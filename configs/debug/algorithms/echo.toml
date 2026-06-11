@@ -19,7 +19,7 @@ group_size = 4
 [orchestrator.algo]
 name = "echo"
 
-[orchestrator.algo.loss]
+[orchestrator.algo.advantage]
 observation_weight = 0.1
 
 [[orchestrator.train.env]]

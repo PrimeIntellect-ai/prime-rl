@@ -173,12 +173,11 @@ class RolloutDispatcher:
 
     def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
         """``(pool, model_name, is_live)`` for *train* rollouts of this env —
-        the env algorithm's sampling pool. (Eval always uses the policy.)"""
-        algorithm = self.train_envs.get(env_name).algorithm
-        pool = algorithm.sampling_pool
-        if algorithm.samples_from_live_policy:
-            return pool, self.policy.model_name, True
-        return pool, pool.model_name, False
+        the env sampler's pool. (Eval always uses the policy.)"""
+        sampler = self.train_envs.get(env_name).sampler
+        if sampler.samples_from_live_policy:
+            return sampler.pool, self.policy.model_name, True
+        return sampler.pool, sampler.pool.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -271,7 +270,7 @@ class RolloutDispatcher:
                 continue
             # Frozen-sourced rollouts never go stale — their sampler doesn't
             # change with policy updates.
-            if not self.train_envs.get(meta.env_name).algorithm.samples_from_live_policy:
+            if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
                 continue
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:

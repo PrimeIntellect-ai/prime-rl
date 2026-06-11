@@ -177,11 +177,10 @@ def test_env_inherits_algorithm_with_advantage_shorthand_on_top():
         }
     )
     env_a, env_b = config.train.env
-    # The shorthand replaces the advantage but keeps the inherited preset's routing.
+    # The shorthand replaces the advantage wholesale — routing included: the
+    # reward env under an echo top-level does not train observation tokens.
     assert env_a.algo is not None and env_a.algo.advantage.type == "reward"
-    assert env_a.algo.loss.observation == "ce"
-    assert env_b.algo is not None and env_b.algo.advantage.type == "group_norm"
-    assert env_b.algo.loss.observation == "ce"
+    assert env_b.algo is not None and env_b.algo.advantage.type == "echo"
 
     # The shorthand is write-only sugar: resolved configs dump without it and round-trip.
     dumped = config.model_dump(exclude_none=True)

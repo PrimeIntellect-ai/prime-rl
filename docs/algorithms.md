@@ -30,11 +30,10 @@ This page covers the math and the configurable algorithmic components: the algor
 
 ## The Algorithm Abstraction
 
-A training algorithm in `prime-rl` is a bundle of three components, configured under `[orchestrator.algo]`:
+A training algorithm in `prime-rl` is a bundle of two components, configured under `[orchestrator.algo]`:
 
-1. **Sampling** (`algo.sampling`) — which model generates train rollouts. `source` is a [model reference](#model-references): `"policy"` (the live policy, the default) or an inline frozen hosted model. Group sizing stays on the env config (`group_size`).
-2. **Advantage** (`algo.advantage`) — the per-token training signal, one concept at different granularities and evaluation sites. Group-relative strategies compute scalars on the orchestrator and ship numbers; reference-KL strategies query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The strategy determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`).
-3. **Loss routing** (`algo.loss`) — what happens to env-provided observation tokens in multi-turn rollouts (tool output, terminal responses): `observation = "none"` masks them out (the default), `"ce"` trains on them with weight `observation_weight`.
+1. **Sampling** (`algo.sampling`) — how train rollouts are produced: which model generates them. `source` is a [model reference](#model-references): `"policy"` (the live policy, the default) or an inline frozen hosted model. Group sizing stays on the env config (`group_size`).
+2. **Advantage** (`algo.advantage`) — the per-token training signal: credit assignment and loss routing, fused. One mapping from a finalized rollout to per-token *(loss component, weight)* pairs — the credit a token gets and the loss that consumes it are two coordinates of the same output. Group-relative strategies compute scalars on the orchestrator and ship numbers; reference-KL strategies query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The strategy determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`) and what happens to env-provided observation tokens in multi-turn rollouts (masked out by default; `echo` trains on them with weighted CE).
 
 The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, ref_kl), each normalized by its own global token count; per-token component weight streams ship on the wire (`rl_weights` / `ce_weights` / `ref_kl_weights` on each training sample) and the trainer just executes them. Adding an algorithm never touches the dispatcher, packer, or trainer hot path.
 
@@ -72,7 +71,7 @@ name = "grpo"  # the default
 | `opd` | policy | `ref_kl` | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs an inline `model`. |
 | `sft_distill` | *(set via `model`)* | `supervised` | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs an inline `model`. |
 | `self_distill` | policy | `demo_ref_kl` | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. Defaults to the live policy (the paper's setting, no extra deployment); set an inline `model` to score under a frozen copy instead. |
-| `echo` | policy | `group_norm` | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-observation tokens already present in the rollout (`observation_weight` is ECHO's λ). |
+| `echo` | policy | `echo` | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-observation tokens already present in the rollout (`observation_weight` is ECHO's λ). |
 
 ### Customizing Components
 
@@ -82,19 +81,20 @@ Every component can be overridden individually — the preset merges under your 
 [orchestrator.algo]
 name = "echo"
 
-[orchestrator.algo.loss]
-observation_weight = 0.25  # keep echo's routing, change lambda
-
 [orchestrator.algo.advantage]
-type = "custom"
-import_path = "my_module.normalized_advantage"
+observation_weight = 0.25  # keep echo's strategy, change lambda
+
+# or replace the strategy wholesale:
+# [orchestrator.algo.advantage]
+# type = "custom"
+# import_path = "my_module.normalized_advantage"
 ```
 
 Component compatibility is validated at config time: frozen-model sampling cannot feed an advantage with the `rl` loss component (no policy sampling logprobs for importance ratios), `ref_kl` pointed at `"policy"` is rejected as degenerate (zero KL), and group-relative advantage with `group_size = 1` warns that every advantage collapses to zero.
 
 ### Per-Env Algorithms
 
-All three components resolve per environment. Each env inherits `[orchestrator.algo]` unless it sets its own, so a single run can mix algorithms across envs — e.g. GRPO on math, ECHO on a terminal env:
+Both components resolve per environment. Each env inherits `[orchestrator.algo]` unless it sets its own, so a single run can mix algorithms across envs — e.g. GRPO on math, ECHO on a terminal env:
 
 ```toml
 [orchestrator.algo]
@@ -110,11 +110,12 @@ algo = { name = "echo" }
 
 ### The Algorithm Classes
 
-At runtime, each env's resolved config builds one of the named algorithm classes in `prime_rl.orchestrator.algo` — dispatch is keyed on `advantage.type`, the axis along which behavior actually differs; preset names are vetted parameterizations of these classes (`echo` builds `GRPOAlgorithm` with observation routing):
+At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_rl.orchestrator.sampler`) from the `sampling` component — the pool rollouts are generated from, and the home of future sampling strategies like replay buffers or branching — and one of the named algorithm classes in `prime_rl.orchestrator.algo` from the `advantage` component. Algorithm dispatch is keyed on `advantage.type`, the axis along which behavior actually differs; preset names are vetted parameterizations of these classes:
 
 | `advantage.type` | Class | `assign` (group time) | `score` (ship time) |
 |---|---|---|---|
 | `group_norm` | `GRPOAlgorithm` | group-norm credit (optional length penalty) | — |
+| `echo` | `EchoAlgorithm` | group-norm credit, plus weighted ce on observation tokens | — |
 | `ref_kl` | `OPDAlgorithm` | group-norm credit (DPPO sign steering) | own-context prefill under the teacher |
 | `demo_ref_kl` | `OPSDAlgorithm` | — | demo-conditioned prefill under the teacher |
 | `supervised` | `SFTDistillAlgorithm` | group-norm credit (feeds filters) | — |
@@ -252,6 +253,7 @@ The advantage strategy is the `advantage` component of the [algorithm](#the-algo
 | Type | Component | Effect |
 |---|---|---|
 | `group_norm` | `rl` | Group-norm (GRPO): reward minus per-group baseline, optional length penalty. |
+| `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-observation tokens (`observation_weight`, ECHO's λ). |
 | `reward` | `rl` | Advantage = raw reward, no baseline. |
 | `ref_kl` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. Group-relative scalars are still assigned (their sign steers the DPPO masking direction; the zero-advantage filter reads them). |
 | `demo_ref_kl` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No scalars — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0. |

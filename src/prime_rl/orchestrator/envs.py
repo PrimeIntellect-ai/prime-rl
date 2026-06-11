@@ -13,6 +13,7 @@ from verifiers.utils.serve_utils import get_free_port
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
+from prime_rl.orchestrator.sampler import Sampler
 from prime_rl.utils.logger import get_logger
 
 REQUIRED_STATE_COLUMNS = ["trajectory"]
@@ -162,10 +163,11 @@ class Env:
 class TrainEnv(Env):
     config: TrainEnvConfig
 
-    def __init__(self, config: TrainEnvConfig, algorithm: Algorithm):
+    def __init__(self, config: TrainEnvConfig, sampler: Sampler, algorithm: Algorithm):
         super().__init__(config)
+        self.sampler = sampler
         self.algorithm = algorithm
-        self.sampling_args = algorithm.sampling_args(config.sampling.to_sampling_args())
+        self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
 
     def get_dataset(self, seed: int | None = None):
         return self.env.get_dataset(seed=seed)
@@ -240,14 +242,19 @@ class Envs(Generic[EnvT]):
 
 
 class TrainEnvs(Envs[TrainEnv]):
-    """Collection of training environments, each paired with its runtime
-    :class:`Algorithm` built from the env's resolved algorithm config."""
+    """Collection of training environments, each paired with its rollout
+    :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
+    resolved algorithm config."""
 
     def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
-            env = TrainEnv(config, build_algorithm(config.algo, policy_pool, renderer))
+            env = TrainEnv(
+                config,
+                Sampler(config.algo.sampling, policy_pool),
+                build_algorithm(config.algo, policy_pool, renderer),
+            )
             self._envs[env.name] = env
 
 

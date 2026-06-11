@@ -12,29 +12,29 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from prime_rl.configs.algorithm import LossRoutingConfig
 from prime_rl.transport import TrainingSample
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import TrainRollout
 
 
-def stamp_loss_routing(sample: TrainingSample, action_loss_type: str, loss: LossRoutingConfig) -> None:
-    """Stamp the env's loss routing onto one sample's component weight streams.
+def stamp_loss_routing(sample: TrainingSample, action_loss_type: str, observation_weight: float | None) -> None:
+    """Stamp the algorithm's loss routing onto one sample's component weight
+    streams.
 
-    Action tokens (the trainable completion tokens) feed the advantage
-    strategy's component: ``rl`` is the default (absent streams ship nothing),
-    while ``ce``/``ref_kl`` stamp that component's weights over the action
-    tokens and zero the rl stream. When the algorithm trains on observations,
-    env-provided tokens (tagged by ``interleave_rollout`` in
-    ``completion_obs_mask``) get a ce weight of ``observation_weight`` — they
-    stay out of ``completion_mask``, so the ce component is the only one that
-    trains them. ``completion_obs_mask`` is orchestrator-internal and cleared
-    here so it never ships.
+    Action tokens (the trainable completion tokens) feed the algorithm's
+    component: ``rl`` is the default (absent streams ship nothing), while
+    ``ce``/``ref_kl`` stamp that component's weights over the action tokens
+    and zero the rl stream. When the algorithm trains on observations
+    (``observation_weight`` is set), env-provided tokens (tagged by
+    ``interleave_rollout`` in ``completion_obs_mask``) get that ce weight —
+    they stay out of ``completion_mask``, so the ce component is the only one
+    that trains them. ``completion_obs_mask`` is orchestrator-internal and
+    cleared here so it never ships.
     """
     obs_mask = sample.completion_obs_mask
     sample.completion_obs_mask = None
-    train_obs = loss.observation == "ce" and obs_mask is not None and any(obs_mask)
+    train_obs = observation_weight is not None and obs_mask is not None and any(obs_mask)
     if action_loss_type == "rl" and not train_obs:
         return
 
@@ -54,11 +54,11 @@ def stamp_loss_routing(sample: TrainingSample, action_loss_type: str, loss: Loss
             sample.ref_kl_weights = action_weights
 
     if train_obs:
-        assert obs_mask is not None
+        assert obs_mask is not None and observation_weight is not None
         ce_weights = sample.ce_weights if sample.ce_weights is not None else [0.0] * seq_len
         for i, is_obs in enumerate(obs_mask):
             if is_obs:
-                ce_weights[prompt_len + i] = loss.observation_weight
+                ce_weights[prompt_len + i] = observation_weight
         sample.ce_weights = ce_weights
 
 

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 import verifiers as vf
 
-from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig, LossRoutingConfig
+from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import spread_token_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
 from prime_rl.orchestrator.types import TrainRollout
@@ -19,29 +19,27 @@ def _ref_kind(ref):
 
 
 @pytest.mark.parametrize(
-    ("name", "model", "source", "advantage_type", "advantage_model", "action_loss_type", "observation"),
+    ("name", "model", "source", "advantage_type", "advantage_model", "action_loss_type"),
     [
-        ("grpo", None, "policy", "group_norm", None, "rl", "none"),
-        ("opd", FROZEN, "policy", "ref_kl", "frozen", "ref_kl", "none"),
-        ("sft_distill", FROZEN, "frozen", "supervised", None, "ce", "none"),
-        ("self_distill", None, "policy", "demo_ref_kl", "policy", "ref_kl", "none"),
-        ("echo", None, "policy", "group_norm", None, "rl", "ce"),
+        ("grpo", None, "policy", "group_norm", None, "rl"),
+        ("opd", FROZEN, "policy", "ref_kl", "frozen", "ref_kl"),
+        ("sft_distill", FROZEN, "frozen", "supervised", None, "ce"),
+        ("self_distill", None, "policy", "demo_ref_kl", "policy", "ref_kl"),
+        ("echo", None, "policy", "echo", None, "rl"),
     ],
 )
-def test_preset_expansion(name, model, source, advantage_type, advantage_model, action_loss_type, observation):
+def test_preset_expansion(name, model, source, advantage_type, advantage_model, action_loss_type):
     algo = AlgorithmConfig(name=name, model=model)
     assert _ref_kind(algo.sampling.source) == source
     assert algo.advantage.type == advantage_type
     assert _ref_kind(getattr(algo.advantage, "model", None)) == advantage_model
     assert algo.advantage.action_loss_type == action_loss_type
-    assert algo.loss.observation == observation
 
 
 def test_preset_component_override():
-    algo = AlgorithmConfig(name="echo", loss={"observation_weight": 0.5})
-    assert algo.loss.observation == "ce"  # unset loss fields inherit from the preset
-    assert algo.loss.observation_weight == 0.5
-    assert algo.advantage.type == "group_norm"  # untouched components still inherit the preset
+    algo = AlgorithmConfig(name="echo", advantage={"observation_weight": 0.5})
+    assert algo.advantage.type == "echo"  # an unset type inherits the preset's strategy
+    assert algo.advantage.observation_weight == 0.5
 
 
 def test_preset_advantage_override_without_type_inherits_strategy():
@@ -101,7 +99,7 @@ def _make_sample(obs_mask: list[bool] | None) -> TrainingSample:
 
 def test_stamp_loss_routing_uniform_rl():
     sample = _make_sample(obs_mask=None)
-    stamp_loss_routing(sample, "rl", LossRoutingConfig())
+    stamp_loss_routing(sample, "rl", None)
     # Hot path: absent streams mean rl weight 1.0 on the loss mask
     assert sample.rl_weights is None
     assert sample.ce_weights is None
@@ -110,7 +108,7 @@ def test_stamp_loss_routing_uniform_rl():
 
 def test_stamp_loss_routing_ref_kl_action():
     sample = _make_sample(obs_mask=None)
-    stamp_loss_routing(sample, "ref_kl", LossRoutingConfig())
+    stamp_loss_routing(sample, "ref_kl", None)
     # Action tokens (completion_mask True) feed the ref_kl component; rl is off
     assert sample.rl_weights == [0.0] * 6
     assert sample.ref_kl_weights == [0.0, 0.0] + [1.0, 1.0, 0.0, 1.0]
@@ -119,7 +117,7 @@ def test_stamp_loss_routing_ref_kl_action():
 
 def test_stamp_loss_routing_ce_action():
     sample = _make_sample(obs_mask=None)
-    stamp_loss_routing(sample, "ce", LossRoutingConfig())
+    stamp_loss_routing(sample, "ce", None)
     assert sample.rl_weights == [0.0] * 6
     assert sample.ce_weights == [0.0, 0.0] + [1.0, 1.0, 0.0, 1.0]
     assert sample.ref_kl_weights is None
@@ -128,7 +126,7 @@ def test_stamp_loss_routing_ce_action():
 def test_stamp_loss_routing_echo_observations():
     # Token at completion index 2 is an env observation (masked out today)
     sample = _make_sample(obs_mask=[False, False, True, False])
-    stamp_loss_routing(sample, "rl", LossRoutingConfig(observation="ce", observation_weight=0.1))
+    stamp_loss_routing(sample, "rl", 0.1)
 
     assert sample.completion_obs_mask is None  # cleared, never ships
     # The observation token trains on the ce component with the configured
@@ -142,7 +140,7 @@ def test_stamp_loss_routing_echo_observations():
 
 def test_stamp_loss_routing_clears_obs_mask_when_unused():
     sample = _make_sample(obs_mask=[False, False, True, False])
-    stamp_loss_routing(sample, "rl", LossRoutingConfig(observation="none"))
+    stamp_loss_routing(sample, "rl", None)
     assert sample.completion_obs_mask is None
     assert sample.ce_weights is None
     assert sample.completion_mask == [True, True, False, True]

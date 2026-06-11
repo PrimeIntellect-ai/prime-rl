@@ -1,18 +1,17 @@
-"""Algorithm abstraction: sampling, advantage, and loss routing.
+"""Algorithm abstraction: sampling and the per-token training signal.
 
-An algorithm is a preset of three pieces:
+An algorithm is a preset of two pieces:
 
 1. **Sampling** — which model generates train rollouts. ``source`` is a model
    reference: ``"policy"`` (the live policy) or an inline frozen hosted model.
-2. **Advantage** — the per-token training signal, one concept at different
-   granularities and evaluation sites: group-relative strategies compute
-   scalars on the orchestrator and ship numbers; reference-KL strategies ship
-   reference prefill logprobs and the trainer evaluates the per-token signal
-   against the live policy. The strategy determines which loss component
-   consumes the action tokens (``rl`` / ``ce`` / ``ref_kl``).
-3. **Loss routing** — what happens to env-provided observation tokens in
-   multi-turn rollouts (``none`` drops them from the loss — the default;
-   ``ce`` trains on them with a per-token weight, ECHO).
+2. **Advantage** — credit assignment and loss routing, fused: one mapping from
+   a finalized rollout to per-token ``(loss component, weight)``.
+   Group-relative strategies compute scalars on the orchestrator and ship
+   numbers; reference-KL strategies ship reference prefill logprobs and the
+   trainer evaluates the per-token signal against the live policy. The
+   strategy determines which loss component consumes the action tokens
+   (``rl`` / ``ce`` / ``ref_kl``) and what happens to env-provided observation
+   tokens (masked out by default; ``echo`` trains on them with weighted CE).
 
 prime-rl only ever hosts the trainable policy. Every other model an algorithm
 uses is an external OpenAI-compatible endpoint, declared inline on the
@@ -66,7 +65,6 @@ version, sampling logprobs carried, rollouts age off-policy) or an inline
 externally-hosted frozen model."""
 
 ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
-ObservationLossType: TypeAlias = Literal["none", "ce"]
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +117,18 @@ class GroupNormAdvantageConfig(BaseConfig):
 
     length_penalty: LengthPenaltyConfig | None = None
     """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
+
+
+class EchoAdvantageConfig(GroupNormAdvantageConfig):
+    type: Literal["echo"] = "echo"  # type: ignore[assignment]
+    """ECHO: group-relative advantage on action tokens (GRPO), plus weighted
+    CE on env-provided observation tokens of later turns (tool output,
+    terminal responses). The observation tokens feed the ``ce`` loss component
+    at ``observation_weight`` and stay outside the rl mask and its
+    denominator."""
+
+    observation_weight: float = Field(0.1, gt=0)
+    """Per-token ce weight for observation tokens (ECHO's lambda)."""
 
 
 class RewardAdvantageConfig(BaseConfig):
@@ -227,6 +237,7 @@ class CustomAdvantageConfig(BaseConfig):
 
 AdvantageConfig: TypeAlias = Annotated[
     GroupNormAdvantageConfig
+    | EchoAdvantageConfig
     | RewardAdvantageConfig
     | RefKLAdvantageConfig
     | DemoRefKLAdvantageConfig
@@ -234,30 +245,6 @@ AdvantageConfig: TypeAlias = Annotated[
     | CustomAdvantageConfig,
     Field(discriminator="type"),
 ]
-
-
-# ---------------------------------------------------------------------------
-# Component 3: loss routing
-# ---------------------------------------------------------------------------
-
-
-class LossRoutingConfig(BaseConfig):
-    """Routing for tokens the advantage strategy doesn't already determine.
-
-    The training loss is a sum of three components (rl, ce, ref_kl), each
-    normalized by its own global token count so the components don't dilute
-    each other. Which component the action tokens feed is derived from the
-    advantage strategy (``advantage.action_loss_type``); this config only
-    routes env-provided observation tokens."""
-
-    observation: ObservationLossType = "none"
-    """Loss component for env-provided tokens of later turns (tool output,
-    terminal responses). ``none`` masks them out (standard RL); ``ce`` trains
-    on them with weight ``observation_weight`` (ECHO)."""
-
-    observation_weight: float = Field(0.1, gt=0)
-    """Per-token ce weight for observation tokens (ECHO's lambda). Only used
-    when ``observation != 'none'``."""
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +263,7 @@ _PRESETS: dict[AlgorithmName, dict[str, dict[str, Any]]] = {
     "opd": {"advantage": {"type": "ref_kl"}},
     "sft_distill": {"sampling": {"source": None}, "advantage": {"type": "supervised"}},
     "self_distill": {"advantage": {"type": "demo_ref_kl"}},
-    "echo": {"loss": {"observation": "ce"}},
+    "echo": {"advantage": {"type": "echo"}},
 }
 
 
@@ -320,11 +307,9 @@ class AlgorithmConfig(BaseConfig):
     """Sampling component. Unset fields inherit from the preset."""
 
     advantage: AdvantageConfig = GroupNormAdvantageConfig()
-    """Advantage strategy. Unset fields inherit from the preset; a different
-    ``type`` replaces the preset's choice wholesale."""
-
-    loss: LossRoutingConfig = LossRoutingConfig()
-    """Loss routing. Unset fields inherit from the preset."""
+    """The per-token training signal: credit assignment and loss routing,
+    fused. Unset fields inherit from the preset; a different ``type`` replaces
+    the preset's choice wholesale."""
 
     @property
     def requires_group_advantage(self) -> bool:

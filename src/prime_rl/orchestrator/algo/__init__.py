@@ -1,15 +1,15 @@
 """Orchestrator-side algorithm runtime.
 
 The config side (``prime_rl.configs.algorithm``) defines *what* an algorithm
-is — a preset of sampling, advantage, and loss routing. This package turns
-that declaration into runtime objects:
+is — a preset of sampling and the per-token training signal. This package
+turns the signal half into runtime objects (the sampling half is the env's
+:class:`~prime_rl.orchestrator.sampler.Sampler`):
 
 - ``algorithm`` — the named algorithm classes (:class:`GRPOAlgorithm`,
   :class:`OPDAlgorithm`, :class:`OPSDAlgorithm`, ...), each owning its
   ``assign`` (group-time credit) and ``score`` (ship-time reference scoring)
   methods and declaring what it needs (loss component, a "teacher", ...).
-  One instance per env, built by :func:`build_algorithm`; the only
-  orchestrator components that interpret ``AlgorithmConfig``. Subclass
+  One instance per env, built by :func:`build_algorithm`. Subclass
   :class:`Algorithm` to write your own.
 - ``advantage`` — pure advantage math: the custom-function interface
   (:class:`AdvantageInputs` / :class:`AdvantageOutputs`) and the default
@@ -29,6 +29,7 @@ from prime_rl.orchestrator.algo.algorithm import (
     ALGORITHM_CLASSES,
     Algorithm,
     CustomAlgorithm,
+    EchoAlgorithm,
     GRPOAlgorithm,
     OPDAlgorithm,
     OPSDAlgorithm,
@@ -47,6 +48,7 @@ __all__ = [
     "AdvantageOutputs",
     "Algorithm",
     "CustomAlgorithm",
+    "EchoAlgorithm",
     "GRPOAlgorithm",
     "OPDAlgorithm",
     "OPSDAlgorithm",

@@ -10,6 +10,12 @@ as plain functions in ``advantage.py``; duplication of orchestration between
 similar algorithms (e.g. OPD and OPSD) is accepted so each class stays
 self-contained.
 
+How rollouts are *produced* is not the algorithm's concern: that is the env's
+:class:`~prime_rl.orchestrator.sampler.Sampler`. The algorithm consumes
+finalized rollouts and compiles them into the per-token component weight
+streams the trainer executes — credit assignment and loss routing are two
+phases of that one compilation.
+
 The pipeline (dispatcher, train sink, orchestrator) calls the base-class hooks
 and reads its properties; it never branches on algorithm config fields or
 model roles — liveness of a reference is the only runtime distinction.
@@ -30,6 +36,7 @@ from prime_rl.configs.algorithm import (
     AlgorithmConfig,
     CustomAdvantageConfig,
     DemoRefKLAdvantageConfig,
+    EchoAdvantageConfig,
     FrozenModelConfig,
     GroupNormAdvantageConfig,
     LengthPenaltyConfig,
@@ -72,8 +79,9 @@ def _assign_group_norm(rollouts: list[TrainRollout], length_penalty: LengthPenal
 
 
 class Algorithm:
-    """Base class for one env's training algorithm — the sole interpreter of
-    ``AlgorithmConfig`` in the orchestrator.
+    """Base class for one env's training algorithm — the interpreter of the
+    bundle's ``advantage`` component (its sibling :class:`Sampler` interprets
+    ``sampling``).
 
     Subclass and override the two execution points of the training signal:
 
@@ -88,29 +96,23 @@ class Algorithm:
     component its action tokens feed (``action_loss_type``) and what it calls
     its reference model, if it has one (``model_role``, e.g. "teacher").
     Constructed with the policy pool and the policy's renderer (the canonical
-    messages → token ids path; ``None`` under MITO); connects client pools to
-    any inline frozen model references in :meth:`setup`."""
+    messages → token ids path; ``None`` under MITO); connects a client pool to
+    an inline frozen reference model in :meth:`setup`."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
     model_role: ClassVar[str | None] = None
 
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
-        assert config.sampling.source is not None
         self.config = config
         self.policy_pool = policy_pool
         self.renderer = renderer
-        self.sampling_pool: InferencePool = policy_pool  # frozen sources swap this in setup()
         self.reference_pool: InferencePool | None = None  # resolved in setup() when the algorithm declares a model
         self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
-        self.loss = config.loss
+        self.observation_weight: float | None = None  # ce weight for env-provided tokens; None masks them out
 
     async def setup(self) -> None:
-        """Connect client pools to the algorithm's frozen model references and
-        wait for readiness. Must run before dispatching or scoring."""
-        source = self.config.sampling.source
-        if isinstance(source, FrozenModelConfig):
-            self.sampling_pool = await connect_frozen_pool(source)
-            self.connected_pools.append(self.sampling_pool)
+        """Connect a client pool to the algorithm's frozen reference model and
+        wait for readiness. Must run before scoring."""
         reference = getattr(self.config.advantage, "model", None)
         if reference is not None:
             if reference == "policy":
@@ -124,22 +126,10 @@ class Algorithm:
         return self.config.name
 
     @property
-    def samples_from_live_policy(self) -> bool:
-        return self.config.sampling.source == "policy"
-
-    @property
     def tag_observation_tokens(self) -> bool:
-        """``interleave_rollout`` marks env-provided tokens when the loss
-        routing trains on them."""
-        return self.loss.observation != "none"
-
-    def sampling_args(self, args: dict) -> dict:
-        """Algorithm-specific sampling-arg overrides. Sampling logprobs are
-        only needed for importance ratios on policy-sampled tokens — frozen
-        endpoints may reject the knob."""
-        if not self.samples_from_live_policy:
-            args.pop("logprobs", None)
-        return args
+        """``interleave_rollout`` marks env-provided tokens when the algorithm
+        trains on them."""
+        return self.observation_weight is not None
 
     def assign(self, rollouts: list[TrainRollout]) -> None:
         """Assign credit to one finalized group of rollouts."""
@@ -161,7 +151,7 @@ class Algorithm:
                 sample.advantage = rollout.advantage if rollout.advantage is not None else 0.0
                 sample.reward = rollout.reward
                 sample.env_name = rollout.env_name
-                stamp_loss_routing(sample, self.action_loss_type, self.loss)
+                stamp_loss_routing(sample, self.action_loss_type, self.observation_weight)
 
     async def score_batch(self, rollouts: list[TrainRollout]) -> None:
         """Run :meth:`score` over this env's rollouts. No-op for algorithms
@@ -188,6 +178,18 @@ class GRPOAlgorithm(Algorithm):
 
     def assign(self, rollouts: list[TrainRollout]) -> None:
         _assign_group_norm(rollouts, self.length_penalty)
+
+
+class EchoAlgorithm(GRPOAlgorithm):
+    """GRPO on action tokens, plus weighted CE on env-provided observation
+    tokens (tool output, terminal responses). The observation tokens feed the
+    ``ce`` loss component at ``observation_weight`` and stay outside the rl
+    mask and its denominator."""
+
+    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+        super().__init__(config, policy_pool, renderer)
+        assert isinstance(config.advantage, EchoAdvantageConfig)
+        self.observation_weight = config.advantage.observation_weight
 
 
 class OPDAlgorithm(Algorithm):
@@ -343,9 +345,10 @@ class CustomAlgorithm(Algorithm):
 
 # Runtime dispatch is keyed on the advantage type — the axis along which
 # behavior actually differs. Preset names are vetted parameterizations of
-# these classes (e.g. ``echo`` builds GRPOAlgorithm with observation routing).
+# these classes.
 ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "group_norm": GRPOAlgorithm,
+    "echo": EchoAlgorithm,
     "ref_kl": OPDAlgorithm,
     "demo_ref_kl": OPSDAlgorithm,
     "supervised": SFTDistillAlgorithm,
