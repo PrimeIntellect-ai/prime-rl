@@ -272,7 +272,25 @@ class NIXLWeightBroadcast(WeightBroadcast, OrchestratorMarkers):
         if self.world.is_master:
             for _, save_dir in notified_runs:
                 (save_dir / NIXL_DONE_MARKER).touch()
+            self._wait_for_pull_acks(notified_runs)
+        # No rank may leave (and on the final step, exit — taking its NIXL
+        # agent with it) until every worker has acked this step's pull.
+        dist.barrier()
         self.logger.debug(f"NIXL weight store refreshed in {time.perf_counter() - start:.2f}s")
+
+    def _wait_for_pull_acks(self, notified_runs: list[tuple[int, Path]]) -> None:
+        """Block until every inference worker acked this step's pull."""
+        deadline = time.monotonic() + self.config.timeout
+        for _, save_dir in notified_runs:
+            while True:
+                acked = len(list(save_dir.glob(f"{NIXL_PULLED_MARKER}.*")))
+                if acked >= self.config.inference_world_size:
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"timed out waiting for pull acks in {save_dir} ({acked}/{self.config.inference_world_size})"
+                    )
+                time.sleep(0.1)
 
     def _resolve_dtensors(self, state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         for key, value in list(state_dict.items()):

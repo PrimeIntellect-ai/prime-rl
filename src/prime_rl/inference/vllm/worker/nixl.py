@@ -45,7 +45,7 @@ from prime_rl.weight_transfer.chains import contiguous_runs, match_runs, resolve
 from prime_rl.weight_transfer.lazy import BakeRecorder
 from prime_rl.weight_transfer.mx import MX_MODEL_NAME, MxRendezvous
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
-from prime_rl.weight_transfer.wire import NIXL_DONE_MARKER, TrainerTable, decode_table
+from prime_rl.weight_transfer.wire import NIXL_DONE_MARKER, NIXL_PULLED_MARKER, TrainerTable, decode_table
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -302,6 +302,8 @@ class NIXLWeightUpdateWorker(Worker):
             self.nixl_agent.wait(handle, context="weight pull")
         torch.cuda.synchronize(self.device)
         update_mla_absorbed_weights(self.raw_model)
+        # Ack the pull so the trainer may rewrite (or tear down) its store.
+        (Path(weight_dir) / f"{NIXL_PULLED_MARKER}.{self._global_rank}").touch()
         logger.info(
             f"Weight update pulled over NIXL: {self._total_pull_bytes / 1e9:.2f} GB "
             f"in {time.perf_counter() - start:.2f}s"

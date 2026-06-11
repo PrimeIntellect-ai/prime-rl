@@ -19,6 +19,14 @@ import msgspec
 # fresh.
 NIXL_DONE_MARKER = "NIXL_DONE"
 
+# Per-worker ack marker (suffixed with the worker's global rank) created in
+# the same directory once that worker's pull completed. The trainer blocks on
+# the full set before returning from a broadcast, which keeps every rank's
+# NIXL agent alive through the last pull (the trainer exits right after the
+# final broadcast) and guarantees the store is never rewritten under an
+# in-flight pull.
+NIXL_PULLED_MARKER = "NIXL_PULLED"
+
 
 class TrainerAgent(msgspec.Struct, frozen=True):
     """One trainer rank's NIXL agent serving a partition of the store."""
