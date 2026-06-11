@@ -21,5 +21,5 @@ class EnvServerConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_num_workers(self):
         if self.env.num_workers == "auto":
-            self.env.num_workers = 1
+            self.env.num_workers = 4
         return self
