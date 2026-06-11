@@ -575,7 +575,13 @@ def setup_admin_clients(client_config: ClientConfig, *, use_admin_base_url: bool
 
 def discover_dynamo_admin_base_urls(client_config: ClientConfig) -> list[str]:
     urls: list[str] = []
-    headers = client_config.headers.copy()
+    # Match the header set used by _setup_admin_client: static headers plus
+    # env-resolved headers, so discovery passes the same auth/routing headers
+    # that the admin clients themselves will carry.
+    env_headers = {
+        k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
+    }
+    headers = {**client_config.headers, **env_headers}
     api_key = os.getenv(client_config.api_key_var, "EMPTY")
     if api_key and api_key != "EMPTY":
         headers["Authorization"] = f"Bearer {api_key}"

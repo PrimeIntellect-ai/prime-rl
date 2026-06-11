@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 import httpx
 import verifiers as vf
@@ -25,6 +26,7 @@ from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.client import (
     ClientIdentity,
     client_identity,
+    discover_dynamo_admin_base_urls,
     load_lora_adapter,
     setup_admin_api,
     setup_admin_clients,
@@ -264,7 +266,19 @@ class ElasticInferencePool:
             api_key_var=self.client_config.api_key_var,
             headers=self.client_config.headers,
             headers_from_env=self.client_config.headers_from_env,
+            # Propagate backend (and RL discovery URL) so the admin client matches
+            # the configured backend instead of silently defaulting to vLLM.
+            backend=self.client_config.backend,
+            rl_base_url=self.client_config.rl_base_url,
         )
+        if config.backend == "dynamo" and not config.admin_base_url:
+            # Dynamo admin (/engine/*) lives on the worker system server, not the
+            # inference port. Resolve THIS pod's system URL from RL discovery
+            # (matched by host) and pin it, so admin ops don't hit the inference
+            # port. Falls back to the first discovered URL if no host match.
+            system_urls = await asyncio.to_thread(discover_dynamo_admin_base_urls, config)
+            match = next((u for u in system_urls if urlsplit(u).hostname == ip), None)
+            config = config.model_copy(update={"admin_base_url": [match] if match else system_urls[:1]})
         return setup_admin_clients(config)[0]
 
     async def _get_loaded_adapter(self, ip: str) -> AdapterState | None:
