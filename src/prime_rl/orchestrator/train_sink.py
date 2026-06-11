@@ -144,12 +144,7 @@ class TrainSink:
         level, so skip them here."""
         if rollout.has_error:
             return
-        samples = await asyncio.to_thread(
-            trace_to_samples,
-            rollout,
-            env_name=rollout.env_name,
-            mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
-        )
+        samples = await asyncio.to_thread(trace_to_samples, rollout, env_name=rollout.env_name)
         rollout.samples = samples or []
 
     def process_group(self, group_id: uuid.UUID) -> None:

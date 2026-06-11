@@ -19,23 +19,6 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
 
 
-def _loggable_task(task) -> str:
-    """A Table-safe JSON string of the task for sample logging. Image content parts are elided to
-    a short placeholder — their base64 data bloats the table and breaks wandb Table's nested-type
-    inference on the variable-length content list (a plain dict would otherwise crash on it)."""
-
-    def elide(obj):
-        if isinstance(obj, dict):
-            if obj.get("type") == "image_url":
-                return {"type": "image_url", "image_url": "<image>"}
-            return {k: elide(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [elide(v) for v in obj]
-        return obj
-
-    return json.dumps(elide(task.model_dump(mode="json")))
-
-
 class WandbMonitor(Monitor):
     """Logs to Weights and Biases."""
 
@@ -198,7 +181,7 @@ class WandbMonitor(Monitor):
                 sample = {
                     "step": step,
                     "env_name": rollout.env_name,
-                    "task": _loggable_task(trace.task),
+                    "task": trace.task.model_dump(mode="json"),
                     "task_idx": trace.task.idx,
                     "messages": self.tokenizer.decode(token_ids),
                     "input_ids": str(token_ids),
@@ -236,7 +219,7 @@ class WandbMonitor(Monitor):
                 sample = {
                     "step": step,
                     "env": env_name,
-                    "task": _loggable_task(trace.task),
+                    "task": trace.task.model_dump(mode="json"),
                     "task_idx": trace.task.idx,
                     "completion": completion,
                     "reward": trace.reward,
