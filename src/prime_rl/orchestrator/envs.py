@@ -4,11 +4,12 @@ Each ``Env`` owns a v1 ``EnvServer`` (spawned as a child process, or an
 external one given by ``config.address``) and an ``EnvClient`` to drive it. The
 orchestrator never *runs* an environment: it asks the server for ``info``
 (``num_tasks`` + whether group scoring is needed), then runs rollouts purely by
-**task index**. The server returns a ``Trace`` (minus its computed fields) which we
-validate into a typed ``Trace[EnvTask]`` — so the rest of the orchestrator works
-with a real ``vf.Trace`` (typed task fields included), never a loose dict. To type
-the task we import the env's ``Task`` subclass (the env package is installed in this
-venv); the env's *runtime* still only ever executes in the server.
+**task index**. The server returns a ``Trace`` (minus its computed fields) which we validate into a
+``Trace[WireTask]`` — a real ``vf.Trace`` (never a loose dict) whose task keeps the env's
+task-specific fields as extras (``WireTask`` allows them). The orchestrator never imports the
+env package: the env's *type* and *runtime* both live only in the server, and the orchestrator
+drives it purely by task index. (Nothing here reads typed env task fields — only ``task.idx``
+and a full ``task.model_dump``, both of which ``WireTask`` preserves.)
 """
 
 from __future__ import annotations
@@ -30,6 +31,11 @@ from verifiers.v1.serve import EnvClient
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
+
+# Every wire trace validates into this type. WireTask (extra="allow") keeps the env's task
+# fields without importing the env package — the orchestrator never reads them typed (only
+# task.idx + task.model_dump).
+ROLLOUT_TYPE = Rollout[vf.WireTask]
 
 # Max wait for a spawned env server to bind and report its address. The child
 # loads the taskset (possibly downloading a dataset) before reporting, so this
@@ -76,12 +82,6 @@ class Env:
         self.sampling_args: dict = {}
         self.num_tasks: int = 0
         self.requires_group_scoring: bool = False
-        # Typed Rollout for this env (prime-rl's Trace subclass parametrized with the env's
-        # Task subclass), used to validate the wire trace into a typed Rollout — the env's task
-        # fields plus prime-rl's orchestration metadata (defaulted here, set by the dispatcher).
-        # v0/legacy envs return Trace[WireTask] (no v1 Task subclass to import); v1 envs type
-        # the trace with the taskset's Task subclass.
-        self.trace_type = Rollout[vf.WireTask] if config.is_legacy else Rollout[vf.task_type(config.env_id)]
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
 
@@ -175,9 +175,7 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        # The server types the trace as Trace[WireTask] (env fields in model_extra);
-        # upgrade to this env's real Task subclass.
-        return self.trace_type.model_validate(wire.to_wire())
+        return ROLLOUT_TYPE.model_validate(wire.to_wire())
 
     async def run_group(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
@@ -190,7 +188,7 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return [self.trace_type.model_validate(wire.to_wire()) for wire in wires]
+        return [ROLLOUT_TYPE.model_validate(wire.to_wire()) for wire in wires]
 
     def shutdown(self) -> None:
         if self._env_server_process is None:
