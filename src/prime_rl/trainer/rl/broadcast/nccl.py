@@ -13,16 +13,13 @@ from vllm.distributed.utils import StatelessProcessGroup
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
+from prime_rl.trainer.rl.broadcast.markers import OrchestratorMarkers
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.weights import get_max_layer_num
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
-from prime_rl.utils.pathing import sync_wait_for_path
-from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 from prime_rl.utils.vlm import get_layer_prefix
-
-NCCL_READY_MARKER = "NCCL_READY"
 
 
 def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
@@ -168,7 +165,7 @@ class NCCLWeightBroadcastSender:
         return state_dict
 
 
-class NCCLWeightBroadcast(WeightBroadcast):
+class NCCLWeightBroadcast(WeightBroadcast, OrchestratorMarkers):
     """Broadcast weights into the inference engine using NCCL."""
 
     def __init__(
@@ -209,55 +206,6 @@ class NCCLWeightBroadcast(WeightBroadcast):
         notified_runs = self._compute_notified_runs()
         if self.world.is_master:
             self._notify_orchestrator(notified_runs)
-        self._wait_for_nccl_ready(notified_runs)
+        self._wait_for_ready_marker(notified_runs)
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
-
-    def _compute_notified_runs(self) -> list[tuple[int, Path]]:
-        """Derive the list of (run_idx, save_dir) pairs that need broadcasting.
-
-        Pure function of `multi_run_manager` state, which is replicated across
-        trainer ranks (SPMD). Returns the same list on every rank so master and
-        non-master ranks agree on which NCCL_READY markers to wait for.
-        """
-        notified_runs: list[tuple[int, Path]] = []
-        for idx in self.multi_run_manager.used_idxs:
-            if not self.multi_run_manager.ready_to_update[idx]:
-                continue
-            try:
-                save_dir = get_step_path(
-                    get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
-                    self.multi_run_manager.progress[idx].step,
-                )
-                notified_runs.append((idx, save_dir))
-            except FileNotFoundError:
-                self.logger.warning(f"Run {idx} is deleted, skipping")
-            except Exception as e:
-                self.logger.error(f"Error resolving broadcast dir for run {idx}: {e}")
-        return notified_runs
-
-    def _notify_orchestrator(self, notified_runs: list[tuple[int, Path]]) -> None:
-        """Create STABLE markers for each notified run and clear their ready flags.
-
-        Master-only side effects (filesystem writes + state mutation). Called
-        after `_compute_notified_runs`; non-master ranks skip this entirely.
-        """
-        for idx, save_dir in notified_runs:
-            try:
-                save_dir.mkdir(parents=True, exist_ok=True)
-                stable_file = save_dir / "STABLE"
-                stable_file.touch()
-            except FileNotFoundError:
-                self.logger.warning(f"Run {idx} is deleted, skipping")
-            except Exception as e:
-                self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
-            finally:
-                self.multi_run_manager.ready_to_update[idx] = False
-
-    def _wait_for_nccl_ready(self, notified_runs: list[tuple[int, Path]]):
-        """Wait for inference workers to signal they are ready to receive NCCL broadcast."""
-        for idx, save_dir in notified_runs:
-            nccl_ready_file = save_dir / NCCL_READY_MARKER
-            self.logger.debug(f"Waiting for NCCL_READY marker at {nccl_ready_file}")
-            sync_wait_for_path(nccl_ready_file, interval=0.1, log_interval=10)
-            self.logger.debug(f"Inference workers ready for NCCL broadcast (run {idx})")

@@ -13,6 +13,9 @@ from prime_rl.configs.orchestrator import (
     NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig,
 )
 from prime_rl.configs.orchestrator import (
+    NIXLWeightBroadcastConfig as OrchestratorNIXLWeightBroadcastConfig,
+)
+from prime_rl.configs.orchestrator import (
     OrchestratorConfig,
 )
 from prime_rl.configs.shared import (
@@ -30,6 +33,9 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
+)
+from prime_rl.configs.trainer import (
+    NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
@@ -114,14 +120,14 @@ class SharedModelConfig(BaseConfig):
 
 
 class SharedWeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem"] = "filesystem"
+    type: Literal["nccl", "filesystem", "nixl"] = "filesystem"
     """Weight broadcast transport."""
 
     port: int = 29501
-    """Port for NCCL weight broadcast."""
+    """Port for the NCCL rendezvous (nccl) or Model Express metadata store (nixl)."""
 
     timeout: int = 1200
-    """Timeout in seconds for NCCL weight broadcast."""
+    """Timeout in seconds for the weight broadcast."""
 
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
@@ -320,6 +326,20 @@ class RLConfig(BaseConfig):
                     timeout=self.weight_broadcast.timeout,
                     inference_world_size=inference_world_size,
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
+                )
+            elif self.weight_broadcast.type == "nixl":
+                inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
+                self.trainer.weight_broadcast = TrainerNIXLWeightBroadcastConfig(
+                    type=self.weight_broadcast.type,
+                    inference_world_size=inference_world_size,
+                    port=self.weight_broadcast.port,
+                    timeout=self.weight_broadcast.timeout,
+                )
+                self.orchestrator.weight_broadcast = OrchestratorNIXLWeightBroadcastConfig(
+                    type=self.weight_broadcast.type,
+                    port=self.weight_broadcast.port,
+                    timeout=self.weight_broadcast.timeout,
+                    inference_world_size=inference_world_size,
                 )
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()

@@ -40,6 +40,11 @@ uv run rl @ examples/reverse_text/rl.toml --dry-run                             
   If a local env exists under `deps/research-environments/environments/` but does not
   import, add it to the root `pyproject.toml` env extra, workspace members, and
   `[tool.uv.sources]`, then run `uv sync --all-extras`.
+- NIXL weight broadcast (`[weight_broadcast] type = "nixl"`): build the Model Express
+  server binaries once with `bash scripts/install_modelexpress.sh` (needs Rust + protoc) —
+  the multi-node SLURM template launches them on the trainer head node and fails fast if
+  `third_party/modelexpress/bin/modelexpress-server` is missing. Unquantized bf16 models
+  only; the worker validates this at startup.
 
 ## `sft` — SFT training
 

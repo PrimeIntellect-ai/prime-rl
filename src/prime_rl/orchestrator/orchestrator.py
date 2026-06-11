@@ -77,7 +77,7 @@ from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import safe_cancel
-from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
+from prime_rl.utils.client import init_weight_broadcast, setup_inference_pool
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
@@ -319,14 +319,14 @@ class Orchestrator:
             await self.inference_metrics.start()
 
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        if config.weight_broadcast.type == "nccl":
-            await init_nccl_broadcast(
+        if config.weight_broadcast.type in ("nccl", "nixl"):
+            await init_weight_broadcast(
                 self.student_inference.admin_clients,
                 config.weight_broadcast.host,
                 config.weight_broadcast.port,
                 config.weight_broadcast.timeout,
                 inference_world_size=config.weight_broadcast.inference_world_size,
-                quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
+                quantize_in_weight_transfer=getattr(config.weight_broadcast, "quantize_in_weight_transfer", False),
             )
 
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
@@ -337,7 +337,7 @@ class Orchestrator:
         if self.resume_step is not None and self.ckpt_manager is not None:
             self.ckpt_manager.load(self.progress, step=self.resume_step)
             get_logger().info(f"Resuming orchestrator from checkpoint step {self.resume_step}")
-            check_exists = config.weight_broadcast.type != "nccl"
+            check_exists = config.weight_broadcast.type not in ("nccl", "nixl")
             wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
             weights_path = get_weight_dir(
                 config.output_dir, self.progress.step, check_exists=check_exists, wait_timeout=wait_timeout

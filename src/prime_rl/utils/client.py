@@ -484,7 +484,7 @@ async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) 
     await asyncio.gather(*[_unload_lora_adapter(admin_client) for admin_client in admin_clients])
 
 
-async def init_nccl_broadcast(
+async def init_weight_broadcast(
     admin_clients: list[AsyncClient],
     host: str,
     port: int,
@@ -492,7 +492,7 @@ async def init_nccl_broadcast(
     inference_world_size: int | None = None,
     quantize_in_weight_transfer: bool = False,
 ) -> None:
-    """Initialize NCCL broadcast on all inference servers.
+    """Initialize an in-band weight broadcast (NCCL or NIXL) on all inference servers.
 
     Each admin client represents one vLLM server. The function computes
     per-server rank_offset and gpus_per_server so that every inference GPU
@@ -509,11 +509,11 @@ async def init_nccl_broadcast(
     gpus_per_server = inference_world_size // len(admin_clients)
 
     logger.info(
-        f"Initializing NCCL broadcast: {len(admin_clients)} servers, "
+        f"Initializing weight broadcast: {len(admin_clients)} servers, "
         f"inference_world_size={inference_world_size}, gpus_per_server={gpus_per_server}"
     )
 
-    async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
+    async def _init_broadcaster(admin_client: AsyncClient, rank_offset: int) -> None:
         try:
             response = await admin_client.post(
                 "/init_broadcaster",
@@ -529,12 +529,12 @@ async def init_nccl_broadcast(
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
-                logger.warning("The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization.")
+                logger.warning("The route /init_broadcaster does not exist. Skipping weight broadcast initialization.")
                 return
 
     await asyncio.gather(
         *[
-            _init_nccl_broadcast(admin_client, client_num * gpus_per_server)
+            _init_broadcaster(admin_client, client_num * gpus_per_server)
             for client_num, admin_client in enumerate(admin_clients)
         ]
     )

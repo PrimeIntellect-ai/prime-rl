@@ -1,0 +1,54 @@
+# 2-node (1 train + 1 infer) Qwen3-30B-A3B on math with the NIXL weight
+# broadcast: trainer serves its native state dict as a NIXL pull source,
+# inference workers (EP=8) bake pull plans via lazy tensors and RDMA-READ
+# slices straight into their live parameters.
+output_dir = "/data/mika/qwen3-30b-math-nixl"
+clean_output_dir = true
+max_steps = 10
+seq_len = 4096
+
+[slurm]
+job_name = "qwen3-30b-math-nixl"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+
+[wandb]
+project = "nixl-weight-transfer"
+name = "qwen3-30b-math-nixl"
+
+[weight_broadcast]
+type = "nixl"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B"
+
+[trainer.model]
+ep = 8
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[orchestrator]
+batch_size = 128
+group_size = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.train.env]]
+id = "math-env"
+name = "hendrycks-math"
+args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", math_verify_max_workers = 128, math_verify_timeout = 60 }
+
+[inference]
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85
+
+[inference.parallel]
+tp = 1
+dp = 8
