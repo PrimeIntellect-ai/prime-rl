@@ -4,6 +4,10 @@
 #SBATCH --nodes={{ num_train_nodes + num_infer_nodes }}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
+# --mem=0 = all node memory. On GH200, GPU HBM is OS NUMA memory charged to the
+# job memory cgroup; default per-node limits get consumed by GPU allocations and
+# OOM-kill the trainer master (observed 2026-06-11 at ~350G/449G).
+#SBATCH --mem=0
 #SBATCH --partition={{ partition }}
 {%- if account %}
 #SBATCH --account={{ account }}
