@@ -155,8 +155,8 @@ class EnvConfig(vf.EnvConfig):
     address: str | None = None
     """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically."""
 
-    num_workers: int | Literal["auto"] = "auto"
-    """Worker processes for the spawned env server. ``auto`` scales to 1 worker per 256 concurrent rollouts. Ignored when ``address`` is set."""
+    num_workers: int | Literal["auto"] = 4
+    """Worker processes for the spawned env server (defaults to 4). ``auto`` scales to 1 worker per 256 concurrent rollouts. Ignored when ``address`` is set."""
 
     ratio: float | None = Field(None, gt=0)
     """Sampling weight for this environment in the buffer. When None for all envs, samples uniformly across all available problems. When set, must be set on all envs — values are relative weights normalized to probabilities (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
@@ -238,7 +238,7 @@ class TrainConfig(BaseConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
 
-    num_workers: int | Literal["auto"] = "auto"
+    num_workers: int | Literal["auto"] = 4
     """Default worker processes for env servers. Can be overridden per env."""
 
     max_retries: int = Field(3, ge=0)
@@ -293,7 +293,7 @@ class EvalConfig(BaseConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Default rollouts per example. Can be overridden per env."""
 
-    num_workers: int | Literal["auto"] = "auto"
+    num_workers: int | Literal["auto"] = 4
     """Default worker processes for env servers. Can be overridden per env."""
 
     max_retries: int = Field(3, ge=0)
