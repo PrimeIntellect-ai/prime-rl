@@ -17,9 +17,31 @@ def transformers_v5_compat():
 
     _patch_qwen35_lora()
     _patch_lora_key_prefix()
+    monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
+
+
+def monkey_patch_nano_v3_reasoning_parser():
+    from vllm.reasoning.abs_reasoning_parsers import ReasoningParserManager
+    from vllm.reasoning.deepseek_r1_reasoning_parser import DeepSeekR1ReasoningParser
+
+    class NanoV3ReasoningParser(DeepSeekR1ReasoningParser):
+        def extract_reasoning(self, model_output, request):
+            reasoning_content, final_content = super().extract_reasoning(model_output, request)
+            chat_template_kwargs = getattr(request, "chat_template_kwargs", None)
+
+            if (
+                chat_template_kwargs
+                and chat_template_kwargs.get("enable_thinking") is False
+                and final_content is None
+            ):
+                reasoning_content, final_content = final_content, reasoning_content
+
+            return reasoning_content, final_content
+
+    ReasoningParserManager.register_module("nano_v3", module=NanoV3ReasoningParser)
 
 
 def monkey_patch_return_routed_experts_with_nixl_connector():
