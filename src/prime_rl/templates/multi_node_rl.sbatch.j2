@@ -208,6 +208,27 @@ srun --kill-on-bad-exit=1 bash -c '
     # Infiniband setup
     IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
     export NCCL_IB_HCA=$IB_HCA
+{% if use_nixl_broadcast %}
+    # NIXL weight broadcast: every node (trainer = pull source, inference =
+    # pull client) needs the CUDA-enabled UCX from third_party/ucx (built by
+    # scripts/install_nixl_from_source.sh — the PyPI nixl wheel bundles a UCX
+    # without CUDA support) and an explicit RDMA NIC list: "all" would also
+    # pick up non-functional devices (e.g. an Ethernet bond UCX cannot open),
+    # which fails NIXL backend creation.
+    export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
+    export UCX_TLS=all
+    nixl_rdma_ports() {
+        for port in /sys/class/infiniband/*/ports/*; do
+            [ "$(cat "$port/link_layer" 2>/dev/null)" = "$1" ] || continue
+            grep -q ACTIVE "$port/state" 2>/dev/null || continue
+            dev=${port%/ports/*}
+            echo "$(basename "$dev"):$(basename "$port")"
+        done | paste -sd,
+    }
+    UCX_NET_DEVICES=$(nixl_rdma_ports InfiniBand)
+    [ -n "$UCX_NET_DEVICES" ] || UCX_NET_DEVICES=$(nixl_rdma_ports Ethernet)
+    export UCX_NET_DEVICES=${UCX_NET_DEVICES:-all}
+{% endif %}
 
 {% if num_infer_nodes > 0 -%}
 
