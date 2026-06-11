@@ -1,10 +1,16 @@
 import io
 import json
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pyarrow.parquet as pq
 
-from prime_rl.utils.monitor.prime import PrimeMonitor
+from prime_rl.utils.monitor.prime import (
+    PrimeMonitor,
+    _get_run_base_model,
+    _get_run_display_config,
+    _get_run_environments,
+)
 
 
 def _new_monitor() -> PrimeMonitor:
@@ -92,6 +98,27 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     assert len(rows) == 1
     assert rows[0]["problem_id"] == 1
     assert rows[0]["sample_id"] == 0
+
+
+def test_run_display_metadata_uses_orchestrator_config_shape():
+    env = SimpleNamespace(id="primeintellect/reverse-text")
+    run_config = SimpleNamespace(
+        orchestrator=SimpleNamespace(
+            student=SimpleNamespace(model=SimpleNamespace(name="PrimeIntellect/Qwen3-0.6B")),
+            train=SimpleNamespace(env=[env]),
+            batch_size=64,
+            group_size=16,
+            seq_len=4096,
+        )
+    )
+
+    assert _get_run_base_model(run_config) == "PrimeIntellect/Qwen3-0.6B"
+    assert _get_run_environments(run_config) == [env]
+    assert _get_run_display_config(run_config) == {
+        "batch_size": 64,
+        "rollouts_per_example": 16,
+        "seq_len": 4096,
+    }
 
 
 def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():

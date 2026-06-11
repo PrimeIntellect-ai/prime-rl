@@ -89,22 +89,48 @@ def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str
     return value
 
 
+def _get_nested_attr(obj: Any, *path: str) -> Any:
+    for attr in path:
+        if obj is None:
+            return None
+        obj = getattr(obj, attr, None)
+    return obj
+
+
+def _get_orchestrator_config(run_config: BaseConfig | None) -> Any:
+    return _get_nested_attr(run_config, "orchestrator") or run_config
+
+
 def _get_run_environments(run_config: BaseConfig | None) -> Any:
-    if run_config is None:
-        return None
+    for path in (("env",), ("train", "env"), ("orchestrator", "train", "env")):
+        environments = _get_nested_attr(run_config, *path)
+        if environments:
+            return environments
+    return None
 
-    environments = getattr(run_config, "env", None)
-    if environments:
-        return environments
 
-    train_config = getattr(run_config, "train", None)
-    environments = getattr(train_config, "env", None) if train_config else None
-    if environments:
-        return environments
+def _get_run_base_model(run_config: BaseConfig | None) -> str:
+    return (
+        _get_nested_attr(_get_orchestrator_config(run_config), "student", "model", "name")
+        or _get_nested_attr(run_config, "model", "name")
+        or "unknown"
+    )
 
-    orchestrator_config = getattr(run_config, "orchestrator", None)
-    train_config = getattr(orchestrator_config, "train", None) if orchestrator_config else None
-    return getattr(train_config, "env", None) if train_config else None
+
+def _get_run_display_config(run_config: BaseConfig | None) -> dict[str, Any]:
+    source = _get_orchestrator_config(run_config)
+    display_config: dict[str, Any] = {}
+
+    for payload_field, config_field in (
+        ("batch_size", "batch_size"),
+        ("rollouts_per_example", "group_size"),
+        ("seq_len", "seq_len"),
+    ):
+        value = _get_nested_attr(source, config_field)
+        if value is not None:
+            display_config[payload_field] = value
+
+    return display_config
 
 
 class PrimeMonitor(Monitor):
@@ -215,20 +241,17 @@ class PrimeMonitor(Monitor):
         if frontend_url is None:
             frontend_url = prime_config.frontend_url
 
-        model = getattr(run_config, "model", None) if run_config else None
+        display_config = _get_run_display_config(run_config)
         environments = _get_run_environments(run_config)
         wandb = getattr(run_config, "wandb", None) if run_config else None
 
         payload: dict[str, Any] = {
-            "base_model": model.name if model else "unknown",
-            "max_steps": getattr(run_config, "max_steps", None) or 0,
+            "base_model": _get_run_base_model(run_config),
+            "max_steps": _get_nested_attr(_get_orchestrator_config(run_config), "max_steps") or 0,
+            **display_config,
         }
         if run_config:
             payload["run_config"] = run_config.model_dump(exclude_none=True, mode="json")
-            for field in ("batch_size", "rollouts_per_example", "seq_len"):
-                value = getattr(run_config, field, None)
-                if value is not None:
-                    payload[field] = value
         if config.run_name:
             payload["name"] = config.run_name
         if team_id:
