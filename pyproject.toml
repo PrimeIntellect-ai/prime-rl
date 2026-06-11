@@ -73,6 +73,7 @@ envs = [
     "general-agent",
     "gpqa",
     "gpqa-open-ended-debate",
+    "hf-singleturn",
     "hle",
     "ifeval",
     "livecodebench",
@@ -155,6 +156,10 @@ override-dependencies = [
     "transformers==5.6.2",
     "torch==2.11.0",
     "openenv-core",
+    # Workspace verifiers fork reports 0.1.6.dev (hatch-vcs picks the tasksets-v0.1.5
+    # tag), so honest env bounds like verifiers>=0.1.15.dev2 are unsatisfiable;
+    # trust the workspace copy unconditionally.
+    "verifiers",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
@@ -230,6 +235,7 @@ deepdive = { path = "deps/research-environments/environments/deepdive", editable
 general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
 gpqa = { path = "deps/research-environments/environments/gpqa", editable = true }
 gpqa-open-ended-debate = { path = "deps/verifiers/environments/gpqa_open_ended_debate", editable = true }
+hf-singleturn = { path = "deps/verifiers/environments/hf_singleturn", editable = true }
 hle = { path = "deps/research-environments/environments/hle", editable = true }
 ifeval = { path = "deps/research-environments/environments/ifeval", editable = true }
 livecodebench = { path = "deps/research-environments/environments/livecodebench", editable = true }

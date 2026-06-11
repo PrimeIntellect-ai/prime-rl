@@ -464,6 +464,9 @@ class BaseWeightBroadcastConfig(BaseConfig):
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    keep_all: bool = False
+    """Keep every per-step broadcast dir instead of pruning to the ckpt interval. Useful for LoRA runs where per-step adapters are small and worth archiving."""
+
     save_sharded: bool = True
     """Save the weight checkpoint in sharded format."""
 

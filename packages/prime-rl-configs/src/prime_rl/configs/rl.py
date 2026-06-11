@@ -117,6 +117,9 @@ class SharedWeightBroadcastConfig(BaseConfig):
     type: Literal["nccl", "filesystem"] = "filesystem"
     """Weight broadcast transport."""
 
+    keep_all: bool = False
+    """Keep every per-step filesystem broadcast dir instead of pruning to the ckpt interval (filesystem broadcast only). Useful for LoRA runs where per-step adapters are small and worth archiving."""
+
     port: int = 29501
     """Port for NCCL weight broadcast."""
 
@@ -428,7 +431,9 @@ class RLConfig(BaseConfig):
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
             elif self.weight_broadcast.type == "filesystem":
-                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
+                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
+                    keep_all=self.weight_broadcast.keep_all
+                )
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
             if self.inference is not None:
                 self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
