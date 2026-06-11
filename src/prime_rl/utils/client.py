@@ -203,14 +203,29 @@ class DynamoAdminAPI(VLLMAdminAPI):
         method: str,
         body: dict | None = None,
         *,
-        timeout: httpx.Timeout | None = None,
+        timeout_s: float = ADMIN_TIMEOUT_S,
     ) -> dict:
-        response = await client.post(f"/engine/{method}", json=body or {}, timeout=timeout)
-        response.raise_for_status()
-        data = response.json()
-        if isinstance(data, dict) and data.get("status") == "error":
-            raise RuntimeError(data.get("message", f"Dynamo /engine/{method} failed"))
-        return data
+        # Mirror _admin_post: bounded per-attempt read timeout + retry on
+        # transient 5xx/transport errors. The admin AsyncClient uses
+        # timeout=None, so without this a stuck worker hangs the op forever.
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception(_is_retryable_admin_error),
+            stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            reraise=True,
+        ):
+            with attempt:
+                response = await client.post(
+                    f"/engine/{method}",
+                    json=body or {},
+                    timeout=httpx.Timeout(connect=10.0, read=timeout_s, write=60.0, pool=10.0),
+                )
+                response.raise_for_status()
+                data = response.json()
+                if isinstance(data, dict) and data.get("status") == "error":
+                    raise RuntimeError(data.get("message", f"Dynamo /engine/{method} failed"))
+                return data
+        raise AssertionError("unreachable: AsyncRetrying returns or raises")
 
     async def pause(self, client: AsyncClient) -> None:
         await self._post_engine(client, "pause_generation", {"mode": "keep", "clear_cache": False})
@@ -233,7 +248,7 @@ class DynamoAdminAPI(VLLMAdminAPI):
                     "weight_dir": weight_dir,
                     "engine_rpc": "update_weights_from_path",
                 },
-                timeout=httpx.Timeout(180.0),
+                timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
             )
         else:
             # Resolve to absolute path so the inference worker (which may run in a
@@ -247,7 +262,7 @@ class DynamoAdminAPI(VLLMAdminAPI):
                     "weight_version": Path(weight_dir).name,
                     "engine_rpc": self._engine_rpc,
                 },
-                timeout=httpx.Timeout(180.0),
+                timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
             )
 
     async def load_lora_adapter(
@@ -265,7 +280,7 @@ class DynamoAdminAPI(VLLMAdminAPI):
                 "lora_name": lora_name,
                 "source": {"uri": Path(lora_path).absolute().as_uri()},
             },
-            timeout=timeout,
+            timeout_s=timeout.read or ADMIN_TIMEOUT_S,
         )
 
     async def init_broadcaster(

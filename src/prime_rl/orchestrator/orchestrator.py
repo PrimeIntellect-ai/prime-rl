@@ -318,6 +318,11 @@ class Orchestrator:
             )
             await self.inference_metrics.start()
 
+        # Propagate the configured broadcast type to the admin API. The Dynamo
+        # backend gates its NCCL init + weight-update path on ``_weight_broadcast_type``.
+        if hasattr(self.student_inference._admin_api, "_weight_broadcast_type"):
+            self.student_inference._admin_api._weight_broadcast_type = config.weight_broadcast.type
+
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
@@ -327,6 +332,7 @@ class Orchestrator:
                 config.weight_broadcast.timeout,
                 inference_world_size=config.weight_broadcast.inference_world_size,
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
+                admin=self.student_inference._admin_api,
             )
 
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")

@@ -22,7 +22,14 @@ from httpx import AsyncClient
 from renderers import RendererConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import ClientIdentity, client_identity, load_lora_adapter, setup_admin_clients, setup_clients
+from prime_rl.utils.client import (
+    ClientIdentity,
+    client_identity,
+    load_lora_adapter,
+    setup_admin_api,
+    setup_admin_clients,
+    setup_clients,
+)
 from prime_rl.utils.logger import get_logger
 
 # --- Shared discovery functions ---
@@ -127,6 +134,7 @@ class ElasticInferencePool:
 
         self._servers: dict[str, ServerState] = {}
         self._admin_clients: dict[str, AsyncClient] = {}
+        self._admin_api = setup_admin_api(client_config)
         self._lock = asyncio.Lock()
         self._desired: AdapterState = AdapterState()
 
@@ -334,7 +342,9 @@ class ElasticInferencePool:
         if self._desired.name and self._desired.path:
             try:
                 self.logger.debug(f"Loading adapter {self._desired.name} on {ip}")
-                await load_lora_adapter([self._admin_clients[ip]], self._desired.name, self._desired.path)
+                await load_lora_adapter(
+                    [self._admin_clients[ip]], self._desired.name, self._desired.path, admin=self._admin_api
+                )
             except Exception as e:
                 server.status = "unhealthy"
                 server.sync_failures += 1
@@ -369,12 +379,8 @@ class ElasticInferencePool:
             return False
 
         try:
-            response = await admin_client.get("/v1/models")
-            response.raise_for_status()
-            data = response.json()
-            models = [m.get("id") for m in data.get("data", [])]
-
-            if self.base_model_name not in models:
+            models = await self._admin_api.list_models(admin_client)
+            if self.base_model_name not in [m.get("id") for m in models]:
                 self.logger.debug(f"Server {ip} does not have base model {self.base_model_name}")
                 return False
         except Exception as e:
