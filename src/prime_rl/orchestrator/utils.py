@@ -170,7 +170,10 @@ async def _compute_teacher_logprobs_dynamo(
     token_ids = list(sample.prompt_ids) + list(sample.completion_ids)
     body = {
         "model": model_name,
-        "messages": [],
+        # Placeholder stub the OpenAI/Dynamo chat schema requires (rejected if
+        # empty); the authoritative prompt is carried in nvext.token_data and
+        # Dynamo ignores these messages. Matches renderers' dynamo_chat client.
+        "messages": [{"role": "user", "content": ""}],
         "max_completion_tokens": 1,
         "temperature": 1.0,
         "top_p": 1.0,
