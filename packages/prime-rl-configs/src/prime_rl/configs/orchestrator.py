@@ -167,6 +167,18 @@ class EnvConfig(vf.EnvServerConfig):
     args: dict = Field(default_factory=dict)
     """Kwargs passed to the v0 env's ``load_environment`` (only used when ``id`` is set)."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_num_workers(cls, data):
+        """Back-compat: the removed ``num_workers`` maps onto ``pool`` — an int becomes a
+        fixed ``static`` pool, ``"auto"`` falls through to the default ``elastic`` pool. An
+        explicit ``pool`` always wins."""
+        if isinstance(data, dict) and "num_workers" in data:
+            num_workers = data.pop("num_workers")
+            if "pool" not in data and num_workers != "auto":
+                data["pool"] = {"type": "static", "num_workers": num_workers}
+        return data
+
     @property
     def is_legacy(self) -> bool:
         """A v0/legacy env (run via the bridge): an ``id`` is set and no v1 ``taskset`` is."""
