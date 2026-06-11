@@ -278,6 +278,16 @@ class TrainSink:
 
         if self.post_filters:
             apply_filters(self.post_filters, cohort)
+            # A post-batch ``penalize`` filter caps the rollout reward after
+            # ``process_group`` already stamped it onto the samples — re-sync
+            # so trainer-bound samples agree with the rollout reward used in
+            # metrics. Advantage is intentionally untouched: post-batch runs
+            # after advantage computation, so a penalty here is metadata-only.
+            for r in cohort:
+                if not r.reward_penalties:
+                    continue
+                for sample in r.samples:
+                    sample.reward = r.reward
 
         # Samples are pre-built by ``process_rollout``; ``process_group``
         # already set advantage/reward on each sample
