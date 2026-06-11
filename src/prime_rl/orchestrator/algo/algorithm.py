@@ -110,6 +110,7 @@ class Algorithm:
         self.reference_pool: InferencePool | None = None  # resolved in setup() when the algorithm declares a model
         self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
         self.observation_weight: float | None = None  # ce weight for env-provided tokens; None masks them out
+        self.observation_tokens: str | None = None  # which env tokens interleave tags: "tool", "all", or None
 
     async def setup(self) -> None:
         """Connect a client pool to the algorithm's frozen reference model and
@@ -121,12 +122,6 @@ class Algorithm:
             else:
                 self.reference_pool = await connect_frozen_pool(reference)
                 self.connected_pools.append(self.reference_pool)
-
-    @property
-    def tag_observation_tokens(self) -> bool:
-        """``interleave_rollout`` marks env-provided tokens when the algorithm
-        trains on them."""
-        return self.observation_weight is not None
 
     def assign(self, rollouts: list[TrainRollout]) -> None:
         """Assign credit to one finalized group of rollouts."""
@@ -180,6 +175,7 @@ class EchoAlgorithm(GRPOAlgorithm):
         super().__init__(config, policy_pool, renderer)
         assert isinstance(config.advantage, EchoAdvantageConfig)
         self.observation_weight = config.advantage.observation_weight
+        self.observation_tokens = config.advantage.observations
 
 
 class MaxRLAlgorithm(Algorithm):

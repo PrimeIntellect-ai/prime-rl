@@ -720,11 +720,10 @@ class OrchestratorConfig(BaseConfig):
         for env in envs:
             if not isinstance(env, dict) or "advantage" not in env:
                 continue
-            # The shorthand applies on top of whichever algorithm the env
-            # inherits, so materialize the inherited copy here.
+            # The shorthand makes the env assemble its own algorithm —
+            # inheriting-and-modifying a preset would break atomicity.
             if env.get("algo") is None:
-                top_algo = data.get("algo")
-                env["algo"] = copy.deepcopy(top_algo) if top_algo is not None else {}
+                env["algo"] = {}
             name = env.get("name") or str(env.get("id", "?")).split("@")[0]
             fold(env["algo"], env["advantage"], f"env '{name}'")
         return data
@@ -831,6 +830,12 @@ class OrchestratorConfig(BaseConfig):
                     "scoring prefix client-side and requires orchestrator.renderer — remove "
                     "'renderer = \"None\"' (and note the renderer is forced off when no train env "
                     "samples from the policy)."
+                )
+            if env.algo is not None and getattr(env.algo.advantage, "observations", None) == "tool":
+                raise ValueError(
+                    f"env '{env.resolved_name}' trains on tool observation tokens, which needs the "
+                    "renderer's per-token role attribution — set orchestrator.renderer, or assemble "
+                    "echo with observations = 'all'."
                 )
         return self
 
