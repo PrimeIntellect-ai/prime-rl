@@ -1,29 +1,28 @@
+from functools import partial
+
 from verifiers.v1.serve import serve_env
 
 from prime_rl.configs.env_server import EnvServerConfig
-from prime_rl.orchestrator.utils import intercept_vf_logging
+from prime_rl.orchestrator.utils import setup_env_server_logging
 from prime_rl.utils.config import cli
-from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 
 
 @clean_exit
 def run_server(config: EnvServerConfig):
-    setup_logger(config.log.level, json_logging=config.log.json_logging)
-    # Route v1's stdlib logging (the server's own logs) through our handler.
-    intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
-
     env = config.env
     address = env.address or "tcp://127.0.0.1:5000"
     # A single in-process server (num_workers=1) or a router + worker pool (>1); a v0/legacy
     # env runs through the bridge, a v1 env is a native taskset — both serve vf.Trace over
-    # the same protocol, so the orchestrator is agnostic.
+    # the same protocol, so the orchestrator is agnostic. serve_env applies the logging setup
+    # in this process and in every spawned worker.
     server_kwargs = {"env_id": env.env_id, "env_args": env.args} if env.is_legacy else {"config": env}
     serve_env(
         num_workers=env.num_workers,
         legacy=env.is_legacy,
         address=address,
+        log_setup=partial(setup_env_server_logging, config.log.level, config.log.json_logging),
         **server_kwargs,
     )
 
