@@ -1,3 +1,7 @@
+# v1 port of configs/rlm_swe/qwen35_4b.toml — identical except the env blocks, which load
+# the v1 `scaleswe-v1` taskset through the rlm harness on the prime runtime instead of the
+# v0 `rlm_swe` composable env. Same model / trainer / inference / orchestrator knobs.
+
 output_dir = "/beegfs/mika/rlm-swe-qwen35-4b"
 max_steps = 400
 seq_len = 65536
@@ -58,13 +62,10 @@ enable_thinking = true
 temperature = 1.0
 
 [[orchestrator.train.env]]
-id = "rlm_swe"
 name = "rlm-swe-scaleswe"
 num_workers = 4
-
-[orchestrator.train.env.args]
-task_type = "scaleswe"
-labels = ["rlm-swe-qwen35-4b"]
+taskset = { id = "scaleswe-v1" }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["rlm-swe-qwen35-4b"] } }
 
 [orchestrator.prime_monitor]
 
@@ -72,14 +73,11 @@ labels = ["rlm-swe-qwen35-4b"]
 interval = 20
 
 [[orchestrator.eval.env]]
-id = "rlm_swe"
 name = "rlm-swe-scaleswe-eval"
 num_workers = 4
 timeout = { rollout = 3600 }
-
-[orchestrator.eval.env.args]
-task_type = "scaleswe"
-labels = ["rlm-swe-qwen35-4b"]
+taskset = { id = "scaleswe-v1" }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["rlm-swe-qwen35-4b"] } }
 
 # --- Inference ---
 
