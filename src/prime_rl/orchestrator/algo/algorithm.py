@@ -47,6 +47,7 @@ from prime_rl.orchestrator.algo.advantage import (
     AdvantageOutputs,
     assign_advantages,
     default_advantage_fn,
+    max_rl_advantage_fn,
 )
 from prime_rl.orchestrator.algo.routing import spread_token_advantages, stamp_loss_routing
 from prime_rl.orchestrator.utils import compute_prefill_logprobs
@@ -179,6 +180,18 @@ class EchoAlgorithm(GRPOAlgorithm):
         super().__init__(config, policy_pool, renderer)
         assert isinstance(config.advantage, EchoAdvantageConfig)
         self.observation_weight = config.advantage.observation_weight
+
+
+class MaxRLAlgorithm(Algorithm):
+    """Maximum-likelihood RL (arXiv:2602.02710): the GRPO pipeline with
+    mean-normalized advantages — ``(reward − group mean) / group mean``
+    instead of plain centering. The mean normalization upweights low-pass-rate
+    examples like the maximum-likelihood gradient does, and ``group_size``
+    doubles as the truncation order of the likelihood expansion the gradient
+    is unbiased for (REINFORCE at 1 → exact maximum likelihood as it grows)."""
+
+    def assign(self, rollouts: list[TrainRollout]) -> None:
+        assign_advantages(rollouts, max_rl_advantage_fn)
 
 
 class OPDAlgorithm(Algorithm):
@@ -335,6 +348,7 @@ class CustomAlgorithm(Algorithm):
 ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "group_norm": GRPOAlgorithm,
     "echo": EchoAlgorithm,
+    "max_rl": MaxRLAlgorithm,
     "ref_kl": OPDAlgorithm,
     "demo_ref_kl": OPSDAlgorithm,
     "supervised": SFTDistillAlgorithm,

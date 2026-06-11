@@ -79,6 +79,22 @@ def default_advantage_fn(
     return AdvantageOutputs(advantages=(rewards - rewards.mean()).tolist())
 
 
+def max_rl_advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
+    """MaxRL advantage for a single group (arXiv:2602.02710): reward minus the
+    per-group mean, divided by that mean — equivalent to averaging score
+    functions over successful rollouts only, which makes the policy gradient
+    unbiased for the order-``group_size`` truncation of the maximum-likelihood
+    objective instead of pass@1. Assumes non-negative (canonically binary)
+    rewards; a group with mean reward <= 0 carries no signal and gets zero
+    advantages (the zero-advantage filter drops it, matching the paper's
+    no-success convention)."""
+    rewards = torch.tensor([r["reward"] for r in inputs.rollouts], dtype=torch.float32)
+    mean = rewards.mean()
+    if mean <= 0:
+        return AdvantageOutputs(advantages=torch.zeros_like(rewards).tolist())
+    return AdvantageOutputs(advantages=((rewards - mean) / mean).tolist())
+
+
 def _efficiency_shaping(
     rewards: Float[Tensor, "group_size"],
     costs: Float[Tensor, "group_size"],

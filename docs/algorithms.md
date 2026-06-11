@@ -66,6 +66,7 @@ name = "grpo"  # the default
 | Preset | Sampling | Advantage | Loss | What it is |
 |---|---|---|---|---|
 | `grpo` | policy | `group_norm` | `rl` on actions | Standard group-relative RL. |
+| `max_rl` | policy | `max_rl` | `rl` on actions | MaxRL ([arXiv:2602.02710](https://arxiv.org/abs/2602.02710)): GRPO's centered reward normalized by the group **mean** instead of the standard deviation — the gradient is unbiased for the order-`group_size` truncation of the maximum-likelihood objective, upweighting hard examples like `1/p`. |
 | `opd` | policy | `ref_kl` | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs an inline `model`. |
 | `sft_distill` | *(set via `model`)* | `supervised` | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs an inline `model`. |
 | `self_distill` | policy | `demo_ref_kl` | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. Defaults to the live policy (the paper's setting, no extra deployment); set an inline `model` to score under a frozen copy instead. |
@@ -114,6 +115,7 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 |---|---|---|---|
 | `group_norm` | `GRPOAlgorithm` | group-norm credit (optional length penalty) | — |
 | `echo` | `EchoAlgorithm` | group-norm credit, plus weighted ce on observation tokens | — |
+| `max_rl` | `MaxRLAlgorithm` | mean-normalized group credit | — |
 | `ref_kl` | `OPDAlgorithm` | — | own-context prefill under the teacher |
 | `demo_ref_kl` | `OPSDAlgorithm` | — | demo-conditioned prefill under the teacher |
 | `supervised` | `SFTDistillAlgorithm` | group-norm credit (feeds filters) | — |

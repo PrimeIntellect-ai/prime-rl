@@ -14,6 +14,7 @@ from prime_rl.orchestrator.algo.advantage import (
     AdvantageOutputs,
     assign_advantages,
     default_advantage_fn,
+    max_rl_advantage_fn,
 )
 from prime_rl.orchestrator.types import TrainRollout
 
@@ -63,6 +64,17 @@ def test_default_advantage_fn_simple_mean():
 
     assert len(result.advantages) == 3
     assert sum(result.advantages) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_max_rl_advantage_fn_mean_normalized():
+    # mean 0.25: the success gets (1 - 0.25)/0.25 = 3, failures (0 - 0.25)/0.25 = -1
+    result = max_rl_advantage_fn(_make_group(rewards=[1.0, 0.0, 0.0, 0.0]))
+    assert result.advantages == pytest.approx([3.0, -1.0, -1.0, -1.0])
+
+    # no-success groups carry no signal (the paper's K=0 convention) ...
+    assert max_rl_advantage_fn(_make_group(rewards=[0.0, 0.0])).advantages == [0.0, 0.0]
+    # ... and all-success groups center to zero like GRPO
+    assert max_rl_advantage_fn(_make_group(rewards=[1.0, 1.0])).advantages == pytest.approx([0.0, 0.0])
 
 
 def test_efficiency_mixed_group():

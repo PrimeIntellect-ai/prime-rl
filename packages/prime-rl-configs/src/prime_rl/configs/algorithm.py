@@ -33,7 +33,7 @@ from pydantic import AliasChoices, Field, model_validator
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.config import BaseConfig
 
-AlgorithmName: TypeAlias = Literal["grpo", "opd", "sft_distill", "self_distill", "echo"]
+AlgorithmName: TypeAlias = Literal["grpo", "max_rl", "opd", "sft_distill", "self_distill", "echo"]
 
 
 class FrozenModelConfig(ClientConfig):
@@ -129,6 +129,22 @@ class EchoAdvantageConfig(GroupNormAdvantageConfig):
 
     observation_weight: float = Field(0.1, gt=0)
     """Per-token ce weight for observation tokens (ECHO's lambda)."""
+
+
+class MaxRLAdvantageConfig(BaseConfig):
+    type: Literal["max_rl"] = "max_rl"
+    """MaxRL (arXiv:2602.02710): scalar advantage = (reward − group mean) /
+    group mean, consumed by the ``rl`` loss component. Normalizing by the
+    mean instead of GRPO's standard deviation makes the policy gradient
+    unbiased for the order-``group_size`` truncation of the maximum-likelihood
+    objective: low-pass-rate examples get ~1/p weight, and ``group_size`` is
+    the truncation order interpolating REINFORCE (1) → exact maximum
+    likelihood (∞). Designed for non-negative (canonically binary) rewards;
+    a group with mean reward 0 carries zero advantages everywhere (the
+    zero-advantage filter drops it, matching the paper's K=0 convention)."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+    group_relative: ClassVar[bool] = True
 
 
 class RewardAdvantageConfig(BaseConfig):
@@ -235,6 +251,7 @@ class CustomAdvantageConfig(BaseConfig):
 AdvantageConfig: TypeAlias = Annotated[
     GroupNormAdvantageConfig
     | EchoAdvantageConfig
+    | MaxRLAdvantageConfig
     | RewardAdvantageConfig
     | RefKLAdvantageConfig
     | DemoRefKLAdvantageConfig
@@ -257,6 +274,7 @@ AdvantageConfig: TypeAlias = Annotated[
 # live policy (the SDFT setting).
 _PRESETS: dict[AlgorithmName, dict[str, dict[str, Any]]] = {
     "grpo": {},
+    "max_rl": {"advantage": {"type": "max_rl"}},
     "opd": {"advantage": {"type": "ref_kl"}},
     "sft_distill": {"sampling": {"source": None}, "advantage": {"type": "supervised"}},
     "self_distill": {"advantage": {"type": "demo_ref_kl"}},
