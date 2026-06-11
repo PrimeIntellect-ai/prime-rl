@@ -506,10 +506,12 @@ def _is_retryable_lora_error(exception: BaseException) -> bool:
     if isinstance(exception, httpx.HTTPStatusError):
         # Retry on 404 (adapter not found) or 500 (server error during loading)
         return exception.response.status_code in (404, 500)
-    # Retry on transport-level failures (timeouts, connection resets, etc.) so
-    # the per-call read timeout below turns a stuck server into a bounded retry
-    # loop instead of propagating as a hard failure on the first hiccup.
-    if isinstance(exception, (httpx.TimeoutException, httpx.TransportError)):
+    # Retry only failures where a new POST can plausibly succeed: connection
+    # establishment problems (server restarting, transient network). A READ
+    # timeout means the server accepted the request and is still working on a
+    # serialized load — re-POSTing just queues a duplicate behind it, so let
+    # the generous per-attempt read window be the verdict instead.
+    if isinstance(exception, (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)):
         return True
     return False
 
@@ -522,8 +524,13 @@ def _is_retryable_lora_error(exception: BaseException) -> bool:
 # 2026-06-11). The bounds still convert a genuinely stuck server into a
 # TimeoutException (tenacity retries per attempt; `_TOTAL` is the wall-clock
 # budget across all retries — whichever stop condition fires first).
-LORA_LOAD_READ_TIMEOUT_S = 240.0
-LORA_LOAD_TOTAL_TIMEOUT_S = 900.0
+# Read window per attempt is deliberately ~the whole budget: vLLM serializes
+# adapter loads per engine, so re-POSTing a slow-but-progressing load only
+# queues a duplicate behind it (observed death spiral on a busy replica,
+# 2026-06-11: 240s attempts stacked until the total budget reraised). Retries
+# are reserved for connection-class failures where a new POST can help.
+LORA_LOAD_READ_TIMEOUT_S = 900.0
+LORA_LOAD_TOTAL_TIMEOUT_S = 1200.0
 
 
 async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
