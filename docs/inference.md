@@ -252,7 +252,7 @@ headless = true
 
 ### Router Replay
 
-Router replay works by capturing the expert routing decisions into a buffer. This buffer then gets sent to the trainer, which can use it instead of re-computing the routing. This lowers the trainer<->inference mismatch by an order of magnitude, resulting in more stable training.
+Router replay works by capturing the expert routing decisions into a buffer. This buffer then gets sent to the trainer, which can use it instead of re-computing the routing. This lowers the trainer↔inference mismatch by an order of magnitude, resulting in more stable training.
 
 To enable router replay, you can set `inference.enable_return_routed_experts = true`.
 

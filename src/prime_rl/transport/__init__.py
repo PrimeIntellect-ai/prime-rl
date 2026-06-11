@@ -8,7 +8,12 @@ from prime_rl.transport.filesystem import (
     FileSystemTrainingBatchReceiver,
     FileSystemTrainingBatchSender,
 )
-from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingBatch, TrainingSample
+from prime_rl.transport.types import (
+    MicroBatch,
+    RoutedExperts,
+    TrainingBatch,
+    TrainingSample,
+)
 from prime_rl.transport.zmq import (
     ZMQMicroBatchReceiver,
     ZMQMicroBatchSender,
