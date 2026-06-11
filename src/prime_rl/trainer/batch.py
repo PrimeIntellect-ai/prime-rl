@@ -80,7 +80,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     temperatures = [prompt_temp] * len(training_example.prompt_ids) + training_example.completion_temperatures
 
     # Ref logprobs already cover the full sequence (prompt + completion),
-    # computed via prefill in the orchestrator when a token scorer is configured
+    # computed via prefill in the orchestrator when the algorithm scores against a reference
     ref_logprobs = training_example.ref_logprobs
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None

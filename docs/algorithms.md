@@ -20,8 +20,6 @@ This page covers the math and the configurable algorithmic components: the algor
   - [Custom Advantage](#custom-advantage)
   - [Reference Scoring](#reference-scoring)
 - [Filters](#filters)
-- [Difficulty Pools](#difficulty-pools)
-- [Online Difficulty Filtering](#online-difficulty-filtering)
 - [Multi-Turn Trajectories](#multi-turn-trajectories)
   - [Extension Property](#extension-property)
   - [Best-Effort Interleaving](#best-effort-interleaving)
@@ -154,7 +152,7 @@ $$
 
 - `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the scalar advantage strategies (`group_norm`, `reward`, `custom`).
 - `ce` — masked NLL. Used for frozen-model tokens (`supervised` / `sft_distill`) and env-observation tokens (`echo`).
-- `ref_kl` — the DPPO machinery with the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal (`opd`, `self_distill`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
+- `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `self_distill`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
 The orchestrator stamps each sample's component membership as per-token weight streams (`rl_weights` / `ce_weights` / `ref_kl_weights` on the wire): a weight scales that component's per-token loss, `0.0` leaves the token out of the component entirely (mask *and* denominator), and components may overlap on the same token — their gradients sum. Each $N$ is the global (all-reduced) count of that component's member tokens, so the components don't dilute each other: adding echo observation tokens never changes the rl term's effective per-token learning rate, and a supervised env packed next to a GRPO env doesn't soften its gradient. Tokens of different components pack freely into the same micro batch, and a plain GRPO run ships no streams at all (absent streams mean rl weight 1.0 on every trainable token — the unchanged hot path).
 
@@ -189,7 +187,7 @@ The knobs (under `[trainer.loss]` with `type = "default"`):
 | Knob | Default | What it does |
 |---|---|---|
 | `dppo_mask_low` / `dppo_mask_high` | 0.2 / 0.2 | Lower / upper thresholds for DPPO-style token-level masking. |
-| `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 for pure distillation (no RL signal). |
+| `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 to drop the policy-gradient term, leaving only the KL regularizer. |
 | `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
 
 Set `[trainer.loss] type = "default"` and configure via the knobs above. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
@@ -358,57 +356,18 @@ Filters drop rollouts between scoring and training. Built-ins (composable):
 | `repetition` | Drops rollouts with high n-gram repetition. |
 | `zero_advantage` | Drops rollouts whose advantage is zero, so the trainer doesn't waste tokens on them. |
 
-The default `[orchestrator]` config already includes all three filters with their defaults. To override, set `filters` explicitly — the list replaces the defaults wholesale:
+The default `[orchestrator]` config registers all three in both filter slots: `post_batch_filters` enforce by default (flagged rollouts are recorded but not shipped to the trainer), while `pre_batch_filters` run in monitor mode (`enforce = false`); flip `enforce = true` there to drop matching rollouts before they consume a slot in the batch. Setting a slot replaces its defaults wholesale:
 
 ```toml
-[[orchestrator.filters]]
+[[orchestrator.post_batch_filters]]
 type = "zero_advantage"
 
-[[orchestrator.filters]]
+[[orchestrator.post_batch_filters]]
 type = "repetition"
 threshold = 0.4
 ```
 
 Filtered rollouts still appear in W&B distributions, just not in the trainer batch — useful for spotting whether filtering is doing its job.
-
-## Difficulty Pools
-
-Difficulty pools gradually retire problems the model has solved or never solves. After each rollout, the average reward across a problem's group is compared to two thresholds:
-
-- `buffer.easy_threshold` — at or above this, the problem moves into the `easy` pool and is no longer sampled.
-- `buffer.hard_threshold` — at or below this, the problem moves into the `hard` pool and is no longer sampled.
-- Otherwise the problem stays in `normal` and remains in the sampling rotation.
-
-Pool assignments persist across checkpoints (`easy_examples.jsonl` / `hard_examples.jsonl` under each step's orchestrator checkpoint). When you resume — or want to broaden the curriculum mid-run — `buffer.easy_fraction` / `buffer.hard_fraction` randomly lift that fraction of pooled problems back into `normal` so they re-enter sampling.
-
-```toml
-[orchestrator.buffer]
-easy_threshold = 0.95
-hard_threshold = 0.05
-easy_fraction = 0.0   # default; bump on resume to bring some easy problems back
-hard_fraction = 0.0   # default; bump on resume to bring some hard problems back
-```
-
-Watch `pool/{env}/{easy,normal,hard}` (current pool ratios) and `evicted_examples/{env}/{easy,hard}` (per-step eviction rate).
-
-## Online Difficulty Filtering
-
-Online difficulty filtering (ODF) drops collapsed-advantage groups on the way *into* the buffer. Set `buffer.online_difficulty_filtering = true` (default `false`) to enable:
-
-- Average reward across the group is **0.0** (every rollout failed) → drop the group, count under `filtered_rollouts/{env}/hard`.
-- Average reward **1.0** (every rollout succeeded) → drop, count under `filtered_rollouts/{env}/easy`.
-- Otherwise → into the buffer.
-
-These are exactly the groups whose within-group advantage collapses to zero — DR-GRPO produces no gradient signal for them, so the trainer would burn step time on tokens it can't learn from.
-
-```toml
-[orchestrator.buffer]
-online_difficulty_filtering = true
-```
-
-**Tradeoff: trainer stability vs. inference speed.** With ODF on, every rollout that reaches the trainer carries non-zero advantage — each trainer step's effective batch is predictable and the gradient signal is denser. The cost is paid on the inference side: rollouts get produced and then thrown away, so the orchestrator has to oversample to keep the trainer fed. If the orchestrator is your bottleneck (`time/wait_for_batch` high on the trainer), ODF can starve the loop. Bump `orchestrator.oversampling_factor` so inference produces enough groups per step to absorb the drops.
-
-ODF is orthogonal to the [pools](#difficulty-pools): ODF reacts to the *current* group's reward distribution, the pools track the *running* per-problem average. Many configs use both — ODF for per-step density, pools for long-horizon curriculum cleanup.
 
 ## Multi-Turn Trajectories
 

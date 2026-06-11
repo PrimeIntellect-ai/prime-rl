@@ -11,7 +11,6 @@ from renderers import AutoRendererConfig, RendererConfig
 from prime_rl.configs.algorithm import (
     AdvantageConfig,
     AlgorithmConfig,
-    GroupNormAdvantageConfig,
 )
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -484,7 +483,7 @@ class OrchestratorConfig(BaseConfig):
 
     model: HostedModelConfig = HostedModelConfig()
     """The model being trained (model + client of the live vLLM deployment).
-    Registered in the model registry under the reserved key ``"policy"``.
+    Algorithm components reference it as ``"policy"``.
     ``[orchestrator.policy]`` and ``[orchestrator.student]`` are accepted
     aliases, and flat ``ModelConfig`` keys re-nest automatically
     (``[orchestrator.model] name = ...``)."""
@@ -525,7 +524,7 @@ class OrchestratorConfig(BaseConfig):
     eval: EvalConfig | None = None
     """Evaluation configuration."""
 
-    advantage: AdvantageConfig | None = Field(GroupNormAdvantageConfig(), exclude=True)
+    advantage: AdvantageConfig | None = Field(None, exclude=True)
     """Shorthand for ``algo.advantage`` (and, through inheritance, for envs
     without their own algorithm). Write-only input sugar — folded on raw
     input and excluded from dumps so resolved configs round-trip."""
@@ -624,9 +623,9 @@ class OrchestratorConfig(BaseConfig):
         - [orchestrator.model.<k>]    -> [orchestrator.model.model.<k>]
           (where <k> is any ModelConfig field)
 
-        Frozen models must always be configured under [orchestrator.models.*]
-        (no equivalent shortcut), so the same shorthand can't silently route
-        to two different targets.
+        Frozen models are declared inline on the algorithm (advantage.model /
+        sampling.source — no equivalent shortcut), so the same shorthand cannot
+        silently route to two different targets.
         """
         if not isinstance(data, dict):
             return data
@@ -685,7 +684,7 @@ class OrchestratorConfig(BaseConfig):
         ``_env_to_train`` (before-validators run in reverse definition order)
         so the legacy ``[[env]]`` layout is already translated.
 
-        ``advantage = "None"`` historically meant "advantage = raw reward".
+        ``advantage = None`` (or the string ``"None"``) selects the raw-reward advantage.
         """
         if not isinstance(data, dict):
             return data

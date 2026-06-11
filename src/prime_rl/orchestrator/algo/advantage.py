@@ -28,9 +28,8 @@ class AdvantageInputs:
 
 @dataclass
 class AdvantageOutputs:
-    """Outputs from advantage computation of a single group. ``None`` entries
-    in ``advantages`` mean "no advantage" — the rollout keeps ``advantage=None``
-    (advantage-based filters never fire) and its samples ship a neutral 0.0.
+    """Outputs from advantage computation of a single group: one scalar
+    advantage per rollout (advantage-based filters and metrics read them).
 
     ``token_advantages`` optionally carries per-token advantages, one entry per
     rollout, each aligned to that rollout's completion tokens (including any
@@ -38,7 +37,7 @@ class AdvantageOutputs:
     ``None``) broadcast the scalar over the sequence instead.
     """
 
-    advantages: list[float | None]
+    advantages: list[float]
     token_advantages: list[list[float] | None] | None = None
 
 
@@ -122,7 +121,7 @@ def assign_advantages(
     advantage_fn: AdvantageFn | None,
 ) -> None:
     """Compute and assign advantages for one finished group of rollouts
-    (``TrainSink.process_group`` hands in a single group's surviving rollouts).
+    (the algorithm's ``assign`` hands in one finalized group's survivors).
     ``advantage_fn=None`` is the trivial case (advantage = reward); a custom
     ``advantage_fn`` receives the raw ``vf.RolloutOutput``\\ s via
     ``AdvantageInputs.rollouts``.

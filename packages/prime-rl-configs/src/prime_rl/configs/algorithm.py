@@ -386,12 +386,12 @@ class AlgorithmConfig(BaseConfig):
                 "the reference distribution equals the policy, so the KL signal is zero. Point at a "
                 "frozen hosted model, or use 'demo_ref_kl' for demo-conditioned self-teaching."
             )
-        if self.advantage.action_loss_type == "rl" and self.sampling.source != "policy":
+        if self.advantage.action_loss_type in ("rl", "ref_kl") and self.sampling.source != "policy":
             raise ValueError(
-                f"algorithm '{self.name}': advantage '{self.advantage.type}' trains with the rl loss "
-                "type but sampling.source is a frozen model — importance ratios need the live "
-                "policy's own sampling logprobs. Use the 'supervised' advantage (sft_distill) to "
-                "distill frozen-model tokens."
+                f"algorithm '{self.name}': advantage '{self.advantage.type}' trains with the "
+                f"{self.advantage.action_loss_type} loss type but sampling.source is a frozen model — "
+                "the importance ratio and trust region need the live policy's own sampling logprobs. "
+                "Use the 'supervised' advantage (sft_distill) to distill frozen-model tokens."
             )
         return self
 

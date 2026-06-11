@@ -122,10 +122,6 @@ class Algorithm:
                 self.connected_pools.append(self.reference_pool)
 
     @property
-    def name(self) -> str:
-        return self.config.name
-
-    @property
     def tag_observation_tokens(self) -> bool:
         """``interleave_rollout`` marks env-provided tokens when the algorithm
         trains on them."""
@@ -152,13 +148,6 @@ class Algorithm:
                 sample.reward = rollout.reward
                 sample.env_name = rollout.env_name
                 stamp_loss_routing(sample, self.action_loss_type, self.observation_weight)
-
-    async def score_batch(self, rollouts: list[TrainRollout]) -> None:
-        """Run :meth:`score` over this env's rollouts. No-op for algorithms
-        without reference scoring."""
-        if not rollouts:
-            return
-        await self.score(rollouts)
 
     def _reference_pool(self) -> InferencePool:
         pool = self.reference_pool
@@ -361,14 +350,13 @@ def build_algorithm(config: AlgorithmConfig, policy_pool: InferencePool, rendere
 
 
 async def score_train_batch(train_envs: TrainEnvs, rollouts: list[TrainRollout]) -> None:
-    """Run each env's ``score_batch`` over its unfiltered rollouts,
-    concurrently across envs. Per-env concurrency is bounded by the
-    algorithm's own config; envs without reference scoring return
-    immediately."""
+    """Run each env's ``score`` over its unfiltered rollouts, concurrently
+    across envs. Per-env concurrency is bounded by the algorithm's own
+    config; envs without reference scoring return immediately."""
     by_env: dict[str, list[TrainRollout]] = defaultdict(list)
     for rollout in rollouts:
         if not rollout.is_filtered:
             by_env[rollout.env_name].append(rollout)
     await asyncio.gather(
-        *(train_envs.get(env_name).algorithm.score_batch(env_rollouts) for env_name, env_rollouts in by_env.items())
+        *(train_envs.get(env_name).algorithm.score(env_rollouts) for env_name, env_rollouts in by_env.items())
     )

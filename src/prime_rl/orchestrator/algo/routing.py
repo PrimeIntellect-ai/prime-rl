@@ -12,13 +12,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from prime_rl.configs.algorithm import ActionLossType
 from prime_rl.transport import TrainingSample
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import TrainRollout
 
 
-def stamp_loss_routing(sample: TrainingSample, action_loss_type: str, observation_weight: float | None) -> None:
+def stamp_loss_routing(
+    sample: TrainingSample, action_loss_type: ActionLossType, observation_weight: float | None
+) -> None:
     """Stamp the algorithm's loss routing onto one sample's component weight
     streams.
 

@@ -137,7 +137,7 @@ class RolloutDispatcher:
         self.policy = policy
         self.train_envs = train_envs
         self.eval_envs = eval_envs
-        # Train rollouts go to the env algorithm's sampling pool; eval always
+        # Train rollouts go to the env sampler's pool; eval always
         # evaluates the policy.
         self.policy_pool = policy_pool
         self.train_source = train_source
@@ -386,7 +386,7 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the env algorithm's sampling pool via the
+        # Train rollouts use the env sampler's pool via the
         # renderer/token train client. Eval always evaluates the policy and
         # goes through the eval client (chat-completions) — the same path the
         # legacy orchestrator used, so eval scores stay comparable.

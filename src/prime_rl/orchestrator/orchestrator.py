@@ -488,7 +488,7 @@ class Orchestrator:
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
-        side-effects (ckpt, save_rollouts, token scorers, sender.send,
+        side-effects (ckpt, save_rollouts, reference scoring, sender.send,
         metrics, heartbeat, progress, eval trigger). The sink has already
         done all data-transformation work."""
         config = self.config
@@ -540,8 +540,8 @@ class Orchestrator:
             save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
 
-        # Per-env token scorers run at the batch boundary; envs without a
-        # scorer are a no-op, so this is unconditional.
+        # Per-env reference scoring runs at the batch boundary; envs without a
+        # reference are a no-op, so this is unconditional.
         t = time.perf_counter()
         await score_train_batch(self.train_envs, batch.rollouts)
         scoring_time = time.perf_counter() - t

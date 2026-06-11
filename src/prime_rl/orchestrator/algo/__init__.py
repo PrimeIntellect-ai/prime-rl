@@ -9,8 +9,9 @@ turns the signal half into runtime objects (the sampling half is the env's
   :class:`OPDAlgorithm`, :class:`OPSDAlgorithm`, ...), each owning its
   ``assign`` (group-time credit) and ``score`` (ship-time reference scoring)
   methods and declaring what it needs (loss component, a "teacher", ...).
-  One instance per env, built by :func:`build_algorithm`. Subclass
-  :class:`Algorithm` to write your own.
+  One instance per env, built by :func:`build_algorithm`. Custom credit
+  assignment plugs in through the ``custom`` advantage type
+  (:class:`CustomAlgorithm` imports a user function by path).
 - ``advantage`` — pure advantage math: the custom-function interface
   (:class:`AdvantageInputs` / :class:`AdvantageOutputs`) and the default
   group-norm computation.
@@ -26,7 +27,6 @@ from prime_rl.orchestrator.algo.advantage import (
     default_advantage_fn,
 )
 from prime_rl.orchestrator.algo.algorithm import (
-    ALGORITHM_CLASSES,
     Algorithm,
     CustomAlgorithm,
     EchoAlgorithm,
@@ -42,7 +42,6 @@ from prime_rl.orchestrator.algo.algorithm import (
 from prime_rl.orchestrator.algo.routing import spread_token_advantages, stamp_loss_routing
 
 __all__ = [
-    "ALGORITHM_CLASSES",
     "AdvantageFn",
     "AdvantageInputs",
     "AdvantageOutputs",

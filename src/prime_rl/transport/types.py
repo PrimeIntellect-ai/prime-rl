@@ -67,7 +67,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
 
     # Orchestrator-internal: marks env-provided observation tokens within
     # ``completion_ids`` (set by ``interleave_rollout`` when the env's
-    # algorithm trains on observations). Consumed by the train sink when
+    # algorithm trains on observations). Consumed by the env algorithm when
     # stamping loss routing and cleared before transport.
     completion_obs_mask: list[bool] | None = None
 

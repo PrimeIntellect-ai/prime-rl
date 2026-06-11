@@ -177,14 +177,16 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
 
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
-    Ref-KL loss type (on-policy distillation): the default DPPO+KL math
-    with the tau knobs hardcoded to drop the reward signal and use the reverse
-    KL to the reference model as the per-token policy-gradient signal.
+    Ref-KL loss type (on-policy distillation): the reverse KL to the reference
+    model is the per-token policy-gradient signal, with the importance ratio
+    correcting trainer/inference mismatch and staleness. A one-sided trust
+    region drops tokens whose trainer probability fell more than 0.2 below the
+    inference probability; a squared-log-ratio term regularizes drift. Scalar
+    advantages are not read — ref_kl algorithms ship none.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
     ref_logprobs = inputs.ref_logprobs
-    advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
     if ref_logprobs is None:
@@ -195,22 +197,13 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     )
 
     probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
-    dppo_invalid_mask_high = probs_diff > 0.2
-    dppo_invalid_mask_low = probs_diff < -0.2
-    positive_advantages = advantages > 0
-    negative_advantages = advantages < 0
-    dppo_invalid_mask = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
-
-    is_masked = dppo_invalid_mask
-    is_masked_high = positive_advantages & dppo_invalid_mask_high
-    is_masked_low = negative_advantages & dppo_invalid_mask_low
+    is_masked = probs_diff < -0.2
     drop_mask = loss_mask & is_masked
     keep_mask = loss_mask & ~is_masked
 
     ref_kl = ref_logprobs - trainer_logprobs
-    advantages = 0.0 * advantages + 1.0 * ref_kl.detach()
 
-    pg_loss = keep_mask * advantages * importance_ratio
+    pg_loss = keep_mask * ref_kl.detach() * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
     per_token_loss = -pg_loss + 1e-3 * kl_loss
     if inputs.loss_weights is not None:
@@ -218,13 +211,9 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     loss = per_token_loss.sum()
 
     metrics = {
-        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, drop_mask),
         "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
         "is_masked": _safe_mean(is_masked, loss_mask),
-        "is_masked_low": _safe_mean(is_masked_low, loss_mask),
-        "is_masked_high": _safe_mean(is_masked_high, loss_mask),
-        "masked_advantage_positive": _safe_mean(positive_advantages, drop_mask),
-        "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
         "ref_kl": _safe_mean(ref_kl, loss_mask),
     }
 
