@@ -17,8 +17,8 @@ prime-rl only ever hosts the trainable policy. Every other model an algorithm
 uses is an external OpenAI-compatible endpoint, declared inline on the
 component that uses it (a :class:`FrozenModelConfig`). Model roles like
 "teacher" are algorithm-local vocabulary over these references; the pipeline
-branches on liveness alone. Presets are vetted bundles; every piece can be
-overridden individually for research. The trainer is algorithm-blind: the loss
+branches on liveness alone. Presets are vetted bundles and atomic — use one
+whole, or assemble the components yourself. The trainer is algorithm-blind: the loss
 is a sum of three components (rl, ce, ref_kl), each normalized by its own
 global token count; per-token component weights ship on the wire and the
 trainer just executes them.
