@@ -116,7 +116,7 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 |---|---|---|---|
 | `group_norm` | `GRPOAlgorithm` | group-norm credit (optional length penalty) | — |
 | `echo` | `EchoAlgorithm` | group-norm credit, plus weighted ce on observation tokens | — |
-| `ref_kl` | `OPDAlgorithm` | group-norm credit (DPPO sign steering) | own-context prefill under the teacher |
+| `ref_kl` | `OPDAlgorithm` | — | own-context prefill under the teacher |
 | `demo_ref_kl` | `OPSDAlgorithm` | — | demo-conditioned prefill under the teacher |
 | `supervised` | `SFTDistillAlgorithm` | group-norm credit (feeds filters) | — |
 | `reward` | `RewardAlgorithm` | raw reward | — |
@@ -255,7 +255,7 @@ The advantage strategy is the `advantage` component of the [algorithm](#the-algo
 | `group_norm` | `rl` | Group-norm (GRPO): reward minus per-group baseline, optional length penalty. |
 | `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-observation tokens (`observation_weight`, ECHO's λ). |
 | `reward` | `rl` | Advantage = raw reward, no baseline. |
-| `ref_kl` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. Group-relative scalars are still assigned (their sign steers the DPPO masking direction; the zero-advantage filter reads them). |
+| `ref_kl` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No scalars — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0; `group_size` only fans out sampling. |
 | `demo_ref_kl` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No scalars — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0. |
 | `supervised` | `ce` | Cross-entropy on the sampled tokens (`sft_distill`). The loss ignores scalars, but group-relative scalars are still assigned so reward-based filtering keeps working. |
 | `custom` | `rl` | Your function (below); scalar per rollout, optionally per-token. |
@@ -266,7 +266,7 @@ The default advantage is per-group reward minus per-group baseline (DR-GRPO with
 
 This is intentionally simple — it does the right thing for most envs. Switch to a [custom advantage](#custom-advantage) when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …).
 
-Two built-in **length penalties** (`length_penalty` on the `group_norm` / `ref_kl` strategies) can be layered on top to discourage rambling:
+Two built-in **length penalties** (`length_penalty` on the `group_norm`-family strategies) can be layered on top to discourage rambling:
 
 - `[orchestrator.advantage.length_penalty] type = "tokens"` — penalizes long completions by weighted token cost.
 - `[orchestrator.advantage.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.

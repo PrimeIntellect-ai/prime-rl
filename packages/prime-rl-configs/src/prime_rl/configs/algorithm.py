@@ -145,12 +145,13 @@ class RefKLAdvantageConfig(BaseConfig):
     """On-policy distillation (OPD): the per-token signal is the reverse KL to
     a reference model, evaluated in the trainer from reference prefill
     logprobs scored over each sample's own context (``ref_logprobs`` on the
-    wire, ``ref_kl`` loss component). Group-relative scalars are still assigned:
-    their sign steers the DPPO masking direction in the loss, and the
-    zero-advantage filter reads them."""
+    wire, ``ref_kl`` loss component). No scalar advantage is assigned —
+    rollouts keep ``advantage=None`` (advantage-based filters never fire) and
+    samples ship a neutral 0.0; rewards still flow to metrics. ``group_size``
+    only fans out sampling."""
 
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
-    group_relative: ClassVar[bool] = True
+    group_relative: ClassVar[bool] = False
     model_role: ClassVar[str] = "teacher"
 
     model: ModelReference | None = None
@@ -161,10 +162,6 @@ class RefKLAdvantageConfig(BaseConfig):
 
     max_concurrent: int = Field(32, ge=1)
     """Maximum concurrent prefill requests per batch."""
-
-    length_penalty: LengthPenaltyConfig | None = None
-    """Length penalty applied to the group-relative scalars (see
-    ``group_norm``)."""
 
 
 class DemoRefKLAdvantageConfig(BaseConfig):

@@ -198,9 +198,10 @@ class OPDAlgorithm(Algorithm):
 
     The policy samples its own rollouts; at ship time each sample's full
     context is prefill-scored under the teacher (``ref_logprobs`` on the
-    wire), and the trainer evaluates the KL against the live policy. Group
-    scalars are still assigned: their sign steers the DPPO masking direction
-    in the ``ref_kl`` loss, and the zero-advantage filter reads them."""
+    wire), and the trainer evaluates the KL against the live policy. No
+    scalar advantage is assigned — rollouts keep ``advantage=None``
+    (advantage-based filters never fire) and samples ship a neutral 0.0;
+    ``group_size`` only fans out sampling."""
 
     action_loss_type = "ref_kl"
     model_role = "teacher"
@@ -208,11 +209,7 @@ class OPDAlgorithm(Algorithm):
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
         assert isinstance(config.advantage, RefKLAdvantageConfig)
-        self.length_penalty = config.advantage.length_penalty
         self.max_concurrent = config.advantage.max_concurrent
-
-    def assign(self, rollouts: list[TrainRollout]) -> None:
-        _assign_group_norm(rollouts, self.length_penalty)
 
     async def score(self, rollouts: list[TrainRollout]) -> None:
         pool = self._reference_pool()
