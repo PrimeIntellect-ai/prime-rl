@@ -22,9 +22,10 @@ The baseline frame is derived from the UNFILTERED zero-sum pair
 ``mar_score``), never from the trainability-filtered member rows: under
 ``train_one`` a whole group can collapse to a single seat, and a
 present-set-derived frame would fold the persistent baseline with a
-flipped sign. The canonical member id is persisted per key in
-``RAEState.canonical_members``; a group whose full pair would change the
-frame fails loud.
+flipped sign. The full pair set is persisted per key in
+``RAEState.canonical_members`` (sorted member tuple; the lex-min entry is
+the canonical member); a group whose full pair would change the frame or
+the pair membership fails loud.
 """
 
 from __future__ import annotations
@@ -66,14 +67,15 @@ class GroupFold:
 class RAEState:
     """Persistent baselines keyed by (env_name, example_id).
 
-    ``canonical_members`` pins the baseline's sign frame per key; it is
-    checkpointed alongside the baselines. ``last_folds`` records the folds
-    from the most recent ``compute_rae_advantages`` call (observability
-    hook; not checkpointed).
+    ``canonical_members`` persists each key's full zero-sum pair set as a
+    sorted member tuple; the lex-min entry is the canonical member that
+    pins the baseline's sign frame. It is checkpointed alongside the
+    baselines. ``last_folds`` records the folds from the most recent
+    ``compute_rae_advantages`` call (observability hook; not checkpointed).
     """
 
     baselines: dict[RAEKey, float] = field(default_factory=dict)
-    canonical_members: dict[RAEKey, str] = field(default_factory=dict)
+    canonical_members: dict[RAEKey, tuple[str, ...]] = field(default_factory=dict)
     beta: float = 0.9
     n_eff: float = 6.0
     last_folds: list[GroupFold] = field(default_factory=list)
@@ -171,29 +173,40 @@ def _validated_pair(key: RAEKey, episode_id: str, episode_pairs: EpisodePairs) -
     return pair
 
 
-def _resolve_canonical(key: RAEKey, pairs: dict[str, dict[str, float]], state: RAEState) -> str:
-    """Resolve the baseline's sign frame for one group, stable across steps.
+def _resolve_pair_members(key: RAEKey, pairs: dict[str, dict[str, float]], state: RAEState) -> tuple[str, ...]:
+    """Resolve the group's full pair set — and thus its sign frame (the
+    lex-min member is canonical) — stable across steps.
 
-    Derived as the lexicographically smallest member id over the group's
-    full pairs; validated against (and persisted to) the per-key frame in
+    Derived as the sorted member-id union over the group's full pairs;
+    validated against (and persisted to) the per-key set in
     ``state.canonical_members``. A group of quarantined single-member
-    episodes cannot establish a frame on its own — it inherits the
-    persisted one (sign-derivation handles the non-canonical seat).
+    episodes cannot establish the full set on its own — it inherits the
+    persisted one (sign-derivation handles the non-canonical seat). A
+    persisted singleton widens once its full pair is observed; any other
+    membership difference is opponent drift and fails loud.
     """
-    union_ids = sorted({member_id for pair in pairs.values() for member_id in pair})
+    union_ids = tuple(sorted({member_id for pair in pairs.values() for member_id in pair}))
     if len(union_ids) > 2:
         raise ValueError(
-            f"group {key} has pair members {union_ids} across episodes: rank-7 RAE requires one zero-sum pair per key"
+            f"group {key} has pair members {list(union_ids)} across episodes: "
+            "rank-7 RAE requires one zero-sum pair per key"
         )
     persisted = state.canonical_members.get(key)
     if persisted is None:
-        return union_ids[0]
-    if len(union_ids) == 2 and union_ids[0] != persisted:
-        raise ValueError(
-            f"group {key} has full pair {union_ids}, which would change the canonical member "
-            f"from {persisted!r} to {union_ids[0]!r}; the persisted baseline frame cannot flip"
-        )
-    return persisted
+        return union_ids
+    if set(union_ids) <= set(persisted):
+        return persisted
+    if set(persisted) <= set(union_ids):
+        if union_ids[0] != persisted[0]:
+            raise ValueError(
+                f"group {key} has full pair {list(union_ids)}, which would change the canonical member "
+                f"from {persisted[0]!r} to {union_ids[0]!r}; the persisted baseline frame cannot flip"
+            )
+        return union_ids
+    raise ValueError(
+        f"group {key} has pair members {list(union_ids)} but the persisted pair set is {list(persisted)}: "
+        "the baseline cannot mix opponents — pair membership drift on a warm key fails loud"
+    )
 
 
 def compute_rae_advantages(
@@ -230,7 +243,8 @@ def compute_rae_advantages(
     state.last_folds = []
     for key, episode_rows in episode_rows_by_key.items():
         pairs = {episode_id: _validated_pair(key, episode_id, episode_pairs) for episode_id in episode_rows}
-        canonical = _resolve_canonical(key, pairs, state)
+        pair_members = _resolve_pair_members(key, pairs, state)
+        canonical = pair_members[0]
         rewards: dict[str, float] = {}
         for episode_id, pair in pairs.items():
             if canonical in pair:
@@ -273,7 +287,7 @@ def compute_rae_advantages(
         if cold:
             stats.cold_updates += 1
         stats.baseline_abs_delta_sum += abs(folded - baseline)
-        state.canonical_members[key] = canonical
+        state.canonical_members[key] = pair_members
         state.baselines[key] = folded
         state.last_folds.append(
             GroupFold(

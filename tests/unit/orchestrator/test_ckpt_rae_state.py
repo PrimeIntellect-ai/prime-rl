@@ -21,8 +21,8 @@ def test_rae_state_round_trips(tmp_path: Path) -> None:
             ("debate_v1", "ex-2"): -0.1,
         },
         canonical_members={
-            ("debate_v1", 1): "debater_a",
-            ("debate_v1", "ex-2"): "debater_a",
+            ("debate_v1", 1): ("debater_a", "debater_b"),
+            ("debate_v1", "ex-2"): ("debater_a", "debater_b"),
         },
         beta=0.85,
         n_eff=4.0,
@@ -49,6 +49,46 @@ def test_old_format_rae_state_fails_loud(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="retired sequential-EMA format"):
         mgr.load(Progress(), step=2, rae_state=RAEState())
+
+
+def test_retired_single_canonical_id_format_fails_loud(tmp_path: Path) -> None:
+    mgr = CheckpointManager(tmp_path / "run", CheckpointConfig(interval=1))
+    mgr.save(Progress(step=4), step=4, rae_state=None)
+    # Retired format: canonical_members stored one member id per key, not the pair set
+    with open(mgr.get_ckpt_path(4) / "rae_state.pt", "wb") as f:
+        torch.save(
+            {
+                "baselines": {("debate_v1", 1): 0.3},
+                "canonical_members": {("debate_v1", 1): "debater_a"},
+                "beta": 0.9,
+                "n_eff": 6.0,
+            },
+            f,
+        )
+
+    with pytest.raises(ValueError, match="retired single-canonical-id format"):
+        mgr.load(Progress(), step=4, rae_state=RAEState())
+
+
+def test_baseline_without_canonical_members_entry_fails_loud(tmp_path: Path) -> None:
+    mgr = CheckpointManager(tmp_path / "run", CheckpointConfig(interval=1))
+    mgr.save(Progress(step=5), step=5, rae_state=None)
+    # Hand-edited checkpoint: warm baselines whose frame entries were dropped
+    with open(mgr.get_ckpt_path(5) / "rae_state.pt", "wb") as f:
+        torch.save(
+            {
+                "baselines": {("debate_v1", 1): 0.3, ("debate_v1", 2): -0.2},
+                "canonical_members": {("debate_v1", 1): ("debater_a", "debater_b")},
+                "beta": 0.9,
+                "n_eff": 6.0,
+            },
+            f,
+        )
+
+    with pytest.raises(ValueError, match="no canonical_members entry") as excinfo:
+        mgr.load(Progress(), step=5, rae_state=RAEState())
+    assert "('debate_v1', 2)" in str(excinfo.value)
+    assert "('debate_v1', 1)" not in str(excinfo.value)
 
 
 def test_rae_state_load_fails_loud_when_missing(tmp_path: Path) -> None:

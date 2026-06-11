@@ -154,7 +154,7 @@ def test_fan_out_pipeline_into_compute_rae_advantages():
     assert advantages[3] == pytest.approx(1.1428571428571428)
     # Single fold at group close: b1 = 0.9*0 + 0.1*mean([1, -1]) = 0.0
     assert state.baselines == {("debate_v1", 1): pytest.approx(0.0)}
-    assert state.canonical_members == {("debate_v1", 1): "debater_a"}
+    assert state.canonical_members == {("debate_v1", 1): ("debater_a", "debater_b")}
 
 
 def test_fan_out_handles_empty_rollouts_list():

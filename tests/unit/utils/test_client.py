@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import verifiers as vf
 
+from prime_rl.configs.multi_agent import FixedMemberTargetConfig
 from prime_rl.configs.shared import ClientConfig
+from prime_rl.orchestrator.member_generation import _fixed_client
 from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter, setup_clients
 
 
@@ -117,6 +119,67 @@ def test_setup_clients_preserves_chat_client_defaults():
             extra_headers_from_state={},
         )
     ]
+
+
+def test_build_client_contract_matches_both_call_sites():
+    """Lock the build_client factory contract: the pool path (setup_clients)
+    and the fixed-member path (_fixed_client) must each map their policy
+    config onto the full vf.ClientConfig exactly as documented."""
+    pool_config = ClientConfig(
+        base_url=["http://worker-a:8000/v1"],
+        api_key_var="PRIME_API_KEY",
+        timeout=900,
+        connect_timeout=12.0,
+        max_retries=3,
+        max_connections=64,
+        max_keepalive_connections=32,
+        headers={"X-Test": "test"},
+        extra_headers_from_state={"X-Session-ID": "session_id"},
+    )
+
+    assert setup_clients(pool_config) == [
+        vf.ClientConfig(
+            client_idx=0,
+            client_type="openai_chat_completions",
+            api_base_url="http://worker-a:8000/v1",
+            api_key_var="PRIME_API_KEY",
+            timeout=900,
+            connect_timeout=12.0,
+            max_connections=64,
+            max_keepalive_connections=32,
+            max_retries=3,
+            extra_headers={"X-Test": "test"},
+            extra_headers_from_state={"X-Session-ID": "session_id"},
+        )
+    ]
+
+    target = FixedMemberTargetConfig(
+        members=["judge"],
+        model="judge-model",
+        base_url=["http://judge:8000/v1"],
+        api_key_var="JUDGE_API_KEY",
+        request_mode="token",
+        headers={"X-Judge": "1"},
+        timeout=600.0,
+        connect_timeout=5.0,
+        max_retries=2,
+        max_connections=16,
+        max_keepalive_connections=8,
+    )
+
+    assert _fixed_client("judge", target, member_id="judge", group_id="group-0") == vf.ClientConfig(
+        client_idx=0,
+        client_type="openai_chat_completions_token",
+        api_base_url="http://judge:8000/v1",
+        api_key_var="JUDGE_API_KEY",
+        timeout=600.0,
+        connect_timeout=5.0,
+        max_connections=16,
+        max_keepalive_connections=8,
+        max_retries=2,
+        extra_headers={"X-Judge": "1"},
+        extra_headers_from_state={},
+    )
 
 
 def test_as_train_client_derives_renderer_twin_from_chat_eval_client():

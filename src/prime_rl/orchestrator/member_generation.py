@@ -158,7 +158,12 @@ def compile_member_generation_plan(
 
         fixed = config.fixed[target_name]
         sampling_args = dict(fixed_sampling_args)
-        sampling_args.update(dict(fixed.sampling))
+        overrides = dict(fixed.sampling)
+        if "extra_body" in overrides:
+            # extra_body merges per-key (target keys win, inherited keys survive);
+            # every other sampling field replaces wholesale.
+            overrides["extra_body"] = {**sampling_args.get("extra_body", {}), **overrides["extra_body"]}
+        sampling_args.update(overrides)
         targets[member_id] = vf.GenerationTarget(
             client=_fixed_client(
                 target_name,

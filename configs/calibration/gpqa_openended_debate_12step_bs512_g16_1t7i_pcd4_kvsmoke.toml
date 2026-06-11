@@ -69,6 +69,10 @@ dump_failed_train_trajectory = true
 
 [orchestrator.client]
 timeout = 3600
+# Admission-control budgets validating `timeout` against worst-case saturation
+# latency: timeout >= ttft_budget_s + max_completion_tokens * tpot_budget_s.
+# ttft_budget_s = 400.0
+# tpot_budget_s = 0.15
 
 [orchestrator.renderer]
 name = "auto"

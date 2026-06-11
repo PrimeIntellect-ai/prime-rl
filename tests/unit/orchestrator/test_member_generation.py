@@ -83,6 +83,54 @@ def test_compile_member_generation_plan_routes_train_one_and_fixed_members():
     }
 
 
+def test_fixed_target_extra_body_override_merges_per_key():
+    """A target setting extra_body.top_k must not clobber inherited extra_body
+    keys (e.g. chat_template_kwargs); non-extra_body fields replace wholesale."""
+    config = MultiAgentConfig(
+        fixed={
+            "judge": FixedMemberTargetConfig(
+                members=["judge"],
+                model="judge-model",
+                base_url=["http://judge/v1"],
+                sampling={"temperature": 0.0, "extra_body": {"top_k": 20}},
+            )
+        }
+    )
+
+    plan = compile_member_generation_plan(
+        config,
+        member_ids=["judge"],
+        default_client=vf.ClientConfig(api_base_url="http://learner/v1"),
+        default_model="learner-model",
+        learner_sampling_args={},
+        fixed_sampling_args={
+            "temperature": 1.0,
+            "max_completion_tokens": 1024,
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        },
+        dispatch_id="dispatch-merge",
+        group_id="group-merge",
+    )
+
+    assert plan is not None
+    assert plan.members["judge"].sampling_args == {
+        "temperature": 0.0,
+        "max_completion_tokens": 1024,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}, "top_k": 20},
+    }
+
+
+def test_fixed_target_sampling_rejects_extra_body_only_keys_at_top_level():
+    with pytest.raises(ValidationError, match="sampling.extra_body") as excinfo:
+        FixedMemberTargetConfig(
+            members=["judge"],
+            model="judge-model",
+            base_url=["http://judge/v1"],
+            sampling={"temperature": 0.0, "top_k": 20, "min_p": 0.0},
+        )
+    assert "['min_p', 'top_k']" in str(excinfo.value)
+
+
 def test_fixed_member_client_is_pinned_per_group():
     config = MultiAgentConfig(
         fixed={

@@ -10,6 +10,31 @@ from prime_rl.utils.config import BaseConfig
 
 RequestMode = Literal["chat", "token", "renderer"]
 
+# Sampling parameters that vLLM's OpenAI-compatible server only accepts as
+# extensions inside the request body. OpenAI-style endpoints drop them at the
+# top level (and the OpenAI SDK never serializes them), so they must travel
+# under ``sampling.extra_body`` to reach the sampler.
+EXTRA_BODY_ONLY_SAMPLING_KEYS = frozenset(
+    {
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+        "min_tokens",
+        "stop_token_ids",
+        "ignore_eos",
+        "skip_special_tokens",
+        "spaces_between_special_tokens",
+        "include_stop_str_in_output",
+        "bad_words",
+        "length_penalty",
+        "use_beam_search",
+        "truncate_prompt_tokens",
+        "allowed_token_ids",
+        "prompt_logprobs",
+        "chat_template_kwargs",
+    }
+)
+
 
 class FixedMemberTargetConfig(BaseConfig):
     """A fixed generation target bound to one or more protocol members."""
@@ -77,6 +102,18 @@ class FixedMemberTargetConfig(BaseConfig):
         if any(not member.strip() for member in members):
             raise ValueError("fixed target members must be non-empty strings")
         return members
+
+    @field_validator("sampling")
+    @classmethod
+    def validate_sampling(cls, sampling: dict[str, Any]) -> dict[str, Any]:
+        misplaced = sorted(EXTRA_BODY_ONLY_SAMPLING_KEYS & sampling.keys())
+        if misplaced:
+            raise ValueError(
+                f"fixed target sampling key(s) {misplaced} are vLLM extensions: at the top level they are "
+                "dropped by OpenAI-style endpoints and silently never reach the sampler. Move them under "
+                "sampling.extra_body, e.g. sampling = { extra_body = { top_k = 20 } }."
+            )
+        return sampling
 
     @field_validator("base_url")
     @classmethod

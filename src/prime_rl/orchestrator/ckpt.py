@@ -84,6 +84,25 @@ class CheckpointManager:
                     f"RAE state at {rae_file} has non-(env_name, example_id) baseline "
                     f"key(s), e.g. {bad_keys[0]!r}. Rank-7 RAE requires 2-tuple keys — start fresh."
                 )
+            bad_frames = [
+                key
+                for key, members in state["canonical_members"].items()
+                if not (isinstance(members, tuple) and members and all(isinstance(m, str) for m in members))
+            ]
+            if bad_frames:
+                raise ValueError(
+                    f"RAE state at {rae_file} has canonical_members value(s) that are not non-empty member "
+                    f"tuples, e.g. {state['canonical_members'][bad_frames[0]]!r} for key {bad_frames[0]!r} — "
+                    "likely the retired single-canonical-id format. Rank-7 RAE persists each key's full "
+                    "pair set — start fresh."
+                )
+            orphaned = sorted(set(state["baselines"]) - set(state["canonical_members"]), key=repr)
+            if orphaned:
+                raise ValueError(
+                    f"RAE state at {rae_file} has warm baseline key(s) with no canonical_members entry: "
+                    f"{orphaned}. A baseline without its persisted frame would silently re-derive a fresh "
+                    "one on the next group — the checkpoint is inconsistent (hand-edited?); start fresh."
+                )
             rae_state.baselines = state["baselines"]
             rae_state.canonical_members = state["canonical_members"]
             rae_state.beta = state["beta"]

@@ -168,7 +168,7 @@ def test_cold_key_baseline_is_zero():
     assert advantages[2] == pytest.approx(-1.1428571428571428)
     # Fold: b1 = 0.9*0 + 0.1*mean([1,-1]) = 0.0 — but the key is now warm
     assert state.baselines[KEY] == pytest.approx(0.0)
-    assert state.canonical_members[KEY] == "debater_a"
+    assert state.canonical_members[KEY] == ("debater_a", "debater_b")
     assert state.last_folds[0].cold is True
 
 
@@ -232,13 +232,13 @@ def test_quarantined_single_member_episode_uses_sign():
     #   A_canonical(ep-1) = -1 - 1/7 = -8/7; the present debater_b row gets +8/7
     assert advantages[2] == pytest.approx(1.1428571428571428)
     assert advantages[0] == pytest.approx(1.1428571428571428)
-    assert state.canonical_members[KEY] == "debater_a"
+    assert state.canonical_members[KEY] == ("debater_a", "debater_b")
 
 
 def test_singleton_pair_group_inherits_persisted_frame():
     """A group of quarantined single-member episodes cannot establish a
     frame on its own — it sign-derives against the persisted canonical."""
-    state = RAEState(baselines={KEY: 0.5}, canonical_members={KEY: "debater_a"})
+    state = RAEState(baselines={KEY: 0.5}, canonical_members={KEY: ("debater_a", "debater_b")})
     rows = [_member(member_id="debater_b", reward=1.0, episode_id="ep-0")]
 
     advantages, _ = compute_rae_advantages(rows, state, episode_pairs={"ep-0": {"debater_b": 1.0}})
@@ -247,14 +247,44 @@ def test_singleton_pair_group_inherits_persisted_frame():
     assert advantages == [pytest.approx(1.5)]
     # Fold stays in the a-frame: b1 = 0.9*0.5 + 0.1*(-1) = 0.35
     assert state.baselines[KEY] == pytest.approx(0.35)
-    assert state.canonical_members[KEY] == "debater_a"
+    assert state.canonical_members[KEY] == ("debater_a", "debater_b")
 
 
 def test_frame_change_fails_loud():
-    state = RAEState(baselines={KEY: 0.5}, canonical_members={KEY: "debater_b"})
+    # Persisted singleton frame (quarantine-only history) meets its full pair:
+    # widening may not move the lex-min member.
+    state = RAEState(baselines={KEY: 0.5}, canonical_members={KEY: ("debater_b",)})
 
     with pytest.raises(ValueError, match="persisted baseline frame cannot flip"):
         compute_rae_advantages(_pair_rows("ep-0", 1.0), state, episode_pairs=_pairs([1.0]))
+
+
+def test_pair_membership_drift_fails_loud():
+    """[debater_a, debater_b] -> [debater_a, debater_c]: the lex-min member is
+    stable, but the opponent changed — the warm baseline cannot be reused."""
+    state = RAEState(baselines={KEY: 0.5}, canonical_members={KEY: ("debater_a", "debater_b")})
+    rows = [
+        _member(member_id="debater_a", reward=1.0, episode_id="ep-0"),
+        _member(member_id="debater_c", reward=-1.0, episode_id="ep-0"),
+    ]
+    episode_pairs = {"ep-0": {"debater_a": 1.0, "debater_c": -1.0}}
+
+    with pytest.raises(ValueError, match="pair membership drift") as excinfo:
+        compute_rae_advantages(rows, state, episode_pairs=episode_pairs)
+    assert "['debater_a', 'debater_c']" in str(excinfo.value)
+    assert "['debater_a', 'debater_b']" in str(excinfo.value)
+
+
+def test_persisted_singleton_widens_to_full_pair():
+    """A key warmed only by quarantined canonical-seat episodes later sees the
+    full pair: same frame, so the set widens in place."""
+    state = RAEState(baselines={KEY: 0.5}, canonical_members={KEY: ("debater_a",)})
+
+    advantages, _ = compute_rae_advantages(_pair_rows("ep-0", 1.0), state, episode_pairs=_pairs([1.0]))
+
+    # G=1: A = r - b = 1.0 - 0.5 = 0.5
+    assert advantages == [pytest.approx(0.5), pytest.approx(-0.5)]
+    assert state.canonical_members[KEY] == ("debater_a", "debater_b")
 
 
 def test_single_seat_group_only_debater_b_keeps_canonical_frame():
@@ -275,7 +305,7 @@ def test_single_seat_group_only_debater_b_keeps_canonical_frame():
     assert advantages[1] == pytest.approx(1.5714285714285714)
     # Fold in the a-frame: b1 = 0.9*0.5 + 0.1*mean([1,-1]) = 0.45
     assert state.baselines[KEY] == pytest.approx(0.45)
-    assert state.canonical_members[KEY] == "debater_a"
+    assert state.canonical_members[KEY] == ("debater_a", "debater_b")
 
 
 def test_cross_step_frame_stability_under_seat_collapse():
@@ -294,7 +324,7 @@ def test_cross_step_frame_stability_under_seat_collapse():
     assert step1 == [pytest.approx(-0.8571428571428571), pytest.approx(-0.8571428571428571)]
     # Fold in the a-frame: b = 0.9*0 + 0.1*1 = 0.1 (a is winning -> baseline rises)
     assert state.baselines[KEY] == pytest.approx(0.1)
-    assert state.canonical_members[KEY] == "debater_a"
+    assert state.canonical_members[KEY] == ("debater_a", "debater_b")
 
     # Step 2: train_one kept only debater_a; debater_a won both episodes again
     step2_rows = [
@@ -307,7 +337,7 @@ def test_cross_step_frame_stability_under_seat_collapse():
     assert step2 == [pytest.approx(0.7714285714285714), pytest.approx(0.7714285714285714)]
     # Fold: b = 0.9*0.1 + 0.1*1 = 0.19
     assert state.baselines[KEY] == pytest.approx(0.19)
-    assert state.canonical_members[KEY] == "debater_a"
+    assert state.canonical_members[KEY] == ("debater_a", "debater_b")
 
 
 def test_single_seat_group_trains_on_canonical_rewards():
