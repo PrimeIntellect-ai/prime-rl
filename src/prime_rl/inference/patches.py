@@ -32,11 +32,7 @@ def monkey_patch_nano_v3_reasoning_parser():
             reasoning_content, final_content = super().extract_reasoning(model_output, request)
             chat_template_kwargs = getattr(request, "chat_template_kwargs", None)
 
-            if (
-                chat_template_kwargs
-                and chat_template_kwargs.get("enable_thinking") is False
-                and final_content is None
-            ):
+            if chat_template_kwargs and chat_template_kwargs.get("enable_thinking") is False and final_content is None:
                 reasoning_content, final_content = final_content, reasoning_content
 
             return reasoning_content, final_content
