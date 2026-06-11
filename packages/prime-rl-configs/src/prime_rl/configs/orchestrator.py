@@ -1,4 +1,3 @@
-import math
 import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -143,20 +142,18 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
-class EnvConfig(vf.EnvConfig):
+class EnvConfig(vf.EnvServerConfig):
     """A v1 environment — its ``taskset`` + ``harness`` (reused from ``vf.EnvConfig``,
-    resolved to their specific config types by ``id`` via vf's shared validator) plus
-    prime-rl's orchestration knobs. Timeouts come from ``vf.TimeoutConfig``
+    resolved to their specific config types by ``id`` via vf's shared validator) plus the
+    worker ``pool`` (from ``vf.EnvServerConfig``: ``static`` or ``elastic``, default
+    elastic) and prime-rl's orchestration knobs. Timeouts come from ``vf.TimeoutConfig``
     (``timeout.rollout`` / ``timeout.scoring``)."""
 
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
     address: str | None = None
-    """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically."""
-
-    num_workers: int | Literal["auto"] = "auto"
-    """Worker processes for the spawned env server. ``auto`` scales to 1 worker per 256 concurrent rollouts. Ignored when ``address`` is set."""
+    """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically. The ``pool`` sizes the spawned server."""
 
     ratio: float | None = Field(None, gt=0)
     """Sampling weight for this environment in the buffer. When None for all envs, samples uniformly across all available problems. When set, must be set on all envs — values are relative weights normalized to probabilities (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
@@ -238,15 +235,13 @@ class TrainConfig(BaseConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
 
-    num_workers: int | Literal["auto"] = "auto"
-    """Default worker processes for env servers. Can be overridden per env."""
-
     max_retries: int = Field(3, ge=0)
     """Default retries for failed rollouts. Can be overridden per env."""
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_workers, and max_retries."""
+        """Resolve per-env overrides: inherit group-level sampling and max_retries (the
+        worker ``pool`` is configured per env, defaulting to elastic)."""
         group_sampling = self.sampling.model_dump()
         for env in self.env:
             if "sampling" not in env.model_fields_set:
@@ -254,8 +249,6 @@ class TrainConfig(BaseConfig):
             else:
                 merged = group_sampling | env.sampling.model_dump(exclude_unset=True)
                 env.sampling = TrainSamplingConfig(**merged)
-            if "num_workers" not in env.model_fields_set:
-                env.num_workers = self.num_workers
             if "max_retries" not in env.model_fields_set:
                 env.max_retries = self.max_retries
         return self
@@ -293,9 +286,6 @@ class EvalConfig(BaseConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Default rollouts per example. Can be overridden per env."""
 
-    num_workers: int | Literal["auto"] = "auto"
-    """Default worker processes for env servers. Can be overridden per env."""
-
     max_retries: int = Field(3, ge=0)
     """Default retries for failed rollouts. Can be overridden per env."""
 
@@ -308,7 +298,8 @@ class EvalConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, group_size, and interval. Then resolve auto num_workers."""
+        """Resolve per-env overrides: inherit group-level sampling, max_retries, num_examples,
+        group_size, and interval (the worker ``pool`` is configured per env, default elastic)."""
         group_sampling = self.sampling.model_dump()
         for env in self.env:
             if "sampling" not in env.model_fields_set:
@@ -322,17 +313,8 @@ class EvalConfig(BaseConfig):
                 env.group_size = self.group_size
             if "interval" not in env.model_fields_set:
                 env.interval = self.interval
-            if "num_workers" not in env.model_fields_set:
-                env.num_workers = self.num_workers
             if "max_retries" not in env.model_fields_set:
                 env.max_retries = self.max_retries
-            # Resolve auto num_workers now that num_examples and group_size are set
-            if env.num_workers == "auto":
-                if env.num_examples == -1:
-                    env.num_workers = 4
-                else:
-                    max_concurrent = env.num_examples * env.group_size
-                    env.num_workers = max(1, math.ceil(max_concurrent / 256))
         return self
 
     @model_validator(mode="after")
@@ -823,12 +805,6 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.env:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
-
-        # Resolve train env num_workers from max_inflight_rollouts
-        for env_cfg in self.train.env:
-            if env_cfg.num_workers == "auto":
-                assert self.max_inflight_rollouts is not None
-                env_cfg.num_workers = max(1, math.ceil(self.max_inflight_rollouts / 256))
 
         return self
 

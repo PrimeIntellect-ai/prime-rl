@@ -42,16 +42,16 @@ def _run_env_server(
     log_file: str,
     log_level: str,
     json_logging: bool,
-    num_workers: int = 1,
     legacy: bool = False,
     **kwargs,
 ) -> None:
     """Spawned-process entry point: redirect this process's output to ``log_file`` (the
-    server's logging + any subprocess-runtime output), then serve via ``serve_env`` — a single
-    in-process server when ``num_workers <= 1``, else a router + worker pool. ``serve_env``
-    applies ``log_setup`` here and in every spawned worker; a worker inherits this process's
-    redirected stdout/stderr, so its per-rollout logs reach ``log_file`` too. Top-level so it
-    stays picklable for the ``spawn`` start method. ``legacy`` picks the v0 bridge."""
+    server's logging + any subprocess-runtime output), then serve via ``serve_env``. The
+    worker-pool sizing arrives in ``kwargs`` (``max_workers`` / ``multiplex`` / ``elastic``
+    from the env's ``pool``). ``serve_env`` applies ``log_setup`` here and in every spawned
+    worker; a worker inherits this process's redirected stdout/stderr, so its per-rollout
+    logs reach ``log_file`` too. Top-level so it stays picklable for the ``spawn`` start
+    method. ``legacy`` picks the v0 bridge."""
     from functools import partial
 
     from verifiers.v1.serve import serve_env
@@ -62,7 +62,6 @@ def _run_env_server(
     os.dup2(fh.fileno(), sys.stdout.fileno())
     os.dup2(fh.fileno(), sys.stderr.fileno())
     serve_env(
-        num_workers=num_workers,
         legacy=legacy,
         log_setup=partial(setup_env_server_logging, log_level, json_logging),
         **kwargs,
@@ -135,14 +134,13 @@ class Env:
             if self.config.is_legacy
             else dict(legacy=False, config=self.config)
         )
-        num_workers = self.config.num_workers
         process = ctx.Process(
             target=_run_env_server,
             kwargs=dict(
                 log_file=str(log_file),
                 log_level=log_level,
                 json_logging=json_logging,
-                num_workers=4 if num_workers == "auto" else num_workers,
+                **vf.pool_serve_kwargs(self.config.pool),
                 address="tcp://127.0.0.1:0",
                 address_queue=address_queue,
                 **server_kwargs,

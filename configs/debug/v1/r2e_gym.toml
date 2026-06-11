@@ -63,7 +63,7 @@ temperature = 1.0
 
 [[orchestrator.train.env]]
 name = "rlm-swe-r2e"
-num_workers = 4
+pool = { type = "elastic", multiplex = 128 }
 taskset = { id = "r2e-gym-v1" }
 harness = { id = "rlm", runtime = { type = "prime", labels = ["rlm-swe-qwen35-4b"] } }
 
