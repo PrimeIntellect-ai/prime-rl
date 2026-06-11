@@ -12,7 +12,7 @@ import verifiers.v1 as vf
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.client import setup_inference_pool
-from prime_rl.utils.logger import InterceptHandler, get_logger
+from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_ckpt_dir,
@@ -72,6 +72,15 @@ def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix
     vf_logger.addHandler(InterceptHandler(prefix=prefix))
     vf_logger.setLevel(level.upper())
     vf_logger.propagate = False
+
+
+def setup_env_server_logging(log_level: str, json_logging: bool = False) -> None:
+    """Configure logging for an env-server process: prime-rl's logger + routing v1's stdlib
+    logs through it. Passed to verifiers' ``serve_env`` so it runs in the broker and in every
+    spawned worker — fresh ``spawn`` processes that otherwise have no handlers and would drop
+    their per-rollout logs."""
+    setup_logger(log_level, json_logging=json_logging)
+    intercept_vf_logging(logger="verifiers.v1", level=log_level)
 
 
 def set_default_executor(max_workers: int = 64) -> None:

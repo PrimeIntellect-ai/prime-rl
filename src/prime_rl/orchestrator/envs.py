@@ -46,21 +46,27 @@ def _run_env_server(
     legacy: bool = False,
     **kwargs,
 ) -> None:
-    """Spawned-process entry point: send the env server's output (its logging + any
-    subprocess-runtime output) to ``log_file``, then serve via ``serve_env`` — a single
-    in-process server when ``num_workers <= 1``, else a router + worker pool. Top-level so
-    it stays picklable for the ``spawn`` start method. ``legacy`` picks the v0 bridge."""
+    """Spawned-process entry point: redirect this process's output to ``log_file`` (the
+    server's logging + any subprocess-runtime output), then serve via ``serve_env`` — a single
+    in-process server when ``num_workers <= 1``, else a router + worker pool. ``serve_env``
+    applies ``log_setup`` here and in every spawned worker; a worker inherits this process's
+    redirected stdout/stderr, so its per-rollout logs reach ``log_file`` too. Top-level so it
+    stays picklable for the ``spawn`` start method. ``legacy`` picks the v0 bridge."""
+    from functools import partial
+
     from verifiers.v1.serve import serve_env
 
-    from prime_rl.orchestrator.utils import intercept_vf_logging
-    from prime_rl.utils.logger import setup_logger
+    from prime_rl.orchestrator.utils import setup_env_server_logging
 
     fh = open(log_file, "w", buffering=1)
     os.dup2(fh.fileno(), sys.stdout.fileno())
     os.dup2(fh.fileno(), sys.stderr.fileno())
-    setup_logger(log_level, json_logging=json_logging)
-    intercept_vf_logging(logger="verifiers.v1", level=log_level)
-    serve_env(num_workers=num_workers, legacy=legacy, **kwargs)
+    serve_env(
+        num_workers=num_workers,
+        legacy=legacy,
+        log_setup=partial(setup_env_server_logging, log_level, json_logging),
+        **kwargs,
+    )
 
 
 class Env:
