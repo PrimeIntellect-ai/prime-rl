@@ -31,6 +31,27 @@ def make_gpu_layout_config(tmp_path: Path, *, hosts: list[str] | None = None, sl
     return config
 
 
+def make_multi_node_config(tmp_path: Path) -> RLConfig:
+    config = RLConfig(
+        max_steps=1,
+        output_dir=tmp_path / "run",
+        dry_run=True,
+        model={"name": "Qwen/Qwen3-0.6B"},
+        weight_broadcast={"type": "filesystem"},
+        trainer={},
+        orchestrator={"student": {"client": {"dp_rank_count": 4}}},
+        deployment={
+            "type": "multi_node",
+            "gpus_per_node": 4,
+            "num_train_nodes": 1,
+            "num_infer_nodes": 1,
+        },
+        inference={"parallel": {"tp": 1, "dp": 4}},
+    )
+    config.output_dir.mkdir(parents=True)
+    return config
+
+
 def test_gpu_layout_step_resources_use_shared_margins(monkeypatch):
     def fake_run(cmd, capture_output, text):
         assert cmd == ["scontrol", "show", "node", "node-a", "-o"]
@@ -79,3 +100,23 @@ def test_gpu_layout_slurm_dry_run_writes_current_dialect_launcher(tmp_path):
     assert "--student.client.base-url" in launcher_text
     assert "--student.client.admin-base-url" in launcher_text
     assert "--client.base-url" not in launcher_text
+
+
+def test_multi_node_launcher_component_commands_do_not_sync(tmp_path):
+    config = make_multi_node_config(tmp_path)
+    config_dir = config.output_dir / "configs"
+    launcher = config.output_dir / rl_entrypoint.MULTI_NODE_SCRIPT
+
+    rl_entrypoint.write_multi_node_script(config, config_dir, launcher)
+
+    subprocess.run(["bash", "-n", launcher], check=True)
+    launcher_text = launcher.read_text()
+    assert "uv run --no-sync inference" in launcher_text
+    assert "uv run --no-sync orchestrator" in launcher_text
+    assert "uv run --no-sync torchrun" in launcher_text
+    assert "uv run inference" not in launcher_text
+    assert "uv run orchestrator" not in launcher_text
+    assert "uv run torchrun" not in launcher_text
+    assert "set -a\n    [ -f .env ] && source .env\n    set +a" in launcher_text
+    assert "INFERENCE_START_STAGGER_SECONDS=${INFERENCE_START_STAGGER_SECONDS:-0}" in launcher_text
+    assert 'sleep "$START_DELAY"' in launcher_text

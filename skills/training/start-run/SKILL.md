@@ -7,10 +7,12 @@ description: How to launch prime-rl training runs — the `rl`, `sft`, and `infe
 
 All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/to.toml` plus CLI overrides.
 
-For allocation work, first bind the shell to the intended checkout:
+For allocation work, first bind the shell to the intended checkout. The held
+allocation shell usually pre-loads the Prime-RL environment; source this only
+if `uv`, `PRIME_RL_ROOT`, or fabric variables are missing:
 
 ```bash
-source scripts/env/activate-prime-rl.sh
+# source scripts/env/activate-prime-rl.sh
 ```
 
 This loads the repo-local `.env`, activates the repo-local `.venv`, and sets

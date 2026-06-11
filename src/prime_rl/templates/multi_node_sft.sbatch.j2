@@ -52,7 +52,9 @@ echo "MASTER_ADDR=${MASTER_ADDR}"
 echo "MASTER_PORT=${MASTER_PORT}"
 
 # Install environment
+set -a
 [ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
+set +a
 source $PROJECT_DIR/.venv/bin/activate
 
 # Install environment as local package
@@ -96,7 +98,9 @@ srun --kill-on-bad-exit=1 bash -c '
     set -o pipefail
 
     # Setup environment
+    set -a
     [ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
+    set +a
     source $PROJECT_DIR/.venv/bin/activate
 
     # Higher ulimit
@@ -114,7 +118,7 @@ srun --kill-on-bad-exit=1 bash -c '
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
     echo $HOSTNAMES | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
-    uv run torchrun \
+    uv run --no-sync torchrun \
         --role=trainer \
         --nnodes=$NUM_NODES \
         --nproc-per-node=$GPUS_PER_NODE \

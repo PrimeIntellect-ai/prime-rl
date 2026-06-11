@@ -15,7 +15,7 @@ rank_log() {
 # launch_inference_rank <port> <cuda_visible_devices> <dp> <rpc_port> <vllm_extra_json|""> <nixl_side_channel_port|""> <log_file>
 launch_inference_rank() {
     local port="$1" gpus="$2" dp="$3" rpc="$4" extra="$5" nixl="$6" log="$7"
-    local -a cmd=(uv run inference @ "$CONFIG_PATH"
+    local -a cmd=(uv run --no-sync inference @ "$CONFIG_PATH"
         --server.host 0.0.0.0 --server.port "$port"
         --parallel.dp "$dp" --data-parallel-size-local 1 --api-server-count 1)
     [ -n "$rpc" ] && cmd+=(--data-parallel-rpc-port "$rpc")

@@ -536,6 +536,7 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     """
     logger = get_logger()
     lora_path_posix = lora_path.as_posix()
+    logger.info(f"Loading LoRA adapter {lora_name} from {lora_path} on {len(admin_clients)} inference server(s)")
 
     @retry(
         retry=retry_if_exception(_is_retryable_lora_error),
@@ -544,15 +545,24 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
         reraise=True,
     )
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
-        logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
-        response = await admin_client.post(
-            "/load_lora_adapter",
-            json={"lora_name": lora_name, "lora_path": lora_path_posix},
-            timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
-        )
-        response.raise_for_status()
+        # `gather` surfaces only the first failure; log per-server so a stuck
+        # replica in a multi-server fanout is identifiable from the logs.
+        logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path} on {admin_client.base_url}")
+        try:
+            response = await admin_client.post(
+                "/load_lora_adapter",
+                json={"lora_name": lora_name, "lora_path": lora_path_posix},
+                timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            logger.warning(
+                f"Failed to load LoRA adapter {lora_name} from {lora_path} on {admin_client.base_url}: {exc!r}"
+            )
+            raise
 
     await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
+    logger.info(f"Loaded LoRA adapter {lora_name} on {len(admin_clients)} inference server(s)")
 
 
 async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) -> None:

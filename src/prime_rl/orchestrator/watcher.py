@@ -56,6 +56,9 @@ class WeightWatcher:
                 await asyncio.sleep(self.poll_interval)
         except asyncio.CancelledError:
             return
+        except Exception:
+            get_logger().exception("Weight watcher failed")
+            raise
 
     async def stop(self) -> None:
         self.stopped.set()
@@ -93,11 +96,14 @@ class WeightWatcher:
                 )
 
             get_logger().debug(f"Updating weights to step {next_step}")
+            get_logger().info(f"Updating inference weights to checkpoint {next_step}")
             t1 = time.perf_counter()
             await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
-            get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
+            get_logger().info(
+                f"Updated inference weights to checkpoint {next_step} in {format_time(self.last_update_weights_time)}"
+            )
 
             self.ckpt_step = next_step
             self.policy.version = next_step

@@ -4,11 +4,18 @@ Use `prime_rl.entrypoints.launch` as the single repo-local launch surface. The
 `prime-launch` console alias exists after syncing the environment, but
 `python -m` works with `uv run --no-sync`.
 
-Before launching from an allocation, bind the shell to this checkout:
+Before launching from an allocation, bind the shell to this checkout. The
+allocation shell normally already has the Prime-RL environment loaded; source
+the env script only if `uv`, `PRIME_RL_ROOT`, or fabric variables are missing.
+Export repo `.env` values before launching so W&B/cache/API variables propagate
+through `uv run` and nested `srun` children.
 
 ```bash
 cd /lus/lfs1aip2/projects/a6r/joanv.a6r/work/prime-rl-main
-source scripts/env/activate-prime-rl.sh
+# source scripts/env/activate-prime-rl.sh
+set -a
+source .env
+set +a
 ```
 
 The helper loads the repo-local `.env`, clears any mismatched active venv, sets
@@ -97,17 +104,23 @@ via `sbatch` (use that when you do *not* already hold nodes). Example lane confi
 ### Hold the nodes
 
 Hold the pool with the cc-wrapper launcher (e.g. 4 nodes), which drops you into a
-shell inside the allocation, then bind the shell to this checkout:
+shell inside the allocation. That shell normally already has the Prime-RL
+environment loaded; source the env script only if `uv` or the fabric variables
+are missing. Then bind the shell to this checkout and export the repo `.env`:
 
 ```bash
 launch-script-mnode 4
-source scripts/env/activate-prime-rl.sh
+# source scripts/env/activate-prime-rl.sh
+cd /lus/lfs1aip2/projects/a6r/joanv.a6r/work/prime-rl-main
+set -a
+source .env
+set +a
 ```
 
 ### Launch one lane
 
 ```bash
-uv run rl @ <base>.toml @ configs/isambard/rl_2node_inalloc.toml
+uv run --no-sync rl @ <base>.toml @ configs/isambard/rl_2node_inalloc.toml
 ```
 
 With no `hosts` set, the launcher treats the whole allocation as a single lane.
@@ -119,13 +132,13 @@ distinct `port_base` (spaced ≥100 apart) and `lane_tag`:
 
 ```bash
 # lane 0 — nodes nid001000,nid001001
-uv run rl @ <base>.toml @ configs/isambard/rl_2node_inalloc.toml \
+uv run --no-sync rl @ <base>.toml @ configs/isambard/rl_2node_inalloc.toml \
   --deployment.hosts nid001000,nid001001 \
   --deployment.port-base 29500 \
   --deployment.lane-tag ${SLURM_JOB_ID}-lane0 &
 
 # lane 1 — nodes nid001002,nid001003
-uv run rl @ <base>.toml @ configs/isambard/rl_2node_inalloc.toml \
+uv run --no-sync rl @ <base>.toml @ configs/isambard/rl_2node_inalloc.toml \
   --deployment.hosts nid001002,nid001003 \
   --deployment.port-base 29700 \
   --deployment.lane-tag ${SLURM_JOB_ID}-lane1 &
@@ -156,10 +169,13 @@ These trip people (and agents) consistently — the [`in-alloc-launch`](../skill
 
 - **Run `rl` plainly — never under `srun`/`sbatch`.** Inside an allocation `rl` is itself the head-node orchestrator and fans out via its own internal `srun --exact`. Wrapping it in an outer `srun` nests step creation and deadlocks.
 - **In-allocation requires NO `[slurm]` block** in the config. A `[slurm]` block switches to the sbatch-submit path; use it only when you do not already hold nodes.
-- **Set `weight_broadcast.type = "nccl"` for real runs.** It moves weights GPU→GPU over Slingshot — roughly an order of magnitude faster than the `filesystem` default at multi-billion-parameter scale, which round-trips a checkpoint through Lustre. It relies on the fabric that `activate-prime-rl.sh` loads.
+- **Set `weight_broadcast.type = "nccl"` for real non-LoRA runs.** It moves weights GPU→GPU over Slingshot — roughly an order of magnitude faster than the `filesystem` default at multi-billion-parameter scale, which round-trips a checkpoint through Lustre. LoRA runs must keep `filesystem`; PRIME-RL rejects NCCL broadcast when `[trainer.model.lora]` is enabled.
 - **Concurrent lanes must be fully disjoint:** distinct host slices, `port-base` ≥100 apart, distinct `lane-tag`. The `lane-tag` namespaces outputs, rollouts, caches, and the broadcast rendezvous; reuse or omit it and concurrent lanes overwrite each other's rollouts (`FileNotFoundError` on `rollouts/step_N`).
 - **`vllm-router` must resolve for aarch64 in `uv.lock`.** If multi_node inference dies with `vllm-router: command not found`, the lock is missing the `manylinux_2_28_aarch64` router wheel. After any `pyproject.toml` dependency change, run `uv lock` and commit the regenerated lock alongside the manifest.
-- **Use `scripts/sync-prime-rl-env.sh` for GH200 syncs.** Raw `uv sync` can leave the FA2/FA4 namespace invalid on aarch64. The wrapper runs the normal locked sync, uses `PRIME_RL_WHEELHOUSE` when present (default: ignored `./wheels`), refuses accidental `flash-attn` source rebuilds, repairs FA4 clobbering, and verifies FA2/FA3/FA4 imports before returning. If FA2 really must be rebuilt, run the wrapper on a compute node with `PRIME_RL_ALLOW_FLASH_ATTN_BUILD=1`.
+- **Use `scripts/sync-prime-rl-env.sh` for GH200 syncs.** Raw `uv sync` can leave the FA2/FA4 namespace invalid on aarch64 — and once uv's build cache is pruned it insists on a full nvcc rebuild of flash-attn just to reconcile the lock. The wrapper excludes flash-attn from the locked sync, restores the locked version from `PRIME_RL_WHEELHOUSE` (default `./wheels`; on Isambard symlink that to the project wheelhouse carrying the pre-built aarch64 wheel), repairs FA4 clobbering, and verifies FA2/FA3/FA4 imports before returning. If FA2 really must be rebuilt, run the wrapper on a compute node with `PRIME_RL_ALLOW_FLASH_ATTN_BUILD=1`.
+- **Generated lane component commands must use `uv run --no-sync`.** Plain inner `uv run inference` / `orchestrator` / `torchrun` can resync a shared `.venv` concurrently across nodes; symptoms include transient missing CUDA libraries such as `libcusparseLt.so.0`.
+- **Export `.env` before launching `rl`.** Plain `source .env` does not export bare assignments. Use `set -a; source .env; set +a` so `WANDB_API_KEY`, cache roots, and API keys reach child processes.
+- **Stagger large inference fanout if vLLM startup livelocks.** Set `INFERENCE_START_STAGGER_SECONDS=30` before `rl` to delay inference node `N` by `N*30s`; default is 0. This preserves CUDA graph mode and avoids simultaneous multi-node vLLM startup pressure.
 - **`/tmp` and `/dev/shm` are a shared, RAM-backed tmpfs that is not wiped between jobs.** A lane can hit `OSError [Errno 28] No space left on device` from other users' leftover caches on a node — an environment condition, not a launcher bug. Pick fresh nodes or clear space rather than debugging it as code.
 
 ## Data Generation / Filtering

@@ -159,7 +159,9 @@ echo "MASTER_PORT=${MASTER_PORT}"
 
 # Setup environment
 cd $PROJECT_DIR
+set -a
 [ -f .env ] && source .env
+set +a
 source "$PROJECT_DIR/scripts/env/isambard-fabric.sh"
 source .venv/bin/activate
 
@@ -219,7 +221,9 @@ srun "${LANE_SRUN_OPTS[@]}" \
 
     # Source environment
     cd $PROJECT_DIR
+    set -a
     [ -f .env ] && source .env
+    set +a
     source "$PROJECT_DIR/scripts/env/isambard-fabric.sh"
     source .venv/bin/activate
     # Do not sync to avoid conflicts with lockfile
@@ -264,6 +268,18 @@ if [ "$LANE_NODE_RANK" -lt "$NUM_INFER_NODES" ]; then
 
     echo "INFER_NODE_RANK=$INFER_NODE_RANK REPLICA=$REPLICA_IDX RANK_IN_REPLICA=$RANK_IN_REPLICA LOCAL_IP=$LOCAL_IP" \
         | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+
+    INFERENCE_START_STAGGER_SECONDS=${INFERENCE_START_STAGGER_SECONDS:-0}
+    if ! [[ "$INFERENCE_START_STAGGER_SECONDS" =~ ^[0-9]+$ ]]; then
+        echo "INFERENCE_START_STAGGER_SECONDS must be a non-negative integer, got '$INFERENCE_START_STAGGER_SECONDS'" >&2
+        exit 1
+    fi
+    if [ "$INFERENCE_START_STAGGER_SECONDS" -gt 0 ]; then
+        START_DELAY=$((INFER_NODE_RANK * INFERENCE_START_STAGGER_SECONDS))
+        echo "Delaying inference startup by ${START_DELAY}s (INFERENCE_START_STAGGER_SECONDS=${INFERENCE_START_STAGGER_SECONDS})" \
+            | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+        sleep "$START_DELAY"
+    fi
 
     CONFIG_PATH="$CONFIG_DIR/inference.toml"
 {% include '_launch_rank.sh.j2' %}
@@ -384,7 +400,7 @@ else
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.base-url $INFER_URLS"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.admin-base-url $ADMIN_URLS"
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
-        {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
+        {% endif %}WANDB_SHARED_LABEL=orchestrator uv run --no-sync orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
     fi
 {%- else %}
@@ -399,7 +415,7 @@ else
     echo $HOSTNAMES_STR | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 
     (
-        WANDB_SHARED_LABEL=trainer uv run torchrun \
+        WANDB_SHARED_LABEL=trainer uv run --no-sync torchrun \
             --role=trainer \
             --nnodes=$NUM_TRAIN_NODES \
             --nproc-per-node=$GPUS_PER_NODE \

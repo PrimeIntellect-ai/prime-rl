@@ -157,7 +157,7 @@ A few warnings are normal. Escalate when errors are persistent, growing, or hit 
 - **Orchestrator**: empty/errored rollout spikes, weight-broadcast failures, checkpoint errors. A `RuntimeError: Dispatcher starved` crash means the pipeline sat at 0 inflight rollouts for 5 min while dispatch was allowed — rollout capacity was lost (wedged inference pool, unschedulable permit cost, permit leak); the message carries the full dispatcher state.
 - **Trainer**: NCCL/CUDA errors, OOM, NaN loss or gradients.
 - **Inference**: NCCL/CUDA errors, OOM, request timeouts.
-- **Teardown leak**: trainer logs `RL trainer finished!` and final checkpoints/weights exist, but Slurm still shows the job `RUNNING` with only the main `bash` step. Inspect inside the allocation with `srun --jobid=<id> --overlap -N<nodes> -n<nodes> --ntasks-per-node=1 ps -eo pid,ppid,stat,etime,cmd`; stale `vllm::router`/`uv run inference` with no trainer means the inference task did not receive the clean trainer-completion signal.
+- **Teardown leak**: trainer logs `RL trainer finished!` and final checkpoints/weights exist, but Slurm still shows the job `RUNNING` with only the main `bash` step. Prefer `ssh <node> ps -eo pid,ppid,stat,etime,cmd` for each lane host, or run a non-overlapping diagnostic step only when the allocation has idle resources. Stale `vllm::router`/`uv run inference` with no trainer means the inference task did not receive the clean trainer-completion signal.
 
 ### Process tree
 

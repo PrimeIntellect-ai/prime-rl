@@ -62,7 +62,9 @@ export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
 
 # Setup environment
 cd $PROJECT_DIR
+set -a
 [ -f .env ] && source .env
+set +a
 source .venv/bin/activate
 uv sync --all-extras
 
@@ -159,7 +161,9 @@ srun --kill-on-bad-exit=1 bash -c '
     set -o pipefail
 
     cd $PROJECT_DIR
+    set -a
     [ -f .env ] && source .env
+    set +a
     source .venv/bin/activate
 
     # Infiniband setup
@@ -298,7 +302,7 @@ srun --kill-on-bad-exit=1 bash -c '
     # Required for graph compilation to work
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
 
-    uv run inference \
+    uv run --no-sync inference \
         @ $CONFIG_PATH \
         2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
 {%- endif %}

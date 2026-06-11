@@ -29,7 +29,9 @@ export PROJECT_DIR={{ project_dir }}
 
 # Setup environment
 cd $PROJECT_DIR
+set -a
 [ -f .env ] && source .env
+set +a
 source .venv/bin/activate
 uv sync --all-extras
 
