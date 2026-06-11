@@ -73,20 +73,21 @@ name = "grpo"  # the default
 
 ### Customizing Components
 
-Every component can be overridden individually — the preset merges under your keys, so fields you don't set are kept. Setting a different `advantage.type` replaces the strategy wholesale (fields can't merge across union members):
+Presets are **atomic**: a preset name fixes both components, and the only keys that may accompany it are the `model` / `teacher` shorthand (the distillation presets are incomplete without an endpoint by design). To customize anything else, drop `name` and assemble the components directly — presets are thin deltas, so assembly costs one `type` key:
 
 ```toml
-[orchestrator.algo]
-name = "echo"
-
+# echo with a custom lambda — assembled, no preset name:
 [orchestrator.algo.advantage]
-observation_weight = 0.25  # keep echo's strategy, change lambda
+type = "echo"
+observation_weight = 0.25
 
-# or replace the strategy wholesale:
+# or a custom advantage strategy:
 # [orchestrator.algo.advantage]
 # type = "custom"
 # import_path = "my_module.normalized_advantage"
 ```
+
+A preset name with explicit `advantage` / `sampling` keys is a parse-time error: a modified preset is not the preset, so the config must state what it actually runs.
 
 Component compatibility is validated at config time: frozen-model sampling cannot feed an advantage with the `rl` loss component (no policy sampling logprobs for importance ratios), `ref_kl` pointed at `"policy"` is rejected as degenerate (zero KL), and group-relative advantage with `group_size = 1` warns that every advantage collapses to zero.
 

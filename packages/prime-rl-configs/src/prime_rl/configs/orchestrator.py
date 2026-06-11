@@ -225,9 +225,10 @@ class TrainEnvConfig(EnvConfig):
     individual components) to give this env its own algorithm."""
 
     advantage: AdvantageConfig | None = Field(None, exclude=True)
-    """Shorthand for ``algo.advantage``, applied on top of whichever
-    algorithm this env inherits. Setting both this and an explicit
-    ``algo.advantage`` to different values is an error. Write-only input
+    """Shorthand for ``algo.advantage`` — the env assembles its own
+    algorithm around it instead of inheriting the top-level one. Setting both
+    this and an explicit ``algo.advantage`` to different values is an error,
+    and it cannot modify a preset. Write-only input
     sugar — folded on raw input and excluded from dumps so resolved configs
     round-trip."""
 
@@ -694,6 +695,11 @@ class OrchestratorConfig(BaseConfig):
                 raise ValueError(
                     f"{owner}: the 'advantage' shorthand needs 'algo' as plain config data — "
                     "set 'algo.advantage' directly instead."
+                )
+            if "name" in algo:
+                raise ValueError(
+                    f"{owner}: the 'advantage' shorthand cannot modify preset '{algo['name']}' — presets "
+                    "are atomic. Drop the preset name and assemble the algorithm, or use the preset as-is."
                 )
             if shorthand is None or shorthand == "None":
                 shorthand = {"type": "reward"}

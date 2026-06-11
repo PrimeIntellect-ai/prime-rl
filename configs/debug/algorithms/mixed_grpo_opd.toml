@@ -19,9 +19,11 @@ project = "algorithms-debug"
 name = "debug-mixed-grpo-opd"
 
 [orchestrator]
-algo = { name = "grpo" }
 batch_size = 128
 group_size = 16
+
+[orchestrator.algo]
+name = "grpo"
 
 [orchestrator.renderer]
 name = "qwen3"

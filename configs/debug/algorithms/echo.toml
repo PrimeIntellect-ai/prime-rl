@@ -16,10 +16,9 @@ name = "debug-echo"
 batch_size = 32
 group_size = 4
 
-[orchestrator.algo]
-name = "echo"
-
+# Assembled (no preset name): presets are atomic, and we set echo's lambda.
 [orchestrator.algo.advantage]
+type = "echo"
 observation_weight = 0.1
 
 [[orchestrator.train.env]]
