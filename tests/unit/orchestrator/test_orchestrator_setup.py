@@ -14,7 +14,7 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
         config = SimpleNamespace(
             model=SimpleNamespace(
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
-                model=SimpleNamespace(name="policy-model"),
+                name="policy-model",
             ),
             renderer=renderer_settings,
             pool_size=None,
@@ -59,7 +59,7 @@ def test_setup_policy_inference_pool_defaults_to_mito():
             pool_size=None,
             model=SimpleNamespace(
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
-                model=SimpleNamespace(name="policy-model"),
+                name="policy-model",
             ),
         )
         inference_pool = object()
