@@ -490,15 +490,6 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
-class TokenExportConfig(BaseConfig):
-    """Configures per-token rollout exports from the RL trainer."""
-
-
-class TrainerExperimentalConfig(BaseConfig):
-    token_export: TokenExportConfig | None = None
-    """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
-
-
 class TrainerConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
 
@@ -562,7 +553,8 @@ class TrainerConfig(BaseConfig):
     max_concurrent_runs: int = Field(1, ge=1)
     """Maximum number of concurrent runs to allow. If 1, only one run may run at a time."""
 
-    experimental: TrainerExperimentalConfig = TrainerExperimentalConfig()
+    enable_token_export: bool = False
+    """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):

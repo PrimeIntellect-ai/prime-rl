@@ -26,9 +26,8 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/` (skips the configs/private/ submodule)."""
-    private = Path("configs/private")
-    config_files = [p for p in Path("configs").rglob("*.toml") if private not in p.parents]
+    """Any TOML file inside `configs/` or `examples/`."""
+    config_files = list(Path("configs").rglob("*.toml"))
     example_files = list(Path("examples").rglob("*.toml"))
 
     return config_files + example_files
@@ -198,6 +197,11 @@ def test_advantage_shorthand_conflicts_with_explicit_algo_advantage():
                 "algo": {"advantage": {"type": "group_norm"}},
             }
         )
+
+
+def test_trainer_enable_token_export_cli_flag():
+    assert not cli(TrainerConfig, args=[]).enable_token_export
+    assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
 
 
 def test_orchestrator_vlm_requires_renderer():

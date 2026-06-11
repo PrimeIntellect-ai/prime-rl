@@ -10,7 +10,12 @@ from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
-from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfig, setup_micro_batch_receiver
+from prime_rl.transport import (
+    MicroBatch,
+    MicroBatchReceiver,
+    TransportConfig,
+    setup_micro_batch_receiver,
+)
 
 
 class TensorMicroBatch(TypedDict):
@@ -47,6 +52,10 @@ class TensorMicroBatch(TypedDict):
     rl_weights: Float[Tensor, "batch seq"] | None
     ce_weights: Float[Tensor, "batch seq"] | None
     ref_kl_weights: Float[Tensor, "batch seq"] | None
+
+    # Packer-derived metadata used for run-local debug exports.
+    run_id: str | None
+    run_step: int | None
 
 
 class FakeDataLoader:
@@ -124,6 +133,8 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "run_id": None,
+            "run_step": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -154,6 +165,8 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "run_id": None,
+            "run_step": None,
         }
 
 
@@ -257,6 +270,8 @@ class DataLoader:
             ref_kl_weights=torch.tensor(micro_batch.ref_kl_weights, dtype=torch.float).unsqueeze(0)
             if micro_batch.ref_kl_weights is not None
             else None,
+            run_id=micro_batch.run_id,
+            run_step=micro_batch.run_step,
         )
 
 
