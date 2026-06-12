@@ -18,6 +18,7 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
             ),
             renderer=renderer_settings,
             pool_size=None,
+            any_policy_sourced=True,
         )
         renderer = object()
         inference_pool = object()
@@ -79,6 +80,51 @@ def test_setup_policy_inference_pool_defaults_to_mito():
         assert renderer is None
         assert returned_pool is inference_pool
         create_renderer_mock.assert_not_called()
+        setup_pool_mock.assert_awaited_once_with(
+            config.model.client,
+            model_name="policy-model",
+            train_client_type="openai_chat_completions",
+            eval_client_type="openai_chat_completions",
+        )
+
+    asyncio.run(run())
+
+
+def test_setup_policy_inference_pool_keeps_renderer_without_policy_sampling():
+    """Frozen-sourced runs (e.g. sft) keep the renderer object for client-side
+    tokenization, but the policy pool serves plain chat completions — the
+    renderer-client sampling path is never wired."""
+
+    async def run() -> None:
+        tokenizer = object()
+        renderer_settings = Qwen3VLRendererConfig()
+        config = SimpleNamespace(
+            model=SimpleNamespace(
+                client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
+                name="policy-model",
+            ),
+            renderer=renderer_settings,
+            pool_size=None,
+            any_policy_sourced=False,
+        )
+        renderer = object()
+        inference_pool = object()
+
+        with (
+            patch("renderers.base.create_renderer", return_value=renderer) as create_renderer_mock,
+            patch(
+                "prime_rl.orchestrator.utils.setup_inference_pool",
+                new=AsyncMock(return_value=inference_pool),
+            ) as setup_pool_mock,
+        ):
+            returned_renderer, returned_pool = await setup_policy_inference_pool(
+                config=config,
+                tokenizer=tokenizer,
+            )
+
+        assert returned_renderer is renderer
+        assert returned_pool is inference_pool
+        create_renderer_mock.assert_called_once_with(tokenizer, renderer_settings)
         setup_pool_mock.assert_awaited_once_with(
             config.model.client,
             model_name="policy-model",

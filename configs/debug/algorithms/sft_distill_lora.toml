@@ -26,6 +26,11 @@ type = "sft"
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = ["http://localhost:8001/v1"]
 
+# The student's renderer tokenizes the teacher's messages into the student's
+# token space (backfill) — the canonical messages -> ids path.
+[orchestrator.renderer]
+name = "qwen3"
+
 [orchestrator.train.sampling]
 max_completion_tokens = 128
 
