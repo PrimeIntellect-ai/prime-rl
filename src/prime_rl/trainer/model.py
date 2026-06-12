@@ -34,6 +34,7 @@ from prime_rl.trainer.models import (
     PreTrainedModelPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
+    get_custom_causal_lm_cls,
     get_custom_vlm_cls,
     supports_custom_impl,
 )
@@ -453,18 +454,7 @@ def get_model(
                 "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
 
-    # GPT-OSS only supports FlashAttention via kernels-community/vllm-flash-attn3, which requires Hopper (SM 90).
-    # On other architectures (e.g. Blackwell), users must fall back to eager attention.
-    HOPPER_MAJOR = 9
     if getattr(model_config, "model_type", "") == "gpt_oss":
-        if config.attn != "eager":
-            major, minor = torch.cuda.get_device_capability()
-            if major != HOPPER_MAJOR:
-                raise ValueError(
-                    f"GPT-OSS requires 'attn = \"eager\"' on non-Hopper GPUs (detected SM {major}{minor}). "
-                    f"The only flash attention kernel supported by GPT-OSS (kernels-community/vllm-flash-attn3) is Hopper-only. "
-                    f'Set [trainer.model] attn = "eager" in your config.'
-                )
         # Enable hub kernels for GPT-OSS (disabled by default to avoid interfering with other models).
         import transformers.integrations.hub_kernels as _hub_kernels
 
@@ -546,6 +536,13 @@ def get_model(
         logger.info(f"Auto-selected implementation: {impl_to_use}")
     else:
         impl_to_use = config.impl
+
+    # Validate the requested attention implementation against the model's declared support
+    # before construction, so unsupported combinations fail with an actionable error.
+    if impl_to_use == "custom":
+        custom_cls = custom_vlm_cls if custom_vlm_cls is not None else get_custom_causal_lm_cls(model_config)
+        if custom_cls is not None:
+            custom_cls.validate_attn_impl(model_config, config.attn)
 
     with device:
         if impl_to_use == "custom" and custom_vlm_cls is not None:

@@ -185,6 +185,21 @@ class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     _can_record_outputs = {"hidden_states": GptOssDecoderLayer}
 
     @classmethod
+    def validate_attn_impl(cls, config, attn_impl: str) -> None:
+        # GPT-OSS only supports FlashAttention via kernels-community/vllm-flash-attn3, which
+        # requires Hopper (SM 90). On other architectures (e.g. Blackwell), users must fall
+        # back to eager attention.
+        HOPPER_MAJOR = 9
+        if attn_impl != "eager":
+            major, minor = torch.cuda.get_device_capability()
+            if major != HOPPER_MAJOR:
+                raise ValueError(
+                    f"GPT-OSS requires 'attn = \"eager\"' on non-Hopper GPUs (detected SM {major}{minor}). "
+                    f"The only flash attention kernel supported by GPT-OSS (kernels-community/vllm-flash-attn3) is Hopper-only. "
+                    f'Set [trainer.model] attn = "eager" in your config.'
+                )
+
+    @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return is_hf_state_dict(state_dict)
 

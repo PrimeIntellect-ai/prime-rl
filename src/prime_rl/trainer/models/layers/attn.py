@@ -287,6 +287,25 @@ ATTN_IMPL2CLASS = {
     "fa4": functools.partial(FlashAttention, flash_attn_version=4),
 }
 
+# (flash_attn version, module providing it) per flash-style attn implementation
+_FLASH_ATTN_REQUIREMENTS = {
+    "flash_attention_2": (2, "flash_attn"),
+    "flash_attention_3": (3, "flash_attn_interface"),
+    "fa4": (4, "flash_attn.cute"),
+}
+
+
+def require_flash_attn_kernels(attn_impl: str) -> None:
+    """Raise at load time if the requested flash-attention variant is not importable.
+
+    Without this check a missing kernel only surfaces as a TypeError at the first forward pass.
+    """
+    if attn_impl not in _FLASH_ATTN_REQUIREMENTS:
+        return
+    version, module = _FLASH_ATTN_REQUIREMENTS[attn_impl]
+    if FlashAttention._funcs[version] is None:
+        raise ValueError(f"attn='{attn_impl}' requires `{module}`, which is not importable in this environment.")
+
 
 def substitute_ring_attn(
     process_group: torch.distributed.ProcessGroup,

@@ -134,6 +134,11 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         "hidden_states": GlmMoeDsaDecoderLayer,
     }
 
+    @classmethod
+    def validate_attn_impl(cls, config, attn_impl: str) -> None:
+        # DSA uses its own sparse MLA kernels; the attn knob does not select a kernel here
+        pass
+
     def _init_weights(self, module):
         super()._init_weights(module)
 
