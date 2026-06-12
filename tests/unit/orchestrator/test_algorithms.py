@@ -303,6 +303,26 @@ def test_rlcsd_contrastive_signal_is_log_mean_exp():
     assert _contrastive_signal([-1.0], [[-1.0], [-3.0]])[0] == pytest.approx(expected)
 
 
+def test_rlcsd_hint_pools_gap_band():
+    from types import SimpleNamespace
+
+    from prime_rl.orchestrator.algo.rlcsd import _hint_pools
+
+    group = [SimpleNamespace(reward=r) for r in (1.0, 0.6, 0.45, 0.1)]
+    # gap 0 reproduces the plain threshold split
+    correct, wrong = _hint_pools(group, 0.5, 0.0)
+    assert [r.reward for r in correct] == [1.0, 0.6]
+    assert [r.reward for r in wrong] == [0.45, 0.1]
+    # the band [threshold - gap, threshold) serves as neither hint
+    correct, wrong = _hint_pools(group, 0.5, 0.3)
+    assert [r.reward for r in correct] == [1.0, 0.6]
+    assert [r.reward for r in wrong] == [0.1]
+    # binary rewards: any gap in (0, 1] reduces to the paper's partition
+    binary = [SimpleNamespace(reward=r) for r in (1.0, 0.0, 1.0)]
+    correct, wrong = _hint_pools(binary, 1.0, 0.5)
+    assert len(correct) == 2 and len(wrong) == 1
+
+
 def test_rlcsd_modulation_two_path_weights_and_clamp():
     from prime_rl.orchestrator.algo.rlcsd import _modulated_token_advantages
 

@@ -32,6 +32,19 @@ def _std_norm_advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
     return AdvantageOutputs(advantages=[(r - mean) / (std + _ADV_EPS) for r in rewards])
 
 
+def _hint_pools(
+    group: list[TrainRollout], correct_threshold: float, min_contrast_gap: float
+) -> tuple[list[TrainRollout], list[TrainRollout]]:
+    """Partition one group into hint pools. Positives are verified correct
+    (``reward >= correct_threshold``); negatives must be clearly wrong
+    (``reward < correct_threshold - min_contrast_gap``). Rollouts in the band
+    between are neither — they never serve as hints, so near-threshold noise
+    stops producing contrast as the group tightens."""
+    correct = [r for r in group if (r.reward or 0.0) >= correct_threshold]
+    wrong = [r for r in group if (r.reward or 0.0) < correct_threshold - min_contrast_gap]
+    return correct, wrong
+
+
 def _contrastive_signal(pos_logprobs: list[float], neg_logprobs: list[list[float]]) -> list[float]:
     """Per-token contrast ``e_ctr`` (Eq. 7): the teacher's logprob under the
     correct hint minus the log of the *mean probability* over the K incorrect
@@ -112,6 +125,7 @@ class RLCSDAlgorithm(Algorithm):
         self.delta = advantage.delta
         self.eta = advantage.eta
         self.correct_threshold = advantage.correct_threshold
+        self.min_contrast_gap = advantage.min_contrast_gap
         self.template = advantage.template
         self.max_concurrent = advantage.max_concurrent
 
@@ -129,8 +143,7 @@ class RLCSDAlgorithm(Algorithm):
 
         tasks = []
         for group in groups.values():
-            correct = [r for r in group if (r.reward or 0.0) >= self.correct_threshold]
-            wrong = [r for r in group if (r.reward or 0.0) < self.correct_threshold]
+            correct, wrong = _hint_pools(group, self.correct_threshold, self.min_contrast_gap)
             for rollout in group:
                 # Hints come from siblings only — conditioning the teacher on
                 # the rollout itself shifts it toward degenerate over-confidence.

@@ -308,8 +308,14 @@ class RLCSDAdvantageConfig(BaseConfig):
 
     correct_threshold: float = 1.0
     """Rollouts with ``reward >= correct_threshold`` form the correct hint
-    pool, the rest the incorrect pool — the binary verifier generalized to
-    continuous rewards."""
+    pool — the binary verifier generalized to continuous rewards."""
+
+    min_contrast_gap: float = Field(0.0, ge=0)
+    """Exclusion band below ``correct_threshold``: negative hints need
+    ``reward < correct_threshold - min_contrast_gap``, so borderline rollouts
+    never serve as wrong hints and near-threshold noise stops producing
+    contrast as the group tightens. ``0.0`` (the default) disables the band;
+    on binary rewards any value in (0, 1] is equivalent to it."""
 
     template: str = (
         "{question}\n\n"

@@ -26,6 +26,10 @@ group_size = 16
 [orchestrator.algo.advantage]
 type = "rlcsd"
 correct_threshold = 0.5
+# Negative hints must be clearly failed reversals (< 0.2), not borderline:
+# the band in between serves as neither hint, so noise contrasts stop firing
+# as groups tighten around the threshold.
+min_contrast_gap = 0.3
 template = """{question}
 
 Here is a reference solution to this problem:
