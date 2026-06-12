@@ -23,7 +23,6 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import (
     backfill_rollout_tokens,
-    interleave_rollout,
     offload_images_to_disk,
 )
 from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
@@ -158,11 +157,10 @@ class TrainSink:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
         algorithm = self.train_envs.get(rollout.env_name).algorithm
         samples = await asyncio.to_thread(
-            lambda: interleave_rollout(
+            lambda: algorithm.build_samples(
                 raw,
-                mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
                 env_name=rollout.env_name,
-                obs_weights=algorithm.observation_weights(raw),
+                mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             )
         )
         rollout.samples = samples or []

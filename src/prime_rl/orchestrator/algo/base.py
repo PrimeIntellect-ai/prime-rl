@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from prime_rl.configs.algorithm import ActionLossType, AlgorithmConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo.routing import spread_token_advantages, stamp_loss_routing
+from prime_rl.orchestrator.trajectories import interleave_rollout
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
 
     from prime_rl.orchestrator.envs import TrainEnvs
     from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
 
 
@@ -60,17 +62,24 @@ class Algorithm:
     bundle's ``advantage`` component (its sibling :class:`Sampler` interprets
     ``sampling``).
 
-    Subclass and override the execution points of the training signal:
+    The algorithm is one compilation — finalized rollouts in, per-token
+    component weight streams out — split over the pipeline's three phases,
+    each driven by one method the pipeline calls:
 
-    - :meth:`assign` — group finalization, cheap and synchronous; set
-      rollout-level scalar (and optionally per-token) advantages. The default
-      assigns nothing (rollouts keep ``advantage=None``, so advantage-based
-      filters skip them).
-    - :meth:`score` — batch-ship time, async; attach per-token reference data
-      by querying ``self.reference_pool``. The default scores nothing.
-    - :meth:`observation_weights` — sample-construction time; per-token ce
-      weights for env-provided observation tokens. The default (``None``)
-      masks them all out.
+    - :meth:`build_samples` — per rollout, as it arrives: interleave the
+      trajectory into training samples, weighting env-provided observation
+      tokens via the :meth:`observation_weights` hook.
+    - :meth:`finalize_group` — per group, at finalization: assign credit via
+      the :meth:`assign` hook, then stamp the wire fields (advantage + loss
+      routing).
+    - :meth:`score` — per batch, at ship time, async: attach per-token
+      reference data by querying ``self.reference_pool``. Runs on batch
+      survivors only, so filtered rollouts never cost reference compute.
+
+    Subclasses override the hooks — :meth:`observation_weights` (default:
+    ``None``, observations stay masked), :meth:`assign` (default: nothing —
+    rollouts keep ``advantage=None``, so advantage-based filters skip them),
+    and :meth:`score` (driver and hook in one; the default scores nothing).
 
     Class-level declarations say what the algorithm needs: which loss
     component its action tokens feed (``action_loss_type``) and what it calls
@@ -109,10 +118,27 @@ class Algorithm:
     def observation_weights(self, output: vf.RolloutOutput) -> list[list[float]] | None:
         """Per-token ce weights for env-provided observation tokens: one list
         per trajectory step, each spanning that step's ``prompt_ids`` +
-        ``completion_ids``. ``interleave_rollout`` aligns the spans onto the
+        ``completion_ids``. :meth:`build_samples` aligns the spans onto the
         merged samples; algorithms that train on observations (echo) override
         this. ``None`` (the default) masks every observation token out."""
         return None
+
+    def build_samples(
+        self,
+        output: vf.RolloutOutput,
+        *,
+        env_name: str,
+        mm_token_type_ids_mapping: dict[int, int] | None = None,
+    ) -> list[TrainingSample] | None:
+        """Compile one finalized rollout into training samples: best-effort
+        interleaving of the trajectory steps, with this algorithm's
+        :meth:`observation_weights` deciding what env-provided tokens train."""
+        return interleave_rollout(
+            output,
+            mm_token_type_ids_mapping=mm_token_type_ids_mapping,
+            env_name=env_name,
+            obs_weights=self.observation_weights(output),
+        )
 
     def finalize_group(self, rollouts: list[TrainRollout]) -> None:
         """Score one finalized group: assign credit, then stamp each sample's
