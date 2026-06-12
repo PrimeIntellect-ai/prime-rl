@@ -107,6 +107,13 @@ envs = [
     "color-codeword-v1",
     "r2e-gym-v1",
     "terminal-bench-2-v1",
+    "code-golf-v1",
+    "deepwiki-v1",
+    "glossary-v1",
+    "swelego-v1",
+    "wiki-search-v1",
+    "wikispeedia-v1",
+    "wordle-v1",
     "tasksets",
     "harnesses",
 ]
@@ -257,6 +264,13 @@ scaleswe-v1 = { path = "deps/verifiers/examples/tasksets/scaleswe_v1", editable 
 color-codeword-v1 = { path = "deps/verifiers/examples/tasksets/color_codeword_v1", editable = true }
 r2e-gym-v1 = { path = "deps/verifiers/examples/tasksets/r2e_gym_v1", editable = true }
 terminal-bench-2-v1 = { path = "deps/verifiers/examples/tasksets/terminal_bench_2_v1", editable = true }
+code-golf-v1 = { path = "deps/verifiers/examples/tasksets/code_golf_v1", editable = true }
+deepwiki-v1 = { path = "deps/verifiers/examples/tasksets/deepwiki_v1", editable = true }
+glossary-v1 = { path = "deps/verifiers/examples/tasksets/glossary_v1", editable = true }
+swelego-v1 = { path = "deps/verifiers/examples/tasksets/swelego_v1", editable = true }
+wiki-search-v1 = { path = "deps/verifiers/examples/tasksets/wiki_search_v1", editable = true }
+wikispeedia-v1 = { path = "deps/verifiers/examples/tasksets/wikispeedia_v1", editable = true }
+wordle-v1 = { path = "deps/verifiers/examples/tasksets/wordle_v1", editable = true }
 tasksets = { path = "deps/verifiers/packages/tasksets", editable = true }
 harnesses = { path = "deps/verifiers/packages/harnesses", editable = true }
 renderers = { path = "deps/renderers", editable = true }
