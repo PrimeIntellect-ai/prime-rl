@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from collections.abc import Callable
+from functools import partial
 from itertools import cycle
 from typing import TYPE_CHECKING, ClassVar
 
@@ -109,8 +111,11 @@ class Algorithm:
         self.renderer = renderer
         self.reference_pool: InferencePool | None = None  # resolved in setup() when the algorithm declares a model
         self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
-        self.observation_weight: float | None = None  # ce weight for env-provided tokens; None masks them out
-        self.observation_tokens: str | None = None  # which env tokens interleave tags: "tool", "all", or None
+        # Echo selection: message role -> per-token ce weight for env-provided
+        # tokens (None masks them all out), plus an optional user filter
+        # narrowing the selection per rollout. Consumed by interleave_rollout.
+        self.echo_roles: dict[str, float] | None = None
+        self.echo_filter_fn: Callable[..., list[list[bool]]] | None = None
 
     async def setup(self) -> None:
         """Connect a client pool to the algorithm's frozen reference model and
@@ -143,7 +148,7 @@ class Algorithm:
                 sample.advantage = rollout.advantage if rollout.advantage is not None else 0.0
                 sample.reward = rollout.reward
                 sample.env_name = rollout.env_name
-                stamp_loss_routing(sample, self.action_loss_type, self.observation_weight)
+                stamp_loss_routing(sample, self.action_loss_type)
 
     def _reference_pool(self) -> InferencePool:
         pool = self.reference_pool
@@ -166,16 +171,25 @@ class GRPOAlgorithm(Algorithm):
 
 
 class EchoAlgorithm(GRPOAlgorithm):
-    """GRPO on action tokens, plus weighted CE on env-provided observation
-    tokens (tool output, terminal responses). The observation tokens feed the
-    ``ce`` loss component at ``observation_weight`` and stay outside the rl
-    mask and its denominator."""
+    """GRPO on action tokens, plus weighted CE on env-provided tokens of
+    later turns (tool output, user feedback), selected by message role —
+    tool-response bodies at the vetted default. Selected tokens feed the
+    ``ce`` loss component at their role's ``alpha`` and stay outside the rl
+    mask and its denominator. An optional user filter narrows the selection
+    per rollout (e.g. dropping tool-output warnings)."""
 
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
-        assert isinstance(config.advantage, EchoAdvantageConfig)
-        self.observation_weight = config.advantage.observation_weight
-        self.observation_tokens = config.advantage.observations
+        advantage = config.advantage
+        assert isinstance(advantage, EchoAdvantageConfig)
+        self.echo_roles = {
+            role: role_config.alpha
+            for role in ("system", "user", "assistant", "tool")
+            if (role_config := getattr(advantage.roles, role)) is not None
+        }
+        if advantage.filter is not None:
+            filter_fn = import_object(advantage.filter.import_path)
+            self.echo_filter_fn = partial(filter_fn, **advantage.filter.kwargs)
 
 
 class MaxRLAlgorithm(Algorithm):

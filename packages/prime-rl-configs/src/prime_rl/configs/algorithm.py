@@ -119,23 +119,63 @@ class GroupNormAdvantageConfig(BaseConfig):
     """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
 
 
+class EchoRoleConfig(BaseConfig):
+    """Echo CE supervision for one message role."""
+
+    alpha: float = Field(0.1, gt=0)
+    """Per-token ce weight for this role's env-provided tokens (ECHO's lambda)."""
+
+
+class EchoRolesConfig(BaseConfig):
+    """Which env-provided message roles train, each at its own weight.
+    Setting any role replaces the whole table — unset roles stay disabled."""
+
+    system: EchoRoleConfig | None = None
+    user: EchoRoleConfig | None = None
+    assistant: EchoRoleConfig | None = None
+    tool: EchoRoleConfig | None = None
+
+    @model_validator(mode="after")
+    def require_a_role(self):
+        if self.system is None and self.user is None and self.assistant is None and self.tool is None:
+            raise ValueError("echo needs at least one role enabled (system, user, assistant, or tool)")
+        return self
+
+
+class EchoFilterConfig(BaseConfig):
+    """User-supplied per-token filter narrowing the role-selected echo tokens.
+
+    The callable is imported at startup and invoked once per rollout as
+    ``filter_fn(rollout, **kwargs) -> list[list[bool]]`` — one keep-mask per
+    trajectory step, each spanning that step's ``prompt_ids`` +
+    ``completion_ids``. Tokens with ``False`` never receive echo weight; the
+    filter can only narrow the role selection, not widen it. The raw rollout
+    exposes message text and sampling logprobs, so content filters (e.g.
+    dropping tool-output warnings) and sampling-probability filters need no
+    extra framework surface."""
+
+    import_path: str
+    """Import path to the filter callable (e.g. ``my_module.drop_warnings``)."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Kwargs forwarded to the filter."""
+
+
 class EchoAdvantageConfig(GroupNormAdvantageConfig):
     type: Literal["echo"] = "echo"  # type: ignore[assignment]
     """ECHO: group-relative advantage on action tokens (GRPO), plus weighted
-    CE on env-provided observation tokens of later turns (tool output,
-    terminal responses). The observation tokens feed the ``ce`` loss component
-    at ``observation_weight`` and stay outside the rl mask and its
-    denominator."""
+    CE on env-provided tokens of later turns (tool output, user feedback),
+    selected by message role via the renderer's per-token attribution
+    (requires ``orchestrator.renderer``; MITO rollouts carry no attribution).
+    Selected tokens feed the ``ce`` loss component at their role's ``alpha``
+    and stay outside the rl mask and its denominator."""
 
-    observation_weight: float = Field(0.1, gt=0)
-    """Per-token ce weight for observation tokens (ECHO's lambda)."""
+    roles: EchoRolesConfig = EchoRolesConfig(tool=EchoRoleConfig())
+    """The role table. The default — tool-response bodies at ``alpha = 0.1``
+    — is the vetted ECHO setting."""
 
-    observations: Literal["tool", "all"] = "tool"
-    """Which env-provided tokens train. ``tool`` (the vetted default — the
-    ECHO setting) trains tool/terminal response bodies only, using the
-    renderer's per-token role attribution (requires ``orchestrator.renderer``;
-    MITO rollouts carry no attribution). ``all`` trains every env-provided
-    token — tool and user feedback alike."""
+    filter: EchoFilterConfig | None = None
+    """Optional user-supplied filter narrowing the role-selected tokens."""
 
 
 class MaxRLAdvantageConfig(BaseConfig):
@@ -305,7 +345,7 @@ class AlgorithmConfig(BaseConfig):
     - ``opd`` — on-policy distillation: policy samples, ``ref_kl`` advantage against a reference model. Needs ``model``.
     - ``sft_distill`` — a frozen model samples, the policy trains with CE on its tokens (``supervised``). Needs ``model``.
     - ``self_distill`` — SDFT: policy samples, ``demo_ref_kl`` advantage against the live policy by default.
-    - ``echo`` — GRPO on action tokens + weighted CE on env-observation tokens.
+    - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
     """
 
     model: ModelReference | None = Field(None, exclude=True, validation_alias=AliasChoices("model", "teacher"))

@@ -65,11 +65,11 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # rollout-level ``advantage`` scalar over the sequence.
     token_advantages: list[float] | None = None
 
-    # Orchestrator-internal: marks env-provided observation tokens within
-    # ``completion_ids`` (set by ``interleave_rollout`` when the env's
-    # algorithm trains on observations). Consumed by the env algorithm when
-    # stamping loss routing and cleared before transport.
-    completion_obs_mask: list[bool] | None = None
+    # Orchestrator-internal: per-token echo ce weights for env-provided
+    # tokens within ``completion_ids`` (set by ``interleave_rollout`` when the
+    # env's algorithm trains on observations; 0.0 = not selected). Folded into
+    # ``ce_weights`` when stamping loss routing and cleared before transport.
+    completion_obs_weights: list[float] | None = None
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):

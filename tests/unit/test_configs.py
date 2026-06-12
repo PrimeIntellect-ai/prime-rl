@@ -170,7 +170,7 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_env_advantage_shorthand_assembles_own_algorithm():
     config = OrchestratorConfig.model_validate(
         {
-            "renderer": {"name": "qwen3"},  # echo's tool-mode default needs role attribution
+            "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
             "algo": {"name": "echo"},
             "train": {"env": [{"id": "a", "advantage": {"type": "reward"}}, {"id": "b"}]},
         }
