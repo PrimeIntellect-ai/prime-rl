@@ -101,6 +101,11 @@ MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
 
+# Drop the per-node multimodal tensors when dumping a Trace to disk (rollout jsonl / wandb
+# tables): they're the training mm_kwargs carrier, not part of the rollout record, and base64
+# pixel tensors would bloat every line. `__all__` applies the exclude to every node in the list.
+ROLLOUT_DUMP_EXCLUDE = {"nodes": {"__all__": {"multi_modal_data"}}}
+
 
 class Orchestrator:
     # Set in ``__init__``
@@ -547,8 +552,9 @@ class Orchestrator:
                 f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
-        # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables).
-        rollout_dicts = [r.model_dump(mode="json") for r in batch.rollouts]
+        # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables); drop the
+        # per-node multimodal tensors — they're for training, not the rollout record, and bloat it.
+        rollout_dicts = [r.model_dump(mode="json", exclude=ROLLOUT_DUMP_EXCLUDE) for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
 
@@ -750,7 +756,7 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
             return
 
-        rollout_dicts = [r.model_dump(mode="json") for r in batch.rollouts]
+        rollout_dicts = [r.model_dump(mode="json", exclude=ROLLOUT_DUMP_EXCLUDE) for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
         save_rollouts(
             rollout_dicts,
