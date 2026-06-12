@@ -320,7 +320,11 @@ def compute_loss(
             all_metrics.setdefault(k, []).append(v)
         return result.loss
 
-    rl_loss = 0.0
+    # Graph anchor: a micro batch whose components are all empty (e.g. a fully
+    # truncated distillation sample, whose stamped streams survive as all-zero
+    # prefixes) must still return a backward-able loss so every rank runs
+    # backward and FSDP collectives stay in sync.
+    rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
     for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(

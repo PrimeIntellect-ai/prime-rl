@@ -210,6 +210,38 @@ def test_disjoint_components_in_one_sequence():
     assert "is_masked" in metrics
 
 
+def test_empty_components_keep_backward_valid():
+    """A fully truncated distillation sample (stamped streams survive truncation
+    as all-zero prefixes) must train as a zero-gradient no-op, not crash backward."""
+    trainer_logprobs = [torch.randn(6, dtype=torch.float32, device="cuda", requires_grad=True)]
+    inference_logprobs = [torch.zeros(6, dtype=torch.float32).cuda()]
+    advantages = [torch.zeros(6, dtype=torch.float32).cuda()]
+    loss_mask = [torch.zeros(6, dtype=torch.bool).cuda()]
+    rl_weights = [torch.zeros(6, dtype=torch.float32).cuda()]
+    ce_weights = [torch.zeros(6, dtype=torch.float32).cuda()]
+
+    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig())
+    loss, _ = compute_loss(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=inference_logprobs,
+        ref_logprobs=None,
+        advantages=advantages,
+        loss_mask=loss_mask,
+        rl_weights=rl_weights,
+        ce_weights=ce_weights,
+        ref_kl_weights=None,
+        rl_loss_fn=rl_loss_fn,
+        rl_scale=1,
+        ce_scale=1,
+        ref_kl_scale=1,
+    )
+
+    assert torch.equal(loss, torch.zeros_like(loss))
+    loss.backward()
+    assert trainer_logprobs[0].grad is not None
+    assert torch.equal(trainer_logprobs[0].grad, torch.zeros_like(trainer_logprobs[0].grad))
+
+
 def test_overlapping_components_sum():
     """Components may overlap on the same token (e.g. RL + a CE behavior-cloning
     regularizer): the total is the sum of each component computed alone, each
