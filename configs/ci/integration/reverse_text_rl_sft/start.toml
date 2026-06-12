@@ -1,4 +1,4 @@
-# Smoke test for the RL-entrypoint sft_distill algorithm (hard distillation).
+# Smoke test for the RL-entrypoint sft algorithm (hard distillation).
 # The policy inference deployment is launched by the rl entrypoint on GPU 0;
 # the frozen sampling server is started externally by the test fixture (see
 # tests/integration/test_reverse_text_rl_sft.py) on the same GPU. Trainer

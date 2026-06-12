@@ -16,9 +16,8 @@ name = "debug-echo"
 batch_size = 32
 group_size = 4
 
-# Assembled (no preset name): presets are atomic. alphabet-sort's feedback
-# arrives as user messages, so we train the user role instead of the echo
-# preset's tool default.
+# alphabet-sort's feedback arrives as user messages, so train the user role
+# instead of echo's tool default.
 [orchestrator.algo.advantage]
 type = "echo"
 

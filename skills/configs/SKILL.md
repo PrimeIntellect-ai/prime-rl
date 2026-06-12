@@ -49,7 +49,7 @@ CLI: `--env.0.id reverse-text --env.1.id math-env`.
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--vllm-extra '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `advantage`) reject JSON strings; use dotted keys (`--orchestrator.algo.advantage.type custom`) or a TOML overlay file.
 
-**Discriminated unions** — set the `type` field to pick the variant (`[orchestrator.advantage] type = "custom"`). Omit `type` to keep the default variant.
+**Discriminated unions** — set the `type` field to pick the variant (`[orchestrator.advantage] type = "max_rl"`). Omit `type` to keep the default variant.
 
 **Algorithms** — `[orchestrator.algo.advantage] type = "grpo" | "max_rl" | "opd" | "opsd" | "sft" | "echo" | "reward" | "custom"` — the advantage type names the algorithm (credit assignment + loss routing, fused), and each type's class defaults are its vetted setting; any other key you set is your own assembly (e.g. `[orchestrator.algo.advantage.roles.user] alpha = 0.1` for echo — setting any echo role replaces the whole role table). There is no preset layer. Per-env override: `[[orchestrator.train.env]]` `advantage = { type = "echo" }` (the env assembles its own algorithm). prime-rl only hosts the trainable policy; frozen models are inline external endpoints on the algorithm — `[orchestrator.algo.teacher]` (alias for `model`) with `name` + `base_url` folds into the slot the type declares (`advantage.model` for opd/opsd, `sampling.source` for sft). `model = "policy"` points a component at the live policy (opsd's default). See `docs/algorithms.md`.
 
