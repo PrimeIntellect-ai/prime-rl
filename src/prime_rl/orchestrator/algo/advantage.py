@@ -153,3 +153,9 @@ def assign_advantages(
     for rollout, advantage, token_adv in zip(rollouts, result.advantages, token_advantages, strict=True):
         rollout.advantage = advantage
         rollout.token_advantages = token_adv
+
+
+def assign_group_norm(rollouts: list["TrainRollout"], length_penalty: LengthPenaltyConfig | None) -> None:
+    """Group-norm credit (the GRPO default), optionally length-shaped — shared
+    by the algorithms whose ``assign`` is plain group normalization."""
+    assign_advantages(rollouts, lambda inputs: default_advantage_fn(inputs, length_penalty=length_penalty))

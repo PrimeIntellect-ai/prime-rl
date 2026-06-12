@@ -131,7 +131,7 @@ advantage = { type = "echo" }   # shorthand: the env assembles its own algorithm
 
 ### The Algorithm Classes
 
-At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_rl.orchestrator.sampler`) from the `sampling` component — the pool rollouts are generated from, and the home of future sampling strategies like replay buffers or branching — and one of the named algorithm classes in `prime_rl.orchestrator.algo` from the `advantage` component. Algorithm dispatch is keyed on `advantage.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
+At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_rl.orchestrator.sampler`) from the `sampling` component — the pool rollouts are generated from, and the home of future sampling strategies like replay buffers or branching — and one of the named algorithm classes in `prime_rl.orchestrator.algo` (one module per algorithm: `algo/grpo.py`, `algo/opd.py`, …) from the `advantage` component. Algorithm dispatch is keyed on `advantage.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
 
 | `advantage.type` | Class | `assign` (group time) | `score` (ship time) |
 |---|---|---|---|
