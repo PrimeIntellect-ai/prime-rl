@@ -82,6 +82,26 @@ async def discover_ready_servers(hostname: str, port: int, model_name: str) -> l
     return sorted(with_model)
 
 
+def _system_url_matches_ip(system_url: str, ip: str) -> bool:
+    host = urlsplit(system_url).hostname
+    if not host:
+        return False
+    if host == ip:
+        return True
+    try:
+        _, _, ips = socket.gethostbyname_ex(host)
+    except socket.gaierror:
+        return False
+    return ip in ips
+
+
+def _find_system_url_for_ip(system_urls: list[str], ip: str) -> str | None:
+    for system_url in system_urls:
+        if _system_url_matches_ip(system_url, ip):
+            return system_url
+    return None
+
+
 @dataclass
 class AdapterState:
     """State of a LoRA adapter (loaded or desired)."""
@@ -136,6 +156,7 @@ class ElasticInferencePool:
 
         self._servers: dict[str, ServerState] = {}
         self._admin_clients: dict[str, AsyncClient] = {}
+        self._model_clients: dict[str, AsyncClient] = {}
         self._admin_api = setup_admin_api(client_config)
         self._lock = asyncio.Lock()
         self._desired: AdapterState = AdapterState()
@@ -200,6 +221,9 @@ class ElasticInferencePool:
             self._client_urls = urls
 
             self._eval_index = 0
+            backend = getattr(self.client_config, "backend", "vllm")
+            if backend not in ("vllm", "dynamo"):
+                backend = "vllm"
             url_config = ClientConfig(
                 timeout=self.client_config.timeout,
                 connect_timeout=self.client_config.connect_timeout,
@@ -209,6 +233,7 @@ class ElasticInferencePool:
                 headers_from_env=self.client_config.headers_from_env,
                 dp_rank_count=self.client_config.dp_rank_count,
                 extra_headers_from_state=self.client_config.extra_headers_from_state,
+                backend=backend,
             )
             self._train_clients = (
                 setup_clients(
@@ -258,9 +283,9 @@ class ElasticInferencePool:
     def num_ready_servers(self) -> int:
         return sum(1 for s in self._servers.values() if s.status == "ready")
 
-    async def _create_admin_client(self, ip: str) -> AsyncClient:
+    def _server_client_config(self, ip: str) -> ClientConfig:
         url = self._build_url(ip)
-        config = ClientConfig(
+        return ClientConfig(
             timeout=self.client_config.timeout,
             base_url=[f"{url}/v1"],
             api_key_var=self.client_config.api_key_var,
@@ -271,27 +296,36 @@ class ElasticInferencePool:
             backend=self.client_config.backend,
             rl_base_url=self.client_config.rl_base_url,
         )
+
+    async def _create_admin_client(self, ip: str) -> AsyncClient:
+        config = self._server_client_config(ip)
         if config.backend == "dynamo" and not config.admin_base_url:
             # Dynamo admin (/engine/*) lives on the worker system server, not the
             # inference port. Resolve THIS pod's system URL from RL discovery
-            # (matched by host) and pin it, so admin ops don't hit the inference
-            # port. Falls back to the first discovered URL if no host match.
+            # (matched by raw host or DNS-resolved IP) and pin it, so admin ops
+            # don't hit the inference port or a different worker.
             system_urls = await asyncio.to_thread(discover_dynamo_admin_base_urls, config)
-            match = next((u for u in system_urls if urlsplit(u).hostname == ip), None)
-            config = config.model_copy(update={"admin_base_url": [match] if match else system_urls[:1]})
+            match = await asyncio.to_thread(_find_system_url_for_ip, system_urls, ip)
+            if match is None:
+                raise ValueError(
+                    f"Dynamo RL discovery did not return a worker system URL matching inference pod {ip}. "
+                    f"Discovered system URLs: {system_urls}"
+                )
+            config = config.model_copy(update={"admin_base_url": [match]})
         return setup_admin_clients(config)[0]
 
+    def _create_model_client(self, ip: str) -> AsyncClient:
+        # Dynamo admin clients point at the worker system server. Model checks
+        # still need the OpenAI-compatible inference URL.
+        return setup_admin_clients(self._server_client_config(ip), use_admin_base_url=False)[0]
+
     async def _get_loaded_adapter(self, ip: str) -> AdapterState | None:
-        if ip not in self._admin_clients:
+        model_client = self._model_clients.get(ip) or self._admin_clients.get(ip)
+        if model_client is None:
             return None
 
         try:
-            admin = self._admin_clients[ip]
-            response = await admin.get("/v1/models")
-            response.raise_for_status()
-            data = response.json()
-
-            for model in data.get("data", []):
+            for model in await self._admin_api.list_models(model_client):
                 parent = model.get("parent")
                 model_id = model.get("id", "")
 
@@ -384,16 +418,18 @@ class ElasticInferencePool:
         server.sync_failures += 1
         return False
 
-    async def _check_server_health(self, admin_client: AsyncClient, ip: str) -> bool:
+    async def _check_server_health(
+        self, admin_client: AsyncClient, ip: str, model_client: AsyncClient | None = None
+    ) -> bool:
         try:
-            response = await admin_client.get("/health")
-            response.raise_for_status()
+            await self._admin_api.health(admin_client)
         except Exception as e:
             self.logger.debug(f"Server {ip} health check failed: {e}")
             return False
 
         try:
-            models = await self._admin_api.list_models(admin_client)
+            model_client = model_client or self._model_clients.get(ip) or admin_client
+            models = await self._admin_api.list_models(model_client)
             if self.base_model_name not in [m.get("id") for m in models]:
                 self.logger.debug(f"Server {ip} does not have base model {self.base_model_name}")
                 return False
@@ -404,18 +440,30 @@ class ElasticInferencePool:
         return True
 
     async def _add_server(self, ip: str) -> bool:
+        admin_client: AsyncClient | None = None
+        model_client: AsyncClient | None = None
         try:
             admin_client = await self._create_admin_client(ip)
+            model_client = (
+                self._create_model_client(ip) if self.client_config.backend == "dynamo" else admin_client
+            )
         except Exception as e:
             self.logger.debug(f"Failed to create admin client for {ip}: {e}")
+            if admin_client is not None:
+                await admin_client.aclose()
+            if model_client is not None and model_client is not admin_client:
+                await model_client.aclose()
             return False
 
-        if not await self._check_server_health(admin_client, ip):
+        if not await self._check_server_health(admin_client, ip, model_client):
             await admin_client.aclose()
+            if model_client is not admin_client:
+                await model_client.aclose()
             return False
 
         self.logger.debug(f"Discovered new inference server: {ip}")
         self._admin_clients[ip] = admin_client
+        self._model_clients[ip] = model_client
         self._servers[ip] = ServerState(ip=ip, url=self._build_url(ip), status="discovering")
         await self._sync_server_adapter(ip)
         return True
@@ -423,8 +471,12 @@ class ElasticInferencePool:
     async def _remove_server(self, ip: str) -> None:
         self.logger.debug(f"Inference server removed: {ip}")
         self._servers.pop(ip, None)
-        if ip in self._admin_clients:
-            await self._admin_clients.pop(ip).aclose()
+        admin_client = self._admin_clients.pop(ip, None)
+        model_client = self._model_clients.pop(ip, None)
+        if model_client is not None and model_client is not admin_client:
+            await model_client.aclose()
+        if admin_client is not None:
+            await admin_client.aclose()
 
     async def sync(self) -> tuple[int, int]:
         async with self._lock:
@@ -447,7 +499,9 @@ class ElasticInferencePool:
             for ip in list(self._servers.keys()):
                 if ip not in self._admin_clients:
                     continue
-                if not await self._check_server_health(self._admin_clients[ip], ip):
+                if not await self._check_server_health(
+                    self._admin_clients[ip], ip, self._model_clients.get(ip)
+                ):
                     self.logger.debug(f"Server {ip} failed health check, removing")
                     await self._remove_server(ip)
                     removed += 1
