@@ -30,7 +30,7 @@ delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterable
 from functools import cached_property
 from typing import Any
 
@@ -93,7 +93,7 @@ class _FinalOutputCapture:
     after delegating iteration to upstream.
     """
 
-    def __init__(self, source: AsyncGenerator[RequestOutput, None]) -> None:
+    def __init__(self, source: AsyncIterable[RequestOutput]) -> None:
         # ``source`` may be any async-iterable — including
         # ``_GenerateRoutedExpertsCapture``, which exposes the protocol via
         # ``async def __aiter__`` (an async generator function) and has no
