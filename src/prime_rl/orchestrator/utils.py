@@ -172,7 +172,7 @@ async def _compute_teacher_logprobs_dynamo(
         "model": model_name,
         # Placeholder stub the OpenAI/Dynamo chat schema requires (rejected if
         # empty); the authoritative prompt is carried in nvext.token_data and
-        # Dynamo ignores these messages. Matches renderers' dynamo_chat client.
+        # Dynamo ignores these messages. Matches renderers' dynamo client.
         "messages": [{"role": "user", "content": ""}],
         "max_completion_tokens": 1,
         "temperature": 1.0,
@@ -210,14 +210,14 @@ async def compute_teacher_logprobs(
     Dispatches to the vLLM-sidecar or dynamo-nvext path based on the per-client
     ``renderer_transport``:
 
-      - ``vllm_generate`` (default): POST ``/inference/v1/generate``
-      - ``dynamo_chat``: POST ``/v1/chat/completions`` with nvext
+      - ``vllm`` (default): POST ``/inference/v1/generate``
+      - ``dynamo``: POST ``/v1/chat/completions`` with nvext
 
     Both flatten to ``list[float]`` via the shared helper.
     """
 
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
-        if getattr(client_config, "renderer_transport", "vllm_generate") == "dynamo_chat":
+        if getattr(client_config, "renderer_transport", "vllm") == "dynamo":
             return await _compute_teacher_logprobs_dynamo(client_config, model_name, sample)
         return await _compute_teacher_logprobs_vllm(client_config, model_name, sample)
 

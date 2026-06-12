@@ -522,7 +522,7 @@ def setup_clients(
     #   - request:  nvext.token_data carries pre-tokenized prompt
     #   - response: nvext.engine_data carries completion_token_ids + logprobs
     # Default backend keeps the legacy vLLM TITO surface.
-    renderer_transport = "dynamo_chat" if client_config.backend == "dynamo" else "vllm_generate"
+    renderer_transport = "dynamo" if client_config.backend == "dynamo" else "vllm"
     clients = []
     client_idx = 0
     # Only forward the renderer config when the client actually uses a

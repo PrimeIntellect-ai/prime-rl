@@ -603,4 +603,4 @@ def test_elastic_clients_preserve_dynamo_backend_for_transport():
 
         clients = pool.train_clients
 
-        assert clients[0].renderer_transport == "dynamo_chat"
+        assert clients[0].renderer_transport == "dynamo"
