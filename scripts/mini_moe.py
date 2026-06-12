@@ -17,12 +17,15 @@ from pathlib import Path
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
+from transformers import HYV3ForCausalLM as HFHYV3ForCausalLM
 from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
 )
 
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
+from prime_rl.trainer.models.hy_v3 import HYV3Config
+from prime_rl.trainer.models.hy_v3 import HYV3ForCausalLM as PrimeRLHYV3ForCausalLM
 from prime_rl.trainer.models.laguna import LagunaConfig
 from prime_rl.trainer.models.laguna import LagunaForCausalLM as PrimeRLLagunaForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -103,6 +106,42 @@ ARCH_PRESETS = {
         "hf_model_class": HFGlm4MoeForCausalLM,
         "prime_model_class": PrimeRLGlm4MoeForCausalLM,
         "tokenizer_source": "THUDM/GLM-4-9B-0414",
+    },
+    "hy_v3": {
+        "config_class": HYV3Config,
+        "config_kwargs": dict(
+            vocab_size=120832,
+            hidden_size=512,
+            intermediate_size=1024,
+            num_hidden_layers=12,
+            num_attention_heads=8,
+            num_key_value_heads=4,
+            head_dim=64,
+            hidden_act="silu",
+            max_position_embeddings=4096,
+            initializer_range=0.006,
+            rms_norm_eps=1e-5,
+            rope_parameters={"rope_type": "default", "rope_theta": 11158840.0},
+            attention_bias=False,
+            mlp_bias=False,
+            moe_intermediate_size=128,
+            num_experts=8,
+            num_experts_per_tok=4,
+            num_shared_experts=1,
+            router_scaling_factor=2.826,
+            route_norm=True,
+            first_k_dense_replace=1,
+            qk_norm=True,
+            enable_moe_fp32_combine=False,
+            num_nextn_predict_layers=0,
+            use_grouped_mm=False,
+            pad_token_id=120002,
+            bos_token_id=120000,
+            eos_token_id=120025,
+        ),
+        "hf_model_class": HFHYV3ForCausalLM,
+        "prime_model_class": PrimeRLHYV3ForCausalLM,
+        "tokenizer_source": "tencent/Hy3-preview",
     },
     "minimax_m2": {
         "config_class": MiniMaxM2Config,
