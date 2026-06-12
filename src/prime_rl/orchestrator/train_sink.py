@@ -19,6 +19,7 @@ import uuid
 from collections import defaultdict
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.algo import build_samples, finalize_group
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import (
@@ -157,7 +158,8 @@ class TrainSink:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
         algorithm = self.train_envs.get(rollout.env_name).algorithm
         samples = await asyncio.to_thread(
-            lambda: algorithm.build_samples(
+            lambda: build_samples(
+                algorithm,
                 raw,
                 env_name=rollout.env_name,
                 mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
@@ -200,7 +202,7 @@ class TrainSink:
         # Advantages + per-sample wire stamping (advantage stream, loss
         # routing) are the algorithm's job; the sink only owns the grouping
         # mechanics.
-        env.algorithm.finalize_group(survivors)
+        finalize_group(env.algorithm, survivors)
 
         # The env has a single sampling temperature; fan it out across each
         # sample's completion tokens (interleave leaves it empty).

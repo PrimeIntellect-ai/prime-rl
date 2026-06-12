@@ -133,7 +133,7 @@ advantage = { type = "echo" }   # shorthand: the env assembles its own algorithm
 
 At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_rl.orchestrator.sampler`) from the `sampling` component — the pool rollouts are generated from, and the home of future sampling strategies like replay buffers or branching — and one of the named algorithm classes in `prime_rl.orchestrator.algo` (one module per algorithm: `algo/grpo.py`, `algo/opd.py`, …) from the `advantage` component. Algorithm dispatch is keyed on `advantage.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
 
-| `advantage.type` | Class | `assign` (group time) | `score` (ship time) |
+| `advantage.type` | Class | `assign_advantages` (group time) | `score` (ship time) |
 |---|---|---|---|
 | `grpo` | `GRPOAlgorithm` | group-norm credit (optional length penalty) | — |
 | `echo` | `EchoAlgorithm` | group-norm credit, plus weighted ce on observation tokens | — |
@@ -144,15 +144,15 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 | `reward` | `RewardAlgorithm` | raw reward | — |
 | `custom` | `CustomAlgorithm` | your function | — |
 
-Each class owns its methods outright — reading one top to bottom reads the algorithm. The execution points of the training signal:
+Each class owns its hooks outright — reading one top to bottom reads the algorithm, and everything on the class is an override point. The three hooks, one per pipeline phase:
 
-- `assign(rollouts)` — at group finalization, cheap and synchronous; sets the rollouts' per-token advantage streams (uniform group credit broadcasts over completion tokens).
-- `async score(rollouts)` — at batch-ship time; attaches per-token reference data by querying the algorithm's own reference pool (e.g. `self.teacher_pool`, connected in its `setup()` override via `self.connect(...)` — the live policy pool when the reference is `"policy"`, a freshly connected client pool when frozen).
 - `observation_weights(output)` — at sample construction; per-token CE weights for env-provided observation tokens, one list per trajectory step. The default (`None`) masks every observation out; `echo` overrides it with role selection (via the renderer's attribution) narrowed by the optional user filter, and interleaving just aligns the returned spans onto the merged samples.
+- `assign_advantages(rollouts)` — at group finalization, cheap and synchronous; writes the rollouts' per-token advantage streams (uniform group credit broadcasts over completion tokens).
+- `async score(rollouts)` — at batch-ship time; attaches per-token reference data by querying the algorithm's own reference pool (e.g. `self.teacher_pool`, connected in its `setup()` override via `self.connect(...)` — the live policy pool when the reference is `"policy"`, a freshly connected client pool when frozen).
 
-These hooks are the stages of one compilation — finalized rollouts in, per-token component weight streams out — and the pipeline drives it through three base-class entry points it never looks inside: `build_samples(rollout)` per arrival (interleaving + observation weighting), `finalize_group(rollouts)` per group (credit + wire stamping), `score(rollouts)` per batch.
+These hooks are the stages of one compilation — finalized rollouts in, per-token streams out — and the pipeline drives it through three module-level phase functions it never looks inside: `build_samples(algorithm, rollout)` per arrival (interleaving + observation weighting), `finalize_group(algorithm, rollouts)` per group (credit + wire stamping; after this the records are frozen), `score_train_batch(train_envs, rollouts)` per batch.
 
-Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`) and what it calls its reference model (`model_role`, e.g. `"teacher"`). Every class is constructed with its advantage config — the component it interprets; the bundle dissolves at construction — plus the two host-owned resources: the policy pool and the policy's renderer. Text → token ids always goes through the renderer, the same path the policy's own prompts take (`opsd` requires one, validated at config time). The pipeline only ever calls the base-class hooks — writing your own algorithm is subclassing `Algorithm` and overriding `assign` and/or `score`. For pure credit assignment, no subclass is needed: `advantage.type = "custom"` imports a plain advantage function (see [Custom Advantage](#custom-advantage)); custom reference scoring means forking one of the named classes. Shared math (group normalization, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
+Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`) and what it calls its reference model (`model_role`, e.g. `"teacher"`). Every class is constructed with its advantage config — the component it interprets; the bundle dissolves at construction — plus the two host-owned resources: the policy pool and the policy's renderer. Text → token ids always goes through the renderer, the same path the policy's own prompts take (`opsd` requires one, validated at config time). The pipeline only ever calls the phase functions — writing your own algorithm is subclassing `Algorithm` and overriding the hooks. For pure credit assignment, no subclass is needed: `advantage.type = "custom"` imports a plain advantage function (see [Custom Advantage](#custom-advantage)); custom reference scoring means forking one of the named classes. Shared math (group normalization, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
 
 ## Async / Off-Policy Training
 

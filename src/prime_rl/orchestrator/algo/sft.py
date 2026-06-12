@@ -18,5 +18,5 @@ class SFTDistillAlgorithm(Algorithm):
 
     action_loss_type = "ce"
 
-    def assign(self, rollouts: list[TrainRollout]) -> None:
+    def assign_advantages(self, rollouts: list[TrainRollout]) -> None:
         assign_group_norm(rollouts, None)

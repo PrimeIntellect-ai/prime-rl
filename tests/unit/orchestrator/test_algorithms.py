@@ -5,7 +5,7 @@ import pytest
 import verifiers as vf
 
 from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import EchoAlgorithm, build_samples, stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
 from prime_rl.orchestrator.types import TrainRollout
 from prime_rl.transport.types import TrainingSample
@@ -255,7 +255,7 @@ def test_interleave_tags_observation_weights_by_role():
     }
     rollout = _two_step_rollout(attribution)
     algo = _echo_algorithm()  # the default table: tool bodies at 0.1
-    samples = algo.build_samples(rollout, env_name="test-env")
+    samples = build_samples(algo, rollout, env_name="test-env")
     assert samples is not None and len(samples) == 1
     sample = samples[0]
     assert sample.completion_ids == [3, 4, 5, 6, 7, 8]
@@ -267,7 +267,7 @@ def test_interleave_tags_observation_weights_by_role():
     attribution = {"message_indices": [0, 0, 1, 1, 2, 3], "message_roles": ["user", "assistant", "tool", "user"]}
     rollout = _two_step_rollout(attribution)
     algo = _echo_algorithm(roles={"tool": {"alpha": 0.1}, "user": {"alpha": 0.05}})
-    samples = algo.build_samples(rollout, env_name="test-env")
+    samples = build_samples(algo, rollout, env_name="test-env")
     assert samples is not None
     assert samples[0].completion_obs_weights == [0.0, 0.0, 0.1, 0.05, 0.0, 0.0]
 
@@ -285,7 +285,7 @@ def test_interleave_echo_filter_narrows_selection():
         return [[True] * 4, [True, True, True, True, False, True, True, True]]
 
     algo = _echo_algorithm(filter_fn=keep_last_only)
-    samples = algo.build_samples(rollout, env_name="test-env")
+    samples = build_samples(algo, rollout, env_name="test-env")
     assert samples is not None
     assert samples[0].completion_obs_weights == [0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
 
