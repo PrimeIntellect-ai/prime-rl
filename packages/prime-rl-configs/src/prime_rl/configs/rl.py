@@ -251,6 +251,19 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_sopd(self):
+        """``orchestrator.sopd`` produces the teacher logprobs that
+        ``trainer.loss.teacher_tau`` consumes — one without the other is a
+        silent no-op or a runtime error, so reject both at resolve time."""
+        has_sopd = self.orchestrator.sopd is not None
+        teacher_tau = getattr(self.trainer.loss, "teacher_tau", 0.0)
+        if has_sopd and teacher_tau == 0.0:
+            raise ValueError("orchestrator.sopd is set but trainer.loss.teacher_tau = 0 — the teacher signal is unused.")
+        if not has_sopd and teacher_tau > 0.0:
+            raise ValueError("trainer.loss.teacher_tau > 0 requires orchestrator.sopd to produce teacher logprobs.")
+        return self
+
+    @model_validator(mode="after")
     def validate_enough_devices_for_nccl(self):
         if self.deployment.type == "single_node":
             if self.trainer.weight_broadcast.type == "nccl":

@@ -68,6 +68,7 @@ The knobs (under `[trainer.loss]` with `type = "default"`):
 | `dppo_mask_low` / `dppo_mask_high` | 0.2 / 0.2 | Lower / upper thresholds for DPPO-style token-level masking. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 for pure distillation (no RL signal). |
 | `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
+| `teacher_tau` | 0.0 | Weight of the per-token reverse-KL-to-teacher term added to the advantage (semantic on-policy distillation). Requires `orchestrator.sopd`. |
 
 The trainer dispatches automatically based on the batch's training mode (set by the orchestrator via `orchestrator.training_mode`):
 
@@ -76,6 +77,10 @@ The trainer dispatches automatically based on the batch's training mode (set by 
 - `sft` mode → standard token-level NLL on teacher-generated rollouts.
 
 Set `[trainer.loss] type = "default"` and configure via the knobs above. SFT and OPD modes ignore the policy-gradient–specific fields.
+
+### Semantic on-policy distillation (SOPD)
+
+`rl` mode with `[orchestrator.sopd]` set adds a dense per-token signal on top of GRPO: after scoring, the orchestrator rescores each rollout through the *student's own inference pool* with a privileged feedback packet — the diagnostics the environment computed for that exact rollout (per-assertion verdicts surfaced via the env's `state_columns`, reward, stop condition, errors) — prepended to the context. The teacher is the current policy itself; its only edge is the feedback. The resulting per-token reverse KL is added to the advantage, weighted by `trainer.loss.teacher_tau`, so the gradient concentrates on the tokens the informed teacher would have changed. `include_diagnostics = false` keeps the rescoring pass but with an empty context (uninformed-teacher ablation).
 
 ### Custom Loss
 

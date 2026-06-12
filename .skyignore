@@ -1,0 +1,17 @@
+# Workdir sync exclusions for sky launch (replaces .gitignore-based filtering —
+# needed because a git worktree's .git file breaks SkyPilot's git detection).
+.git
+.env
+.venv
+.claude
+.cursor
+.vscode
+__pycache__
+*.pyc
+**/wandb
+**/checkpoints
+**/broadcasts
+**/rollouts
+**/logs
+outputs
+semantic-distillation.html

@@ -1,0 +1,69 @@
+# SOPD experiment — treatment arm: semantic on-policy distillation.
+# Same recipe as the GRPO control, plus: each train batch is rescored through the
+# student inference pool with the environment's per-rollout diagnostics (assertion
+# verdicts, reward, stop condition) prepended to the teacher context. The teacher is
+# the current policy itself — its only edge is the feedback packet. The per-token
+# teacher KL rides the RL loss via trainer.loss.teacher_tau.
+max_steps = 200
+seq_len = 8192
+
+[deployment]
+num_train_gpus = 4
+num_infer_gpus = 4
+
+[wandb]
+project = "sopd-automationbench"
+name = "sopd-ab-sopd"
+
+[ckpt]
+interval = 100
+keep_last = 1
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[orchestrator]
+batch_size = 256
+group_size = 16
+
+[orchestrator.sopd]
+
+[[orchestrator.train.env]]
+id = "zapier/AutomationBench"
+name = "automationbench"
+# Surface the rubric's per-assertion verdicts on the rollout records — the SOPD
+# arms feed them to the teacher; logged here too so all arms save identical data.
+state_columns = ["_assertion_results"]
+# Bound the multi-turn rollout so heavy tool transcripts don't blow past seq_len.
+max_total_completion_tokens = 6144
+args = { domains = "simple", toolset = "zapier", max_steps = 12 }
+
+[orchestrator.train.sampling]
+# Tool-calling turns are short; 1536 is ample and keeps total tokens under seq_len.
+max_completion_tokens = 1536
+
+[trainer]
+
+[trainer.loss]
+teacher_tau = 1.0
+
+# 4B + fp32 Adam OOMs without these: cp=2 shards the sequence, ac checkpoints
+# activations, dp_shard=2 (4 GPUs / cp=2) shards optimizer states.
+[trainer.model]
+cp = 2
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+# seq_len + headroom for the SOPD teacher-prefill context; identical across all
+# arms so rollout behavior matches (rollouts themselves are bounded by seq_len).
+max_model_len = 10240
+
+[inference.parallel]
+dp = 4

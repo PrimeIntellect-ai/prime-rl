@@ -1,0 +1,76 @@
+# SkyPilot launch for the SOPD AutomationBench experiment (single node per arm).
+#
+#   # treatment (diagnostics teacher):
+#   sky launch -c sopd-ab scripts/sky_sopd_automationbench.yaml -y
+#   # control (plain GRPO):
+#   sky launch -c sopd-ab-grpo scripts/sky_sopd_automationbench.yaml \
+#       --env CONFIG=configs/sopd/automationbench_grpo.toml -y
+#   # ablation (uninformed teacher):
+#   sky launch -c sopd-ab-nodiag scripts/sky_sopd_automationbench.yaml \
+#       --env CONFIG=configs/sopd/automationbench_nodiag.toml -y
+#
+# Needs a .env (HF_TOKEN, PRIME_API_KEY) and a ~/.netrc with wandb creds.
+#
+# Launched from a git worktree: the synced workdir is NOT a git repo on the
+# remote, so deps/ submodules must be initialized locally before launching
+# (their files sync as part of the workdir) and setup runs no git commands.
+
+name: sopd-automationbench
+
+resources:
+  infra: kubernetes
+  image_id: 211125782317.dkr.ecr.us-west-2.amazonaws.com/hai-training/base-cuda-aws:cuda12.8.1-efa1.45.1-ofiv1.17.2-ncclv2.27.5-1-dev
+  # 4 trainer (cp=2 × dp_shard=2 for the 4B + fp32 Adam) + 4 vLLM. Keep accelerators
+  # == num_train_gpus + num_infer_gpus and inference dp == num_infer_gpus.
+  accelerators: H100:8
+  cpus: 64+
+  memory: 512GB+
+  autostop:
+    idle_minutes: 30
+    down: true
+
+num_nodes: 1
+
+workdir: .
+
+file_mounts:
+  ~/sky_workdir/.env: .env
+  ~/.netrc: ~/.netrc  # wandb credentials
+
+envs:
+  # Treatment by default; override with --env CONFIG=configs/sopd/automationbench_{grpo,nodiag}.toml
+  CONFIG: configs/sopd/automationbench_sopd.toml
+  # No git on the remote (worktree launch): hatch-vcs can't infer the renderers
+  # version, so pin it to the submodule's current tag (must satisfy the
+  # renderers>=… constraint in packages/prime-rl-configs).
+  SETUPTOOLS_SCM_PRETEND_VERSION: "0.1.8.dev41"
+
+setup: |
+  set -eux
+  curl -LsSf https://astral.sh/uv/0.11.1/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+  cd ~/sky_workdir
+  # deps/ submodules are synced from the local worktree; fail fast if missing.
+  test -f deps/verifiers/pyproject.toml
+  test -f deps/renderers/pyproject.toml
+  uv sync --all-extras
+  uv tool install prime
+  # set +x around the source so the secret values aren't echoed into the job logs.
+  set +x; set -a; [ -f .env ] && source .env; set +a; set -x
+  prime env install zapier/AutomationBench
+  uv run --no-sync python -c "import automationbench; print('env OK')"
+
+run: |
+  set -eux -o pipefail
+  cd ~/sky_workdir
+  export PATH="$HOME/.local/bin:$PATH"
+  # set +x around the source so the secret values aren't echoed into the job logs.
+  set +x; set -a; [ -f .env ] && source .env; set +a; set -x
+  # torch needs NCCL >= 2.28 (ncclDevCommCreate). The image's system NCCL 2.27.5 is
+  # on LD_LIBRARY_PATH and gets loaded first (soname dedup beats torch's RPATH), so
+  # preload torch's bundled NCCL to win the resolution.
+  export LD_PRELOAD="$(ls -d "$PWD"/.venv/lib/python*/site-packages/nvidia/nccl/lib)/libnccl.so.2${LD_PRELOAD:+:$LD_PRELOAD}"
+  # The 4B trainer OOMs by a hair at long seq_len; reclaim fragmented reserved memory.
+  export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  # --no-sync: a re-sync would uninstall the editable workspace packages.
+  uv run --no-sync rl @ "$CONFIG"
