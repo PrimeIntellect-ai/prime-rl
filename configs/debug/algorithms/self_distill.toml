@@ -21,7 +21,7 @@ group_size = 1
 # Assembled (no preset name): presets are atomic, and reverse-text's demo
 # lives in the "answer" column.
 [orchestrator.algo.advantage]
-type = "demo_ref_kl"
+type = "opsd"
 model = "policy"
 demo_key = "answer"
 

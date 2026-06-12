@@ -1,7 +1,7 @@
 """Orchestrator-side algorithm runtime.
 
 The config side (``prime_rl.configs.algorithm``) defines *what* an algorithm
-is — a preset of sampling and the per-token training signal. This package
+is — a bundle of sampling and the per-token training signal. This package
 turns the signal half into runtime objects (the sampling half is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`):
 

@@ -171,13 +171,13 @@ def test_env_advantage_shorthand_assembles_own_algorithm():
     config = OrchestratorConfig.model_validate(
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
-            "algo": {"name": "echo"},
+            "algo": {"advantage": {"type": "echo"}},
             "train": {"env": [{"id": "a", "advantage": {"type": "reward"}}, {"id": "b"}]},
         }
     )
     env_a, env_b = config.train.env
     # The shorthand makes env a assemble its own algorithm (default sampling +
-    # the given advantage); only env b inherits the top-level echo preset.
+    # the given advantage); only env b inherits the top-level echo algorithm.
     assert env_a.algo is not None and env_a.algo.advantage.type == "reward"
     assert env_b.algo is not None and env_b.algo.advantage.type == "echo"
 
@@ -194,7 +194,7 @@ def test_advantage_shorthand_conflicts_with_explicit_algo_advantage():
             {
                 "renderer": None,
                 "advantage": {"type": "reward"},
-                "algo": {"advantage": {"type": "group_norm"}},
+                "algo": {"advantage": {"type": "grpo"}},
             }
         )
 

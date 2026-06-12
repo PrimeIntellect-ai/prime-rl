@@ -12,8 +12,8 @@ name = "debug-max-rl"
 batch_size = 128
 group_size = 16
 
-[orchestrator.algo]
-name = "max_rl"
+[orchestrator.algo.advantage]
+type = "max_rl"
 
 [orchestrator.renderer]
 name = "qwen3"

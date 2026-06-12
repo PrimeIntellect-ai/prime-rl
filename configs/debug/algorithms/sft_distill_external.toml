@@ -18,8 +18,8 @@ name = "debug-sft-external"
 batch_size = 128
 group_size = 4
 
-[orchestrator.algo]
-name = "sft_distill"
+[orchestrator.algo.advantage]
+type = "sft"
 
 [orchestrator.algo.model]
 name = "openai/gpt-5-mini"

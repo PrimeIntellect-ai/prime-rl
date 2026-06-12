@@ -19,33 +19,25 @@ def _ref_kind(ref):
 
 
 @pytest.mark.parametrize(
-    ("name", "model", "source", "advantage_type", "advantage_model", "action_loss_type"),
+    ("advantage_type", "model", "source", "advantage_model", "action_loss_type"),
     [
-        ("grpo", None, "policy", "group_norm", None, "rl"),
-        ("opd", FROZEN, "policy", "ref_kl", "frozen", "ref_kl"),
-        ("sft_distill", FROZEN, "frozen", "supervised", None, "ce"),
-        ("self_distill", None, "policy", "demo_ref_kl", "policy", "ref_kl"),
-        ("echo", None, "policy", "echo", None, "rl"),
+        ("grpo", None, "policy", None, "rl"),
+        ("max_rl", None, "policy", None, "rl"),
+        ("opd", FROZEN, "policy", "frozen", "ref_kl"),
+        ("sft", FROZEN, "frozen", None, "ce"),
+        ("opsd", None, "policy", "policy", "ref_kl"),
+        ("echo", None, "policy", None, "rl"),
     ],
 )
-def test_preset_expansion(name, model, source, advantage_type, advantage_model, action_loss_type):
-    algo = AlgorithmConfig(name=name, model=model)
+def test_type_defaults_are_the_vetted_algorithms(advantage_type, model, source, advantage_model, action_loss_type):
+    algo = AlgorithmConfig(advantage={"type": advantage_type}, model=model)
     assert _ref_kind(algo.sampling.source) == source
     assert algo.advantage.type == advantage_type
     assert _ref_kind(getattr(algo.advantage, "model", None)) == advantage_model
     assert algo.advantage.action_loss_type == action_loss_type
 
 
-def test_preset_with_component_override_is_rejected():
-    with pytest.raises(ValueError, match="presets are atomic"):
-        AlgorithmConfig(name="echo", advantage={"roles": {"user": {"alpha": 0.5}}})
-    with pytest.raises(ValueError, match="presets are atomic"):
-        AlgorithmConfig(name="opd", model=FROZEN, advantage={"max_concurrent": 64})
-    with pytest.raises(ValueError, match="presets are atomic"):
-        AlgorithmConfig(name="grpo", sampling={"source": "policy"})
-
-
-def test_assembled_components_without_preset_name():
+def test_echo_roles_replace_the_default_table():
     algo = AlgorithmConfig(advantage={"type": "echo", "roles": {"user": {"alpha": 0.5}}})
     assert algo.advantage.type == "echo"
     assert algo.advantage.roles.user.alpha == 0.5
@@ -53,8 +45,8 @@ def test_assembled_components_without_preset_name():
     assert algo.advantage.roles.tool is None
 
 
-def test_echo_preset_defaults_to_tool_bodies():
-    algo = AlgorithmConfig(name="echo")
+def test_echo_defaults_to_tool_bodies():
+    algo = AlgorithmConfig(advantage={"type": "echo"})
     assert algo.advantage.roles.tool.alpha == 0.1
     assert algo.advantage.roles.system is None
     assert algo.advantage.roles.user is None
@@ -66,40 +58,40 @@ def test_echo_roles_require_at_least_one():
         AlgorithmConfig(advantage={"type": "echo", "roles": {}})
 
 
-def test_ref_kl_requires_model_reference():
+def test_opd_requires_teacher():
     with pytest.raises(ValueError, match="needs a teacher"):
-        AlgorithmConfig(name="opd")
+        AlgorithmConfig(advantage={"type": "opd"})
 
 
-def test_frozen_sampling_requires_model_reference():
+def test_sft_requires_teacher():
     with pytest.raises(ValueError, match="needs a teacher to sample rollouts from"):
-        AlgorithmConfig(name="sft_distill")
+        AlgorithmConfig(advantage={"type": "sft"})
 
 
 def test_teacher_aliases_model_shorthand():
-    algo = AlgorithmConfig.model_validate({"name": "opd", "teacher": FROZEN})
+    algo = AlgorithmConfig.model_validate({"advantage": {"type": "opd"}, "teacher": FROZEN})
     assert isinstance(algo.advantage.model, FrozenModelConfig)
     assert algo.advantage.model.name == "org/ref-model"
 
 
 def test_model_shorthand_without_target_errors():
     with pytest.raises(ValueError, match="no component reference accepts it"):
-        AlgorithmConfig(name="grpo", model=FROZEN)
+        AlgorithmConfig(model=FROZEN)
 
 
 def test_model_shorthand_redundant_but_consistent_is_accepted():
-    algo = AlgorithmConfig(model=FROZEN, advantage={"type": "ref_kl", "model": FROZEN})
+    algo = AlgorithmConfig(model=FROZEN, advantage={"type": "opd", "model": FROZEN})
     assert isinstance(algo.advantage.model, FrozenModelConfig)
 
 
-def test_ref_kl_rejects_policy():
+def test_opd_rejects_policy():
     with pytest.raises(ValueError, match="degenerate"):
-        AlgorithmConfig(name="opd", model="policy")
+        AlgorithmConfig(advantage={"type": "opd"}, model="policy")
 
 
 def test_rl_loss_type_incompatible_with_frozen_sampling():
     with pytest.raises(ValueError, match="sampling.source is a frozen model"):
-        AlgorithmConfig(sampling={"source": FROZEN}, advantage={"type": "group_norm"})
+        AlgorithmConfig(sampling={"source": FROZEN}, advantage={"type": "grpo"})
 
 
 def _make_sample(obs_weights: list[float] | None) -> TrainingSample:

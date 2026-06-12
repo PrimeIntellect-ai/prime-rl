@@ -37,12 +37,12 @@ from prime_rl.configs.algorithm import (
     ActionLossType,
     AlgorithmConfig,
     CustomAdvantageConfig,
-    DemoRefKLAdvantageConfig,
     EchoAdvantageConfig,
     FrozenModelConfig,
-    GroupNormAdvantageConfig,
+    GRPOAdvantageConfig,
     LengthPenaltyConfig,
-    RefKLAdvantageConfig,
+    OPDAdvantageConfig,
+    OPSDAdvantageConfig,
 )
 from prime_rl.orchestrator.algo.advantage import (
     AdvantageInputs,
@@ -163,7 +163,7 @@ class GRPOAlgorithm(Algorithm):
 
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
-        assert isinstance(config.advantage, GroupNormAdvantageConfig)
+        assert isinstance(config.advantage, GRPOAdvantageConfig)
         self.length_penalty = config.advantage.length_penalty
 
     def assign(self, rollouts: list[TrainRollout]) -> None:
@@ -220,7 +220,7 @@ class OPDAlgorithm(Algorithm):
 
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
-        assert isinstance(config.advantage, RefKLAdvantageConfig)
+        assert isinstance(config.advantage, OPDAdvantageConfig)
         self.max_concurrent = config.advantage.max_concurrent
 
     async def score(self, rollouts: list[TrainRollout]) -> None:
@@ -253,8 +253,8 @@ class OPSDAlgorithm(Algorithm):
 
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
-        assert isinstance(config.advantage, DemoRefKLAdvantageConfig)
-        assert renderer is not None, "demo_ref_kl requires the renderer (validated at config time)"
+        assert isinstance(config.advantage, OPSDAdvantageConfig)
+        assert renderer is not None, "opsd requires the renderer (validated at config time)"
         self.demo_key = config.advantage.demo_key
         self.template = config.advantage.template
         self.max_concurrent = config.advantage.max_concurrent
@@ -263,7 +263,7 @@ class OPSDAlgorithm(Algorithm):
         trajectory = rollout.raw.get("trajectory") or []
         if len(trajectory) != 1:
             raise ValueError(
-                f"demo_ref_kl supports single-step trajectories only; "
+                f"opsd supports single-step trajectories only; "
                 f"env '{rollout.env_name}' produced {len(trajectory)} steps."
             )
         info = rollout.raw.get("info") or {}
@@ -272,18 +272,18 @@ class OPSDAlgorithm(Algorithm):
             demonstration = rollout.raw.get(self.demo_key)
         if demonstration is None:
             raise ValueError(
-                f"demo_ref_kl requires '{self.demo_key}' in the example's info dict or as a "
+                f"opsd requires '{self.demo_key}' in the example's info dict or as a "
                 f"top-level rollout field (env '{rollout.env_name}', example {rollout.example_id})."
             )
 
         messages = [dict(m) for m in trajectory[0]["prompt"]]
         user_indices = [i for i, m in enumerate(messages) if m.get("role") == "user"]
         if not user_indices:
-            raise ValueError(f"demo_ref_kl found no user message to condition (env '{rollout.env_name}').")
+            raise ValueError(f"opsd found no user message to condition (env '{rollout.env_name}').")
         last_user = messages[user_indices[-1]]
         question = last_user.get("content")
         if not isinstance(question, str):
-            raise ValueError("demo_ref_kl supports text-only prompts (user content must be a string).")
+            raise ValueError("opsd supports text-only prompts (user content must be a string).")
         last_user["content"] = self.template.format(question=question, demonstration=demonstration)
 
         # Render through the policy's renderer — the same messages → token ids
@@ -352,16 +352,15 @@ class CustomAlgorithm(Algorithm):
         assign_advantages(rollouts, self.advantage_fn)
 
 
-# Runtime dispatch is keyed on the advantage type — the axis along which
-# behavior actually differs. Preset names are vetted parameterizations of
-# these classes.
+# Runtime dispatch is keyed on the advantage type — it names the algorithm,
+# and each config class's defaults are its vetted parameterization.
 ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
-    "group_norm": GRPOAlgorithm,
+    "grpo": GRPOAlgorithm,
     "echo": EchoAlgorithm,
     "max_rl": MaxRLAlgorithm,
-    "ref_kl": OPDAlgorithm,
-    "demo_ref_kl": OPSDAlgorithm,
-    "supervised": SFTDistillAlgorithm,
+    "opd": OPDAlgorithm,
+    "opsd": OPSDAlgorithm,
+    "sft": SFTDistillAlgorithm,
     "reward": RewardAlgorithm,
     "custom": CustomAlgorithm,
 }

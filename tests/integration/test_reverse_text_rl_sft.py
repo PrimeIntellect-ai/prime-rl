@@ -83,7 +83,7 @@ def rl_sft_process(
     wandb_project: str,
     wandb_name: str,
 ) -> ProcessResult:
-    """Run the RL entrypoint with the sft_distill algorithm; ref_inference is
+    """Run the RL entrypoint with the sft algorithm; ref_inference is
     a fixture-managed external vLLM at http://localhost:8001/v1."""
     cmd = [
         "uv",

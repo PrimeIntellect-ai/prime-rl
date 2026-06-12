@@ -1,6 +1,6 @@
 """Algorithm abstraction: sampling and the per-token training signal.
 
-An algorithm is a preset of two pieces:
+An algorithm is a bundle of two pieces:
 
 1. **Sampling** — which model generates train rollouts. ``source`` is a model
    reference: ``"policy"`` (the live policy) or an inline frozen hosted model.
@@ -17,14 +17,14 @@ prime-rl only ever hosts the trainable policy. Every other model an algorithm
 uses is an external OpenAI-compatible endpoint, declared inline on the
 component that uses it (a :class:`FrozenModelConfig`). Model roles like
 "teacher" are algorithm-local vocabulary over these references; the pipeline
-branches on liveness alone. Presets are vetted bundles and atomic — use one
-whole, or assemble the components yourself. The trainer is algorithm-blind: the loss
-is a sum of three components (rl, ce, ref_kl), each normalized by its own
-global token count; per-token component weights ship on the wire and the
-trainer just executes them.
+branches on liveness alone. The advantage ``type`` names the algorithm and its
+class defaults are the vetted setting — ``type = "opd"`` with nothing else IS
+on-policy distillation; any key you set is visibly your own assembly. The
+trainer is algorithm-blind: the loss is a sum of three components (rl, ce,
+ref_kl), each normalized by its own global token count; per-token component
+weights ship on the wire and the trainer just executes them.
 """
 
-import copy
 import warnings
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
@@ -32,8 +32,6 @@ from pydantic import AliasChoices, Field, model_validator
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.config import BaseConfig
-
-AlgorithmName: TypeAlias = Literal["grpo", "max_rl", "opd", "sft_distill", "self_distill", "echo"]
 
 
 class FrozenModelConfig(ClientConfig):
@@ -73,13 +71,11 @@ ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
 
 
 class SamplingConfig(BaseConfig):
-    source: ModelReference | None = "policy"
+    source: ModelReference = "policy"
     """Model reference for train rollout generation: ``"policy"`` (the live
     policy — prefix caches salted per version, sampling logprobs requested,
     rollouts age off-policy) or an inline frozen hosted model (stable prefix
-    cache, no sampling logprobs, rollouts never go stale). ``None`` is only
-    set by presets that require a frozen source and must be resolved via
-    ``algo.model`` or an explicit value."""
+    cache, no sampling logprobs, rollouts never go stale)."""
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +103,8 @@ LengthPenaltyConfig: TypeAlias = Annotated[
 ]
 
 
-class GroupNormAdvantageConfig(BaseConfig):
-    type: Literal["group_norm"] = "group_norm"
+class GRPOAdvantageConfig(BaseConfig):
+    type: Literal["grpo"] = "grpo"
     """GRPO: scalar advantage = reward minus the per-group mean baseline,
     consumed by the ``rl`` loss component on the rollout's action tokens."""
 
@@ -161,7 +157,7 @@ class EchoFilterConfig(BaseConfig):
     """Kwargs forwarded to the filter."""
 
 
-class EchoAdvantageConfig(GroupNormAdvantageConfig):
+class EchoAdvantageConfig(GRPOAdvantageConfig):
     type: Literal["echo"] = "echo"  # type: ignore[assignment]
     """ECHO: group-relative advantage on action tokens (GRPO), plus weighted
     CE on env-provided tokens of later turns (tool output, user feedback),
@@ -203,9 +199,9 @@ class RewardAdvantageConfig(BaseConfig):
     group_relative: ClassVar[bool] = False
 
 
-class RefKLAdvantageConfig(BaseConfig):
-    type: Literal["ref_kl"] = "ref_kl"
-    """On-policy distillation (OPD): the per-token signal is the reverse KL to
+class OPDAdvantageConfig(BaseConfig):
+    type: Literal["opd"] = "opd"
+    """On-policy distillation: the per-token signal is the reverse KL to
     a reference model, evaluated in the trainer from reference prefill
     logprobs scored over each sample's own context (``ref_logprobs`` on the
     wire, ``ref_kl`` loss component). No scalar advantage is assigned —
@@ -221,17 +217,17 @@ class RefKLAdvantageConfig(BaseConfig):
     """The teacher — an inline frozen hosted model (``name`` + ``base_url``).
     Required — set it here or fold via ``algo.model`` / ``algo.teacher``.
     ``"policy"`` is rejected: scoring the policy under itself yields zero KL
-    signal (use ``demo_ref_kl`` for demo-conditioned self-teaching)."""
+    signal (use ``opsd`` for demo-conditioned self-teaching)."""
 
     max_concurrent: int = Field(32, ge=1)
     """Maximum concurrent prefill requests per batch."""
 
 
-class DemoRefKLAdvantageConfig(BaseConfig):
-    type: Literal["demo_ref_kl"] = "demo_ref_kl"
-    """Self-distillation (SDFT, https://arxiv.org/abs/2601.19897): the
-    per-token signal is the reverse KL to a reference model conditioned on an
-    expert demonstration. The scoring prefix is rebuilt from the rollout's
+class OPSDAdvantageConfig(BaseConfig):
+    type: Literal["opsd"] = "opsd"
+    """On-policy self-distillation (SDFT, https://arxiv.org/abs/2601.19897):
+    the per-token signal is the reverse KL to a reference model conditioned on
+    an expert demonstration. The scoring prefix is rebuilt from the rollout's
     first-turn messages with the demonstration woven into the user message via
     ``template``; completion logprobs are aligned back onto the sample.
     Requires single-step trajectories. No scalar advantage is assigned —
@@ -265,9 +261,9 @@ class DemoRefKLAdvantageConfig(BaseConfig):
     """Maximum concurrent prefill requests per batch."""
 
 
-class SupervisedAdvantageConfig(BaseConfig):
-    type: Literal["supervised"] = "supervised"
-    """Cross-entropy on the sampled tokens (SFT distillation). The ``ce``
+class SFTAdvantageConfig(BaseConfig):
+    type: Literal["sft"] = "sft"
+    """SFT distillation: cross-entropy on the sampled tokens. The ``ce``
     loss component ignores scalar advantages, but group-relative scalars are still
     assigned so reward-based filtering keeps working (the zero-advantage
     filter drops uniform-reward groups)."""
@@ -276,7 +272,8 @@ class SupervisedAdvantageConfig(BaseConfig):
     group_relative: ClassVar[bool] = True
     source_role: ClassVar[str] = "teacher"
     """The sampling source is this algorithm's teacher — the frozen model
-    whose tokens the policy trains on."""
+    whose tokens the policy trains on. Required: CE on the policy's own
+    tokens is rejected at validation."""
 
 
 class CustomAdvantageConfig(BaseConfig):
@@ -296,13 +293,13 @@ class CustomAdvantageConfig(BaseConfig):
 
 
 AdvantageConfig: TypeAlias = Annotated[
-    GroupNormAdvantageConfig
+    GRPOAdvantageConfig
     | EchoAdvantageConfig
     | MaxRLAdvantageConfig
     | RewardAdvantageConfig
-    | RefKLAdvantageConfig
-    | DemoRefKLAdvantageConfig
-    | SupervisedAdvantageConfig
+    | OPDAdvantageConfig
+    | OPSDAdvantageConfig
+    | SFTAdvantageConfig
     | CustomAdvantageConfig,
     Field(discriminator="type"),
 ]
@@ -312,59 +309,41 @@ AdvantageConfig: TypeAlias = Annotated[
 # The algorithm bundle
 # ---------------------------------------------------------------------------
 
-# Preset component deltas, merged under the user's raw input by
-# ``merge_preset`` (the user's keys win). The component field defaults are
-# grpo's, so each preset only encodes its deviation from grpo. Model
-# references with no sensible default (``sampling.source`` of sft_distill,
-# ``advantage.model`` of opd) are set to ``None`` and validation demands
-# ``algo.model`` (or the component field); ``demo_ref_kl`` defaults to the
-# live policy (the SDFT setting).
-_PRESETS: dict[AlgorithmName, dict[str, dict[str, Any]]] = {
-    "grpo": {},
-    "max_rl": {"advantage": {"type": "max_rl"}},
-    "opd": {"advantage": {"type": "ref_kl"}},
-    "sft_distill": {"sampling": {"source": None}, "advantage": {"type": "supervised"}},
-    "self_distill": {"advantage": {"type": "demo_ref_kl"}},
-    "echo": {"advantage": {"type": "echo"}},
-}
-
 
 class AlgorithmConfig(BaseConfig):
-    name: AlgorithmName = Field("grpo", exclude=True)
-    """Algorithm preset — atomic. Selecting a preset fixes both components;
-    only the ``model`` / ``teacher`` shorthand may accompany it (the
-    distillation presets are incomplete without an endpoint by design). To
-    customize anything else, drop ``name`` and assemble the components
-    directly — presets are thin deltas, e.g. ``echo`` is exactly
-    ``advantage = { type = "echo" }``. Write-only input sugar — excluded from
-    dumps so resolved configs round-trip as plain component assemblies.
+    """The advantage ``type`` names the algorithm, and each type's class
+    defaults are its vetted setting — ``advantage = { type = "opd" }`` with a
+    teacher IS on-policy distillation; any other key you set is visibly your
+    own assembly.
 
-    The presets:
+    The algorithms:
 
-    - ``grpo`` — policy group sampling, group-relative advantage, RL loss.
-    - ``opd`` — on-policy distillation: policy samples, ``ref_kl`` advantage against a reference model. Needs ``model``.
-    - ``sft_distill`` — a frozen model samples, the policy trains with CE on its tokens (``supervised``). Needs ``model``.
-    - ``self_distill`` — SDFT: policy samples, ``demo_ref_kl`` advantage against the live policy by default.
+    - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
+    - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
+    - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
+    - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy by default.
+    - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs ``teacher``.
     - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
+    - ``reward`` / ``custom`` — raw-reward and user-supplied advantage functions.
     """
 
     model: ModelReference | None = Field(None, exclude=True, validation_alias=AliasChoices("model", "teacher"))
     """Model reference shorthand: ``"policy"`` or an inline frozen hosted
-    model. Folds into the component reference the preset leaves unresolved
-    (``advantage.model`` for opd, ``sampling.source`` for sft_distill) or a
-    component default the user didn't set; an explicit component reference
-    that already equals it is accepted, a disagreeing one is an error.
-    ``teacher`` is an accepted alias — the distillation algorithms declare
-    their reference's role as "teacher", and this is the slot it fills.
-    Write-only input sugar — folded by validation and excluded from dumps so
-    resolved configs round-trip."""
+    model. Folds into the slot the advantage type declares for it —
+    ``advantage.model`` when the type has one (opd, opsd), ``sampling.source``
+    when the type's teacher is its sampling source (sft). A slot the user
+    didn't set takes the shorthand; an explicit reference that already equals
+    it is accepted, a disagreeing one is an error. ``teacher`` is an accepted
+    alias — the distillation algorithms declare their reference's role as
+    "teacher", and this is the slot it fills. Write-only input sugar — folded
+    by validation and excluded from dumps so resolved configs round-trip."""
 
     sampling: SamplingConfig = SamplingConfig()
-    """Sampling component. Set by the preset, or directly when assembling."""
+    """Sampling component."""
 
-    advantage: AdvantageConfig = GroupNormAdvantageConfig()
+    advantage: AdvantageConfig = GRPOAdvantageConfig()
     """The per-token training signal: credit assignment and loss routing,
-    fused. Set by the preset, or directly when assembling."""
+    fused. The ``type`` selects the algorithm."""
 
     @property
     def requires_group_advantage(self) -> bool:
@@ -372,39 +351,15 @@ class AlgorithmConfig(BaseConfig):
         i.e. degenerate with ``group_size=1``."""
         return self.advantage.group_relative
 
-    @model_validator(mode="before")
-    @classmethod
-    def apply_preset(cls, data: Any) -> Any:
-        """Insert the named preset's components into the raw input.
-
-        Presets are atomic: a preset name next to explicit component keys is
-        an error, never a merge — a modified preset is not the preset, so it
-        must be assembled without the name. Downstream validators see one
-        plain config whose field provenance is exactly what the user wrote."""
-        if not isinstance(data, dict) or "name" not in data:
-            return data
-        preset = _PRESETS.get(data["name"])
-        if preset is None:
-            return data  # unknown preset name: let field validation report it
-        overridden = sorted(k for k in ("advantage", "sampling") if k in data)
-        if overridden:
-            raise ValueError(
-                f"preset '{data['name']}' with explicit {' and '.join(overridden)} — presets are atomic. "
-                "Use the preset as-is (only 'model'/'teacher' may accompany it), or drop 'name' and "
-                "assemble the algorithm from its components (e.g. advantage = { type = ... })."
-            )
-        for component, delta in preset.items():
-            data[component] = copy.deepcopy(delta)
-        return data
-
     @model_validator(mode="after")
     def fold_model(self):
         """Fold the ``model`` shorthand into the component references.
 
-        Fill-or-agree: an unresolved reference (``None``, or a default the
-        user didn't set) takes the shorthand; an explicit reference that
-        already equals it is redundant-but-consistent; if no reference
-        accepts it, that's an error."""
+        Fill-or-agree: the slot the advantage type declares (``model`` field,
+        or ``sampling.source`` for source-role types) takes the shorthand
+        when the user didn't set it; an explicit reference that already
+        equals it is redundant-but-consistent; if no slot accepts it, that's
+        an error."""
         if self.model is None:
             return self
         matched = False
@@ -415,14 +370,15 @@ class AlgorithmConfig(BaseConfig):
                 matched = True
             elif advantage.model == self.model:
                 matched = True
-        if self.sampling.source is None:
-            self.sampling.source = self.model
-            matched = True
-        elif self.sampling.source == self.model:
-            matched = True
+        if getattr(advantage, "source_role", None) is not None:
+            if "source" not in self.sampling.model_fields_set:
+                self.sampling.source = self.model
+                matched = True
+            elif self.sampling.source == self.model:
+                matched = True
         if not matched:
             raise ValueError(
-                f"algorithm '{self.name}': 'model' is set but no component reference accepts it — "
+                f"advantage '{self.advantage.type}': 'model' is set but no component reference accepts it — "
                 "every reference is already explicitly set to a different value, or the algorithm "
                 "references no model. Set advantage.model / sampling.source directly instead."
             )
@@ -430,43 +386,41 @@ class AlgorithmConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_component_compatibility(self):
-        if self.sampling.source is None:
-            role = getattr(self.advantage, "source_role", None)
-            need = f"a {role} to sample rollouts from" if role else "a model reference for sampling"
+        source_role = getattr(self.advantage, "source_role", None)
+        if source_role is not None and self.sampling.source == "policy":
             raise ValueError(
-                f"algorithm '{self.name}' needs {need} — set '{role or 'model'}' on the "
-                "algorithm (an inline hosted model: name + base_url), or sampling.source "
-                "explicitly."
+                f"advantage '{self.advantage.type}' needs a {source_role} to sample rollouts from — "
+                f"CE on the policy's own tokens is not a distillation target. Set '{source_role}' on "
+                "the algorithm (an inline hosted model: name + base_url), or sampling.source explicitly."
             )
         if getattr(self.advantage, "model", "<absent>") is None:
             role = getattr(self.advantage, "model_role", "reference model")
             raise ValueError(
-                f"algorithm '{self.name}' needs a {role} — "
+                f"advantage '{self.advantage.type}' needs a {role} — "
                 f"set '{role}' on the algorithm (an inline hosted model: name + base_url), "
                 "or advantage.model explicitly."
             )
-        if isinstance(self.advantage, RefKLAdvantageConfig) and self.advantage.model == "policy":
+        if isinstance(self.advantage, OPDAdvantageConfig) and self.advantage.model == "policy":
             raise ValueError(
-                f"algorithm '{self.name}': advantage 'ref_kl' with model='policy' is degenerate — "
-                "the reference distribution equals the policy, so the KL signal is zero. Point at a "
-                "frozen hosted model, or use 'demo_ref_kl' for demo-conditioned self-teaching."
+                "advantage 'opd' with model='policy' is degenerate — the reference distribution "
+                "equals the policy, so the KL signal is zero. Point at a frozen hosted model, or "
+                "use 'opsd' for demo-conditioned self-teaching."
             )
         if self.advantage.action_loss_type in ("rl", "ref_kl") and self.sampling.source != "policy":
             raise ValueError(
-                f"algorithm '{self.name}': advantage '{self.advantage.type}' trains with the "
+                f"advantage '{self.advantage.type}' trains with the "
                 f"{self.advantage.action_loss_type} loss type but sampling.source is a frozen model — "
                 "the importance ratio and trust region need the live policy's own sampling logprobs. "
-                "Use the 'supervised' advantage (sft_distill) to distill frozen-model tokens."
+                "Use the 'sft' advantage to distill frozen-model tokens."
             )
         return self
 
     def warn_group_size(self, group_size: int, env_name: str) -> None:
         """Group-relative scoring with a single rollout per example collapses
-        every advantage to zero. Warn loudly — this is the classic footgun the
-        algorithm presets exist to prevent."""
+        every advantage to zero. Warn loudly — this is the classic footgun."""
         if self.requires_group_advantage and group_size == 1:
             warnings.warn(
-                f"Env '{env_name}' uses group-relative advantage (algorithm '{self.name}') with "
+                f"Env '{env_name}' uses group-relative advantage ('{self.advantage.type}') with "
                 "group_size=1 — every advantage is 0 and (with the default zero-advantage filter) "
                 "no rollout will train. Set group_size >= 2 or a non-group-relative advantage "
                 "(e.g. advantage.type='reward').",

@@ -19,8 +19,8 @@ name = "debug-sft"
 batch_size = 128
 group_size = 4
 
-[orchestrator.algo]
-name = "sft_distill"
+[orchestrator.algo.advantage]
+type = "sft"
 
 [orchestrator.algo.model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"

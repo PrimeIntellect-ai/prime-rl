@@ -221,16 +221,15 @@ class TrainEnvConfig(EnvConfig):
 
     algo: AlgorithmConfig | None = None
     """Training algorithm for this env. Inherits from the top-level
-    ``orchestrator.algo`` when unset; set a different preset (or override
-    individual components) to give this env its own algorithm."""
+    ``orchestrator.algo`` when unset; set its components to give this env its
+    own algorithm."""
 
     advantage: AdvantageConfig | None = Field(None, exclude=True)
     """Shorthand for ``algo.advantage`` — the env assembles its own
     algorithm around it instead of inheriting the top-level one. Setting both
-    this and an explicit ``algo.advantage`` to different values is an error,
-    and it cannot modify a preset. Write-only input
-    sugar — folded on raw input and excluded from dumps so resolved configs
-    round-trip."""
+    this and an explicit ``algo.advantage`` to different values is an error.
+    Write-only input sugar — folded on raw input and excluded from dumps so
+    resolved configs round-trip."""
 
 
 class EvalEnvConfig(EnvConfig):
@@ -477,9 +476,10 @@ class HostedModelConfig(ModelConfig):
 
 class OrchestratorConfig(BaseConfig):
     algo: AlgorithmConfig = AlgorithmConfig()
-    """Training algorithm: a preset bundle of sampling, advantage, and loss
-    routing. Defaults to ``grpo``. Override per env via
-    ``[[orchestrator.train.env]]``'s ``algo``."""
+    """Training algorithm: sampling plus the advantage (credit assignment
+    and loss routing, fused — its ``type`` names the algorithm). Defaults to
+    ``grpo``. Override per env via ``[[orchestrator.train.env]]``'s
+    ``algo``."""
 
     model: HostedModelConfig = HostedModelConfig()
     """The model being trained: its model fields plus the client of the live
@@ -632,11 +632,6 @@ class OrchestratorConfig(BaseConfig):
                     f"{owner}: the 'advantage' shorthand needs 'algo' as plain config data — "
                     "set 'algo.advantage' directly instead."
                 )
-            if "name" in algo:
-                raise ValueError(
-                    f"{owner}: the 'advantage' shorthand cannot modify preset '{algo['name']}' — presets "
-                    "are atomic. Drop the preset name and assemble the algorithm, or use the preset as-is."
-                )
             if shorthand is None or shorthand == "None":
                 shorthand = {"type": "reward"}
             existing = algo.get("advantage")
@@ -656,8 +651,8 @@ class OrchestratorConfig(BaseConfig):
         for env in envs:
             if not isinstance(env, dict) or "advantage" not in env:
                 continue
-            # The shorthand makes the env assemble its own algorithm —
-            # inheriting-and-modifying a preset would break atomicity.
+            # The shorthand makes the env assemble its own algorithm instead
+            # of inheriting-and-modifying the top-level one.
             if env.get("algo") is None:
                 env["algo"] = {}
             name = env.get("name") or str(env.get("id", "?")).split("@")[0]
@@ -754,15 +749,15 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_renderer_for_demo_scoring(self):
-        """``demo_ref_kl`` rebuilds its demo-conditioned scoring prefix
+        """``opsd`` rebuilds its demo-conditioned scoring prefix
         client-side, which requires the policy's renderer (the canonical
         messages → token ids path)."""
         if self.renderer is not None:
             return self
         for env in self.train.env:
-            if env.algo is not None and env.algo.advantage.type == "demo_ref_kl":
+            if env.algo is not None and env.algo.advantage.type == "opsd":
                 raise ValueError(
-                    f"env '{env.resolved_name}' uses demo_ref_kl, which renders its demo-conditioned "
+                    f"env '{env.resolved_name}' uses opsd, which renders its demo-conditioned "
                     "scoring prefix client-side and requires orchestrator.renderer — remove "
                     "'renderer = \"None\"' (and note the renderer is forced off when no train env "
                     "samples from the policy)."

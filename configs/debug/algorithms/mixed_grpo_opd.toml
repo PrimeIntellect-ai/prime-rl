@@ -22,8 +22,8 @@ name = "debug-mixed-grpo-opd"
 batch_size = 128
 group_size = 16
 
-[orchestrator.algo]
-name = "grpo"
+[orchestrator.algo.advantage]
+type = "grpo"
 
 [orchestrator.renderer]
 name = "qwen3"
@@ -39,8 +39,8 @@ name = "reverse-text-grpo"
 id = "reverse-text"
 name = "reverse-text-opd"
 
-[orchestrator.train.env.algo]
-name = "opd"
+[orchestrator.train.env.algo.advantage]
+type = "opd"
 
 [orchestrator.train.env.algo.model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
