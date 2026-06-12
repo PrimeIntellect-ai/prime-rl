@@ -108,7 +108,7 @@ class _FinalOutputCapture:
             yield item
 
 
-def _build_usage(final_res: RequestOutput, enable_cached_tokens: bool) -> UsageInfo:
+def _build_usage(final_res: RequestOutput) -> UsageInfo:
     assert final_res.prompt_token_ids is not None
     num_prompt_tokens = len(final_res.prompt_token_ids)
     if final_res.encoder_prompt_token_ids is not None:
@@ -119,7 +119,11 @@ def _build_usage(final_res: RequestOutput, enable_cached_tokens: bool) -> UsageI
         completion_tokens=num_generated_tokens,
         total_tokens=num_prompt_tokens + num_generated_tokens,
     )
-    if enable_cached_tokens and final_res.num_cached_tokens:
+    # Always emit cached tokens when vLLM reports any. Upstream gates this on
+    # ``enable_prompt_tokens_details`` (default False) for OpenAI-API compat,
+    # but ``/inference/v1/generate`` is prime-rl internal — the cache-discount
+    # billing pipeline always wants the cached subset surfaced.
+    if final_res.num_cached_tokens:
         usage.prompt_tokens_details = PromptTokenUsageInfo(cached_tokens=final_res.num_cached_tokens)
     return usage
 
@@ -350,9 +354,6 @@ class PrimeRlServingTokens(ServingTokens):
             )
 
         if final_capture.final_res is not None:
-            response.usage = _build_usage(
-                final_capture.final_res,
-                enable_cached_tokens=self.enable_prompt_tokens_details,
-            )
+            response.usage = _build_usage(final_capture.final_res)
 
         return response

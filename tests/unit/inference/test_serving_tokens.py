@@ -154,7 +154,7 @@ def test_build_usage_sums_prompt_and_completion_tokens():
         prompt_token_ids=[1, 2, 3, 4, 5],
         output_token_ids_list=[[10, 11], [20, 21, 22]],
     )
-    usage = _build_usage(final_res, enable_cached_tokens=True)
+    usage = _build_usage(final_res)
     assert usage.prompt_tokens == 5
     assert usage.completion_tokens == 5  # 2 + 3
     assert usage.total_tokens == 10
@@ -167,41 +167,33 @@ def test_build_usage_includes_encoder_prompt_tokens():
         output_token_ids_list=[[10]],
         encoder_prompt_token_ids=[100, 101],
     )
-    usage = _build_usage(final_res, enable_cached_tokens=False)
+    usage = _build_usage(final_res)
     assert usage.prompt_tokens == 5  # 3 + 2
     assert usage.total_tokens == 6
 
 
-def test_build_usage_reports_cached_tokens_when_enabled():
+def test_build_usage_reports_cached_tokens_unconditionally():
+    # Unlike upstream's ``enable_prompt_tokens_details`` gate, prime-rl always
+    # surfaces cached tokens — the cache-discount billing pipeline needs them.
     final_res = _FakeRequestOutput(
         prompt_token_ids=[1, 2, 3, 4],
         output_token_ids_list=[[10, 11]],
         num_cached_tokens=3,
     )
-    usage = _build_usage(final_res, enable_cached_tokens=True)
+    usage = _build_usage(final_res)
     assert usage.prompt_tokens_details is not None
     assert usage.prompt_tokens_details.cached_tokens == 3
 
 
-def test_build_usage_skips_cached_tokens_when_disabled():
-    final_res = _FakeRequestOutput(
-        prompt_token_ids=[1, 2, 3, 4],
-        output_token_ids_list=[[10, 11]],
-        num_cached_tokens=3,
-    )
-    usage = _build_usage(final_res, enable_cached_tokens=False)
-    assert usage.prompt_tokens_details is None
-
-
 def test_build_usage_skips_cached_tokens_when_zero():
-    # Mirrors upstream behavior — don't emit a details block with cached=0,
-    # which would be misleading to the router's billing extractor.
+    # Don't emit a details block with cached=0, which would be misleading
+    # to the router's billing extractor.
     final_res = _FakeRequestOutput(
         prompt_token_ids=[1, 2, 3, 4],
         output_token_ids_list=[[10, 11]],
         num_cached_tokens=0,
     )
-    usage = _build_usage(final_res, enable_cached_tokens=True)
+    usage = _build_usage(final_res)
     assert usage.prompt_tokens_details is None
 
 
