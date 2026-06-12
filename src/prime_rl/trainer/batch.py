@@ -57,20 +57,17 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     input_ids = training_example.prompt_ids + training_example.completion_ids
     loss_mask = training_example.prompt_mask + training_example.completion_mask
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
-    if training_example.token_advantages is not None:
-        advantages = list(training_example.token_advantages)
+    if training_example.advantages is not None:
+        advantages = list(training_example.advantages)
     else:
-        advantage = training_example.advantage
-        if advantage is None:
-            rl_w = training_example.rl_weights
-            has_rl_members = any(loss_mask) if rl_w is None else any(m and w != 0 for m, w in zip(loss_mask, rl_w))
-            if has_rl_members:
-                raise ValueError(
-                    f"sample from env '{training_example.env_name}' has rl member tokens but no advantage — "
-                    "the producer must stamp a scalar (the orchestrator ships 0.0 for scalar-less algorithms)"
-                )
-            advantage = 0.0
-        advantages = [advantage] * len(input_ids)
+        rl_w = training_example.rl_weights
+        has_rl_members = any(loss_mask) if rl_w is None else any(m and w != 0 for m, w in zip(loss_mask, rl_w))
+        if has_rl_members:
+            raise ValueError(
+                f"sample from env '{training_example.env_name}' has rl member tokens but no advantages — "
+                "the producer must stamp the advantage stream (the orchestrator broadcasts the rollout scalar)"
+            )
+        advantages = [0.0] * len(input_ids)
     # Component weight streams: keep absent streams None (rl weight 1.0 on the
     # loss mask, no ce/ref_kl component) so the packed batch stays as small as before.
     rl_weights = list(training_example.rl_weights) if training_example.rl_weights is not None else None

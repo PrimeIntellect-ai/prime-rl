@@ -30,7 +30,6 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_temperatures: list[float]  # Per-token temperatures used during generation
     env_name: str
     ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl component)
-    advantage: float | None = None
     reward: float | None = None
 
     # Generic multimodal kwargs: flat dict keyed by the kwarg names the
@@ -61,9 +60,11 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     ce_weights: list[float] | None = None
     ref_kl_weights: list[float] | None = None
 
-    # Per-token advantages (full sequence length). ``None`` broadcasts the
-    # rollout-level ``advantage`` scalar over the sequence.
-    token_advantages: list[float] | None = None
+    # Per-token advantages (full prompt+completion length), the fourth stream:
+    # the orchestrator broadcasts the rollout's scalar over the completion for
+    # scalar algorithms. ``None`` means no rl credit assigned — legal only for
+    # samples without live rl member tokens (the trainer raises otherwise).
+    advantages: list[float] | None = None
 
     # Orchestrator-internal: per-token echo ce weights for env-provided
     # tokens within ``completion_ids`` (set by ``interleave_rollout`` when the

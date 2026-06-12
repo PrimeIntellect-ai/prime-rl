@@ -5,7 +5,7 @@ import pytest
 import verifiers as vf
 
 from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, spread_token_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
 from prime_rl.orchestrator.types import TrainRollout
 from prime_rl.transport.types import TrainingSample
@@ -157,7 +157,7 @@ def test_stamp_loss_routing_clears_obs_weights_when_all_zero():
     assert sample.completion_mask == [True, True, False, True]
 
 
-def _make_rollout(samples: list[TrainingSample], token_advantages: list[float] | None) -> TrainRollout:
+def _make_rollout(samples: list[TrainingSample], advantages: list[float] | None = None) -> TrainRollout:
     return TrainRollout(
         raw={},
         env_name="test-env",
@@ -166,28 +166,35 @@ def _make_rollout(samples: list[TrainingSample], token_advantages: list[float] |
         policy_version=0,
         off_policy_steps=0,
         samples=samples,
-        token_advantages=token_advantages,
+        advantages=advantages,
     )
 
 
-def test_spread_token_advantages_pads_prompt():
-    rollout = _make_rollout([_make_sample(obs_weights=None)], token_advantages=[0.5, -0.5, 0.0, 1.0])
-    spread_token_advantages(rollout)
+def test_stamp_advantages_pads_prompt():
+    rollout = _make_rollout([_make_sample(obs_weights=None)], advantages=[0.5, -0.5, 0.0, 1.0])
+    stamp_advantages(rollout)
     # 2 prompt positions padded with 0.0 + 4 completion-aligned advantages
-    assert rollout.samples[0].token_advantages == [0.0, 0.0, 0.5, -0.5, 0.0, 1.0]
+    assert rollout.samples[0].advantages == [0.0, 0.0, 0.5, -0.5, 0.0, 1.0]
 
 
-def test_spread_token_advantages_rejects_misaligned():
-    rollout = _make_rollout([_make_sample(obs_weights=None)], token_advantages=[0.5])
-    with pytest.raises(ValueError, match="align"):
-        spread_token_advantages(rollout)
-
-
-def test_spread_token_advantages_rejects_multi_sample_rollouts():
+def test_stamp_advantages_slices_across_samples():
     samples = [_make_sample(obs_weights=None), _make_sample(obs_weights=None)]
-    rollout = _make_rollout(samples, token_advantages=[0.5, -0.5, 0.0, 1.0])
-    with pytest.raises(ValueError, match="exactly one training sample"):
-        spread_token_advantages(rollout)
+    rollout = _make_rollout(samples, advantages=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+    stamp_advantages(rollout)
+    assert rollout.samples[0].advantages == [0.0, 0.0, 1.0, 2.0, 3.0, 4.0]
+    assert rollout.samples[1].advantages == [0.0, 0.0, 5.0, 6.0, 7.0, 8.0]
+
+
+def test_stamp_advantages_no_credit_ships_none():
+    rollout = _make_rollout([_make_sample(obs_weights=None)])
+    stamp_advantages(rollout)
+    assert rollout.samples[0].advantages is None
+
+
+def test_stamp_advantages_rejects_misaligned():
+    rollout = _make_rollout([_make_sample(obs_weights=None)], advantages=[0.5])
+    with pytest.raises(ValueError, match="align"):
+        stamp_advantages(rollout)
 
 
 def _echo_algorithm(roles: dict | None = None, filter_fn=None) -> EchoAlgorithm:
@@ -329,19 +336,19 @@ def test_rlcsd_modulation_two_path_weights_and_clamp():
     knobs = dict(lam=0.5, tau=0.02, delta=0.02, eta=1.0)
     # Token 0 carries a saturating contrast (tanh -> 1, r = lam), token 1 none.
     # Paths normalize independently: each path's weight is L / |path|.
-    out = _modulated_token_advantages([10.0, 0.0], 1.0, [True, True], **knobs)
+    out = _modulated_token_advantages([10.0, 0.0], [1.0, 1.0], [True, True], **knobs)
     assert out[0] == pytest.approx((1.0 + 0.5) * 2.0)  # modulated path, |M| = 1
     assert out[1] == pytest.approx(1.0 * 2.0)  # plain path, |U| = 1
 
     # Sign-preserving clamp: modulation never flips the verifier's direction
-    out = _modulated_token_advantages([10.0], -0.2, [True], **knobs)
+    out = _modulated_token_advantages([10.0], [-0.2], [True], **knobs)
     assert out == [0.0]
 
     # Below the mask threshold everything stays plain GRPO at unit weight
-    assert _modulated_token_advantages([0.0], 1.0, [True], **knobs) == [1.0]
+    assert _modulated_token_advantages([0.0], [1.0], [True], **knobs) == [1.0]
 
     # No trainable tokens -> no per-token advantages
-    assert _modulated_token_advantages([10.0], 1.0, [False], **knobs) is None
+    assert _modulated_token_advantages([10.0], [1.0], [False], **knobs) is None
 
 
 def test_interleave_obs_weights_off_by_default():

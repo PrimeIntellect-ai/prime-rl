@@ -15,10 +15,10 @@ turns the signal half into runtime objects (the sampling half is the env's
 - ``base`` — the :class:`Algorithm` base class and the pipeline hooks
   (frozen-pool connection, batch scoring).
 - ``advantage`` — pure advantage math: the custom-function interface
-  (:class:`AdvantageInputs` / :class:`AdvantageOutputs`) and the default
+  (:class:`AdvantageInputs`, per-token advantages out) and the default
   group-norm computation.
 - ``routing`` — wire-field stamping: per-token component weight streams
-  (rl / ce / ref_kl) and per-token advantage spreading.
+  (rl / ce / ref_kl) and the per-token advantage stream.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING
 from prime_rl.orchestrator.algo.advantage import (
     AdvantageFn,
     AdvantageInputs,
-    AdvantageOutputs,
     assign_advantages,
     default_advantage_fn,
     max_rl_advantage_fn,
@@ -42,7 +41,7 @@ from prime_rl.orchestrator.algo.opd import OPDAlgorithm
 from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.reward import RewardAlgorithm
 from prime_rl.orchestrator.algo.rlcsd import RLCSDAlgorithm
-from prime_rl.orchestrator.algo.routing import spread_token_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
 
 if TYPE_CHECKING:
@@ -75,7 +74,6 @@ def build_algorithm(config: AlgorithmConfig, policy_pool: InferencePool, rendere
 __all__ = [
     "AdvantageFn",
     "AdvantageInputs",
-    "AdvantageOutputs",
     "Algorithm",
     "CustomAlgorithm",
     "EchoAlgorithm",
@@ -92,6 +90,6 @@ __all__ = [
     "default_advantage_fn",
     "max_rl_advantage_fn",
     "score_train_batch",
-    "spread_token_advantages",
+    "stamp_advantages",
     "stamp_loss_routing",
 ]

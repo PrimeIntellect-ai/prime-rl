@@ -9,7 +9,7 @@ from itertools import cycle
 from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import AlgorithmConfig, RLCSDAdvantageConfig
-from prime_rl.orchestrator.algo.advantage import AdvantageInputs, AdvantageOutputs, assign_advantages
+from prime_rl.orchestrator.algo.advantage import AdvantageInputs, assign_advantages
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.utils import compute_prefill_logprobs
 from prime_rl.utils.logger import get_logger
@@ -23,13 +23,13 @@ if TYPE_CHECKING:
 _ADV_EPS = 1e-6
 
 
-def _std_norm_advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
+def _std_norm_advantage_fn(inputs: AdvantageInputs) -> list[list[float]]:
     """Std-normalized group-relative advantage (the paper's Eq. 8):
-    ``(r - mean) / (std + eps)``."""
+    ``(r - mean) / (std + eps)``, broadcast over completion tokens."""
     rewards = [r["reward"] for r in inputs.rollouts]
     mean = statistics.fmean(rewards)
     std = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
-    return AdvantageOutputs(advantages=[(r - mean) / (std + _ADV_EPS) for r in rewards])
+    return inputs.broadcast([(r - mean) / (std + _ADV_EPS) for r in rewards])
 
 
 def _hint_pools(
@@ -61,7 +61,7 @@ def _contrastive_signal(pos_logprobs: list[float], neg_logprobs: list[list[float
 
 def _modulated_token_advantages(
     signal: list[float],
-    advantage: float,
+    advantages: list[float],
     completion_mask: list[bool],
     *,
     lam: float,
@@ -70,13 +70,13 @@ def _modulated_token_advantages(
     eta: float,
 ) -> list[float] | None:
     """Two-path token advantages (Eqs. 9-15): squash the contrast through
-    ``lam·tanh(·/tau)``, modulate the scalar advantage at tokens above the
-    ``delta`` mask with a sign-preserving clamp, and fold the paper's
-    independent path normalization into the magnitudes — the clipped
-    surrogate is positively homogeneous in the advantage, so per-rollout
-    weights ``L/|U|`` and ``eta·L/|M|`` reproduce the two-path objective
-    without touching the trainer. Returns ``None`` when no token is
-    trainable."""
+    ``lam·tanh(·/tau)``, modulate the per-token base advantages (uniform
+    under group-norm assignment) at tokens above the ``delta`` mask with a
+    sign-preserving clamp, and fold the paper's independent path
+    normalization into the magnitudes — the clipped surrogate is positively
+    homogeneous in the advantage, so per-rollout weights ``L/|U|`` and
+    ``eta·L/|M|`` reproduce the two-path objective without touching the
+    trainer. Returns ``None`` when no token is trainable."""
     modulation = [lam * math.tanh(e / tau) for e in signal]
     trainable = [t for t, trains in enumerate(completion_mask) if trains]
     if not trainable:
@@ -88,12 +88,13 @@ def _modulated_token_advantages(
 
     token_advantages = [0.0] * len(signal)
     for t in trainable:
+        base = advantages[t]
         if t in modulated:
-            shifted = advantage + modulation[t]
-            clamped = max(0.0, shifted) if advantage >= 0 else min(0.0, shifted)
+            shifted = base + modulation[t]
+            clamped = max(0.0, shifted) if base >= 0 else min(0.0, shifted)
             token_advantages[t] = eta * clamped * (num_total / num_modulated)
         else:
-            token_advantages[t] = advantage * (num_total / num_plain)
+            token_advantages[t] = base * (num_total / num_plain)
     return token_advantages
 
 
@@ -102,14 +103,15 @@ class RLCSDAlgorithm(Algorithm):
     contrastive self-distillation signal modulating the advantage magnitude
     at high-signal tokens.
 
-    At group time, std-normalized group-relative scalars. At ship time, each
-    surviving rollout's tokens are prefill-scored under the teacher
-    conditioned on a correct sibling rollout and on K incorrect siblings
-    (byte-identical hint template, so the privilege-induced style shift
-    cancels in the subtraction); the squashed contrast modulates the scalar
-    advantage with a sign-preserving clamp and ships as per-token advantages
-    on the ``rl`` component. Rollouts whose group offers no contrast (no
-    correct or no incorrect sibling) keep their plain scalar."""
+    At group time, std-normalized group-relative credit (broadcast per
+    token). At ship time, each surviving rollout's tokens are prefill-scored
+    under the teacher conditioned on a correct sibling rollout and on K
+    incorrect siblings (byte-identical hint template, so the
+    privilege-induced style shift cancels in the subtraction); the squashed
+    contrast modulates the base advantages with a sign-preserving clamp and
+    overwrites the sample's advantage stream on the ``rl`` component.
+    Rollouts whose group offers no contrast (no correct or no incorrect
+    sibling) keep their plain group-norm stream."""
 
     action_loss_type = "rl"
     model_role = "teacher"
@@ -150,7 +152,7 @@ class RLCSDAlgorithm(Algorithm):
                 pos_pool = [s for s in correct if s is not rollout]
                 neg_pool = [s for s in wrong if s is not rollout]
                 if not pos_pool or not neg_pool:
-                    continue  # no contrast available — the rollout keeps its plain scalar
+                    continue  # no contrast available — the rollout keeps its plain group-norm stream
                 tasks.append(self._score_rollout(rollout, pos_pool, neg_pool, semaphore, pool, next(clients)))
         # Contrast needs a correct AND an incorrect sibling; early in training
         # (or with a miscalibrated correct_threshold) most groups offer none
@@ -184,10 +186,11 @@ class RLCSDAlgorithm(Algorithm):
         results = await asyncio.gather(hinted_logprobs(pos_hint), *(hinted_logprobs(h) for h in neg_hints))
         signal = _contrastive_signal(results[0], list(results[1:]))
 
-        advantage = rollout.advantage if rollout.advantage is not None else 0.0
+        # The assigned stream is completion-aligned (single sample, asserted above).
+        advantages = rollout.advantages if rollout.advantages is not None else [0.0] * len(completion_ids)
         token_advantages = _modulated_token_advantages(
             signal,
-            advantage,
+            advantages,
             list(sample.completion_mask),
             lam=self.lam,
             tau=self.tau,
@@ -195,7 +198,7 @@ class RLCSDAlgorithm(Algorithm):
             eta=self.eta,
         )
         if token_advantages is not None:
-            sample.token_advantages = [0.0] * len(sample.prompt_ids) + token_advantages
+            sample.advantages = [0.0] * len(sample.prompt_ids) + token_advantages
 
     def _hint_text(self, rollout: TrainRollout) -> str:
         """A sibling rollout's full completion text — the reference solution

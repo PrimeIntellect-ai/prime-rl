@@ -11,12 +11,12 @@ from prime_rl.configs.algorithm import (
 from prime_rl.orchestrator.algo import CustomAlgorithm
 from prime_rl.orchestrator.algo.advantage import (
     AdvantageInputs,
-    AdvantageOutputs,
     assign_advantages,
     default_advantage_fn,
     max_rl_advantage_fn,
 )
 from prime_rl.orchestrator.types import TrainRollout
+from prime_rl.transport.types import TrainingSample
 
 
 def _make_rollout(
@@ -44,13 +44,21 @@ def _make_rollout(
 
 
 def _make_group(rewards, completion_lengths=None, num_turns=None) -> AdvantageInputs:
-    """Build single-group AdvantageInputs from 1D arrays of rewards/lengths/turns."""
+    """Build single-group AdvantageInputs from 1D arrays of rewards/lengths/turns.
+
+    Training-sample completion lengths are 1, so every returned advantage
+    stream is a singleton (``_scalars`` unwraps them)."""
     rollouts = []
     for i, reward in enumerate(rewards):
         cl = int(completion_lengths[i]) if completion_lengths is not None else 0
         nt = int(num_turns[i]) if num_turns is not None else 1
         rollouts.append(_make_rollout(float(reward), cl, nt))
-    return AdvantageInputs(rollouts=rollouts)
+    return AdvantageInputs(rollouts=rollouts, completion_lengths=[1] * len(rollouts))
+
+
+def _scalars(advantages: list[list[float]]) -> list[float]:
+    """Per-rollout scalar view of length-1 broadcast streams."""
+    return [advs[0] for advs in advantages]
 
 
 # Helper aliases for readability — completion-only and tool-only token shaping.
@@ -62,19 +70,19 @@ def test_default_advantage_fn_simple_mean():
     inputs = _make_group(rewards=[1.0, 0.5, 0.8], completion_lengths=[10, 12, 8])
     result = default_advantage_fn(inputs)
 
-    assert len(result.advantages) == 3
-    assert sum(result.advantages) == pytest.approx(0.0, abs=1e-6)
+    assert len(_scalars(result)) == 3
+    assert sum(_scalars(result)) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_max_rl_advantage_fn_mean_normalized():
     # mean 0.25: the success gets (1 - 0.25)/0.25 = 3, failures (0 - 0.25)/0.25 = -1
     result = max_rl_advantage_fn(_make_group(rewards=[1.0, 0.0, 0.0, 0.0]))
-    assert result.advantages == pytest.approx([3.0, -1.0, -1.0, -1.0])
+    assert _scalars(result) == pytest.approx([3.0, -1.0, -1.0, -1.0])
 
     # no-success groups carry no signal (the paper's K=0 convention) ...
-    assert max_rl_advantage_fn(_make_group(rewards=[0.0, 0.0])).advantages == [0.0, 0.0]
+    assert _scalars(max_rl_advantage_fn(_make_group(rewards=[0.0, 0.0]))) == [0.0, 0.0]
     # ... and all-success groups center to zero like GRPO
-    assert max_rl_advantage_fn(_make_group(rewards=[1.0, 1.0])).advantages == pytest.approx([0.0, 0.0])
+    assert _scalars(max_rl_advantage_fn(_make_group(rewards=[1.0, 1.0]))) == pytest.approx([0.0, 0.0])
 
 
 def test_efficiency_mixed_group():
@@ -87,13 +95,13 @@ def test_efficiency_mixed_group():
     # shaped_rewards = R * (1 + bonus * correct_mask) = [1.5, 1, 0, 1]
     # baseline = mean(shaped_rewards) = 0.875
     # A = shaped_rewards - baseline = [0.625, 0.125, -0.875, 0.125]
-    assert result.advantages == pytest.approx([0.625, 0.125, -0.875, 0.125], abs=1e-6)
+    assert _scalars(result) == pytest.approx([0.625, 0.125, -0.875, 0.125], abs=1e-6)
 
     # Zero-mean per group
-    assert sum(result.advantages) == pytest.approx(0.0, abs=1e-6)
+    assert sum(_scalars(result)) == pytest.approx(0.0, abs=1e-6)
 
     # All correct rollouts have positive advantage
-    for rollout, adv in zip(inputs.rollouts, result.advantages):
+    for rollout, adv in zip(inputs.rollouts, _scalars(result)):
         if rollout["reward"] >= 1.0:
             assert adv > 0
 
@@ -109,13 +117,13 @@ def test_efficiency_all_correct_group():
     shaped = [11.0 / 7, 8.0 / 7, 1.0]
     mean_shaped = sum(shaped) / len(shaped)
     expected = [s - mean_shaped for s in shaped]
-    assert result.advantages == pytest.approx(expected, abs=1e-6)
+    assert _scalars(result) == pytest.approx(expected, abs=1e-6)
 
     # Zero-mean
-    assert sum(result.advantages) == pytest.approx(0.0, abs=1e-6)
+    assert sum(_scalars(result)) == pytest.approx(0.0, abs=1e-6)
 
     # Shortest has highest advantage
-    assert result.advantages[0] > result.advantages[1] > result.advantages[2]
+    assert _scalars(result)[0] > _scalars(result)[1] > _scalars(result)[2]
 
 
 def test_efficiency_all_zero_rewards():
@@ -124,7 +132,7 @@ def test_efficiency_all_zero_rewards():
     result_with = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
     result_without = default_advantage_fn(inputs)
 
-    assert result_with.advantages == pytest.approx(result_without.advantages, abs=1e-6)
+    assert _scalars(result_with) == pytest.approx(_scalars(result_without), abs=1e-6)
 
 
 def test_efficiency_single_correct():
@@ -132,7 +140,7 @@ def test_efficiency_single_correct():
     inputs = _make_group(rewards=[1.0, 0.0, 0.0, 0.0], completion_lengths=[100, 50, 200, 150])
     result = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
 
-    assert result.advantages == pytest.approx([0.75, -0.25, -0.25, -0.25], abs=1e-6)
+    assert _scalars(result) == pytest.approx([0.75, -0.25, -0.25, -0.25], abs=1e-6)
 
 
 def test_efficiency_shorter_correct_higher_advantage():
@@ -140,7 +148,7 @@ def test_efficiency_shorter_correct_higher_advantage():
     inputs = _make_group(rewards=[1.0, 1.0, 1.0, 0.0, 0.0], completion_lengths=[50, 100, 200, 80, 120])
     result = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
 
-    advs = result.advantages
+    advs = _scalars(result)
     assert advs[0] > advs[1] > advs[2]
     assert all(a > 0 for a in advs[:3])
     assert all(a < 0 for a in advs[3:])
@@ -157,8 +165,8 @@ def test_efficiency_zero_mean_per_group():
         length_penalty=_TOKENS_COMPLETION,
     )
 
-    assert sum(mixed.advantages) == pytest.approx(0.0, abs=1e-6)
-    assert sum(all_correct.advantages) == pytest.approx(0.0, abs=1e-6)
+    assert sum(_scalars(mixed)) == pytest.approx(0.0, abs=1e-6)
+    assert sum(_scalars(all_correct)) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_efficiency_amplification_bounded():
@@ -169,7 +177,7 @@ def test_efficiency_amplification_bounded():
     # Shortest correct gets bonus ≈ 1, so shaped_reward ≈ 2
     # Standard reward = 1, so amplification ≈ 2x
     # shaped_rewards ≈ [2, 1, 0], baseline ≈ 1, max advantage ≈ 1
-    assert result.advantages[0] < 1.0 + 1e-3
+    assert _scalars(result)[0] < 1.0 + 1e-3
 
 
 def test_efficiency_tokens_with_tool_response_weight():
@@ -191,16 +199,16 @@ def test_efficiency_tokens_with_tool_response_weight():
             "metrics": {"rlm_total_tool_response_tokens": 100},
         },
     ]
-    inputs = AdvantageInputs(rollouts=rollouts)
+    inputs = AdvantageInputs(rollouts=rollouts, completion_lengths=[1] * len(rollouts))
 
     # completion tokens identical (10 each) → completion-only shaping is a no-op
     result_completion_only = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
-    assert result_completion_only.advantages == pytest.approx([0.0, 0.0, 0.0], abs=1e-6)
+    assert _scalars(result_completion_only) == pytest.approx([0.0, 0.0, 0.0], abs=1e-6)
 
     # tool-response only: costs are [200, 0, 100], mean=100, bonus is one-sided
     # so only the below-mean rollout (idx 1) gets amplified; the at/above-mean tie.
     result_tool_only = default_advantage_fn(inputs, length_penalty=_TOKENS_TOOL_ONLY)
-    advs = result_tool_only.advantages
+    advs = _scalars(result_tool_only)
     assert advs[1] > advs[0]
     assert advs[1] > advs[2]
     assert advs[0] == pytest.approx(advs[2], abs=1e-6)
@@ -217,9 +225,14 @@ def test_efficiency_fractional_weight_with_int_rewards():
     rollouts_float = [{**r, "reward": float(r["reward"])} for r in rollouts_int]
 
     fractional = TokensLengthPenaltyConfig(completion_weight=0.3, tool_response_weight=0.0)
-    int_result = default_advantage_fn(AdvantageInputs(rollouts=rollouts_int), length_penalty=fractional)
-    float_result = default_advantage_fn(AdvantageInputs(rollouts=rollouts_float), length_penalty=fractional)
-    assert int_result.advantages == pytest.approx(float_result.advantages, abs=1e-6)
+    lengths = [1] * len(rollouts_int)
+    int_result = default_advantage_fn(
+        AdvantageInputs(rollouts=rollouts_int, completion_lengths=lengths), length_penalty=fractional
+    )
+    float_result = default_advantage_fn(
+        AdvantageInputs(rollouts=rollouts_float, completion_lengths=lengths), length_penalty=fractional
+    )
+    assert _scalars(int_result) == pytest.approx(_scalars(float_result), abs=1e-6)
 
 
 def test_efficiency_zero_costs_falls_back_to_plain_grpo():
@@ -230,11 +243,11 @@ def test_efficiency_zero_costs_falls_back_to_plain_grpo():
         {"reward": 1.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
         {"reward": 0.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
     ]
-    inputs = AdvantageInputs(rollouts=rollouts)
+    inputs = AdvantageInputs(rollouts=rollouts, completion_lengths=[1] * len(rollouts))
     result = default_advantage_fn(inputs, length_penalty=_TOKENS_TOOL_ONLY)
     expected = default_advantage_fn(inputs)  # plain GRPO
-    assert not any(math.isnan(a) for a in result.advantages)
-    assert result.advantages == pytest.approx(expected.advantages, abs=1e-6)
+    assert not any(math.isnan(a) for a in _scalars(result))
+    assert _scalars(result) == pytest.approx(_scalars(expected), abs=1e-6)
 
 
 def test_efficiency_tokens_default_weights_match_completion_when_no_metric():
@@ -242,7 +255,7 @@ def test_efficiency_tokens_default_weights_match_completion_when_no_metric():
     inputs = _make_group(rewards=[1.0, 1.0, 0.0, 1.0], completion_lengths=[10, 30, 20, 20])
     result_default = default_advantage_fn(inputs, length_penalty=TokensLengthPenaltyConfig())
     result_completion = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
-    assert result_default.advantages == pytest.approx(result_completion.advantages, abs=1e-6)
+    assert _scalars(result_default) == pytest.approx(_scalars(result_completion), abs=1e-6)
 
 
 def test_efficiency_turns_penalty():
@@ -257,13 +270,14 @@ def test_efficiency_turns_penalty():
 
     # mean_correct_turns = (1+3+2)/3 = 2
     # bonus = clamp(1 - [1,3,2,2]/2, 0, 1) = [0.5, 0, 0, 0]
-    assert result.advantages == pytest.approx([0.625, 0.125, -0.875, 0.125], abs=1e-6)
+    assert _scalars(result) == pytest.approx([0.625, 0.125, -0.875, 0.125], abs=1e-6)
 
 
 def _train_rollouts(rewards: list[float]) -> list[TrainRollout]:
     """Wrap a list of rewards into ``TrainRollout``\\ s sharing a single
     ``group_id`` — ``assign_advantages`` works on one group at a time
-    (the sink groups by ``group_id`` upstream)."""
+    (the sink groups by ``group_id`` upstream). Each rollout carries one
+    two-completion-token training sample, so assigned streams have length 2."""
     gid = uuid.uuid4()
     return [
         TrainRollout(
@@ -273,30 +287,43 @@ def _train_rollouts(rewards: list[float]) -> list[TrainRollout]:
             group_id=gid,
             policy_version=0,
             off_policy_steps=0,
+            samples=[
+                TrainingSample(
+                    prompt_ids=[1],
+                    prompt_mask=[False],
+                    completion_ids=[2, 3],
+                    completion_mask=[True, True],
+                    completion_logprobs=[-0.1, -0.2],
+                    completion_temperatures=[],
+                    env_name="test",
+                )
+            ],
         )
         for r in rewards
     ]
 
 
-def test_assign_advantages_writes_field():
+def test_assign_advantages_writes_per_token_stream():
     rollouts = _train_rollouts([1.0, 0.5, 0.8])
     assign_advantages(rollouts, default_advantage_fn)
-    advs = [r.advantage for r in rollouts]
-    assert sum(advs) == pytest.approx(0.0, abs=1e-6)
+    streams = [r.advantages for r in rollouts]
+    # group credit broadcasts uniformly over each rollout's completion tokens
+    assert all(len(s) == 2 and s[0] == s[1] for s in streams)
+    assert sum(s[0] for s in streams) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_assign_advantages_without_fn_is_reward():
     """``advantage_fn=None`` falls back to ``advantage = reward``."""
     rollouts = _train_rollouts([1.0, 0.5, 0.8])
     assign_advantages(rollouts, None)
-    assert [r.advantage for r in rollouts] == [1.0, 0.5, 0.8]
+    assert [r.advantages for r in rollouts] == [[1.0, 1.0], [0.5, 0.5], [0.8, 0.8]]
 
 
 def test_assign_advantages_singleton_group_is_zero():
     """A group of size 1 has reward == mean, so its advantage is 0."""
     rollouts = _train_rollouts([0.7])
     assign_advantages(rollouts, default_advantage_fn)
-    assert rollouts[0].advantage == pytest.approx(0.0, abs=1e-6)
+    assert rollouts[0].advantages == pytest.approx([0.0, 0.0], abs=1e-6)
 
 
 def test_custom_advantage_algorithm():
@@ -314,10 +341,9 @@ def test_custom_advantage_algorithm():
     inputs = _make_group(rewards=[1.0, 0.5, 0.8], completion_lengths=[10, 12, 8])
 
     result = algorithm.advantage_fn(inputs)
-    assert isinstance(result, AdvantageOutputs)
-    assert result.advantages == pytest.approx([2.0, 1.0, 1.6], abs=1e-6)
+    assert _scalars(result) == pytest.approx([2.0, 1.0, 1.6], abs=1e-6)
 
 
-def _dummy_custom_advantage(inputs: AdvantageInputs, scale: float = 1.0) -> AdvantageOutputs:
+def _dummy_custom_advantage(inputs: AdvantageInputs, scale: float = 1.0) -> list[list[float]]:
     """A simple custom advantage for testing."""
-    return AdvantageOutputs(advantages=[r["reward"] * scale for r in inputs.rollouts])
+    return inputs.broadcast([r["reward"] * scale for r in inputs.rollouts])

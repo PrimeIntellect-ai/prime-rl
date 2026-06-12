@@ -31,9 +31,9 @@ This page covers the math and the configurable algorithmic components: the algor
 A training algorithm in `prime-rl` is a bundle of two components, configured under `[orchestrator.algo]`:
 
 1. **Sampling** (`algo.sampling`) — how train rollouts are produced: which model generates them. `source` is a [model reference](#model-references): `"policy"` (the live policy, the default) or an inline frozen hosted model. Group sizing stays on the env config (`group_size`).
-2. **Advantage** (`algo.advantage`) — the per-token training signal: credit assignment and loss routing, fused. One mapping from a finalized rollout to per-token *(loss component, weight)* pairs — the credit a token gets and the loss that consumes it are two coordinates of the same output. Group-relative strategies compute scalars on the orchestrator and ship numbers; reference-KL strategies query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The strategy determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`) and what happens to env-provided observation tokens in multi-turn rollouts (masked out by default; `echo` trains on them with weighted CE).
+2. **Advantage** (`algo.advantage`) — the per-token training signal: credit assignment and loss routing, fused. One mapping from a finalized rollout to per-token *(loss component, weight)* pairs — the credit a token gets and the loss that consumes it are two coordinates of the same output. Group-relative strategies compute credit on the orchestrator and ship per-token advantage streams; reference-KL strategies query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The strategy determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`) and what happens to env-provided observation tokens in multi-turn rollouts (masked out by default; `echo` trains on them with weighted CE).
 
-The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, ref_kl), each normalized by its own global token count; per-token component weight streams ship on the wire (`rl_weights` / `ce_weights` / `ref_kl_weights` on each training sample) and the trainer just executes them. Adding an algorithm never touches the dispatcher, packer, or trainer hot path.
+The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, ref_kl), each normalized by its own global token count; per-token streams ship on the wire (the `rl_weights` / `ce_weights` / `ref_kl_weights` component weights plus the `advantages` stream on each training sample) and the trainer just executes them. Adding an algorithm never touches the dispatcher, packer, or trainer hot path.
 
 ### Model References
 
@@ -71,9 +71,9 @@ type = "grpo"  # the default
 | `sft` | *(the teacher)* | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs a `teacher` (folds into `sampling.source`). |
 | `opsd` | policy | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. Defaults to the live policy (the paper's setting, no extra deployment); set an inline `model` to score under a frozen copy instead. |
 | `echo` | policy | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-provided tokens already present in the rollout, selected by message role (needs the renderer's role attribution). Defaults to tool-response bodies at `alpha = 0.1` (ECHO's λ); set `roles` to train other roles, each at its own weight. |
-| `rlcsd` | policy | `rl` on actions (per-token) | RLCSD ([arXiv:2606.11709](https://arxiv.org/abs/2606.11709)): GRPO anchored by the verifier, with a contrastive self-distillation signal — the teacher's logprobs under a correct sibling-rollout hint vs. under K incorrect sibling hints — modulating the advantage magnitude at high-signal tokens (sign-preserving). The identical hint template makes the privilege-induced style shift cancel in the subtraction, concentrating the signal on task-bearing tokens. Teacher defaults to the live policy. |
+| `rlcsd` | policy | `rl` on actions | RLCSD ([arXiv:2606.11709](https://arxiv.org/abs/2606.11709)): GRPO anchored by the verifier, with a contrastive self-distillation signal — the teacher's logprobs under a correct sibling-rollout hint vs. under K incorrect sibling hints — modulating the advantage magnitude at high-signal tokens (sign-preserving). The identical hint template makes the privilege-induced style shift cancel in the subtraction, concentrating the signal on task-bearing tokens. Teacher defaults to the live policy. |
 | `reward` | policy | `rl` on actions | REINFORCE-style: advantage = raw reward, no group baseline. |
-| `custom` | policy | `rl` on actions | Your own advantage function (`import_path`), scalar per rollout, optionally per-token — see [Custom Advantage](#custom-advantage). |
+| `custom` | policy | `rl` on actions | Your own advantage function (`import_path`), per-token advantages per rollout — see [Custom Advantage](#custom-advantage). |
 
 ### Customizing Components
 
@@ -148,13 +148,13 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 
 Each class owns its methods outright — reading one top to bottom reads the algorithm. The execution points of the training signal:
 
-- `assign(rollouts)` — at group finalization, cheap and synchronous; sets rollout-level scalar (and optionally per-token) advantages.
+- `assign(rollouts)` — at group finalization, cheap and synchronous; sets the rollouts' per-token advantage streams (uniform group credit broadcasts over completion tokens).
 - `async score(rollouts)` — at batch-ship time; attaches per-token reference data by querying `self.reference_pool` (connected in `setup()` from the algorithm's declared model reference — the live policy pool when the reference is `"policy"`).
 - `observation_weights(output)` — at sample construction; per-token CE weights for env-provided observation tokens, one list per trajectory step. The default (`None`) masks every observation out; `echo` overrides it with role selection (via the renderer's attribution) narrowed by the optional user filter, and interleaving just aligns the returned spans onto the merged samples.
 
 These hooks are the stages of one compilation — finalized rollouts in, per-token component weight streams out — and the pipeline drives it through three base-class entry points it never looks inside: `build_samples(rollout)` per arrival (interleaving + observation weighting), `finalize_group(rollouts)` per group (credit + wire stamping), `score(rollouts)` per batch.
 
-Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`) and what it calls its reference model (`model_role`, e.g. `"teacher"`). Every class is constructed with the policy pool and the policy's renderer — text → token ids always goes through the renderer, the same path the policy's own prompts take (`opsd` requires one, validated at config time). The pipeline only ever calls the base-class hooks — writing your own algorithm is subclassing `Algorithm` and overriding `assign` and/or `score`. For pure scalar credit, no subclass is needed: `advantage.type = "custom"` imports a plain advantage function (see [Custom Advantage](#custom-advantage)); custom reference scoring means forking one of the named classes. Shared math (group normalization, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
+Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`) and what it calls its reference model (`model_role`, e.g. `"teacher"`). Every class is constructed with the policy pool and the policy's renderer — text → token ids always goes through the renderer, the same path the policy's own prompts take (`opsd` requires one, validated at config time). The pipeline only ever calls the base-class hooks — writing your own algorithm is subclassing `Algorithm` and overriding `assign` and/or `score`. For pure credit assignment, no subclass is needed: `advantage.type = "custom"` imports a plain advantage function (see [Custom Advantage](#custom-advantage)); custom reference scoring means forking one of the named classes. Shared math (group normalization, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
 
 ## Async / Off-Policy Training
 
@@ -179,11 +179,11 @@ $$
 \mathcal{L} = \frac{\sum \mathcal{L}_{rl}}{N_{rl}} + \frac{\sum \mathcal{L}_{ce}}{N_{ce}} + \frac{\sum \mathcal{L}_{ref\_kl}}{N_{ref\_kl}}
 $$
 
-- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the scalar advantage strategies (`grpo`, `max_rl`, `reward`, `custom`, and `echo`'s action tokens).
+- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the group-relative advantage strategies (`grpo`, `max_rl`, `reward`, `custom`, and `echo`'s action tokens).
 - `ce` — masked NLL. Used for frozen-model tokens (`sft`) and env-observation tokens (`echo`).
 - `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `opsd`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
-The orchestrator stamps each sample's component membership as per-token weight streams (`rl_weights` / `ce_weights` / `ref_kl_weights` on the wire): a weight scales that component's per-token loss, `0.0` leaves the token out of the component entirely (mask *and* denominator), and components may overlap on the same token — their gradients sum. Each $N$ is the global (all-reduced) count of that component's member tokens, so the components don't dilute each other: adding echo observation tokens never changes the rl term's effective per-token learning rate, and an sft env packed next to a GRPO env doesn't soften its gradient. Tokens of different components pack freely into the same micro batch, and a plain GRPO run ships no streams at all (absent streams mean rl weight 1.0 on every trainable token — the unchanged hot path).
+The orchestrator stamps each sample's component membership as per-token weight streams (`rl_weights` / `ce_weights` / `ref_kl_weights` on the wire): a weight scales that component's per-token loss, `0.0` leaves the token out of the component entirely (mask *and* denominator), and components may overlap on the same token — their gradients sum. Each $N$ is the global (all-reduced) count of that component's member tokens, so the components don't dilute each other: adding echo observation tokens never changes the rl term's effective per-token learning rate, and an sft env packed next to a GRPO env doesn't soften its gradient. Tokens of different components pack freely into the same micro batch, and a plain GRPO run ships no weight streams at all (absent streams mean rl weight 1.0 on every trainable token — the unchanged hot path). Advantages always ship per token (`advantages` on the wire), assigned as per-token streams from the start — uniform group credit is broadcast over completion tokens at assignment; algorithms with no rl credit (opd, opsd) ship none.
 
 ### Default RL Loss
 
@@ -275,7 +275,7 @@ Anything you put in `metrics` is averaged across sequences and logged with the o
 
 ## Advantage
 
-The advantage strategy is the `advantage` component of the [algorithm](#the-algorithm-abstraction) — every training signal is an advantage, varying in granularity (group-scalar vs. per-token) and evaluation site (orchestrator vs. trainer). `[orchestrator.advantage]` (and per-env `advantage = {...}`) is shorthand for `algo.advantage`. Types:
+The advantage strategy is the `advantage` component of the [algorithm](#the-algorithm-abstraction) — every training signal is a per-token advantage stream, varying in evaluation site (orchestrator vs. trainer). `[orchestrator.advantage]` (and per-env `advantage = {...}`) is shorthand for `algo.advantage`. Types:
 
 | Type | Component | Effect |
 |---|---|---|
@@ -283,11 +283,11 @@ The advantage strategy is the `advantage` component of the [algorithm](#the-algo
 | `max_rl` | `rl` | Mean-normalized group credit (maximum-likelihood RL). |
 | `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-provided tokens selected by message role (each role's `alpha` is its ECHO λ), optionally narrowed by a user filter. |
 | `reward` | `rl` | Advantage = raw reward, no baseline. |
-| `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No scalars — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0; `group_size` only fans out sampling. |
-| `opsd` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No scalars — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0. |
-| `rlcsd` | `rl` | Std-normalized group scalars, modulated per token at ship time by the contrastive hinted-teacher signal (`λ·tanh(e_ctr/τ)`, masked at `δ`, sign-preserving clamp, two-path normalization via `η`). Ships per-token advantages. |
-| `sft` | `ce` | Cross-entropy on the sampled tokens. The loss ignores scalars, but group-relative scalars are still assigned so reward-based filtering keeps working. |
-| `custom` | `rl` | Your function (below); scalar per rollout, optionally per-token. |
+| `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream; `group_size` only fans out sampling. |
+| `opsd` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream. |
+| `rlcsd` | `rl` | Std-normalized group credit, modulated per token at ship time by the contrastive hinted-teacher signal (`λ·tanh(e_ctr/τ)`, masked at `δ`, sign-preserving clamp, two-path normalization via `η`). |
+| `sft` | `ce` | Cross-entropy on the sampled tokens. The loss ignores advantages, but group-relative credit is still assigned so reward-based filtering keeps working. |
+| `custom` | `rl` | Your function (below); per-token advantages per rollout. |
 
 ### Default Advantage
 
@@ -308,18 +308,18 @@ type = "tokens"
 
 ### Custom Advantage
 
-Advantages are computed **per group**. You write a function that takes one group of rollouts and returns one advantage scalar per rollout. The orchestrator handles groups of varying size automatically — partial-group training kicks in when some rollouts in a group errored.
+Advantages are computed **per group**. You write a function that takes one group of rollouts and returns per-token advantages: one list per rollout, aligned to `inputs.completion_lengths` (that rollout's training-sample completion tokens — for multi-turn envs the merged completion, including interleaved observation tokens). There is no scalar advantage anywhere in the pipeline — uniform group credit goes through `inputs.broadcast(...)`, which spreads one value per rollout over its completion tokens. The orchestrator handles groups of varying size automatically — partial-group training kicks in when some rollouts in a group errored.
 
 ```python
 # my_module.py
 import statistics
-from prime_rl.orchestrator.algo import AdvantageInputs, AdvantageOutputs
+from prime_rl.orchestrator.algo import AdvantageInputs
 
-def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> AdvantageOutputs:
+def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> list[list[float]]:
     rewards = [r["reward"] for r in inputs.rollouts]
     mean = statistics.fmean(rewards)
     std = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
-    return AdvantageOutputs(advantages=[(r - mean) / (std + eps) for r in rewards])
+    return inputs.broadcast([(r - mean) / (std + eps) for r in rewards])
 ```
 
 ```toml
@@ -331,23 +331,19 @@ kwargs = { eps = 1e-8 }
 
 `AdvantageInputs.rollouts` is a list of `verifiers.RolloutOutput`, so you have access to the full rollout (turns, tool calls, custom metadata) — not just the reward. Use this for anything reward-shaping-like that needs trajectory context.
 
-#### Per-token advantages
-
-A custom function can also emit **per-token advantages** (process rewards, step-level credit assignment) via `AdvantageOutputs.token_advantages` — one optional list per rollout, aligned to that rollout's completion tokens. `None` entries (or omitting the field) broadcast the scalar over the sequence; prompt positions are padded internally and never trained.
+Genuinely per-token credit (process rewards, step-level credit assignment) skips the broadcast and returns shaped lists directly:
 
 ```python
-def step_weighted_advantage(inputs: AdvantageInputs) -> AdvantageOutputs:
+def step_weighted_advantage(inputs: AdvantageInputs) -> list[list[float]]:
     rewards = [r["reward"] for r in inputs.rollouts]
     baseline = statistics.fmean(rewards)
-    scalars = [r - baseline for r in rewards]
-    token_advantages = [
-        [scalar * w for w in my_token_weights(rollout)]  # one float per completion token
-        for scalar, rollout in zip(scalars, inputs.rollouts)
+    return [
+        [(reward - baseline) * w for w in my_token_weights(rollout)]  # one float per completion token
+        for reward, rollout in zip(rewards, inputs.rollouts)
     ]
-    return AdvantageOutputs(advantages=scalars, token_advantages=token_advantages)
 ```
 
-The scalar `advantages` are still required — advantage-based filters and metrics read them. Each list must match the rollout's completion token count exactly (for multi-turn envs that's the merged completion, including interleaved observation tokens), and the rollout must map to a single training sample — both are validated loudly at group finalization. Signals that depend on the live policy's weights (like OPD's reverse KL) cannot be precomputed here; those are reference-scoring algorithms, evaluated in the trainer.
+Each list must match `inputs.completion_lengths` exactly — validated loudly at group finalization. Advantage-based filters and metrics derive from the streams (the zero-advantage filter checks for all-zero streams; logged distributions use per-rollout means). Signals that depend on the live policy's weights (like OPD's reverse KL) cannot be precomputed here; those are reference-scoring algorithms, evaluated in the trainer.
 
 ### Reference Scoring
 
