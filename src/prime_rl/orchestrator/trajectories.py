@@ -1,6 +1,5 @@
 import base64
 import hashlib
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -202,68 +201,12 @@ def backfill_rollout_tokens(
     return True
 
 
-def _observation_span_weights(tokens: dict[str, Any], prefix_len: int, role_weights: dict[str, float]) -> list[float]:
-    """Per-token echo weights for one later-turn prompt extension
-    (``prompt_ids[prefix_len:]``).
-
-    Each token gets its message role's weight (0.0 for unselected roles), via
-    the renderer's per-token attribution — message content bodies when the
-    renderer provides ``is_content``, whole messages otherwise."""
-    attribution = tokens.get("prompt_attribution")
-    if attribution is None:
-        raise ValueError(
-            "echo selects env-provided tokens by message role, which needs the renderer's "
-            "per-token attribution — MITO rollouts don't carry it; set orchestrator.renderer."
-        )
-
-    # Serialized steps carry the attribution as a dict of RenderedTokens
-    # fields; in-process steps may carry the dataclass itself.
-    def field(key: str) -> Any:
-        return attribution.get(key) if isinstance(attribution, dict) else getattr(attribution, key, None)
-
-    indices = field("message_indices")
-    roles = field("message_roles")
-    is_content = field("is_content") or []
-    weights = []
-    for k in range(prefix_len, len(tokens["prompt_ids"])):
-        idx = indices[k]
-        selected = idx >= 0 and roles[idx] in role_weights
-        if selected and is_content:
-            selected = bool(is_content[k])
-        weights.append(role_weights[roles[idx]] if selected else 0.0)
-    return weights
-
-
-def _echo_filter_masks(output: vf.RolloutOutput, filter_fn: Callable[..., list[list[bool]]]) -> list[list[bool]]:
-    """Invoke the user echo filter and validate its shape: one keep-mask per
-    trajectory step, each spanning that step's ``prompt_ids`` +
-    ``completion_ids``."""
-    trajectory = output["trajectory"]
-    masks = filter_fn(output)
-    if not isinstance(masks, list) or len(masks) != len(trajectory):
-        got = len(masks) if isinstance(masks, list) else type(masks).__name__
-        raise ValueError(
-            f"echo filter must return one keep-mask per trajectory step: got {got}, expected {len(trajectory)}"
-        )
-    for step_idx, (step, mask) in enumerate(zip(trajectory, masks)):
-        tokens = step["tokens"]
-        expected = len(tokens["prompt_ids"]) + len(tokens["completion_ids"])
-        if not isinstance(mask, list) or len(mask) != expected:
-            got = len(mask) if isinstance(mask, list) else type(mask).__name__
-            raise ValueError(
-                f"echo filter mask for step {step_idx} must span the step's prompt+completion "
-                f"tokens: got {got}, expected {expected}"
-            )
-    return masks
-
-
 def interleave_rollout(
     output: vf.RolloutOutput,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
     *,
     env_name: str = "",
-    echo_roles: dict[str, float] | None = None,
-    echo_filter_fn: Callable[..., list[list[bool]]] | None = None,
+    obs_weights: list[list[float]] | None = None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -280,14 +223,13 @@ def interleave_rollout(
     Returns a list of samples - could be 1 (extension always held) or up to T
     (extension never held).
 
-    With ``echo_roles`` (message role → per-token ce weight), each sample
-    additionally carries ``completion_obs_weights`` over its
-    ``completion_ids``: env-provided tokens within the later-turn prompt
-    extensions get their message role's weight (via the renderer's per-token
-    attribution), everything else 0.0. ``echo_filter_fn`` optionally narrows
-    the selection with per-step keep-masks (see ``_echo_filter_masks``).
-    Algorithms that train on observations (ECHO) fold these weights into the
-    CE component instead of dropping the tokens.
+    With ``obs_weights`` (from :meth:`Algorithm.observation_weights` — one
+    per-token weight list per trajectory step, each spanning that step's
+    prompt + completion tokens), each sample additionally carries
+    ``completion_obs_weights`` over its ``completion_ids``: the spans that
+    land as later-turn prompt extensions keep their step's weights,
+    everything else is 0.0. Algorithms that train on observations (ECHO) fold
+    these weights into the CE component instead of dropping the tokens.
 
     For VLM models, each renderer-produced trajectory step carries its
     per-image processed tensors inline on ``multi_modal_data``; the last
@@ -347,7 +289,19 @@ def interleave_rollout(
             return None
         prepared_steps.append(prepared)
 
-    echo_filter_masks = _echo_filter_masks(output, echo_filter_fn) if echo_roles and echo_filter_fn else None
+    if obs_weights is not None:
+        if len(obs_weights) != len(prepared_steps):
+            raise ValueError(
+                f"observation weights must cover every trajectory step: "
+                f"got {len(obs_weights)}, expected {len(prepared_steps)}"
+            )
+        for step_idx, (step_tokens, step_weights) in enumerate(zip(prepared_steps, obs_weights)):
+            expected = len(step_tokens["prompt_ids"]) + len(step_tokens["completion_ids"])
+            if len(step_weights) != expected:
+                raise ValueError(
+                    f"observation weights for step {step_idx} must span the step's prompt+completion "
+                    f"tokens: got {len(step_weights)}, expected {expected}"
+                )
 
     # Deferred routed_experts state per sample: O(N) chunk list concatenated
     # once at finalize, replacing the prior O(N²) per-extension unpack/repack.
@@ -381,7 +335,7 @@ def interleave_rollout(
             mm_token_type_ids=None,
             routed_experts=None,  # deferred — finalized at end of interleave_rollout
             # A step's own completion tokens are actions, not observations
-            completion_obs_weights=[0.0] * len(completion_ids) if echo_roles else None,
+            completion_obs_weights=[0.0] * len(completion_ids) if obs_weights is not None else None,
         )
         # Initialize routed-experts state for this sample. First chunk is the
         # raw step routed_experts (no pad, no copy). running_len is the
@@ -451,11 +405,8 @@ def interleave_rollout(
         sample.completion_mask.extend([False] * len(new_prompt_ids))
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
         if sample.completion_obs_weights is not None:
-            weights = _observation_span_weights(tokens, prefix_len, echo_roles)
-            if echo_filter_masks is not None:
-                step_mask = echo_filter_masks[step_idx]
-                weights = [w if step_mask[prefix_len + j] else 0.0 for j, w in enumerate(weights)]
-            sample.completion_obs_weights.extend(weights)
+            assert obs_weights is not None
+            sample.completion_obs_weights.extend(obs_weights[step_idx][prefix_len : len(tokens["prompt_ids"])])
 
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]

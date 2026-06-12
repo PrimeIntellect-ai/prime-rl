@@ -158,12 +158,12 @@ class TrainSink:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
         algorithm = self.train_envs.get(rollout.env_name).algorithm
         samples = await asyncio.to_thread(
-            interleave_rollout,
-            raw,
-            mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
-            env_name=rollout.env_name,
-            echo_roles=algorithm.echo_roles,
-            echo_filter_fn=algorithm.echo_filter_fn,
+            lambda: interleave_rollout(
+                raw,
+                mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
+                env_name=rollout.env_name,
+                obs_weights=algorithm.observation_weights(raw),
+            )
         )
         rollout.samples = samples or []
         # Offload base64 image bytes to disk as soon as the rollout is

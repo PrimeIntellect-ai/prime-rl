@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar
 
 from prime_rl.configs.algorithm import ActionLossType, AlgorithmConfig, FrozenModelConfig
@@ -36,6 +35,7 @@ from prime_rl.orchestrator.algo.routing import spread_token_advantages, stamp_lo
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    import verifiers as vf
     from renderers.base import Renderer
 
     from prime_rl.orchestrator.envs import TrainEnvs
@@ -60,7 +60,7 @@ class Algorithm:
     bundle's ``advantage`` component (its sibling :class:`Sampler` interprets
     ``sampling``).
 
-    Subclass and override the two execution points of the training signal:
+    Subclass and override the execution points of the training signal:
 
     - :meth:`assign` — group finalization, cheap and synchronous; set
       rollout-level scalar (and optionally per-token) advantages. The default
@@ -68,6 +68,9 @@ class Algorithm:
       filters skip them).
     - :meth:`score` — batch-ship time, async; attach per-token reference data
       by querying ``self.reference_pool``. The default scores nothing.
+    - :meth:`observation_weights` — sample-construction time; per-token ce
+      weights for env-provided observation tokens. The default (``None``)
+      masks them all out.
 
     Class-level declarations say what the algorithm needs: which loss
     component its action tokens feed (``action_loss_type``) and what it calls
@@ -85,11 +88,6 @@ class Algorithm:
         self.renderer = renderer
         self.reference_pool: InferencePool | None = None  # resolved in setup() when the algorithm declares a model
         self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
-        # Echo selection: message role -> per-token ce weight for env-provided
-        # tokens (None masks them all out), plus an optional user filter
-        # narrowing the selection per rollout. Consumed by interleave_rollout.
-        self.echo_roles: dict[str, float] | None = None
-        self.echo_filter_fn: Callable[..., list[list[bool]]] | None = None
 
     async def setup(self) -> None:
         """Connect a client pool to the algorithm's frozen reference model and
@@ -107,6 +105,14 @@ class Algorithm:
 
     async def score(self, rollouts: list[TrainRollout]) -> None:
         """Attach per-token reference data to a batch of rollouts at ship time."""
+
+    def observation_weights(self, output: vf.RolloutOutput) -> list[list[float]] | None:
+        """Per-token ce weights for env-provided observation tokens: one list
+        per trajectory step, each spanning that step's ``prompt_ids`` +
+        ``completion_ids``. ``interleave_rollout`` aligns the spans onto the
+        merged samples; algorithms that train on observations (echo) override
+        this. ``None`` (the default) masks every observation token out."""
+        return None
 
     def finalize_group(self, rollouts: list[TrainRollout]) -> None:
         """Score one finalized group: assign credit, then stamp each sample's

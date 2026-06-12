@@ -5,7 +5,7 @@ import pytest
 import verifiers as vf
 
 from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import spread_token_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import EchoAlgorithm, spread_token_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
 from prime_rl.orchestrator.types import TrainRollout
 from prime_rl.transport.types import TrainingSample
@@ -189,6 +189,15 @@ def test_spread_token_advantages_rejects_multi_sample_rollouts():
         spread_token_advantages(rollout)
 
 
+def _echo_algorithm(roles: dict | None = None, filter_fn=None) -> EchoAlgorithm:
+    advantage: dict = {"type": "echo"}
+    if roles is not None:
+        advantage["roles"] = roles
+    algo = EchoAlgorithm(AlgorithmConfig(advantage=advantage), MagicMock(), MagicMock())
+    algo.filter_fn = filter_fn
+    return algo
+
+
 def _two_step_rollout(attribution: dict | None = None) -> vf.RolloutOutput:
     def step(prompt_ids, completion_ids, logprobs, prompt_attribution=None):
         tokens = vf.TrajectoryStepTokens(
@@ -214,10 +223,13 @@ def _two_step_rollout(attribution: dict | None = None) -> vf.RolloutOutput:
             extras={},
         )
 
+    # Renderer rollouts carry attribution on every step; the first step's
+    # prompt never lands as observation tokens, so a minimal one suffices.
+    first_attribution = {"message_indices": [0, 0], "message_roles": ["user"]} if attribution is not None else None
     return vf.RolloutOutput(
         example_id=0,
         trajectory=[
-            step([1, 2], [3, 4], [-0.1, -0.2]),
+            step([1, 2], [3, 4], [-0.1, -0.2], prompt_attribution=first_attribution),
             # Extension: prompt re-includes [1,2,3,4]; tokens [5,6] are the
             # env's observation; [7,8] the next action.
             step([1, 2, 3, 4, 5, 6], [7, 8], [-0.3, -0.4], prompt_attribution=attribution),
@@ -234,7 +246,9 @@ def test_interleave_tags_observation_weights_by_role():
         "message_roles": ["user", "assistant", "tool"],
         "is_content": [True, True, True, True, False, True],
     }
-    samples = interleave_rollout(_two_step_rollout(attribution), env_name="test-env", echo_roles={"tool": 0.1})
+    rollout = _two_step_rollout(attribution)
+    algo = _echo_algorithm()  # the default table: tool bodies at 0.1
+    samples = interleave_rollout(rollout, env_name="test-env", obs_weights=algo.observation_weights(rollout))
     assert samples is not None and len(samples) == 1
     sample = samples[0]
     assert sample.completion_ids == [3, 4, 5, 6, 7, 8]
@@ -244,45 +258,35 @@ def test_interleave_tags_observation_weights_by_role():
 
     # Without is_content, whole messages count; each role carries its own weight.
     attribution = {"message_indices": [0, 0, 1, 1, 2, 3], "message_roles": ["user", "assistant", "tool", "user"]}
-    samples = interleave_rollout(
-        _two_step_rollout(attribution), env_name="test-env", echo_roles={"tool": 0.1, "user": 0.05}
-    )
+    rollout = _two_step_rollout(attribution)
+    algo = _echo_algorithm(roles={"tool": {"alpha": 0.1}, "user": {"alpha": 0.05}})
+    samples = interleave_rollout(rollout, env_name="test-env", obs_weights=algo.observation_weights(rollout))
     assert samples is not None
     assert samples[0].completion_obs_weights == [0.0, 0.0, 0.1, 0.05, 0.0, 0.0]
 
     # MITO rollouts carry no attribution: loud error, not a silent no-op.
     with pytest.raises(ValueError, match="attribution"):
-        interleave_rollout(_two_step_rollout(), env_name="test-env", echo_roles={"tool": 0.1})
+        _echo_algorithm().observation_weights(_two_step_rollout())
 
 
 def test_interleave_echo_filter_narrows_selection():
     attribution = {"message_indices": [0, 0, 1, 1, 2, 2], "message_roles": ["user", "assistant", "tool"]}
+    rollout = _two_step_rollout(attribution)
 
-    def keep_last_only(rollout):
+    def keep_last_only(output):
         # One keep-mask per step over prompt+completion; drops span position 4.
         return [[True] * 4, [True, True, True, True, False, True, True, True]]
 
-    samples = interleave_rollout(
-        _two_step_rollout(attribution), env_name="test-env", echo_roles={"tool": 0.1}, echo_filter_fn=keep_last_only
-    )
+    algo = _echo_algorithm(filter_fn=keep_last_only)
+    samples = interleave_rollout(rollout, env_name="test-env", obs_weights=algo.observation_weights(rollout))
     assert samples is not None
     assert samples[0].completion_obs_weights == [0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
 
     # Shape violations fail loudly: wrong step count, wrong per-step length.
     with pytest.raises(ValueError, match="per trajectory step"):
-        interleave_rollout(
-            _two_step_rollout(attribution),
-            env_name="test-env",
-            echo_roles={"tool": 0.1},
-            echo_filter_fn=lambda r: [[True] * 4],
-        )
+        _echo_algorithm(filter_fn=lambda output: [[True] * 4]).observation_weights(rollout)
     with pytest.raises(ValueError, match="prompt\\+completion"):
-        interleave_rollout(
-            _two_step_rollout(attribution),
-            env_name="test-env",
-            echo_roles={"tool": 0.1},
-            echo_filter_fn=lambda r: [[True] * 4, [True] * 6],
-        )
+        _echo_algorithm(filter_fn=lambda output: [[True] * 4, [True] * 6]).observation_weights(rollout)
 
 
 def test_interleave_obs_weights_off_by_default():
