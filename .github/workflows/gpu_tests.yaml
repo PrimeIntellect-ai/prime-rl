@@ -78,6 +78,9 @@ jobs:
           - test: alphabet_sort
             runner: vm
             pytest_args: "tests/integration/test_alphabet_sort.py"
+          - test: ckpt_compat
+            runner: vm
+            pytest_args: "tests/integration/test_ckpt_compat.py"
           - test: reverse_text_lora
             runner: vm
             pytest_args: "tests/integration/test_reverse_text_lora.py"
