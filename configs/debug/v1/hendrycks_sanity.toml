@@ -30,8 +30,6 @@ seq_len = 8192
 name = "hendrycks-math"
 taskset = { id = "math-env-v1", dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
 harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
-# Cap scoring so a wedged verify (sympy can outlive its in-script alarm) can't hold a
-# rollout's permit forever and stall the run; on timeout the verify subprocess is killed.
 timeout = { scoring = 10 }
 
 [orchestrator.eval]
