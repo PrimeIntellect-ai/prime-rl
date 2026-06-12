@@ -128,15 +128,32 @@ def test_prepare_sample_uniform_rl_keeps_streams_none(make_training_example):
     assert micro_batch.ref_kl_weights is None
 
 
-def test_prepare_batch_packs_mixed_components(make_training_example):
+@pytest.mark.parametrize("streams_on_longer", [True, False])
+def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_longer):
     """Component membership is per token, so samples feeding different
-    components pack together; the plain-rl sample's positions backfill with
-    the stream defaults (rl 1.0, ce 0.0)."""
-    rl_example = make_training_example()
-    ce_example = make_training_example(ce_weights=[0.0, 0.0, 1.0, 1.0], rl_weights=[0.0, 0.0, 0.0, 0.0])
+    components pack together. The stream-less sample's positions must backfill
+    with the stream defaults (rl 1.0, ce 0.0) on whichever side of the pack
+    boundary it lands — a wrong-side backfill silently reroutes tokens between
+    components while keeping every array length-aligned."""
+    longer = TrainingSample(
+        prompt_ids=[1, 2, 3],
+        prompt_mask=[False] * 3,
+        completion_ids=[4, 5, 6],
+        completion_mask=[True] * 3,
+        completion_logprobs=[-0.1] * 3,
+        completion_temperatures=[1.0] * 3,
+        advantage=1.0,
+        env_name="test-env",
+        ce_weights=[0.0, 0.0, 0.0, 1.0, 1.0, 1.0] if streams_on_longer else None,
+        rl_weights=[0.0] * 6 if streams_on_longer else None,
+    )
+    shorter = make_training_example(
+        ce_weights=None if streams_on_longer else [0.0, 0.0, 1.0, 1.0],
+        rl_weights=None if streams_on_longer else [0.0, 0.0, 0.0, 0.0],
+    )
 
     batches_per_gpu = prepare_batch(
-        rollouts=[rl_example, ce_example],
+        rollouts=[longer, shorter],
         seq_len=16,
         num_train_workers=1,
         idxs=[0, 0],
@@ -145,11 +162,15 @@ def test_prepare_batch_packs_mixed_components(make_training_example):
 
     flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
     assert len(flat_batches) == 1
-    assert len(flat_batches[0].input_ids) == 8
     batch = flat_batches[0]
-    # One side is the rl sample (backfilled rl 1.0 / ce 0.0), the other the ce sample
-    assert sorted(batch.rl_weights) == sorted([1.0] * 4 + [0.0] * 4)
-    assert sorted(batch.ce_weights) == sorted([0.0] * 4 + [0.0, 0.0, 1.0, 1.0])
+    # FFD places the longer sample first; every stream value must sit at its
+    # sample's offset, with the stream-less side backfilled.
+    if streams_on_longer:
+        assert batch.rl_weights == [0.0] * 6 + [1.0] * 4
+        assert batch.ce_weights == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0] + [0.0] * 4
+    else:
+        assert batch.rl_weights == [1.0] * 6 + [0.0] * 4
+        assert batch.ce_weights == [0.0] * 6 + [0.0, 0.0, 1.0, 1.0]
 
 
 @pytest.mark.parametrize("refs_on_longer", [True, False])

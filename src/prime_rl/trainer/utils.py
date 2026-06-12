@@ -405,6 +405,9 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
         "mismatch_kl/",
         "masked_mismatch_kl/",
         "unmasked_mismatch_kl/",
+        "ref_kl/is_masked/",
+        "ref_kl/masked_mismatch_kl/",
+        "ref_kl/unmasked_mismatch_kl/",
     )
     out: dict[str, float | int] = {}
     for k, v in metrics.items():

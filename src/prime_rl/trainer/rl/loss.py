@@ -210,10 +210,12 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
         per_token_loss = per_token_loss * inputs.loss_weights
     loss = per_token_loss.sum()
 
+    # Namespaced: the rl loss fn emits same-named trust-region metrics with a
+    # different definition, and mixed batches run both fns in one step.
     metrics = {
-        "masked_mismatch_kl": _safe_mean(mismatch_kl, drop_mask),
-        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
-        "is_masked": _safe_mean(is_masked, loss_mask),
+        "ref_kl/masked_mismatch_kl": _safe_mean(mismatch_kl, drop_mask),
+        "ref_kl/unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
+        "ref_kl/is_masked": _safe_mean(is_masked, loss_mask),
         "ref_kl": _safe_mean(ref_kl, loss_mask),
     }
 

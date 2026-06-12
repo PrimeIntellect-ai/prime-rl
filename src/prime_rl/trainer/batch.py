@@ -60,7 +60,16 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     if training_example.token_advantages is not None:
         advantages = list(training_example.token_advantages)
     else:
-        advantage = training_example.advantage if training_example.advantage is not None else 0.0
+        advantage = training_example.advantage
+        if advantage is None:
+            rl_w = training_example.rl_weights
+            has_rl_members = any(loss_mask) if rl_w is None else any(m and w != 0 for m, w in zip(loss_mask, rl_w))
+            if has_rl_members:
+                raise ValueError(
+                    f"sample from env '{training_example.env_name}' has rl member tokens but no advantage — "
+                    "the producer must stamp a scalar (the orchestrator ships 0.0 for scalar-less algorithms)"
+                )
+            advantage = 0.0
         advantages = [advantage] * len(input_ids)
     # Component weight streams: keep absent streams None (rl weight 1.0 on the
     # loss mask, no ce/ref_kl component) so the packed batch stays as small as before.
@@ -297,12 +306,13 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.temperatures.extend([1.0] * padding_size)
     if micro_batch.ref_logprobs is not None:
         micro_batch.ref_logprobs.extend([0.0] * padding_size)
-    # Padding tokens are loss-masked, so the rl fill value is irrelevant;
-    # ce/ref_kl membership is weight != 0, so their fill must be 0.0.
-    for stream_name, fill in STREAM_FILL.items():
+    # Padding is loss-masked, so no component trains it; fill every stream
+    # with 0.0 (not the pack-boundary defaults) so a padded pure-ce batch
+    # still reads as rl-empty in token export, which keys off nonzero weights.
+    for stream_name in STREAM_FILL:
         stream = getattr(micro_batch, stream_name)
         if stream is not None:
-            stream.extend([fill] * padding_size)
+            stream.extend([0.0] * padding_size)
     micro_batch.lora_num_tokens[-1] += (
         padding_size  # We send padding to the last lora so that tokens have ascending lora idx
     )
