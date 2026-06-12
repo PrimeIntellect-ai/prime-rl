@@ -96,7 +96,7 @@ The RL entrypoint supports several training algorithms, switched via `[orchestra
 
 `reward` (raw-reward credit, no baseline) and `custom` (your own advantage function) complete the set — see [Algorithms § The Algorithms](algorithms.md#the-algorithms).
 
-Frozen models are declared inline on the algorithm (`[orchestrator.algo.model]` with `name` + `base_url`). The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `base_url` at them:
+Frozen models are declared inline on the algorithm (`[orchestrator.algo.teacher]` with `name` + `base_url`). The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `base_url` at them:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \

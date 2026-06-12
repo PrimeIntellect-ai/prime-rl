@@ -22,7 +22,7 @@ group_size = 4
 [orchestrator.algo.advantage]
 type = "sft"
 
-[orchestrator.algo.model]
+[orchestrator.algo.teacher]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = ["http://localhost:8001/v1"]
 
