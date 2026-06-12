@@ -384,6 +384,7 @@ class StaticInferencePool:
         renderer_config: RendererConfig | None = None,
         pool_size: int | None = None,
     ):
+        self._client_config = client_config
         renderer_model_name = model_name if train_client_type == "renderer" else None
         self._train_clients = setup_clients(
             client_config,
@@ -393,7 +394,11 @@ class StaticInferencePool:
             pool_size=pool_size,
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
-        self._admin_clients = setup_admin_clients(client_config)
+        self._admin_clients = (
+            []
+            if client_config.backend == "dynamo" and not client_config.admin_base_url
+            else setup_admin_clients(client_config)
+        )
         self._model_clients = (
             setup_admin_clients(client_config, use_admin_base_url=False)
             if client_config.backend == "dynamo" or client_config.admin_base_url
@@ -428,10 +433,34 @@ class StaticInferencePool:
             await asyncio.sleep(0.5)
         return min(self.train_clients, key=lambda c: load[client_identity(c)])
 
+    async def _ensure_admin_clients(self, timeout: int) -> None:
+        if self._admin_clients:
+            return
+        if self._client_config.backend != "dynamo" or self._client_config.admin_base_url:
+            self._admin_clients = setup_admin_clients(self._client_config)
+            return
+
+        logger = get_logger()
+        wait_time = 0
+        while wait_time < timeout:
+            try:
+                self._admin_clients = await asyncio.to_thread(setup_admin_clients, self._client_config)
+                return
+            except Exception as e:
+                if wait_time % 10 == 0 and wait_time > 0:
+                    logger.warning(
+                        f"Dynamo worker admin URLs were not discovered after {wait_time} seconds (Error: {e})"
+                    )
+                await asyncio.sleep(1)
+                wait_time += 1
+        raise TimeoutError(f"Dynamo worker admin URLs were not discovered after {wait_time} seconds")
+
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
+        timeout = timeout if timeout is not None else self._wait_for_ready_timeout
+        await self._ensure_admin_clients(timeout)
         await check_health(
             self._admin_clients,
-            timeout=timeout if timeout is not None else self._wait_for_ready_timeout,
+            timeout=timeout,
             admin=self._admin_api,
         )
         await maybe_check_has_model(
@@ -439,6 +468,7 @@ class StaticInferencePool:
         )
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+        await self._ensure_admin_clients(self._wait_for_ready_timeout)
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step, admin=self._admin_api)
 
     def get_metrics(self) -> dict[str, float]:

@@ -1,12 +1,12 @@
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import verifiers as vf
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter, setup_clients
+from prime_rl.utils.client import StaticInferencePool, _is_retryable_lora_error, load_lora_adapter, setup_clients
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -117,3 +117,42 @@ def test_setup_clients_preserves_chat_client_defaults():
             extra_headers_from_state={},
         )
     ]
+
+
+def test_static_dynamo_admin_discovery_retries_in_wait_for_ready():
+    client_config = ClientConfig(
+        base_url=["http://worker-a:8000/v1"],
+        api_key_var="PRIME_API_KEY",
+        backend="dynamo",
+        wait_for_ready_timeout=2,
+    )
+    model_client = AsyncMock()
+    admin_client = AsyncMock()
+    admin_attempts = 0
+
+    def fake_setup_admin_clients(config, *, use_admin_base_url=True):
+        nonlocal admin_attempts
+        if not use_admin_base_url:
+            return [model_client]
+        admin_attempts += 1
+        if admin_attempts == 1:
+            raise ValueError("workers not ready")
+        return [admin_client]
+
+    with (
+        patch("prime_rl.utils.client.setup_admin_clients", side_effect=fake_setup_admin_clients),
+        patch("prime_rl.utils.client.check_health", new=AsyncMock()) as mock_check_health,
+        patch("prime_rl.utils.client.maybe_check_has_model", new=AsyncMock()) as mock_check_has_model,
+        patch("prime_rl.utils.client.asyncio.sleep", new=AsyncMock()),
+    ):
+        pool = StaticInferencePool(client_config, model_name="test-model")
+        assert pool.admin_clients == []
+
+        asyncio.run(pool.wait_for_ready("test-model", timeout=2))
+
+    assert admin_attempts == 2
+    assert pool.admin_clients == [admin_client]
+    mock_check_health.assert_awaited_once_with([admin_client], timeout=2, admin=pool._admin_api)
+    mock_check_has_model.assert_awaited_once_with(
+        [model_client], "test-model", skip_model_check=False, admin=pool._admin_api
+    )
