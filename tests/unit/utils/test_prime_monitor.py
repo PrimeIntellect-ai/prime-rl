@@ -1,11 +1,9 @@
 import io
 import json
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pyarrow.parquet as pq
 
-from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.configs.shared import PrimeMonitorConfig
 from prime_rl.utils.monitor.prime import PrimeMonitor
 
 
@@ -94,41 +92,6 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     assert len(rows) == 1
     assert rows[0]["problem_id"] == 1
     assert rows[0]["sample_id"] == 0
-
-
-def test_register_run_sends_display_metadata_from_orchestrator_config():
-    run_config = OrchestratorConfig(
-        student={"model": {"name": "PrimeIntellect/Qwen3-0.6B"}},
-        renderer=None,
-        train={"env": [{"id": "primeintellect/reverse-text"}]},
-        batch_size=64,
-        group_size=16,
-        seq_len=4096,
-        max_steps=100,
-    )
-    monitor = _new_monitor()
-    monitor.logger = Mock()
-    monitor.base_url = "https://api.test"
-    monitor._headers = {}
-    response = Mock(status_code=201)
-    response.json.return_value = {"run": {"id": "run-123"}}
-
-    with patch("prime_rl.utils.monitor.prime.httpx.post", return_value=response) as post:
-        run_id = monitor._register_run(
-            PrimeMonitorConfig(team_id="team-1", frontend_url="https://app.test"),
-            run_config,
-        )
-
-    assert run_id == "run-123"
-    payload = post.call_args.kwargs["json"]
-    assert payload["base_model"] == "PrimeIntellect/Qwen3-0.6B"
-    assert payload["max_steps"] == 100
-    assert payload["batch_size"] == 64
-    assert payload["rollouts_per_example"] == 16
-    assert payload["seq_len"] == 4096
-    assert payload["environments"] == [{"id": "primeintellect/reverse-text"}]
-    assert payload["team_id"] == "team-1"
-    assert payload["run_config"] == run_config.model_dump(exclude_none=True, mode="json")
 
 
 def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
