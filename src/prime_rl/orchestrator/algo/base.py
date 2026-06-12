@@ -30,7 +30,7 @@ import asyncio
 from collections import defaultdict
 from typing import TYPE_CHECKING, ClassVar
 
-from prime_rl.configs.algorithm import ActionLossType, AlgorithmConfig, FrozenModelConfig
+from prime_rl.configs.algorithm import ActionLossType, AdvantageConfig, FrozenModelConfig, ModelReference
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
 from prime_rl.utils.logger import get_logger
@@ -73,7 +73,8 @@ class Algorithm:
       the :meth:`assign` hook, then stamp the wire fields (advantage + loss
       routing).
     - :meth:`score` — per batch, at ship time, async: attach per-token
-      reference data by querying ``self.reference_pool``. Runs on batch
+      reference data by querying the algorithm's own reference pool (e.g.
+      ``self.teacher_pool``, connected in :meth:`setup`). Runs on batch
       survivors only, so filtered rollouts never cost reference compute.
 
     Subclasses override the hooks — :meth:`observation_weights` (default:
@@ -84,30 +85,36 @@ class Algorithm:
     Class-level declarations say what the algorithm needs: which loss
     component its action tokens feed (``action_loss_type``) and what it calls
     its reference model, if it has one (``model_role``, e.g. "teacher").
-    Constructed with the policy pool and the policy's renderer (the canonical
-    messages → token ids path; ``None`` under MITO); connects a client pool to
-    an inline frozen reference model in :meth:`setup`."""
+    Constructed with the advantage component it interprets plus the two
+    host-owned resources: the policy pool and the policy's renderer (the
+    canonical messages → token ids path; ``None`` under MITO). Algorithms
+    with frozen model references override :meth:`setup` and resolve them via
+    :meth:`connect`."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
     model_role: ClassVar[str | None] = None
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
-        self.config = config
+    def __init__(self, advantage: AdvantageConfig, policy_pool: InferencePool, renderer: Renderer | None):
+        self.advantage = advantage
         self.policy_pool = policy_pool
         self.renderer = renderer
-        self.reference_pool: InferencePool | None = None  # resolved in setup() when the algorithm declares a model
         self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
 
     async def setup(self) -> None:
-        """Connect a client pool to the algorithm's frozen reference model and
-        wait for readiness. Must run before scoring."""
-        reference = getattr(self.config.advantage, "model", None)
-        if reference is not None:
-            if reference == "policy":
-                self.reference_pool = self.policy_pool
-            else:
-                self.reference_pool = await connect_frozen_pool(reference)
-                self.connected_pools.append(self.reference_pool)
+        """Connect client pools to the algorithm's frozen models — override
+        and resolve each reference via :meth:`connect`. The base has nothing
+        to connect."""
+
+    async def connect(self, reference: ModelReference) -> InferencePool:
+        """Resolve a model reference to a client pool: the live policy's own
+        pool, or a freshly connected pool to a frozen endpoint. Only the
+        latter is tracked in ``connected_pools`` — the host closes what the
+        algorithm opened, and nothing else, at shutdown."""
+        if reference == "policy":
+            return self.policy_pool
+        pool = await connect_frozen_pool(reference)
+        self.connected_pools.append(pool)
+        return pool
 
     def assign(self, rollouts: list[TrainRollout]) -> None:
         """Assign credit to one finalized group of rollouts."""
@@ -150,11 +157,6 @@ class Algorithm:
                 sample.reward = rollout.reward
                 sample.env_name = rollout.env_name
                 stamp_loss_routing(sample, self.action_loss_type)
-
-    def _reference_pool(self) -> InferencePool:
-        pool = self.reference_pool
-        assert pool is not None, f"{self.model_role or 'reference'} pool not set — Algorithm.setup() must run first"
-        return pool
 
 
 async def score_train_batch(train_envs: TrainEnvs, rollouts: list[TrainRollout]) -> None:

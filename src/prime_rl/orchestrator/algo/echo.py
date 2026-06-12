@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable
 
-from prime_rl.configs.algorithm import AlgorithmConfig, EchoAdvantageConfig
+from prime_rl.configs.algorithm import AdvantageConfig, EchoAdvantageConfig
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.utils.utils import import_object
 
@@ -53,9 +53,8 @@ class EchoAlgorithm(GRPOAlgorithm):
     mask and its denominator. An optional user filter narrows the selection
     per rollout (e.g. dropping tool-output warnings)."""
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
-        super().__init__(config, policy_pool, renderer)
-        advantage = config.advantage
+    def __init__(self, advantage: AdvantageConfig, policy_pool: InferencePool, renderer: Renderer | None):
+        super().__init__(advantage, policy_pool, renderer)
         assert isinstance(advantage, EchoAdvantageConfig)
         self.role_weights = {
             role: role_config.alpha

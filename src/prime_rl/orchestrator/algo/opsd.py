@@ -4,7 +4,7 @@ import asyncio
 from itertools import cycle
 from typing import TYPE_CHECKING
 
-from prime_rl.configs.algorithm import AlgorithmConfig, OPSDAdvantageConfig
+from prime_rl.configs.algorithm import AdvantageConfig, OPSDAdvantageConfig
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.utils import compute_prefill_logprobs
 
@@ -28,13 +28,18 @@ class OPSDAlgorithm(Algorithm):
     action_loss_type = "ref_kl"
     model_role = "teacher"
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
-        super().__init__(config, policy_pool, renderer)
-        assert isinstance(config.advantage, OPSDAdvantageConfig)
+    def __init__(self, advantage: AdvantageConfig, policy_pool: InferencePool, renderer: Renderer | None):
+        super().__init__(advantage, policy_pool, renderer)
+        assert isinstance(advantage, OPSDAdvantageConfig)
         assert renderer is not None, "opsd requires the renderer (validated at config time)"
-        self.demo_key = config.advantage.demo_key
-        self.template = config.advantage.template
-        self.max_concurrent = config.advantage.max_concurrent
+        self.demo_key = advantage.demo_key
+        self.template = advantage.template
+        self.max_concurrent = advantage.max_concurrent
+        self.teacher = advantage.model
+        self.teacher_pool: InferencePool | None = None  # connected in setup()
+
+    async def setup(self) -> None:
+        self.teacher_pool = await self.connect(self.teacher)
 
     def _ref_prefix_ids(self, rollout: TrainRollout) -> list[int]:
         trajectory = rollout.raw.get("trajectory") or []
@@ -70,7 +75,8 @@ class OPSDAlgorithm(Algorithm):
         return self.renderer.render_ids(messages, add_generation_prompt=True)
 
     async def score(self, rollouts: list[TrainRollout]) -> None:
-        pool = self._reference_pool()
+        pool = self.teacher_pool
+        assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
 
         async def score_rollout(client, rollout: TrainRollout) -> None:
