@@ -30,7 +30,7 @@ def make_training_example():
             completion_logprobs=[-0.1, -0.2],
             completion_temperatures=[temperature, temperature],  # Per-token temperatures
             ref_logprobs=[0.0, 0.0, 0.0, 0.0],
-            advantage=1.0,
+            advantages=[0.0, 0.0, 1.0, 1.0],
             env_name=env_name,
             ce_weights=ce_weights,
             rl_weights=rl_weights,
@@ -48,7 +48,6 @@ def test_training_sample_requires_env_name():
             completion_mask=[True, True],
             completion_logprobs=[-0.1, -0.2],
             completion_temperatures=[1.0, 1.0],
-            advantage=1.0,
         )
 
 
@@ -75,9 +74,10 @@ def test_prepare_batch_balances_micro_batches_across_workers(
     print(flat_batches)
 
     # Verify real rollouts have expected non-zero advantages and loss mask
+    # (the advantage stream is 0.0 on prompt positions, the scalar on completion)
     for batch in flat_batches[: len(examples)]:
         print(batch)
-        assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 4
+        assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 2
         assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 2
 
     # Verify padded batches have zero advantages and loss mask
@@ -142,7 +142,7 @@ def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_
         completion_mask=[True] * 3,
         completion_logprobs=[-0.1] * 3,
         completion_temperatures=[1.0] * 3,
-        advantage=1.0,
+        advantages=[0.0] * 3 + [1.0] * 3,
         env_name="test-env",
         ce_weights=[0.0, 0.0, 0.0, 1.0, 1.0, 1.0] if streams_on_longer else None,
         rl_weights=[0.0] * 6 if streams_on_longer else None,
@@ -187,7 +187,7 @@ def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, 
         completion_logprobs=[-0.1] * 3,
         completion_temperatures=[1.0] * 3,
         ref_logprobs=[-1.5] * 6 if refs_on_longer else None,
-        advantage=1.0,
+        advantages=[0.0] * 3 + [1.0] * 3,
         env_name="test-env",
     )
     shorter = make_training_example()
@@ -224,7 +224,7 @@ def test_prepare_sample_with_routed_experts():
         completion_mask=[True, True],
         completion_logprobs=[-0.1, -0.2],
         completion_temperatures=[1.0, 1.0],
-        advantage=1.0,
+        advantages=[0.0, 0.0, 1.0, 1.0],
         env_name="test-env",
         routed_experts=routed_payload,
     )
@@ -246,7 +246,7 @@ def test_prepare_sample_truncates_routed_experts():
         completion_mask=[True, True],
         completion_logprobs=[-0.1, -0.2],
         completion_temperatures=[1.0, 1.0],
-        advantage=1.0,
+        advantages=[0.0, 0.0, 1.0, 1.0],
         env_name="test-env",
         routed_experts=routed_payload,
     )
@@ -266,7 +266,7 @@ def test_prepare_sample_none_routed_experts():
         completion_mask=[True, True],
         completion_logprobs=[-0.1, -0.2],
         completion_temperatures=[1.0, 1.0],
-        advantage=1.0,
+        advantages=[0.0, 0.0, 1.0, 1.0],
         env_name="test-env",
     )
 

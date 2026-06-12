@@ -5,7 +5,7 @@ import pytest
 import verifiers as vf
 
 from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, spread_token_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
 from prime_rl.orchestrator.types import TrainRollout
 from prime_rl.transport.types import TrainingSample
@@ -156,7 +156,7 @@ def test_stamp_loss_routing_clears_obs_weights_when_all_zero():
     assert sample.completion_mask == [True, True, False, True]
 
 
-def _make_rollout(samples: list[TrainingSample], token_advantages: list[float] | None) -> TrainRollout:
+def _make_rollout(samples: list[TrainingSample], advantages: list[float] | None = None) -> TrainRollout:
     return TrainRollout(
         raw={},
         env_name="test-env",
@@ -165,28 +165,35 @@ def _make_rollout(samples: list[TrainingSample], token_advantages: list[float] |
         policy_version=0,
         off_policy_steps=0,
         samples=samples,
-        token_advantages=token_advantages,
+        advantages=advantages,
     )
 
 
-def test_spread_token_advantages_pads_prompt():
-    rollout = _make_rollout([_make_sample(obs_weights=None)], token_advantages=[0.5, -0.5, 0.0, 1.0])
-    spread_token_advantages(rollout)
+def test_stamp_advantages_pads_prompt():
+    rollout = _make_rollout([_make_sample(obs_weights=None)], advantages=[0.5, -0.5, 0.0, 1.0])
+    stamp_advantages(rollout)
     # 2 prompt positions padded with 0.0 + 4 completion-aligned advantages
-    assert rollout.samples[0].token_advantages == [0.0, 0.0, 0.5, -0.5, 0.0, 1.0]
+    assert rollout.samples[0].advantages == [0.0, 0.0, 0.5, -0.5, 0.0, 1.0]
 
 
-def test_spread_token_advantages_rejects_misaligned():
-    rollout = _make_rollout([_make_sample(obs_weights=None)], token_advantages=[0.5])
-    with pytest.raises(ValueError, match="align"):
-        spread_token_advantages(rollout)
-
-
-def test_spread_token_advantages_rejects_multi_sample_rollouts():
+def test_stamp_advantages_slices_across_samples():
     samples = [_make_sample(obs_weights=None), _make_sample(obs_weights=None)]
-    rollout = _make_rollout(samples, token_advantages=[0.5, -0.5, 0.0, 1.0])
-    with pytest.raises(ValueError, match="exactly one training sample"):
-        spread_token_advantages(rollout)
+    rollout = _make_rollout(samples, advantages=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+    stamp_advantages(rollout)
+    assert rollout.samples[0].advantages == [0.0, 0.0, 1.0, 2.0, 3.0, 4.0]
+    assert rollout.samples[1].advantages == [0.0, 0.0, 5.0, 6.0, 7.0, 8.0]
+
+
+def test_stamp_advantages_no_credit_ships_none():
+    rollout = _make_rollout([_make_sample(obs_weights=None)])
+    stamp_advantages(rollout)
+    assert rollout.samples[0].advantages is None
+
+
+def test_stamp_advantages_rejects_misaligned():
+    rollout = _make_rollout([_make_sample(obs_weights=None)], advantages=[0.5])
+    with pytest.raises(ValueError, match="align"):
+        stamp_advantages(rollout)
 
 
 def _echo_algorithm(roles: dict | None = None, filter_fn=None) -> EchoAlgorithm:

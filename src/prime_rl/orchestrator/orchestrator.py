@@ -601,7 +601,8 @@ class Orchestrator:
         self.monitor.log_distributions(
             distributions={
                 "rewards": [r.reward for r in batch.rollouts],
-                "advantages": [r.advantage for r in batch.rollouts if r.advantage is not None],
+                # Scalar view of the per-token streams (exact for uniform streams)
+                "advantages": [sum(r.advantages) / len(r.advantages) for r in batch.rollouts if r.advantages],
             },
             step=step,
         )

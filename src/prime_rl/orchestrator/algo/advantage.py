@@ -24,39 +24,36 @@ class AdvantageInputs:
     """Inputs for advantage computation of a single group (one example × N rollouts)."""
 
     rollouts: list[vf.RolloutOutput]
+    completion_lengths: list[int]
+    """Per rollout: its training samples' total completion-token count
+    (including any interleaved env-observation tokens) — the length of the
+    advantage list to return for it."""
+
+    def broadcast(self, values: list[float]) -> list[list[float]]:
+        """Spread one value per rollout over that rollout's completion tokens —
+        scalar group credit (e.g. reward minus baseline) becomes a uniform
+        per-token stream."""
+        return [[float(v)] * n for v, n in zip(values, self.completion_lengths, strict=True)]
 
 
-@dataclass
-class AdvantageOutputs:
-    """Outputs from advantage computation of a single group: one scalar
-    advantage per rollout (advantage-based filters and metrics read them).
-
-    ``token_advantages`` optionally carries per-token advantages, one entry per
-    rollout, each aligned to that rollout's completion tokens (including any
-    interleaved env-observation tokens). ``None`` entries (or leaving the field
-    ``None``) broadcast the scalar over the sequence instead.
-    """
-
-    advantages: list[float]
-    token_advantages: list[list[float] | None] | None = None
-
-
-AdvantageFn = Callable[..., AdvantageOutputs]
+AdvantageFn = Callable[..., list[list[float]]]
 """Type for an advantage function.
 
 Expected signature:
-    def my_advantage(inputs: AdvantageInputs, **kwargs) -> AdvantageOutputs:
+    def my_advantage(inputs: AdvantageInputs, **kwargs) -> list[list[float]]:
         ...
 
-The function receives a single group and returns a list of advantages with one
-entry per rollout. `assign_advantages` calls it on one already-grouped cohort.
+The function receives a single group and returns per-token advantages: one
+list per rollout, aligned to ``inputs.completion_lengths``. There is no scalar
+advantage anywhere — uniform group credit goes through ``inputs.broadcast``.
+`assign_advantages` calls the function on one already-grouped cohort.
 """
 
 
 def default_advantage_fn(
     inputs: AdvantageInputs,
     length_penalty: LengthPenaltyConfig | None = None,
-) -> AdvantageOutputs:
+) -> list[list[float]]:
     """Default GRPO advantage for a single group: reward minus per-group baseline.
 
     `length_penalty` enables correctness-gated efficiency shaping over a per-rollout
@@ -71,15 +68,15 @@ def default_advantage_fn(
             [w_c * get_model_completion_len(r) + w_t * get_tool_response_len(r) for r in inputs.rollouts],
             dtype=rewards.dtype,
         )
-        return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
+        return inputs.broadcast(_efficiency_shaping(rewards, costs).tolist())
     if isinstance(length_penalty, TurnsLengthPenaltyConfig):
         costs = torch.tensor([len(r["trajectory"]) for r in inputs.rollouts], dtype=rewards.dtype)
-        return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
+        return inputs.broadcast(_efficiency_shaping(rewards, costs).tolist())
 
-    return AdvantageOutputs(advantages=(rewards - rewards.mean()).tolist())
+    return inputs.broadcast((rewards - rewards.mean()).tolist())
 
 
-def max_rl_advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
+def max_rl_advantage_fn(inputs: AdvantageInputs) -> list[list[float]]:
     """MaxRL advantage for a single group (arXiv:2602.02710): reward minus the
     per-group mean, divided by that mean — equivalent to averaging score
     functions over successful rollouts only, which makes the policy gradient
@@ -91,8 +88,8 @@ def max_rl_advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
     rewards = torch.tensor([r["reward"] for r in inputs.rollouts], dtype=torch.float32)
     mean = rewards.mean()
     if mean <= 0:
-        return AdvantageOutputs(advantages=torch.zeros_like(rewards).tolist())
-    return AdvantageOutputs(advantages=((rewards - mean) / mean).tolist())
+        return inputs.broadcast(torch.zeros_like(rewards).tolist())
+    return inputs.broadcast(((rewards - mean) / mean).tolist())
 
 
 def _efficiency_shaping(
@@ -136,23 +133,20 @@ def assign_advantages(
     rollouts: list["TrainRollout"],  # noqa: F821 (forward ref)
     advantage_fn: AdvantageFn | None,
 ) -> None:
-    """Compute and assign advantages for one finished group of rollouts
-    (the algorithm's ``assign`` hands in one finalized group's survivors).
-    ``advantage_fn=None`` is the trivial case (advantage = reward); a custom
-    ``advantage_fn`` receives the raw ``vf.RolloutOutput``\\ s via
-    ``AdvantageInputs.rollouts``.
+    """Compute and assign per-token advantages for one finished group of
+    rollouts (the algorithm's ``assign`` hands in one finalized group's
+    survivors). ``advantage_fn=None`` is the trivial case (advantage = reward,
+    broadcast); a custom ``advantage_fn`` receives the raw
+    ``vf.RolloutOutput``\\ s and per-rollout completion lengths via
+    ``AdvantageInputs``.
     """
-    if advantage_fn is None:
-        for rollout in rollouts:
-            rollout.advantage = rollout.reward
-        return
-    result = advantage_fn(AdvantageInputs(rollouts=[r.raw for r in rollouts]))
-    token_advantages = result.token_advantages
-    if token_advantages is None:
-        token_advantages = [None] * len(result.advantages)
-    for rollout, advantage, token_adv in zip(rollouts, result.advantages, token_advantages, strict=True):
-        rollout.advantage = advantage
-        rollout.token_advantages = token_adv
+    inputs = AdvantageInputs(
+        rollouts=[r.raw for r in rollouts],
+        completion_lengths=[sum(len(s.completion_ids) for s in r.samples) for r in rollouts],
+    )
+    advantages = inputs.broadcast([r.reward for r in rollouts]) if advantage_fn is None else advantage_fn(inputs)
+    for rollout, advs in zip(rollouts, advantages, strict=True):
+        rollout.advantages = advs
 
 
 def assign_group_norm(rollouts: list["TrainRollout"], length_penalty: LengthPenaltyConfig | None) -> None:

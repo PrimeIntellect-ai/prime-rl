@@ -99,14 +99,14 @@ class RepetitionFilter:
 
 @dataclass
 class ZeroAdvantageFilter:
-    """Flags rollouts whose computed advantage is zero (e.g. all rollouts in a
-    GRPO group earned the same reward, so the centered advantage collapses)."""
+    """Flags rollouts whose advantage stream is all zero (e.g. all rollouts in
+    a GRPO group earned the same reward, so the centered advantage collapses)."""
 
     name: str
     enforce: bool = True
 
     def check(self, rollout: "TrainRollout") -> FilterResult:
-        if rollout.advantage is not None and rollout.advantage == 0.0:
+        if rollout.advantages is not None and all(a == 0.0 for a in rollout.advantages):
             return FilterResult(detected=True)
         return FilterResult(detected=False)
 

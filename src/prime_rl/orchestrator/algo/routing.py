@@ -1,11 +1,12 @@
-"""Wire-field stamping for per-token component weights and advantage spreading.
+"""Wire-field stamping for the per-token streams.
 
 The training loss is a sum of three components — ``rl`` (importance-weighted
 PG + KL), ``ce`` (masked NLL), and ``ref_kl`` (reverse KL to a reference model
 as the PG signal) — each normalized by its own global token count in the
 trainer. The advantage strategy decides which component the action tokens feed
-and optional per-token advantages; these helpers write the per-token component
-weight streams onto the ``TrainingSample`` wire fields at group finalization.
+and the per-token advantages the rl component consumes; these helpers write
+the component weight streams and the advantage stream onto the
+``TrainingSample`` wire fields at group finalization.
 """
 
 from __future__ import annotations
@@ -63,25 +64,24 @@ def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType)
         sample.ce_weights = ce_weights
 
 
-def spread_token_advantages(rollout: TrainRollout) -> None:
-    """Stamp the strategy's per-token advantages onto the rollout's sample,
-    padded with 0.0 over prompt positions (never trained).
-
-    Per-token advantages are aligned to one sample's completion tokens, so a
-    rollout that split into several training samples is rejected — there is no
-    unambiguous way to distribute one list across them.
+def stamp_advantages(rollout: TrainRollout) -> None:
+    """Stamp the rollout's per-token advantage stream onto its samples' wire
+    fields, padded with 0.0 over prompt positions (never trained). The stream
+    is aligned to the samples' completion tokens (concatenated in step order)
+    and sliced across them. Rollouts with no credit assigned
+    (``advantages=None``, e.g. opd/opsd) ship no advantage stream.
     """
-    assert rollout.token_advantages is not None
-    if len(rollout.samples) != 1:
+    advantages = rollout.advantages
+    if advantages is None:
+        return
+    total = sum(len(sample.completion_ids) for sample in rollout.samples)
+    if len(advantages) != total:
         raise ValueError(
-            f"per-token advantages need a rollout with exactly one training sample; "
-            f"env '{rollout.env_name}' produced {len(rollout.samples)}."
+            f"advantage stream must align with the rollout's completion tokens: "
+            f"got {len(advantages)}, expected {total} (env '{rollout.env_name}')."
         )
-    sample = rollout.samples[0]
-    if len(rollout.token_advantages) != len(sample.completion_ids):
-        raise ValueError(
-            f"per-token advantages must align with the sample's completion tokens: "
-            f"got {len(rollout.token_advantages)}, expected {len(sample.completion_ids)} "
-            f"(env '{rollout.env_name}')."
-        )
-    sample.token_advantages = [0.0] * len(sample.prompt_ids) + list(rollout.token_advantages)
+    offset = 0
+    for sample in rollout.samples:
+        num_completion = len(sample.completion_ids)
+        sample.advantages = [0.0] * len(sample.prompt_ids) + advantages[offset : offset + num_completion]
+        offset += num_completion

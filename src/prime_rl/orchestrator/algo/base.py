@@ -31,7 +31,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, ClassVar
 
 from prime_rl.configs.algorithm import ActionLossType, AlgorithmConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo.routing import spread_token_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
 from prime_rl.utils.logger import get_logger
 
@@ -78,7 +78,7 @@ class Algorithm:
 
     Subclasses override the hooks — :meth:`observation_weights` (default:
     ``None``, observations stay masked), :meth:`assign` (default: nothing —
-    rollouts keep ``advantage=None``, so advantage-based filters skip them),
+    rollouts keep ``advantages=None``, so advantage-based filters skip them),
     and :meth:`score` (driver and hook in one; the default scores nothing).
 
     Class-level declarations say what the algorithm needs: which loss
@@ -142,16 +142,11 @@ class Algorithm:
 
     def finalize_group(self, rollouts: list[TrainRollout]) -> None:
         """Score one finalized group: assign credit, then stamp each sample's
-        wire fields (advantage + loss routing)."""
+        wire fields (the advantage stream + loss routing)."""
         self.assign(rollouts)
         for rollout in rollouts:
-            if rollout.token_advantages is not None:
-                spread_token_advantages(rollout)
+            stamp_advantages(rollout)
             for sample in rollout.samples:
-                # Algorithms without scalars leave ``rollout.advantage=None``
-                # (advantage-based filters skip it); the wire ships a
-                # neutral 0.0.
-                sample.advantage = rollout.advantage if rollout.advantage is not None else 0.0
                 sample.reward = rollout.reward
                 sample.env_name = rollout.env_name
                 stamp_loss_routing(sample, self.action_loss_type)

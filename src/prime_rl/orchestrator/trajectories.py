@@ -330,7 +330,6 @@ def interleave_rollout(
             completion_logprobs=list(tokens["completion_logprobs"]),
             completion_temperatures=[],
             ref_logprobs=None,
-            advantage=None,
             env_name=env_name,
             mm_token_type_ids=None,
             routed_experts=None,  # deferred — finalized at end of interleave_rollout
