@@ -35,7 +35,12 @@ from functools import cached_property
 from typing import Any
 
 from fastapi import Request
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
+from vllm.entrypoints.openai.engine.protocol import (
+    ErrorResponse,
+    PromptTokenUsageInfo,
+    RequestResponseMetadata,
+    UsageInfo,
+)
 from vllm.entrypoints.serve.disagg.protocol import (
     GenerateRequest,
     GenerateResponse,
@@ -55,6 +60,12 @@ class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
 
 class PrimeRlGenerateResponse(GenerateResponse):
     choices: list[PrimeRlGenerateResponseChoice]
+    # Upstream ``GenerateResponse`` doesn't declare a ``usage`` field, so the
+    # parent ``ServingTokens.serve_tokens_full_generator`` constructs it and
+    # Pydantic silently drops it on serialization. Declare it here so the
+    # router can extract per-run token counts (and cached-prefix tokens) for
+    # platform billing — see https://github.com/PrimeIntellect-ai/router/pull/43.
+    usage: UsageInfo | None = None
 
 
 class _GenerateRoutedExpertsCapture(RoutedExpertsCapture):
@@ -72,6 +83,43 @@ class _GenerateRoutedExpertsCapture(RoutedExpertsCapture):
             prompt_logprobs=response.prompt_logprobs,
             kv_transfer_params=response.kv_transfer_params,
         )
+
+
+class _FinalOutputCapture:
+    """Wraps a ``RequestOutput`` async generator to record the last yielded item.
+
+    Needed so the response builder can construct a ``usage`` block from
+    ``final_res.prompt_token_ids`` / ``output.token_ids`` / ``num_cached_tokens``
+    after delegating iteration to upstream.
+    """
+
+    def __init__(self, source: AsyncGenerator[RequestOutput, None]) -> None:
+        self._source = source
+        self.final_res: RequestOutput | None = None
+
+    def __aiter__(self) -> "_FinalOutputCapture":
+        return self
+
+    async def __anext__(self) -> RequestOutput:
+        item = await self._source.__anext__()
+        self.final_res = item
+        return item
+
+
+def _build_usage(final_res: RequestOutput, enable_cached_tokens: bool) -> UsageInfo:
+    assert final_res.prompt_token_ids is not None
+    num_prompt_tokens = len(final_res.prompt_token_ids)
+    if final_res.encoder_prompt_token_ids is not None:
+        num_prompt_tokens += len(final_res.encoder_prompt_token_ids)
+    num_generated_tokens = sum(len(output.token_ids) for output in final_res.outputs)
+    usage = UsageInfo(
+        prompt_tokens=num_prompt_tokens,
+        completion_tokens=num_generated_tokens,
+        total_tokens=num_prompt_tokens + num_generated_tokens,
+    )
+    if enable_cached_tokens and final_res.num_cached_tokens:
+        usage.prompt_tokens_details = PromptTokenUsageInfo(cached_tokens=final_res.num_cached_tokens)
+    return usage
 
 
 async def _client_set_max_tokens(raw_request: Request | None) -> bool:
@@ -273,11 +321,39 @@ class PrimeRlServingTokens(ServingTokens):
             )
             result_generator = capture
 
+        # Always capture the final ``RequestOutput`` so we can attach a
+        # ``usage`` block to the response. The router parses ``usage`` for
+        # per-run billing metrics; without it the cache-discount counter
+        # (``vllm_router_run_cached_prompt_tokens_total``) stays at zero.
+        final_capture = _FinalOutputCapture(result_generator)
+        result_generator = final_capture
+
         response = await super().serve_tokens_full_generator(
             request, result_generator, request_id, model_name, request_metadata
         )
 
-        if capture is not None and isinstance(response, GenerateResponse):
+        if not isinstance(response, GenerateResponse):
+            return response
+
+        if capture is not None:
             response = capture.post_process(response)
+        elif not isinstance(response, PrimeRlGenerateResponse):
+            # Upgrade to the prime-rl subclass so the declared ``usage`` field
+            # actually surfaces in JSON (the parent class would drop it).
+            response = PrimeRlGenerateResponse(
+                request_id=response.request_id,
+                choices=[
+                    PrimeRlGenerateResponseChoice(**choice.model_dump())
+                    for choice in response.choices
+                ],
+                prompt_logprobs=response.prompt_logprobs,
+                kv_transfer_params=response.kv_transfer_params,
+            )
+
+        if final_capture.final_res is not None:
+            response.usage = _build_usage(
+                final_capture.final_res,
+                enable_cached_tokens=self.enable_prompt_tokens_details,
+            )
 
         return response
