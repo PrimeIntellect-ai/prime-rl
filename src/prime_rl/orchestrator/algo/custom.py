@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import AdvantageConfig, CustomAdvantageConfig
-from prime_rl.orchestrator.algo.advantage import AdvantageInputs, assign_advantages
+from prime_rl.orchestrator.algo.advantage import AdvantageInputs, apply_advantage_fn
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.utils.utils import import_object
 
@@ -30,5 +30,5 @@ class CustomAlgorithm(Algorithm):
 
         self.advantage_fn = advantage_fn
 
-    def assign(self, rollouts: list[TrainRollout]) -> None:
-        assign_advantages(rollouts, self.advantage_fn)
+    def assign_advantages(self, rollouts: list[TrainRollout]) -> None:
+        apply_advantage_fn(rollouts, self.advantage_fn)

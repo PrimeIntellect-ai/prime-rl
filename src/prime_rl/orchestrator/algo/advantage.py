@@ -46,7 +46,7 @@ Expected signature:
 The function receives a single group and returns per-token advantages: one
 list per rollout, aligned to ``inputs.completion_lengths``. There is no scalar
 advantage anywhere — uniform group credit goes through ``inputs.broadcast``.
-`assign_advantages` calls the function on one already-grouped cohort.
+`apply_advantage_fn` calls the function on one already-grouped cohort.
 """
 
 
@@ -129,13 +129,14 @@ def _efficiency_shaping(
     return shaped_rewards - shaped_rewards.mean()
 
 
-def assign_advantages(
+def apply_advantage_fn(
     rollouts: list["TrainRollout"],  # noqa: F821 (forward ref)
     advantage_fn: AdvantageFn | None,
 ) -> None:
-    """Compute and assign per-token advantages for one finished group of
-    rollouts (the algorithm's ``assign`` hands in one finalized group's
-    survivors). ``advantage_fn=None`` is the trivial case (advantage = reward,
+    """Run an advantage function over one finished group of rollouts and
+    write the resulting per-token streams (the algorithm's
+    ``assign_advantages`` hands in one finalized group's survivors).
+    ``advantage_fn=None`` is the trivial case (advantage = reward,
     broadcast); a custom ``advantage_fn`` receives the raw
     ``vf.RolloutOutput``\\ s and per-rollout completion lengths via
     ``AdvantageInputs``.
@@ -151,5 +152,5 @@ def assign_advantages(
 
 def assign_group_norm(rollouts: list["TrainRollout"], length_penalty: LengthPenaltyConfig | None) -> None:
     """Group-norm credit (the GRPO default), optionally length-shaped — shared
-    by the algorithms whose ``assign`` is plain group normalization."""
-    assign_advantages(rollouts, lambda inputs: default_advantage_fn(inputs, length_penalty=length_penalty))
+    by the algorithms whose ``assign_advantages`` is plain group normalization."""
+    apply_advantage_fn(rollouts, lambda inputs: default_advantage_fn(inputs, length_penalty=length_penalty))

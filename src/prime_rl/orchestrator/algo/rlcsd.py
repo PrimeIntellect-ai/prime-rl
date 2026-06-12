@@ -9,7 +9,7 @@ from itertools import cycle
 from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import AdvantageConfig, RLCSDAdvantageConfig
-from prime_rl.orchestrator.algo.advantage import AdvantageInputs, assign_advantages
+from prime_rl.orchestrator.algo.advantage import AdvantageInputs, apply_advantage_fn
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.utils import compute_prefill_logprobs
 from prime_rl.utils.logger import get_logger
@@ -135,8 +135,8 @@ class RLCSDAlgorithm(Algorithm):
     async def setup(self) -> None:
         self.teacher_pool = await self.connect(self.teacher)
 
-    def assign(self, rollouts: list[TrainRollout]) -> None:
-        assign_advantages(rollouts, _std_norm_advantage_fn)
+    def assign_advantages(self, rollouts: list[TrainRollout]) -> None:
+        apply_advantage_fn(rollouts, _std_norm_advantage_fn)
 
     async def score(self, rollouts: list[TrainRollout]) -> None:
         pool = self.teacher_pool

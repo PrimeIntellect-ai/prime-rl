@@ -11,7 +11,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.orchestrator.algo import CustomAlgorithm
 from prime_rl.orchestrator.algo.advantage import (
     AdvantageInputs,
-    assign_advantages,
+    apply_advantage_fn,
     default_advantage_fn,
     max_rl_advantage_fn,
 )
@@ -275,7 +275,7 @@ def test_efficiency_turns_penalty():
 
 def _train_rollouts(rewards: list[float]) -> list[TrainRollout]:
     """Wrap a list of rewards into ``TrainRollout``\\ s sharing a single
-    ``group_id`` — ``assign_advantages`` works on one group at a time
+    ``group_id`` — ``apply_advantage_fn`` works on one group at a time
     (the sink groups by ``group_id`` upstream). Each rollout carries one
     two-completion-token training sample, so assigned streams have length 2."""
     gid = uuid.uuid4()
@@ -303,26 +303,26 @@ def _train_rollouts(rewards: list[float]) -> list[TrainRollout]:
     ]
 
 
-def test_assign_advantages_writes_per_token_stream():
+def test_apply_advantage_fn_writes_per_token_stream():
     rollouts = _train_rollouts([1.0, 0.5, 0.8])
-    assign_advantages(rollouts, default_advantage_fn)
+    apply_advantage_fn(rollouts, default_advantage_fn)
     streams = [r.advantages for r in rollouts]
     # group credit broadcasts uniformly over each rollout's completion tokens
     assert all(len(s) == 2 and s[0] == s[1] for s in streams)
     assert sum(s[0] for s in streams) == pytest.approx(0.0, abs=1e-6)
 
 
-def test_assign_advantages_without_fn_is_reward():
+def test_apply_advantage_fn_without_fn_is_reward():
     """``advantage_fn=None`` falls back to ``advantage = reward``."""
     rollouts = _train_rollouts([1.0, 0.5, 0.8])
-    assign_advantages(rollouts, None)
+    apply_advantage_fn(rollouts, None)
     assert [r.advantages for r in rollouts] == [[1.0, 1.0], [0.5, 0.5], [0.8, 0.8]]
 
 
-def test_assign_advantages_singleton_group_is_zero():
+def test_apply_advantage_fn_singleton_group_is_zero():
     """A group of size 1 has reward == mean, so its advantage is 0."""
     rollouts = _train_rollouts([0.7])
-    assign_advantages(rollouts, default_advantage_fn)
+    apply_advantage_fn(rollouts, default_advantage_fn)
     assert rollouts[0].advantages == pytest.approx([0.0, 0.0], abs=1e-6)
 
 

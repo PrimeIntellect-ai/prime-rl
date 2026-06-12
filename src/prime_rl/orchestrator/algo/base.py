@@ -1,27 +1,31 @@
-"""The per-env algorithm runtime: base class and pipeline hooks.
+"""The per-env algorithm runtime: base class and pipeline phase functions.
 
 Each named class in this package *is* one training algorithm, one module per
-algorithm: it owns the algorithm's methods directly — ``assign`` (group-time
-credit) and ``score`` (ship-time reference scoring) — and declares what it
-needs (``action_loss_type``, a ``model_role`` like "teacher"). Reading a
-module top to bottom reads the algorithm; writing your own is subclassing
-:class:`Algorithm` and overriding the same methods. Shared math (group
+algorithm: it owns the algorithm's hooks directly — ``observation_weights``
+(sample-construction time), ``assign_advantages`` (group-time credit), and
+``score`` (ship-time reference scoring) — and declares what it needs
+(``action_loss_type``, a ``model_role`` like "teacher"). Reading a module top
+to bottom reads the algorithm; writing your own is subclassing
+:class:`Algorithm` and overriding the same hooks. Shared math (group
 normalization, prefill alignment) lives as plain functions in
 ``advantage.py``; duplication of orchestration between similar algorithms
 (e.g. OPD and OPSD) is accepted so each module stays self-contained.
 
 How rollouts are *produced* is not the algorithm's concern: that is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`. The algorithm consumes
-finalized rollouts and compiles them into the per-token component weight
-streams the trainer executes — credit assignment and loss routing are two
-phases of that one compilation.
+finalized rollouts and compiles them into the per-token streams the trainer
+executes — credit assignment and loss routing are two coordinates of that one
+compilation, split over the pipeline's three barriers by the module-level
+phase functions :func:`build_samples` (rollout arrival),
+:func:`finalize_group` (group completion), and :func:`score_train_batch`
+(batch ship).
 
-The pipeline (dispatcher, train sink, orchestrator) calls the base-class hooks
-and reads its properties; it never branches on algorithm config fields or
-model roles — liveness of a reference is the only runtime distinction.
-prime-rl hosts exactly one model — the trainable policy, whose pool is passed
-in; every frozen model reference is an external endpoint the algorithm
-*connects to* (never launches) in :meth:`Algorithm.setup`.
+The pipeline (dispatcher, train sink, orchestrator) calls those phase
+functions and reads the class declarations; it never branches on algorithm
+config fields or model roles — liveness of a reference is the only runtime
+distinction. prime-rl hosts exactly one model — the trainable policy, whose
+pool is passed in; every frozen model reference is an external endpoint the
+algorithm *connects to* (never launches) in :meth:`Algorithm.setup`.
 """
 
 from __future__ import annotations
@@ -58,38 +62,36 @@ async def connect_frozen_pool(config: FrozenModelConfig) -> InferencePool:
 
 
 class Algorithm:
-    """Base class for one env's training algorithm — the interpreter of the
+    """Base class for one env's training algorithm — the runtime of the
     bundle's ``advantage`` component (its sibling :class:`Sampler` interprets
     ``sampling``).
 
-    The algorithm is one compilation — finalized rollouts in, per-token
-    component weight streams out — split over the pipeline's three phases,
-    each driven by one method the pipeline calls:
+    Everything on this class is yours to override; the pipeline drives the
+    compilation through the module-level phase functions below
+    (:func:`build_samples` / :func:`finalize_group` / :func:`score_train_batch`)
+    and never calls anything else. The surface is:
 
-    - :meth:`build_samples` — per rollout, as it arrives: interleave the
-      trajectory into training samples, weighting env-provided observation
-      tokens via the :meth:`observation_weights` hook.
-    - :meth:`finalize_group` — per group, at finalization: assign credit via
-      the :meth:`assign` hook, then stamp the wire fields (advantage + loss
-      routing).
-    - :meth:`score` — per batch, at ship time, async: attach per-token
-      reference data by querying the algorithm's own reference pool (e.g.
-      ``self.teacher_pool``, connected in :meth:`setup`). Runs on batch
-      survivors only, so filtered rollouts never cost reference compute.
+    - declarations — which loss component the action tokens feed
+      (``action_loss_type``) and what the algorithm calls its reference
+      model, if it has one (``model_role``, e.g. "teacher");
+    - lifecycle — :meth:`setup` connects client pools to the frozen models
+      the algorithm declares, resolving each reference via :meth:`connect`;
+    - the three hooks, one per pipeline phase:
 
-    Subclasses override the hooks — :meth:`observation_weights` (default:
-    ``None``, observations stay masked), :meth:`assign` (default: nothing —
-    rollouts keep ``advantages=None``, so advantage-based filters skip them),
-    and :meth:`score` (driver and hook in one; the default scores nothing).
+      - :meth:`observation_weights` — per rollout, at sample construction:
+        per-token ce weights for env-provided tokens (default ``None``,
+        observations stay masked).
+      - :meth:`assign_advantages` — per group, at finalization: write each
+        rollout's per-token advantage stream (default: nothing — rollouts
+        keep ``advantages=None``, so advantage-based filters skip them).
+      - :meth:`score` — per batch, at ship time, async: attach per-token
+        reference data by querying the algorithm's own reference pool (e.g.
+        ``self.teacher_pool``, connected in :meth:`setup`). Runs on batch
+        survivors only, so filtered rollouts never cost reference compute.
 
-    Class-level declarations say what the algorithm needs: which loss
-    component its action tokens feed (``action_loss_type``) and what it calls
-    its reference model, if it has one (``model_role``, e.g. "teacher").
     Constructed with the advantage component it interprets plus the two
     host-owned resources: the policy pool and the policy's renderer (the
-    canonical messages → token ids path; ``None`` under MITO). Algorithms
-    with frozen model references override :meth:`setup` and resolve them via
-    :meth:`connect`."""
+    canonical messages → token ids path; ``None`` under MITO)."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
     model_role: ClassVar[str | None] = None
@@ -116,51 +118,57 @@ class Algorithm:
         self.connected_pools.append(pool)
         return pool
 
-    def assign(self, rollouts: list[TrainRollout]) -> None:
-        """Assign credit to one finalized group of rollouts."""
-
-    async def score(self, rollouts: list[TrainRollout]) -> None:
-        """Attach per-token reference data to a batch of rollouts at ship time."""
-
     def observation_weights(self, output: vf.RolloutOutput) -> list[list[float]] | None:
         """Per-token ce weights for env-provided observation tokens: one list
         per trajectory step, each spanning that step's ``prompt_ids`` +
-        ``completion_ids``. :meth:`build_samples` aligns the spans onto the
+        ``completion_ids``. :func:`build_samples` aligns the spans onto the
         merged samples; algorithms that train on observations (echo) override
         this. ``None`` (the default) masks every observation token out."""
         return None
 
-    def build_samples(
-        self,
-        output: vf.RolloutOutput,
-        *,
-        env_name: str,
-        mm_token_type_ids_mapping: dict[int, int] | None = None,
-    ) -> list[TrainingSample] | None:
-        """Compile one finalized rollout into training samples: best-effort
-        interleaving of the trajectory steps, with this algorithm's
-        :meth:`observation_weights` deciding what env-provided tokens train."""
-        return interleave_rollout(
-            output,
-            mm_token_type_ids_mapping=mm_token_type_ids_mapping,
-            env_name=env_name,
-            obs_weights=self.observation_weights(output),
-        )
+    def assign_advantages(self, rollouts: list[TrainRollout]) -> None:
+        """Write each rollout's per-token advantage stream
+        (``rollout.advantages``) for one finalized group."""
 
-    def finalize_group(self, rollouts: list[TrainRollout]) -> None:
-        """Score one finalized group: assign credit, then stamp each sample's
-        wire fields (the advantage stream + loss routing)."""
-        self.assign(rollouts)
-        for rollout in rollouts:
-            stamp_advantages(rollout)
-            for sample in rollout.samples:
-                sample.reward = rollout.reward
-                sample.env_name = rollout.env_name
-                stamp_loss_routing(sample, self.action_loss_type)
+    async def score(self, rollouts: list[TrainRollout]) -> None:
+        """Attach per-token reference data to a batch of rollouts at ship time."""
+
+
+def build_samples(
+    algorithm: Algorithm,
+    output: vf.RolloutOutput,
+    *,
+    env_name: str,
+    mm_token_type_ids_mapping: dict[int, int] | None = None,
+) -> list[TrainingSample] | None:
+    """Arrival phase: compile one finalized rollout into training samples —
+    best-effort interleaving of the trajectory steps, with the algorithm's
+    :meth:`~Algorithm.observation_weights` deciding what env-provided tokens
+    train."""
+    return interleave_rollout(
+        output,
+        mm_token_type_ids_mapping=mm_token_type_ids_mapping,
+        env_name=env_name,
+        obs_weights=algorithm.observation_weights(output),
+    )
+
+
+def finalize_group(algorithm: Algorithm, rollouts: list[TrainRollout]) -> None:
+    """Group phase: assign credit via the algorithm's
+    :meth:`~Algorithm.assign_advantages`, then stamp each sample's wire fields
+    (the advantage stream + loss routing). After this the records are frozen —
+    groups die at stamping."""
+    algorithm.assign_advantages(rollouts)
+    for rollout in rollouts:
+        stamp_advantages(rollout)
+        for sample in rollout.samples:
+            sample.reward = rollout.reward
+            sample.env_name = rollout.env_name
+            stamp_loss_routing(sample, algorithm.action_loss_type)
 
 
 async def score_train_batch(train_envs: TrainEnvs, rollouts: list[TrainRollout]) -> None:
-    """Run each env's ``score`` over its unfiltered rollouts, concurrently
+    """Ship phase: run each env's ``score`` over its unfiltered rollouts, concurrently
     across envs. Per-env concurrency is bounded by the algorithm's own
     config; envs without reference scoring return immediately."""
     by_env: dict[str, list[TrainRollout]] = defaultdict(list)

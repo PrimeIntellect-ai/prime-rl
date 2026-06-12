@@ -6,14 +6,15 @@ turns the signal half into runtime objects (the sampling half is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`):
 
 - one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``opd``,
-  ``opsd``, ``rlcsd``, ``sft``, ``reward``, ``custom``) — each named class owns its
-  ``assign`` (group-time credit) and ``score`` (ship-time reference scoring)
-  methods and declares what it needs (loss component, a "teacher", ...).
+  ``opsd``, ``rlcsd``, ``sft``, ``reward``, ``custom``) — each named class
+  owns its hooks (``observation_weights`` / ``assign_advantages`` /
+  ``score``) and declares what it needs (loss component, a "teacher", ...).
   One instance per env, built by :func:`build_algorithm`. Custom credit
   assignment plugs in through the ``custom`` advantage type
   (:class:`CustomAlgorithm` imports a user function by path).
-- ``base`` — the :class:`Algorithm` base class and the pipeline hooks
-  (frozen-pool connection, batch scoring).
+- ``base`` — the :class:`Algorithm` base class and the pipeline phase
+  functions (:func:`build_samples` / :func:`finalize_group` /
+  :func:`score_train_batch`).
 - ``advantage`` — pure advantage math: the custom-function interface
   (:class:`AdvantageInputs`, per-token advantages out) and the default
   group-norm computation.
@@ -28,11 +29,17 @@ from typing import TYPE_CHECKING
 from prime_rl.orchestrator.algo.advantage import (
     AdvantageFn,
     AdvantageInputs,
-    assign_advantages,
+    apply_advantage_fn,
     default_advantage_fn,
     max_rl_advantage_fn,
 )
-from prime_rl.orchestrator.algo.base import Algorithm, connect_frozen_pool, score_train_batch
+from prime_rl.orchestrator.algo.base import (
+    Algorithm,
+    build_samples,
+    connect_frozen_pool,
+    finalize_group,
+    score_train_batch,
+)
 from prime_rl.orchestrator.algo.custom import CustomAlgorithm
 from prime_rl.orchestrator.algo.echo import EchoAlgorithm
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
@@ -86,10 +93,12 @@ __all__ = [
     "RLCSDAlgorithm",
     "RewardAlgorithm",
     "SFTDistillAlgorithm",
-    "assign_advantages",
+    "apply_advantage_fn",
     "build_algorithm",
+    "build_samples",
     "connect_frozen_pool",
     "default_advantage_fn",
+    "finalize_group",
     "max_rl_advantage_fn",
     "score_train_batch",
     "stamp_advantages",

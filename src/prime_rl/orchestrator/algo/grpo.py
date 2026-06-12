@@ -23,5 +23,5 @@ class GRPOAlgorithm(Algorithm):
         assert isinstance(advantage, GRPOAdvantageConfig)
         self.length_penalty = advantage.length_penalty
 
-    def assign(self, rollouts: list[TrainRollout]) -> None:
+    def assign_advantages(self, rollouts: list[TrainRollout]) -> None:
         assign_group_norm(rollouts, self.length_penalty)
