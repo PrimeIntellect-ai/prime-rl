@@ -157,8 +157,10 @@ uv run sft @ configs/debug/sft/train.toml
 4. Check that you can run the RL trainer (*this requires 1 GPU*)
 
 ```bash
-uv run trainer @ configs/debug/rl/train.toml
+uv run torchrun --nproc-per-node 1 -m prime_rl.entrypoints.trainer @ configs/debug/rl/train.toml
 ```
+
+*The `trainer` entrypoint expects to be launched under `torchrun` (normally handled automatically by the `rl` launcher), so it cannot be invoked directly.*
 
 5. Check that you can run the inference server (*this requires 1 GPU*)
 
