@@ -93,6 +93,7 @@ The RL entrypoint supports several training algorithms, switched via `[orchestra
 | `sft` | Required, any OpenAI-compatible endpoint | Hard-distill: a frozen model generates rollouts, the policy trains on its tokens |
 | `opsd` | `"policy"` (the default, no deployment) or a vLLM endpoint serving a frozen copy | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own reference conditioned on expert demonstrations |
 | `echo` | None | GRPO plus cross-entropy on env-observation tokens |
+| `rlcsd` | `"policy"` (the default) or a vLLM endpoint | [RLCSD](https://arxiv.org/abs/2606.11709): GRPO with a contrastive self-distillation signal from sibling-rollout hints modulating per-token advantages |
 
 `reward` (raw-reward credit, no baseline) and `custom` (your own advantage function) complete the set — see [Algorithms § The Algorithms](algorithms.md#the-algorithms).
 

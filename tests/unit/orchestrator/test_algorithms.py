@@ -27,6 +27,7 @@ def _ref_kind(ref):
         ("sft", FROZEN, "frozen", None, "ce"),
         ("opsd", None, "policy", "policy", "ref_kl"),
         ("echo", None, "policy", None, "rl"),
+        ("rlcsd", None, "policy", "policy", "rl"),
     ],
 )
 def test_type_defaults_are_the_vetted_algorithms(advantage_type, model, source, advantage_model, action_loss_type):
@@ -287,6 +288,40 @@ def test_interleave_echo_filter_narrows_selection():
         _echo_algorithm(filter_fn=lambda output: [[True] * 4]).observation_weights(rollout)
     with pytest.raises(ValueError, match="prompt\\+completion"):
         _echo_algorithm(filter_fn=lambda output: [[True] * 4, [True] * 6]).observation_weights(rollout)
+
+
+def test_rlcsd_contrastive_signal_is_log_mean_exp():
+    from prime_rl.orchestrator.algo.rlcsd import _contrastive_signal
+
+    # One negative hint: plain logprob difference
+    assert _contrastive_signal([-1.0], [[-2.0]])[0] == pytest.approx(1.0)
+    # K negatives: the negative branch is the log of the MEAN probability,
+    # not the mean logprob
+    import math
+
+    expected = -1.0 - math.log((math.exp(-1.0) + math.exp(-3.0)) / 2)
+    assert _contrastive_signal([-1.0], [[-1.0], [-3.0]])[0] == pytest.approx(expected)
+
+
+def test_rlcsd_modulation_two_path_weights_and_clamp():
+    from prime_rl.orchestrator.algo.rlcsd import _modulated_token_advantages
+
+    knobs = dict(lam=0.5, tau=0.02, delta=0.02, eta=1.0)
+    # Token 0 carries a saturating contrast (tanh -> 1, r = lam), token 1 none.
+    # Paths normalize independently: each path's weight is L / |path|.
+    out = _modulated_token_advantages([10.0, 0.0], 1.0, [True, True], **knobs)
+    assert out[0] == pytest.approx((1.0 + 0.5) * 2.0)  # modulated path, |M| = 1
+    assert out[1] == pytest.approx(1.0 * 2.0)  # plain path, |U| = 1
+
+    # Sign-preserving clamp: modulation never flips the verifier's direction
+    out = _modulated_token_advantages([10.0], -0.2, [True], **knobs)
+    assert out == [0.0]
+
+    # Below the mask threshold everything stays plain GRPO at unit weight
+    assert _modulated_token_advantages([0.0], 1.0, [True], **knobs) == [1.0]
+
+    # No trainable tokens -> no per-token advantages
+    assert _modulated_token_advantages([10.0], 1.0, [False], **knobs) is None
 
 
 def test_interleave_obs_weights_off_by_default():

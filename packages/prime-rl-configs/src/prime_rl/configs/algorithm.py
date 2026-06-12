@@ -261,6 +261,74 @@ class OPSDAdvantageConfig(BaseConfig):
     """Maximum concurrent prefill requests per batch."""
 
 
+class RLCSDAdvantageConfig(BaseConfig):
+    type: Literal["rlcsd"] = "rlcsd"
+    """RLCSD (arXiv:2606.11709): GRPO with a contrastive self-distillation
+    modulation. The teacher scores each rollout's tokens under a correct
+    sibling rollout as a hint and under ``num_negative_hints`` incorrect
+    sibling hints (identical template, so the privilege-induced style shift
+    cancels in the subtraction); the squashed contrast ``λ·tanh(e/τ)``
+    modulates the group-relative advantage at tokens where it exceeds
+    ``delta``, with a sign-preserving clamp so the verifier keeps the update
+    direction. Ships per-token advantages on the ``rl`` loss component.
+    Groups without both correct and incorrect rollouts get no modulation
+    (uniform groups already die in the zero-advantage filter, matching the
+    paper's group-discard rule)."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+    group_relative: ClassVar[bool] = True
+    model_role: ClassVar[str] = "teacher"
+
+    model: ModelReference = "policy"
+    """The teacher the hinted distributions are computed under. ``"policy"``
+    (the default) approximates the paper's setting — there the teacher is a
+    snapshot of the student refreshed every 10 steps; the live policy
+    refreshes every weight update. Set an inline frozen hosted model to
+    contrast under a fixed teacher instead."""
+
+    num_negative_hints: int = Field(4, ge=1)
+    """K: incorrect sibling hints whose probabilities average into the
+    negative branch — marginalizing over error types stabilizes the
+    contrast."""
+
+    tau: float = Field(0.02, gt=0)
+    """Soft-threshold slope of the tanh squash on the raw contrast."""
+
+    lam: float = Field(0.5, gt=0)
+    """Scale of the modulation: ``r_t = lam · tanh(e_ctr / tau)`` ∈ (-lam, lam)."""
+
+    delta: float = Field(0.02, ge=0)
+    """Modulation mask threshold: only tokens with ``|r_t| > delta`` get
+    their advantage modulated (~20-30% of tokens at the defaults)."""
+
+    eta: float = Field(1.0, ge=0)
+    """Weight of the modulated path relative to the unmodulated path; both
+    paths are normalized independently per rollout so the modulated tokens
+    never dilute."""
+
+    correct_threshold: float = 1.0
+    """Rollouts with ``reward >= correct_threshold`` form the correct hint
+    pool, the rest the incorrect pool — the binary verifier generalized to
+    continuous rewards."""
+
+    template: str = (
+        "{question}\n\n"
+        "Here is a reference solution to this problem:\n"
+        "=== Reference Solution Begin ===\n{hint}\n=== Reference Solution End ===\n\n"
+        "After reading the reference solution above, make sure you understand the "
+        "reasoning behind each step. Please reason step by step, and put your final "
+        "answer within \\boxed{{}}."
+    )
+    """Template for the hinted teacher context. Receives ``{question}`` (the
+    original user message text) and ``{hint}`` (a sibling rollout's full
+    completion text). Byte-for-byte identical for correct and incorrect
+    hints — that symmetry is what cancels the style component."""
+
+    max_concurrent: int = Field(32, ge=1)
+    """Maximum concurrent prefill requests per batch (each rollout costs
+    ``1 + num_negative_hints`` prefills)."""
+
+
 class SFTAdvantageConfig(BaseConfig):
     type: Literal["sft"] = "sft"
     """SFT distillation: cross-entropy on the sampled tokens. The ``ce``
@@ -299,6 +367,7 @@ AdvantageConfig: TypeAlias = Annotated[
     | RewardAdvantageConfig
     | OPDAdvantageConfig
     | OPSDAdvantageConfig
+    | RLCSDAdvantageConfig
     | SFTAdvantageConfig
     | CustomAdvantageConfig,
     Field(discriminator="type"),

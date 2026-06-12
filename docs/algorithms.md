@@ -71,6 +71,7 @@ type = "grpo"  # the default
 | `sft` | *(the teacher)* | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs a `teacher` (folds into `sampling.source`). |
 | `opsd` | policy | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. Defaults to the live policy (the paper's setting, no extra deployment); set an inline `model` to score under a frozen copy instead. |
 | `echo` | policy | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-provided tokens already present in the rollout, selected by message role (needs the renderer's role attribution). Defaults to tool-response bodies at `alpha = 0.1` (ECHO's λ); set `roles` to train other roles, each at its own weight. |
+| `rlcsd` | policy | `rl` on actions (per-token) | RLCSD ([arXiv:2606.11709](https://arxiv.org/abs/2606.11709)): GRPO anchored by the verifier, with a contrastive self-distillation signal — the teacher's logprobs under a correct sibling-rollout hint vs. under K incorrect sibling hints — modulating the advantage magnitude at high-signal tokens (sign-preserving). The identical hint template makes the privilege-induced style shift cancel in the subtraction, concentrating the signal on task-bearing tokens. Teacher defaults to the live policy. |
 | `reward` | policy | `rl` on actions | REINFORCE-style: advantage = raw reward, no group baseline. |
 | `custom` | policy | `rl` on actions | Your own advantage function (`import_path`), scalar per rollout, optionally per-token — see [Custom Advantage](#custom-advantage). |
 
@@ -140,6 +141,7 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 | `max_rl` | `MaxRLAlgorithm` | mean-normalized group credit | — |
 | `opd` | `OPDAlgorithm` | — | own-context prefill under the teacher |
 | `opsd` | `OPSDAlgorithm` | — | demo-conditioned prefill under the teacher |
+| `rlcsd` | `RLCSDAlgorithm` | std-normalized group credit | contrastive hinted prefills → per-token advantage modulation |
 | `sft` | `SFTDistillAlgorithm` | group-norm credit (feeds filters) | — |
 | `reward` | `RewardAlgorithm` | raw reward | — |
 | `custom` | `CustomAlgorithm` | your function | — |
@@ -283,6 +285,7 @@ The advantage strategy is the `advantage` component of the [algorithm](#the-algo
 | `reward` | `rl` | Advantage = raw reward, no baseline. |
 | `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No scalars — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0; `group_size` only fans out sampling. |
 | `opsd` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No scalars — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0. |
+| `rlcsd` | `rl` | Std-normalized group scalars, modulated per token at ship time by the contrastive hinted-teacher signal (`λ·tanh(e_ctr/τ)`, masked at `δ`, sign-preserving clamp, two-path normalization via `η`). Ships per-token advantages. |
 | `sft` | `ce` | Cross-entropy on the sampled tokens. The loss ignores scalars, but group-relative scalars are still assigned so reward-based filtering keeps working. |
 | `custom` | `rl` | Your function (below); scalar per rollout, optionally per-token. |
 
@@ -360,6 +363,8 @@ model = "policy"
 demo_key = "demonstration"
 max_concurrent = 64
 ```
+
+`rlcsd` also scores at ship time — `1 + num_negative_hints` hinted prefills per rollout, hints drawn from the rollout's own group siblings — but ships modulated per-token advantages instead of reference logprobs.
 
 Only batch survivors get scored — rollouts that are filtered or cancelled never cost reference compute. The time shows up as `time/scoring` in the step timing.
 
