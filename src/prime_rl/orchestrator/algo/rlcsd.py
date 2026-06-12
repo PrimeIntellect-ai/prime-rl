@@ -8,7 +8,7 @@ from collections import defaultdict
 from itertools import cycle
 from typing import TYPE_CHECKING
 
-from prime_rl.configs.algorithm import AlgorithmConfig, RLCSDAdvantageConfig
+from prime_rl.configs.algorithm import AdvantageConfig, RLCSDAdvantageConfig
 from prime_rl.orchestrator.algo.advantage import AdvantageInputs, assign_advantages
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.utils import compute_prefill_logprobs
@@ -116,9 +116,8 @@ class RLCSDAlgorithm(Algorithm):
     action_loss_type = "rl"
     model_role = "teacher"
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
-        super().__init__(config, policy_pool, renderer)
-        advantage = config.advantage
+    def __init__(self, advantage: AdvantageConfig, policy_pool: InferencePool, renderer: Renderer | None):
+        super().__init__(advantage, policy_pool, renderer)
         assert isinstance(advantage, RLCSDAdvantageConfig)
         assert renderer is not None, "rlcsd requires the renderer (validated at config time)"
         self.num_negative_hints = advantage.num_negative_hints
@@ -130,12 +129,18 @@ class RLCSDAlgorithm(Algorithm):
         self.min_contrast_gap = advantage.min_contrast_gap
         self.template = advantage.template
         self.max_concurrent = advantage.max_concurrent
+        self.teacher = advantage.model
+        self.teacher_pool: InferencePool | None = None  # connected in setup()
+
+    async def setup(self) -> None:
+        self.teacher_pool = await self.connect(self.teacher)
 
     def assign(self, rollouts: list[TrainRollout]) -> None:
         assign_advantages(rollouts, _std_norm_advantage_fn)
 
     async def score(self, rollouts: list[TrainRollout]) -> None:
-        pool = self._reference_pool()
+        pool = self.teacher_pool
+        assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
         clients = cycle(pool.train_clients)
 

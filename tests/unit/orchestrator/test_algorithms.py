@@ -201,7 +201,7 @@ def _echo_algorithm(roles: dict | None = None, filter_fn=None) -> EchoAlgorithm:
     advantage: dict = {"type": "echo"}
     if roles is not None:
         advantage["roles"] = roles
-    algo = EchoAlgorithm(AlgorithmConfig(advantage=advantage), MagicMock(), MagicMock())
+    algo = EchoAlgorithm(AlgorithmConfig(advantage=advantage).advantage, MagicMock(), MagicMock())
     algo.filter_fn = filter_fn
     return algo
 

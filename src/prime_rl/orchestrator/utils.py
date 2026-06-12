@@ -21,16 +21,27 @@ from prime_rl.utils.utils import (
 
 async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     """Build the live policy inference pool + matching renderer. Returns
-    ``(renderer | None, inference_pool)``; ``renderer`` is ``None`` on the
-    MITO path (``config.renderer is None``)."""
+    ``(renderer | None, inference_pool)``; ``renderer`` is ``None`` only when
+    the run opts out (``config.renderer is None``, MITO).
+
+    The renderer object and the renderer *client* are decoupled: the object
+    is the canonical messages → token ids path (sft backfill, hinted scoring
+    prefixes, role attribution) and exists whenever configured; the
+    renderer-client sampling path is wired onto the pool only when a train
+    env actually samples from the policy. Frozen-sourced runs keep the
+    renderer for tokenization while the policy pool serves plain
+    chat-completions (evals)."""
     from renderers.base import create_renderer
 
     client_config = config.model.client
     model_name = config.model.name
 
+    renderer = None
     if config.renderer is not None:
         renderer = create_renderer(tokenizer, config.renderer)
         get_logger().info(f"Initialized {type(renderer).__name__} for {model_name}")
+
+    if renderer is not None and config.any_policy_sourced:
         inference_pool = await setup_inference_pool(
             client_config,
             model_name=model_name,
@@ -42,14 +53,17 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
         get_logger().info("Using direct renderer rollout client")
         return renderer, inference_pool
 
-    get_logger().info("Using MITO (openai_chat_completions) for rollouts")
+    if renderer is not None:
+        get_logger().info("No policy-sourced train env — renderer kept for client-side tokenization only")
+    else:
+        get_logger().info("Using MITO (openai_chat_completions) for rollouts")
     inference_pool = await setup_inference_pool(
         client_config,
         model_name=model_name,
         train_client_type="openai_chat_completions",
         eval_client_type="openai_chat_completions",
     )
-    return None, inference_pool
+    return renderer, inference_pool
 
 
 def get_model_completion_len(output: vf.RolloutOutput) -> int:

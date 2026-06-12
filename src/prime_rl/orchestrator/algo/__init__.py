@@ -68,7 +68,9 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
 def build_algorithm(config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None) -> Algorithm:
     cls = ALGORITHM_CLASSES[config.advantage.type]
     assert cls.action_loss_type == config.advantage.action_loss_type  # config and runtime declare in two places
-    return cls(config, policy_pool, renderer)
+    # The bundle dissolves at construction: the Algorithm is the advantage
+    # component's runtime (its sibling Sampler interprets the sampling half).
+    return cls(config.advantage, policy_pool, renderer)
 
 
 __all__ = [

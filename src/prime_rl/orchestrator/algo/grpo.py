@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from prime_rl.configs.algorithm import AlgorithmConfig, GRPOAdvantageConfig
+from prime_rl.configs.algorithm import AdvantageConfig, GRPOAdvantageConfig
 from prime_rl.orchestrator.algo.advantage import assign_group_norm
 from prime_rl.orchestrator.algo.base import Algorithm
 
@@ -18,10 +18,10 @@ class GRPOAlgorithm(Algorithm):
     policy per example; credit = reward minus the group mean (optionally
     length-shaped); action tokens feed the ``rl`` loss."""
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
-        super().__init__(config, policy_pool, renderer)
-        assert isinstance(config.advantage, GRPOAdvantageConfig)
-        self.length_penalty = config.advantage.length_penalty
+    def __init__(self, advantage: AdvantageConfig, policy_pool: InferencePool, renderer: Renderer | None):
+        super().__init__(advantage, policy_pool, renderer)
+        assert isinstance(advantage, GRPOAdvantageConfig)
+        self.length_penalty = advantage.length_penalty
 
     def assign(self, rollouts: list[TrainRollout]) -> None:
         assign_group_norm(rollouts, self.length_penalty)
