@@ -26,6 +26,8 @@ from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4Mo
 from prime_rl.trainer.models.laguna import LagunaConfig
 from prime_rl.trainer.models.laguna import LagunaForCausalLM as PrimeRLLagunaForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.mimo_v2 import MiMoV2Config
+from prime_rl.trainer.models.mimo_v2 import MiMoV2ForCausalLM as PrimeRLMiMoV2ForCausalLM
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2ForCausalLM as PrimeRLMiniMaxM2ForCausalLM
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeVLM
@@ -73,6 +75,15 @@ def _qwen3_5_moe_vlm_config():
     return config
 
 
+def _init_mimo_v2_biases(model):
+    """The MiMo-V2 remote code leaves sink/correction biases as torch.empty; give them
+    deterministic non-trivial values so the verification exercises them."""
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if "attention_sink_bias" in name or "e_score_correction_bias" in name:
+                param.copy_(torch.linspace(-1.0, 1.0, param.numel()).view_as(param))
+
+
 ARCH_PRESETS = {
     "glm4_moe": {
         "config_class": Glm4MoeConfig,
@@ -103,6 +114,59 @@ ARCH_PRESETS = {
         "hf_model_class": HFGlm4MoeForCausalLM,
         "prime_model_class": PrimeRLGlm4MoeForCausalLM,
         "tokenizer_source": "THUDM/GLM-4-9B-0414",
+    },
+    "mimo_v2": {
+        "config_class": MiMoV2Config,
+        "config_kwargs": dict(
+            vocab_size=152576,
+            hidden_size=512,
+            intermediate_size=1024,
+            num_hidden_layers=8,
+            hybrid_layer_pattern=[0, 1, 1, 1, 0, 1, 1, 0],
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            head_dim=96,
+            v_head_dim=64,
+            swa_num_attention_heads=8,
+            swa_num_key_value_heads=4,
+            swa_head_dim=96,
+            swa_v_head_dim=64,
+            sliding_window=32,
+            partial_rotary_factor=0.334,
+            rope_theta=10000000.0,
+            swa_rope_theta=10000.0,
+            attention_bias=False,
+            attention_value_scale=0.707,
+            add_full_attention_sink_bias=False,
+            add_swa_attention_sink_bias=True,
+            attention_projection_layout="fused_qkv",
+            hidden_act="silu",
+            max_position_embeddings=4096,
+            layernorm_epsilon=1e-5,
+            moe_layer_freq=[0, 1, 1, 1, 1, 1, 1, 1],
+            n_routed_experts=8,
+            num_experts_per_tok=4,
+            moe_intermediate_size=128,
+            norm_topk_prob=True,
+            routed_scaling_factor=None,
+            scoring_func="sigmoid",
+            topk_method="noaux_tc",
+            n_group=1,
+            topk_group=1,
+            use_grouped_mm=False,
+            pad_token_id=151643,
+            eos_token_id=151645,
+            auto_map={
+                "AutoConfig": "XiaomiMiMo/MiMo-V2.5--configuration_mimo_v2.MiMoV2Config",
+                "AutoModelForCausalLM": "XiaomiMiMo/MiMo-V2.5--modeling_mimo_v2.MiMoV2ForCausalLM",
+            },
+        ),
+        "hf_model_class": None,  # uses Xiaomi remote modeling code
+        "prime_model_class": PrimeRLMiMoV2ForCausalLM,
+        "tokenizer_source": "XiaomiMiMo/MiMo-V2.5",
+        "post_create_fn": _init_mimo_v2_biases,
+        # The remote code predates the transformers 5.x SDPA support declaration
+        "attn_implementation": "eager",
     },
     "minimax_m2": {
         "config_class": MiniMaxM2Config,
@@ -238,6 +302,9 @@ def create(arch: str, output_dir: Path) -> None:
     with torch.device("cpu"):
         model = _create_hf_model(preset, config)
 
+    if "post_create_fn" in preset:
+        preset["post_create_fn"](model)
+
     param_count = sum(p.numel() for p in model.parameters())
     print(f"  Parameters: {param_count / 1e6:.1f}M")
 
@@ -257,9 +324,10 @@ def verify(arch: str, model_dir: Path) -> None:
 
     trust_remote_code = preset["hf_model_class"] is None
     config = AutoConfig.from_pretrained(str(model_dir), trust_remote_code=trust_remote_code)
-    config._attn_implementation = "sdpa"
+    attn_implementation = preset.get("attn_implementation", "sdpa")
+    config._attn_implementation = attn_implementation
     if hasattr(config, "text_config"):
-        config.text_config._attn_implementation = "sdpa"
+        config.text_config._attn_implementation = attn_implementation
 
     text_config = getattr(config, "text_config", config)
     vocab_size = text_config.vocab_size
