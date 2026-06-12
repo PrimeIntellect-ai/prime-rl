@@ -106,6 +106,7 @@ envs = [
     "scaleswe-v1",
     "color-codeword-v1",
     "r2e-gym-v1",
+    "terminal-bench-2-v1",
     "tasksets",
     "harnesses",
 ]
@@ -255,6 +256,7 @@ alphabet-sort-v1 = { path = "deps/verifiers/examples/tasksets/alphabet_sort_v1",
 scaleswe-v1 = { path = "deps/verifiers/examples/tasksets/scaleswe_v1", editable = true }
 color-codeword-v1 = { path = "deps/verifiers/examples/tasksets/color_codeword_v1", editable = true }
 r2e-gym-v1 = { path = "deps/verifiers/examples/tasksets/r2e_gym_v1", editable = true }
+terminal-bench-2-v1 = { path = "deps/verifiers/examples/tasksets/terminal_bench_2_v1", editable = true }
 tasksets = { path = "deps/verifiers/packages/tasksets", editable = true }
 harnesses = { path = "deps/verifiers/packages/harnesses", editable = true }
 renderers = { path = "deps/renderers", editable = true }
