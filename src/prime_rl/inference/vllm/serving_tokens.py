@@ -94,16 +94,18 @@ class _FinalOutputCapture:
     """
 
     def __init__(self, source: AsyncGenerator[RequestOutput, None]) -> None:
+        # ``source`` may be any async-iterable — including
+        # ``_GenerateRoutedExpertsCapture``, which exposes the protocol via
+        # ``async def __aiter__`` (an async generator function) and has no
+        # ``__anext__`` method. Drive it through ``async for`` rather than
+        # poking ``__anext__`` directly so both shapes work.
         self._source = source
         self.final_res: RequestOutput | None = None
 
-    def __aiter__(self) -> "_FinalOutputCapture":
-        return self
-
-    async def __anext__(self) -> RequestOutput:
-        item = await self._source.__anext__()
-        self.final_res = item
-        return item
+    async def __aiter__(self) -> AsyncGenerator[RequestOutput, None]:
+        async for item in self._source:
+            self.final_res = item
+            yield item
 
 
 def _build_usage(final_res: RequestOutput, enable_cached_tokens: bool) -> UsageInfo:

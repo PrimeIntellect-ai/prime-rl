@@ -224,6 +224,36 @@ def test_final_output_capture_records_last_item():
     assert capture.final_res.prompt_token_ids == [1, 2, 3]
 
 
+def test_final_output_capture_works_over_async_def_aiter_source():
+    # ``_GenerateRoutedExpertsCapture`` exposes the async-iterator protocol
+    # via ``async def __aiter__`` (an async generator function) and has no
+    # ``__anext__``. The wrapper must drive it through ``async for`` rather
+    # than poking ``__anext__`` directly, or routed-experts runs raise
+    # AttributeError before the response is built.
+
+    class _AsyncGenAiterSource:
+        def __init__(self, items):
+            self._items = items
+
+        async def __aiter__(self):
+            for item in self._items:
+                yield item
+
+    items = [
+        _FakeRequestOutput(prompt_token_ids=[1], output_token_ids_list=[[1]]),
+        _FakeRequestOutput(prompt_token_ids=[1, 2], output_token_ids_list=[[1, 2]]),
+    ]
+    capture = _FinalOutputCapture(_AsyncGenAiterSource(items))
+
+    async def _drain():
+        async for _ in capture:
+            pass
+
+    asyncio.run(_drain())
+    assert capture.final_res is not None
+    assert capture.final_res.prompt_token_ids == [1, 2]
+
+
 def test_final_output_capture_handles_empty_stream():
     capture = _FinalOutputCapture(_empty_request_outputs())
 
