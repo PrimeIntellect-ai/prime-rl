@@ -1,0 +1,60 @@
+# Online block-FP8 inference variant of rl.toml: the trainer still serves bf16
+# shards over NIXL; the inference engine quantizes bf16 -> fp8-blockwise via
+# vLLM's process_weights_after_loading on every weight reload (the worker bakes
+# through vLLM's layerwise-reload path so re-quantization runs each sync).
+output_dir = "/home/outputs/qwen3-30b-math-nixl-fp8"
+clean_output_dir = true
+max_steps = 10
+seq_len = 4096
+
+[slurm]
+job_name = "qwen3-30b-math-nixl-fp8"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+
+[wandb]
+project = "nixl-weight-transfer"
+name = "qwen3-30b-math-nixl-fp8"
+
+[weight_broadcast]
+type = "nixl"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B"
+
+[trainer.model]
+ep = 8
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[orchestrator]
+batch_size = 128
+group_size = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.train.env]]
+id = "math-env"
+name = "hendrycks-math"
+args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", math_verify_max_workers = 128, math_verify_timeout = 60 }
+
+[inference]
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85
+use_deep_gemm = true
+
+[inference.parallel]
+tp = 1
+dp = 8
+
+# Online block-wise FP8 on the inference side (bf16 base model, quantized at
+# load/reload). Forwarded straight to the vLLM engine.
+[inference.vllm_extra]
+quantization = "fp8_per_block"

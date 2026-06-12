@@ -1,19 +1,20 @@
 """Zero-storage lazy weight placeholders for the NIXL bake.
 
 Mimics the lazy-tensor mechanism of vLLM PR #43375 (sharded RDT weight
-transfer), reduced to the one mode prime-rl needs: a *recording dry run*
-against the live model. ``model.load_weights`` is driven once per worker
-with one :class:`LazyWeight` per HF checkpoint tensor; vLLM's own loaders
-(fused QKV, merged gate/up, FusedMoE expert routing) call their usual
-``narrow``/``view``/``__getitem__``/... on the placeholder — each op is
-appended to the placeholder's chain — and finally ``copy_`` it into a view
-of a real parameter. That ``copy_`` is the recording sink: it captures the
-source op chain and the destination view, and moves no data.
+transfer): a *recording dry run* through vLLM's own layerwise-reload path.
+``model.load_weights`` is driven once with one :class:`LazyWeight` per HF
+checkpoint tensor; vLLM's loaders (fused QKV, merged gate/up, FusedMoE expert
+routing) call their usual ``narrow``/``view``/``__getitem__``/... on the
+placeholder — each op is appended to the placeholder's chain — and finally
+``copy_`` it into a view of a (meta) parameter. That ``copy_`` is the
+recording sink: it captures the source op chain plus the destination's owning
+``(module, param_name)`` and its ``offset/shape/stride``, and moves no data.
 
-Because destination params keep their live storage (weights are updated
-in place via RDMA, never re-materialized), no meta-device tricks and no
-layerwise-reload plumbing are needed: the recorded destination views point
-straight at the memory NIXL writes into.
+The destination is recorded against the param layout that exists at *load*
+time — i.e. before ``process_weights_after_loading``. For an online-fp8 model
+that layout is bf16, so per sync the worker materializes bf16 params, fills
+them with the pulled slices, and re-runs ``process_weights_after_loading`` to
+re-quantize to fp8 — exactly as a normal vLLM weight reload.
 
 Any op outside the allowlist (arithmetic, ``.to``/``.float``, ``.item``,
 ``.data``, bool-mask indexing) raises :class:`UnsupportedOpError` — a loud
@@ -23,7 +24,7 @@ failure instead of silently transferring the wrong bytes.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 import torch
 
@@ -32,19 +33,30 @@ from prime_rl.weight_transfer.chains import SUPPORTED_OPS, OpChain, OpSpec, Unsu
 
 @dataclass
 class RecordedCopy:
-    """One recorded ``copy_``: fetch ``apply_chain(hf[src_name], ops)`` and
-    write it into the real-storage view ``dst``."""
+    """One recorded ``copy_``: the source slice ``apply_chain(src_name, ops)``
+    lands in ``param_name`` of ``layer`` at the strided destination
+    ``(offset, shape, stride)`` (captured from the meta destination view, valid
+    without storage)."""
 
     src_name: str
     ops: OpChain
-    dst: torch.Tensor
+    layer: Any
+    param_name: str
+    offset: int
+    shape: tuple[int, ...]
+    stride: tuple[int, ...]
 
 
 @dataclass
 class BakeRecorder:
-    """Collects every ``copy_`` issued during one dry-run ``load_weights`` pass."""
+    """Collects every ``copy_`` issued during one dry-run ``load_weights`` pass.
+
+    ``current`` is the ``(module, param_name)`` stamp the engine sets around
+    each param's loader so the lazy ``copy_`` can attribute its destination; a
+    ``copy_`` with no stamp is left unattributed (its group falls back)."""
 
     copies: list[RecordedCopy] = field(default_factory=list)
+    current: "tuple[Any, str] | None" = None
 
 
 class LazyWeight(torch.Tensor):
@@ -116,8 +128,25 @@ class LazyWeight(torch.Tensor):
                     raise UnsupportedOpError(
                         f"copy_ shape mismatch for {src._name!r}: src {tuple(src.shape)} vs dst {tuple(dst.shape)}"
                     )
-                src._recorder.copies.append(RecordedCopy(src_name=src._name, ops=src._ops, dst=dst))
-                return dst
+                current = src._recorder.current
+                if current is not None:
+                    layer, param_name = current
+                    src._recorder.copies.append(
+                        RecordedCopy(
+                            src_name=src._name,
+                            ops=src._ops,
+                            layer=layer,
+                            param_name=param_name,
+                            offset=dst.storage_offset(),
+                            shape=tuple(dst.shape),
+                            stride=tuple(dst.stride()),
+                        )
+                    )
+                # Fire a meta copy_ so layerwise's load-numel counter still
+                # advances (otherwise the layer never reaches "fully loaded").
+                meta_src = torch.empty(src.shape, dtype=src.dtype, device="meta")
+                with torch._C.DisableTorchFunctionSubclass():
+                    return dst.copy_(meta_src)
 
         # Allowlisted view/slice/shape ops: append to the chain, return a child.
         op_name = SUPPORTED_OPS.get(func)
