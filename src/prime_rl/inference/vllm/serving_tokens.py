@@ -342,10 +342,7 @@ class PrimeRlServingTokens(ServingTokens):
             # actually surfaces in JSON (the parent class would drop it).
             response = PrimeRlGenerateResponse(
                 request_id=response.request_id,
-                choices=[
-                    PrimeRlGenerateResponseChoice(**choice.model_dump())
-                    for choice in response.choices
-                ],
+                choices=[PrimeRlGenerateResponseChoice(**choice.model_dump()) for choice in response.choices],
                 prompt_logprobs=response.prompt_logprobs,
                 kv_transfer_params=response.kv_transfer_params,
             )
