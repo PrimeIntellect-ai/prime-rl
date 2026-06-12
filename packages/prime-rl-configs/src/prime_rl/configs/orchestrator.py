@@ -504,6 +504,22 @@ class RolloutModelConfig(BaseConfig):
     client: ClientConfig = ClientConfig()
 
 
+class SopdConfig(BaseConfig):
+    """Semantic on-policy distillation: rescore each rollout through the student's
+    own inference pool with a privileged feedback packet (the environment's
+    diagnostics for *this* rollout) prepended to the context. The resulting
+    per-token teacher logprobs ride the RL loss via ``trainer.loss.teacher_tau``."""
+
+    include_diagnostics: bool = True
+    """Prepend the per-rollout diagnostics packet to the teacher context. ``False`` rescores the rollout with no extra context (uninformed-teacher ablation)."""
+
+    max_feedback_chars: int = Field(4000, ge=0)
+    """Truncate the diagnostics packet to this many characters before tokenization."""
+
+    feedback_wrapper: str = "<|im_start|>system\n{feedback}<|im_end|>\n"
+    """Chat-format wrapper for the feedback packet, prepended verbatim (tokenized with ``add_special_tokens=False``) to the teacher's context. The default matches the Qwen chat template."""
+
+
 class OrchestratorConfig(BaseConfig):
     training_mode: Literal["rl", "opd", "sft"] = "rl"
     """Training mode. ``rl``: student generates rollouts, no teacher. ``opd``: student generates rollouts, teacher computes logprobs (teacher_tau > 0). ``sft``: teacher generates rollouts, student inference pool used for evals and weight sync."""
@@ -513,6 +529,9 @@ class OrchestratorConfig(BaseConfig):
 
     teacher: RolloutModelConfig | None = Field(None, validation_alias=AliasChoices("teacher", "teacher_model"))
     """Teacher rollout participant (model + client). Role depends on ``training_mode``: ``opd`` — teacher computes logprobs; ``sft`` — teacher generates rollouts."""
+
+    sopd: SopdConfig | None = None
+    """Semantic on-policy distillation. When set (``rl`` mode only), each train batch is rescored through the student inference pool with the rollout's environment diagnostics prepended, and the per-token teacher logprobs are shipped to the trainer (weighted by ``trainer.loss.teacher_tau``)."""
 
     train: TrainConfig = TrainConfig()
 
@@ -775,6 +794,8 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
         if self.training_mode in ("opd", "sft") and not has_teacher:
             raise ValueError(f"orchestrator.teacher must be configured when training_mode = '{self.training_mode}'.")
+        if self.sopd is not None and self.training_mode != "rl":
+            raise ValueError("orchestrator.sopd requires training_mode = 'rl' (it rides the RL loss).")
         return self
 
     @model_validator(mode="after")

@@ -54,6 +54,7 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
+from prime_rl.orchestrator.sopd import build_sopd_contexts
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
@@ -562,7 +563,7 @@ class Orchestrator:
             save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
 
-        teacher_logprobs_time = 0.0  # opd only
+        teacher_logprobs_time = 0.0  # opd / sopd only
         if config.training_mode == "opd" and self.teacher_inference is not None:
             assert config.teacher is not None
             t = time.perf_counter()
@@ -570,6 +571,25 @@ class Orchestrator:
                 clients=self.teacher_inference.train_clients,
                 model_name=config.teacher.model.name,
                 samples=batch.samples,
+            )
+            for ex, lp in zip(batch.samples, teacher_logprobs_list):
+                ex.teacher_logprobs = lp
+            teacher_logprobs_time = time.perf_counter() - t
+        elif config.sopd is not None and batch.samples:
+            # SOPD: the teacher is the current policy itself, rescored through
+            # the student pool with the rollout's diagnostics prepended.
+            t = time.perf_counter()
+            context_ids = build_sopd_contexts(
+                rollouts=batch.rollouts,
+                samples=batch.samples,
+                tokenizer=self.tokenizer,
+                config=config.sopd,
+            )
+            teacher_logprobs_list = await compute_teacher_logprobs(
+                clients=self.student_inference.train_clients,
+                model_name=config.student.model.name,
+                samples=batch.samples,
+                context_ids=context_ids,
             )
             for ex, lp in zip(batch.samples, teacher_logprobs_list):
                 ex.teacher_logprobs = lp

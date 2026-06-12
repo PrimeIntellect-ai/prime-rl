@@ -100,12 +100,20 @@ async def compute_teacher_logprobs(
     clients: list[vf.ClientConfig],
     model_name: str,
     samples: list[TrainingSample],
+    context_ids: list[list[int]] | None = None,
 ) -> list[list[float]]:
-    """Compute teacher model logprobs for a batch of training samples via prefill."""
+    """Compute teacher model logprobs for a batch of training samples via prefill.
+
+    ``context_ids`` optionally prepends per-sample privileged tokens (SOPD
+    feedback) to the scored sequence; the returned logprobs are sliced back to
+    the sample's own ``prompt_ids + completion_ids`` positions.
+    """
     import httpx
     from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 
-    async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
+    async def _compute_single(
+        client_config: vf.ClientConfig, sample: TrainingSample, context: list[int]
+    ) -> list[float]:
         client = setup_openai_client(client_config)
 
         # Two escape hatches from ``AsyncOpenAI.post``:
@@ -125,7 +133,7 @@ async def compute_teacher_logprobs(
             cast_to=httpx.Response,
             body={
                 "model": model_name,
-                "token_ids": list(sample.prompt_ids) + list(sample.completion_ids),
+                "token_ids": context + list(sample.prompt_ids) + list(sample.completion_ids),
                 "sampling_params": {
                     "max_tokens": 1,
                     "temperature": 1.0,
@@ -147,9 +155,12 @@ async def compute_teacher_logprobs(
             first = next(iter(entry.values()))
             lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
             flat.append(float(lp) if lp is not None else 0.0)
-        return flat
+        return flat[len(context) :]
 
-    return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
+    contexts = context_ids if context_ids is not None else [[] for _ in samples]
+    return await asyncio.gather(
+        *[_compute_single(client, sample, context) for client, sample, context in zip(cycle(clients), samples, contexts)]
+    )
 
 
 def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:

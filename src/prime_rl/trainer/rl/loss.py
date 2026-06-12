@@ -130,6 +130,17 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
+    # Semantic on-policy distillation: a per-token reverse-KL-to-teacher term
+    # rides the advantage. The combined advantage drives both the DPPO mask
+    # conditioning and the policy-gradient term below.
+    teacher_kl = None
+    advantages = loss_config.adv_tau * advantages
+    if loss_config.teacher_tau > 0:
+        if inputs.teacher_logprobs is None:
+            raise ValueError("trainer.loss.teacher_tau > 0 requires teacher logprobs — configure orchestrator.sopd.")
+        teacher_kl = inputs.teacher_logprobs - trainer_logprobs
+        advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
+
     log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
     )
@@ -147,7 +158,6 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     drop_mask = loss_mask & is_masked
     keep_mask = loss_mask & ~is_masked
 
-    advantages = loss_config.adv_tau * advantages
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
     loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
@@ -161,6 +171,9 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         "masked_advantage_positive": _safe_mean(positive_advantages, drop_mask),
         "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
     }
+    if teacher_kl is not None:
+        metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
+        metrics["teacher_kl_abs"] = _safe_mean(teacher_kl.abs(), loss_mask)
 
     return LossOutputs(loss=loss, metrics=metrics)
 

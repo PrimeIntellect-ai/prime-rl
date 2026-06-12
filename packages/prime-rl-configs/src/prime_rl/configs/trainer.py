@@ -424,6 +424,9 @@ class DefaultLossConfig(BaseConfig):
     kl_tau: float = Field(1e-3, ge=0)
     """Temperature for the KL term."""
 
+    teacher_tau: float = Field(0.0, ge=0)
+    """Weight of the per-token reverse-KL-to-teacher term added to the advantage (semantic on-policy distillation). Requires teacher logprobs on the batch (``orchestrator.sopd``); ``0`` disables."""
+
 
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
