@@ -1,6 +1,22 @@
 max_steps = 5
 batch_size = 16
 
+# Standalone validation run: no trainer is consuming batches, so don't gate
+# dispatch on weight broadcasts — ship all `max_steps` batches and exit.
+wait_for_trainer = false
+
 [train.sampling]
 max_completion_tokens = 16
 
+# With 16 completion tokens, all rollouts in a group score 0 reward, so every
+# advantage is zero. Keep the zero_advantage filter in monitor mode here —
+# the default (enforce) would drop 100% of rollouts and abort the run.
+[[post_batch_filters]]
+type = "gibberish"
+
+[[post_batch_filters]]
+type = "repetition"
+
+[[post_batch_filters]]
+type = "zero_advantage"
+enforce = false
