@@ -13,7 +13,7 @@ from httpx import AsyncClient
 from openai import NotFoundError
 from renderers import RendererConfig
 from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
-from verifiers.v1.clients.config import OpenAIClientConfig, RendererClientConfig
+from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
@@ -187,15 +187,15 @@ def setup_clients(
     pool_size: int | None = None,
 ) -> list[vf.ClientConfig]:
     """Build v1 client configs (one per base_url × DP rank). ``client_type``
-    ``renderer`` → token-in/out (``RendererClientConfig``, with the renderer the env
+    ``renderer`` → token-in/out (``TrainClientConfig``, with the renderer the env
     server should use forwarded as a serialized config so it doesn't fall back to the
-    default renderer); otherwise plain chat-completions (``OpenAIClientConfig``)."""
+    default renderer); otherwise plain chat-completions (``EvalClientConfig``)."""
     is_renderer = client_type == "renderer"
-    config_cls = RendererClientConfig if is_renderer else OpenAIClientConfig
+    config_cls = TrainClientConfig if is_renderer else EvalClientConfig
     renderer_extra: dict = {}
     if is_renderer:
         # Pass the shared renderers.RendererConfig straight through (v1's
-        # RendererClientConfig.renderer is the same type; pydantic round-trips it
+        # TrainClientConfig.renderer is the same type; pydantic round-trips it
         # over the wire). prime-rl and v1 share one renderer config.
         renderer_extra = {
             "renderer": renderer_config,
