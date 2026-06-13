@@ -51,6 +51,24 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         raise NotImplementedError(f"is_prime_state_dict is not implemented for {cls.__name__}")
 
+    def conversion_ops(self):
+        """Declarative HF<->prime conversion chain for this model.
+
+        Returns the list of
+        :class:`~prime_rl.trainer.models.conversion_ops.ConvOp` that defines
+        this model's conversion; play it forward with ``apply_hf_to_tt`` (HF ->
+        prime) or backward with ``apply_tt_to_hf`` (prime -> HF). Dispatches on
+        ``config.model_type`` via the registry in ``conversion_chains``.
+
+        Each op is present-guarded, so the same chain works on a full state
+        dict, a single layer's keys, or a local shard. Equivalence to the
+        legacy imperative ``convert_*`` functions is verified in
+        tests/unit/train/models/conversions.
+        """
+        from prime_rl.trainer.models.conversion_chains import build_conversion_chain
+
+        return build_conversion_chain(self.config.model_type, self.config)
+
     @classmethod
     def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """
