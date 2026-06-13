@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
+from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, IPOLossConfig, LossConfig
 from prime_rl.utils.utils import import_object
 
 
@@ -165,6 +165,36 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
+
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
+
+    abs_probs_diff = torch.abs(torch.exp(trainer_logprobs) - torch.exp(inference_logprobs))
+
+    is_masked = abs_probs_diff > loss_config.ipo_threshold
+    keep_mask = loss_mask & ~is_masked
+
+    advantages = loss_config.adv_tau * advantages
+    pg_loss = keep_mask * advantages * importance_ratio
+    kl_loss = loss_mask * log_importance_ratio**2
+    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
+
+    metrics = {
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
+        "is_masked": _safe_mean(is_masked, loss_mask),
+    }
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
     On-policy distillation loss: the default DPPO+KL math with the tau knobs
@@ -240,7 +270,8 @@ def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
     - ``"opd"`` → ``opd_loss_fn`` (teacher KL as gradient signal, hardcoded
       DPPO + KL knobs)
     - ``"rl"``  → ``default_loss_fn(loss_config)`` for ``DefaultLossConfig``,
-      or the imported function for ``CustomLossConfig``.
+      ``ipo_loss_fn(loss_config)`` for ``IPOLossConfig``, or the imported
+      function for ``CustomLossConfig``.
 
     ``trainer.loss`` only affects the rl path - opd and sft are independent.
     """
@@ -250,6 +281,10 @@ def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return custom_fn(inputs, **kwargs)
+    elif isinstance(loss_config, IPOLossConfig):
+
+        def rl_fn(inputs: LossInputs) -> LossOutputs:
+            return ipo_loss_fn(inputs, loss_config)
     else:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
