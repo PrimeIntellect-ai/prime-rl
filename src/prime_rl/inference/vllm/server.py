@@ -20,6 +20,7 @@ from prime_rl.utils.logger import get_logger
 
 logger = get_logger()
 from prime_rl.inference.patches import (
+    monkey_patch_dp_coordinator_startup_timeout,
     monkey_patch_harmony_stop_token_propagation,
     monkey_patch_load_lora_adapter,
     monkey_patch_nano_v3_reasoning_parser,
@@ -42,6 +43,10 @@ monkey_patch_nano_v3_reasoning_parser()
 # NOTE: Optional mitigation for vLLM padded decode inputs until the native fix
 # is available in our pinned runtime.
 monkey_patch_vllm_padded_input_scrub()
+# NOTE: vLLM hard-codes a 30s DP coordinator startup timeout, which the rank-0
+# API server blows through when all engine-core ranks on the node are loading
+# weights concurrently (multi-node disaggregated deployments).
+monkey_patch_dp_coordinator_startup_timeout()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
