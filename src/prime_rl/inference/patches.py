@@ -17,9 +17,27 @@ def transformers_v5_compat():
 
     _patch_qwen35_lora()
     _patch_lora_key_prefix()
+    monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
+
+
+def monkey_patch_nano_v3_reasoning_parser():
+    from vllm.reasoning.abs_reasoning_parsers import ReasoningParserManager
+    from vllm.reasoning.deepseek_r1_reasoning_parser import DeepSeekR1ReasoningParser
+
+    class NanoV3ReasoningParser(DeepSeekR1ReasoningParser):
+        def extract_reasoning(self, model_output, request):
+            reasoning_content, final_content = super().extract_reasoning(model_output, request)
+            chat_template_kwargs = getattr(request, "chat_template_kwargs", None)
+
+            if chat_template_kwargs and chat_template_kwargs.get("enable_thinking") is False and final_content is None:
+                reasoning_content, final_content = final_content, reasoning_content
+
+            return reasoning_content, final_content
+
+    ReasoningParserManager.register_module("nano_v3", module=NanoV3ReasoningParser)
 
 
 def monkey_patch_return_routed_experts_with_nixl_connector():
@@ -836,3 +854,36 @@ def monkey_patch_fp32_lm_head():
     LogitsProcessor.__init__ = _patched_init
     LogitsProcessor._get_logits = _patched_get_logits
     logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")
+
+
+def monkey_patch_dp_coordinator_startup_timeout():
+    """Raise the DP coordinator startup timeout from vLLM's hard-coded 30s.
+
+    The coordinator child process is spawned on the DP-rank-0 API server while
+    every engine-core rank on the node is importing and loading weights, so its
+    own spawn-time re-import can take well over 30s under that CPU/IO
+    contention (seen on multi-node disaggregated GLM-5.1 launches). Configurable
+    via PRIME_DP_COORDINATOR_STARTUP_TIMEOUT (seconds, default 300).
+    """
+    import multiprocessing.connection
+    import os
+
+    from vllm.v1.engine.coordinator import DPCoordinator
+
+    timeout = float(os.environ.get("PRIME_DP_COORDINATOR_STARTUP_TIMEOUT", "300"))
+
+    def _patched_wait_for_zmq_addrs(self, zmq_addr_pipe):
+        try:
+            ready = multiprocessing.connection.wait([zmq_addr_pipe, self.proc.sentinel], timeout=timeout)
+            if not ready:
+                raise RuntimeError(
+                    f"DP Coordinator process failed to report ZMQ addresses within {timeout}s during startup."
+                )
+            try:
+                return zmq_addr_pipe.recv()
+            except EOFError:
+                raise RuntimeError("DP Coordinator process failed during startup.") from None
+        finally:
+            zmq_addr_pipe.close()
+
+    DPCoordinator._wait_for_zmq_addrs = _patched_wait_for_zmq_addrs

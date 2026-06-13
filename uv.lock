@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-06-01T23:58:54.614773201Z"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -1234,6 +1234,7 @@ dependencies = [
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c8/33/c97b2bcbe06e0f011eedee0f41d4060f6344901a53c2703acc3dd7429713/fastsafetensors-0.3.2.tar.gz", hash = "sha256:9e358fce238684613a5c3ebb7800c52c5b3270c0bb5e4ed2191ee8f3d0431de1", size = 70409, upload-time = "2026-05-22T05:39:34.787Z" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/c9/bb/9f821eac9bddd41ea1c5cd9b6a597c002741f022ecf6f3ba5cfcc3e9c950/fastsafetensors-0.3.2-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:69f4d8cbd3b542e5ddf7fee8136cf35e1524f9c30e118f64a0e846dab7e8de6b", size = 1877989, upload-time = "2026-06-04T09:02:56.11Z" },
     { url = "https://files.pythonhosted.org/packages/e9/68/a31c1661adf4d1b5ec29470ff991bde9094e4f347b0e6d1af8ba6b560d32/fastsafetensors-0.3.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6a932d7166c9e17e48aca3e5503d326bc6fc73fce6dc985ae6bd2ccc0f308b14", size = 1907188, upload-time = "2026-05-22T05:39:30.242Z" },
 ]
 
@@ -4013,6 +4014,7 @@ envs = [
     { name = "opencode-science", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "opencode-swe", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "reverse-text", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "rlm-search", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "rlm-swe", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "science-env", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "simpleqa-verified", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4114,6 +4116,7 @@ requires-dist = [
     { name = "reverse-text", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
+    { name = "rlm-search", marker = "extra == 'envs'", editable = "deps/research-environments/environments/rlm_search" },
     { name = "rlm-swe", marker = "extra == 'envs'", editable = "deps/research-environments/environments/rlm_swe" },
     { name = "science-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/science_env" },
     { name = "setproctitle", specifier = ">=1.3.0" },
@@ -4190,16 +4193,16 @@ wheels = [
 
 [[package]]
 name = "prime-tunnel"
-version = "0.1.7"
+version = "0.1.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/91/63/900dbb168a0f49dd9b6c510520a8c9b2b7ecb2c5863caac7757f12ea16e5/prime_tunnel-0.1.7.tar.gz", hash = "sha256:0fd296a78645c95c4474cf418321bac2ad6ba6816701e8823baf6ab718a68a5a", size = 13024, upload-time = "2026-05-20T06:38:40.444Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/36/de/0d17589b232708d1f5985372d1ca49e73493e0b08f860e6540d4885ce229/prime_tunnel-0.1.9.tar.gz", hash = "sha256:8d6c7fd7f5a98c47f50707edd606c4e7110e9dd1a08a1008b073be466408ac8d", size = 15162, upload-time = "2026-06-11T18:10:03.513Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/32/3270dba4c7c402372d25faf8f633f571fe2be8692d720e0eb717ed6ab44e/prime_tunnel-0.1.7-py3-none-any.whl", hash = "sha256:226a08ef9cc4c13503f4e1a687d4fa733ab72626725538b822edbaf8064c40fd", size = 14912, upload-time = "2026-05-20T06:38:38.986Z" },
+    { url = "https://files.pythonhosted.org/packages/50/2a/4b370d5d7cf7cbd98ce2714b7d877d2a184cc1b00d599df498aca04bce2d/prime_tunnel-0.1.9-py3-none-any.whl", hash = "sha256:9ad888e26ba4d81e96c643d9d27687ed4737c873f3b80ed3da8f92d6d7a2a615", size = 16274, upload-time = "2026-06-11T18:10:01.463Z" },
 ]
 
 [[package]]
@@ -4922,8 +4925,29 @@ wheels = [
 ]
 
 [[package]]
+name = "rlm-search"
+version = "0.1.2"
+source = { editable = "deps/research-environments/environments/rlm_search" }
+dependencies = [
+    { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "httpx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "openai", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "prime-sandboxes", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", extra = ["packages"], marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets", specifier = ">=4.0.0" },
+    { name = "httpx" },
+    { name = "openai", specifier = ">=1.0" },
+    { name = "prime-sandboxes", specifier = ">=0.2.19" },
+    { name = "verifiers", specifier = ">=0.1.15.dev171" },
+]
+
+[[package]]
 name = "rlm-swe"
-version = "0.4.4"
+version = "0.5.1"
 source = { editable = "deps/research-environments/environments/rlm_swe" }
 dependencies = [
     { name = "multi-swe-bench", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4937,7 +4961,7 @@ requires-dist = [
     { name = "multi-swe-bench", specifier = ">=1.1.2" },
     { name = "prime-sandboxes", specifier = ">=0.2.19" },
     { name = "swebench", specifier = "==4.1.0" },
-    { name = "verifiers", extras = ["packages"], specifier = ">=0.1.15.dev17" },
+    { name = "verifiers", extras = ["packages"], specifier = ">=0.1.15.dev17,<0.1.15.dev156" },
 ]
 
 [[package]]
@@ -6002,7 +6026,7 @@ requires-dist = [
     { name = "pillow" },
     { name = "prime-pydantic-config", extras = ["toml"] },
     { name = "prime-sandboxes", specifier = ">=0.2.25" },
-    { name = "prime-tunnel", specifier = ">=0.1.6" },
+    { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pymupdf" },
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
