@@ -65,15 +65,6 @@ def _routed_experts_op(
     return Conditional(key_present(gate_up), then=fused_then, else_=stacks)
 
 
-def build_qwen3_moe_chain(num_layers: int) -> list[ConvOp]:
-    ops: list[ConvOp] = []
-    for i in range(num_layers):
-        p = f"model.layers.{i}"
-        ops.append(Rename(f"{p}.mlp.gate.weight", f"{p}.mlp.router.gate.weight"))
-        ops.append(_routed_experts_op(p, hf_experts="mlp.experts", tt_experts="mlp.experts", fused=True))
-    return ops
-
-
 # --------------------------------------------------------------------------- #
 # Registry: model_type -> a builder that takes the model config and returns the
 # full conversion chain. Each model's per-layer builder lives in its own
@@ -97,6 +88,7 @@ def _conversion_chain_registry() -> dict[str, "callable"]:
     from prime_rl.trainer.models.minimax_m2.conversion_chain import build_minimax_m2_chain
     from prime_rl.trainer.models.nemotron_h.conversion_chain import build_nemotron_h_chain
     from prime_rl.trainer.models.qwen3_5_moe.conversion_chain import build_qwen3_5_moe_chain
+    from prime_rl.trainer.models.qwen3_moe.conversion_chain import build_qwen3_moe_chain
 
     return {
         "qwen3_moe": _by_num_layers(build_qwen3_moe_chain),
