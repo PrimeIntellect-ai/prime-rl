@@ -137,6 +137,36 @@ def test_vlm_weight_load_from_hf():
     assert not torch.isnan(out["logits"]).any()
 
 
+def test_vlm_weight_roundtrip():
+    """HF -> PrimeRL -> HF weight conversion is lossless (vision keys untouched, text keys converted)."""
+    config = _tiny_vlm_config()
+    with torch.device("cuda"), default_dtype(torch.float32):
+        hf_model = HFQwen3_5MoeVLM._from_config(config)
+        prime_model = Qwen3_5MoeForCausalLM(config)
+
+    hf_sd = hf_model.state_dict()
+    original_vision_key = "model.visual.blocks.0.mlp.linear_fc1.weight"
+    original_vision_weight = hf_sd[original_vision_key].clone()
+
+    # HF -> PrimeRL
+    prime_sd = prime_model.convert_to_prime(dict(hf_sd))
+    assert any("language_model" in k and "mlp.experts.w1" in k for k in prime_sd)
+    assert original_vision_key in prime_sd
+
+    # PrimeRL -> HF
+    roundtripped = prime_model.convert_to_hf(dict(prime_sd))
+
+    # Original HF also needs a roundtrip for expert-format normalization (fused <-> per-expert).
+    orig_rt = prime_model.convert_to_hf(prime_model.convert_to_prime(dict(hf_sd)))
+
+    for key in orig_rt:
+        assert key in roundtripped, f"Missing key: {key}"
+        assert torch.equal(orig_rt[key], roundtripped[key]), f"Mismatch at {key}"
+
+    # Vision weights preserved through the whole roundtrip
+    assert torch.equal(roundtripped[original_vision_key], original_vision_weight)
+
+
 def test_vlm_router_replay():
     """routed_experts bypasses router computation in VLM multimodal forward."""
     config = _tiny_vlm_config()
