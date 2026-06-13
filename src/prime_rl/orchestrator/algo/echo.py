@@ -72,11 +72,14 @@ class EchoAlgorithm(GRPOAlgorithm):
             self._weight_observations(rollout)
 
     def _weight_observations(self, rollout: TrainRollout) -> None:
-        """Write each sample's per-token ce weights for the env-provided
+        """Write each sample's ``ce_weights`` stream for the env-provided
         observation spans interleaving recorded (``obs_spans``): each token
         gets its message role's weight, narrowed by the optional user filter.
-        Step attribution is looked up lazily — only steps whose prompt tokens
-        actually landed as observations are computed."""
+        The selected tokens stay outside ``completion_mask``, so ce is the
+        only component that trains them. Step attribution is looked up
+        lazily — only steps whose prompt tokens actually landed as
+        observations are computed; samples where nothing is selected ship no
+        ce stream at all."""
         trajectory = rollout.raw["trajectory"]
         filter_masks = self._filter_masks(rollout.raw) if self.filter_fn is not None else None
         step_weights: dict[int, list[float]] = {}
@@ -93,7 +96,8 @@ class EchoAlgorithm(GRPOAlgorithm):
                         prompt_weights = [w if keep else 0.0 for w, keep in zip(prompt_weights, filter_masks[step_idx])]
                     step_weights[step_idx] = prompt_weights
                 weights[start : start + length] = step_weights[step_idx][step_start : step_start + length]
-            sample.completion_obs_weights = weights
+            if any(weights):
+                sample.ce_weights = [0.0] * len(sample.prompt_ids) + weights
 
     def _filter_masks(self, output: vf.RolloutOutput) -> list[list[bool]]:
         """Invoke the user echo filter and validate its shape: one keep-mask
