@@ -138,3 +138,24 @@ class WeightWatcher:
             "watcher/last_update_weights_time": self.last_update_weights_time,
             "watcher/last_wait_for_ckpt_time": self.last_wait_for_ckpt_time,
         }
+
+
+class NoOpWeightWatcher:
+    """Weight watcher for orchestrator debug runs without a trainer."""
+
+    def __init__(self, *, policy: Policy) -> None:
+        self.policy = policy
+
+    async def start(self) -> None:
+        await asyncio.Event().wait()
+
+    async def stop(self) -> None:
+        return None
+
+    def gauges(self) -> dict[str, float]:
+        return {
+            "watcher/policy_version": float(self.policy.version),
+            "watcher/update_count": 0.0,
+            "watcher/last_update_weights_time": 0.0,
+            "watcher/last_wait_for_ckpt_time": 0.0,
+        }

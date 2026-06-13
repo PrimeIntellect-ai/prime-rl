@@ -34,6 +34,13 @@ class FileSystemTrainingBatchSender(TrainingBatchSender):
         tmp_path.rename(step_path / BATCH_FILE_NAME)
 
 
+class NoOpTrainingBatchSender(TrainingBatchSender):
+    """Debug sender that drops batches after orchestrator-side processing."""
+
+    async def send(self, batch: TrainingBatch) -> None:
+        self.logger.info(f"No-op training transport dropping batch step={batch.step} examples={len(batch.examples)}")
+
+
 class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
     """Filesystem-based training batch receiver that reads batches from multiple run directories."""
 
