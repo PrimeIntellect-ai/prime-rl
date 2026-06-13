@@ -36,12 +36,7 @@ from prime_rl.trainer.models.layers.rotary_emb import (
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 from .configuration_afmoe import AfmoeConfig
-from .converting_afmoe import (
-    convert_hf_layer_to_tt,
-    convert_hf_to_tt_moe,
-    convert_tt_layer_to_hf,
-    convert_tt_to_hf_moe,
-)
+from .converting_afmoe import conversion_chain
 
 
 @dataclass
@@ -412,25 +407,8 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
     def is_prime_state_dict(cls, state_dict: dict[str, torch.Tensor]) -> bool:
         return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
 
-    @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        convert_tt_to_hf_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        convert_hf_to_tt_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, torch.Tensor], layer_idx: int) -> dict[str, torch.Tensor]:
-        convert_tt_layer_to_hf(state_dict, layer_idx)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, torch.Tensor], layer_idx: int) -> dict[str, torch.Tensor]:
-        convert_hf_layer_to_tt(state_dict, layer_idx)
-        return state_dict
+    def conversion_chain(self):
+        return conversion_chain(self.config)
 
 
 class AfmoeModel(AfmoePreTrainedModel):

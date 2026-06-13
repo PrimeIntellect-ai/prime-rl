@@ -311,3 +311,51 @@ class Sequence(ConvOp):
 
 def key_present(name: str) -> Callable[[StateDict], bool]:
     return lambda sd: name in sd
+
+
+# --------------------------------------------------------------------------- #
+# Shared composition helper for Llama-style routed experts (prime w1=gate,
+# w2=down, w3=up). Used by several models' converting_<model>.py.
+# --------------------------------------------------------------------------- #
+
+GATE_DOWN_UP = (("w1", "gate_proj"), ("w2", "down_proj"), ("w3", "up_proj"))
+
+
+def routed_experts_op(
+    prefix: str,
+    *,
+    hf_experts: str,
+    tt_experts: str,
+    proj_order=GATE_DOWN_UP,
+    hf_proj_suffix: str = ".weight",
+    fused: bool = False,
+) -> ConvOp:
+    """Compose the routed-experts conversion for one layer from base ops.
+
+    Per-expert HF weights <-> stacked prime tensors is a :class:`Stack` per
+    proj. ``hf_experts``/``tt_experts`` are the (relative) expert container
+    names (e.g. ``mlp.experts`` / ``block_sparse_moe.experts``); ``proj_order``
+    maps prime ``wN`` to the HF per-expert proj name.
+
+    With ``fused`` set, the transformers-v5 fused ``gate_up_proj`` input is also
+    accepted: a :class:`Conditional` on its presence splits it (dim 1) into
+    w1/w3 and renames ``down_proj`` -> w2; otherwise the per-expert ``Stack``s
+    run. Prime always stores split w1/w2/w3, so the backward path always goes
+    through the per-expert ``Stack`` unstack (the fused key is absent in prime,
+    so the conditional takes the else branch)."""
+    stacks = [
+        Stack(stacked=f"{prefix}.{tt_experts}.{wn}", item=f"{prefix}.{hf_experts}.{{e}}.{hf_proj}{hf_proj_suffix}")
+        for wn, hf_proj in proj_order
+    ]
+    if not fused:
+        return Sequence(stacks)
+    gate_up = f"{prefix}.{hf_experts}.gate_up_proj"
+    fused_then = [
+        SplitConcat(
+            combined=gate_up,
+            parts=[(f"{prefix}.{tt_experts}.w1", None), (f"{prefix}.{tt_experts}.w3", None)],
+            dim=1,
+        ),
+        Rename(f"{prefix}.{hf_experts}.down_proj", f"{prefix}.{tt_experts}.w2"),
+    ]
+    return Conditional(key_present(gate_up), then=fused_then, else_=stacks)

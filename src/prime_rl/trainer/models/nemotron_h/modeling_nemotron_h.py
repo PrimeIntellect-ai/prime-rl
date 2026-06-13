@@ -25,12 +25,7 @@ from prime_rl.trainer.models.layers.moe import LatentMoE, NemotronHRouter, NonGa
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
-from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
-    convert_hf_layer_to_prime,
-    convert_hf_to_prime,
-    convert_prime_layer_to_hf,
-    convert_prime_to_hf,
-)
+from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import conversion_chain
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 logger = logging.get_logger(__name__)
@@ -373,18 +368,8 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
             for name in state_dict
         )
 
-    @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        # Need config to know layer types; infer from state dict keys
-        layers_block_type = _infer_layers_block_type(state_dict)
-        convert_prime_to_hf(state_dict, layers_block_type)
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        layers_block_type = _infer_layers_block_type_from_hf(state_dict)
-        convert_hf_to_prime(state_dict, layers_block_type)
-        return state_dict
+    def conversion_chain(self):
+        return conversion_chain(self.config)
 
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -402,88 +387,6 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
             if new_key != old_key:
                 state_dict[new_key] = state_dict.pop(old_key)
         return state_dict
-
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import _rename_keys
-
-        if layer_idx == -1:
-            # Non-layer weights: rename global keys and model.* -> backbone.*
-            if "model.embed_tokens.weight" in state_dict:
-                state_dict["model.embeddings.weight"] = state_dict.pop("model.embed_tokens.weight")
-            if "model.norm.weight" in state_dict:
-                state_dict["model.norm_f.weight"] = state_dict.pop("model.norm.weight")
-            _rename_keys(state_dict, "model.", "backbone.")
-        else:
-            layer_type = _infer_layer_type_prime(state_dict, layer_idx)
-            convert_prime_layer_to_hf(state_dict, layer_idx, layer_type)
-            _rename_keys(state_dict, "model.layers.", "backbone.layers.")
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import _rename_keys
-
-        # Handle backbone.* -> model.* prefix before layer conversion
-        _rename_keys(state_dict, "backbone.", "model.")
-
-        if layer_idx == -1:
-            # Non-layer weights: rename global keys
-            if "model.embeddings.weight" in state_dict:
-                state_dict["model.embed_tokens.weight"] = state_dict.pop("model.embeddings.weight")
-            if "model.norm_f.weight" in state_dict:
-                state_dict["model.norm.weight"] = state_dict.pop("model.norm_f.weight")
-        else:
-            layer_type = _infer_layer_type_hf(state_dict, layer_idx)
-            convert_hf_layer_to_prime(state_dict, layer_idx, layer_type)
-        return state_dict
-
-
-def _infer_layer_type_hf(state_dict: dict[str, Tensor], layer_idx: int) -> str:
-    """Infer layer type from HF state dict keys for a given layer."""
-    # HF checkpoints may use either "model." or "backbone." prefix
-    for root in ("model", "backbone"):
-        prefix = f"{root}.layers.{layer_idx}.mixer."
-        layer_keys = [k for k in state_dict if k.startswith(prefix)]
-        if layer_keys:
-            for k in layer_keys:
-                suffix = k[len(prefix) :]
-                if suffix.startswith("gate.") or suffix.startswith("experts."):
-                    return "moe"
-                if suffix.startswith("q_proj") or suffix.startswith("k_proj"):
-                    return "attention"
-            return "mamba"
-    return "mamba"  # fallback
-
-
-def _infer_layer_type_prime(state_dict: dict[str, Tensor], layer_idx: int) -> str:
-    """Infer layer type from PrimeRL state dict keys for a given layer."""
-    prefix = f"model.layers.{layer_idx}."
-    for k in state_dict:
-        if not k.startswith(prefix):
-            continue
-        suffix = k[len(prefix) :]
-        if suffix.startswith("mlp."):
-            return "moe"
-        if suffix.startswith("self_attn."):
-            return "attention"
-        if suffix.startswith("mamba."):
-            return "mamba"
-    return "mamba"
-
-
-def _infer_layers_block_type_from_hf(state_dict: dict[str, Tensor]) -> list[str]:
-    """Infer full layers_block_type list from HF state dict."""
-    # HF checkpoints may use either "model." or "backbone." prefix
-    layer_keys = [k for k in state_dict if k.startswith("model.layers.") or k.startswith("backbone.layers.")]
-    max_layer = max(int(k.split(".")[2]) for k in layer_keys) + 1
-    return [_infer_layer_type_hf(state_dict, i) for i in range(max_layer)]
-
-
-def _infer_layers_block_type(state_dict: dict[str, Tensor]) -> list[str]:
-    """Infer full layers_block_type list from PrimeRL state dict."""
-    max_layer = max(int(k.split(".")[2]) for k in state_dict if k.startswith("model.layers.")) + 1
-    return [_infer_layer_type_prime(state_dict, i) for i in range(max_layer)]
 
 
 class NemotronHModel(NemotronHPreTrainedModel):
