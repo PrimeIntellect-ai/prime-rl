@@ -40,7 +40,7 @@ class OPDAlgorithm(Algorithm):
     async def setup(self) -> None:
         self.teacher_pool = await self.connect(self.teacher)
 
-    async def score(self, rollouts: list[TrainRollout]) -> None:
+    async def query_references(self, rollouts: list[TrainRollout]) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)

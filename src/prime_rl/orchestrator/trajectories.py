@@ -206,7 +206,6 @@ def interleave_rollout(
     mm_token_type_ids_mapping: dict[int, int] | None = None,
     *,
     env_name: str = "",
-    obs_weights: list[list[float]] | None = None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -223,13 +222,12 @@ def interleave_rollout(
     Returns a list of samples - could be 1 (extension always held) or up to T
     (extension never held).
 
-    With ``obs_weights`` (from :meth:`Algorithm.observation_weights` — one
-    per-token weight list per trajectory step, each spanning that step's
-    prompt + completion tokens), each sample additionally carries
-    ``completion_obs_weights`` over its ``completion_ids``: the spans that
-    land as later-turn prompt extensions keep their step's weights,
-    everything else is 0.0. Algorithms that train on observations (ECHO) fold
-    these weights into the CE component instead of dropping the tokens.
+    Env-provided observation tokens (the spans that land as later-turn prompt
+    extensions) are recorded as provenance on each sample: ``obs_spans``
+    entries map sample completion positions back to trajectory-step
+    coordinates (``[completion_start, step_idx, step_prompt_start, length]``).
+    Algorithms that train on observations (ECHO) consume the spans at group
+    time to write per-token ce weights; everything else ignores them.
 
     For VLM models, each renderer-produced trajectory step carries its
     per-image processed tensors inline on ``multi_modal_data``; the last
@@ -289,20 +287,6 @@ def interleave_rollout(
             return None
         prepared_steps.append(prepared)
 
-    if obs_weights is not None:
-        if len(obs_weights) != len(prepared_steps):
-            raise ValueError(
-                f"observation weights must cover every trajectory step: "
-                f"got {len(obs_weights)}, expected {len(prepared_steps)}"
-            )
-        for step_idx, (step_tokens, step_weights) in enumerate(zip(prepared_steps, obs_weights)):
-            expected = len(step_tokens["prompt_ids"]) + len(step_tokens["completion_ids"])
-            if len(step_weights) != expected:
-                raise ValueError(
-                    f"observation weights for step {step_idx} must span the step's prompt+completion "
-                    f"tokens: got {len(step_weights)}, expected {expected}"
-                )
-
     # Deferred routed_experts state per sample: O(N) chunk list concatenated
     # once at finalize, replacing the prior O(N²) per-extension unpack/repack.
     sample_routed_state: dict[int, dict[str, Any]] = {}
@@ -333,8 +317,6 @@ def interleave_rollout(
             env_name=env_name,
             mm_token_type_ids=None,
             routed_experts=None,  # deferred — finalized at end of interleave_rollout
-            # A step's own completion tokens are actions, not observations
-            completion_obs_weights=[0.0] * len(completion_ids) if obs_weights is not None else None,
         )
         # Initialize routed-experts state for this sample. First chunk is the
         # raw step routed_experts (no pad, no copy). running_len is the
@@ -398,14 +380,17 @@ def interleave_rollout(
         tokens = prepared_steps[step_idx]
 
         # Extend with new prompt tokens (mask=False, no gradient). These are
-        # the env's response to the previous action — observation tokens.
+        # the env's response to the previous action — observation tokens;
+        # record where they came from so group-time observation weighting
+        # (echo) can look up the step's attribution.
         new_prompt_ids = tokens["prompt_ids"][prefix_len:]
+        if new_prompt_ids:
+            if sample.obs_spans is None:
+                sample.obs_spans = []
+            sample.obs_spans.append([len(sample.completion_ids), step_idx, prefix_len, len(new_prompt_ids)])
         sample.completion_ids.extend(new_prompt_ids)
         sample.completion_mask.extend([False] * len(new_prompt_ids))
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
-        if sample.completion_obs_weights is not None:
-            assert obs_weights is not None
-            sample.completion_obs_weights.extend(obs_weights[step_idx][prefix_len : len(tokens["prompt_ids"])])
 
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]
@@ -415,8 +400,6 @@ def interleave_rollout(
         else:
             sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
-        if sample.completion_obs_weights is not None:
-            sample.completion_obs_weights.extend([0.0] * len(completion_ids))
 
         step_routed = tokens.get("routed_experts")
         state = sample_routed_state.get(id(sample))

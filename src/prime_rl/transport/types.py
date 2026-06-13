@@ -66,10 +66,16 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: list[float] | None = None
 
-    # Orchestrator-internal: per-token echo ce weights for env-provided
-    # tokens within ``completion_ids`` (set by ``interleave_rollout`` when the
-    # env's algorithm trains on observations; 0.0 = not selected). Folded into
-    # ``ce_weights`` when stamping loss routing and cleared before transport.
+    # Orchestrator-internal, cleared before transport:
+    # ``obs_spans`` is interleaving's provenance record for env-provided
+    # observation tokens — one ``[completion_start, step_idx,
+    # step_prompt_start, length]`` entry per span that landed as a later-turn
+    # prompt extension, mapping sample positions back to trajectory-step
+    # coordinates. ``completion_obs_weights`` is per-token ce weights over
+    # ``completion_ids`` (written by algorithms that train on observations,
+    # e.g. echo, at group time; 0.0 = not selected), folded into
+    # ``ce_weights`` when stamping loss routing.
+    obs_spans: list[list[int]] | None = None
     completion_obs_weights: list[float] | None = None
 
 

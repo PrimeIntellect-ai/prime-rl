@@ -7,14 +7,13 @@ turns the signal half into runtime objects (the sampling half is the env's
 
 - one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``opd``,
   ``opsd``, ``sft``, ``reward``, ``custom``) — each named class owns its
-  hooks (``observation_weights`` / ``assign_advantages`` / ``score``) and
-  declares what it needs (loss component, a "teacher", ...). One instance
-  per env, built by :func:`build_algorithm`. Custom credit assignment plugs
-  in through the ``custom`` advantage type (:class:`CustomAlgorithm` imports
-  a user function by path).
+  two hooks (``assign_advantages`` / ``query_references``) and declares what
+  it needs (loss component, a "teacher", ...). One instance per env, built
+  by :func:`build_algorithm`. Custom credit assignment plugs in through the
+  ``custom`` advantage type (:class:`CustomAlgorithm` imports a user
+  function by path).
 - ``base`` — the :class:`Algorithm` base class and the pipeline phase
-  functions (:func:`build_samples` / :func:`finalize_group` /
-  :func:`score_train_batch`).
+  functions (:func:`finalize_group` / :func:`query_batch_references`).
 - ``advantage`` — pure advantage math: the custom-function interface
   (:class:`AdvantageInputs`, per-token advantages out) and the default
   group-norm computation.
@@ -35,10 +34,9 @@ from prime_rl.orchestrator.algo.advantage import (
 )
 from prime_rl.orchestrator.algo.base import (
     Algorithm,
-    build_samples,
     connect_frozen_pool,
     finalize_group,
-    score_train_batch,
+    query_batch_references,
 )
 from prime_rl.orchestrator.algo.custom import CustomAlgorithm
 from prime_rl.orchestrator.algo.echo import EchoAlgorithm
@@ -92,12 +90,11 @@ __all__ = [
     "SFTDistillAlgorithm",
     "apply_advantage_fn",
     "build_algorithm",
-    "build_samples",
     "connect_frozen_pool",
     "default_advantage_fn",
     "finalize_group",
     "max_rl_advantage_fn",
-    "score_train_batch",
+    "query_batch_references",
     "stamp_advantages",
     "stamp_loss_routing",
 ]

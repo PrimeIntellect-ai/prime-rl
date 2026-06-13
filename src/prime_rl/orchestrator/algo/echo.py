@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     import verifiers as vf
     from renderers.base import Renderer
 
+    from prime_rl.orchestrator.types import TrainRollout
     from prime_rl.utils.client import InferencePool
 
 
@@ -65,23 +66,34 @@ class EchoAlgorithm(GRPOAlgorithm):
         if advantage.filter is not None:
             self.filter_fn = partial(import_object(advantage.filter.import_path), **advantage.filter.kwargs)
 
-    def observation_weights(self, output: vf.RolloutOutput) -> list[list[float]]:
-        """Each step's prompt tokens get their message role's weight; a step's
-        own completion tokens are actions, not observations (0.0). The user
-        filter narrows the selection. ``interleave_rollout`` slices the spans
-        that actually land as observations in the merged samples."""
-        trajectory = output["trajectory"]
-        filter_masks = self._filter_masks(output) if self.filter_fn is not None else None
-        per_step = []
-        for step_idx, step in enumerate(trajectory):
-            tokens = step["tokens"]
-            weights = _prompt_role_weights(tokens, self.role_weights)
-            weights.extend([0.0] * len(tokens["completion_ids"]))
-            if filter_masks is not None:
-                mask = filter_masks[step_idx]
-                weights = [weight if keep else 0.0 for weight, keep in zip(weights, mask)]
-            per_step.append(weights)
-        return per_step
+    def assign_advantages(self, rollouts: list[TrainRollout]) -> None:
+        super().assign_advantages(rollouts)
+        for rollout in rollouts:
+            self._weight_observations(rollout)
+
+    def _weight_observations(self, rollout: TrainRollout) -> None:
+        """Write each sample's per-token ce weights for the env-provided
+        observation spans interleaving recorded (``obs_spans``): each token
+        gets its message role's weight, narrowed by the optional user filter.
+        Step attribution is looked up lazily — only steps whose prompt tokens
+        actually landed as observations are computed."""
+        trajectory = rollout.raw["trajectory"]
+        filter_masks = self._filter_masks(rollout.raw) if self.filter_fn is not None else None
+        step_weights: dict[int, list[float]] = {}
+        for sample in rollout.samples:
+            if not sample.obs_spans:
+                continue
+            weights = [0.0] * len(sample.completion_ids)
+            for start, step_idx, step_start, length in sample.obs_spans:
+                if step_idx not in step_weights:
+                    prompt_weights = _prompt_role_weights(trajectory[step_idx]["tokens"], self.role_weights)
+                    if filter_masks is not None:
+                        # Masks span the step's prompt+completion; obs spans
+                        # only ever come from the prompt part.
+                        prompt_weights = [w if keep else 0.0 for w, keep in zip(prompt_weights, filter_masks[step_idx])]
+                    step_weights[step_idx] = prompt_weights
+                weights[start : start + length] = step_weights[step_idx][step_start : step_start + length]
+            sample.completion_obs_weights = weights
 
     def _filter_masks(self, output: vf.RolloutOutput) -> list[list[bool]]:
         """Invoke the user echo filter and validate its shape: one keep-mask
