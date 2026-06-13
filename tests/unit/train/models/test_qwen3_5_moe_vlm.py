@@ -135,6 +135,7 @@ def test_vlm_weight_load_from_hf():
     with torch.device("cuda"), default_dtype(torch.float32):
         hf_model = HFQwen3_5MoeVLM._from_config(config)
         prime_model = Qwen3_5MoeForCausalLM(config)
+        prime_model = Qwen3_5MoeForCausalLM(config)
 
     # Copy weights: HF -> PrimeRL (with MoE conversion)
     with torch.no_grad():
@@ -167,19 +168,15 @@ def test_vlm_weight_roundtrip():
     original_vision_weight = hf_sd[original_vision_key].clone()
 
     # HF -> PrimeRL
-    prime_sd = dict(hf_sd)
-    Qwen3_5MoeForCausalLM.convert_to_prime(prime_sd)
+    prime_sd = prime_model.convert_to_prime(dict(hf_sd))
     assert any("language_model" in k and "mlp.experts.w1" in k for k in prime_sd)
     assert original_vision_key in prime_sd
 
     # PrimeRL -> HF
-    roundtripped = dict(prime_sd)
-    Qwen3_5MoeForCausalLM.convert_to_hf(roundtripped)
+    roundtripped = prime_model.convert_to_hf(dict(prime_sd))
 
-    # Original HF also needs roundtrip for expert format normalization
-    orig_rt = dict(hf_sd)
-    Qwen3_5MoeForCausalLM.convert_to_prime(orig_rt)
-    Qwen3_5MoeForCausalLM.convert_to_hf(orig_rt)
+    # Original HF also needs a roundtrip for expert-format normalization (fused <-> per-expert).
+    orig_rt = prime_model.convert_to_hf(prime_model.convert_to_prime(dict(hf_sd)))
 
     for key in orig_rt:
         assert key in roundtripped, f"Missing key: {key}"
