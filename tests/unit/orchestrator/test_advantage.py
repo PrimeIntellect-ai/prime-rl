@@ -10,8 +10,8 @@ from prime_rl.configs.algorithm import (
 )
 from prime_rl.orchestrator.algo import CustomAlgorithm
 from prime_rl.orchestrator.algo.advantage import (
-    AdvantageInputs,
     apply_advantage_fn,
+    broadcast,
     default_advantage_fn,
     max_rl_advantage_fn,
 )
@@ -43,17 +43,43 @@ def _make_rollout(
     }
 
 
-def _make_group(rewards, completion_lengths=None, num_turns=None) -> AdvantageInputs:
-    """Build single-group AdvantageInputs from 1D arrays of rewards/lengths/turns.
-
-    Training-sample completion lengths are 1, so every returned advantage
+def _wrap(raw_rollouts: list[dict]) -> list[TrainRollout]:
+    """Wrap raw rollout dicts into ``TrainRollout``\ s, each carrying one
+    single-completion-token training sample, so every returned advantage
     stream is a singleton (``_scalars`` unwraps them)."""
-    rollouts = []
+    gid = uuid.uuid4()
+    return [
+        TrainRollout(
+            raw=raw,
+            env_name="test",
+            example_id=0,
+            group_id=gid,
+            policy_version=0,
+            off_policy_steps=0,
+            samples=[
+                TrainingSample(
+                    prompt_ids=[1],
+                    prompt_mask=[False],
+                    completion_ids=[2],
+                    completion_mask=[True],
+                    completion_logprobs=[-0.1],
+                    completion_temperatures=[],
+                    env_name="test",
+                )
+            ],
+        )
+        for raw in raw_rollouts
+    ]
+
+
+def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[TrainRollout]:
+    """Build one group of ``TrainRollout``\ s from 1D arrays of rewards/lengths/turns."""
+    raw_rollouts = []
     for i, reward in enumerate(rewards):
         cl = int(completion_lengths[i]) if completion_lengths is not None else 0
         nt = int(num_turns[i]) if num_turns is not None else 1
-        rollouts.append(_make_rollout(float(reward), cl, nt))
-    return AdvantageInputs(rollouts=rollouts, completion_lengths=[1] * len(rollouts))
+        raw_rollouts.append(_make_rollout(float(reward), cl, nt))
+    return _wrap(raw_rollouts)
 
 
 def _scalars(advantages: list[list[float]]) -> list[float]:
@@ -101,8 +127,8 @@ def test_efficiency_mixed_group():
     assert sum(_scalars(result)) == pytest.approx(0.0, abs=1e-6)
 
     # All correct rollouts have positive advantage
-    for rollout, adv in zip(inputs.rollouts, _scalars(result)):
-        if rollout["reward"] >= 1.0:
+    for rollout, adv in zip(inputs, _scalars(result)):
+        if rollout.reward >= 1.0:
             assert adv > 0
 
 
@@ -199,7 +225,7 @@ def test_efficiency_tokens_with_tool_response_weight():
             "metrics": {"rlm_total_tool_response_tokens": 100},
         },
     ]
-    inputs = AdvantageInputs(rollouts=rollouts, completion_lengths=[1] * len(rollouts))
+    inputs = _wrap(rollouts)
 
     # completion tokens identical (10 each) → completion-only shaping is a no-op
     result_completion_only = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
@@ -225,13 +251,8 @@ def test_efficiency_fractional_weight_with_int_rewards():
     rollouts_float = [{**r, "reward": float(r["reward"])} for r in rollouts_int]
 
     fractional = TokensLengthPenaltyConfig(completion_weight=0.3, tool_response_weight=0.0)
-    lengths = [1] * len(rollouts_int)
-    int_result = default_advantage_fn(
-        AdvantageInputs(rollouts=rollouts_int, completion_lengths=lengths), length_penalty=fractional
-    )
-    float_result = default_advantage_fn(
-        AdvantageInputs(rollouts=rollouts_float, completion_lengths=lengths), length_penalty=fractional
-    )
+    int_result = default_advantage_fn(_wrap(rollouts_int), length_penalty=fractional)
+    float_result = default_advantage_fn(_wrap(rollouts_float), length_penalty=fractional)
     assert _scalars(int_result) == pytest.approx(_scalars(float_result), abs=1e-6)
 
 
@@ -243,7 +264,7 @@ def test_efficiency_zero_costs_falls_back_to_plain_grpo():
         {"reward": 1.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
         {"reward": 0.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
     ]
-    inputs = AdvantageInputs(rollouts=rollouts, completion_lengths=[1] * len(rollouts))
+    inputs = _wrap(rollouts)
     result = default_advantage_fn(inputs, length_penalty=_TOKENS_TOOL_ONLY)
     expected = default_advantage_fn(inputs)  # plain GRPO
     assert not any(math.isnan(a) for a in _scalars(result))
@@ -344,6 +365,6 @@ def test_custom_advantage_algorithm():
     assert _scalars(result) == pytest.approx([2.0, 1.0, 1.6], abs=1e-6)
 
 
-def _dummy_custom_advantage(inputs: AdvantageInputs, scale: float = 1.0) -> list[list[float]]:
+def _dummy_custom_advantage(rollouts: list[TrainRollout], scale: float = 1.0) -> list[list[float]]:
     """A simple custom advantage for testing."""
-    return inputs.broadcast([r["reward"] * scale for r in inputs.rollouts])
+    return broadcast(rollouts, [r.reward * scale for r in rollouts])
