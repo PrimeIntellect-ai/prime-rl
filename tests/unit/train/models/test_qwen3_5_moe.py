@@ -65,6 +65,25 @@ def test_qwen3_5_moe():
     assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
 
 
+def test_qwen3_5_moe_roundtrip():
+    """Verify HF → PrimeRL → HF weight conversion is lossless at the state_dict level."""
+    hf_model, prime_model = get_model_pairs()
+
+    original_hf_sd = hf_model.state_dict()
+    prime_sd = prime_model.state_dict()
+
+    # PrimeRL → per-expert HF format (plays the chain backward).
+    converted_hf_sd = prime_model.convert_to_hf(dict(prime_sd))
+
+    # Original HF (fused) → PrimeRL → per-expert HF, for a like-for-like comparison.
+    orig_prime_sd = prime_model.convert_to_prime(dict(original_hf_sd))
+    orig_roundtripped = prime_model.convert_to_hf(dict(orig_prime_sd))
+
+    for key in orig_roundtripped:
+        assert key in converted_hf_sd, f"Missing key: {key}"
+        assert torch.equal(orig_roundtripped[key], converted_hf_sd[key]), f"Mismatch at {key}"
+
+
 def test_qwen3_5_moe_router_replay():
     """When routed_experts are provided, the model uses them instead of computing routing."""
     _, prime_model = get_model_pairs()
