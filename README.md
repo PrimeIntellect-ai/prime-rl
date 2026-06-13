@@ -176,8 +176,6 @@ uv run inference @ configs/debug/infer.toml
 uv run orchestrator @ configs/debug/orch.toml
 ```
 
-*This runs the orchestrator standalone (no trainer); the debug config sets `wait_for_trainer = false` so it completes 5 steps and exits cleanly on its own.*
-
 5.2. Check that you can run evals against the inference server
 
 ```bash
