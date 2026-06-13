@@ -79,7 +79,7 @@ args = { dataset_name="PrimeIntellect/SWE-Bench-Verified-Quick", max_turns = 200
 
 [[orchestrator.post_batch_filters]]
 type = "gibberish"
-enforce = true
+action = "drop"
 
 [inference]
 enable_expert_parallel = true

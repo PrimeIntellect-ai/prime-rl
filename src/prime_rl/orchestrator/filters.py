@@ -143,7 +143,7 @@ def setup_filter(config: FilterConfig, vocab_size: int) -> RolloutFilter:
             name="gibberish",
             token_id_threshold=config.token_id_threshold,
             logprob_threshold=-math.log(vocab_size) - config.logprob_offset,
-            action=config.resolved_action,
+            action=config.action,
             penalty_reward=config.penalty_reward,
         )
     elif config.type == "repetition":
@@ -151,13 +151,13 @@ def setup_filter(config: FilterConfig, vocab_size: int) -> RolloutFilter:
             name="repetition",
             window=config.window,
             logprob_threshold=math.log(config.prob_threshold),
-            action=config.resolved_action,
+            action=config.action,
             penalty_reward=config.penalty_reward,
         )
     elif config.type == "zero_advantage":
         return ZeroAdvantageFilter(
             name="zero_advantage",
-            action=config.resolved_action,
+            action=config.action,
             penalty_reward=config.penalty_reward,
         )
     raise ValueError(f"Unknown filter type: {config.type}")

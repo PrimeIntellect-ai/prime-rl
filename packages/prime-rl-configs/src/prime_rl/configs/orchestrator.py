@@ -1,7 +1,7 @@
 import math
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import AliasChoices, Field, model_serializer, model_validator
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
@@ -426,43 +426,13 @@ FilterAction: TypeAlias = Literal["monitor", "drop", "penalize"]
 
 
 class BaseFilterConfig(BaseConfig):
-    """Shared action fields for rollout filters.
+    """Shared action fields for rollout filters."""
 
-    Exactly one of ``action`` / ``enforce`` should be set (``enforce`` is legacy
-    compatibility). If neither is set, the filter falls back to its per-type
-    default action.
-    """
-
-    action: FilterAction | None = None
-    """What to do when the filter detects a rollout. ``monitor``: only track detection metrics. ``drop``: skip the rollout entirely so it is not sent to the trainer. ``penalize``: cap the rollout's reward at ``penalty_reward`` before advantage computation while keeping it trainable. If None, resolves from the legacy ``enforce`` flag, falling back to the filter's default action."""
-
-    enforce: bool | None = None
-    """Legacy flag kept for backwards compatibility: ``true`` resolves to ``action="drop"``, ``false`` to ``action="monitor"``. Prefer setting ``action`` instead."""
+    action: FilterAction = "monitor"
+    """What to do when the filter detects a rollout. ``monitor``: only track detection metrics. ``drop``: skip the rollout entirely so it is not sent to the trainer. ``penalize``: cap the rollout's reward at ``penalty_reward`` before advantage computation while keeping it trainable."""
 
     penalty_reward: float = -1.0
     """Reward cap applied when ``action="penalize"``: final reward = ``min(raw_reward, penalty_reward)``. Ignored by other actions."""
-
-    _default_action: ClassVar[FilterAction] = "monitor"
-
-    @model_validator(mode="after")
-    def _validate_action_and_enforce(self):
-        if self.action is not None and self.enforce is not None:
-            implied = "drop" if self.enforce else "monitor"
-            if self.action != implied:
-                raise ValueError(
-                    f"Conflicting filter config: action={self.action!r} but enforce={self.enforce} "
-                    f"implies action={implied!r}. Set only `action` (preferred) or only `enforce`."
-                )
-        return self
-
-    @property
-    def resolved_action(self) -> FilterAction:
-        """The effective action: explicit ``action`` wins, then legacy ``enforce``, then the per-type default."""
-        if self.action is not None:
-            return self.action
-        if self.enforce is not None:
-            return "drop" if self.enforce else "monitor"
-        return self._default_action
 
 
 # Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
@@ -493,7 +463,7 @@ class RepetitionFilterConfig(BaseFilterConfig):
 class ZeroAdvantageFilterConfig(BaseFilterConfig):
     type: Literal["zero_advantage"] = "zero_advantage"
 
-    _default_action: ClassVar[FilterAction] = "drop"
+    action: FilterAction = "drop"
 
 
 FilterConfig: TypeAlias = Annotated[
