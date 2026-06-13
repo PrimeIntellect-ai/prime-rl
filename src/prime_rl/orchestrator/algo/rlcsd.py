@@ -9,7 +9,7 @@ from itertools import cycle
 from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import AdvantageConfig, RLCSDAdvantageConfig
-from prime_rl.orchestrator.algo.advantage import AdvantageInputs, apply_advantage_fn
+from prime_rl.orchestrator.algo.advantage import apply_advantage_fn, broadcast
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.utils import compute_prefill_logprobs
 from prime_rl.utils.logger import get_logger
@@ -23,13 +23,13 @@ if TYPE_CHECKING:
 _ADV_EPS = 1e-6
 
 
-def _std_norm_advantage_fn(inputs: AdvantageInputs) -> list[list[float]]:
+def _std_norm_advantage_fn(rollouts: list[TrainRollout]) -> list[list[float]]:
     """Std-normalized group-relative advantage (the paper's Eq. 8):
     ``(r - mean) / (std + eps)``, broadcast over completion tokens."""
-    rewards = [r["reward"] for r in inputs.rollouts]
+    rewards = [r.reward for r in rollouts]
     mean = statistics.fmean(rewards)
     std = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
-    return inputs.broadcast([(r - mean) / (std + _ADV_EPS) for r in rewards])
+    return broadcast(rollouts, [(r - mean) / (std + _ADV_EPS) for r in rewards])
 
 
 def _hint_pools(
