@@ -68,8 +68,34 @@ def _moe_layer_ops(prefix: str) -> list[ConvOp]:
     ]
 
 
-def build_nemotron_h_chain(layers_block_type: list[str]) -> list[ConvOp]:
-    """``layers_block_type[i]`` is one of ``"mamba"``, ``"attention"``, ``"moe"``."""
+def _layer_op(prefix: str) -> ConvOp:
+    """One uniform op for any layer: detect its type from a signature key and
+    dispatch. No ``layers_block_type`` needed — the unified HF ``mixer.``
+    namespace is disambiguated by which sub-key is present (and, on the way
+    back, by which prime namespace is present, so the predicates work both
+    directions). Mamba/attention keep a bulk ``PrefixRename`` (robust to params
+    we didn't enumerate); MoE needs its specific ops (and the gated
+    ``Synthetic`` w3, which is why this is a Conditional rather than a plain
+    catch-all)."""
+    is_attention = lambda sd: (  # noqa: E731
+        f"{prefix}.mixer.q_proj.weight" in sd or f"{prefix}.self_attn.q_proj.weight" in sd
+    )
+    is_moe = lambda sd: f"{prefix}.mixer.gate.weight" in sd or f"{prefix}.mlp.router.gate" in sd  # noqa: E731
+    return Conditional(
+        is_attention,
+        then=[PrefixRename(f"{prefix}.mixer.", f"{prefix}.self_attn.")],
+        else_=[
+            Conditional(
+                is_moe,
+                then=_moe_layer_ops(prefix),
+                else_=[PrefixRename(f"{prefix}.mixer.", f"{prefix}.mamba.")],
+            )
+        ],
+    )
+
+
+def build_nemotron_h_chain(num_layers: int) -> list[ConvOp]:
+    """Uniform per-layer dispatch — no ``layers_block_type`` required."""
     ops: list[ConvOp] = [
         # Global. Listed first so the backbone<->model swap is played LAST on the
         # way back (everything must be in model.* form before re-prefixing).
@@ -78,14 +104,5 @@ def build_nemotron_h_chain(layers_block_type: list[str]) -> list[ConvOp]:
         Rename("model.embeddings.weight", "model.embed_tokens.weight"),
         Rename("model.norm_f.weight", "model.norm.weight"),
     ]
-    for i, layer_type in enumerate(layers_block_type):
-        prefix = f"model.layers.{i}"
-        if layer_type == "mamba":
-            ops.append(PrefixRename(f"{prefix}.mixer.", f"{prefix}.mamba."))
-        elif layer_type == "attention":
-            ops.append(PrefixRename(f"{prefix}.mixer.", f"{prefix}.self_attn."))
-        elif layer_type == "moe":
-            ops.extend(_moe_layer_ops(prefix))
-        else:
-            raise ValueError(f"unknown NemotronH layer type {layer_type!r}")
+    ops.extend(_layer_op(f"model.layers.{i}") for i in range(num_layers))
     return ops

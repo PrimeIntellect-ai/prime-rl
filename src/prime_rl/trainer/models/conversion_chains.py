@@ -98,7 +98,7 @@ def _conversion_chain_registry() -> dict[str, "callable"]:
         "minimax_m2": _by_num_layers(build_minimax_m2_chain),
         "laguna": _by_num_layers(build_laguna_chain),
         "afmoe": _by_num_layers(build_afmoe_chain),
-        "nemotron_h": lambda config: build_nemotron_h_chain(config.layers_block_type),
+        "nemotron_h": _by_num_layers(build_nemotron_h_chain),
         "gpt_oss": lambda config: build_gpt_oss_chain(),
     }
 
