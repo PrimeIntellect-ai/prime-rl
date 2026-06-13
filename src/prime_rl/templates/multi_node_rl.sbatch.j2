@@ -175,6 +175,9 @@ srun bash -s <<'CLEANUP_SH'
     # the exact process name, so it never hits the worktree path (e.g. mooncake-baby).
     pkill -9 -x mooncake_master 2>/dev/null
     pkill -9 -x mooncake_client 2>/dev/null
+    # Model Express server / redis left over from a prior NIXL-broadcast run.
+    pkill -9 -x modelexpress-server 2>/dev/null
+    pkill -9 -f "[r]edis-server.*:29502" 2>/dev/null
     sleep 2
     rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
     procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::|mooncake_" | grep -v grep | wc -l)
@@ -205,6 +208,27 @@ srun --kill-on-bad-exit=1 bash -c '
     # Infiniband setup
     IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
     export NCCL_IB_HCA=$IB_HCA
+{% if use_nixl_broadcast %}
+    # NIXL weight broadcast: every node (trainer = pull source, inference =
+    # pull client) needs the CUDA-enabled UCX from third_party/ucx (built by
+    # scripts/install_nixl_from_source.sh — the PyPI nixl wheel bundles a UCX
+    # without CUDA support) and an explicit RDMA NIC list: "all" would also
+    # pick up non-functional devices (e.g. an Ethernet bond UCX cannot open),
+    # which fails NIXL backend creation.
+    export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
+    export UCX_TLS=all
+    nixl_rdma_ports() {
+        for port in /sys/class/infiniband/*/ports/*; do
+            [ "$(cat "$port/link_layer" 2>/dev/null)" = "$1" ] || continue
+            grep -q ACTIVE "$port/state" 2>/dev/null || continue
+            dev=${port%/ports/*}
+            echo "$(basename "$dev"):$(basename "$port")"
+        done | paste -sd,
+    }
+    UCX_NET_DEVICES=$(nixl_rdma_ports InfiniBand)
+    [ -n "$UCX_NET_DEVICES" ] || UCX_NET_DEVICES=$(nixl_rdma_ports Ethernet)
+    export UCX_NET_DEVICES=${UCX_NET_DEVICES:-all}
+{% endif %}
 
 {% if num_infer_nodes > 0 -%}
 
@@ -355,10 +379,22 @@ else
     TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
 
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
+{%- if use_nixl_broadcast %}
+        # Model Express metadata store for the NIXL weight broadcast (ports
+        # match the weight_broadcast config defaults). Build the binaries once
+        # with scripts/install_modelexpress.sh.
+        MX_BIN=$PROJECT_DIR/third_party/modelexpress/bin
+        [ -x "$MX_BIN/modelexpress-server" ] || { echo "modelexpress-server not found in $MX_BIN — run scripts/install_modelexpress.sh" >&2; exit 1; }
+        $MX_BIN/redis-server --port 29502 --bind 0.0.0.0 --protected-mode no --save "" --appendonly no \
+            > $OUTPUT_DIR/logs/mx_redis.log 2>&1 &
+        MX_METADATA_BACKEND=redis REDIS_URL="redis://127.0.0.1:29502" MX_HEARTBEAT_TIMEOUT_SECS=86400 \
+            $MX_BIN/modelexpress-server --port 29501 \
+            > $OUTPUT_DIR/logs/modelexpress.log 2>&1 &
+{%- endif %}
         ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.base-url $INFER_URLS"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.admin-base-url $ADMIN_URLS"
-        {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
+        {% if use_nccl_broadcast or use_nixl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
         {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
     fi

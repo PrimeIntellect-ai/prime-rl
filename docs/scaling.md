@@ -242,6 +242,12 @@ Full multi-node configs ship in [`examples/multinode/`](https://github.com/Prime
 
 For inference-only multi-node, set `[deployment] type = "multi_node"` on an inference TOML — each node runs an independent vLLM replica (TP and DP must fit within one node), and the launcher prints one URL per node. Front the URLs with a router or point clients at any of them.
 
+### NIXL weight broadcast
+
+`[weight_broadcast] type = "nixl"` replaces the NCCL broadcast with RDMA pulls: the trainer serves its native state dict from persistent NIXL-registered buffers and publishes one tensor table to a per-job [Model Express](https://github.com/ai-dynamo/modelexpress) metadata store; each vLLM worker discovers its exact slices once by driving `model.load_weights` with zero-storage lazy placeholders, then per sync issues batched NIXL READs straight into its live parameter memory. There is no per-model conversion code and the trainer never tracks consumers, so inference workers can join, restart, or scale without trainer-side coordination.
+
+Requirements: unquantized bf16 models (the kernel weight format must equal the loaded HF layout — enforced at startup), no EPLB, and the Model Express server binaries built once via `scripts/install_modelexpress.sh`. The SLURM template launches the server on the trainer head node automatically. Example config: [`configs/qwen3_30b_math_nixl_2node/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs/qwen3_30b_math_nixl_2node).
+
 ### Custom Templates
 
 For unusual partitions, module loads, or environment setup, supply your own Jinja2 template:
