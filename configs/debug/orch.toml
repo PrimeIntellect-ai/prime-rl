@@ -12,11 +12,5 @@ max_completion_tokens = 16
 # advantage is zero. Keep the zero_advantage filter in monitor mode here —
 # the default (enforce) would drop 100% of rollouts and abort the run.
 [[post_batch_filters]]
-type = "gibberish"
-
-[[post_batch_filters]]
-type = "repetition"
-
-[[post_batch_filters]]
 type = "zero_advantage"
 enforce = false
