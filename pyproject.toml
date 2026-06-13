@@ -116,6 +116,7 @@ envs = [
     "wordle-v1",
     "tasksets",
     "harnesses",
+    "compact",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -273,6 +274,7 @@ wikispeedia-v1 = { path = "deps/verifiers/examples/tasksets/wikispeedia_v1", edi
 wordle-v1 = { path = "deps/verifiers/examples/tasksets/wordle_v1", editable = true }
 tasksets = { path = "deps/verifiers/packages/tasksets", editable = true }
 harnesses = { path = "deps/verifiers/packages/harnesses", editable = true }
+compact = { path = "deps/verifiers/examples/harnesses/compact", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
 torch = { index = "pytorch-cu128" }
