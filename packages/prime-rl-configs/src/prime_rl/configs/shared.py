@@ -261,4 +261,12 @@ class ZMQTransportConfig(BaseTransportConfig):
     """High-water mark (max in-flight messages per ZMQ socket)."""
 
 
-TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
+class NoOpTransportConfig(BaseTransportConfig):
+    type: Literal["noop"] = "noop"
+    """Drop training batches after orchestrator-side processing. Intended for orchestrator debug runs without a trainer."""
+
+
+TransportConfig: TypeAlias = Annotated[
+    FileSystemTransportConfig | ZMQTransportConfig | NoOpTransportConfig,
+    Field(discriminator="type"),
+]

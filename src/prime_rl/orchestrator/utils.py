@@ -12,7 +12,7 @@ from verifiers.utils.save_utils import make_serializable
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.transport import TrainingSample
-from prime_rl.utils.client import setup_inference_pool
+from prime_rl.utils.client import NoOpInferencePool, setup_inference_pool
 from prime_rl.utils.logger import InterceptHandler, get_logger
 from prime_rl.utils.utils import (
     get_broadcast_dir,
@@ -25,6 +25,11 @@ async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer)
     """Build the student inference pool + matching renderer. Returns
     ``(renderer | None, inference_pool)``; ``renderer`` is ``None`` on the
     MITO path (``config.renderer is None``)."""
+    if config.debug.no_inference:
+        model_name = config.student.model.name
+        get_logger().warning(f"Using no-op student inference pool for orchestrator debug mode ({model_name=})")
+        return None, NoOpInferencePool(model_name=model_name)
+
     from renderers.base import create_renderer
 
     client_config = config.student.client
@@ -94,6 +99,29 @@ def set_default_executor(max_workers: int = 64) -> None:
     """Scale the default asyncio thread pool so asyncio.to_thread has enough capacity."""
     get_logger().info(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
     asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
+
+
+def log_process_memory(label: str) -> None:
+    """Debug-log RSS for the orchestrator process and its child processes."""
+    try:
+        import psutil
+
+        proc = psutil.Process()
+        rss = proc.memory_info().rss
+        child_rss = 0
+        for child in proc.children(recursive=True):
+            try:
+                child_rss += child.memory_info().rss
+            except psutil.Error:
+                continue
+        total = rss + child_rss
+        gib = 1024**3
+        get_logger().debug(
+            f"Memory | {label} | rss={rss / gib:.3f} GiB | child_rss={child_rss / gib:.3f} GiB | "
+            f"total_rss={total / gib:.3f} GiB"
+        )
+    except Exception as exc:
+        get_logger().debug(f"Memory logging failed at {label}: {exc!r}")
 
 
 async def compute_teacher_logprobs(

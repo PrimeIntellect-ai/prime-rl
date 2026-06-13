@@ -13,6 +13,7 @@ from prime_rl.configs.shared import (
     FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
+    NoOpTransportConfig,
     PrimeMonitorConfig,
     TransportConfig,
     WandbWithExtrasConfig,
@@ -498,6 +499,20 @@ class OrchestratorExperimentalConfig(BaseConfig):
     pass
 
 
+class OrchestratorDebugConfig(BaseConfig):
+    no_inference: bool = False
+    """Use an in-process no-op inference pool. Rollout environments must not call the model client."""
+
+    no_trainer: bool = False
+    """Run without a trainer. Uses no-op batch sending and advances policy version locally."""
+
+    fake_tokenizer: bool = False
+    """Use a tiny tokenizer stub. Only safe when rollouts already include tokens and sample monitors are disabled."""
+
+    log_memory: bool = False
+    """Log orchestrator and child-process RSS after each completed orchestrator step."""
+
+
 class RolloutModelConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
 
@@ -632,6 +647,8 @@ class OrchestratorConfig(BaseConfig):
 
     env_install_prerelease: bool = False
     """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
+
+    debug: OrchestratorDebugConfig = OrchestratorDebugConfig()
 
     experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
 
@@ -769,6 +786,8 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_training_mode(self):
         """Enforce training mode invariants that involve only orchestrator fields."""
+        if self.debug.no_inference:
+            return self
         has_teacher = self.teacher is not None
         if self.training_mode == "rl" and has_teacher:
             raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
@@ -781,6 +800,8 @@ class OrchestratorConfig(BaseConfig):
         """``pool_size`` is only meaningful when the renderer is enabled
         (``renderer is not None``). Reject otherwise so callers don't
         silently pass it and wonder why it's ignored."""
+        if self.debug.no_inference:
+            return self
         if self.renderer is None and self.pool_size is not None:
             raise ValueError(
                 f"orchestrator.pool_size={self.pool_size!r} is set but "
@@ -797,6 +818,8 @@ class OrchestratorConfig(BaseConfig):
         tokens, and ships generic ``mm_kwargs`` keyed by whatever the
         model's forward signature expects.
         """
+        if self.debug.no_inference:
+            return self
         if self.student.model.vlm is not None and self.renderer is None:
             raise ValueError(
                 "orchestrator.renderer must be set when model.vlm is set. "
@@ -818,6 +841,8 @@ class OrchestratorConfig(BaseConfig):
         config time so ``--dry-run`` reports the error.
         """
         if self.renderer is None or self.renderer.name != "auto":
+            return self
+        if self.debug.no_inference:
             return self
         from renderers.base import MODEL_RENDERER_MAP
 
@@ -905,6 +930,17 @@ class OrchestratorConfig(BaseConfig):
             if self.prime_monitor:
                 self.prime_monitor.log_extras = None
 
+        return self
+
+    @model_validator(mode="after")
+    def resolve_debug(self):
+        if self.debug.no_trainer:
+            self.rollout_transport = NoOpTransportConfig()
+        if self.debug.fake_tokenizer and (self.wandb is not None or self.prime_monitor is not None):
+            raise ValueError("orchestrator.debug.fake_tokenizer requires wandb and prime_monitor to be disabled.")
+        if self.debug.no_inference:
+            self.renderer = None
+            self.collect_inference_metrics = False
         return self
 
     @model_validator(mode="after")

@@ -1,0 +1,18 @@
+[project]
+name = "fake-r3-trajectory"
+version = "0.1.0"
+description = "Deterministic heavy trajectory environment for PRIME-RL orchestrator memory debugging."
+requires-python = ">=3.10"
+dependencies = [
+    "datasets",
+    "numpy",
+    "pybase64",
+    "verifiers",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["fake_r3_trajectory.py"]

@@ -69,12 +69,12 @@ from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
     get_weight_dir,
     intercept_vf_logging,
+    log_process_memory,
     save_rollouts,
     set_default_executor,
     setup_student_inference_pool,
 )
-from prime_rl.orchestrator.watcher import WeightWatcher
-from prime_rl.trainer.model import setup_tokenizer
+from prime_rl.orchestrator.watcher import NoOpWeightWatcher, WeightWatcher
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
@@ -112,6 +112,20 @@ TARGET_LAG = 1
 # token-export steps it hadn't flushed yet, and how often to poll for them.
 TOKEN_EXPORT_DRAIN_TIMEOUT_S = 300.0
 TOKEN_EXPORT_DRAIN_POLL_S = 2.0
+
+
+class DebugTokenizer:
+    """Tiny tokenizer stub for pre-tokenized orchestrator debug rollouts."""
+
+    vocab_size = 200_000
+    eos_token_id = 0
+    pad_token_id = 0
+
+    def decode(self, token_ids, *args, **kwargs) -> str:
+        return " ".join(str(t) for t in token_ids)
+
+    def batch_decode(self, sequences, *args, **kwargs) -> list[str]:
+        return [self.decode(seq, *args, **kwargs) for seq in sequences]
 
 
 class Orchestrator:
@@ -217,8 +231,14 @@ class Orchestrator:
         for env_id in env_ids_to_install:
             install_env(env_id, prerelease=config.env_install_prerelease)
 
-        get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
-        self.tokenizer = setup_tokenizer(config.tokenizer)
+        if config.debug.fake_tokenizer:
+            get_logger().warning("Using debug tokenizer stub; rollout tokens must be present in env output")
+            self.tokenizer = DebugTokenizer()  # type: ignore[assignment]
+        else:
+            get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
+            from prime_rl.trainer.model import setup_tokenizer
+
+            self.tokenizer = setup_tokenizer(config.tokenizer)
 
         # Student inference pool
         get_logger().info(
@@ -234,7 +254,7 @@ class Orchestrator:
         if self.mm_token_type_ids_mapping == {}:
             self.mm_token_type_ids_mapping = None
 
-        if config.teacher is not None:
+        if config.teacher is not None and not config.debug.no_inference:
             get_logger().info(
                 f"Initializing teacher inference pool (base_url={', '.join(config.teacher.client.base_url)}, "
                 f"model={config.teacher.model.name})"
@@ -318,8 +338,11 @@ class Orchestrator:
             )
             await self.inference_metrics.start()
 
-        get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        if config.weight_broadcast.type == "nccl":
+        if config.debug.no_trainer:
+            get_logger().warning("Skipping weight broadcast setup for orchestrator debug no-trainer mode")
+        else:
+            get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        if not config.debug.no_trainer and config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
                 self.student_inference.admin_clients,
                 config.weight_broadcast.host,
@@ -400,14 +423,17 @@ class Orchestrator:
             post_filters=post_filters,
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
-        self.watcher = WeightWatcher(
-            config,
-            policy=self.policy,
-            inference=self.student_inference,
-            observers=[self.dispatcher, self],
-            lora_name=self.lora_name,
-            ckpt_step=self.progress.step,
-        )
+        if config.debug.no_trainer:
+            self.watcher = NoOpWeightWatcher(policy=self.policy)  # type: ignore[assignment]
+        else:
+            self.watcher = WeightWatcher(
+                config,
+                policy=self.policy,
+                inference=self.student_inference,
+                observers=[self.dispatcher, self],
+                lora_name=self.lora_name,
+                ckpt_step=self.progress.step,
+            )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
         self.lag_monitor = EventLoopLagMonitor()
@@ -613,7 +639,11 @@ class Orchestrator:
             teacher_logprobs_time = time.perf_counter() - t
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
+        if config.debug.no_trainer:
+            self.policy.version = max(self.policy.version, step + 1)
         self.update_dispatch_gate()
+        if config.debug.log_memory:
+            log_process_memory(f"after_step step={step}")
 
         metrics = self.metrics.build(
             step=step,
