@@ -11,7 +11,7 @@ from prime_rl.orchestrator.utils import compute_prefill_logprobs
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.orchestrator.types import RolloutView
     from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
 
@@ -40,11 +40,11 @@ class OPDAlgorithm(Algorithm):
     async def setup(self) -> None:
         self.teacher_pool = await self.connect(self.teacher)
 
-    async def query_references(self, rollouts: list[TrainRollout]) -> None:
+    async def score_batch(self, batch: list[RolloutView]) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
-        samples = [sample for rollout in rollouts for sample in rollout.samples]
+        samples = [sample for view in batch for sample in view.samples]
 
         async def score_sample(client, sample: TrainingSample) -> None:
             async with semaphore:

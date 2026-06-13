@@ -19,7 +19,7 @@ import uuid
 from collections import defaultdict
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.algo import finalize_group
+from prime_rl.orchestrator.algo import finalize_group, finalize_rollout
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import (
@@ -165,6 +165,10 @@ class TrainSink:
             )
         )
         rollout.samples = samples or []
+        # Arrival phase: rollout-local scoring (raw reward, echo observation
+        # weighting) runs as soon as the rollout is tokenized — before its
+        # group is complete.
+        finalize_rollout(self.train_envs.get(rollout.env_name).algorithm, rollout)
         # Offload base64 image bytes to disk as soon as the rollout is
         # tokenized, so memory stays flat instead of holding every buffered
         # rollout's images until the batch ships (no-op for text-only).

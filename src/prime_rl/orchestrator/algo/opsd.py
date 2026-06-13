@@ -11,7 +11,7 @@ from prime_rl.orchestrator.utils import compute_prefill_logprobs
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.orchestrator.types import RolloutView
     from prime_rl.utils.client import InferencePool
 
 
@@ -41,7 +41,7 @@ class OPSDAlgorithm(Algorithm):
     async def setup(self) -> None:
         self.teacher_pool = await self.connect(self.teacher)
 
-    def _ref_prefix_ids(self, rollout: TrainRollout) -> list[int]:
+    def _ref_prefix_ids(self, rollout: RolloutView) -> list[int]:
         trajectory = rollout.raw.get("trajectory") or []
         if len(trajectory) != 1:
             raise ValueError(
@@ -74,12 +74,12 @@ class OPSDAlgorithm(Algorithm):
         assert self.renderer is not None
         return self.renderer.render_ids(messages, add_generation_prompt=True)
 
-    async def query_references(self, rollouts: list[TrainRollout]) -> None:
+    async def score_batch(self, batch: list[RolloutView]) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
 
-        async def score_rollout(client, rollout: TrainRollout) -> None:
+        async def score_one(client, rollout: RolloutView) -> None:
             prefix_ids = self._ref_prefix_ids(rollout)
             assert len(rollout.samples) == 1  # single-step trajectory → one sample
             sample = rollout.samples[0]
@@ -90,6 +90,4 @@ class OPSDAlgorithm(Algorithm):
             completion_logprobs = full_logprobs[-len(sample.completion_ids) :]
             sample.ref_logprobs = [0.0] * len(sample.prompt_ids) + completion_logprobs
 
-        await asyncio.gather(
-            *[score_rollout(client, rollout) for client, rollout in zip(cycle(pool.train_clients), rollouts)]
-        )
+        await asyncio.gather(*[score_one(client, rollout) for client, rollout in zip(cycle(pool.train_clients), batch)])

@@ -7,16 +7,20 @@ turns the signal half into runtime objects (the sampling half is the env's
 
 - one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``opd``,
   ``opsd``, ``sft``, ``reward``, ``custom``) — each named class owns its
-  two hooks (``assign_advantages`` / ``query_references``) and declares what
-  it needs (loss component, a "teacher", ...). One instance per env, built
-  by :func:`build_algorithm`. Custom credit assignment plugs in through the
-  ``custom`` advantage type (:class:`CustomAlgorithm` imports a user
-  function by path).
+  scoring hooks (``score_rollout`` / ``score_group`` / ``score_batch``) and
+  declares what it needs (loss component, a "teacher", ...). One instance per
+  env, built by :func:`build_algorithm`. Custom credit assignment plugs in
+  through the ``custom`` advantage type (:class:`CustomAlgorithm` imports a
+  user function by path).
 - ``base`` — the :class:`Algorithm` base class and the pipeline phase
-  functions (:func:`finalize_group` / :func:`finalize_batch`).
-- ``advantage`` — pure advantage math: the custom-function interface
-  (``TrainRollout``\ s in, per-token advantages out; :func:`broadcast` for
-  uniform credit) and the default group-norm computation.
+  functions (:func:`finalize_rollout` / :func:`finalize_group` /
+  :func:`finalize_batch`).
+- ``advantage`` — pure advantage math (default group-norm + the
+  custom-function interface). Advantages are per-token everywhere they are
+  stored or shipped — there is no scalar advantage in the pipeline. A
+  function takes ``RolloutView`` objects and returns one value per rollout: a
+  scalar that the view *broadcasts* over the rollout's completion tokens
+  (uniform credit, the common case), or an explicit per-token list.
 - ``routing`` — wire-field stamping: per-token component weight streams
   (rl / ce / ref_kl) and the per-token advantage stream.
 """
@@ -28,7 +32,6 @@ from typing import TYPE_CHECKING
 from prime_rl.orchestrator.algo.advantage import (
     AdvantageFn,
     apply_advantage_fn,
-    broadcast,
     default_advantage_fn,
     max_rl_advantage_fn,
 )
@@ -37,6 +40,7 @@ from prime_rl.orchestrator.algo.base import (
     connect_frozen_pool,
     finalize_batch,
     finalize_group,
+    finalize_rollout,
 )
 from prime_rl.orchestrator.algo.custom import CustomAlgorithm
 from prime_rl.orchestrator.algo.echo import EchoAlgorithm
@@ -47,6 +51,7 @@ from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.reward import RewardAlgorithm
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
+from prime_rl.orchestrator.types import RolloutView
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -78,7 +83,6 @@ def build_algorithm(config: AlgorithmConfig, policy_pool: InferencePool, rendere
 
 __all__ = [
     "AdvantageFn",
-    "broadcast",
     "Algorithm",
     "CustomAlgorithm",
     "EchoAlgorithm",
@@ -87,14 +91,16 @@ __all__ = [
     "OPDAlgorithm",
     "OPSDAlgorithm",
     "RewardAlgorithm",
+    "RolloutView",
     "SFTDistillAlgorithm",
     "apply_advantage_fn",
     "build_algorithm",
     "connect_frozen_pool",
     "default_advantage_fn",
-    "finalize_group",
-    "max_rl_advantage_fn",
     "finalize_batch",
+    "finalize_group",
+    "finalize_rollout",
+    "max_rl_advantage_fn",
     "stamp_advantages",
     "stamp_loss_routing",
 ]

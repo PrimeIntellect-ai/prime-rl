@@ -6,7 +6,7 @@ from prime_rl.orchestrator.algo.advantage import apply_advantage_fn, max_rl_adva
 from prime_rl.orchestrator.algo.base import Algorithm
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.orchestrator.types import RolloutView
 
 
 class MaxRLAlgorithm(Algorithm):
@@ -17,5 +17,5 @@ class MaxRLAlgorithm(Algorithm):
     doubles as the truncation order of the likelihood expansion the gradient
     is unbiased for (REINFORCE at 1 → exact maximum likelihood as it grows)."""
 
-    def assign_advantages(self, rollouts: list[TrainRollout]) -> None:
-        apply_advantage_fn(rollouts, max_rl_advantage_fn)
+    def score_group(self, group: list[RolloutView]) -> None:
+        apply_advantage_fn(group, max_rl_advantage_fn)
