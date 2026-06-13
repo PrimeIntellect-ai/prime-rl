@@ -166,7 +166,6 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
 
 
 def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
-
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
     advantages = inputs.advantages
