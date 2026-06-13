@@ -854,3 +854,36 @@ def monkey_patch_fp32_lm_head():
     LogitsProcessor.__init__ = _patched_init
     LogitsProcessor._get_logits = _patched_get_logits
     logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")
+
+
+def monkey_patch_dp_coordinator_startup_timeout():
+    """Raise the DP coordinator startup timeout from vLLM's hard-coded 30s.
+
+    The coordinator child process is spawned on the DP-rank-0 API server while
+    every engine-core rank on the node is importing and loading weights, so its
+    own spawn-time re-import can take well over 30s under that CPU/IO
+    contention (seen on multi-node disaggregated GLM-5.1 launches). Configurable
+    via PRIME_DP_COORDINATOR_STARTUP_TIMEOUT (seconds, default 300).
+    """
+    import multiprocessing.connection
+    import os
+
+    from vllm.v1.engine.coordinator import DPCoordinator
+
+    timeout = float(os.environ.get("PRIME_DP_COORDINATOR_STARTUP_TIMEOUT", "300"))
+
+    def _patched_wait_for_zmq_addrs(self, zmq_addr_pipe):
+        try:
+            ready = multiprocessing.connection.wait([zmq_addr_pipe, self.proc.sentinel], timeout=timeout)
+            if not ready:
+                raise RuntimeError(
+                    f"DP Coordinator process failed to report ZMQ addresses within {timeout}s during startup."
+                )
+            try:
+                return zmq_addr_pipe.recv()
+            except EOFError:
+                raise RuntimeError("DP Coordinator process failed during startup.") from None
+        finally:
+            zmq_addr_pipe.close()
+
+    DPCoordinator._wait_for_zmq_addrs = _patched_wait_for_zmq_addrs
