@@ -45,7 +45,7 @@ def _mock_hf() -> dict:
 
 def test_nemotron_h_forward_matches():
     hf = _mock_hf()
-    chain = build_nemotron_h_chain(LAYERS)
+    chain = build_nemotron_h_chain(len(LAYERS))
     imperative = clone(hf)
     convert_hf_to_prime(imperative, LAYERS)
     declarative = apply_hf_to_tt(clone(hf), chain)
@@ -54,7 +54,7 @@ def test_nemotron_h_forward_matches():
 
 def test_nemotron_h_backward_matches():
     hf = _mock_hf()
-    chain = build_nemotron_h_chain(LAYERS)
+    chain = build_nemotron_h_chain(len(LAYERS))
     tt = clone(hf)
     convert_hf_to_prime(tt, LAYERS)  # produce a valid prime state dict
     imperative = clone(tt)
