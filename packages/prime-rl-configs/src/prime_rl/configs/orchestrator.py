@@ -608,6 +608,12 @@ class OrchestratorConfig(BaseConfig):
     max_inflight_rollouts: int | None = Field(None, ge=1)
     """Maximum number of rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
 
+    max_buffered_rollouts: int | None = Field(None, ge=1)
+    """Maximum rollouts held in the train sink (partial groups + batch overflow) before the dispatcher stops opening fresh groups. Rollouts of already-open groups still complete, so the effective ceiling is roughly this value plus ``max_inflight_rollouts``. With ``batch_size`` set, defaults to ``2 * batch_size``; with ``token_batch_size``, unset disables the cap. The buffer only grows past the batch threshold when rollout production outpaces trainer consumption — buffering deeper than ~2 batches just accumulates off-policy rollouts and memory."""
+
+    group_timeout_secs: float | None = Field(None, gt=0)
+    """Cancel a train group's outstanding rollouts this many seconds after the group is first dispatched. A single stuck rollout otherwise pins its completed groupmates in the sink indefinitely; on timeout the group finalizes with the rollouts that did complete (group-scored envs drop the whole group). None disables the timeout."""
+
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Output sequences returned per example during training."""
 
@@ -871,6 +877,8 @@ class OrchestratorConfig(BaseConfig):
                     raise ValueError("max_inflight_rollouts conflicts with oversampling_factor * batch_size")
             if self.max_inflight_rollouts is None:
                 self.max_inflight_rollouts = resolved_max_inflight_rollouts
+            if self.max_buffered_rollouts is None:
+                self.max_buffered_rollouts = 2 * self.batch_size
 
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.group_size:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")

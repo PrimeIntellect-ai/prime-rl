@@ -22,11 +22,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Literal
+from typing import Callable, Literal
 
 import verifiers as vf
 from aiolimiter import AsyncLimiter
@@ -134,6 +135,8 @@ class RolloutDispatcher:
         max_off_policy_steps: int,
         training_mode: Literal["rl", "opd", "sft"],
         use_cache_salt: bool = True,
+        train_buffer_full: Callable[[], bool] | None = None,
+        group_timeout_secs: float | None = None,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -153,6 +156,16 @@ class RolloutDispatcher:
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
         )
+
+        # Backpressure from the train sink: while it reports full, no fresh
+        # train groups are opened (open groups keep scheduling so they can
+        # finalize and drain). ``train_backpressured`` tracks the level for
+        # edge-triggered logging + the periodic gauge.
+        self.train_buffer_full = train_buffer_full
+        self.train_backpressured = False
+        # Train groups older than this (seconds since first dispatch) are
+        # dropped so stuck rollouts can't pin their groupmates forever
+        self.group_timeout_secs = group_timeout_secs
 
         self.inflight: dict[asyncio.Task, InflightRollout] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
@@ -236,6 +249,7 @@ class RolloutDispatcher:
         self.task = asyncio.current_task()
         try:
             while not self.stopped.is_set():
+                await self.expire_stale_groups()
                 await self.fill_inflight()
                 if not self.inflight:
                     # No work — sleep briefly. Eval triggers from the
@@ -346,6 +360,9 @@ class RolloutDispatcher:
             if cost <= self.available_permits:
                 return await self.schedule_group_rollout(gid, group)
 
+        if kind == "train" and self.is_train_backpressured():
+            return False
+
         fresh = self.next_fresh_group(kind, envs)
         if fresh is None:
             return False
@@ -378,7 +395,45 @@ class RolloutDispatcher:
             target_rollouts=group_size,
             eval_step=eval_step,
             policy_version_at_start=self.policy.version,
+            created_at=time.monotonic(),
         )
+
+    def is_train_backpressured(self) -> bool:
+        """Level-triggered backpressure from the train sink: while it holds
+        more rollouts than its cap, don't open fresh train groups. Open
+        groups keep scheduling, so partial groups still finalize and drain."""
+        full = self.train_buffer_full is not None and self.train_buffer_full()
+        if full and not self.train_backpressured:
+            get_logger().warning(
+                "Train sink buffer is full (max_buffered_rollouts) — pausing fresh group dispatch until it drains"
+            )
+        elif not full and self.train_backpressured:
+            get_logger().info("Train sink buffer drained — resuming fresh group dispatch")
+        self.train_backpressured = full
+        return full
+
+    async def expire_stale_groups(self) -> None:
+        """Drop train groups older than ``group_timeout_secs``. A single
+        stuck rollout otherwise pins its finished groupmates in the sink
+        forever; dropping emits ``Cancelled`` markers for the outstanding
+        rollouts so the sink finalizes the group with the ones that did
+        complete."""
+        if self.group_timeout_secs is None:
+            return
+        now = time.monotonic()
+        stale = [
+            gid
+            for gid, group in self.groups.items()
+            if group.kind == "train" and now - group.created_at > self.group_timeout_secs
+        ]
+        cancelled = 0
+        for gid in stale:
+            cancelled += await self.drop_group(gid, reason="Group timeout")
+        if cancelled:
+            get_logger().warning(
+                f"Cancelled {cancelled} train rollout(s) in {len(stale)} group(s) older than "
+                f"group_timeout_secs={self.group_timeout_secs}"
+            )
 
     async def schedule_group_rollout(self, group_id: uuid.UUID, group: GroupState) -> bool:
         """Dispatch one ``run_rollout`` / ``run_group`` task for this group.
@@ -569,7 +624,7 @@ class RolloutDispatcher:
         }
         return out
 
-    async def drop_group(self, group_id: uuid.UUID) -> int:
+    async def drop_group(self, group_id: uuid.UUID, *, reason: str = "Off-policy cancel") -> int:
         """Cancel remaining in-flight tasks for this group and emit a
         ``Cancelled`` marker for every rollout it still owes the sink
         (both in-flight and not-yet-scheduled). Returns the count for
@@ -594,7 +649,7 @@ class RolloutDispatcher:
         last_meta: InflightRollout | None = claimed[-1][1] if claimed else None
         for _, meta in claimed:
             for _ in range(meta.rollout_count):
-                raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
+                raw = self.error_rollout_output(error_type="Cancelled", error_repr=reason)
                 await self.emit_rollout(meta, group, raw)
 
         # For non-group-scoring envs, the group may have rollouts that
@@ -616,7 +671,7 @@ class RolloutDispatcher:
             )
             unscheduled_cancelled = group.rollouts_to_schedule
             for _ in range(unscheduled_cancelled):
-                raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
+                raw = self.error_rollout_output(error_type="Cancelled", error_repr=reason)
                 await self.emit_rollout(fallback_meta, group, raw)
 
         cancelled = inflight_cancelled + unscheduled_cancelled
@@ -690,4 +745,5 @@ class RolloutDispatcher:
             "dispatcher/groups_in_flight": float(len(self.groups)),
             "dispatcher/off_policy_level_max": float(self.max_off_policy_level),
             "dispatcher/off_policy_level_mean": self.mean_off_policy_level,
+            "dispatcher/train_backpressured": float(self.train_backpressured),
         }

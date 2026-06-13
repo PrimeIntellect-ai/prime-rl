@@ -32,6 +32,17 @@ class RolloutFilter(Protocol):
     def check(self, rollout: "TrainRollout") -> FilterResult: ...
 
 
+def cache_token_filter_results(filters: list[RolloutFilter], rollout: "TrainRollout") -> None:
+    """Run token-level filters once while the rollout's per-step token
+    payloads are still on ``raw`` and cache the verdicts on the rollout.
+    The sink strips those payloads right after tokenization
+    (``strip_trajectory_token_payloads``), but the pre-/post-batch filter
+    passes run much later — ``check`` returns the cached verdict then."""
+    for filt in filters:
+        if getattr(filt, "uses_step_tokens", False) and filt.name not in rollout.filter_cache:
+            rollout.filter_cache[filt.name] = filt.check(rollout)
+
+
 @dataclass
 class GibberishFilter:
     """Flags rollouts containing rare tokens generated at high entropy.
@@ -48,8 +59,12 @@ class GibberishFilter:
     token_id_threshold: int
     logprob_threshold: float
     enforce: bool = False
+    uses_step_tokens = True
 
     def check(self, rollout: "TrainRollout") -> FilterResult:
+        cached = rollout.filter_cache.get(self.name)
+        if cached is not None:
+            return cached
         global_idx = 0
         for step in rollout.raw["trajectory"]:
             tokens = step["tokens"]
@@ -78,8 +93,12 @@ class RepetitionFilter:
     window: int
     logprob_threshold: float
     enforce: bool = False
+    uses_step_tokens = True
 
     def check(self, rollout: "TrainRollout") -> FilterResult:
+        cached = rollout.filter_cache.get(self.name)
+        if cached is not None:
+            return cached
         consecutive = 0
         global_idx = 0
         for step in rollout.raw["trajectory"]:

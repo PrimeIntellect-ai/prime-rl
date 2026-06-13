@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field, fields
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import verifiers as vf
 
 from prime_rl.transport import TrainingSample
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.filters import FilterResult
 
 
 @dataclass
@@ -62,6 +65,7 @@ class GroupState:
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None
     policy_version_at_start: int = 0
+    created_at: float = 0.0  # time.monotonic() at creation; drives the group-age timeout
 
 
 @dataclass
@@ -97,7 +101,7 @@ class FinishedRollout:
         ``monitor.log_samples``). Shallow copy; never mutates ``self.raw``."""
         out: vf.RolloutOutput = dict(self.raw)  # type: ignore[assignment]
         for f in fields(self):
-            if f.name in ("raw", "samples"):
+            if f.name in ("raw", "samples", "filter_cache"):
                 continue
             val = getattr(self, f.name)
             if f.name == "filter_results":
@@ -113,6 +117,9 @@ class TrainRollout(FinishedRollout):
     advantage: float | None = None
     is_filtered: bool = False
     filter_results: dict[str, bool] = field(default_factory=dict)
+    # Token-level filter verdicts, computed by the sink before the per-step
+    # token payloads are stripped from ``raw`` (filters.cache_token_filter_results)
+    filter_cache: dict[str, FilterResult] = field(default_factory=dict)
 
 
 @dataclass

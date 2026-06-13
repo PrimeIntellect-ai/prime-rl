@@ -177,7 +177,16 @@ class WandbMonitor(Monitor):
                 continue
             last_step = trajectory[-1]
             tokens = last_step["tokens"]
-            full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
+            if tokens is not None and "prompt_ids" in tokens:
+                full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
+            else:
+                # Train rollouts arrive with per-step token payloads stripped
+                # (strip_trajectory_token_payloads); the full final sequence
+                # is stashed compactly at the top level instead
+                stashed = rollout.get("last_step_input_ids")
+                if stashed is None:
+                    continue
+                full_ids = stashed.tolist()
             messages_text = self.tokenizer.decode(full_ids)
             sample = {
                 "step": step,

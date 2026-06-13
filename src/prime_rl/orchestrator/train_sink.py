@@ -17,18 +17,58 @@ import asyncio
 import uuid
 from collections import defaultdict
 
+import numpy as np
+
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages
 from prime_rl.orchestrator.envs import TrainEnvs
-from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
+from prime_rl.orchestrator.filters import RolloutFilter, apply_filters, cache_token_filter_results
 from prime_rl.orchestrator.trajectories import (
     backfill_rollout_tokens,
     interleave_rollout,
     offload_images_to_disk,
+    strip_trajectory_token_payloads,
 )
 from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
+
+_PER_TOKEN_SAMPLE_FIELDS = (
+    "prompt_ids",
+    "prompt_mask",
+    "completion_ids",
+    "completion_mask",
+    "completion_logprobs",
+    "completion_temperatures",
+    "mm_token_type_ids",
+)
+
+
+def compact_sample(sample: TrainingSample) -> TrainingSample:
+    """Repack per-token list fields as numpy arrays for buffering. A boxed
+    Python int costs ~36 B vs 4 B raw, and a buffered rollout can hold 100k+
+    tokens for hours — same motivation as ``RoutedExperts`` carrying raw
+    bytes. ``materialize_wire_lists`` restores the wire-format lists at ship
+    time, so the shipped payload is unchanged."""
+    sample.prompt_ids = np.asarray(sample.prompt_ids, dtype=np.int32)
+    sample.prompt_mask = np.asarray(sample.prompt_mask, dtype=np.bool_)
+    sample.completion_ids = np.asarray(sample.completion_ids, dtype=np.int32)
+    sample.completion_mask = np.asarray(sample.completion_mask, dtype=np.bool_)
+    # float64, not float32, so the round-trip back to lists is value-identical
+    sample.completion_logprobs = np.asarray(sample.completion_logprobs, dtype=np.float64)
+    if sample.mm_token_type_ids is not None:
+        sample.mm_token_type_ids = np.asarray(sample.mm_token_type_ids, dtype=np.int32)
+    return sample
+
+
+def materialize_wire_lists(sample: TrainingSample) -> TrainingSample:
+    """Inverse of ``compact_sample``: convert numpy-backed per-token fields
+    back to the plain lists the transport encodes, just before shipping."""
+    for name in _PER_TOKEN_SAMPLE_FIELDS:
+        value = getattr(sample, name)
+        if isinstance(value, np.ndarray):
+            setattr(sample, name, value.tolist())
+    return sample
 
 
 class TrainSink:
@@ -114,6 +154,12 @@ class TrainSink:
         (non-group-scoring envs) — buffered in the sink ahead of the batch."""
         return sum(len(group) for group in self.in_progress_groups())
 
+    def held_count(self) -> int:
+        """Every rollout resident in the sink: partial-group arrivals (all
+        envs, including group-scoring) plus batch overflow. Drives the
+        dispatcher's ``max_buffered_rollouts`` backpressure."""
+        return sum(len(group) for group in self.pending_groups.values()) + len(self.pending_batch)
+
     def pending_batch_by_env(self) -> dict[str, int]:
         """Per-env breakdown of ``batch_progress()`` (``pending_batch`` only);
         values sum to the aggregate."""
@@ -167,6 +213,18 @@ class TrainSink:
         # tokenized, so memory stays flat instead of holding every buffered
         # rollout's images until the batch ships (no-op for text-only).
         await asyncio.to_thread(offload_images_to_disk, [raw], self.config.output_dir)
+        await asyncio.to_thread(self.compact_rollout, rollout)
+
+    def compact_rollout(self, rollout: TrainRollout) -> None:
+        """Shrink a tokenized rollout to its buffered footprint: numpy-backed
+        sample fields, token-level filter verdicts cached, per-step token
+        payloads stripped from ``raw``. The rollout may wait hours for its
+        group to finalize and its batch to ship — everything held across that
+        window must be compact."""
+        for sample in rollout.samples:
+            compact_sample(sample)
+        cache_token_filter_results([*self.pre_filters, *self.post_filters], rollout)
+        strip_trajectory_token_payloads(rollout.raw)
 
     def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
@@ -209,7 +267,7 @@ class TrainSink:
                 sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
-                sample.completion_temperatures = [temperature] * len(sample.completion_ids)
+                sample.completion_temperatures = np.full(len(sample.completion_ids), temperature)
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)
@@ -278,12 +336,13 @@ class TrainSink:
             prefill = 0
             decode = 0
             for sample in r.samples:
-                sample_decode = sum(sample.completion_mask)
-                sample_prefill = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode
+                completion_mask = np.asarray(sample.completion_mask)
+                sample_decode = int(completion_mask.sum())
+                sample_prefill = len(sample.prompt_ids) + completion_mask.size - sample_decode
                 decode += sample_decode
                 prefill += sample_prefill
                 if not r.is_filtered:
-                    samples.append(sample)
+                    samples.append(materialize_wire_lists(sample))
             prefill_lens.append(prefill)
             decode_lens.append(decode)
             num_prefill += prefill

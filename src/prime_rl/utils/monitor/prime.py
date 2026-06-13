@@ -31,6 +31,18 @@ def _json(val: Any) -> str:
     return json.dumps(val)
 
 
+def _step_token_count(step: dict, key: str) -> int | None:
+    """Token count for one trajectory step. Train rollouts arrive with token
+    payloads stripped to count stubs (strip_trajectory_token_payloads); eval
+    rollouts still carry the full id lists."""
+    tokens = step.get("tokens")
+    if not tokens:
+        return None
+    if f"num_{key}" in tokens:
+        return tokens[f"num_{key}"]
+    return len(tokens[key])
+
+
 _SAMPLE_SCHEMA = pa.schema(
     [
         ("run_id", pa.string()),
@@ -354,8 +366,8 @@ class PrimeMonitor(Monitor):
                     "reward": ts.get("reward"),
                     "advantage": ts.get("advantage"),
                     "extras": ts.get("extras", {}),
-                    "num_input_tokens": len(ts["tokens"]["prompt_ids"]) if ts.get("tokens") else None,
-                    "num_output_tokens": len(ts["tokens"]["completion_ids"]) if ts.get("tokens") else None,
+                    "num_input_tokens": _step_token_count(ts, "prompt_ids"),
+                    "num_output_tokens": _step_token_count(ts, "completion_ids"),
                 }
                 for ts in trajectory
             ]

@@ -386,6 +386,10 @@ class Orchestrator:
             max_off_policy_steps=config.max_off_policy_steps,
             training_mode=config.training_mode,
             use_cache_salt=use_cache_salt,
+            # ``train_sink`` is constructed just below; the dispatcher only
+            # calls this from its scheduling loop, long after setup
+            train_buffer_full=self.train_sink_buffer_full,
+            group_timeout_secs=config.group_timeout_secs,
         )
         self.metrics = MetricsBuilder(config, start_step=self.progress.step)
         self.train_sink = TrainSink(
@@ -596,7 +600,10 @@ class Orchestrator:
         rollout_dicts = [r.to_dict() for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(
-            save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
+            save_rollouts,
+            rollout_dicts,
+            step_path / "train_rollouts.jsonl",
+            exclude_keys={"trajectory", "last_step_input_ids"},
         )
 
         teacher_logprobs_time = 0.0  # opd only
@@ -856,6 +863,17 @@ class Orchestrator:
         t = time.perf_counter()
         await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
         return time.perf_counter() - t
+
+    def train_sink_buffer_full(self) -> bool:
+        """Backpressure predicate for the dispatcher: True while the train
+        sink holds ``max_buffered_rollouts`` or more rollouts (partial groups
+        + batch overflow). The dispatcher then stops opening fresh train
+        groups; in-flight and already-open groups still complete, so the
+        buffer drains instead of growing unboundedly when rollout production
+        outpaces trainer consumption."""
+        if self.config.max_buffered_rollouts is None:
+            return False
+        return self.train_sink.held_count() >= self.config.max_buffered_rollouts
 
     def update_dispatch_gate(self) -> None:
         """Pause/resume the dispatcher based on how far the orchestrator's

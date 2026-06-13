@@ -607,6 +607,38 @@ def _pack_mm_kwargs_from_renderer(mm_data: Any) -> "dict[str, Any] | None":
     return out
 
 
+def strip_trajectory_token_payloads(output: vf.RolloutOutput) -> None:
+    """Drop per-step token payloads once a rollout is tokenized.
+
+    The per-step ids/masks/logprobs and base64 ``routed_experts`` strings are
+    the dominant share of a buffered rollout's memory and are fully captured
+    in ``TrainingSample`` by ``interleave_rollout`` — but the rollout can sit
+    in the sink for hours waiting for its group/batch, so they must not stay
+    alive on ``raw``. Each step's ``tokens`` dict is replaced by a count stub
+    (``num_prompt_ids`` / ``num_completion_ids``) for downstream consumers
+    that only need lengths (length-penalty advantage, sample-table metadata).
+    The last step's full input ids are stashed compactly on
+    ``output["last_step_input_ids"]`` for monitor sample logging. Step
+    messages are kept — rollout persistence and sample tables read them.
+    """
+    trajectory = output.get("trajectory") or []
+    if not trajectory:
+        return
+    last_tokens = trajectory[-1].get("tokens")
+    if last_tokens is not None:
+        output["last_step_input_ids"] = np.asarray(
+            list(last_tokens["prompt_ids"]) + list(last_tokens["completion_ids"]), dtype=np.int32
+        )
+    for step in trajectory:
+        tokens = step.get("tokens")
+        if tokens is None:
+            continue
+        step["tokens"] = {
+            "num_prompt_ids": len(tokens["prompt_ids"]),
+            "num_completion_ids": len(tokens["completion_ids"]),
+        }
+
+
 _FILE_URL_PREFIX = "file://"
 
 
