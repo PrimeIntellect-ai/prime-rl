@@ -13,10 +13,10 @@ turns the signal half into runtime objects (the sampling half is the env's
   ``custom`` advantage type (:class:`CustomAlgorithm` imports a user
   function by path).
 - ``base`` — the :class:`Algorithm` base class and the pipeline phase
-  functions (:func:`finalize_group` / :func:`query_batch_references`).
+  functions (:func:`finalize_group` / :func:`finalize_batch`).
 - ``advantage`` — pure advantage math: the custom-function interface
-  (:class:`AdvantageInputs`, per-token advantages out) and the default
-  group-norm computation.
+  (``TrainRollout``\ s in, per-token advantages out; :func:`broadcast` for
+  uniform credit) and the default group-norm computation.
 - ``routing`` — wire-field stamping: per-token component weight streams
   (rl / ce / ref_kl) and the per-token advantage stream.
 """
@@ -27,16 +27,16 @@ from typing import TYPE_CHECKING
 
 from prime_rl.orchestrator.algo.advantage import (
     AdvantageFn,
-    AdvantageInputs,
     apply_advantage_fn,
+    broadcast,
     default_advantage_fn,
     max_rl_advantage_fn,
 )
 from prime_rl.orchestrator.algo.base import (
     Algorithm,
     connect_frozen_pool,
+    finalize_batch,
     finalize_group,
-    query_batch_references,
 )
 from prime_rl.orchestrator.algo.custom import CustomAlgorithm
 from prime_rl.orchestrator.algo.echo import EchoAlgorithm
@@ -78,7 +78,7 @@ def build_algorithm(config: AlgorithmConfig, policy_pool: InferencePool, rendere
 
 __all__ = [
     "AdvantageFn",
-    "AdvantageInputs",
+    "broadcast",
     "Algorithm",
     "CustomAlgorithm",
     "EchoAlgorithm",
@@ -94,7 +94,7 @@ __all__ = [
     "default_advantage_fn",
     "finalize_group",
     "max_rl_advantage_fn",
-    "query_batch_references",
+    "finalize_batch",
     "stamp_advantages",
     "stamp_loss_routing",
 ]

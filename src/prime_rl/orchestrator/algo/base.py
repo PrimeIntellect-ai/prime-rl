@@ -22,7 +22,7 @@ recorded as ``obs_spans``) is pure pipeline.
 
 The pipeline (dispatcher, train sink, orchestrator) calls the module-level
 phase functions (:func:`finalize_group` at group completion,
-:func:`query_batch_references` at batch ship) and reads the class
+:func:`finalize_batch` at batch ship) and reads the class
 declarations; it never branches on algorithm config fields or model roles —
 liveness of a reference is the only runtime distinction. prime-rl hosts
 exactly one model — the trainable policy, whose pool is passed in; every
@@ -67,7 +67,7 @@ class Algorithm:
 
     Everything on this class is yours to override; the pipeline drives the
     compilation through the module-level phase functions below
-    (:func:`finalize_group` / :func:`query_batch_references`) and never calls
+    (:func:`finalize_group` / :func:`finalize_batch`) and never calls
     anything else. The surface is:
 
     - declarations — which loss component the action tokens feed
@@ -142,7 +142,7 @@ def finalize_group(algorithm: Algorithm, rollouts: list[TrainRollout]) -> None:
             stamp_loss_routing(sample, algorithm.action_loss_type)
 
 
-async def query_batch_references(train_envs: TrainEnvs, rollouts: list[TrainRollout]) -> None:
+async def finalize_batch(train_envs: TrainEnvs, rollouts: list[TrainRollout]) -> None:
     """Ship phase: run each env's ``query_references`` over its unfiltered
     rollouts, concurrently across envs. Per-env concurrency is bounded by the
     algorithm's own config; envs without references return immediately."""
