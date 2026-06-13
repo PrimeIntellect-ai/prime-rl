@@ -74,6 +74,9 @@ class Indexer(nn.Module):
         self.k_norm = LayerNorm(dim=self.head_dim, eps=1e-6)
         self.weights_proj = nn.Linear(args.hidden_size, self.n_head, bias=False)
         self.weight_scale = (self.head_dim**-0.5) * (self.n_head**-0.5)
+        # Sparse index selection is non-differentiable; keep indexer weights checkpointed but frozen.
+        for param in self.parameters():
+            param.requires_grad = False
 
     @torch.no_grad()
     def compute_sparse_indices(

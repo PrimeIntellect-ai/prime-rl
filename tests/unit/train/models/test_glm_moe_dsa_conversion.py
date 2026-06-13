@@ -1,6 +1,25 @@
 import torch
 
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import convert_tt_layer_to_vllm_kernel
+from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
+
+
+def _build_sparse_mla_args() -> SparseMlaAttentionArgs:
+    return SparseMlaAttentionArgs(
+        hidden_size=6,
+        num_attention_heads=1,
+        kv_lora_rank=3,
+        q_lora_rank=6,
+        qk_rope_head_dim=2,
+        qk_nope_head_dim=2,
+        qk_head_dim=4,
+        v_head_dim=3,
+        attention_bias=False,
+        rms_norm_eps=1e-6,
+        index_n_heads=2,
+        index_head_dim=4,
+        index_topk=64,
+    )
 
 
 def _build_prime_layer_state(layer_idx: int = 0) -> dict[str, torch.Tensor]:
@@ -28,6 +47,21 @@ def _build_prime_layer_state(layer_idx: int = 0) -> dict[str, torch.Tensor]:
         f"{prefix}.mlp.shared_expert.w2": torch.randn(1, 6, 3),
         f"{prefix}.mlp.shared_expert.w3": torch.randn(1, 3, 6),
     }
+
+
+def test_glm_moe_dsa_indexer_parameters_are_frozen():
+    attention = GlmMoeDsaAttention(_build_sparse_mla_args())
+
+    indexer_params = dict(attention.indexer.named_parameters())
+    trainable_non_indexer_params = {
+        name: param
+        for name, param in attention.named_parameters()
+        if not name.startswith("indexer.") and param.requires_grad
+    }
+
+    assert indexer_params
+    assert all(not param.requires_grad for param in indexer_params.values())
+    assert trainable_non_indexer_params
 
 
 def test_convert_tt_layer_to_vllm_kernel_no_fp8():
