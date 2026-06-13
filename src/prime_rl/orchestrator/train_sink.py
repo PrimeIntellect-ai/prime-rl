@@ -19,11 +19,12 @@ import uuid
 from collections import defaultdict
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.algo import build_samples, finalize_group
+from prime_rl.orchestrator.algo import finalize_group
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import (
     backfill_rollout_tokens,
+    interleave_rollout,
     offload_images_to_disk,
 )
 from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
@@ -156,10 +157,8 @@ class TrainSink:
         needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
-        algorithm = self.train_envs.get(rollout.env_name).algorithm
         samples = await asyncio.to_thread(
-            lambda: build_samples(
-                algorithm,
+            lambda: interleave_rollout(
                 raw,
                 env_name=rollout.env_name,
                 mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,

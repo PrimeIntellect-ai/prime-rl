@@ -36,6 +36,7 @@ def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType)
     """
     obs_weights = sample.completion_obs_weights
     sample.completion_obs_weights = None
+    sample.obs_spans = None  # orchestrator-internal provenance, never ships
     train_obs = obs_weights is not None and any(obs_weights)
     if action_loss_type == "rl" and not train_obs:
         return

@@ -138,7 +138,7 @@ class RLCSDAlgorithm(Algorithm):
     def assign_advantages(self, rollouts: list[TrainRollout]) -> None:
         apply_advantage_fn(rollouts, _std_norm_advantage_fn)
 
-    async def score(self, rollouts: list[TrainRollout]) -> None:
+    async def query_references(self, rollouts: list[TrainRollout]) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)

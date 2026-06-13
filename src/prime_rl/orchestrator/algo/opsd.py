@@ -74,7 +74,7 @@ class OPSDAlgorithm(Algorithm):
         assert self.renderer is not None
         return self.renderer.render_ids(messages, add_generation_prompt=True)
 
-    async def score(self, rollouts: list[TrainRollout]) -> None:
+    async def query_references(self, rollouts: list[TrainRollout]) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
