@@ -22,47 +22,35 @@ if TYPE_CHECKING:
 
 def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType) -> None:
     """Stamp the algorithm's loss routing onto one sample's component weight
-    streams.
+    streams: action tokens (the trainable completion tokens, per the loss
+    mask) feed the algorithm's declared component.
 
-    Action tokens (the trainable completion tokens) feed the algorithm's
-    component: ``rl`` is the default (absent streams ship nothing), while
-    ``ce``/``ref_kl`` stamp that component's weights over the action tokens
-    and zero the rl stream. When the algorithm trains on observations,
-    env-provided tokens carry their per-token ce weights (tagged by
-    ``interleave_rollout`` in ``completion_obs_weights``) — they stay out of
-    ``completion_mask``, so the ce component is the only one that trains
-    them. ``completion_obs_weights`` is orchestrator-internal and cleared
-    here so it never ships.
+    ``rl`` is the default and ships nothing (absent streams mean rl weight
+    1.0 on the loss mask — the hot path); ``ce``/``ref_kl`` weight the action
+    tokens into that component's stream and zero the rl stream. Streams an
+    algorithm wrote directly (echo's observation ce weights) are merged, not
+    clobbered — env-provided tokens stay out of ``completion_mask``, so the
+    component an algorithm weights them into is the only one that trains
+    them.
     """
-    obs_weights = sample.completion_obs_weights
-    sample.completion_obs_weights = None
     sample.obs_spans = None  # orchestrator-internal provenance, never ships
-    train_obs = obs_weights is not None and any(obs_weights)
-    if action_loss_type == "rl" and not train_obs:
+    if action_loss_type == "rl":
         return
 
     prompt_len = len(sample.prompt_ids)
     seq_len = prompt_len + len(sample.completion_ids)
-
-    if action_loss_type != "rl":
-        sample.rl_weights = [0.0] * seq_len
-        action_weights = [0.0] * seq_len
-        for i, trains in enumerate(sample.completion_mask):
-            if trains:
-                action_weights[prompt_len + i] = 1.0
-        if action_loss_type == "ce":
-            sample.ce_weights = action_weights
-        else:
-            assert action_loss_type == "ref_kl"
-            sample.ref_kl_weights = action_weights
-
-    if train_obs:
-        assert obs_weights is not None
-        ce_weights = sample.ce_weights if sample.ce_weights is not None else [0.0] * seq_len
-        for i, weight in enumerate(obs_weights):
-            if weight:
-                ce_weights[prompt_len + i] = weight
-        sample.ce_weights = ce_weights
+    sample.rl_weights = [0.0] * seq_len
+    action_weights = (
+        sample.ce_weights if action_loss_type == "ce" and sample.ce_weights is not None else [0.0] * seq_len
+    )
+    for i, trains in enumerate(sample.completion_mask):
+        if trains:
+            action_weights[prompt_len + i] = 1.0
+    if action_loss_type == "ce":
+        sample.ce_weights = action_weights
+    else:
+        assert action_loss_type == "ref_kl"
+        sample.ref_kl_weights = action_weights
 
 
 def stamp_advantages(rollout: TrainRollout) -> None:

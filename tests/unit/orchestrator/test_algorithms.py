@@ -94,7 +94,7 @@ def test_rl_loss_type_incompatible_with_frozen_sampling():
         AlgorithmConfig(sampling={"source": FROZEN}, advantage={"type": "grpo"})
 
 
-def _make_sample(obs_weights: list[float] | None) -> TrainingSample:
+def _make_sample(ce_weights: list[float] | None = None) -> TrainingSample:
     return TrainingSample(
         prompt_ids=[1, 2],
         prompt_mask=[False, False],
@@ -103,12 +103,12 @@ def _make_sample(obs_weights: list[float] | None) -> TrainingSample:
         completion_logprobs=[-0.1, -0.2, 0.0, -0.3],
         completion_temperatures=[],
         env_name="test-env",
-        completion_obs_weights=obs_weights,
+        ce_weights=ce_weights,
     )
 
 
 def test_stamp_loss_routing_uniform_rl():
-    sample = _make_sample(obs_weights=None)
+    sample = _make_sample()
     stamp_loss_routing(sample, "rl")
     # Hot path: absent streams mean rl weight 1.0 on the loss mask
     assert sample.rl_weights is None
@@ -117,7 +117,7 @@ def test_stamp_loss_routing_uniform_rl():
 
 
 def test_stamp_loss_routing_ref_kl_action():
-    sample = _make_sample(obs_weights=None)
+    sample = _make_sample()
     stamp_loss_routing(sample, "ref_kl")
     # Action tokens (completion_mask True) feed the ref_kl component; rl is off
     assert sample.rl_weights == [0.0] * 6
@@ -126,34 +126,32 @@ def test_stamp_loss_routing_ref_kl_action():
 
 
 def test_stamp_loss_routing_ce_action():
-    sample = _make_sample(obs_weights=None)
+    sample = _make_sample()
     stamp_loss_routing(sample, "ce")
     assert sample.rl_weights == [0.0] * 6
     assert sample.ce_weights == [0.0, 0.0] + [1.0, 1.0, 0.0, 1.0]
     assert sample.ref_kl_weights is None
 
 
-def test_stamp_loss_routing_echo_observations():
-    # Token at completion index 2 is an env observation (masked out today)
-    sample = _make_sample(obs_weights=[0.0, 0.0, 0.1, 0.0])
+def test_stamp_loss_routing_keeps_algorithm_written_ce_stream():
+    # Echo writes ce_weights directly at group time (observation at
+    # completion index 2, outside completion_mask); rl routing must not
+    # clobber it — the rl component still ships no streams (hot path).
+    sample = _make_sample(ce_weights=[0.0, 0.0] + [0.0, 0.0, 0.1, 0.0])
     stamp_loss_routing(sample, "rl")
-
-    assert sample.completion_obs_weights is None  # cleared, never ships
-    # The observation token trains on the ce component with its role's
-    # weight; it stays out of completion_mask (the rl mask), so the rl
-    # component and its denominator never see it.
-    assert sample.completion_mask == [True, True, False, True]
     assert sample.rl_weights is None
     assert sample.ce_weights == [0.0, 0.0] + [0.0, 0.0, 0.1, 0.0]
     assert sample.ref_kl_weights is None
 
 
-def test_stamp_loss_routing_clears_obs_weights_when_all_zero():
-    sample = _make_sample(obs_weights=[0.0, 0.0, 0.0, 0.0])
-    stamp_loss_routing(sample, "rl")
-    assert sample.completion_obs_weights is None
-    assert sample.ce_weights is None
-    assert sample.completion_mask == [True, True, False, True]
+def test_stamp_loss_routing_merges_action_weights_into_ce_stream():
+    # A ce-action algorithm that also weighted observation tokens: action
+    # tokens merge into the existing stream instead of replacing it.
+    sample = _make_sample(ce_weights=[0.0, 0.0] + [0.0, 0.0, 0.1, 0.0])
+    stamp_loss_routing(sample, "ce")
+    assert sample.rl_weights == [0.0] * 6
+    assert sample.ce_weights == [0.0, 0.0] + [1.0, 1.0, 0.1, 1.0]
+    assert sample.ref_kl_weights is None
 
 
 def _make_rollout(
@@ -174,14 +172,14 @@ def _make_rollout(
 
 
 def test_stamp_advantages_pads_prompt():
-    rollout = _make_rollout([_make_sample(obs_weights=None)], advantages=[0.5, -0.5, 0.0, 1.0])
+    rollout = _make_rollout([_make_sample()], advantages=[0.5, -0.5, 0.0, 1.0])
     stamp_advantages(rollout)
     # 2 prompt positions padded with 0.0 + 4 completion-aligned advantages
     assert rollout.samples[0].advantages == [0.0, 0.0, 0.5, -0.5, 0.0, 1.0]
 
 
 def test_stamp_advantages_slices_across_samples():
-    samples = [_make_sample(obs_weights=None), _make_sample(obs_weights=None)]
+    samples = [_make_sample(), _make_sample()]
     rollout = _make_rollout(samples, advantages=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
     stamp_advantages(rollout)
     assert rollout.samples[0].advantages == [0.0, 0.0, 1.0, 2.0, 3.0, 4.0]
@@ -189,13 +187,13 @@ def test_stamp_advantages_slices_across_samples():
 
 
 def test_stamp_advantages_no_credit_ships_none():
-    rollout = _make_rollout([_make_sample(obs_weights=None)])
+    rollout = _make_rollout([_make_sample()])
     stamp_advantages(rollout)
     assert rollout.samples[0].advantages is None
 
 
 def test_stamp_advantages_rejects_misaligned():
-    rollout = _make_rollout([_make_sample(obs_weights=None)], advantages=[0.5])
+    rollout = _make_rollout([_make_sample()], advantages=[0.5])
     with pytest.raises(ValueError, match="align"):
         stamp_advantages(rollout)
 
@@ -270,7 +268,7 @@ def test_echo_weights_observations_by_role():
     sample = rollout.samples[0]
     assert sample.completion_ids == [3, 4, 5, 6, 7, 8]
     # [3,4] step-1 action, [5,6] observation, [7,8] step-2 action
-    assert sample.completion_obs_weights == [0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
+    assert sample.ce_weights == [0.0, 0.0] + [0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
     assert sample.completion_mask == [True, True, False, False, True, True]
 
     # Without is_content, whole messages count; each role carries its own weight.
@@ -278,7 +276,7 @@ def test_echo_weights_observations_by_role():
     rollout = _echo_rollout(_two_step_rollout(attribution))
     algo = _echo_algorithm(roles={"tool": {"alpha": 0.1}, "user": {"alpha": 0.05}})
     algo.assign_advantages([rollout])
-    assert rollout.samples[0].completion_obs_weights == [0.0, 0.0, 0.1, 0.05, 0.0, 0.0]
+    assert rollout.samples[0].ce_weights == [0.0, 0.0] + [0.0, 0.0, 0.1, 0.05, 0.0, 0.0]
 
     # MITO rollouts carry no attribution: loud error, not a silent no-op.
     with pytest.raises(ValueError, match="attribution"):
@@ -295,7 +293,7 @@ def test_echo_filter_narrows_selection():
     rollout = _echo_rollout(_two_step_rollout(attribution))
     algo = _echo_algorithm(filter_fn=keep_last_only)
     algo.assign_advantages([rollout])
-    assert rollout.samples[0].completion_obs_weights == [0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
+    assert rollout.samples[0].ce_weights == [0.0, 0.0] + [0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
 
     # Shape violations fail loudly: wrong step count, wrong per-step length.
     rollout = _echo_rollout(_two_step_rollout(attribution))
@@ -311,5 +309,5 @@ def test_interleave_records_obs_spans():
     # The step-2 prompt extension [5,6] lands at completion positions 2-3,
     # sourced from step 1's prompt at offset 4, length 2.
     assert samples[0].obs_spans == [[2, 1, 4, 2]]
-    # Provenance only — no algorithm wrote weights.
-    assert samples[0].completion_obs_weights is None
+    # Provenance only — no algorithm wrote a ce stream.
+    assert samples[0].ce_weights is None
