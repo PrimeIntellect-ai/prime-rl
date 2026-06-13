@@ -16,12 +16,7 @@ from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.minimax_m2.configuration_minimax_m2 import MiniMaxM2Config
-from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import (
-    convert_hf_layer_to_tt,
-    convert_hf_to_tt_moe,
-    convert_tt_layer_to_hf,
-    convert_tt_to_hf_moe,
-)
+from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import conversion_chain
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 logger = logging.get_logger(__name__)
@@ -111,25 +106,8 @@ class MiniMaxM2PreTrainedModel(PreTrainedModelPrimeRL):
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return any("mlp.experts.w1" in name for name in state_dict.keys())
 
-    @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        convert_tt_to_hf_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        convert_hf_to_tt_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        convert_tt_layer_to_hf(state_dict, layer_idx)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        convert_hf_layer_to_tt(state_dict, layer_idx)
-        return state_dict
+    def conversion_chain(self):
+        return conversion_chain(self.config)
 
 
 @auto_docstring

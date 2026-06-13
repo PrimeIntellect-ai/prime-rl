@@ -15,11 +15,8 @@ from transformers.utils.deprecation import deprecate_kwarg
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
-    convert_hf_layer_to_tt,
-    convert_hf_to_tt_moe,
-    convert_tt_layer_to_hf,
+    conversion_chain,
     convert_tt_layer_to_vllm_kernel,
-    convert_tt_to_hf_moe,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
@@ -145,25 +142,8 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
 
-    @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        convert_tt_to_hf_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        convert_hf_to_tt_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        convert_tt_layer_to_hf(state_dict, layer_idx)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        convert_hf_layer_to_tt(state_dict, layer_idx)
-        return state_dict
+    def conversion_chain(self):
+        return conversion_chain(self.config)
 
     @classmethod
     def convert_layer_to_vllm_kernel(
