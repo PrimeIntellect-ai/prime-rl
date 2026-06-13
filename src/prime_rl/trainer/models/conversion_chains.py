@@ -11,10 +11,13 @@ checked in tests/unit/train/models/conversions.
 from __future__ import annotations
 
 from prime_rl.trainer.models.conversion_ops import (
+    Conditional,
     ConvOp,
-    FusedGateUp,
-    MoEExperts,
     Rename,
+    Sequence,
+    SplitConcat,
+    Stack,
+    key_present,
 )
 
 # Per-layer routed-expert proj order shared by the Llama-style MoE models:
@@ -30,27 +33,36 @@ def _routed_experts_op(
     proj_order=_GATE_DOWN_UP,
     hf_proj_suffix: str = ".weight",
     fused: bool = False,
-) -> MoEExperts:
-    """Build the MoEExperts op for one layer.
+) -> ConvOp:
+    """Compose the routed-experts conversion for one layer from base ops.
 
-    ``hf_experts``/``tt_experts`` are the (relative) expert container names,
-    e.g. ``mlp.experts`` / ``block_sparse_moe.experts``. ``proj_order`` maps
-    prime ``wN`` to the HF per-expert proj name."""
-    projs = {
-        f"{prefix}.{tt_experts}.{wn}": f"{prefix}.{hf_experts}.{{e}}.{hf_proj}{hf_proj_suffix}"
+    Per-expert input <-> stacked prime tensors is a ``Stack`` per proj.
+    ``hf_experts``/``tt_experts`` are the (relative) expert container names
+    (e.g. ``mlp.experts`` / ``block_sparse_moe.experts``); ``proj_order`` maps
+    prime ``wN`` to the HF per-expert proj name.
+
+    When ``fused`` is set, the transformers-v5 fused ``gate_up_proj`` input is
+    accepted too: a ``Conditional`` on its presence splits it (``SplitConcat``,
+    dim 1) into w1/w3 and renames ``down_proj`` -> w2; otherwise the per-expert
+    ``Stack``s run. Prime always stores split w1/w2/w3, so the backward path
+    always goes through the per-expert ``Stack`` unstack (the fused key is
+    absent in prime, so the conditional takes the else branch)."""
+    stacks = [
+        Stack(stacked=f"{prefix}.{tt_experts}.{wn}", item=f"{prefix}.{hf_experts}.{{e}}.{hf_proj}{hf_proj_suffix}")
         for wn, hf_proj in proj_order
-    }
-    fused_spec = None
-    if fused:
-        fused_spec = FusedGateUp(
-            gate_up=f"{prefix}.{hf_experts}.gate_up_proj",
-            down=f"{prefix}.{hf_experts}.down_proj",
-            w_gate=f"{prefix}.{tt_experts}.w1",
-            w_down=f"{prefix}.{tt_experts}.w2",
-            w_up=f"{prefix}.{tt_experts}.w3",
-            split_dim=1,
-        )
-    return MoEExperts(projs=projs, fused=fused_spec)
+    ]
+    if not fused:
+        return Sequence(stacks)
+    gate_up = f"{prefix}.{hf_experts}.gate_up_proj"
+    fused_then = [
+        SplitConcat(
+            combined=gate_up,
+            parts=[(f"{prefix}.{tt_experts}.w1", None), (f"{prefix}.{tt_experts}.w3", None)],
+            dim=1,
+        ),
+        Rename(f"{prefix}.{hf_experts}.down_proj", f"{prefix}.{tt_experts}.w2"),
+    ]
+    return Conditional(key_present(gate_up), then=fused_then, else_=stacks)
 
 
 def build_qwen3_moe_chain(num_layers: int) -> list[ConvOp]:
