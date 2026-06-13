@@ -18,9 +18,9 @@ from prime_rl.trainer.models.conversion_ops import (
     ConvOp,
     Drop,
     MapValue,
-    MoEExperts,
     PrefixRename,
     Rename,
+    Stack,
     Synthetic,
     key_present,
 )
@@ -57,12 +57,8 @@ def _moe_layer_ops(prefix: str) -> list[ConvOp]:
                 Rename(f"{prefix}.mixer.experts.down_proj", f"{prefix}.mlp.experts.w2"),
             ],
             else_=[
-                MoEExperts(
-                    projs={
-                        f"{prefix}.mlp.experts.w1": f"{prefix}.mixer.experts.{{e}}.up_proj.weight",
-                        f"{prefix}.mlp.experts.w2": f"{prefix}.mixer.experts.{{e}}.down_proj.weight",
-                    }
-                )
+                Stack(stacked=f"{prefix}.mlp.experts.w1", item=f"{prefix}.mixer.experts.{{e}}.up_proj.weight"),
+                Stack(stacked=f"{prefix}.mlp.experts.w2", item=f"{prefix}.mixer.experts.{{e}}.down_proj.weight"),
             ],
         ),
         Synthetic(f"{prefix}.mlp.experts.w3", factory=_empty_w3(prefix)),

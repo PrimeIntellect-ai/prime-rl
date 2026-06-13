@@ -19,7 +19,7 @@ Design constraints:
 * **Sharding-aware, no gathers.** Pure name ops (:class:`Rename`,
   :class:`PrefixRename`, :class:`Drop`) are value-agnostic, so they operate on
   DTensors/local shards untouched. The only value-touching op,
-  :class:`MoEExperts`, stacks/unstacks along the expert dim and takes an
+  :class:`Stack`, stacks/unstacks along a new (expert) dim and takes an
   ``expert_offset`` so a rank can unstack just its *local* experts into
   globally-numbered per-expert keys — no all-gather. Any op that genuinely
   needs a full tensor is the caller's responsibility to gather first (via the
@@ -138,75 +138,79 @@ class Drop(ConvOp):
 
 
 @dataclass
-class MoEExperts(ConvOp):
-    """Stack per-expert HF weights into prime's fused 3-D tensors, and back.
+class Stack(ConvOp):
+    """Stack a variable-cardinality ``{e}``-indexed group of keys into one
+    tensor along a NEW leading dim, and unstack back.
 
-    ``projs`` maps each prime stacked key to its HF per-expert key pattern
-    (``{e}`` is the expert index), e.g.
-    ``{"…mlp.experts.w1": "…mlp.experts.{e}.gate_proj.weight"}``.
+    ``item`` is the per-element key pattern with an ``{e}`` placeholder, e.g.
+    ``"…mlp.experts.{e}.gate_proj.weight"``; ``stacked`` is the combined key.
+    Not MoE-specific — any indexed group (experts, layers, ...) fits.
 
-    * forward: for each proj, collect contiguous experts ``0..N-1`` and
-      ``torch.stack`` them into the prime key. If ``fused`` is given and its key
-      is present, the transformers-v5 fused layout is split instead (one
-      ``(E, 2*I, H)`` gate_up tensor → two stacked halves) — this is the
-      forward-only alternative input.
-    * backward: unstack each prime tensor into per-expert HF keys, numbering
-      experts from ``expert_offset`` (0 for a full tensor; the global id of
-      local row 0 when serving a shard).
-
-    Sharding: backward never indexes a sharded dim across ranks — it unstacks
-    whatever local rows it holds and labels them with the global offset, so no
-    gather is needed.
+    * forward: collect contiguous elements ``0..N-1`` and ``torch.stack`` them.
+    * backward: unstack along ``dim`` into per-element keys, numbering from
+      ``index_offset`` (0 for a full tensor; the global id of local row 0 when
+      serving a shard — so a rank can unstack just its local slice into
+      globally-numbered keys without gathering).
     """
 
-    projs: dict[str, str]
-    fused: "FusedGateUp | None" = None
-    expert_offset: int = 0
+    stacked: str
+    item: str
     dim: int = 0
+    index_offset: int = 0
 
     def hf_to_tt(self, sd: StateDict) -> None:
-        if self.fused is not None and self.fused.gate_up in sd:
-            self.fused.split(sd, self.projs, self.dim)
-            return
-        for tt_key, hf_pattern in self.projs.items():
-            experts: list[Tensor] = []
-            e = 0
-            while hf_pattern.format(e=e) in sd:
-                experts.append(sd.pop(hf_pattern.format(e=e)))
-                e += 1
-            if experts:
-                sd[tt_key] = torch.stack(experts, dim=self.dim)
+        items: list[Tensor] = []
+        e = 0
+        while self.item.format(e=e) in sd:
+            items.append(sd.pop(self.item.format(e=e)))
+            e += 1
+        if items:
+            sd[self.stacked] = torch.stack(items, dim=self.dim)
 
     def tt_to_hf(self, sd: StateDict) -> None:
-        for tt_key, hf_pattern in self.projs.items():
-            if tt_key not in sd:
-                continue
-            stacked = sd.pop(tt_key)
-            for e in range(stacked.shape[self.dim]):
-                sd[hf_pattern.format(e=self.expert_offset + e)] = stacked.select(self.dim, e)
+        if self.stacked not in sd:
+            return
+        t = sd.pop(self.stacked)
+        for e in range(t.shape[self.dim]):
+            sd[self.item.format(e=self.index_offset + e)] = t.select(self.dim, e)
 
 
 @dataclass
-class FusedGateUp:
-    """The transformers-v5 fused expert layout: one ``gate_up_proj`` of shape
-    ``(E, 2*I, H)`` (gate then up along dim 1) plus a separate ``down_proj``.
-    Only consumed in the forward (HF -> prime) direction; prime always stores
-    the split w1/w2/w3, so backward goes through per-expert keys."""
+class SplitConcat(ConvOp):
+    """Split one tensor into fixed parts along an EXISTING dim, and concat back.
 
-    gate_up: str  # HF key, e.g. "…mlp.experts.gate_up_proj"
-    down: str  # HF key, e.g. "…mlp.experts.down_proj"
-    w_gate: str  # prime key for gate (w1)
-    w_down: str  # prime key for down (w2)
-    w_up: str  # prime key for up (w3)
-    split_dim: int = 1
+    ``parts`` is ``[(key, size), ...]``; ``size=None`` means an equal split
+    across all parts. Forward (HF -> prime) splits ``combined`` into the part
+    keys (views); backward concatenates them back. Used e.g. for the
+    transformers-v5 fused ``gate_up_proj`` (two equal halves on dim 1), but is
+    a general structural primitive.
+    """
 
-    def split(self, sd: StateDict, projs: dict[str, str], stack_dim: int) -> None:
-        gate_up = sd.pop(self.gate_up)
-        down = sd.pop(self.down)
-        half = gate_up.shape[self.split_dim] // 2
-        sd[self.w_gate] = gate_up.narrow(self.split_dim, 0, half)
-        sd[self.w_up] = gate_up.narrow(self.split_dim, half, half)
-        sd[self.w_down] = down
+    combined: str
+    parts: list[tuple[str, "int | None"]]
+    dim: int = 0
+
+    def _sizes(self, total: int) -> list[int]:
+        if all(size is None for _, size in self.parts):
+            n = len(self.parts)
+            assert total % n == 0, f"{self.combined}: dim {self.dim} size {total} not divisible by {n} parts"
+            return [total // n] * n
+        return [int(size) for _, size in self.parts]
+
+    def hf_to_tt(self, sd: StateDict) -> None:
+        if self.combined not in sd:
+            return
+        t = sd.pop(self.combined)
+        offset = 0
+        for (key, _), size in zip(self.parts, self._sizes(t.shape[self.dim])):
+            sd[key] = t.narrow(self.dim, offset, size)
+            offset += size
+
+    def tt_to_hf(self, sd: StateDict) -> None:
+        if not all(key in sd for key, _ in self.parts):
+            return
+        tensors = [sd.pop(key) for key, _ in self.parts]
+        sd[self.combined] = torch.cat(tensors, dim=self.dim)
 
 
 @dataclass
@@ -289,6 +293,20 @@ class Conditional(ConvOp):
     def tt_to_hf(self, sd: StateDict) -> None:
         branch = self.then if self.predicate(sd) else self.else_
         apply_tt_to_hf(sd, branch)
+
+
+@dataclass
+class Sequence(ConvOp):
+    """Bundle several ops into one (forward in order, backward reversed). Lets a
+    helper return a single ``ConvOp`` built from base ops."""
+
+    ops: list[ConvOp]
+
+    def hf_to_tt(self, sd: StateDict) -> None:
+        apply_hf_to_tt(sd, self.ops)
+
+    def tt_to_hf(self, sd: StateDict) -> None:
+        apply_tt_to_hf(sd, self.ops)
 
 
 def key_present(name: str) -> Callable[[StateDict], bool]:

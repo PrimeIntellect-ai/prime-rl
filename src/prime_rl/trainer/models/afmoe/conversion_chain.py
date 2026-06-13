@@ -18,7 +18,7 @@ AFMoE specifics:
 
 from __future__ import annotations
 
-from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, MoEExperts, Rename
+from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, Rename, Stack
 
 # prime w1=gate, w2=down, w3=up.
 _GATE_DOWN_UP = (("w1", "gate_proj"), ("w2", "down_proj"), ("w3", "up_proj"))
@@ -30,11 +30,8 @@ def build_afmoe_chain(num_layers: int) -> list[ConvOp]:
         p = f"model.layers.{i}.mlp"
         for wn, hf_proj in _GATE_DOWN_UP:
             ops.append(Rename(f"{p}.shared_experts.{hf_proj}.weight", f"{p}.shared_expert.{wn}"))
-        ops.append(
-            MoEExperts(
-                projs={f"{p}.experts.{wn}": f"{p}.experts.{{e}}.{hf_proj}.weight" for wn, hf_proj in _GATE_DOWN_UP}
-            )
-        )
+        for wn, hf_proj in _GATE_DOWN_UP:
+            ops.append(Stack(stacked=f"{p}.experts.{wn}", item=f"{p}.experts.{{e}}.{hf_proj}.weight"))
         ops.append(Drop(f"{p}.tokens_per_expert"))
         ops.append(Drop(f"{p}.reorderer", is_prefix=True))
     return ops
