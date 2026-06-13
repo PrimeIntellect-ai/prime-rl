@@ -110,24 +110,26 @@ class PrefixRename(ConvOp):
 
 @dataclass
 class Drop(ConvOp):
-    """Drop prime-only keys (matched by exact name or prefix) when going to HF.
-
-    Forward is a no-op (the keys don't exist in HF); backward removes any
-    prime-side runtime buffer that has no HF counterpart (e.g.
-    ``tokens_per_expert``, ``reorderer``, MTP heads)."""
+    """Drop keys (by exact name or prefix) that have no counterpart in the
+    other format. Symmetric: removes matching keys whenever present, in either
+    direction — covers prime-only runtime buffers dropped on the way to HF
+    (``tokens_per_expert``, ``reorderer``) and HF-only keys dropped on the way
+    to prime (e.g. NemotronH ``mtp.*`` multi-token-prediction heads). Only use
+    for keys that are genuinely absent from one side, so neither direction
+    needs to recreate them."""
 
     name: str
     is_prefix: bool = False
 
-    def _match(self, key: str) -> bool:
-        return key.startswith(self.name) if self.is_prefix else key == self.name
+    def _drop(self, sd: StateDict) -> None:
+        for key in [k for k in sd if (k.startswith(self.name) if self.is_prefix else k == self.name)]:
+            del sd[key]
 
     def hf_to_tt(self, sd: StateDict) -> None:
-        return None
+        self._drop(sd)
 
     def tt_to_hf(self, sd: StateDict) -> None:
-        for key in [k for k in sd if self._match(k)]:
-            del sd[key]
+        self._drop(sd)
 
 
 # --------------------------------------------------------------------------- #
