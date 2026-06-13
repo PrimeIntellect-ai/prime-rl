@@ -7,7 +7,7 @@ import verifiers as vf
 from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
-from prime_rl.orchestrator.types import TrainRollout
+from prime_rl.orchestrator.types import RolloutView, TrainRollout
 from prime_rl.transport.types import TrainingSample
 
 FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
@@ -265,7 +265,7 @@ def test_echo_weights_observations_by_role():
     }
     rollout = _echo_rollout(_two_step_rollout(attribution))
     algo = _echo_algorithm()  # the default table: tool bodies at 0.1
-    algo.assign_advantages([rollout])
+    algo.score_rollout(RolloutView(rollout))
     sample = rollout.samples[0]
     assert sample.completion_ids == [3, 4, 5, 6, 7, 8]
     # [3,4] step-1 action, [5,6] observation, [7,8] step-2 action
@@ -276,12 +276,12 @@ def test_echo_weights_observations_by_role():
     attribution = {"message_indices": [0, 0, 1, 1, 2, 3], "message_roles": ["user", "assistant", "tool", "user"]}
     rollout = _echo_rollout(_two_step_rollout(attribution))
     algo = _echo_algorithm(roles={"tool": {"alpha": 0.1}, "user": {"alpha": 0.05}})
-    algo.assign_advantages([rollout])
+    algo.score_rollout(RolloutView(rollout))
     assert rollout.samples[0].ce_weights == [0.0, 0.0] + [0.0, 0.0, 0.1, 0.05, 0.0, 0.0]
 
     # MITO rollouts carry no attribution: loud error, not a silent no-op.
     with pytest.raises(ValueError, match="attribution"):
-        _echo_algorithm().assign_advantages([_echo_rollout(_two_step_rollout())])
+        _echo_algorithm().score_rollout(RolloutView(_echo_rollout(_two_step_rollout())))
 
 
 def test_echo_filter_narrows_selection():
@@ -293,15 +293,15 @@ def test_echo_filter_narrows_selection():
 
     rollout = _echo_rollout(_two_step_rollout(attribution))
     algo = _echo_algorithm(filter_fn=keep_last_only)
-    algo.assign_advantages([rollout])
+    algo.score_rollout(RolloutView(rollout))
     assert rollout.samples[0].ce_weights == [0.0, 0.0] + [0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
 
     # Shape violations fail loudly: wrong step count, wrong per-step length.
     rollout = _echo_rollout(_two_step_rollout(attribution))
     with pytest.raises(ValueError, match="per trajectory step"):
-        _echo_algorithm(filter_fn=lambda output: [[True] * 4]).assign_advantages([rollout])
+        _echo_algorithm(filter_fn=lambda output: [[True] * 4]).score_rollout(RolloutView(rollout))
     with pytest.raises(ValueError, match="prompt\\+completion"):
-        _echo_algorithm(filter_fn=lambda output: [[True] * 4, [True] * 6]).assign_advantages([rollout])
+        _echo_algorithm(filter_fn=lambda output: [[True] * 4, [True] * 6]).score_rollout(RolloutView(rollout))
 
 
 def test_rlcsd_contrastive_signal_is_log_mean_exp():

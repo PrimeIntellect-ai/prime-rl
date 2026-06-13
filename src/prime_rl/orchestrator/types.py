@@ -128,6 +128,67 @@ class TrainRollout(FinishedRollout):
         return out
 
 
+@dataclass(frozen=True)
+class RolloutView:
+    """A finalized rollout as a writable handle — the single currency the
+    scoring hooks operate on. Exposes what the env produced (``raw``), the
+    samples interleaving built (``samples``, carrying ``obs_spans``), the
+    rollout's identity/reward, and its ``group_key`` (the safe cohort key for
+    partitioning a batch's survivors at the batch stage); credit is written
+    through :meth:`assign_advantages`, which spreads over the samples'
+    completion tokens. Deliberately does *not* expose pipeline-internal
+    lifecycle fields (``is_filtered``, ``filter_results``) or not-yet-assigned
+    credit (``advantages``) — a hook can only touch what is valid at its
+    stage."""
+
+    _rollout: TrainRollout
+
+    @property
+    def raw(self) -> vf.RolloutOutput:
+        return self._rollout.raw
+
+    @property
+    def samples(self) -> list[TrainingSample]:
+        return self._rollout.samples
+
+    @property
+    def reward(self) -> float:
+        return self._rollout.reward
+
+    @property
+    def env_name(self) -> str:
+        return self._rollout.env_name
+
+    @property
+    def example_id(self) -> int | str:
+        return self._rollout.example_id
+
+    @property
+    def group_key(self) -> uuid.UUID:
+        """The rollout's group identity — the safe key for partitioning a
+        batch's survivors back into their cohorts at the batch stage (the only
+        stage that sees more than one group). Use over ``example_id``, which
+        collides when an example is re-sampled."""
+        return self._rollout.group_id
+
+    def assign_advantages(self, values: float | list[float]) -> None:
+        """Write the rl advantage stream: a scalar broadcast over the
+        rollout's completion tokens, or a per-token list aligned to them
+        (concatenated across samples in step order). Prompt positions are
+        padded at stamping; a rollout never assigned ships no advantage
+        stream."""
+        total = sum(len(sample.completion_ids) for sample in self._rollout.samples)
+        if isinstance(values, (int, float)):
+            self._rollout.advantages = [float(values)] * total
+            return
+        if len(values) != total:
+            raise ValueError(
+                f"per-token advantages must align with the rollout's completion tokens: "
+                f"got {len(values)}, expected {total} (env '{self._rollout.env_name}')."
+            )
+        self._rollout.advantages = [float(v) for v in values]
+
+
 @dataclass
 class EvalRollout(FinishedRollout):
     eval_step: int = 0

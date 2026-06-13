@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     import verifiers as vf
     from renderers.base import Renderer
 
-    from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.orchestrator.types import RolloutView
     from prime_rl.utils.client import InferencePool
 
 
@@ -66,12 +66,12 @@ class EchoAlgorithm(GRPOAlgorithm):
         if advantage.filter is not None:
             self.filter_fn = partial(import_object(advantage.filter.import_path), **advantage.filter.kwargs)
 
-    def assign_advantages(self, rollouts: list[TrainRollout]) -> None:
-        super().assign_advantages(rollouts)
-        for rollout in rollouts:
-            self._weight_observations(rollout)
+    def score_rollout(self, rollout: RolloutView) -> None:
+        # Observation weighting is rollout-local; the group-relative GRPO
+        # baseline is inherited unchanged as ``score_group``.
+        self._weight_observations(rollout)
 
-    def _weight_observations(self, rollout: TrainRollout) -> None:
+    def _weight_observations(self, rollout: RolloutView) -> None:
         """Write each sample's ``ce_weights`` stream for the env-provided
         observation spans interleaving recorded (``obs_spans``): each token
         gets its message role's weight, narrowed by the optional user filter.

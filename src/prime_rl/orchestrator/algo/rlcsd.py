@@ -9,7 +9,7 @@ from itertools import cycle
 from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import AdvantageConfig, RLCSDAdvantageConfig
-from prime_rl.orchestrator.algo.advantage import apply_advantage_fn, broadcast
+from prime_rl.orchestrator.algo.advantage import apply_advantage_fn
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.utils import compute_prefill_logprobs
 from prime_rl.utils.logger import get_logger
@@ -17,24 +17,25 @@ from prime_rl.utils.logger import get_logger
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.orchestrator.types import RolloutView
     from prime_rl.utils.client import InferencePool
 
 _ADV_EPS = 1e-6
 
 
-def _std_norm_advantage_fn(rollouts: list[TrainRollout]) -> list[list[float]]:
+def _std_norm_advantage_fn(group: list[RolloutView]) -> list[float]:
     """Std-normalized group-relative advantage (the paper's Eq. 8):
-    ``(r - mean) / (std + eps)``, broadcast over completion tokens."""
-    rewards = [r.reward for r in rollouts]
+    ``(r - mean) / (std + eps)`` — one scalar per rollout (the view broadcasts
+    it over the completion tokens)."""
+    rewards = [v.reward for v in group]
     mean = statistics.fmean(rewards)
     std = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
-    return broadcast(rollouts, [(r - mean) / (std + _ADV_EPS) for r in rewards])
+    return [(r - mean) / (std + _ADV_EPS) for r in rewards]
 
 
 def _hint_pools(
-    group: list[TrainRollout], correct_threshold: float, min_contrast_gap: float
-) -> tuple[list[TrainRollout], list[TrainRollout]]:
+    group: list[RolloutView], correct_threshold: float, min_contrast_gap: float
+) -> tuple[list[RolloutView], list[RolloutView]]:
     """Partition one group into hint pools. Positives are verified correct
     (``reward >= correct_threshold``); negatives must be clearly wrong
     (``reward < correct_threshold - min_contrast_gap``). Rollouts in the band
@@ -135,55 +136,56 @@ class RLCSDAlgorithm(Algorithm):
     async def setup(self) -> None:
         self.teacher_pool = await self.connect(self.teacher)
 
-    def assign_advantages(self, rollouts: list[TrainRollout]) -> None:
-        apply_advantage_fn(rollouts, _std_norm_advantage_fn)
+    def score_group(self, group: list[RolloutView]) -> None:
+        apply_advantage_fn(group, _std_norm_advantage_fn)
 
-    async def query_references(self, rollouts: list[TrainRollout]) -> None:
+    async def score_batch(self, batch: list[RolloutView]) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
         clients = cycle(pool.train_clients)
 
-        groups: dict[object, list[TrainRollout]] = defaultdict(list)
-        for rollout in rollouts:
-            groups[rollout.group_id].append(rollout)
+        groups: dict[object, list[RolloutView]] = defaultdict(list)
+        for view in batch:
+            groups[view.group_key].append(view)
 
         tasks = []
         for group in groups.values():
             correct, wrong = _hint_pools(group, self.correct_threshold, self.min_contrast_gap)
-            for rollout in group:
+            for view in group:
                 # Hints come from siblings only — conditioning the teacher on
                 # the rollout itself shifts it toward degenerate over-confidence.
-                pos_pool = [s for s in correct if s is not rollout]
-                neg_pool = [s for s in wrong if s is not rollout]
+                pos_pool = [s for s in correct if s is not view]
+                neg_pool = [s for s in wrong if s is not view]
                 if not pos_pool or not neg_pool:
                     continue  # no contrast available — the rollout keeps its plain group-norm stream
-                tasks.append(self._score_rollout(rollout, pos_pool, neg_pool, semaphore, pool, next(clients)))
+                tasks.append(self._score_one(view, pos_pool, neg_pool, semaphore, pool, next(clients)))
         # Contrast needs a correct AND an incorrect sibling; early in training
         # (or with a miscalibrated correct_threshold) most groups offer none
         # and the batch silently trains as plain GRPO — make that visible.
-        get_logger().debug(f"rlcsd: contrast available for {len(tasks)}/{len(rollouts)} rollouts")
+        get_logger().debug(f"rlcsd: contrast available for {len(tasks)}/{len(batch)} rollouts")
         if tasks:
             await asyncio.gather(*tasks)
 
-    async def _score_rollout(
+    async def _score_one(
         self,
-        rollout: TrainRollout,
-        pos_pool: list[TrainRollout],
-        neg_pool: list[TrainRollout],
+        view: RolloutView,
+        pos_pool: list[RolloutView],
+        neg_pool: list[RolloutView],
         semaphore: asyncio.Semaphore,
         pool: InferencePool,
         client,
     ) -> None:
-        assert len(rollout.samples) == 1  # single-step trajectory → one sample
-        sample = rollout.samples[0]
+        assert len(view.samples) == 1  # single-step trajectory → one sample
+        sample = view.samples[0]
         completion_ids = list(sample.completion_ids)
+        prompt_len = len(sample.prompt_ids)
 
         pos_hint = random.choice(pos_pool)
         neg_hints = random.sample(neg_pool, min(self.num_negative_hints, len(neg_pool)))
 
-        async def hinted_logprobs(hint: TrainRollout) -> list[float]:
-            prefix_ids = self._hinted_prefix_ids(rollout, hint)
+        async def hinted_logprobs(hint: RolloutView) -> list[float]:
+            prefix_ids = self._hinted_prefix_ids(view, hint)
             async with semaphore:
                 full = await compute_prefill_logprobs(client, pool.model_name, prefix_ids + completion_ids)
             return full[-len(completion_ids) :]
@@ -191,11 +193,12 @@ class RLCSDAlgorithm(Algorithm):
         results = await asyncio.gather(hinted_logprobs(pos_hint), *(hinted_logprobs(h) for h in neg_hints))
         signal = _contrastive_signal(results[0], list(results[1:]))
 
-        # The assigned stream is completion-aligned (single sample, asserted above).
-        advantages = rollout.advantages if rollout.advantages is not None else [0.0] * len(completion_ids)
+        # Base credit = the group-norm stream already stamped onto the sample
+        # at group time (prompt-padded); modulate its completion portion.
+        base = sample.advantages[prompt_len:] if sample.advantages is not None else [0.0] * len(completion_ids)
         token_advantages = _modulated_token_advantages(
             signal,
-            advantages,
+            base,
             list(sample.completion_mask),
             lam=self.lam,
             tau=self.tau,
@@ -203,9 +206,9 @@ class RLCSDAlgorithm(Algorithm):
             eta=self.eta,
         )
         if token_advantages is not None:
-            sample.advantages = [0.0] * len(sample.prompt_ids) + token_advantages
+            sample.advantages = [0.0] * prompt_len + token_advantages
 
-    def _hint_text(self, rollout: TrainRollout) -> str:
+    def _hint_text(self, rollout: RolloutView) -> str:
         """A sibling rollout's full completion text — the reference solution
         the teacher is conditioned on."""
         trajectory = rollout.raw.get("trajectory") or []
@@ -217,7 +220,7 @@ class RLCSDAlgorithm(Algorithm):
         parts = [m.get("content") for m in trajectory[0]["completion"] if isinstance(m.get("content"), str)]
         return "\n".join(parts)
 
-    def _hinted_prefix_ids(self, rollout: TrainRollout, hint: TrainRollout) -> list[int]:
+    def _hinted_prefix_ids(self, rollout: RolloutView, hint: RolloutView) -> list[int]:
         """Rebuild the rollout's first-turn prompt with the hint woven into
         the last user message, rendered through the policy's renderer — the
         same messages → token ids path the policy's own prompts take."""
