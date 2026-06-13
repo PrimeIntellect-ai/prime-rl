@@ -41,7 +41,7 @@ from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.algo import query_batch_references
+from prime_rl.orchestrator.algo import finalize_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -578,7 +578,7 @@ class Orchestrator:
         # Per-env reference scoring runs at the batch boundary; envs without a
         # reference are a no-op, so this is unconditional.
         t = time.perf_counter()
-        await query_batch_references(self.train_envs, batch.rollouts)
+        await finalize_batch(self.train_envs, batch.rollouts)
         scoring_time = time.perf_counter() - t
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
