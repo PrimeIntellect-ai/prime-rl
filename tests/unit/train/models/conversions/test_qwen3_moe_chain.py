@@ -2,7 +2,7 @@
 
 import torch
 
-from prime_rl.trainer.models.conversion_chains import build_qwen3_moe_chain
+from prime_rl.trainer.models.qwen3_moe.conversion_chain import build_qwen3_moe_chain
 from prime_rl.trainer.models.conversion_ops import apply_hf_to_tt, apply_tt_to_hf
 from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import convert_hf_to_tt_moe, convert_tt_to_hf_moe
 
