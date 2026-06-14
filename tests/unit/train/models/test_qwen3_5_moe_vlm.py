@@ -111,9 +111,15 @@ def test_vlm_forward_rejects_image_token_feature_mismatch():
     text_part = torch.randint(0, 200, (1, 10), device="cuda")
     img_part = torch.full((1, n_img_tokens + 1), config.image_token_id, device="cuda")
     input_ids = torch.cat([text_part[:, :5], img_part, text_part[:, 5:]], dim=1)
+    mm_token_type_ids = _make_mm_token_type_ids(input_ids, config.image_token_id)
 
     with pytest.raises(ValueError, match="image token/feature mismatch"):
-        model(input_ids=input_ids, pixel_values=pixel_values, image_grid_thw=image_grid_thw)
+        model(
+            input_ids=input_ids,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
+        )
 
 
 def test_vlm_backward():

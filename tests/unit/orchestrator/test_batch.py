@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from prime_rl.trainer.batch import prepare_batch, prepare_sample
-from prime_rl.transport.types import RoutedExperts, TrainingSample
+from prime_rl.transport.types import EncodedTensor, RoutedExperts, TrainingSample
 
 
 def _routed_experts(data, dtype=np.uint8):
@@ -11,6 +11,44 @@ def _routed_experts(data, dtype=np.uint8):
         data=routed_experts.tobytes(),
         shape=list(routed_experts.shape),
         dtype=str(routed_experts.dtype),
+    )
+
+
+def _encoded_tensor(data, dtype) -> EncodedTensor:
+    arr = np.asarray(data, dtype=dtype)
+    return EncodedTensor(dtype=str(arr.dtype), shape=list(arr.shape), data=arr.tobytes())
+
+
+def _decode_encoded_tensor(encoded: EncodedTensor):
+    return np.frombuffer(encoded.data, dtype=np.dtype(encoded.dtype)).reshape(encoded.shape).tolist()
+
+
+def _make_mm_training_example(
+    *,
+    pixel_values,
+    image_grid_thw,
+    mm_token_type_ids,
+    env_name,
+    prompt_ids=None,
+    completion_ids=None,
+) -> TrainingSample:
+    prompt_ids = [1, 250] if prompt_ids is None else prompt_ids
+    completion_ids = [3, 4] if completion_ids is None else completion_ids
+    return TrainingSample(
+        prompt_ids=prompt_ids,
+        prompt_mask=[False] * len(prompt_ids),
+        completion_ids=completion_ids,
+        completion_mask=[True] * len(completion_ids),
+        completion_logprobs=[-0.1] * len(completion_ids),
+        completion_temperatures=[1.0] * len(completion_ids),
+        teacher_logprobs=[0.0] * (len(prompt_ids) + len(completion_ids)),
+        advantage=1.0,
+        env_name=env_name,
+        mm_kwargs={
+            "pixel_values": _encoded_tensor(pixel_values, np.float32),
+            "image_grid_thw": _encoded_tensor(image_grid_thw, np.int64),
+        },
+        mm_token_type_ids=mm_token_type_ids,
     )
 
 
@@ -95,6 +133,7 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
         num_train_workers=1,
         idxs=[0, 0],
         num_loras=1,
+        pack_multimodal=True,
     )
 
     flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
@@ -107,6 +146,83 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     # Second sample (4 tokens): all get temp 1.1
     assert flat_batches[0].temperatures[4:8] == [1.1, 1.1, 1.1, 1.1]
     assert flat_batches[0].env_names == ["env-a"] * 4 + ["env-b"] * 4
+    assert flat_batches[0].seq_lens is None
+
+
+def test_prepare_batch_packs_compatible_multimodal_samples():
+    example1 = _make_mm_training_example(
+        pixel_values=[[1.0, 2.0, 3.0]],
+        image_grid_thw=[[1, 2, 2]],
+        mm_token_type_ids=[0, 1, 0, 0],
+        env_name="mm-a",
+    )
+    example2 = _make_mm_training_example(
+        pixel_values=[[4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
+        image_grid_thw=[[1, 4, 4]],
+        mm_token_type_ids=[0, 0, 1, 0],
+        env_name="mm-b",
+    )
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[example1, example2],
+        seq_len=8,
+        num_train_workers=1,
+        idxs=[0, 0],
+        num_loras=1,
+        pack_multimodal=True,
+    )
+
+    flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
+    assert len(flat_batches) == 1
+    batch = flat_batches[0]
+    assert batch.seq_lens == [4, 4]
+    assert batch.position_ids == [0, 1, 2, 3, 0, 1, 2, 3]
+    assert batch.mm_token_type_ids == [0, 1, 0, 0, 0, 0, 1, 0]
+    assert batch.env_names == ["mm-a"] * 4 + ["mm-b"] * 4
+    assert batch.mm_kwargs is not None
+    assert _decode_encoded_tensor(batch.mm_kwargs["pixel_values"]) == [
+        [1.0, 2.0, 3.0],
+        [4.0, 5.0, 6.0],
+        [7.0, 8.0, 9.0],
+    ]
+    assert _decode_encoded_tensor(batch.mm_kwargs["image_grid_thw"]) == [[1, 2, 2], [1, 4, 4]]
+
+
+def test_prepare_batch_records_multimodal_padding_as_segment():
+    example1 = _make_mm_training_example(
+        pixel_values=[[1.0, 2.0, 3.0]],
+        image_grid_thw=[[1, 2, 2]],
+        mm_token_type_ids=[0, 1, 0],
+        env_name="mm-a",
+        prompt_ids=[1],
+        completion_ids=[250, 3],
+    )
+    example2 = _make_mm_training_example(
+        pixel_values=[[4.0, 5.0, 6.0]],
+        image_grid_thw=[[1, 2, 2]],
+        mm_token_type_ids=[0, 1, 0],
+        env_name="mm-b",
+        prompt_ids=[2],
+        completion_ids=[250, 4],
+    )
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[example1, example2],
+        seq_len=8,
+        num_train_workers=1,
+        idxs=[0, 0],
+        num_loras=1,
+        pad_to_multiple_of=4,
+        pack_multimodal=True,
+    )
+
+    flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
+    assert len(flat_batches) == 1
+    batch = flat_batches[0]
+    assert batch.seq_lens == [3, 3, 2]
+    assert batch.position_ids == [0, 1, 2, 0, 1, 2, 0, 1]
+    assert batch.mm_token_type_ids == [0, 1, 0, 0, 1, 0, 0, 0]
+    assert batch.loss_mask[-2:] == [False, False]
 
 
 def test_prepare_sample_propagates_training_mode(make_training_example):

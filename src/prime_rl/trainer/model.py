@@ -1143,6 +1143,7 @@ def forward(
     # not a renderer/processor output.
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
+    seq_lens: Int[Tensor, "segments"] | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
     kwargs = {
@@ -1164,6 +1165,8 @@ def forward(
         # from them, so they must receive trainer ``position_ids``.
         if "image_grid_thw" not in mm_kwargs or get_packed_mm_position_strategy(model) == "pass_1d":
             kwargs["position_ids"] = position_ids
+        elif seq_lens is not None:
+            kwargs["seq_lens"] = seq_lens
     else:
         kwargs["position_ids"] = position_ids
 

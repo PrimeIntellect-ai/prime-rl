@@ -438,21 +438,23 @@ def test_prepare_batch_packs_eager_mm_kwargs_when_enabled():
     assert mb.position_ids == [0, 1, 2, 3, 0, 1, 2, 3]
 
 
-def test_prepare_batch_rejects_incompatible_eager_mm_kwargs():
+def test_prepare_batch_does_not_pack_incompatible_eager_mm_kwargs():
     from prime_rl.trainer.batch import prepare_batch
 
-    with pytest.raises(ValueError, match="incompatible shapes"):
-        prepare_batch(
-            [
-                _mm_kwargs_sample(torch.tensor([[1.0, 2.0]], dtype=torch.float32)),
-                _mm_kwargs_sample(torch.tensor([[3.0, 4.0, 5.0]], dtype=torch.float32)),
-            ],
-            seq_len=16,
-            num_train_workers=1,
-            idxs=[0, 0],
-            num_loras=1,
-            pack_multimodal=True,
-        )
+    grid = prepare_batch(
+        [
+            _mm_kwargs_sample(torch.tensor([[1.0, 2.0]], dtype=torch.float32)),
+            _mm_kwargs_sample(torch.tensor([[3.0, 4.0, 5.0]], dtype=torch.float32)),
+        ],
+        seq_len=16,
+        num_train_workers=1,
+        idxs=[0, 0],
+        num_loras=1,
+        pack_multimodal=True,
+    )
+
+    mm_mbs = [mb for mb in grid[0] if _is_multimodal_sample(mb)]
+    assert len(mm_mbs) == 2
 
 
 def test_prepare_batch_rejects_truncated_multimodal_sample():

@@ -106,6 +106,14 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # sft → sft loss). All samples packed into a micro batch share the same mode.
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
+
     # See TrainingSample.mm_refs. APPENDED LAST — array_like=True is positional, so
     # new fields go at the end to preserve existing field wire positions.
     mm_refs: MMRefs | None = None
+
+    # Packer-derived metadata used for run-local token exports.
+    run_id: str | None = None
+    run_step: int | None = None
+
+    # Packed multimodal sample boundaries. Sum equals len(input_ids) when present.
+    seq_lens: list[int] | None = None

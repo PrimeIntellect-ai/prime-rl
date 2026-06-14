@@ -81,6 +81,7 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
 
     assert model.kwargs is not None
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
+    assert "seq_lens" not in model.kwargs
 
 
 def test_forward_keeps_position_ids_for_pass_1d_mrope_vlm():
