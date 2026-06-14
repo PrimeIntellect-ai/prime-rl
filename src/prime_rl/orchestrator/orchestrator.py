@@ -108,6 +108,11 @@ MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
 
+# After max_steps, how long to wait for the trainer to finalize the trailing
+# token-export steps it hadn't flushed yet, and how often to poll for them.
+TOKEN_EXPORT_DRAIN_TIMEOUT_S = 300.0
+TOKEN_EXPORT_DRAIN_POLL_S = 2.0
+
 
 class Orchestrator:
     # Set in ``__init__``
@@ -345,13 +350,14 @@ class Orchestrator:
         else:
             get_logger().info("Training from scratch")
 
-        # SFT generates rollouts via the teacher (the student is trained on
-        # the teacher's outputs); RL / OPD generate via the student
-        if config.training_mode == "sft":
-            assert self.teacher_inference is not None, "sft mode requires teacher inference"
+        # SFT train rollouts come from the teacher when configured; otherwise
+        # they use the existing student rollout pool.
+        if config.training_mode == "sft" and self.teacher_inference is not None:
             rollout_inference = self.teacher_inference
+            use_cache_salt = False
         else:
             rollout_inference = self.student_inference
+            use_cache_salt = True
 
         self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source: EvalSource | None = (
@@ -379,8 +385,9 @@ class Orchestrator:
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
             training_mode=config.training_mode,
+            use_cache_salt=use_cache_salt,
         )
-        self.metrics = MetricsBuilder(config)
+        self.metrics = MetricsBuilder(config, start_step=self.progress.step)
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
@@ -389,7 +396,6 @@ class Orchestrator:
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
-            advantage_config=config.advantage,
             pre_filters=pre_filters,
             post_filters=post_filters,
         )
@@ -459,6 +465,7 @@ class Orchestrator:
         clean_exit = False
         try:
             await self.main_loop()
+            await self._drain_token_export_metrics()
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
@@ -499,7 +506,7 @@ class Orchestrator:
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(rollout)
                 if eval_batch is not None:
-                    self.finalize_eval_batch(eval_batch)
+                    await self.finalize_eval_batch(eval_batch)
                 continue
 
             assert isinstance(rollout, TrainRollout)
@@ -508,6 +515,35 @@ class Orchestrator:
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
+
+    async def _drain_token_export_metrics(self) -> None:
+        """Token exports lag the orchestrator, so once the loop ends the trainer is
+        still finalizing the last shipped steps and ``build`` no longer runs to pick
+        them up. Poll for the remaining stable steps up to ``max_steps - 1`` and log
+        each under its own ``trainer/step`` (a local W&B step axis, so the final
+        checkpoint's ``progress.step`` is untouched)."""
+        if self.config.max_steps is None:
+            return
+        if not (self.config.output_dir / "token_exports").exists():
+            return  # token export not enabled for this run — don't block shutdown
+        target = self.config.max_steps - 1
+        if self.metrics.last_token_export_step_logged >= target:
+            return  # build() already kept up — nothing trailing to flush
+        wandb_step = self.progress.step
+        deadline = time.perf_counter() + TOKEN_EXPORT_DRAIN_TIMEOUT_S
+        while time.perf_counter() < deadline:
+            token_export = self.metrics.next_token_export_metrics()
+            if not token_export:
+                await asyncio.sleep(TOKEN_EXPORT_DRAIN_POLL_S)
+                continue
+            self.monitor.log(token_export, step=wandb_step)
+            wandb_step += 1
+            if self.metrics.last_token_export_step_logged >= target:
+                return
+        get_logger().warning(
+            f"Token-export drain timed out before step {target} "
+            f"(last logged {self.metrics.last_token_export_step_logged})"
+        )
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
@@ -761,7 +797,7 @@ class Orchestrator:
             )
         get_logger().success("\n\t\t ".join(lines))
 
-    def finalize_eval_batch(self, batch: EvalBatch) -> None:
+    async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch (save_rollouts,
         monitor.log_eval_samples, monitor.log)."""
         if not batch.rollouts:
@@ -770,24 +806,32 @@ class Orchestrator:
 
         rollout_dicts = [r.to_dict() for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
-        save_rollouts(
+        await asyncio.to_thread(
+            save_rollouts,
             rollout_dicts,
             step_path / f"eval_rollouts_{batch.env_name}.jsonl",
             exclude_keys={"trajectory"},
         )
         self.monitor.log_eval_samples(rollout_dicts, env_name=batch.env_name, step=batch.step)
-        self.monitor.log(batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step), step=batch.step)
+        policy_versions = {r.policy_version for r in batch.rollouts}
+        policy_version = min(policy_versions)
+        if len(policy_versions) > 1:
+            get_logger().warning(
+                f"Eval {batch.env_name} step {batch.step} had mixed policy versions: {sorted(policy_versions)}"
+            )
+        metrics = batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step)
+        metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
+        self.monitor.log(metrics, step=batch.step)
 
         n_total = batch.metrics.n_rollouts
         error_rate = ((batch.metrics.n_cancelled + batch.metrics.n_errored) / n_total) if n_total else 0.0
-        max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
 
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
-            f"{format_time(elapsed):>7} | Reward {batch.metrics.reward_mean:.4f} | "
-            f"Turns {batch.metrics.num_turns_mean:.1f} | Max Off-Policy {max_off_policy} | "
+            f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {batch.metrics.reward_mean:.4f} | "
+            f"Turns {batch.metrics.num_turns_mean:.1f} | "
             f"Error {error_rate:.1%} | Truncation {batch.metrics.truncation_rate:.1%}"
         )
 

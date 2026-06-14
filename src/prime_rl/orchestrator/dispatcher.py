@@ -12,7 +12,9 @@
   source's emptiness), so in-flight rollouts of the opposite kind drain
   naturally on either side of an eval boundary.
 - ``on_new_version`` (called by the watcher) bumps ``off_policy_steps`` on
-  every in-flight rollout and drops groups past ``max_off_policy_steps``.
+  in-flight train rollouts and drops groups past ``max_off_policy_steps``.
+  Eval rollouts are measurements for the policy version they started with,
+  so they are allowed to finish even if training advances.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
   count-to-``group_size`` finalization still fires.
 """
@@ -131,6 +133,7 @@ class RolloutDispatcher:
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
         training_mode: Literal["rl", "opd", "sft"],
+        use_cache_salt: bool = True,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -142,6 +145,7 @@ class RolloutDispatcher:
         self.train_source = train_source
         self.eval_source = eval_source
         self.training_mode = training_mode
+        self.use_cache_salt = use_cache_salt
         self.max_off_policy_steps = max_off_policy_steps
 
         self.max_inflight = max_inflight_rollouts
@@ -262,32 +266,33 @@ class RolloutDispatcher:
     async def on_new_version(self, step: int) -> None:
         """Bump off-policy counters and drop groups past
         ``max_off_policy_steps`` (drop_group emits ``Cancelled`` markers so
-        the sink still finalizes the partial group)."""
-        stale_groups: dict[uuid.UUID, RolloutKind] = {}
-        cancelled_by_kind: dict[RolloutKind, int] = {"train": 0, "eval": 0}
+        the sink still finalizes the partial group). Eval rollouts are not
+        aged because they are tied to their start-time policy version."""
+        stale_groups: set[uuid.UUID] = set()
+        cancelled = 0
         for meta in self.inflight.values():
+            if meta.kind != "train":
+                continue
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:
-                stale_groups[meta.group_id] = meta.kind
+                stale_groups.add(meta.group_id)
 
-        for gid, kind in stale_groups.items():
+        for gid in stale_groups:
             removed = await self.drop_group(gid)
-            cancelled_by_kind[kind] += removed
+            cancelled += removed
 
-        for kind in ("train", "eval"):
-            n = cancelled_by_kind[kind]
-            if n:
-                get_logger().warning(
-                    f"Cancelled {n} {kind} rollouts past max_off_policy_steps={self.max_off_policy_steps}. "
-                    "Consider increasing it to avoid this."
-                )
+        if cancelled:
+            get_logger().warning(
+                f"Cancelled {cancelled} train rollouts past max_off_policy_steps={self.max_off_policy_steps}. "
+                "Consider increasing it to avoid this."
+            )
 
     async def fill_inflight(self) -> None:
         """Schedule new rollouts up to ``max_inflight``, honoring
-        ``self.mode``. When ``PREFER_EVAL``'s source exhausts we flip back
-        to ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
-        if not self.dispatch_allowed.is_set():
-            return
+        ``self.mode``. Eval scheduling ignores the orchestrator's dispatch
+        gate (evals are version-pinned measurements); only train scheduling
+        respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
+        ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
         while True:
             if self.available_permits <= 0:
                 return
@@ -308,7 +313,9 @@ class RolloutDispatcher:
                 scheduled = await self.try_schedule("eval")
                 if not scheduled:
                     return
-            else:  # PREFER_TRAIN
+            else:  # PREFER_TRAIN — respects the orchestrator's dispatch gate
+                if not self.dispatch_allowed.is_set():
+                    return
                 scheduled = await self.try_schedule("train")
                 if not scheduled:
                     return
@@ -408,13 +415,10 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        # SFT-mode train rollouts hit the frozen teacher pool; salting per
-        # policy version would invalidate the teacher's prefix cache every
-        # weight update for no reason.
-        if self.training_mode == "sft" and group.kind == "train":
-            cache_salt = None
-        else:
+        if group.kind == "eval" or self.use_cache_salt:
             cache_salt = str(group.policy_version_at_start)
+        else:
+            cache_salt = None
 
         if env.requires_group_scoring:
             permits = group.rollouts_to_schedule
