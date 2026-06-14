@@ -420,19 +420,29 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_router_replay(self):
-        if self.trainer.enable_router_replay:
-            if self.inference is not None:
-                if self.inference.enable_return_routed_experts is False:
-                    warnings.warn(
-                        "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True.",
-                        stacklevel=2,
-                    )
-                self.inference.enable_return_routed_experts = True
-            else:
-                warnings.warn(
-                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server.",
-                    stacklevel=2,
+        # `trainer.enable_router_replay` is the single source of truth. The vLLM
+        # server flag `inference.enable_return_routed_experts` is *derived* from
+        # it, never set by hand: returning the per-token expert traces is only
+        # useful when the trainer replays routing. Returning them without
+        # replaying silently wastes inference compute and a large amount of host
+        # RAM — the traces flow all the way to the trainer, which then drops
+        # them (see trainer/rl/train.py). Setting the inference flag directly in
+        # the RL config is therefore rejected, so the two can never desync.
+        if self.inference is not None:
+            if "enable_return_routed_experts" in self.inference.model_fields_set:
+                raise ValueError(
+                    "Do not set `inference.enable_return_routed_experts` directly in the RL "
+                    "config — it is derived from `trainer.enable_router_replay`. Set "
+                    "`trainer.enable_router_replay` instead."
                 )
+            self.inference.enable_return_routed_experts = self.trainer.enable_router_replay
+        elif self.trainer.enable_router_replay:
+            warnings.warn(
+                "Router replay is enabled, but inference is not configured. When manually "
+                "starting the inference server, make sure to pass `--enable-return-routed-experts` "
+                "to the vLLM server.",
+                stacklevel=2,
+            )
         return self
 
     @model_validator(mode="after")
