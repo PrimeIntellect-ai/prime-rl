@@ -1,6 +1,24 @@
 import copy
+import math
 
-from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
+
+ENCODED_TENSOR_DTYPE_ITEMSIZE = {
+    "bool": 1,
+    "bool_": 1,
+    "float16": 2,
+    "bfloat16": 2,
+    "float32": 4,
+    "float64": 8,
+    "int8": 1,
+    "uint8": 1,
+    "int16": 2,
+    "uint16": 2,
+    "int32": 4,
+    "uint32": 4,
+    "int64": 8,
+    "uint64": 8,
+}
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
     "uint8": 1,
@@ -39,6 +57,71 @@ def _append_routed_experts(dst: MicroBatch, src: MicroBatch) -> None:
     assert dst_routed.shape[1:] == src_routed.shape[1:]
     dst_routed.data += src_routed.data
     dst_routed.shape[0] += src_routed.shape[0]
+
+
+def _copy_encoded_tensor(encoded: EncodedTensor) -> EncodedTensor:
+    return EncodedTensor(dtype=encoded.dtype, shape=list(encoded.shape), data=encoded.data)
+
+
+def _copy_mm_kwargs(mm_kwargs: dict[str, EncodedTensor] | None) -> dict[str, EncodedTensor] | None:
+    if mm_kwargs is None:
+        return None
+    return {key: _copy_encoded_tensor(value) for key, value in mm_kwargs.items()}
+
+
+def _encoded_tensor_dtype_itemsize(encoded: EncodedTensor) -> int:
+    dtype = encoded.dtype.replace("numpy.", "").replace("torch.", "")
+    if dtype not in ENCODED_TENSOR_DTYPE_ITEMSIZE:
+        raise ValueError(f"Unsupported EncodedTensor dtype for multimodal packing: {encoded.dtype}")
+    return ENCODED_TENSOR_DTYPE_ITEMSIZE[dtype]
+
+
+def _validate_encoded_tensor_payload(encoded: EncodedTensor) -> None:
+    expected_nbytes = math.prod(encoded.shape) * _encoded_tensor_dtype_itemsize(encoded)
+    if len(encoded.data) != expected_nbytes:
+        raise ValueError(
+            "EncodedTensor byte length does not match dtype and shape: "
+            f"dtype={encoded.dtype}, shape={encoded.shape}, "
+            f"data_nbytes={len(encoded.data)}, expected_nbytes={expected_nbytes}"
+        )
+
+
+def _encoded_tensors_can_concat(dst: EncodedTensor, src: EncodedTensor) -> bool:
+    return bool(
+        dst.dtype == src.dtype
+        and len(dst.shape) > 0
+        and len(dst.shape) == len(src.shape)
+        and dst.shape[1:] == src.shape[1:]
+    )
+
+
+def _mm_kwargs_can_concat(
+    dst: dict[str, EncodedTensor] | None,
+    src: dict[str, EncodedTensor] | None,
+) -> bool:
+    if dst is None or src is None:
+        return dst is None and src is None
+    if dst.keys() != src.keys():
+        return False
+    return all(_encoded_tensors_can_concat(dst[key], src[key]) for key in dst)
+
+
+def _append_encoded_tensor(dst: EncodedTensor, src: EncodedTensor) -> None:
+    _validate_encoded_tensor_payload(dst)
+    _validate_encoded_tensor_payload(src)
+    if not _encoded_tensors_can_concat(dst, src):
+        raise ValueError(f"Cannot concatenate encoded tensors with shapes {dst.shape} and {src.shape}")
+    dst.data += src.data
+    dst.shape[0] += src.shape[0]
+
+
+def _append_mm_kwargs(dst: MicroBatch, src: MicroBatch) -> None:
+    if dst.mm_kwargs is None or src.mm_kwargs is None:
+        raise ValueError("Cannot append multimodal kwargs when either micro batch is missing mm_kwargs")
+    if not _mm_kwargs_can_concat(dst.mm_kwargs, src.mm_kwargs):
+        raise ValueError("Cannot pack multimodal samples with incompatible mm_kwargs")
+    for key, src_tensor in src.mm_kwargs.items():
+        _append_encoded_tensor(dst.mm_kwargs[key], src_tensor)
 
 
 def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
@@ -117,6 +200,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         assert len(mm_token_type_ids) == len(input_ids), (
             f"mm_token_type_ids: {len(mm_token_type_ids)}, input_ids: {len(input_ids)}"
         )
+    if training_example.mm_kwargs is not None and "image_grid_thw" in training_example.mm_kwargs:
+        if mm_token_type_ids is None:
+            raise ValueError("image_grid_thw multimodal samples require mm_token_type_ids")
     assert len(env_names) == len(input_ids), f"env_names: {len(env_names)}, input_ids: {len(input_ids)}"
 
     return MicroBatch(
@@ -131,14 +217,92 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
-        mm_kwargs=training_example.mm_kwargs,
+        mm_kwargs=_copy_mm_kwargs(training_example.mm_kwargs),
         training_mode=training_example.training_mode,
+        seq_lens=[len(input_ids)] if training_example.mm_kwargs is not None else None,
     )
 
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
     """Check if a sample contains multimodal data (images)."""
     return sample.mm_kwargs is not None
+
+
+def _has_video_tokens(sample: MicroBatch) -> bool:
+    return sample.mm_token_type_ids is not None and 2 in sample.mm_token_type_ids
+
+
+def _can_pack_sample_into(bin_content: MicroBatch, sample: MicroBatch, max_seq_len: int) -> bool:
+    if len(bin_content.input_ids) + len(sample.input_ids) > max_seq_len:
+        return False
+    if bin_content.training_mode != sample.training_mode:
+        return False
+    if _is_multimodal_sample(bin_content) != _is_multimodal_sample(sample):
+        return False
+    if _is_multimodal_sample(bin_content):
+        if _has_video_tokens(bin_content) or _has_video_tokens(sample):
+            return False
+        return _mm_kwargs_can_concat(bin_content.mm_kwargs, sample.mm_kwargs)
+    return True
+
+
+def _extend_optional_rewards(bin_content: MicroBatch, sample: MicroBatch, existing_len: int) -> None:
+    if sample.rewards is not None:
+        if bin_content.rewards is None:
+            bin_content.rewards = [float("nan")] * existing_len
+        bin_content.rewards.extend(sample.rewards)
+    elif bin_content.rewards is not None:
+        bin_content.rewards.extend([float("nan")] * len(sample.input_ids))
+
+
+def _extend_optional_teacher_logprobs(bin_content: MicroBatch, sample: MicroBatch) -> None:
+    if sample.teacher_logprobs is not None:
+        if bin_content.teacher_logprobs is None:
+            bin_content.teacher_logprobs = []
+        bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
+
+
+def _extend_mm_token_type_ids(bin_content: MicroBatch, sample: MicroBatch, existing_len: int) -> None:
+    if bin_content.mm_token_type_ids is None and sample.mm_token_type_ids is None:
+        return
+    if bin_content.mm_token_type_ids is None:
+        bin_content.mm_token_type_ids = [0] * existing_len
+    if sample.mm_token_type_ids is None:
+        bin_content.mm_token_type_ids.extend([0] * len(sample.input_ids))
+    else:
+        bin_content.mm_token_type_ids.extend(sample.mm_token_type_ids)
+
+
+def _extend_seq_lens(bin_content: MicroBatch, sample: MicroBatch, existing_len: int) -> None:
+    if bin_content.seq_lens is None and sample.seq_lens is None:
+        return
+    if bin_content.seq_lens is None:
+        bin_content.seq_lens = [existing_len]
+    bin_content.seq_lens.extend(sample.seq_lens if sample.seq_lens is not None else [len(sample.input_ids)])
+
+
+def _append_sample_to_bin(bin_content: MicroBatch, sample: MicroBatch, idx: int) -> None:
+    existing_len = len(bin_content.input_ids)
+    bin_content.input_ids.extend(sample.input_ids)
+    bin_content.loss_mask.extend(sample.loss_mask)
+    bin_content.advantages.extend(sample.advantages)
+    _extend_optional_rewards(bin_content, sample, existing_len)
+    bin_content.inference_logprobs.extend(sample.inference_logprobs)
+    bin_content.temperatures.extend(sample.temperatures)
+    _extend_optional_teacher_logprobs(bin_content, sample)
+    assert (bin_content.routed_experts is None) == (sample.routed_experts is None)
+    if sample.routed_experts is not None:
+        if bin_content.routed_experts is None:
+            bin_content.routed_experts = _copy_routed_experts(sample.routed_experts)
+        else:
+            _append_routed_experts(bin_content, sample)
+    _extend_mm_token_type_ids(bin_content, sample, existing_len)
+    if _is_multimodal_sample(bin_content):
+        _append_mm_kwargs(bin_content, sample)
+    bin_content.env_names.extend(sample.env_names)
+    bin_content.position_ids.extend(sample.position_ids)
+    _extend_seq_lens(bin_content, sample, existing_len)
+    bin_content.lora_num_tokens[idx] += len(sample.input_ids)
 
 
 def packed_samples_into_micro_bs(
@@ -149,8 +313,8 @@ def packed_samples_into_micro_bs(
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
-    NOTE: Multimodal samples (with mm_kwargs) are NOT packed together as they have variable-sized
-    vision data that doesn't pack well. Each multimodal sample becomes its own micro batch.
+    Multimodal samples pack with compatible multimodal samples by concatenating
+    each encoded tensor along dim 0 and preserving sample boundaries in seq_lens.
     """
     # Sort by (lora_idx, -length) for packing efficiency
     samples.sort(key=lambda x: (x[0], -len(x[1].input_ids)))
@@ -159,52 +323,10 @@ def packed_samples_into_micro_bs(
     micro_batches: list[MicroBatch] = []
 
     for idx, sample in samples:
-        # Multimodal samples cannot be packed - each becomes its own micro batch
-        if _is_multimodal_sample(sample):
-            sample.lora_num_tokens = [0] * num_loras
-            sample.lora_num_tokens[idx] = len(sample.input_ids)
-            micro_batches.append(sample)
-            continue
-
-        # Try to find a bin that can fit this sequence (only pack text-only samples)
+        # Try to find a bin that can fit this sequence.
         for bin_content in micro_batches:
-            # Don't pack into multimodal micro batches
-            if _is_multimodal_sample(bin_content):
-                continue
-            # Check if sequence fits in this bin
-            if (
-                len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
-                and bin_content.training_mode == sample.training_mode
-            ):
-                existing_len = len(bin_content.input_ids)
-                bin_content.input_ids.extend(sample.input_ids)
-                bin_content.loss_mask.extend(sample.loss_mask)
-                bin_content.advantages.extend(sample.advantages)
-                if sample.rewards is not None:
-                    if bin_content.rewards is None:
-                        bin_content.rewards = [float("nan")] * existing_len
-                    bin_content.rewards.extend(sample.rewards)
-                elif bin_content.rewards is not None:
-                    bin_content.rewards.extend([float("nan")] * len(sample.input_ids))
-                bin_content.inference_logprobs.extend(sample.inference_logprobs)
-                bin_content.temperatures.extend(sample.temperatures)
-                if sample.teacher_logprobs is not None:
-                    if bin_content.teacher_logprobs is None:
-                        bin_content.teacher_logprobs = []
-                    bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
-                assert (bin_content.routed_experts is None) == (sample.routed_experts is None)
-                if sample.routed_experts is not None:
-                    if bin_content.routed_experts is None:
-                        bin_content.routed_experts = _copy_routed_experts(sample.routed_experts)
-                    else:
-                        _append_routed_experts(bin_content, sample)
-                if sample.mm_token_type_ids is not None:
-                    if bin_content.mm_token_type_ids is None:
-                        bin_content.mm_token_type_ids = []
-                    bin_content.mm_token_type_ids.extend(sample.mm_token_type_ids)
-                bin_content.env_names.extend(sample.env_names)
-                bin_content.position_ids.extend(sample.position_ids)
-                bin_content.lora_num_tokens[idx] += len(sample.input_ids)
+            if _can_pack_sample_into(bin_content, sample, max_seq_len):
+                _append_sample_to_bin(bin_content, sample, idx)
                 break
         else:
             sample.lora_num_tokens = [0] * num_loras
@@ -255,6 +377,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
     micro_batch.env_names.extend([""] * padding_size)
+    if micro_batch.seq_lens is not None:
+        micro_batch.seq_lens.append(padding_size)
 
     return micro_batch
 

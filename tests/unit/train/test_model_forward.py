@@ -45,6 +45,26 @@ def test_forward_passes_renderer_mm_token_type_ids_through():
     torch.testing.assert_close(model.kwargs["mm_token_type_ids"], mm_token_type_ids)
 
 
+def test_forward_passes_seq_lens_to_mrope_vlm():
+    model = _CaptureModel(SimpleNamespace(model_type="qwen3_vl"))
+    input_ids = torch.tensor([[1, 10, 10, 2, 20]])
+    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
+    seq_lens = torch.tensor([3, 2])
+
+    forward(
+        model,
+        input_ids,
+        position_ids,
+        mm_kwargs={"pixel_values": torch.ones(2, 3), "image_grid_thw": torch.tensor([[1, 1, 2]])},
+        mm_token_type_ids=torch.tensor([[0, 1, 1, 0, 0]]),
+        seq_lens=seq_lens,
+    )
+
+    assert model.kwargs is not None
+    assert "position_ids" not in model.kwargs
+    torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
+
+
 def test_forward_omits_mm_token_type_ids_when_renderer_does_not_supply():
     """When the renderer doesn't ship ``mm_token_type_ids`` (text-only
     or a family without modality markers), ``forward()`` doesn't
@@ -77,7 +97,9 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
         input_ids,
         position_ids,
         mm_kwargs={"pixel_values": torch.ones(2, 3)},
+        seq_lens=torch.tensor([4]),
     )
 
     assert model.kwargs is not None
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
+    assert "seq_lens" not in model.kwargs
