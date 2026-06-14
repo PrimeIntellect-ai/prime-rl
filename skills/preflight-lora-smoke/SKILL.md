@@ -48,3 +48,15 @@ Run `uv run scripts/preflight_lora_smoke.py --base-model <model> --adapter-a <pa
 ## Escape hatch
 
 If any probe fails and an upstream fix isn't immediately available, fall back to **two vLLM instances**: point `opponent_base_url` in the `gpqa_debate` env config at a second vLLM running the plain base model, no LoRA. The `agent_bindings_fn` accommodates both topologies without any env-pack change — this is the forward-compatible design that motivated that kwarg in the first place. See `docs/plans/2026-04-20-stage3-learner-vs-fixed.md`.
+
+## Known probe footguns (fixed 2026-06-11)
+
+- The load must hit prime-rl's root-level `/load_lora_adapter` (production route,
+  applies the MoE key remap). vLLM's native `/v1/load_lora_adapter` returns 200 but
+  silently no-ops for expert-targeted adapters.
+- Probes must use raw `/v1/completions`: on reasoning-parsed servers, short chat
+  responses land entirely in `reasoning_content`, making `message.content` empty on
+  both sides and producing false "byte-identical" failures.
+- Probe adapters must be strongly non-trivial: early-RL adapters (few steps, low lr)
+  have ~1e-5-scale weights that cannot flip greedy tokens; synthesize ~0.02-scale
+  random adapters for the probes.

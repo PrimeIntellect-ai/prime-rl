@@ -47,10 +47,14 @@ import httpx
 
 
 async def _load_adapter(client: httpx.AsyncClient, url: str, alias: str, path: str) -> None:
-    """POST /load_lora_adapter. Tolerates the adapter already being loaded
-    under a different path (reload behavior under prime-rl's monkeypatch)."""
+    """POST the prime-rl root-level /load_lora_adapter — the route production
+    uses (applies the MoE adapter-key remap + inplace reload patches). vLLM's
+    native /v1/load_lora_adapter returns 200 but skips prime-rl's key remap,
+    so expert-targeted adapters silently load as no-ops there. Tolerates the
+    adapter already being loaded under a different path (reload behavior
+    under prime-rl's monkeypatch)."""
     r = await client.post(
-        f"{url}/load_lora_adapter",
+        f"{url.removesuffix('/v1')}/load_lora_adapter",
         json={"lora_name": alias, "lora_path": path},
         timeout=120.0,
     )
@@ -69,24 +73,26 @@ async def _complete(
     """Fire one chat completion. Returns (text, token_ids). Uses greedy
     sampling + fixed seed so repeated calls give stable outputs (modulo
     the #7977 atomic-nondeterminism hazard we're partly probing)."""
+    # Raw completions, NOT chat: on reasoning-parsed servers (e.g. qwen3 parser)
+    # chat responses put short outputs entirely into reasoning_content, leaving
+    # message.content empty for base AND adapter -> false "byte-identical" FAILs.
     r = await client.post(
-        f"{url}/chat/completions",
+        f"{url}/completions",
         json={
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "prompt": prompt,
             "temperature": 0.0,
             "max_tokens": max_tokens,
             "seed": seed,
-            "logprobs": True,
-            "top_logprobs": 5,
+            "logprobs": 1,
         },
         timeout=60.0,
     )
     r.raise_for_status()
     data = r.json()
     choice = data["choices"][0]
-    text = choice["message"]["content"]
-    ids = [tok["token"] for tok in choice.get("logprobs", {}).get("content", [])]
+    text = choice["text"]
+    ids = (choice.get("logprobs") or {}).get("tokens") or []
     return text, ids
 
 

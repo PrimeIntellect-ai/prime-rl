@@ -16,6 +16,21 @@ if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.shared import WandbConfig, WandbWithExtrasConfig
+
+
+def _table_cell(value):
+    """Coerce a value to a wandb-Table-stable cell type. Different envs put
+    different shapes in fields like ``task`` (str vs dict of messages); a mixed
+    column type raises TypeError inside Table.add_data and would otherwise
+    kill the orchestrator over telemetry."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except TypeError:
+        return str(value)
+
+
 from prime_rl.utils.chat_template import deserialize_tool_calls
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
@@ -192,7 +207,7 @@ class WandbMonitor(Monitor):
             sample = {
                 "step": step,
                 "env_name": rollout.get("env_name"),
-                "task": rollout.get("task"),
+                "task": _table_cell(rollout.get("task")),
                 "example_id": rollout["example_id"],
                 "messages": messages_text,
                 "input_ids": str(full_ids),
@@ -204,6 +219,9 @@ class WandbMonitor(Monitor):
             self.samples_table.add_data(*sample.values())
 
         wandb.log({"samples": self.samples_table, "step": step})
+        # INCREMENTAL tables keep every row in-process forever; the server holds
+        # cumulative state, so reset the local object after each delta upload.
+        self.samples_table = wandb.Table(columns=self.samples_cols, log_mode="INCREMENTAL")
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
 
@@ -231,14 +249,19 @@ class WandbMonitor(Monitor):
             sample = {
                 "step": step,
                 "env": env_name,
-                "task": rollout.get("task"),
+                "task": _table_cell(rollout.get("task")),
                 "example_id": rollout["example_id"],
                 "completion": completion,
                 "reward": rollout["reward"],
             }
-            self.eval_samples_table.add_data(*sample.values())
+            try:
+                self.eval_samples_table.add_data(*sample.values())
+            except (TypeError, ValueError) as exc:
+                # Telemetry only: log loudly and keep training alive.
+                self.logger.warning(f"Skipping eval sample row for {env_name} (table schema clash): {exc!r}")
 
         wandb.log({"eval/samples": self.eval_samples_table, "step": step})
+        self.eval_samples_table = wandb.Table(columns=self.eval_samples_cols, log_mode="INCREMENTAL")
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         """Log distributions (no-op for W&B)."""

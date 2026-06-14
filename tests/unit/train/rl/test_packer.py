@@ -113,6 +113,10 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     assert len(sender.sent) == 1
     assert len(sender.sent[0][0]) == 1
 
+    micro_batch = sender.sent[0][0][0]
+    assert micro_batch.run_id == "run_test123"
+    assert micro_batch.run_step == 0
+
 
 def test_multi_packer_passes_pack_samples_to_prepare_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     reset_world()

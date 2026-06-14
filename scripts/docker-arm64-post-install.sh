@@ -1,8 +1,11 @@
 #!/bin/bash
 # arm64 post-install fixups: rebuild flash-attn from source for the target GPU.
 #
-# Why this exists: x86_64 gets a prebuilt FA2 wheel, but aarch64 must build FA2
-# from source for the local GPU. It also repairs FA4 after FA2, because both
+# Why this exists: pyproject.toml sets FLASH_ATTENTION_SKIP_CUDA_BUILD=TRUE to keep
+# `uv sync` fast; on x86_64 it pins a prebuilt FA2 wheel to fill in the binary, but
+# no such wheel exists for aarch64. Without this script, `import flash_attn` fails on
+# aarch64 with `ModuleNotFoundError: No module named 'flash_attn_2_cuda'`, so we build
+# FA2 from source for the local GPU. It also repairs FA4 after FA2, because both
 # packages write into the flash_attn namespace and FA2 can overwrite FA4's
 # `flash_attn/cute` implementation with a stub.
 #
@@ -34,9 +37,11 @@ export FLASH_ATTENTION_SKIP_CUDA_BUILD=FALSE
 
 echo "=== building flash-attn from source (TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST, MAX_JOBS=$MAX_JOBS) ==="
 echo "    target venv: $VENV_PATH"
-# Run from /tmp so uv does not try to resolve the whole project while repairing
-# this single package. Keep uv's cache enabled so a previous matching source
-# build can be reused instead of forcing a rebuild every time.
+# Run from /tmp so uv ignores the project's [tool.uv.extra-build-variables], which
+# sets FLASH_ATTENTION_SKIP_CUDA_BUILD=TRUE and would prevent kernel compilation, and
+# so uv does not try to resolve the whole project while repairing this single package.
+# Keep uv's cache enabled so a previous matching source build can be reused instead of
+# forcing a rebuild every time.
 (cd /tmp && uv pip install --python "$VENV_PATH/bin/python" \
     "flash-attn==2.8.3" --no-build-isolation --no-binary flash-attn --reinstall-package flash-attn)
 

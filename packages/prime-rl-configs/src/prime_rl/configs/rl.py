@@ -117,6 +117,9 @@ class SharedWeightBroadcastConfig(BaseConfig):
     type: Literal["nccl", "filesystem"] = "filesystem"
     """Weight broadcast transport."""
 
+    keep_all: bool = False
+    """Keep every per-step filesystem broadcast dir instead of pruning to the ckpt interval (filesystem broadcast only). Useful for LoRA runs where per-step adapters are small and worth archiving."""
+
     port: int = 29501
     """Port for NCCL weight broadcast."""
 
@@ -267,6 +270,9 @@ class MultiNodeDeploymentConfig(LaneHostsMixin, BaseDeploymentConfig):
 
     lane_tag: str | None = None
     """Unique tag namespacing this lane's caches, shm, rdzv-id, and output subdir. When unset, the placement falls back to ``$SLURM_JOB_ID``."""
+
+    orchestrator_on_inference: bool = False
+    """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
 
     @property
     def total_infer_nodes(self) -> int:
@@ -428,7 +434,9 @@ class RLConfig(BaseConfig):
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
             elif self.weight_broadcast.type == "filesystem":
-                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
+                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
+                    keep_all=self.weight_broadcast.keep_all
+                )
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
             if self.inference is not None:
                 self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)

@@ -146,6 +146,7 @@ def _multi_node_template_vars(config: RLConfig, config_dir: Path) -> dict[str, o
         "inference_data_parallel_rpc_port": inference.data_parallel_rpc_port if inference is not None else 29600,
         "use_nccl_broadcast": config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
         "ranks_filter": ",".join(map(str, config.trainer.log.ranks_filter)),
+        "orchestrator_on_inference": deployment.orchestrator_on_inference,
         **_kv_offload_template_vars(config),
     }
 

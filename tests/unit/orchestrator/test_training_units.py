@@ -1,5 +1,6 @@
 import uuid
 from collections import defaultdict
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -193,9 +194,12 @@ def _batch_metrics(rollouts: list[TrainRollout], rae_stats: RAEStats | None = No
 
 def _metrics_builder(env_group_sizes: dict[str, int]) -> MetricsBuilder:
     config = SimpleNamespace(
+        # output_dir feeds MetricsBuilder's token-export drain (upstream #2641); a dir with
+        # no token_exports/ yields no metrics, which is what this MA-metrics test wants.
+        output_dir=Path("/tmp/__prime_rl_metrics_test_no_exports__"),
         train=SimpleNamespace(
             env=[SimpleNamespace(resolved_name=name, group_size=size) for name, size in env_group_sizes.items()]
-        )
+        ),
     )
     return MetricsBuilder(config)
 

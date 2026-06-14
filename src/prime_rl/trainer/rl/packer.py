@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import shutil
 import threading
@@ -119,8 +120,24 @@ class SinglePacker(BasePacker):
             num_loras=self.multi_run_manager.max_runs,
             pack_samples=self.pack_samples,
         )
+        # The receiver always stamps run_idx from used_idxs (a key of idx_2_id).
+        run_id = self.multi_run_manager.idx_2_id[batch.run_idx]
+        for worker_batches in micro_batch_grid:
+            for micro_batch in worker_batches:
+                micro_batch.run_id = run_id
+                micro_batch.run_step = batch.step
 
         self.sender.send(micro_batch_grid)
+        # The master decodes + re-encodes the whole batch every step (rollout
+        # bytes + routed_experts blobs — hundreds of MB of transient large
+        # allocations). glibc keeps those freed pages in its arena, so trainer
+        # rank-0 RSS ratchets to OOM over a run (steps 12-25 on 4t12i r64). Drop
+        # the references and return the freed pages to the OS each step.
+        del micro_batch_grid, batch, batches
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception as e:
+            self.logger.debug(f"malloc_trim(0) failed: {e}")
 
 
 class MultiPacker(BasePacker):
@@ -309,10 +326,14 @@ class MultiPacker(BasePacker):
         # Group samples by run_idx - each microbatch must contain samples from only ONE run
         # because MultiLoRAGroupedExperts (MoE) only supports one adapter per microbatch
         samples_by_run: dict[int, list[TrainingSample]] = {}
+        steps_by_run: dict[int, int] = {}
         per_run_stats: dict[int, tuple[int, int]] = {}
         for run_idx, sample, step in selected_samples:
             if run_idx not in samples_by_run:
                 samples_by_run[run_idx] = []
+                steps_by_run[run_idx] = step
+            else:
+                assert steps_by_run[run_idx] == step, "Micro batches for a run must come from a single run step"
             samples_by_run[run_idx].append(sample)
 
             num_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
@@ -338,8 +359,13 @@ class MultiPacker(BasePacker):
                 num_loras=self.multi_run_manager.max_runs,
                 pack_samples=self.pack_samples,
             )
+            run_id = self.multi_run_manager.idx_2_id[run_idx]
+            run_step = steps_by_run[run_idx]
             # Merge into combined grid
             for worker_idx, worker_batches in enumerate(run_micro_batch_grid):
+                for micro_batch in worker_batches:
+                    micro_batch.run_id = run_id
+                    micro_batch.run_step = run_step
                 all_micro_batches[worker_idx].extend(worker_batches)
 
         self.sender.send(all_micro_batches)
