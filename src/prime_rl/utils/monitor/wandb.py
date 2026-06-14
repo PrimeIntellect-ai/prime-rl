@@ -16,6 +16,7 @@ from prime_rl.utils.chat_template import deserialize_tool_calls
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
+from prime_rl.utils.monitor.samples import render_prompt_completion_text, token_payload_ids
 
 
 class WandbMonitor(Monitor):
@@ -176,9 +177,15 @@ class WandbMonitor(Monitor):
             if not trajectory:
                 continue
             last_step = trajectory[-1]
-            tokens = last_step["tokens"]
-            full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
-            messages_text = self.tokenizer.decode(full_ids)
+            full_ids = token_payload_ids(last_step.get("tokens")) or []
+            if full_ids:
+                messages_text = self.tokenizer.decode(full_ids)
+            else:
+                messages_text = render_prompt_completion_text(
+                    self.tokenizer,
+                    last_step.get("prompt") or rollout.get("prompt"),
+                    last_step.get("completion") or rollout.get("completion"),
+                )
             sample = {
                 "step": step,
                 "env_name": rollout.get("env_name"),

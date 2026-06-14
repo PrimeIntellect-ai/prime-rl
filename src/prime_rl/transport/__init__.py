@@ -7,6 +7,7 @@ from prime_rl.transport.filesystem import (
     FileSystemMicroBatchSender,
     FileSystemTrainingBatchReceiver,
     FileSystemTrainingBatchSender,
+    NoOpTrainingBatchSender,
 )
 from prime_rl.transport.types import (
     MicroBatch,
@@ -27,6 +28,8 @@ def setup_training_batch_sender(output_dir: Path, transport: TransportConfig) ->
         return FileSystemTrainingBatchSender(output_dir)
     elif transport.type == "zmq":
         return ZMQTrainingBatchSender(output_dir, transport)
+    elif transport.type == "noop":
+        return NoOpTrainingBatchSender(output_dir)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 
@@ -65,6 +68,7 @@ def setup_micro_batch_receiver(
 __all__ = [
     "FileSystemTrainingBatchSender",
     "FileSystemTrainingBatchReceiver",
+    "NoOpTrainingBatchSender",
     "FileSystemMicroBatchSender",
     "FileSystemMicroBatchReceiver",
     "MicroBatchReceiver",

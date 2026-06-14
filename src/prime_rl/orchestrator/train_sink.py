@@ -153,6 +153,7 @@ class TrainSink:
         if rollout.error is not None:
             return
         raw = rollout.raw
+        rollout.num_turns = len(raw.get("trajectory") or [])
         needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
@@ -161,6 +162,7 @@ class TrainSink:
             raw,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             env_name=rollout.env_name,
+            prune_raw_payload=True,
         )
         rollout.samples = samples or []
         # Offload base64 image bytes to disk as soon as the rollout is
@@ -200,8 +202,8 @@ class TrainSink:
 
         # Propagate to the pre-tokenized samples so the orchestrator can
         # collect samples at ship time without re-walking rollouts. The env
-        # has a single sampling temperature; fan it out across each sample's
-        # completion tokens here (interleave leaves it empty).
+        # has a single sampling temperature; keep it compact instead of
+        # fanning out a duplicate Python float per completion token.
         temperature = env.sampling_args["temperature"]
         for r in survivors:
             for sample in r.samples:
@@ -209,7 +211,8 @@ class TrainSink:
                 sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
-                sample.completion_temperatures = [temperature] * len(sample.completion_ids)
+                sample.completion_temperature = temperature
+                sample.completion_temperatures = []
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)

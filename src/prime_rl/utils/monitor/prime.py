@@ -20,6 +20,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import PrimeMonitorConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
+from prime_rl.utils.monitor.samples import token_payload_length
 
 
 def _json(val: Any) -> str:
@@ -354,8 +355,8 @@ class PrimeMonitor(Monitor):
                     "reward": ts.get("reward"),
                     "advantage": ts.get("advantage"),
                     "extras": ts.get("extras", {}),
-                    "num_input_tokens": len(ts["tokens"]["prompt_ids"]) if ts.get("tokens") else None,
-                    "num_output_tokens": len(ts["tokens"]["completion_ids"]) if ts.get("tokens") else None,
+                    "num_input_tokens": token_payload_length(ts.get("tokens"), "prompt_ids"),
+                    "num_output_tokens": token_payload_length(ts.get("tokens"), "completion_ids"),
                 }
                 for ts in trajectory
             ]

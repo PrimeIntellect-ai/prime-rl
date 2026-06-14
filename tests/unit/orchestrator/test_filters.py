@@ -10,6 +10,7 @@ from prime_rl.orchestrator.filters import (
     setup_filters,
 )
 from prime_rl.orchestrator.types import TrainRollout
+from prime_rl.transport import TrainingSample
 
 
 def _make_rollout(
@@ -134,6 +135,32 @@ def test_gibberish_works_across_trajectory_steps():
     assert result.detection_index == 2
 
 
+def test_gibberish_uses_samples_when_raw_tokens_are_pruned():
+    gibberish_filter = _make_gibberish_filter()
+    rollout = _make_rollout(completion_ids=[], completion_logprobs=[])
+    rollout.raw["trajectory"][0]["tokens"] = {
+        "prompt_ids_len": 4,
+        "completion_ids_len": 2,
+        "has_routed_experts": True,
+    }
+    rollout.samples = [
+        TrainingSample(
+            prompt_ids=[1, 2],
+            prompt_mask=[False, False],
+            completion_ids=[777, 120_000],
+            completion_mask=[False, True],
+            completion_logprobs=[0.0, gibberish_filter.logprob_threshold - 1.0],
+            completion_temperatures=[1.0, 1.0],
+            env_name="test",
+        )
+    ]
+
+    result = gibberish_filter.check(rollout)
+
+    assert result.detected is True
+    assert result.detection_index == 0
+
+
 # --- RepetitionFilter tests ---
 
 
@@ -185,6 +212,32 @@ def test_repetition_varied_probs_no_trigger():
         )
     )
     assert result.detected is False
+
+
+def test_repetition_uses_samples_when_raw_tokens_are_pruned():
+    repetition_filter = _make_repetition_filter(window=3)
+    rollout = _make_rollout(completion_ids=[], completion_logprobs=[])
+    rollout.raw["trajectory"][0]["tokens"] = {
+        "prompt_ids_len": 4,
+        "completion_ids_len": 5,
+        "has_routed_experts": True,
+    }
+    rollout.samples = [
+        TrainingSample(
+            prompt_ids=[1, 2],
+            prompt_mask=[False, False],
+            completion_ids=[10, 11, 12, 13],
+            completion_mask=[False, True, True, True],
+            completion_logprobs=[0.0, -0.001, -0.001, -0.001],
+            completion_temperatures=[1.0, 1.0, 1.0, 1.0],
+            env_name="test",
+        )
+    ]
+
+    result = repetition_filter.check(rollout)
+
+    assert result.detected is True
+    assert result.detection_index == 2
 
 
 # --- setup_filter / setup_filters tests ---

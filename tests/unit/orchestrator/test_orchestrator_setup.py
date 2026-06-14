@@ -19,6 +19,7 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
             ),
             renderer=renderer_settings,
             pool_size=None,
+            debug=SimpleNamespace(no_inference=False),
         )
         renderer = object()
         inference_pool = object()
@@ -63,6 +64,7 @@ def test_setup_student_inference_pool_defaults_to_mito():
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
                 model=SimpleNamespace(name="student-model"),
             ),
+            debug=SimpleNamespace(no_inference=False),
         )
         inference_pool = object()
 

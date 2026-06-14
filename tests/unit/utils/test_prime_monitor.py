@@ -94,6 +94,28 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     assert rows[0]["sample_id"] == 0
 
 
+def test_rollouts_to_parquet_bytes_uses_compacted_token_lengths():
+    monitor = _new_monitor()
+    monitor.run_id = "run-compact"
+    rollout = _build_rollout(example_id=303, reward=1.0, task="task-c")
+    rollout["trajectory"][0]["tokens"] = {
+        "prompt_ids_len": 12,
+        "completion_ids_len": 34,
+        "has_routed_experts": True,
+    }
+
+    parquet_bytes = monitor._rollouts_to_parquet_bytes([rollout], step=9)
+
+    assert parquet_bytes is not None
+
+    table = pq.read_table(io.BytesIO(parquet_bytes))
+    rows = table.to_pylist()
+    trajectory = json.loads(rows[0]["trajectory"])
+
+    assert trajectory[0]["num_input_tokens"] == 12
+    assert trajectory[0]["num_output_tokens"] == 34
+
+
 def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
     monitor = _new_monitor()
     monitor.logger = Mock()

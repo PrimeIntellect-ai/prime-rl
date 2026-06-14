@@ -69,6 +69,7 @@ envs = [
     "code-env",
     "color-codeword",
     "deepdive",
+    "fake-r3-trajectory",
     "general-agent",
     "gpqa",
     "hle",
@@ -208,6 +209,7 @@ alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable =
 code-env = { path = "deps/research-environments/environments/code_env", editable = true }
 color-codeword = { path = "deps/research-environments/environments/color_codeword", editable = true }
 deepdive = { path = "deps/research-environments/environments/deepdive", editable = true }
+fake-r3-trajectory = { path = "tests/debug_envs/fake_r3_trajectory", editable = true }
 general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
 gpqa = { path = "deps/research-environments/environments/gpqa", editable = true }
 harnesses = { path = "deps/verifiers/packages/harnesses", editable = true }

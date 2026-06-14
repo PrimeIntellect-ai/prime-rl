@@ -9,6 +9,7 @@ are not sent to the trainer. Reward is kept as-is for baseline calculation.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -17,6 +18,42 @@ from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import TrainRollout
+
+
+@dataclass(frozen=True)
+class GeneratedTokenLogprob:
+    token_id: int
+    logprob: float
+
+
+def _iter_generated_token_logprobs(rollout: "TrainRollout") -> Iterator[GeneratedTokenLogprob]:
+    """Yield only model-generated completion tokens for rollout filters.
+
+    ``TrainSink`` builds ``rollout.samples`` before pre-filters run. Those
+    samples survive raw trajectory compaction, so filters prefer them when
+    present. Tests and direct callers can still use the raw trajectory path.
+    """
+    if rollout.samples:
+        for sample in rollout.samples:
+            for token_id, logprob, is_generated in zip(
+                sample.completion_ids,
+                sample.completion_logprobs,
+                sample.completion_mask,
+            ):
+                if is_generated:
+                    yield GeneratedTokenLogprob(token_id=token_id, logprob=logprob)
+        return
+
+    for step in rollout.raw.get("trajectory") or []:
+        tokens = step.get("tokens") if isinstance(step, dict) else None
+        if tokens is None or "completion_ids" not in tokens or "completion_logprobs" not in tokens:
+            continue
+        mask = tokens.get("completion_mask")
+        if mask is None:
+            mask = [True] * len(tokens["completion_ids"])
+        for token_id, logprob, is_generated in zip(tokens["completion_ids"], tokens["completion_logprobs"], mask):
+            if is_generated:
+                yield GeneratedTokenLogprob(token_id=token_id, logprob=logprob)
 
 
 @dataclass
@@ -51,14 +88,10 @@ class GibberishFilter:
 
     def check(self, rollout: "TrainRollout") -> FilterResult:
         global_idx = 0
-        for step in rollout.raw["trajectory"]:
-            tokens = step["tokens"]
-            if tokens is None:
-                continue
-            for token_id, logprob in zip(tokens["completion_ids"], tokens["completion_logprobs"]):
-                if token_id > self.token_id_threshold and logprob < self.logprob_threshold:
-                    return FilterResult(detected=True, detection_index=global_idx)
-                global_idx += 1
+        for token in _iter_generated_token_logprobs(rollout):
+            if token.token_id > self.token_id_threshold and token.logprob < self.logprob_threshold:
+                return FilterResult(detected=True, detection_index=global_idx)
+            global_idx += 1
         return FilterResult(detected=False)
 
 
@@ -82,18 +115,14 @@ class RepetitionFilter:
     def check(self, rollout: "TrainRollout") -> FilterResult:
         consecutive = 0
         global_idx = 0
-        for step in rollout.raw["trajectory"]:
-            tokens = step["tokens"]
-            if tokens is None:
-                continue
-            for logprob in tokens["completion_logprobs"]:
-                if logprob > self.logprob_threshold:
-                    consecutive += 1
-                else:
-                    consecutive = 0
-                if consecutive >= self.window:
-                    return FilterResult(detected=True, detection_index=global_idx)
-                global_idx += 1
+        for token in _iter_generated_token_logprobs(rollout):
+            if token.logprob > self.logprob_threshold:
+                consecutive += 1
+            else:
+                consecutive = 0
+            if consecutive >= self.window:
+                return FilterResult(detected=True, detection_index=global_idx)
+            global_idx += 1
         return FilterResult(detected=False)
 
 

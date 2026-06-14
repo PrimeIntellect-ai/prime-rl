@@ -22,6 +22,68 @@ from prime_rl.utils.logger import get_logger
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
 # primitives are immutable. mm_kwargs payloads are not mutated after creation.
 
+_RAW_TOKEN_ARRAY_KEYS = {
+    "prompt_ids",
+    "prompt_mask",
+    "completion_ids",
+    "completion_mask",
+    "completion_logprobs",
+    "routed_experts",
+    "multi_modal_data",
+    "mm_token_type_ids",
+}
+
+
+def _safe_len(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return len(value)
+    except TypeError:
+        return None
+
+
+def _compact_token_payload(tokens: dict) -> dict:
+    compact: dict = {}
+    for key in ("prompt_ids", "prompt_mask", "completion_ids", "completion_mask", "completion_logprobs"):
+        length = _safe_len(tokens.get(key))
+        if length is not None:
+            compact[f"{key}_len"] = length
+
+    routed = tokens.get("routed_experts")
+    compact["has_routed_experts"] = routed is not None
+    if isinstance(routed, dict):
+        for key in ("shape", "dtype", "start"):
+            if key in routed:
+                compact[f"routed_experts_{key}"] = routed[key]
+
+    for key, value in tokens.items():
+        if key in _RAW_TOKEN_ARRAY_KEYS:
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            compact[key] = value
+    return compact
+
+
+def prune_train_rollout_payload(raw: dict) -> None:
+    """Replace duplicate raw trajectory token/R3 arrays with length summaries."""
+    if raw.get("trajectory_payload_pruned"):
+        return
+
+    trajectory = raw.get("trajectory")
+    if not isinstance(trajectory, list):
+        return
+
+    for step in trajectory:
+        if not isinstance(step, dict):
+            continue
+        tokens = step.get("tokens")
+        if isinstance(tokens, dict):
+            step["tokens"] = _compact_token_payload(tokens)
+        step.pop("response", None)
+
+    raw["trajectory_payload_pruned"] = True
+
 
 def align_routed_experts(
     routed_experts: np.ndarray | None,
@@ -206,6 +268,7 @@ def interleave_rollout(
     mm_token_type_ids_mapping: dict[int, int] | None = None,
     *,
     env_name: str = "",
+    prune_raw_payload: bool = False,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -276,6 +339,10 @@ def interleave_rollout(
         if prepared is None:
             return None
         prepared_steps.append(prepared)
+    if prune_raw_payload:
+        # Each step has been copied into prepared_steps, so raw tokens can be
+        # compacted without affecting sample construction below.
+        prune_train_rollout_payload(output)
 
     # Deferred routed_experts state per sample: O(N) chunk list concatenated
     # once at finalize, replacing the prior O(N²) per-extension unpack/repack.
