@@ -271,6 +271,9 @@ class MultiNodeDeploymentConfig(LaneHostsMixin, BaseDeploymentConfig):
     lane_tag: str | None = None
     """Unique tag namespacing this lane's caches, shm, rdzv-id, and output subdir. When unset, the placement falls back to ``$SLURM_JOB_ID``."""
 
+    orchestrator_on_inference: bool = False
+    """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
+
     @property
     def total_infer_nodes(self) -> int:
         return self.num_infer_nodes * self.num_infer_replicas

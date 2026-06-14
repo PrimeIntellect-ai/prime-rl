@@ -59,6 +59,7 @@ export OUTPUT_DIR={{ output_dir }}
 export ORCHESTRATOR_OUTPUT_DIR={{ orchestrator_output_dir }}
 mkdir -p $OUTPUT_DIR/logs/trainer $OUTPUT_DIR/logs/inference $OUTPUT_DIR/control
 rm -f $OUTPUT_DIR/control/trainer_done
+rm -f $OUTPUT_DIR/logs/inference/*.log
 ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 
@@ -297,10 +298,28 @@ if [ "$LANE_NODE_RANK" -lt "$NUM_INFER_NODES" ]; then
     export VLLM_MOE_USE_DEEP_GEMM=1
 {%- endif %}
 
-    export GLOO_SOCKET_IFNAME=bond0
+    # Bind gloo to the interface that owns LOCAL_IP (the rendezvous IP) — NIC
+    # names vary across clusters (bond0, eth0, ...). If the lookup fails, leave
+    # GLOO_SOCKET_IFNAME unset so gloo falls back to its own detection.
+    GLOO_IFNAME=$(ip -o -4 addr show to "$LOCAL_IP" 2>/dev/null | awk "{print \$2; exit}")
+    if [ -n "$GLOO_IFNAME" ]; then export GLOO_SOCKET_IFNAME=$GLOO_IFNAME; fi
     export VLLM_ENGINE_READY_TIMEOUT_S=4200
     export UCX_TLS=all
-    export UCX_NET_DEVICES=all
+    # Enumerate RDMA NICs for UCX/NIXL from sysfs (ibv_devices is not on the job
+    # PATH). Prefer InfiniBand ports and fall back to RoCE: "all" would also pick
+    # up non-functional devices (e.g. an Ethernet bond UCX cannot open), which
+    # fails NIXL backend creation. Hosts without RDMA devices keep "all" (TCP).
+    rdma_ports() {
+        for port in /sys/class/infiniband/*/ports/*; do
+            [ "$(cat "$port/link_layer" 2>/dev/null)" = "$1" ] || continue
+            grep -q ACTIVE "$port/state" 2>/dev/null || continue
+            dev=${port%/ports/*}
+            echo "$(basename "$dev"):$(basename "$port")"
+        done | paste -sd,
+    }
+    UCX_NET_DEVICES=$(rdma_ports InfiniBand)
+    [ -n "$UCX_NET_DEVICES" ] || UCX_NET_DEVICES=$(rdma_ports Ethernet)
+    export UCX_NET_DEVICES=${UCX_NET_DEVICES:-all}
     export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
     export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
@@ -398,15 +417,6 @@ if [ "$LANE_NODE_RANK" -lt "$NUM_INFER_NODES" ]; then
 
 else
     TRAIN_NODE_RANK=$((LANE_NODE_RANK - NUM_INFER_NODES))
-
-    if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
-        ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
-        ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.base-url $INFER_URLS"
-        ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.admin-base-url $ADMIN_URLS"
-        {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
-        {% endif %}WANDB_SHARED_LABEL=orchestrator uv run --no-sync orchestrator $ORCHESTRATOR_ARGS \
-            2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
-    fi
 {%- else %}
     TRAIN_NODE_RANK=$LANE_NODE_RANK
 {%- endif %}
@@ -440,6 +450,21 @@ else
         exit "$TRAINER_STATUS"
     ) &
 {% if num_infer_nodes > 0 %}    fi{% endif %}
+{% if num_infer_nodes > 0 %}
+# Launch the orchestrator on one node. Default is trainer rank 0 (LANE_NODE_RANK ==
+# NUM_INFER_NODES). With orchestrator_on_inference it moves to the last inference node
+# (a decode node) to keep its rollout buffer + env workers off host-RAM-saturated
+# trainer nodes. Top-level (after the role if/else) so the wait -n teardown covers it.
+{% if orchestrator_on_inference %}ORCH_NODE_RANK=$((NUM_INFER_NODES - 1)){% else %}ORCH_NODE_RANK=$NUM_INFER_NODES{% endif %}
+if [ "$LANE_NODE_RANK" -eq "$ORCH_NODE_RANK" ]; then
+    ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
+    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.base-url $INFER_URLS"
+    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.admin-base-url $ADMIN_URLS"
+    {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
+    {% endif %}WANDB_SHARED_LABEL=orchestrator uv run --no-sync orchestrator $ORCHESTRATOR_ARGS \
+        2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
+fi
+{% endif %}
 
 # Wait for the first background job to exit and propagate its exit code. This
 # turns background process crashes (router, orchestrator) into task failures

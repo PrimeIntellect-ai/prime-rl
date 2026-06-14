@@ -30,6 +30,8 @@ final_summary.json
 tmp/
 /output
 
+deps/nixl_*
+nixl_workspace/*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

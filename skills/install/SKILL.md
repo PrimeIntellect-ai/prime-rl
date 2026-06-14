@@ -16,10 +16,8 @@ bash scripts/install.sh   # clones, inits submodules, installs uv, syncs PrimeRL
 For an existing clone, init submodules explicitly:
 
 ```bash
-git submodule update --init -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
+git submodule update --init --recursive
 ```
-
-Do **not** run `git submodule update --init --recursive` without paths — it tries to clone the private `configs/private` submodule and aborts for users without access. `scripts/install.sh` walks submodules one at a time and skips failures, so it works for everyone.
 
 ## Sync
 

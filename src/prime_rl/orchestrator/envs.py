@@ -272,8 +272,9 @@ class TrainEnv(Env):
         super().__init__(config)
         self.sampling_args = config.sampling.to_sampling_args()
         # Built once — custom advantage funcs do an ``import_object`` we don't
-        # want to pay per group. ``None`` = reward-only path. ``rae``
-        # has no group-level fn: the train sink computes RAE advantages instead.
+        # want to pay per group. ``config.advantage`` is the per-env strategy
+        # (#2721). ``None`` = reward-only path. ``rae`` has no group-level fn:
+        # the train sink computes RAE advantages instead.
         self.advantage_fn: AdvantageFn | None = (
             setup_advantage_fn(config.advantage)
             if config.advantage is not None and not isinstance(config.advantage, RAEAdvantageConfig)

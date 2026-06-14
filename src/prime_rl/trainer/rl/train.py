@@ -516,7 +516,14 @@ def train(config: TrainerConfig):
                 for env_name, indices in env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
-            token_exporter.export(progress.step, micro_step, micro_batch, out, response_lengths, config.loss)
+            token_exporter.export(
+                progress.step,
+                micro_step,
+                micro_batch,
+                out,
+                response_lengths,
+                config.loss,
+            )
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
@@ -537,6 +544,15 @@ def train(config: TrainerConfig):
             if "routing_confidence" in tensors:
                 micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
+
+        if config.enable_token_export:
+            dist.barrier()
+            ready_run_ids = {
+                multi_run_manager.idx_2_id[idx]
+                for idx in multi_run_manager.ready_to_update_idxs
+                if idx in multi_run_manager.idx_2_id
+            }
+            token_exporter.mark_stable(ready_run_ids)
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
