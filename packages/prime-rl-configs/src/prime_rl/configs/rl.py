@@ -16,6 +16,7 @@ from prime_rl.configs.orchestrator import (
     OrchestratorConfig,
 )
 from prime_rl.configs.shared import (
+    CheckpointExperimentalConfig,
     SlurmConfig,
     VLMConfig,
 )
@@ -91,6 +92,9 @@ class SharedWandbConfig(BaseConfig):
 class SharedCheckpointConfig(BaseConfig):
     output_dir: Path | None = None
     """Override directory for checkpoints and weights. When set, checkpoints and weight snapshots are written here instead of under the trainer ``output_dir``."""
+
+    experimental: CheckpointExperimentalConfig | None = None
+    """Experimental checkpoint behavior. These knobs may change or be removed."""
 
     interval: int | None = None
     """Interval at which to save checkpoints."""

@@ -6,6 +6,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    CheckpointExperimentalConfig,
     FileSystemTransportConfig,
     HeartbeatConfig,
     MetricsServerConfig,
@@ -374,6 +375,9 @@ class WeightCheckpointConfig(BaseConfig):
 class CheckpointConfig(BaseConfig):
     output_dir: Path | None = None
     """Override directory for checkpoints and weights. If set, checkpoints and weight snapshots are written here instead of under the trainer ``output_dir`` — useful for writing large checkpoints to a separate storage volume."""
+
+    experimental: CheckpointExperimentalConfig | None = None
+    """Experimental checkpoint behavior. These knobs may change or be removed."""
 
     interval: int | None = Field(None, ge=1)
     """Interval at which to save the training checkpoint. If None, only checkpoints at the end of training."""

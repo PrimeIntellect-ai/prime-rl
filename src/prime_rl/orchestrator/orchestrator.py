@@ -41,6 +41,7 @@ from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.checkpoint_pause import CheckpointPauseWatcher
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -137,6 +138,7 @@ class Orchestrator:
     train_sink: TrainSink
     dispatcher: RolloutDispatcher
     watcher: WeightWatcher
+    checkpoint_pause_watcher: CheckpointPauseWatcher | None
     metrics: MetricsBuilder
     lag_monitor: EventLoopLagMonitor
     periodic_logger: PeriodicLogger
@@ -196,6 +198,7 @@ class Orchestrator:
         self.lora_name = None
         self.resume_step = None
         self.lag_task = None
+        self.checkpoint_pause_watcher = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -400,6 +403,7 @@ class Orchestrator:
             post_filters=post_filters,
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
+        inference_update_lock = asyncio.Lock()
         self.watcher = WeightWatcher(
             config,
             policy=self.policy,
@@ -407,7 +411,14 @@ class Orchestrator:
             observers=[self.dispatcher, self],
             lora_name=self.lora_name,
             ckpt_step=self.progress.step,
+            update_lock=inference_update_lock,
         )
+        if config.ckpt and config.ckpt.experimental and config.ckpt.experimental.pause_inference:
+            self.checkpoint_pause_watcher = CheckpointPauseWatcher(
+                config,
+                inference=self.student_inference,
+                update_lock=inference_update_lock,
+            )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
         self.lag_monitor = EventLoopLagMonitor()
@@ -451,6 +462,10 @@ class Orchestrator:
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
         ]
+        if self.checkpoint_pause_watcher is not None:
+            self.component_tasks.append(
+                asyncio.create_task(self.checkpoint_pause_watcher.start(), name="checkpoint_pause_watcher")
+            )
 
         # Default step-0 base-model eval — fires before any train rollouts
         # unless ``eval.skip_first_step=True`` (or this is a resume)
@@ -893,6 +908,8 @@ class Orchestrator:
                 await self.dispatcher.stop()
             if self.watcher is not None:
                 await self.watcher.stop()
+            if self.checkpoint_pause_watcher is not None:
+                await self.checkpoint_pause_watcher.stop()
             if self.periodic_logger is not None:
                 await self.periodic_logger.stop()
             if self.lag_task is not None:

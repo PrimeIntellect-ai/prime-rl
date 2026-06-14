@@ -102,6 +102,8 @@ class MultiCheckpointManager:
 
     def _should_save(self, idx: int, step: int) -> bool:
         """Determine if a checkpoint should be saved for a given run and step."""
+        if self.managers[idx] is None:
+            return False
         ckpt_config = self.multi_run_manager.config[idx].ckpt
         if ckpt_config is None or ckpt_config.interval is None:
             return False
@@ -109,6 +111,13 @@ class MultiCheckpointManager:
             return False
         # Check if already saved this step
         return step not in self.managers[idx].ckpt_steps
+
+    def should_save_any(self) -> bool:
+        for idx in self.multi_run_manager.used_idxs:
+            step = self.multi_run_manager.progress[idx].step
+            if self._should_save(idx, step):
+                return True
+        return False
 
     def save(
         self,

@@ -99,6 +99,11 @@ def propagate_shared_fields(data: Any) -> Any:
     propagate("ckpt.resume_step", "trainer.ckpt.resume_step", "orchestrator.ckpt.resume_step")
     propagate("ckpt.keep_last", "trainer.ckpt.keep_last", "orchestrator.ckpt.keep_last")
     propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval", "orchestrator.ckpt.keep_interval")
+    propagate(
+        "ckpt.experimental.pause_inference",
+        "trainer.ckpt.experimental.pause_inference",
+        "orchestrator.ckpt.experimental.pause_inference",
+    )
 
     # [wandb] leaves. (Bare empty ``[wandb]`` block enablement is at the end.)
     # ``wandb.name`` flows verbatim to both sub-configs — shared W&B mode is
@@ -199,6 +204,11 @@ def validate_shared_ckpt_config(
     trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
+    def pause_inference_enabled(config: TrainerConfig | OrchestratorConfig) -> bool:
+        if config.ckpt is None or config.ckpt.experimental is None:
+            return False
+        return config.ckpt.experimental.pause_inference
+
     if trainer.ckpt and not orchestrator.ckpt:
         raise ValueError(
             "Trainer checkpoint config is specified, but orchestrator checkpoint config is not. Please setup checkpointing on both for checkpointing to work properly."
@@ -214,6 +224,10 @@ def validate_shared_ckpt_config(
     if trainer.ckpt and orchestrator.ckpt and trainer.ckpt.resume_step != orchestrator.ckpt.resume_step:
         raise ValueError(
             f"Trainer checkpoint resume step ({trainer.ckpt.resume_step}) and orchestrator checkpoint resume step ({orchestrator.ckpt.resume_step}) are not the same. Please specify the same checkpoint resume step for both."
+        )
+    if trainer.ckpt and orchestrator.ckpt and pause_inference_enabled(trainer) != pause_inference_enabled(orchestrator):
+        raise ValueError(
+            "Trainer checkpoint pause_inference setting and orchestrator checkpoint pause_inference setting are not the same. Please specify the same checkpoint experimental config for both."
         )
 
 

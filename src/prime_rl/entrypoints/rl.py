@@ -16,6 +16,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
+    clean_checkpoint_pause_requests,
     clean_future_steps,
     format_log_message,
     get_ckpt_dir,
@@ -498,6 +499,7 @@ def rl(config: RLConfig):
     else:
         get_logger().info("Training from scratch, cleaning any stale rollouts and broadcasts")
         clean_future_steps(config.output_dir, -1)
+    clean_checkpoint_pause_requests(config.output_dir)
 
     if not config.dry_run:
         from prime_rl.trainer.model import pre_download_model

@@ -9,6 +9,7 @@ from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    CheckpointExperimentalConfig,
     ClientConfig,
     FileSystemTransportConfig,
     HeartbeatConfig,
@@ -403,6 +404,9 @@ class EvalConfig(BaseConfig):
 
 
 class CheckpointConfig(BaseConfig):
+    experimental: CheckpointExperimentalConfig | None = None
+    """Experimental checkpoint behavior. These knobs may change or be removed."""
+
     interval: int | None = Field(None, ge=1)
     """Step interval at which to save the orchestrator checkpoint."""
 

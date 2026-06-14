@@ -348,17 +348,17 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
             response.raise_for_status()
 
 
-async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
+async def pause_inference(admin_clients: list[AsyncClient], *, reason: str = "Pausing inference") -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
-    logger.info(f"Updating policy in-flight to v{step}")
+    logger.info(reason)
     await asyncio.gather(
         *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
     )
     logger.debug("All inference engines paused")
 
 
-async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
+async def resume_inference(admin_clients: list[AsyncClient]) -> None:
     """Resume all inference engines after weight update.
 
     Resuming is idempotent (it just clears the paused flag), so retrying transient
@@ -367,6 +367,14 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     logger = get_logger()
     await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
     logger.debug("All inference engines resumed")
+
+
+async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
+    await pause_inference(admin_clients, reason=f"Updating policy in-flight to v{step}")
+
+
+async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
+    await resume_inference(admin_clients)
 
 
 async def update_weights(

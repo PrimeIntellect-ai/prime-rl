@@ -29,6 +29,7 @@ class WeightWatcher:
         lora_name: str | None,
         ckpt_step: int = 0,
         poll_interval: float = 1.0,
+        update_lock: asyncio.Lock | None = None,
     ) -> None:
         self.config = config
         self.policy = policy
@@ -43,7 +44,7 @@ class WeightWatcher:
         self.update_count: int = 0
 
         self.task: asyncio.Task | None = None
-        self.update_lock = asyncio.Lock()
+        self.update_lock = update_lock or asyncio.Lock()
         self.stopped = asyncio.Event()
 
     async def start(self) -> None:

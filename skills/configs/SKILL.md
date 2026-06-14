@@ -60,6 +60,20 @@ CLI: `--env.0.id reverse-text --env.1.id math-env`.
 
 In TOML, an empty section header (`[ckpt]`) does the same.
 
+## Checkpoint inference pause
+
+For RL runs, trainer interval checkpoints can pause student inference while the checkpoint is written:
+
+```toml
+[ckpt]
+interval = 100
+
+[ckpt.experimental]
+pause_inference = true
+```
+
+This is an experimental shared checkpoint knob. Set it under top-level `[ckpt.experimental]` so it propagates to both trainer and orchestrator; the trainer requests the pause, and the orchestrator owns the actual inference `/pause` and `/resume` calls.
+
 ## RL trainer token exports
 
 For rollout debugging, enable trainer-side token export with `trainer.enable_token_export = true` (or `--enable-token-export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence. Single-run/fallback exports go under `output_dir/token_exports/step_<step>/rank_<rank>.jsonl`; multi-run trainer exports with packer metadata go under the owning run directory, `output_dir/<run_id>/token_exports/step_<run_step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, advantage, reward, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.

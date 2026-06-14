@@ -427,6 +427,22 @@ def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
     assert config.trainer.ckpt.interval == 50
 
 
+def test_shared_ckpt_experimental_pause_inference_propagates():
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {"experimental": {"pause_inference": True}, "interval": 50},
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    assert config.trainer.ckpt is not None
+    assert config.trainer.ckpt.experimental is not None
+    assert config.trainer.ckpt.experimental.pause_inference is True
+    assert config.orchestrator.ckpt is not None
+    assert config.orchestrator.ckpt.experimental is not None
+    assert config.orchestrator.ckpt.experimental.pause_inference is True
+
+
 def test_shared_and_subconfig_disjoint_fields_coexist():
     """Per-field mutex only forbids conflicts on the SAME field — disjoint
     fields in [model] vs [trainer.model] are fine."""

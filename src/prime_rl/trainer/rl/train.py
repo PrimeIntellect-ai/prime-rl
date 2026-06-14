@@ -9,6 +9,7 @@ from datetime import timedelta
 
 from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.trainer.rl.broadcast import setup_weight_broadcast
+from prime_rl.trainer.rl.checkpoint_pause import InferenceCheckpointPause
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
@@ -243,6 +244,7 @@ def train(config: TrainerConfig):
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
+    checkpoint_pause = InferenceCheckpointPause(config.output_dir, config.ckpt, world)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
@@ -290,10 +292,14 @@ def train(config: TrainerConfig):
             # Multi-run: Save per-run checkpoints using each run's orchestrator config.
             # Trainer-level ckpt config can be set by the combined rl entrypoint,
             # but MultiCheckpointManager has a different save signature.
-            save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(optimizer, scheduler)
-            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
-            ckpt_manager.maybe_clean()
+            pause_request_id = checkpoint_pause.pause(progress.step) if ckpt_manager.should_save_any() else None
+            try:
+                save_ckpt_start_time = time.perf_counter()
+                ckpt_manager.save(optimizer, scheduler)
+                save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+                ckpt_manager.maybe_clean()
+            finally:
+                checkpoint_pause.release(progress.step, pause_request_id)
         elif (
             ckpt_manager is not None
             and (config.ckpt and config.ckpt.interval)
@@ -301,23 +307,27 @@ def train(config: TrainerConfig):
             and progress.step % config.ckpt.interval == 0
         ):
             save_ckpt_time = 0
+            pause_request_id = checkpoint_pause.pause(progress.step)
 
-            if not config.ckpt.weights_only:
-                # Single-run: Save full checkpoint
-                logger.info(f"Saving checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+            try:
+                if not config.ckpt.weights_only:
+                    # Single-run: Save full checkpoint
+                    logger.info(f"Saving checkpoint at step {progress.step}")
+                    save_ckpt_start_time = time.perf_counter()
+                    ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+                    save_ckpt_time += time.perf_counter() - save_ckpt_start_time
 
-            ckpt_manager.maybe_clean()
+                ckpt_manager.maybe_clean()
 
-            # Save weight checkpoint
-            if weight_ckpt_manager is not None:
-                logger.info(f"Saving weight checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                weight_ckpt_manager.save(progress.step, model, tokenizer)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
-                weight_ckpt_manager.maybe_clean()
+                # Save weight checkpoint
+                if weight_ckpt_manager is not None:
+                    logger.info(f"Saving weight checkpoint at step {progress.step}")
+                    save_ckpt_start_time = time.perf_counter()
+                    weight_ckpt_manager.save(progress.step, model, tokenizer)
+                    save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+                    weight_ckpt_manager.maybe_clean()
+            finally:
+                checkpoint_pause.release(progress.step, pause_request_id)
         else:
             save_ckpt_time = 0
 

@@ -81,6 +81,10 @@ def get_broadcast_dir(output_dir: Path) -> Path:
     return output_dir / "broadcasts"
 
 
+def get_checkpoint_pause_dir(output_dir: Path) -> Path:
+    return output_dir / "checkpoint_pause"
+
+
 def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
 
@@ -170,6 +174,13 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
         )
         for step in steps_to_delete:
             shutil.rmtree(get_step_path(directory, step))
+
+
+def clean_checkpoint_pause_requests(output_dir: Path) -> None:
+    pause_dir = get_checkpoint_pause_dir(output_dir)
+    if pause_dir.exists():
+        get_logger().info(f"Deleting stale checkpoint pause requests in {pause_dir}")
+        shutil.rmtree(pause_dir)
 
 
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:

@@ -145,6 +145,11 @@ class ClientConfig(BaseConfig):
         return self.elastic is not None
 
 
+class CheckpointExperimentalConfig(BaseConfig):
+    pause_inference: bool = False
+    """Pause student inference while the trainer writes interval checkpoints."""
+
+
 class LogConfig(BaseConfig):
     level: str = Field(default_factory=lambda: os.environ.get("PRIME_LOG_LEVEL", "info"))
     """Log level for the process. Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``."""
