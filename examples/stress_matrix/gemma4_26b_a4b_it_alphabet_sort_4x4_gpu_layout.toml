@@ -32,7 +32,8 @@ reduce_dtype = "bfloat16"
 
 # Opt-in per-token JSONL export: writes importance_ratio / mismatch_kl / is_masked* per token
 # under output_dir/token_exports/step_N/rank_R.jsonl (the full IS/DPPO-mask family, no wandb needed).
-[trainer.experimental.token_export]
+[trainer]
+enable_token_export = true
 
 [orchestrator]
 batch_size = 24
