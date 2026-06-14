@@ -30,6 +30,71 @@ from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRoll
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
+_RAW_TOKEN_ARRAY_KEYS = {
+    "prompt_ids",
+    "prompt_mask",
+    "completion_ids",
+    "completion_mask",
+    "completion_logprobs",
+    "routed_experts",
+    "multi_modal_data",
+    "mm_token_type_ids",
+}
+
+
+def _safe_len(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return len(value)
+    except TypeError:
+        return None
+
+
+def _compact_token_payload(tokens: dict) -> dict:
+    compact: dict = {}
+    for key in ("prompt_ids", "prompt_mask", "completion_ids", "completion_mask", "completion_logprobs"):
+        length = _safe_len(tokens.get(key))
+        if length is not None:
+            compact[f"{key}_len"] = length
+
+    routed = tokens.get("routed_experts")
+    compact["has_routed_experts"] = routed is not None
+    if isinstance(routed, dict):
+        for key in ("shape", "dtype", "start"):
+            if key in routed:
+                compact[f"routed_experts_{key}"] = routed[key]
+
+    for key, value in tokens.items():
+        if key in _RAW_TOKEN_ARRAY_KEYS:
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            compact[key] = value
+    return compact
+
+
+def prune_train_rollout_payload(raw: dict) -> None:
+    """Replace duplicate raw trajectory token/R3 arrays with length summaries.
+
+    By the time this runs, ``interleave_rollout`` has already materialized the
+    trainer-bound ``TrainingSample`` objects. Keeping both the raw VF token
+    lists/base64 R3 deltas and the samples in ``pending_batch`` is the dominant
+    orchestrator-side memory duplication for long RLM/R3 rollouts.
+    """
+    trajectory = raw.get("trajectory")
+    if not isinstance(trajectory, list):
+        return
+
+    for step in trajectory:
+        if not isinstance(step, dict):
+            continue
+        tokens = step.get("tokens")
+        if isinstance(tokens, dict):
+            step["tokens"] = _compact_token_payload(tokens)
+        step.pop("response", None)
+
+    raw["trajectory_payload_pruned"] = True
+
 
 class TrainSink:
     """Three-level train sink. Constructed once, fed via ``add(rollout)``."""
@@ -153,6 +218,7 @@ class TrainSink:
         if rollout.error is not None:
             return
         raw = rollout.raw
+        rollout.num_turns = len(raw.get("trajectory") or [])
         needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
@@ -228,6 +294,8 @@ class TrainSink:
             # Reset annotations so the post-batch filter pass starts clean
             r.filter_results = {}
             r.is_filtered = False
+            if self.config.experimental.prune_train_rollout_payloads and r.samples:
+                prune_train_rollout_payload(r.raw)
             self.pending_batch.append(r)
 
         # Per-group summary. One line per finalized group; per-filter

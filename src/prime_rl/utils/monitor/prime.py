@@ -31,6 +31,19 @@ def _json(val: Any) -> str:
     return json.dumps(val)
 
 
+def _token_len(tokens: dict[str, Any] | None, key: str) -> int | None:
+    if not tokens:
+        return None
+    value = tokens.get(key)
+    if value is not None:
+        try:
+            return len(value)
+        except TypeError:
+            pass
+    compact_value = tokens.get(f"{key}_len")
+    return compact_value if isinstance(compact_value, int) else None
+
+
 _SAMPLE_SCHEMA = pa.schema(
     [
         ("run_id", pa.string()),
@@ -354,8 +367,8 @@ class PrimeMonitor(Monitor):
                     "reward": ts.get("reward"),
                     "advantage": ts.get("advantage"),
                     "extras": ts.get("extras", {}),
-                    "num_input_tokens": len(ts["tokens"]["prompt_ids"]) if ts.get("tokens") else None,
-                    "num_output_tokens": len(ts["tokens"]["completion_ids"]) if ts.get("tokens") else None,
+                    "num_input_tokens": _token_len(ts.get("tokens"), "prompt_ids"),
+                    "num_output_tokens": _token_len(ts.get("tokens"), "completion_ids"),
                 }
                 for ts in trajectory
             ]
