@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import shutil
 import threading
@@ -121,6 +122,16 @@ class SinglePacker(BasePacker):
         )
 
         self.sender.send(micro_batch_grid)
+        # The master decodes + re-encodes the whole batch every step (rollout
+        # bytes + routed_experts blobs — hundreds of MB of transient large
+        # allocations). glibc keeps those freed pages in its arena, so trainer
+        # rank-0 RSS ratchets to OOM over a run (steps 12-25 on 4t12i r64). Drop
+        # the references and return the freed pages to the OS each step.
+        del micro_batch_grid, batch, batches
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception as e:
+            self.logger.debug(f"malloc_trim(0) failed: {e}")
 
 
 class MultiPacker(BasePacker):

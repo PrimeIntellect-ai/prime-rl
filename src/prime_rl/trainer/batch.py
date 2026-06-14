@@ -37,6 +37,12 @@ def _append_routed_experts(dst: MicroBatch, src: MicroBatch) -> None:
     assert src_routed is not None
     assert dst_routed.dtype == src_routed.dtype
     assert dst_routed.shape[1:] == src_routed.shape[1:]
+    # Accumulate in a bytearray: immutable `bytes +=` reallocates the whole
+    # buffer on every append (O(n^2) over a bin, fragmenting the glibc arena and
+    # ratcheting trainer rank-0 RSS to OOM). bytearray += is amortized in-place;
+    # packed_samples_into_micro_bs converts back to bytes once at the end.
+    if not isinstance(dst_routed.data, bytearray):
+        dst_routed.data = bytearray(dst_routed.data)
     dst_routed.data += src_routed.data
     dst_routed.shape[0] += src_routed.shape[0]
 
@@ -210,6 +216,12 @@ def packed_samples_into_micro_bs(
             sample.lora_num_tokens = [0] * num_loras
             sample.lora_num_tokens[idx] = len(sample.input_ids)
             micro_batches.append(sample)
+
+    # Convert routed_experts accumulators back to immutable bytes for transport.
+    for micro_batch in micro_batches:
+        re = micro_batch.routed_experts
+        if re is not None and isinstance(re.data, bytearray):
+            re.data = bytes(re.data)
 
     return micro_batches
 
