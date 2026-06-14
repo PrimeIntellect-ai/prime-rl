@@ -101,10 +101,12 @@ MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
 
-# Drop the per-node multimodal tensors when dumping a Trace to disk (rollout jsonl / wandb
-# tables): they're the training mm_kwargs carrier, not part of the rollout record, and base64
-# pixel tensors would bloat every line. `__all__` applies the exclude to every node in the list.
-ROLLOUT_DUMP_EXCLUDE = {"nodes": {"__all__": {"multi_modal_data"}}}
+# Drop the per-node training tensors when dumping a Trace to disk (rollout jsonl / wandb
+# tables): the multimodal `mm_kwargs` carrier and the router-replay `routed_experts` array are
+# training inputs, not part of the rollout record, and would bloat every line. They also can't
+# round-trip the json dump — their `__nd__` carriers hold raw bytes. `__all__` applies the
+# exclude to every node in the list.
+ROLLOUT_DUMP_EXCLUDE = {"nodes": {"__all__": {"multi_modal_data", "routed_experts"}}}
 
 
 class Orchestrator:

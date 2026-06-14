@@ -19,7 +19,7 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.transport import TrainingSample
-from prime_rl.transport.types import EncodedTensor
+from prime_rl.transport.types import EncodedTensor, RoutedExperts
 from prime_rl.utils.logger import get_logger
 
 
@@ -45,6 +45,23 @@ def _encode_mm_kwargs(mm_items: dict[str, list[dict]]) -> dict[str, EncodedTenso
         arr = np.concatenate(arrs, axis=0)
         encoded[key] = EncodedTensor(dtype=str(arr.dtype), shape=list(arr.shape), data=arr.tobytes())
     return encoded or None
+
+
+def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExperts | None:
+    """The branch's router-replay array (`[tokens, layers, top_k]`) -> the transport
+    `RoutedExperts` the trainer replays. Defensively realigns the token axis to `num_tokens`
+    (the trainer asserts `routed_experts.shape[0] == len(token_ids)`): truncate if longer,
+    zero-pad the tail if shorter. `Branch.routed_experts` already guarantees alignment, so this
+    is a backstop."""
+    if arr is None:
+        return None
+    arr = np.ascontiguousarray(arr)
+    if arr.shape[0] > num_tokens:
+        arr = arr[:num_tokens]
+    elif arr.shape[0] < num_tokens:
+        pad = np.zeros((num_tokens - arr.shape[0], *arr.shape[1:]), dtype=arr.dtype)
+        arr = np.concatenate([arr, pad], axis=0)
+    return RoutedExperts(data=arr.tobytes(), shape=list(arr.shape), dtype=str(arr.dtype))
 
 
 def trace_to_samples(
@@ -88,6 +105,7 @@ def trace_to_samples(
                 env_name=env_name,
                 mm_kwargs=mm_kwargs,
                 mm_token_type_ids=mm_token_type_ids,
+                routed_experts=_encode_routed_experts(branch.routed_experts, len(token_ids)),
             )
         )
     if not samples:
