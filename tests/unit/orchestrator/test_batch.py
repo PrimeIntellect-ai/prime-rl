@@ -109,6 +109,24 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     assert flat_batches[0].env_names == ["env-a"] * 4 + ["env-b"] * 4
 
 
+def test_prepare_sample_expands_compact_completion_temperature():
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[],
+        completion_temperature=0.7,
+        advantage=1.0,
+        env_name="test-env",
+    )
+
+    micro_batch = prepare_sample(sample, seq_len=8)
+
+    assert micro_batch.temperatures == [0.7, 0.7, 0.7, 0.7]
+
+
 def test_prepare_sample_propagates_training_mode(make_training_example):
     example = make_training_example(training_mode="sft")
 

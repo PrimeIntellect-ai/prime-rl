@@ -266,8 +266,8 @@ class TrainSink:
 
         # Propagate to the pre-tokenized samples so the orchestrator can
         # collect samples at ship time without re-walking rollouts. The env
-        # has a single sampling temperature; fan it out across each sample's
-        # completion tokens here (interleave leaves it empty).
+        # has a single sampling temperature; keep it compact instead of
+        # fanning out a duplicate Python float per completion token.
         temperature = env.sampling_args["temperature"]
         for r in survivors:
             for sample in r.samples:
@@ -275,7 +275,8 @@ class TrainSink:
                 sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
-                sample.completion_temperatures = [temperature] * len(sample.completion_ids)
+                sample.completion_temperature = temperature
+                sample.completion_temperatures = []
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)

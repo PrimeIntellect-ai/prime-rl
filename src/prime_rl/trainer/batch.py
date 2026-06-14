@@ -30,6 +30,16 @@ def _slice_routed_experts(routed_experts: RoutedExperts, seq_len: int) -> Routed
     )
 
 
+def _completion_temperatures(training_example: TrainingSample) -> tuple[float, list[float]]:
+    if training_example.completion_temperatures:
+        return training_example.completion_temperatures[0], training_example.completion_temperatures
+
+    temperature = training_example.completion_temperature
+    if temperature is None:
+        temperature = 1.0
+    return temperature, [temperature] * len(training_example.completion_ids)
+
+
 def _append_routed_experts(dst: MicroBatch, src: MicroBatch) -> None:
     dst_routed = dst.routed_experts
     src_routed = src.routed_experts
@@ -65,10 +75,11 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
 
-    # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
-    # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
-    prompt_temp = training_example.completion_temperatures[0] if training_example.completion_temperatures else 1.0
-    temperatures = [prompt_temp] * len(training_example.prompt_ids) + training_example.completion_temperatures
+    # Per-token temperatures: prompt tokens use the completion temperature
+    # (masked out anyway). The transport can carry a compact scalar for the
+    # common constant-temperature case.
+    prompt_temp, completion_temperatures = _completion_temperatures(training_example)
+    temperatures = [prompt_temp] * len(training_example.prompt_ids) + completion_temperatures
 
     # Teacher logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when a teacher model is configured

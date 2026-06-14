@@ -1,4 +1,5 @@
 import asyncio
+import ctypes
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -122,6 +123,14 @@ def log_process_memory(label: str) -> None:
         )
     except Exception as exc:
         get_logger().debug(f"Memory logging failed at {label}: {exc!r}")
+
+
+def trim_process_memory() -> None:
+    """Return freed heap pages to the OS on glibc systems."""
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception as exc:
+        get_logger().debug(f"malloc_trim(0) failed: {exc!r}")
 
 
 async def compute_teacher_logprobs(

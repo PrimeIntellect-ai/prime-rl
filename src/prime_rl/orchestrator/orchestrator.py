@@ -21,7 +21,6 @@ in ``setup()`` and drives them from ``main_loop()``.
 from __future__ import annotations
 
 import asyncio
-import ctypes
 import logging
 import os
 import time
@@ -73,6 +72,7 @@ from prime_rl.orchestrator.utils import (
     save_rollouts,
     set_default_executor,
     setup_student_inference_pool,
+    trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import NoOpWeightWatcher, WeightWatcher
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
@@ -508,10 +508,7 @@ class Orchestrator:
                 get_logger().success("Orchestrator finished.")
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced).")
-            try:
-                ctypes.CDLL("libc.so.6").malloc_trim(0)
-            except Exception as e:
-                get_logger().debug(f"malloc_trim(0) failed: {e}")
+            trim_process_memory()
 
     async def main_loop(self) -> None:
         """Consume ``FinishedRollout``\\ s from the dispatcher and route them
@@ -639,11 +636,10 @@ class Orchestrator:
             teacher_logprobs_time = time.perf_counter() - t
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
+        self.release_train_batch_samples(batch)
         if config.debug.no_trainer:
             self.policy.version = max(self.policy.version, step + 1)
         self.update_dispatch_gate()
-        if config.debug.log_memory:
-            log_process_memory(f"after_step step={step}")
 
         metrics = self.metrics.build(
             step=step,
@@ -659,6 +655,7 @@ class Orchestrator:
         )
         self.monitor.log(metrics, step=step)
         self.monitor.log_samples(rollout_dicts, step=step)
+        rollout_dicts.clear()
         self.monitor.log_distributions(
             distributions={
                 "rewards": [r.reward for r in batch.rollouts],
@@ -693,6 +690,23 @@ class Orchestrator:
         self.train_sink.reset_pre_filter_stats()
         self.progress.step += 1
         self.maybe_trigger_eval(self.progress.step)
+        self.release_train_batch_rollouts(batch)
+        if config.experimental.trim_memory_after_train_batch:
+            trim_process_memory()
+        if config.debug.log_memory:
+            log_process_memory(f"after_step step={step}")
+
+    @staticmethod
+    def release_train_batch_samples(batch: TrainBatch) -> None:
+        """Drop orchestrator-owned references to sent trainer samples."""
+        batch.samples.clear()
+        for rollout in batch.rollouts:
+            rollout.samples.clear()
+
+    @staticmethod
+    def release_train_batch_rollouts(batch: TrainBatch) -> None:
+        """Drop the finalized train batch after metrics and logs consume it."""
+        batch.rollouts.clear()
 
     def maybe_trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything

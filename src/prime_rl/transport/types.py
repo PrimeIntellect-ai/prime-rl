@@ -36,6 +36,10 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     teacher_logprobs: list[float] | None = None
     advantage: float | None = None
     reward: float | None = None
+    # Compact representation for the common case where all completion tokens
+    # were sampled with the same temperature. Legacy per-token temperatures
+    # remain supported for callers that need token-varying values.
+    completion_temperature: float | None = None
 
     # Generic multimodal kwargs: flat dict keyed by the kwarg names the
     # model's forward expects (e.g. {"pixel_values": ..., "image_grid_thw":

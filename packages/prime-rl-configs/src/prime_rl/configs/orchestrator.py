@@ -503,6 +503,11 @@ class OrchestratorExperimentalConfig(BaseConfig):
     lengths for logging. Disable for custom monitors that need exact raw token
     arrays."""
 
+    trim_memory_after_train_batch: bool = True
+    """Call libc malloc_trim after each train batch is finalized. This returns
+    freed large rollout/sample allocations to the OS on glibc systems; disable
+    if the per-step pause costs more than the lower RSS is worth."""
+
 
 class OrchestratorDebugConfig(BaseConfig):
     no_inference: bool = False
