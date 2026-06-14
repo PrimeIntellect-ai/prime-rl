@@ -47,7 +47,7 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     mock_client.post.assert_called_once_with(
         "/load_lora_adapter",
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
-        timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
+        timeout=httpx.Timeout(connect=10.0, read=900.0, write=60.0, pool=10.0),
     )
 
 

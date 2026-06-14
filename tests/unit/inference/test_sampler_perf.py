@@ -42,6 +42,7 @@ def _upstream_convert(output_token_ids: list[list[int]], vocab_size: int) -> tor
     return t
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="exercises the pinned-staging GPU copy path")
 @pytest.mark.parametrize("seed", [0, 1, 2, 3])
 def test_fast_output_tokens_matches_upstream(seed):
     rng = random.Random(seed)
@@ -76,6 +77,7 @@ def test_fast_output_tokens_falls_back_on_foreign_rows():
     assert build_output_tokens_fast(ib, staging, combined, VOCAB, torch.device("cpu")) is None
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="exercises the pinned-staging GPU copy path")
 def test_staging_double_buffer_reuse():
     ib = FakeInputBatch([[1]], [[2, 3]])
     staging = _PinnedStaging(4, 32)
