@@ -117,7 +117,9 @@ def monkey_patch_strip_routed_experts_from_chat():
 
     _patched._prime_rl_strips_routed_experts = True
     OpenAIServingChat.chat_completion_full_generator = _patched
-    logger.info("Stripped routed_experts from chat-completions responses (PD router merges only the /generate object form).")
+    logger.info(
+        "Stripped routed_experts from chat-completions responses (PD router merges only the /generate object form)."
+    )
 
 
 @triton.jit
