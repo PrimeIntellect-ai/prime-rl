@@ -353,15 +353,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
 else
     TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
-
-    if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
-        ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
-        ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.base-url $INFER_URLS"
-        ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.admin-base-url $ADMIN_URLS"
-        {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
-        {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
-            2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
-    fi
 {%- else %}
     TRAIN_NODE_RANK=$SLURM_PROCID
 {%- endif %}
@@ -388,6 +379,21 @@ else
         @ $CONFIG_DIR/trainer.toml \
         2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log &
 {% if num_infer_nodes > 0 %}    fi{% endif %}
+{% if num_infer_nodes > 0 %}
+# Launch the orchestrator on one node. Default is trainer rank 0 (SLURM_PROCID ==
+# NUM_INFER_NODES). With orchestrator_on_inference it moves to the last inference node
+# (a decode node) to keep its rollout buffer + env workers off host-RAM-saturated
+# trainer nodes. Top-level (after the role if/else) so the wait -n teardown covers it.
+{% if orchestrator_on_inference %}ORCH_PROCID=$((NUM_INFER_NODES - 1)){% else %}ORCH_PROCID=$NUM_INFER_NODES{% endif %}
+if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
+    ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
+    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.base-url $INFER_URLS"
+    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.admin-base-url $ADMIN_URLS"
+    {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
+    {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
+        2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
+fi
+{% endif %}
 
 # Wait for the first background job to exit and propagate its exit code. This
 # turns background process crashes (router, orchestrator) into task failures
