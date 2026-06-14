@@ -339,11 +339,10 @@ def interleave_rollout(
         if prepared is None:
             return None
         prepared_steps.append(prepared)
-        if prune_raw_payload and isinstance(step, dict) and isinstance(step.get("tokens"), dict):
-            step["tokens"] = _compact_token_payload(step["tokens"])
-            step.pop("response", None)
     if prune_raw_payload:
-        output["trajectory_payload_pruned"] = True
+        # Each step has been copied into prepared_steps, so raw tokens can be
+        # compacted without affecting sample construction below.
+        prune_train_rollout_payload(output)
 
     # Deferred routed_experts state per sample: O(N) chunk list concatenated
     # once at finalize, replacing the prior O(N²) per-extension unpack/repack.

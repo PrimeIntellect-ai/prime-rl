@@ -96,6 +96,41 @@ def test_interleave_rollout_prunes_raw_payload_during_preparation():
     assert "routed_experts" not in step["tokens"]
 
 
+def test_interleave_rollout_does_not_partially_prune_on_prepare_failure():
+    raw = {
+        "example_id": 0,
+        "error": None,
+        "trajectory": [
+            {
+                "tokens": {
+                    "prompt_ids": [1, 2],
+                    "prompt_mask": [0, 0],
+                    "completion_ids": [3],
+                    "completion_mask": [1],
+                    "completion_logprobs": [-0.1],
+                    "routed_experts": {
+                        "data": base64.b64encode(bytes([7, 8])).decode(),
+                        "shape": [2, 1, 1],
+                        "dtype": "uint8",
+                        "start": 0,
+                    },
+                },
+                "response": object(),
+            },
+            {"tokens": None},
+        ],
+    }
+
+    samples = interleave_rollout(raw, env_name="test-env", prune_raw_payload=True)
+
+    assert samples is None
+    assert "trajectory_payload_pruned" not in raw
+    first_step = raw["trajectory"][0]
+    assert "response" in first_step
+    assert "routed_experts" in first_step["tokens"]
+    assert "completion_ids" in first_step["tokens"]
+
+
 @pytest.mark.asyncio
 async def test_process_rollout_prunes_raw_payload_immediately(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     raw = {

@@ -16,24 +16,7 @@ from prime_rl.utils.chat_template import deserialize_tool_calls
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
-
-
-def _messages_to_text(tokenizer: PreTrainedTokenizer, prompt: Any, completion: Any) -> str:
-    messages: list[dict[str, Any]] = []
-    if isinstance(prompt, list):
-        messages.extend(prompt)
-    elif prompt is not None:
-        messages.append({"role": "user", "content": str(prompt)})
-    if isinstance(completion, list):
-        messages.extend(completion)
-    elif completion is not None:
-        messages.append({"role": "assistant", "content": str(completion)})
-    if not messages:
-        return ""
-    try:
-        return tokenizer.apply_chat_template(deserialize_tool_calls(messages), tokenize=False)
-    except Exception:
-        return json.dumps(messages)
+from prime_rl.utils.monitor.samples import render_prompt_completion_text, token_payload_ids
 
 
 class WandbMonitor(Monitor):
@@ -194,13 +177,11 @@ class WandbMonitor(Monitor):
             if not trajectory:
                 continue
             last_step = trajectory[-1]
-            tokens = last_step.get("tokens")
-            full_ids = []
-            if tokens and "prompt_ids" in tokens and "completion_ids" in tokens:
-                full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
+            full_ids = token_payload_ids(last_step.get("tokens")) or []
+            if full_ids:
                 messages_text = self.tokenizer.decode(full_ids)
             else:
-                messages_text = _messages_to_text(
+                messages_text = render_prompt_completion_text(
                     self.tokenizer,
                     last_step.get("prompt") or rollout.get("prompt"),
                     last_step.get("completion") or rollout.get("completion"),

@@ -20,6 +20,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import PrimeMonitorConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
+from prime_rl.utils.monitor.samples import token_payload_length
 
 
 def _json(val: Any) -> str:
@@ -29,19 +30,6 @@ def _json(val: Any) -> str:
     if val is None:
         return ""
     return json.dumps(val)
-
-
-def _token_len(tokens: dict[str, Any] | None, key: str) -> int | None:
-    if not tokens:
-        return None
-    value = tokens.get(key)
-    if value is not None:
-        try:
-            return len(value)
-        except TypeError:
-            pass
-    compact_value = tokens.get(f"{key}_len")
-    return compact_value if isinstance(compact_value, int) else None
 
 
 _SAMPLE_SCHEMA = pa.schema(
@@ -367,8 +355,8 @@ class PrimeMonitor(Monitor):
                     "reward": ts.get("reward"),
                     "advantage": ts.get("advantage"),
                     "extras": ts.get("extras", {}),
-                    "num_input_tokens": _token_len(ts.get("tokens"), "prompt_ids"),
-                    "num_output_tokens": _token_len(ts.get("tokens"), "completion_ids"),
+                    "num_input_tokens": token_payload_length(ts.get("tokens"), "prompt_ids"),
+                    "num_output_tokens": token_payload_length(ts.get("tokens"), "completion_ids"),
                 }
                 for ts in trajectory
             ]
