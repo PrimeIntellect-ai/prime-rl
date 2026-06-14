@@ -63,7 +63,19 @@ async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer)
 def get_model_completion_len(output: vf.RolloutOutput) -> int:
     """Sum of model-generated completion tokens across all turns (excludes
     environment-injected tokens between turns)."""
-    return sum(len(step["tokens"]["completion_ids"]) for step in output["trajectory"] if step.get("tokens"))
+    total = 0
+    for step in output["trajectory"]:
+        tokens = step.get("tokens")
+        if not tokens:
+            continue
+        completion_ids = tokens.get("completion_ids")
+        if completion_ids is not None:
+            total += len(completion_ids)
+            continue
+        completion_ids_len = tokens.get("completion_ids_len")
+        if isinstance(completion_ids_len, int):
+            total += completion_ids_len
+    return total
 
 
 def get_tool_response_len(output: vf.RolloutOutput) -> int:

@@ -17,6 +17,7 @@ from prime_rl.orchestrator.advantage import (
     setup_advantage_fn,
 )
 from prime_rl.orchestrator.types import TrainRollout
+from prime_rl.orchestrator.utils import get_model_completion_len
 
 
 def _make_rollout(
@@ -232,6 +233,27 @@ def test_efficiency_tokens_default_weights_match_completion_when_no_metric():
     result_default = default_advantage_fn(inputs, length_penalty=TokensLengthPenaltyConfig())
     result_completion = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
     assert result_default.advantages == pytest.approx(result_completion.advantages, abs=1e-6)
+
+
+def test_tokens_length_penalty_uses_compacted_completion_lengths():
+    rollout = _make_rollout(reward=1.0, completion_len=0, num_turns=2)
+    rollout["trajectory"] = [
+        {"tokens": {"prompt_ids_len": 10, "completion_ids_len": 12}},
+        {"tokens": {"prompt_ids_len": 20, "completion_ids_len": 34}},
+    ]
+
+    assert get_model_completion_len(rollout) == 46
+
+    inputs = AdvantageInputs(
+        rollouts=[
+            rollout,
+            _make_rollout(reward=1.0, completion_len=92),
+            _make_rollout(reward=0.0, completion_len=46),
+        ]
+    )
+    result = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
+
+    assert result.advantages[0] > result.advantages[1]
 
 
 def test_efficiency_turns_penalty():
