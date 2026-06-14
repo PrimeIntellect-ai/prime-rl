@@ -454,6 +454,21 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def disable_prefix_caching_for_router_replay(self):
+        # Prefix-cache hits skip recomputing the cached prefix, so the engine returns no
+        # routed-expert decisions for those tokens. Router replay needs routing for every
+        # token (branch attribution is all-or-nothing), so force full recompute.
+        if self.trainer.enable_router_replay and self.inference is not None:
+            if self.inference.enable_prefix_caching:
+                warnings.warn(
+                    "Router replay needs routing for every token, but prefix-cache hits carry "
+                    "none. Setting inference.enable_prefix_caching=False.",
+                    stacklevel=2,
+                )
+            self.inference.enable_prefix_caching = False
+        return self
+
+    @model_validator(mode="after")
     def validate_mooncake_offload_requires_slurm(self):
         if (
             self.slurm is None
