@@ -74,27 +74,11 @@ ensure_known_hosts() {
   fi
 }
 
-# Initialize each submodule independently so that a missing private repo
-# (e.g. configs/private when the user lacks access) does not abort the install.
 init_submodules() {
   if [ ! -f .gitmodules ]; then
     return 0
   fi
-  local paths failures
-  paths=$(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | awk '{print $2}')
-  failures=()
-  for path in $paths; do
-    log_info "Initializing submodule: ${path}"
-    if git submodule update --init --recursive -- "$path"; then
-      :
-    else
-      log_warn "Could not initialize submodule '${path}' (likely no access). Continuing without it."
-      failures+=("$path")
-    fi
-  done
-  if [ "${#failures[@]}" -gt 0 ]; then
-    log_warn "Skipped submodules: ${failures[*]}"
-  fi
+  git submodule update --init --recursive
 }
 
 main() {
