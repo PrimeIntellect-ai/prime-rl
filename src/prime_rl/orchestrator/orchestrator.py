@@ -485,7 +485,7 @@ class Orchestrator:
                 get_logger().success("Orchestrator finished.")
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced).")
-            _release_unused_memory()
+            await asyncio.to_thread(_release_unused_memory)
 
     async def main_loop(self) -> None:
         """Consume ``FinishedRollout``\\ s from the dispatcher and route them
@@ -502,29 +502,30 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 continue
 
-            batch = None
+            train_batch = None
+            eval_batch = None
             should_release_memory = False
             try:
                 if isinstance(rollout, EvalRollout):
                     assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
-                    batch = self.eval_sink.add(rollout)
-                    if batch is not None:
+                    eval_batch = self.eval_sink.add(rollout)
+                    if eval_batch is not None:
                         should_release_memory = True
-                        await self.finalize_eval_batch(batch)
+                        await self.finalize_eval_batch(eval_batch)
                     continue
 
                 assert isinstance(rollout, TrainRollout)
-                batch = await self.train_sink.add(rollout)
+                train_batch = await self.train_sink.add(rollout)
                 # In drain mode any late-arriving train batch is dropped — we
                 # don't want to ship past ``max_steps``
-                if batch is not None:
+                if train_batch is not None:
                     should_release_memory = True
-                if batch is not None and not self.draining and not self.stopped.is_set():
-                    await self.finalize_train_batch(batch)
+                if train_batch is not None and not self.draining and not self.stopped.is_set():
+                    await self.finalize_train_batch(train_batch)
             finally:
-                del batch, rollout
+                del train_batch, eval_batch, rollout
                 if should_release_memory:
-                    _release_unused_memory()
+                    await asyncio.to_thread(_release_unused_memory)
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
