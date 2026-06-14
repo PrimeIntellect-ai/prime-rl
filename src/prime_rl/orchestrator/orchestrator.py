@@ -691,8 +691,7 @@ class Orchestrator:
         self.progress.step += 1
         self.maybe_trigger_eval(self.progress.step)
         self.release_train_batch_rollouts(batch)
-        if config.experimental.trim_memory_after_train_batch:
-            trim_process_memory()
+        trim_process_memory()
         if config.debug.log_memory:
             log_process_memory(f"after_step step={step}")
 

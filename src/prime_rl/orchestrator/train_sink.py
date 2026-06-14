@@ -162,7 +162,7 @@ class TrainSink:
             raw,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             env_name=rollout.env_name,
-            prune_raw_payload=self.config.experimental.prune_train_rollout_payloads,
+            prune_raw_payload=True,
         )
         rollout.samples = samples or []
         # Offload base64 image bytes to disk as soon as the rollout is

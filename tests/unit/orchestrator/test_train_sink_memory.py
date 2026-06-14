@@ -138,7 +138,6 @@ async def test_process_rollout_prunes_raw_payload_immediately(monkeypatch: pytes
 
     sink = TrainSink(
         SimpleNamespace(
-            experimental=SimpleNamespace(prune_train_rollout_payloads=True),
             output_dir=tmp_path,
             training_mode="rl",
         ),

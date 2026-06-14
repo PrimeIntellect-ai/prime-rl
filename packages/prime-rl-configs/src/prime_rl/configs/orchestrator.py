@@ -496,17 +496,7 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 
 
 class OrchestratorExperimentalConfig(BaseConfig):
-    prune_train_rollout_payloads: bool = True
-    """Drop heavy raw train trajectory token/R3 payloads after samples, advantages,
-    and pre-batch filters are computed. The trainer-bound TrainingSample keeps
-    the data needed for training; raw trajectories retain lightweight token
-    lengths for logging. Disable for custom monitors that need exact raw token
-    arrays."""
-
-    trim_memory_after_train_batch: bool = True
-    """Call libc malloc_trim after each train batch is finalized. This returns
-    freed large rollout/sample allocations to the OS on glibc systems; disable
-    if the per-step pause costs more than the lower RSS is worth."""
+    pass
 
 
 class OrchestratorDebugConfig(BaseConfig):
