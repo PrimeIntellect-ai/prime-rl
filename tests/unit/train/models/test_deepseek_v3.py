@@ -24,6 +24,7 @@ def get_configs(
     rope_interleave: bool = True,
     rope_type: str = "default",
     num_hidden_layers: int = 8,
+    vocab_size: int = 50272,
 ):
 
     if rope_type == "yarn":
@@ -40,7 +41,7 @@ def get_configs(
         rope_scaling = None
 
     hf_conf = DeepseekV3Config(
-        vocab_size=50272,
+        vocab_size=vocab_size,
         max_position_embeddings=4096,
         hidden_size=1024,
         intermediate_size=1024,
@@ -78,15 +79,24 @@ def get_model_pairs(
     n_group: int = None,
     rope_interleave: bool = True,
     rope_type: str = "default",
-    device="cpu",
+    device_prime="cpu",
+    device_hf=None,
+    **config_kwgs,
 ):
+    if device_hf is None:
+        device_hf = device_prime
 
     hf_conf, prime_config = get_configs(
-        n_group=n_group, rope_interleave=rope_interleave, rope_type=rope_type
+        n_group=n_group,
+        rope_interleave=rope_interleave,
+        rope_type=rope_type,
+        **config_kwgs,
     )
 
-    with torch.device(device), default_dtype(torch.float32):
+    with torch.device(device_prime), default_dtype(torch.float32):
         prime_model = DeepseekV3ForCausalLM(prime_config)
+
+    with torch.device(device_hf), default_dtype(torch.float32):
         hf_model = HFDeepseekV3ForCausalLM(hf_conf)
 
     with torch.no_grad():
@@ -171,7 +181,7 @@ def test_deepseekv3_attention_only(rope_interleave: bool, rope_type: str, device
     fix_seed(45)
 
     hf_model, prime_model = get_model_pairs(
-        rope_interleave=rope_interleave, rope_type=rope_type, device=device
+        rope_interleave=rope_interleave, rope_type=rope_type, device_prime=device
     )
 
     for layer in hf_model.model.layers:
@@ -188,7 +198,7 @@ def test_deepseekv3_mlp_only(n_group: int, device):
 
     fix_seed(48)
 
-    hf_model, prime_model = get_model_pairs(n_group=n_group, device=device)
+    hf_model, prime_model = get_model_pairs(n_group=n_group, device_prime=device)
 
     def foo(hidden_states: torch.Tensor, *args, **kwargs):
         return hidden_states, None
@@ -215,7 +225,7 @@ def test_embeddings(device):
 
     fix_seed(49)
 
-    hf_model, prime_model = get_model_pairs(device=device)
+    hf_model, prime_model = get_model_pairs(device_prime=device)
 
     bs, sl = 1, 1024
     tokens = torch.randint(low=0, high=20000, size=(bs, sl))
@@ -232,7 +242,7 @@ def test_deepseekv3(device):
     fix_seed(51)
 
     hf_model, prime_model = get_model_pairs(
-        rope_type="yarn", rope_interleave=True, n_group=4, device=device
+        rope_type="yarn", rope_interleave=True, n_group=4, device_prime=device
     )
     assert_models_close(hf_model, prime_model, bs=1, sl=100)
 
@@ -337,7 +347,7 @@ def test_layers_conversion(layer_idx: int, device):
     )
 
     for k in new_state_dict.keys():
-        p = re.search("model.layers.(\d+)", k)
+        p = re.search(r"model.layers.(\d+)", k)
         if not p:
             continue
 
@@ -353,7 +363,7 @@ def test_layers_conversion(layer_idx: int, device):
     )
 
     for k in new_state_dict.keys():
-        p = re.search("model.layers.(\d+)", k)
+        p = re.search(r"model.layers.(\d+)", k)
         if not p:
             continue
 
