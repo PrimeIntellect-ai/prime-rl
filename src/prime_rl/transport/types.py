@@ -22,6 +22,12 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
     dtype: str
 
 
+class PackedArray(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    data: bytes
+    shape: list[int]
+    dtype: str
+
+
 # Orchestrator -> Packer
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A single training example."""
@@ -59,6 +65,18 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # Loss dispatch is batch-driven: rl/opd use default_loss_fn (with mode-specific
     # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
     training_mode: TrainingMode = "rl"
+
+    # Compact transport representation for large Python lists. Orchestrator
+    # compacts these at the train-batch send boundary; trainer inflates only
+    # when preparing the selected microbatch.
+    packed_prompt_ids: PackedArray | None = None
+    packed_prompt_mask: PackedArray | None = None
+    packed_completion_ids: PackedArray | None = None
+    packed_completion_mask: PackedArray | None = None
+    packed_completion_logprobs: PackedArray | None = None
+    packed_completion_temperatures: PackedArray | None = None
+    packed_teacher_logprobs: PackedArray | None = None
+    packed_mm_token_type_ids: PackedArray | None = None
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):

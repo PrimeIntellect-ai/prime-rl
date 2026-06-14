@@ -76,6 +76,7 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.orchestrator.watcher import NoOpWeightWatcher, WeightWatcher
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
+from prime_rl.transport.compact import compact_training_samples
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
 from prime_rl.utils.heartbeat import Heartbeat
@@ -635,6 +636,7 @@ class Orchestrator:
                 ex.teacher_logprobs = lp
             teacher_logprobs_time = time.perf_counter() - t
 
+        compact_training_samples(batch.samples)
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.release_train_batch_samples(batch)
         if config.debug.no_trainer:

@@ -17,6 +17,16 @@ from prime_rl.transport import (
     setup_micro_batch_sender,
     setup_training_batch_receiver,
 )
+from prime_rl.transport.compact import (
+    training_sample_completion_len,
+    training_sample_completion_logprobs_len,
+    training_sample_completion_mask_len,
+    training_sample_completion_temperatures_len,
+    training_sample_prompt_len,
+    training_sample_prompt_mask_len,
+    training_sample_teacher_logprobs_len,
+    training_sample_token_len,
+)
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir
 
@@ -154,30 +164,35 @@ class MultiPacker(BasePacker):
 
     def _validate_sample(self, sample: TrainingSample) -> tuple[bool, str | None]:
         """Validate a sample to ensure it won't crash the trainer."""
-        sample_length = len(sample.prompt_ids) + len(sample.completion_ids)
-        if len(sample.prompt_mask) != len(sample.prompt_ids):
+        prompt_len = training_sample_prompt_len(sample)
+        completion_len = training_sample_completion_len(sample)
+        sample_length = prompt_len + completion_len
+        prompt_mask_len = training_sample_prompt_mask_len(sample)
+        completion_mask_len = training_sample_completion_mask_len(sample)
+        completion_logprobs_len = training_sample_completion_logprobs_len(sample)
+        if prompt_mask_len != prompt_len:
             return (
                 False,
-                f"Run wrote a sample with prompt mask length != prompt ids length ({len(sample.prompt_mask)} != {len(sample.prompt_ids)})",
+                f"Run wrote a sample with prompt mask length != prompt ids length ({prompt_mask_len} != {prompt_len})",
             )
-        if len(sample.completion_mask) != len(sample.completion_ids):
+        if completion_mask_len != completion_len:
             return (
                 False,
-                f"Run wrote a sample with completion mask length != completion ids length ({len(sample.completion_mask)} != {len(sample.completion_ids)})",
+                f"Run wrote a sample with completion mask length != completion ids length ({completion_mask_len} != {completion_len})",
             )
-        if len(sample.completion_logprobs) != len(sample.completion_ids):
+        if completion_logprobs_len != completion_len:
             return (
                 False,
-                f"Run wrote a sample with completion logprobs length != completion ids length ({len(sample.completion_logprobs)} != {len(sample.completion_ids)})",
+                f"Run wrote a sample with completion logprobs length != completion ids length ({completion_logprobs_len} != {completion_len})",
             )
-        completion_temperatures_len = len(sample.completion_temperatures)
+        completion_temperatures_len = training_sample_completion_temperatures_len(sample)
         has_compact_temperature = sample.completion_temperature is not None
-        if completion_temperatures_len != len(sample.completion_ids) and not (
+        if completion_temperatures_len != completion_len and not (
             completion_temperatures_len == 0 and has_compact_temperature
         ):
             return (
                 False,
-                f"Run wrote a sample with completion temperatures length != completion ids length ({completion_temperatures_len} != {len(sample.completion_ids)})",
+                f"Run wrote a sample with completion temperatures length != completion ids length ({completion_temperatures_len} != {completion_len})",
             )
         if sample_length == 0:
             return False, "Run wrote a sample with no tokens"
@@ -186,10 +201,11 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with length {sample_length} which exceeds max sequence length {self.seq_len}",
             )
-        if sample.teacher_logprobs is not None and len(sample.teacher_logprobs) != sample_length:
+        teacher_logprobs_len = training_sample_teacher_logprobs_len(sample)
+        if teacher_logprobs_len is not None and teacher_logprobs_len != sample_length:
             return (
                 False,
-                f"Run wrote a sample with teacher logprobs length != sample length ({len(sample.teacher_logprobs)} != {sample_length})",
+                f"Run wrote a sample with teacher logprobs length != sample length ({teacher_logprobs_len} != {sample_length})",
             )
         return True, None
 
@@ -226,7 +242,7 @@ class MultiPacker(BasePacker):
             for sample, step in buffer:
                 if step > current_step:
                     break
-                tokens += len(sample.prompt_ids) + len(sample.completion_ids)
+                tokens += training_sample_token_len(sample)
                 if threshold is not None and tokens >= threshold:
                     return tokens
         return tokens
@@ -263,10 +279,11 @@ class MultiPacker(BasePacker):
                 if step > current_step:
                     # Samples from different steps should be consumed later
                     break
-                tokens_collected += len(sample.prompt_ids) + len(sample.completion_ids)
+                sample_tokens = training_sample_token_len(sample)
+                tokens_collected += sample_tokens
                 if tokens_collected > token_budget:
-                    if tokens_collected == (len(sample.prompt_ids) + len(sample.completion_ids)):
-                        tokens_collected -= len(sample.prompt_ids) + len(sample.completion_ids)
+                    if tokens_collected == sample_tokens:
+                        tokens_collected -= sample_tokens
                         # This means we have a sample that has more tokens than max seqlen
                         self.buffers[run_idx].popleft()
                         continue
@@ -320,7 +337,7 @@ class MultiPacker(BasePacker):
                 assert steps_by_run[run_idx] == step, "Micro batches for a run must come from a single run step"
             samples_by_run[run_idx].append(sample)
 
-            num_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
+            num_tokens = training_sample_token_len(sample)
             if run_idx in per_run_stats:
                 cur_samples, cur_tokens = per_run_stats[run_idx]
                 per_run_stats[run_idx] = (cur_samples + 1, cur_tokens + num_tokens)

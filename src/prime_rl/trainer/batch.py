@@ -1,5 +1,17 @@
 import copy
 
+from prime_rl.transport.compact import (
+    training_sample_completion_ids,
+    training_sample_completion_len,
+    training_sample_completion_logprobs,
+    training_sample_completion_mask,
+    training_sample_completion_temperatures,
+    training_sample_mm_token_type_ids,
+    training_sample_prompt_ids,
+    training_sample_prompt_len,
+    training_sample_prompt_mask,
+    training_sample_teacher_logprobs,
+)
 from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
@@ -30,14 +42,15 @@ def _slice_routed_experts(routed_experts: RoutedExperts, seq_len: int) -> Routed
     )
 
 
-def _completion_temperatures(training_example: TrainingSample) -> tuple[float, list[float]]:
-    if training_example.completion_temperatures:
-        return training_example.completion_temperatures[0], training_example.completion_temperatures
+def _completion_temperatures(training_example: TrainingSample, completion_len: int) -> tuple[float, list[float]]:
+    completion_temperatures = training_sample_completion_temperatures(training_example)
+    if completion_temperatures:
+        return completion_temperatures[0], completion_temperatures
 
     temperature = training_example.completion_temperature
     if temperature is None:
         temperature = 1.0
-    return temperature, [temperature] * len(training_example.completion_ids)
+    return temperature, [temperature] * completion_len
 
 
 def _append_routed_experts(dst: MicroBatch, src: MicroBatch) -> None:
@@ -64,26 +77,34 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     Prepare a problem for sequence packing training.
     Tokenize and prepare tensors.
     """
-    input_ids = training_example.prompt_ids + training_example.completion_ids
-    loss_mask = training_example.prompt_mask + training_example.completion_mask
-    inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
+    prompt_ids = training_sample_prompt_ids(training_example)
+    prompt_mask = training_sample_prompt_mask(training_example)
+    completion_ids = training_sample_completion_ids(training_example)
+    completion_mask = training_sample_completion_mask(training_example)
+    completion_logprobs = training_sample_completion_logprobs(training_example)
+    prompt_len = training_sample_prompt_len(training_example)
+    completion_len = training_sample_completion_len(training_example)
+
+    input_ids = prompt_ids + completion_ids
+    loss_mask = prompt_mask + completion_mask
+    inference_logprobs = [0.0] * prompt_len + completion_logprobs
     advantages = [training_example.advantage] * len(input_ids)
     reward = training_example.reward if training_example.reward is not None else float("nan")
     rewards = [reward] * len(input_ids)
     position_ids = list(range(len(input_ids)))
-    mm_token_type_ids = training_example.mm_token_type_ids
+    mm_token_type_ids = training_sample_mm_token_type_ids(training_example)
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
 
     # Per-token temperatures: prompt tokens use the completion temperature
     # (masked out anyway). The transport can carry a compact scalar for the
     # common constant-temperature case.
-    prompt_temp, completion_temperatures = _completion_temperatures(training_example)
-    temperatures = [prompt_temp] * len(training_example.prompt_ids) + completion_temperatures
+    prompt_temp, completion_temperatures = _completion_temperatures(training_example, completion_len)
+    temperatures = [prompt_temp] * prompt_len + completion_temperatures
 
     # Teacher logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when a teacher model is configured
-    teacher_logprobs = training_example.teacher_logprobs
+    teacher_logprobs = training_sample_teacher_logprobs(training_example)
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )

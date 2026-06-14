@@ -1,8 +1,10 @@
+import msgspec
 import numpy as np
 import pytest
 
 from prime_rl.trainer.batch import prepare_batch, prepare_sample
-from prime_rl.transport.types import RoutedExperts, TrainingSample
+from prime_rl.transport.compact import compact_training_sample, training_sample_token_len
+from prime_rl.transport.types import RoutedExperts, TrainingBatch, TrainingSample
 
 
 def _routed_experts(data, dtype=np.uint8):
@@ -125,6 +127,51 @@ def test_prepare_sample_expands_compact_completion_temperature():
     micro_batch = prepare_sample(sample, seq_len=8)
 
     assert micro_batch.temperatures == [0.7, 0.7, 0.7, 0.7]
+
+
+def test_prepare_sample_inflates_compact_training_sample_after_msgpack_roundtrip():
+    prompt_len = 256
+    completion_len = 256
+    sample = TrainingSample(
+        prompt_ids=[100_000 + i for i in range(prompt_len)],
+        prompt_mask=[False] * prompt_len,
+        completion_ids=[200_000 + i for i in range(completion_len)],
+        completion_mask=[True] * completion_len,
+        completion_logprobs=[-0.01 * i for i in range(completion_len)],
+        completion_temperatures=[0.7] * completion_len,
+        teacher_logprobs=[-0.02 * i for i in range(prompt_len + completion_len)],
+        mm_token_type_ids=[0] * (prompt_len + completion_len),
+        advantage=1.0,
+        reward=0.5,
+        env_name="test-env",
+    )
+    encoder = msgspec.msgpack.Encoder()
+    unpacked_size = len(encoder.encode(TrainingBatch(examples=[sample], step=0)))
+
+    compact_training_sample(sample)
+
+    assert sample.prompt_ids == []
+    assert sample.completion_ids == []
+    assert sample.completion_logprobs == []
+    assert sample.teacher_logprobs is None
+    assert training_sample_token_len(sample) == prompt_len + completion_len
+
+    packed_payload = encoder.encode(TrainingBatch(examples=[sample], step=0))
+    assert len(packed_payload) < unpacked_size
+
+    decoded = msgspec.msgpack.Decoder(type=TrainingBatch).decode(packed_payload)
+    micro_batch = prepare_sample(decoded.examples[0], seq_len=prompt_len + completion_len)
+
+    assert micro_batch.input_ids == [100_000 + i for i in range(prompt_len)] + [
+        200_000 + i for i in range(completion_len)
+    ]
+    assert micro_batch.loss_mask == [False] * prompt_len + [True] * completion_len
+    assert micro_batch.inference_logprobs == pytest.approx(
+        [0.0] * prompt_len + [-0.01 * i for i in range(completion_len)]
+    )
+    assert micro_batch.temperatures == pytest.approx([0.7] * (prompt_len + completion_len))
+    assert micro_batch.teacher_logprobs == pytest.approx([-0.02 * i for i in range(prompt_len + completion_len)])
+    assert micro_batch.mm_token_type_ids == [0] * (prompt_len + completion_len)
 
 
 def test_prepare_sample_propagates_training_mode(make_training_example):
