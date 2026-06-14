@@ -57,6 +57,7 @@ export CONFIG_DIR={{ config_dir }}
 export OUTPUT_DIR={{ output_dir }}
 export ORCHESTRATOR_OUTPUT_DIR={{ orchestrator_output_dir }}
 mkdir -p $OUTPUT_DIR/logs/trainer $OUTPUT_DIR/logs/inference
+rm -f $OUTPUT_DIR/logs/inference/*.log
 ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 
