@@ -391,6 +391,7 @@ class Orchestrator:
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
+            advantage_config=config.advantage,
             pre_filters=pre_filters,
             post_filters=post_filters,
         )
