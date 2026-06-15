@@ -111,7 +111,7 @@ def test_train_env_threads_max_seq_len_into_advantage_fn(monkeypatch):
 
     monkeypatch.setattr(Env, "__init__", fake_env_init)
     config = TrainEnvConfig(
-        advantage=DefaultAdvantageConfig(length_penalty=LinearLengthPenaltyConfig(coef=1.0)),
+        advantage={"type": "default", "length_penalty": {"coef": 1.0}},
     )
 
     env = TrainEnv(config, max_seq_len=100)
