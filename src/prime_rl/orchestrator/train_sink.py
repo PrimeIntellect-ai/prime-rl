@@ -17,8 +17,8 @@ import asyncio
 import uuid
 from collections import defaultdict
 
-from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
-from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
+from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.advantage import assign_advantages
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import (
@@ -44,7 +44,6 @@ class TrainSink:
         mm_token_type_ids_mapping: dict[int, int] | None,
         batch_size: int | None,
         token_batch_size: int | None,
-        advantage_config: AdvantageConfig | None,
         pre_filters: list[RolloutFilter],
         post_filters: list[RolloutFilter],
     ) -> None:
@@ -202,7 +201,7 @@ class TrainSink:
             )
             return
 
-        assign_advantages(survivors, self.advantage_fn)
+        assign_advantages(survivors, self.train_envs.get(env_name).advantage_fn)
 
         # Propagate to the pre-tokenized samples so the orchestrator can
         # collect samples at ship time without re-walking rollouts. The env

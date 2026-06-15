@@ -79,7 +79,6 @@ envs = [
     "math-python",
     "math500",
     "mini-swe-agent-plus",
-    "mini-swe-agent-plus-rlm",
     "mmlu-pro",
     "opencode-cp",
     "opencode-deepdive",
@@ -88,6 +87,7 @@ envs = [
     "opencode-swe",
     "reverse-text",
     "rlm-swe",
+    "rlm-search",
     "science-env",
     "simpleqa-verified",
     "tau2-bench",
@@ -152,6 +152,7 @@ override-dependencies = [
     "transformers==5.6.2",
     "torch>=2.9.0",
     "openenv-core",
+    "verifiers[packages]>=0.1.15.dev150",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
@@ -209,6 +210,7 @@ color-codeword = { path = "deps/research-environments/environments/color_codewor
 deepdive = { path = "deps/research-environments/environments/deepdive", editable = true }
 general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
 gpqa = { path = "deps/research-environments/environments/gpqa", editable = true }
+harnesses = { path = "deps/verifiers/packages/harnesses", editable = true }
 hle = { path = "deps/research-environments/environments/hle", editable = true }
 ifeval = { path = "deps/research-environments/environments/ifeval", editable = true }
 livecodebench = { path = "deps/research-environments/environments/livecodebench", editable = true }
@@ -217,7 +219,6 @@ math-env = { path = "deps/research-environments/environments/math_env", editable
 math-python = { path = "deps/verifiers/environments/math_python", editable = true }
 math500 = { path = "deps/research-environments/environments/math500", editable = true }
 mini-swe-agent-plus = { path = "deps/research-environments/environments/mini_swe_agent_plus", editable = true }
-mini-swe-agent-plus-rlm = { path = "deps/research-environments/environments/mini_swe_agent_plus_rlm", editable = true }
 mmlu-pro = { path = "deps/research-environments/environments/mmlu_pro", editable = true }
 opencode-cp = { path = "deps/research-environments/environments/opencode_cp", editable = true }
 opencode-deepdive = { path = "deps/research-environments/environments/opencode_deepdive", editable = true }
@@ -226,9 +227,11 @@ opencode-science = { path = "deps/research-environments/environments/opencode_sc
 opencode-swe = { path = "deps/research-environments/environments/opencode_swe", editable = true }
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
 rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable = true }
+rlm-search = { path = "deps/research-environments/environments/rlm_search", editable = true }
 science-env = { path = "deps/research-environments/environments/science_env", editable = true }
 simpleqa-verified = { path = "deps/research-environments/environments/simpleqa_verified", editable = true }
 tau2-bench = { path = "deps/research-environments/environments/tau2_bench", editable = true }
+tasksets = { path = "deps/verifiers/packages/tasksets", editable = true }
 wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
 wordle = { path = "deps/verifiers/environments/wordle", editable = true }
 torch = { index = "pytorch-cu128" }

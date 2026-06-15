@@ -133,6 +133,7 @@ class RolloutDispatcher:
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
         training_mode: Literal["rl", "opd", "sft"],
+        use_cache_salt: bool = True,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -144,6 +145,7 @@ class RolloutDispatcher:
         self.train_source = train_source
         self.eval_source = eval_source
         self.training_mode = training_mode
+        self.use_cache_salt = use_cache_salt
         self.max_off_policy_steps = max_off_policy_steps
 
         self.max_inflight = max_inflight_rollouts
@@ -413,13 +415,10 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        # SFT-mode train rollouts hit the frozen teacher pool; salting per
-        # policy version would invalidate the teacher's prefix cache every
-        # weight update for no reason.
-        if self.training_mode == "sft" and group.kind == "train":
-            cache_salt = None
-        else:
+        if group.kind == "eval" or self.use_cache_salt:
             cache_salt = str(group.policy_version_at_start)
+        else:
+            cache_salt = None
 
         if env.requires_group_scoring:
             permits = group.rollouts_to_schedule
