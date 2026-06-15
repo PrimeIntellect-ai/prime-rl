@@ -1,3 +1,4 @@
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TypedDict
 
@@ -10,7 +11,12 @@ from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
-from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfig, setup_micro_batch_receiver
+from prime_rl.transport import (
+    MicroBatch,
+    MicroBatchReceiver,
+    TransportConfig,
+    setup_micro_batch_receiver,
+)
 
 
 class TensorMicroBatch(TypedDict):
@@ -26,6 +32,7 @@ class TensorMicroBatch(TypedDict):
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
     env_names: list[str]
+    sequence_lengths: list[int]
 
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
@@ -45,6 +52,10 @@ class TensorMicroBatch(TypedDict):
     # Selects loss dispatch (rl/opd → default loss with mode-specific taus,
     # sft → sft loss). All samples in a micro batch share the same mode.
     training_mode: str
+
+    # Packer-derived metadata used for run-local debug exports.
+    run_id: str | None
+    run_step: int | None
 
 
 class FakeDataLoader:
@@ -84,6 +95,7 @@ class FakeDataLoader:
         total_seq_len = 0
         input_ids = []
         position_ids = []
+        sequence_lengths = []
 
         while total_seq_len < self.seq_len:
             # Generate reasonably long documents
@@ -91,6 +103,7 @@ class FakeDataLoader:
             if seq_len_to_generate + total_seq_len > self.seq_len:
                 seq_len_to_generate = self.seq_len - total_seq_len
             total_seq_len += seq_len_to_generate
+            sequence_lengths.append(seq_len_to_generate)
             tmp_input_ids = torch.randint(0, 120000, (seq_len_to_generate,), generator=generator).long()
             tmp_position_ids = torch.arange(seq_len_to_generate).long()
 
@@ -114,12 +127,15 @@ class FakeDataLoader:
             "teacher_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
             "env_names": ["fake"] * input_ids.shape[0],
+            "sequence_lengths": sequence_lengths,
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
+            "run_id": None,
+            "run_step": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -142,12 +158,15 @@ class FakeDataLoader:
             "teacher_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
             "env_names": ["fake"] * self.seq_len,
+            "sequence_lengths": [self.seq_len],
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
+            "run_id": None,
+            "run_step": None,
         }
 
 
@@ -162,6 +181,7 @@ class DataLoader:
         seq_len: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
+        bin_cost: Callable[[Sequence[int]], int],
         config: TransportConfig,
     ):
         self.world = get_world()
@@ -173,6 +193,7 @@ class DataLoader:
                 tokenizer=tokenizer,
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
+                bin_cost=bin_cost,
                 start_step=start_step,
             )
 
@@ -236,6 +257,7 @@ class DataLoader:
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
             env_names=micro_batch.env_names,
+            sequence_lengths=micro_batch.sequence_lengths,
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
             mm_kwargs=mm_kwargs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
@@ -243,6 +265,8 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             training_mode=micro_batch.training_mode,
+            run_id=micro_batch.run_id,
+            run_step=micro_batch.run_step,
         )
 
 

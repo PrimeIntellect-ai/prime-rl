@@ -12,7 +12,7 @@ import verifiers as vf
 from httpx import AsyncClient
 from openai import NotFoundError
 from renderers import RendererConfig
-from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
+from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
@@ -300,8 +300,8 @@ async def check_health(
 NCCL_READY_MARKER = "NCCL_READY"
 
 
-def _is_retryable_pause_error(exception: BaseException) -> bool:
-    """Check if an exception should trigger a retry for pausing engines."""
+def _is_retryable_admin_error(exception: BaseException) -> bool:
+    """Check if an exception should trigger a retry for an admin op (pause/resume/update_weights)."""
     if isinstance(exception, httpx.HTTPStatusError):
         # Retry on transient server errors (5xx, e.g. engine briefly unresponsive);
         # client errors (4xx) won't fix themselves on retry.
@@ -314,47 +314,55 @@ def _is_retryable_pause_error(exception: BaseException) -> bool:
     return False
 
 
-# Per-attempt and total bounds for `/pause`. Pausing drains in-flight requests
-# (mode="keep"), so a single attempt can legitimately take a while, but the global
-# admin AsyncClient uses `timeout=None`, so a stuck server would hang the weight
-# update forever. `_READ_TIMEOUT` converts a hang into a TimeoutException so
-# tenacity retries; `_TOTAL` is the wall-clock budget across all retries.
-PAUSE_READ_TIMEOUT_S = 120.0
-PAUSE_TOTAL_TIMEOUT_S = 300.0
+# Per-attempt read timeout for admin ops, overridable per call. The admin
+# AsyncClient uses `timeout=None`, so without this a stuck server would hang the
+# weight update forever: the read timeout converts a hang into a TimeoutException
+# that tenacity retries. Sized for `/pause`, which drains in-flight requests
+# (mode="keep") and so can legitimately take a while.
+ADMIN_TIMEOUT_S = 300.0
+# `/update_weights` runs a collective NCCL receive across all DP workers, which
+# can take longer than the other admin ops.
+UPDATE_WEIGHTS_TIMEOUT_S = 720.0
+
+
+async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+    """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
+
+    The total wall-clock budget across all retries is twice the per-attempt timeout.
+    """
+    async for attempt in AsyncRetrying(
+        retry=retry_if_exception(_is_retryable_admin_error),
+        stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    ):
+        with attempt:
+            response = await client.post(
+                path,
+                timeout=httpx.Timeout(connect=10.0, read=timeout_s, write=60.0, pool=10.0),
+                **kwargs,
+            )
+            response.raise_for_status()
 
 
 async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
     logger.info(f"Updating policy in-flight to v{step}")
-
-    @retry(
-        retry=retry_if_exception(_is_retryable_pause_error),
-        stop=stop_after_delay(PAUSE_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
+    await asyncio.gather(
+        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
     )
-    async def _pause(client: AsyncClient) -> None:
-        response = await client.post(
-            "/pause",
-            params={"mode": "keep", "clear_cache": "false"},
-            timeout=httpx.Timeout(connect=10.0, read=PAUSE_READ_TIMEOUT_S, write=60.0, pool=10.0),
-        )
-        response.raise_for_status()
-
-    await asyncio.gather(*[_pause(client) for client in admin_clients])
     logger.debug("All inference engines paused")
 
 
 async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
-    """Resume all inference engines after weight update."""
+    """Resume all inference engines after weight update.
+
+    Resuming is idempotent (it just clears the paused flag), so retrying transient
+    failures is safe; a dropped /resume would leave engines paused indefinitely.
+    """
     logger = get_logger()
-
-    async def _resume(client: AsyncClient) -> None:
-        response = await client.post("/resume")
-        response.raise_for_status()
-
-    await asyncio.gather(*[_resume(client) for client in admin_clients])
+    await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
     logger.debug("All inference engines resumed")
 
 
@@ -380,11 +388,6 @@ async def update_weights(
     if lora_name is not None and weight_dir is not None:
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
-
-        async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
-            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
-            response.raise_for_status()
-
         # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
         await _pause_engines(admin_clients, step=step)
 
@@ -396,7 +399,17 @@ async def update_weights(
                 nccl_ready_file.touch()
                 logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
-            await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
+            await asyncio.gather(
+                *[
+                    _admin_post(
+                        admin_client,
+                        "/update_weights",
+                        json={"weight_dir": weight_dir_posix},
+                        timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                    )
+                    for admin_client in admin_clients
+                ]
+            )
         finally:
             await _resume_engines(admin_clients)
 

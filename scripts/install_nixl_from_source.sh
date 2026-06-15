@@ -10,6 +10,19 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV_BIN="$PROJECT_DIR/.venv/bin"
 PYTHON="$VENV_BIN/python"
 
+# UCX's --with-verbs silently disables IB/RoCE support when the rdma-core *dev*
+# headers (verbs.h / rdma_cma.h) are missing, yielding a TCP-only build. On hosts
+# with RDMA devices, require the headers up front instead of failing at runtime.
+HAVE_RDMA=0
+if compgen -G "/sys/class/infiniband/*" > /dev/null; then
+    HAVE_RDMA=1
+    if [ ! -f /usr/include/infiniband/verbs.h ] || [ ! -f /usr/include/rdma/rdma_cma.h ]; then
+        echo "ERROR: host has RDMA devices but the rdma-core dev headers are missing." >&2
+        echo "Install them first, e.g.: apt-get install -y libibverbs-dev librdmacm-dev" >&2
+        exit 1
+    fi
+fi
+
 WORKSPACE="$PROJECT_DIR/nixl_workspace"
 mkdir -p "$WORKSPACE"
 UCX_SRC="$WORKSPACE/ucx_source"
@@ -40,11 +53,23 @@ if [ ! -f "$UCX_INSTALL/lib/libucs.so" ]; then
         --enable-devel-headers \
         --enable-mt \
         --with-verbs \
+        --with-rdmacm \
         --with-cuda="$CUDA_PATH" \
         --with-ze=no
     make -j"$NPROC"
     make install
     echo "=== UCX installed to $UCX_INSTALL ==="
+
+    # Fail loudly if the IB transports didn't make it into the build.
+    if [ "$HAVE_RDMA" = 1 ]; then
+        ucx_transports=$(LD_LIBRARY_PATH="$UCX_INSTALL/lib:$UCX_INSTALL/lib/ucx:${LD_LIBRARY_PATH:-}" \
+            "$UCX_INSTALL/bin/ucx_info" -d)
+        if ! grep -q "Transport: rc_verbs" <<< "$ucx_transports"; then
+            echo "ERROR: UCX built without IB (rc_verbs) transport despite RDMA devices being present." >&2
+            echo "Check that libibverbs-dev / librdmacm-dev were present at configure time." >&2
+            exit 1
+        fi
+    fi
 else
     echo "=== UCX already built, skipping ==="
 fi

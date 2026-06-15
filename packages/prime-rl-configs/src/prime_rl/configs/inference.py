@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
-from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
+from prime_rl.configs.shared import BaseModelConfig, LogConfig, SlurmConfig
 from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
@@ -342,6 +342,9 @@ class InferenceConfig(BaseConfig):
 
     parallel: ParallelConfig = ParallelConfig()
     """Multi-node and multi-GPU parallelism (TP, DP, PP)."""
+
+    log: LogConfig = LogConfig()
+    """Logging configuration."""
 
     enable_lora: bool = False
     """Enable LoRA. Forwarded as ``--enable-lora``."""

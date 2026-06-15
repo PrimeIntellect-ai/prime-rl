@@ -74,27 +74,11 @@ ensure_known_hosts() {
   fi
 }
 
-# Initialize each submodule independently so that a missing private repo
-# (e.g. configs/private when the user lacks access) does not abort the install.
 init_submodules() {
   if [ ! -f .gitmodules ]; then
     return 0
   fi
-  local paths failures
-  paths=$(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | awk '{print $2}')
-  failures=()
-  for path in $paths; do
-    log_info "Initializing submodule: ${path}"
-    if git submodule update --init --recursive -- "$path"; then
-      :
-    else
-      log_warn "Could not initialize submodule '${path}' (likely no access). Continuing without it."
-      failures+=("$path")
-    fi
-  done
-  if [ "${#failures[@]}" -gt 0 ]; then
-    log_warn "Skipped submodules: ${failures[*]}"
-  fi
+  git submodule update --init --recursive
 }
 
 main() {
@@ -158,6 +142,16 @@ main() {
 
   log_info "Installing pre-commit hooks..."
   uv run pre-commit install
+
+  # aarch64 has no prebuilt flash-attn wheel; build it from source for the local GPU.
+  # Without this, `import flash_attn` fails with `ModuleNotFoundError: flash_attn_2_cuda`.
+  # Run last so no subsequent uv operation (which implicitly syncs against the lockfile)
+  # rebuilds flash-attn from PyPI with FLASH_ATTENTION_SKIP_CUDA_BUILD=TRUE and undoes this.
+  if [ "$(uname -m)" = "aarch64" ]; then
+    log_info "aarch64 detected: building flash-attn from source (this takes 20-30 minutes)..."
+    log_warn "Future 'uv sync --all-extras' or 'uv run' will remove this build. Use 'uv sync --inexact' or 'uv run --no-sync' to keep it."
+    bash scripts/docker-arm64-post-install.sh
+  fi
 
   log_info "Installation completed!"
 }

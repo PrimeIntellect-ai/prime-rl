@@ -143,6 +143,49 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
+class TokensLengthPenaltyConfig(BaseConfig):
+    type: Literal["tokens"] = "tokens"
+
+    completion_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
+    """Weight on model completion tokens. Finite and non-negative."""
+
+    tool_response_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
+    """Weight on tool-response tokens (read from the rollout's ``*_total_tool_response_tokens`` harness metric; 0 if absent). Finite and non-negative."""
+
+
+class TurnsLengthPenaltyConfig(BaseConfig):
+    type: Literal["turns"] = "turns"
+
+
+LengthPenaltyConfig: TypeAlias = Annotated[
+    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
+    Field(discriminator="type"),
+]
+
+
+class DefaultAdvantageConfig(BaseConfig):
+    type: Literal["default"] = "default"
+
+    length_penalty: LengthPenaltyConfig | None = None
+    """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
+
+
+class CustomAdvantageConfig(BaseConfig):
+    type: Literal["custom"] = "custom"
+
+    import_path: str
+    """Import path to the advantage function (e.g. ``my_module.my_advantage``)."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Kwargs forwarded to the advantage function."""
+
+
+AdvantageConfig: TypeAlias = Annotated[
+    DefaultAdvantageConfig | CustomAdvantageConfig,
+    Field(discriminator="type"),
+]
+
+
 class EnvConfig(BaseConfig):
     id: str = "reverse-text"
     """Registered verifiers environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation."""
@@ -213,6 +256,11 @@ class TrainEnvConfig(EnvConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
+
+    advantage: AdvantageConfig | None = None
+    """Advantage strategy for this env's GRPO groups. Inherits from the top-level
+    ``orchestrator.advantage`` when unset; set a different ``default``/``custom``
+    config to give this env its own advantage computation."""
 
 
 class EvalEnvConfig(EnvConfig):
@@ -374,49 +422,6 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the progress from checkpoint."""
 
 
-class TokensLengthPenaltyConfig(BaseConfig):
-    type: Literal["tokens"] = "tokens"
-
-    completion_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on model completion tokens. Finite and non-negative."""
-
-    tool_response_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on tool-response tokens (read from the rollout's ``*_total_tool_response_tokens`` harness metric; 0 if absent). Finite and non-negative."""
-
-
-class TurnsLengthPenaltyConfig(BaseConfig):
-    type: Literal["turns"] = "turns"
-
-
-LengthPenaltyConfig: TypeAlias = Annotated[
-    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
-    Field(discriminator="type"),
-]
-
-
-class DefaultAdvantageConfig(BaseConfig):
-    type: Literal["default"] = "default"
-
-    length_penalty: LengthPenaltyConfig | None = None
-    """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
-
-
-class CustomAdvantageConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Import path to the advantage function (e.g. ``my_module.my_advantage``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the advantage function."""
-
-
-AdvantageConfig: TypeAlias = Annotated[
-    DefaultAdvantageConfig | CustomAdvantageConfig,
-    Field(discriminator="type"),
-]
-
-
 # Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
 class GibberishFilterConfig(BaseConfig):
     type: Literal["gibberish"] = "gibberish"
@@ -517,7 +522,7 @@ class OrchestratorConfig(BaseConfig):
     """Typed renderer config (``renderers.RendererConfig`` discriminated
     union). Defaults to ``"auto"``, which resolves from
     ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. ``None``
-    opts into MITO (``openai_chat_completions``); SFT mode forces this."""
+    opts into MITO (``openai_chat_completions``)."""
 
     pool_size: int | None = Field(None, ge=1)
     """Number of renderer slots shared across concurrent rollouts. Bump
@@ -754,11 +759,10 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _force_no_renderer_for_sft(self):
-        """SFT rolls out via the teacher's plain chat-completions endpoint; the
-        renderer client doesn't apply. Force ``renderer=None`` so the user
-        doesn't have to remember to set it. Declared before the renderer
-        validators below so they see the corrected value."""
-        if self.training_mode == "sft":
+        """Teacher-backed SFT rolls out via the teacher's plain chat-completions
+        endpoint; the renderer client doesn't apply. When no teacher is
+        configured, SFT uses the student rollout path and keeps the renderer."""
+        if self.training_mode == "sft" and self.teacher is not None:
             self.renderer = None
         return self
 
@@ -768,8 +772,8 @@ class OrchestratorConfig(BaseConfig):
         has_teacher = self.teacher is not None
         if self.training_mode == "rl" and has_teacher:
             raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
-        if self.training_mode in ("opd", "sft") and not has_teacher:
-            raise ValueError(f"orchestrator.teacher must be configured when training_mode = '{self.training_mode}'.")
+        if self.training_mode == "opd" and not has_teacher:
+            raise ValueError("orchestrator.teacher must be configured when training_mode = 'opd'.")
         return self
 
     @model_validator(mode="after")
@@ -875,6 +879,11 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.env:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
+
+        # Propagate the top-level ``advantage`` into each train env that didn't set its own.
+        for env_cfg in self.train.env:
+            if "advantage" not in env_cfg.model_fields_set:
+                env_cfg.advantage = self.advantage
 
         # Resolve train env num_workers from max_inflight_rollouts
         for env_cfg in self.train.env:

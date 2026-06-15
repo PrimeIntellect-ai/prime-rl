@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = "~=3.12.0"
 dependencies = [
     "prime-rl-configs",
+    "prime-pydantic-config",
     "beartype>=0.21.0",
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
@@ -17,7 +18,7 @@ dependencies = [
     "torchvision",
     "torchaudio",
     "torchdata>=0.11.0",
-    "transformers",
+    "transformers==5.6.2",
     "vllm>=0.22.0",
     "mooncake-transfer-engine>=0.3.10.post2",
     "wandb>=0.26.1",
@@ -27,6 +28,7 @@ dependencies = [
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
     "openai>=1.106.1",
+    "orjson>=3.11.0",
     "rich>=14.0.0",
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
@@ -77,7 +79,6 @@ envs = [
     "math-python",
     "math500",
     "mini-swe-agent-plus",
-    "mini-swe-agent-plus-rlm",
     "mmlu-pro",
     "opencode-cp",
     "opencode-deepdive",
@@ -86,10 +87,12 @@ envs = [
     "opencode-swe",
     "reverse-text",
     "rlm-swe",
+    "rlm-search",
     "science-env",
     "simpleqa-verified",
     "tau2-bench",
     "wiki-search",
+    "wordle",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -128,7 +131,6 @@ dev = [
     "ruff>=0.12.1",
 ]
 
-
 [tool.uv]
 # Enforce a uv version that supports the friendly-duration form
 # (`"7 days"`) in the static pyproject parser. Older uvs silently parse
@@ -147,9 +149,10 @@ environments = [
 override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
-    "transformers>=5.1.0.dev0",
+    "transformers==5.6.2",
     "torch>=2.9.0",
     "openenv-core",
+    "verifiers[packages]>=0.1.15.dev150",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
@@ -184,6 +187,8 @@ prime-tunnel = false
 prime-evals = false
 verifiers = false
 renderers = false
+tasksets = false
+harnesses = false
 prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
@@ -205,6 +210,7 @@ color-codeword = { path = "deps/research-environments/environments/color_codewor
 deepdive = { path = "deps/research-environments/environments/deepdive", editable = true }
 general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
 gpqa = { path = "deps/research-environments/environments/gpqa", editable = true }
+harnesses = { path = "deps/verifiers/packages/harnesses", editable = true }
 hle = { path = "deps/research-environments/environments/hle", editable = true }
 ifeval = { path = "deps/research-environments/environments/ifeval", editable = true }
 livecodebench = { path = "deps/research-environments/environments/livecodebench", editable = true }
@@ -213,7 +219,6 @@ math-env = { path = "deps/research-environments/environments/math_env", editable
 math-python = { path = "deps/verifiers/environments/math_python", editable = true }
 math500 = { path = "deps/research-environments/environments/math500", editable = true }
 mini-swe-agent-plus = { path = "deps/research-environments/environments/mini_swe_agent_plus", editable = true }
-mini-swe-agent-plus-rlm = { path = "deps/research-environments/environments/mini_swe_agent_plus_rlm", editable = true }
 mmlu-pro = { path = "deps/research-environments/environments/mmlu_pro", editable = true }
 opencode-cp = { path = "deps/research-environments/environments/opencode_cp", editable = true }
 opencode-deepdive = { path = "deps/research-environments/environments/opencode_deepdive", editable = true }
@@ -222,16 +227,18 @@ opencode-science = { path = "deps/research-environments/environments/opencode_sc
 opencode-swe = { path = "deps/research-environments/environments/opencode_swe", editable = true }
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
 rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable = true }
+rlm-search = { path = "deps/research-environments/environments/rlm_search", editable = true }
 science-env = { path = "deps/research-environments/environments/science_env", editable = true }
 simpleqa-verified = { path = "deps/research-environments/environments/simpleqa_verified", editable = true }
 tau2-bench = { path = "deps/research-environments/environments/tau2_bench", editable = true }
+tasksets = { path = "deps/verifiers/packages/tasksets", editable = true }
 wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
+wordle = { path = "deps/verifiers/environments/wordle", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
-transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
 vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }
 vllm = [

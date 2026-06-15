@@ -76,6 +76,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     position_ids: list[int]
     temperatures: list[float]  # Per-token temperatures used during generation
     env_names: list[str]
+    sequence_lengths: list[int]
     teacher_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None
@@ -89,3 +90,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # sft → sft loss). All samples packed into a micro batch share the same mode.
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
+
+    # Packer-derived metadata used for run-local token exports.
+    run_id: str | None = None
+    run_step: int | None = None
