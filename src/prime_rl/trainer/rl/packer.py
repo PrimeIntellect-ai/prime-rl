@@ -4,6 +4,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from collections.abc import Callable, Sequence
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -32,6 +33,7 @@ class BasePacker(ABC):
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
+        bin_cost: Callable[[Sequence[int]], int],
         start_step: int = 0,
     ):
         self.logger = get_logger()
@@ -40,6 +42,7 @@ class BasePacker(ABC):
         self.seq_len = seq_len
         self.pad_to_multiple_of = pad_to_multiple_of
         self.tokenizer = tokenizer
+        self.bin_cost = bin_cost
         self.receiver = setup_training_batch_receiver(config)
         shutil.rmtree(get_rollout_dir(self.multi_run_manager.output_dir), ignore_errors=True)
         self.sender: MicroBatchSender = setup_micro_batch_sender(
@@ -84,9 +87,10 @@ class SinglePacker(BasePacker):
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
+        bin_cost: Callable[[Sequence[int]], int],
         start_step: int = 0,
     ):
-        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
+        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, bin_cost, start_step)
         assert self.multi_run_manager.max_runs == 1, "SinglePacker only supports one run"
 
     def pack(self):
@@ -110,6 +114,7 @@ class SinglePacker(BasePacker):
             num_train_workers=self.dp_world_size,
             idxs=[0] * len(batch.examples),
             num_loras=self.multi_run_manager.max_runs,
+            bin_cost=self.bin_cost,
         )
         # The receiver always stamps run_idx from used_idxs (a key of idx_2_id).
         run_id = self.multi_run_manager.idx_2_id[batch.run_idx]
@@ -129,9 +134,10 @@ class MultiPacker(BasePacker):
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
+        bin_cost: Callable[[Sequence[int]], int],
         start_step: int = 0,
     ):
-        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
+        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, bin_cost, start_step)
         # Per-run buffer: stores (TrainingSample, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
@@ -337,6 +343,7 @@ class MultiPacker(BasePacker):
                 num_train_workers=self.dp_world_size,
                 idxs=[run_idx] * len(run_samples),
                 num_loras=self.multi_run_manager.max_runs,
+                bin_cost=self.bin_cost,
             )
             run_id = self.multi_run_manager.idx_2_id[run_idx]
             run_step = steps_by_run[run_idx]
@@ -356,10 +363,15 @@ def setup_packer(
     pad_to_multiple_of: int,
     tokenizer: PreTrainedTokenizer,
     transport_config: TransportConfig,
+    bin_cost: Callable[[Sequence[int]], int],
     start_step: int = 0,
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()
     if multi_run_manager.max_runs == 1:
-        return SinglePacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+        return SinglePacker(
+            dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, bin_cost, start_step
+        )
     else:
-        return MultiPacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+        return MultiPacker(
+            dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, bin_cost, start_step
+        )

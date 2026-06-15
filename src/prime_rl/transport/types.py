@@ -95,6 +95,9 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     position_ids: list[int]
     temperatures: list[float]  # Per-token temperatures used during generation
     env_names: list[str]
+    # Per-sample token counts within the packed batch (one entry per packed
+    # sample); the loss splits the packed sequence back into samples by these.
+    sequence_lengths: list[int]
     ref_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None

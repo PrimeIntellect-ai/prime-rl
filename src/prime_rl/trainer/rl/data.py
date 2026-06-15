@@ -1,3 +1,4 @@
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TypedDict
 
@@ -31,6 +32,7 @@ class TensorMicroBatch(TypedDict):
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
     env_names: list[str]
+    sequence_lengths: list[int]
 
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
@@ -95,6 +97,7 @@ class FakeDataLoader:
         total_seq_len = 0
         input_ids = []
         position_ids = []
+        sequence_lengths = []
 
         while total_seq_len < self.seq_len:
             # Generate reasonably long documents
@@ -102,6 +105,7 @@ class FakeDataLoader:
             if seq_len_to_generate + total_seq_len > self.seq_len:
                 seq_len_to_generate = self.seq_len - total_seq_len
             total_seq_len += seq_len_to_generate
+            sequence_lengths.append(seq_len_to_generate)
             tmp_input_ids = torch.randint(0, 120000, (seq_len_to_generate,), generator=generator).long()
             tmp_position_ids = torch.arange(seq_len_to_generate).long()
 
@@ -125,6 +129,7 @@ class FakeDataLoader:
             "ref_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
             "env_names": ["fake"] * input_ids.shape[0],
+            "sequence_lengths": sequence_lengths,
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
@@ -157,6 +162,7 @@ class FakeDataLoader:
             "ref_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
             "env_names": ["fake"] * self.seq_len,
+            "sequence_lengths": [self.seq_len],
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
@@ -181,6 +187,7 @@ class DataLoader:
         seq_len: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
+        bin_cost: Callable[[Sequence[int]], int],
         config: TransportConfig,
     ):
         self.world = get_world()
@@ -192,6 +199,7 @@ class DataLoader:
                 tokenizer=tokenizer,
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
+                bin_cost=bin_cost,
                 start_step=start_step,
             )
 
@@ -255,6 +263,7 @@ class DataLoader:
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
             env_names=micro_batch.env_names,
+            sequence_lengths=micro_batch.sequence_lengths,
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
             mm_kwargs=mm_kwargs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)

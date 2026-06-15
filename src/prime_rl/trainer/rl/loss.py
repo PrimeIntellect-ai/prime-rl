@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
+from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, IPOLossConfig, LossConfig
 from prime_rl.utils.utils import import_object
 
 
@@ -175,6 +175,41 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
+    """IPO loss type: a symmetric trust region (mask tokens whose probability
+    moved more than ``ipo_threshold`` in absolute terms), policy gradient via
+    the importance ratio, and a squared-log-ratio KL regularizer."""
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
+
+    abs_probs_diff = torch.abs(torch.exp(trainer_logprobs) - torch.exp(inference_logprobs))
+
+    is_masked = abs_probs_diff > loss_config.ipo_threshold
+    keep_mask = loss_mask & ~is_masked
+
+    advantages = loss_config.adv_tau * advantages
+    pg_loss = keep_mask * advantages * importance_ratio
+    kl_loss = loss_mask * log_importance_ratio**2
+    per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+    loss = per_token_loss.sum()
+
+    metrics = {
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
+        "is_masked": _safe_mean(is_masked, loss_mask),
+    }
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
     Ref-KL loss type (on-policy distillation): the reverse KL to the reference
@@ -239,8 +274,9 @@ def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
 
 
 def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
-    """Build the loss fn for the RL loss type: ``default_loss_fn`` with the
-    configured knobs, or the imported function for ``CustomLossConfig``.
+    """Build the loss fn for the rl component from ``trainer.loss``:
+    ``default_loss_fn`` (``DefaultLossConfig``), ``ipo_loss_fn``
+    (``IPOLossConfig``), or the imported function (``CustomLossConfig``).
     The ce / ref_kl loss types are fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
         custom_fn = import_object(loss_config.import_path)
@@ -248,6 +284,10 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return custom_fn(inputs, **kwargs)
+    elif isinstance(loss_config, IPOLossConfig):
+
+        def rl_fn(inputs: LossInputs) -> LossOutputs:
+            return ipo_loss_fn(inputs, loss_config)
     else:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:

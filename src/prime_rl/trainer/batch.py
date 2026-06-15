@@ -1,5 +1,8 @@
 import copy
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
+from prime_rl.trainer.utils import balanced_partition
 from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
@@ -7,6 +10,11 @@ ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
     "int16": 2,
     "int32": 4,
 }
+
+# Backfill value per component weight stream when a packed sample doesn't
+# carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
+# means no component (weight 0.0).
+STREAM_FILL = {"rl_weights": 1.0, "ce_weights": 0.0, "ref_kl_weights": 0.0}
 
 
 def _copy_routed_experts(routed_experts: RoutedExperts) -> RoutedExperts:
@@ -28,17 +36,6 @@ def _slice_routed_experts(routed_experts: RoutedExperts, seq_len: int) -> Routed
         shape=[seq_len, routed_experts.shape[1], routed_experts.shape[2]],
         dtype=routed_experts.dtype,
     )
-
-
-def _append_routed_experts(dst: MicroBatch, src: MicroBatch) -> None:
-    dst_routed = dst.routed_experts
-    src_routed = src.routed_experts
-    assert dst_routed is not None
-    assert src_routed is not None
-    assert dst_routed.dtype == src_routed.dtype
-    assert dst_routed.shape[1:] == src_routed.shape[1:]
-    dst_routed.data += src_routed.data
-    dst_routed.shape[0] += src_routed.shape[0]
 
 
 def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
@@ -153,6 +150,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         loss_mask=loss_mask,
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
+        sequence_lengths=[len(input_ids)],
         ref_logprobs=ref_logprobs,
         temperatures=temperatures,
         rewards=rewards,
@@ -171,28 +169,160 @@ def _is_multimodal_sample(sample: MicroBatch) -> bool:
     return sample.mm_kwargs is not None
 
 
-# Backfill value per component weight stream when a packed sample doesn't
-# carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
-# means no component (weight 0.0).
-STREAM_FILL = {"rl_weights": 1.0, "ce_weights": 0.0, "ref_kl_weights": 0.0}
+@dataclass
+class _MicroBatchBin:
+    samples: list[tuple[int, MicroBatch]]
+    length: int
+
+    @classmethod
+    def from_sample(cls, lora_idx: int, sample: MicroBatch) -> "_MicroBatchBin":
+        return cls(samples=[(lora_idx, sample)], length=len(sample.input_ids))
+
+    @property
+    def first_sample(self) -> MicroBatch:
+        return self.samples[0][1]
+
+    def can_add(self, sample: MicroBatch, max_seq_len: int) -> bool:
+        # Loss routing is per token (component weight streams), so samples of
+        # different loss types pack together freely — only modality, length and
+        # routed-experts presence constrain packing.
+        first_sample = self.first_sample
+        return (
+            not _is_multimodal_sample(first_sample)
+            and not _is_multimodal_sample(sample)
+            and self.length + len(sample.input_ids) <= max_seq_len
+            and (first_sample.routed_experts is None) == (sample.routed_experts is None)
+        )
+
+    def add(self, lora_idx: int, sample: MicroBatch) -> None:
+        self.samples.append((lora_idx, sample))
+        self.length += len(sample.input_ids)
+
+    def workload(self, bin_cost: Callable[[Sequence[int]], int]) -> int:
+        return bin_cost([len(sample.input_ids) for _, sample in self.samples])
+
+    def split_by_workload(self, bin_cost: Callable[[Sequence[int]], int]) -> tuple["_MicroBatchBin", "_MicroBatchBin"]:
+        # Greedily place the heaviest sample on the currently lighter side (longest-processing-time).
+        ranked = sorted(self.samples, key=lambda pair: -bin_cost([len(pair[1].input_ids)]))
+        left: list[tuple[int, MicroBatch]] = []
+        right: list[tuple[int, MicroBatch]] = []
+        left_workload = right_workload = 0
+        for lora_idx, sample in ranked:
+            sample_workload = bin_cost([len(sample.input_ids)])
+            if left_workload <= right_workload:
+                left.append((lora_idx, sample))
+                left_workload += sample_workload
+            else:
+                right.append((lora_idx, sample))
+                right_workload += sample_workload
+        return (
+            _MicroBatchBin(left, sum(len(sample.input_ids) for _, sample in left)),
+            _MicroBatchBin(right, sum(len(sample.input_ids) for _, sample in right)),
+        )
 
 
-def _extend_stream(
-    current: list[float] | None, values: list[float] | None, existing_len: int, new_len: int, fill: float
-) -> list[float] | None:
-    """Extend a per-token weight stream across a packing boundary, backfilling
-    whichever side doesn't carry it with the stream's default."""
-    if values is not None:
-        if current is None:
-            current = [fill] * existing_len
-        current.extend(values)
-    elif current is not None:
-        current.extend([fill] * new_len)
-    return current
+def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
+    has_rewards = any(sample.rewards is not None for _, sample in bin_content.samples)
+    has_ref_logprobs = any(sample.ref_logprobs is not None for _, sample in bin_content.samples)
+    has_mm_token_type_ids = any(sample.mm_token_type_ids is not None for _, sample in bin_content.samples)
+    # A weight stream materializes as soon as one packed sample carries it; the
+    # samples that lack it get the stream's identity fill (STREAM_FILL).
+    has_stream = {name: any(getattr(s, name) is not None for _, s in bin_content.samples) for name in STREAM_FILL}
+
+    input_ids: list[int] = []
+    loss_mask: list[bool] = []
+    advantages: list[float] = []
+    inference_logprobs: list[float] = []
+    position_ids: list[int] = []
+    temperatures: list[float] = []
+    env_names: list[str] = []
+    rewards: list[float] | None = [] if has_rewards else None
+    ref_logprobs: list[float] | None = [] if has_ref_logprobs else None
+    mm_token_type_ids: list[int] | None = [] if has_mm_token_type_ids else None
+    streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
+    routed_experts: RoutedExperts | None = None
+    lora_num_tokens = [0] * num_loras
+
+    for lora_idx, sample in bin_content.samples:
+        sample_len = len(sample.input_ids)
+        input_ids.extend(sample.input_ids)
+        loss_mask.extend(sample.loss_mask)
+        advantages.extend(sample.advantages)
+        inference_logprobs.extend(sample.inference_logprobs)
+        position_ids.extend(sample.position_ids)
+        temperatures.extend(sample.temperatures)
+        env_names.extend(sample.env_names)
+        if rewards is not None:
+            rewards.extend(sample.rewards if sample.rewards is not None else [float("nan")] * sample_len)
+        if ref_logprobs is not None:
+            ref_logprobs.extend(sample.ref_logprobs if sample.ref_logprobs is not None else [0.0] * sample_len)
+        for name, fill in STREAM_FILL.items():
+            stream = streams[name]
+            if stream is not None:
+                sample_stream = getattr(sample, name)
+                stream.extend(sample_stream if sample_stream is not None else [fill] * sample_len)
+        if mm_token_type_ids is not None:
+            mm_token_type_ids.extend(
+                sample.mm_token_type_ids if sample.mm_token_type_ids is not None else [0] * sample_len
+            )
+        if sample.routed_experts is not None:
+            if routed_experts is None:
+                routed_experts = _copy_routed_experts(sample.routed_experts)
+            else:
+                assert routed_experts.dtype == sample.routed_experts.dtype
+                assert routed_experts.shape[1:] == sample.routed_experts.shape[1:]
+                routed_experts.data += sample.routed_experts.data
+                routed_experts.shape[0] += sample.routed_experts.shape[0]
+        lora_num_tokens[lora_idx] += sample_len
+
+    sequence_lengths = [len(sample.input_ids) for _, sample in bin_content.samples]
+    assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
+    first_sample = bin_content.first_sample
+
+    return MicroBatch(
+        input_ids=input_ids,
+        advantages=advantages,
+        loss_mask=loss_mask,
+        position_ids=position_ids,
+        inference_logprobs=inference_logprobs,
+        sequence_lengths=sequence_lengths,
+        ref_logprobs=ref_logprobs,
+        temperatures=temperatures,
+        rewards=rewards,
+        lora_num_tokens=lora_num_tokens,
+        routed_experts=routed_experts,
+        mm_token_type_ids=mm_token_type_ids,
+        env_names=env_names,
+        mm_kwargs=first_sample.mm_kwargs if _is_multimodal_sample(first_sample) else None,
+        rl_weights=streams["rl_weights"],
+        ce_weights=streams["ce_weights"],
+        ref_kl_weights=streams["ref_kl_weights"],
+    )
+
+
+def _expand_bins_by_splitting(
+    bins: list[_MicroBatchBin], target_count: int, bin_cost: Callable[[Sequence[int]], int]
+) -> None:
+    while len(bins) < target_count:
+        candidates = [
+            (bin_content.workload(bin_cost), idx)
+            for idx, bin_content in enumerate(bins)
+            if len(bin_content.samples) > 1
+        ]
+        if not candidates:
+            break
+        _, idx = max(candidates)
+        left, right = bins[idx].split_by_workload(bin_cost)
+        bins[idx] = left
+        bins.append(right)
 
 
 def packed_samples_into_micro_bs(
-    samples: list[tuple[int, MicroBatch]], max_seq_len: int, num_loras: int
+    samples: list[tuple[int, MicroBatch]],
+    max_seq_len: int,
+    num_loras: int,
+    num_train_workers: int,
+    bin_cost: Callable[[Sequence[int]], int],
 ) -> list[MicroBatch]:
     """
     Pack samples into micro_batch efficiently.
@@ -205,69 +335,40 @@ def packed_samples_into_micro_bs(
     # Sort by (lora_idx, -length) for packing efficiency
     samples.sort(key=lambda x: (x[0], -len(x[1].input_ids)))
 
-    ## we create bins
-    micro_batches: list[MicroBatch] = []
+    bins: list[_MicroBatchBin] = []
 
     for idx, sample in samples:
-        # Multimodal samples cannot be packed - each becomes its own micro batch
-        if _is_multimodal_sample(sample):
-            sample.lora_num_tokens = [0] * num_loras
-            sample.lora_num_tokens[idx] = len(sample.input_ids)
-            micro_batches.append(sample)
-            continue
-
         # Try to find a bin that can fit this sequence (only pack text-only samples)
-        for bin_content in micro_batches:
-            # Don't pack into multimodal micro batches
-            if _is_multimodal_sample(bin_content):
-                continue
-            # Check if sequence fits in this bin. Loss routing is per token,
-            # so samples of different loss types pack together freely.
-            if len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len:
-                existing_len = len(bin_content.input_ids)
-                bin_content.input_ids.extend(sample.input_ids)
-                bin_content.loss_mask.extend(sample.loss_mask)
-                bin_content.advantages.extend(sample.advantages)
-                sample_len = len(sample.input_ids)
-                for stream_name, fill in STREAM_FILL.items():
-                    extended = _extend_stream(
-                        getattr(bin_content, stream_name), getattr(sample, stream_name), existing_len, sample_len, fill
-                    )
-                    setattr(bin_content, stream_name, extended)
-                if sample.rewards is not None:
-                    if bin_content.rewards is None:
-                        bin_content.rewards = [float("nan")] * existing_len
-                    bin_content.rewards.extend(sample.rewards)
-                elif bin_content.rewards is not None:
-                    bin_content.rewards.extend([float("nan")] * len(sample.input_ids))
-                bin_content.inference_logprobs.extend(sample.inference_logprobs)
-                bin_content.temperatures.extend(sample.temperatures)
-                if sample.ref_logprobs is not None:
-                    if bin_content.ref_logprobs is None:
-                        bin_content.ref_logprobs = [0.0] * existing_len
-                    bin_content.ref_logprobs.extend(sample.ref_logprobs)
-                elif bin_content.ref_logprobs is not None:
-                    bin_content.ref_logprobs.extend([0.0] * len(sample.input_ids))
-                assert (bin_content.routed_experts is None) == (sample.routed_experts is None)
-                if sample.routed_experts is not None:
-                    if bin_content.routed_experts is None:
-                        bin_content.routed_experts = _copy_routed_experts(sample.routed_experts)
-                    else:
-                        _append_routed_experts(bin_content, sample)
-                if sample.mm_token_type_ids is not None:
-                    if bin_content.mm_token_type_ids is None:
-                        bin_content.mm_token_type_ids = []
-                    bin_content.mm_token_type_ids.extend(sample.mm_token_type_ids)
-                bin_content.env_names.extend(sample.env_names)
-                bin_content.position_ids.extend(sample.position_ids)
-                bin_content.lora_num_tokens[idx] += len(sample.input_ids)
+        for bin_content in bins:
+            if bin_content.can_add(sample, max_seq_len):
+                bin_content.add(idx, sample)
                 break
         else:
-            sample.lora_num_tokens = [0] * num_loras
-            sample.lora_num_tokens[idx] = len(sample.input_ids)
-            micro_batches.append(sample)
+            bins.append(_MicroBatchBin.from_sample(idx, sample))
 
-    return micro_batches
+    if num_train_workers > 1:
+        target_count = max(
+            ((len(bins) + num_train_workers - 1) // num_train_workers) * num_train_workers,
+            num_train_workers,
+        )
+        _expand_bins_by_splitting(bins, target_count, bin_cost)
+
+    return [_materialize_bin(bin_content, num_loras) for bin_content in bins]
+
+
+def _distribute_group(
+    group: list[MicroBatch],
+    num_train_workers: int,
+    bin_cost: Callable[[Sequence[int]], int],
+) -> list[list[MicroBatch]]:
+    # Callers pad each group to a positive multiple of num_train_workers first.
+    assert len(group) % num_train_workers == 0, "Number of micro batches is not divisible by number of data ranks"
+    if not group:
+        return [[] for _ in range(num_train_workers)]
+
+    weights = [bin_cost(micro_batch.sequence_lengths) for micro_batch in group]
+    partitions = balanced_partition(weights, num_train_workers)
+    return [[group[i] for i in partition] for partition in partitions]
 
 
 def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBatch:
@@ -298,6 +399,7 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         micro_batch.rewards.extend([float("nan")] * padding_size)
     micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
+    micro_batch.sequence_lengths.append(padding_size)
     micro_batch.inference_logprobs.extend([0.0] * padding_size)
     # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)
     micro_batch.temperatures.extend([1.0] * padding_size)
@@ -310,9 +412,10 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         stream = getattr(micro_batch, stream_name)
         if stream is not None:
             stream.extend([0.0] * padding_size)
-    micro_batch.lora_num_tokens[-1] += (
-        padding_size  # We send padding to the last lora so that tokens have ascending lora idx
-    )
+    if micro_batch.lora_num_tokens is not None:
+        micro_batch.lora_num_tokens[-1] += (
+            padding_size  # We send padding to the last lora so that tokens have ascending lora idx
+        )
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
     if micro_batch.routed_experts is not None:
@@ -346,6 +449,9 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         assert values is None or len(values) == num_tokens, (
             f"{name} misaligned after packing: {len(values)} != {num_tokens} tokens"
         )
+    assert sum(micro_batch.sequence_lengths) == num_tokens, (
+        f"sequence_lengths sum {sum(micro_batch.sequence_lengths)} != {num_tokens} tokens"
+    )
     if micro_batch.routed_experts is not None:
         assert micro_batch.routed_experts.shape[0] == num_tokens, (
             f"routed_experts misaligned after packing: {micro_batch.routed_experts.shape[0]} != {num_tokens} tokens"
@@ -380,6 +486,7 @@ def prepare_batch(
     num_train_workers: int,
     idxs: list[int],
     num_loras: int,
+    bin_cost: Callable[[Sequence[int]], int],
     pad_to_multiple_of: int = 1,
 ) -> list[list[MicroBatch]]:
     """
@@ -393,7 +500,7 @@ def prepare_batch(
     """
     all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
-    micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
+    micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras, num_train_workers, bin_cost)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
     for micro_batch in micro_batches:
         _assert_token_arrays_aligned(micro_batch)
@@ -406,15 +513,10 @@ def prepare_batch(
     mm_batches = _pad_group_for_distribution(mm_batches, num_train_workers)
     text_batches = _pad_group_for_distribution(text_batches, num_train_workers)
 
-    # Combine: all multimodal first, then all text-only. Since each group's length is
-    # divisible by num_train_workers, the modality boundary aligns with distribution rows.
-    ordered = mm_batches + text_batches
-
-    assert len(ordered) % num_train_workers == 0, "Number of micro batches is not divisible by number of data ranks"
-
-    # Distribute in strided order so each step index has the same modality across ranks
     batches_per_gpu: list[list[MicroBatch]] = [[] for _ in range(num_train_workers)]
-    for i, batch in enumerate(ordered):
-        batches_per_gpu[i % num_train_workers].append(batch)
+    for group in (mm_batches, text_batches):
+        group_batches_per_gpu = _distribute_group(group, num_train_workers, bin_cost)
+        for worker_idx, worker_batches in enumerate(group_batches_per_gpu):
+            batches_per_gpu[worker_idx].extend(worker_batches)
 
     return batches_per_gpu
