@@ -24,17 +24,22 @@ else:
 
 logger = init_logger("vllm.inference.vllm.worker_nccl")
 
-# NemotronH mixer.D is dropped by vLLM 0.22's layerwise online-reload path (left uninitialized).
+# NemotronH mixer.D is dropped by vLLM's layerwise online-reload path (left uninitialized).
 _RELOAD_CORRUPTED_SUFFIXES = (".mixer.D",)
 
 
 def _restore_reload_corrupted_params(model: Module, received: dict[str, torch.Tensor]) -> None:
-    """Work around a vLLM 0.22 layerwise-reload bug for NemotronH.
+    """Work around a vLLM layerwise-reload bug for NemotronH (present through vLLM 0.23.0).
 
     The online reload drops the weight load for every Mamba layer's ``mixer.D`` (the SSD skip
     connection), leaving it as uninitialized ``empty_strided`` memory -- it reads back as garbage
-    (NaN/inf) and the logits go NaN after a weight update. The received broadcast value is correct,
-    so restore D from it via the param's own ``weight_loader``. Remove once the upstream bug is fixed.
+    (NaN/inf) and the logits go NaN after a weight update. Root cause: ``mixer.A`` is loaded with
+    ``composed_weight_loader`` (an extra in-place transform copy), so the reload element counter
+    double-counts ``A`` and finalizes the layer before ``D`` (loaded last) is loaded. The received
+    broadcast value is correct, so restore D from it via the param's own ``weight_loader``.
+
+    Fixed upstream by vllm-project/vllm#44814 (merged 2026-06-10) but NOT in the pinned 0.23.0
+    release; remove this shim once we bump to a vLLM release that includes it.
     """
 
     def _layer_key(name: str) -> str:
@@ -179,7 +184,7 @@ class NCCLWeightUpdateWorker(Worker):
             update_mla_absorbed_weights(model)
             return
 
-        # vLLM 0.22's layerwise reload drops NemotronH mixer.D's weight load (see
+        # vLLM's layerwise reload drops NemotronH mixer.D's weight load (see
         # _restore_reload_corrupted_params). Capture the correct received value to restore after.
         received_reload_fix: dict[str, torch.Tensor] = {}
 
