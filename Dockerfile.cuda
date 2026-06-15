@@ -1,7 +1,7 @@
 #inspired from https://github.com/astral-sh/uv-docker-example/blob/main/multistage.Dockerfile
 
 # Build stage - multi-arch base (supports amd64 + arm64)
-FROM nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04 AS builder
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS builder
 LABEL maintainer="prime intellect"
 LABEL repository="prime-rl"
 
@@ -86,7 +86,7 @@ ARG TARGETARCH
 COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
 RUN if [ "$TARGETARCH" = "arm64" ]; then /app/scripts/docker-arm64-post-install.sh; fi
 
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 
 RUN apt-get update && apt-get install -y \
     --no-install-recommends \
@@ -113,9 +113,8 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Copy the CUDA toolkit from the builder
-COPY --from=builder /usr/local/cuda-12.9 /usr/local/cuda-12.9
-RUN ln -s /usr/local/cuda-12.9 /usr/local/cuda
+COPY --from=builder /usr/local/cuda-12.8 /usr/local/cuda-12.8
+RUN ln -s /usr/local/cuda-12.8 /usr/local/cuda
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH="/usr/local/cuda/bin:${PATH}"
 
