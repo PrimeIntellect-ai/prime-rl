@@ -17,14 +17,18 @@
 #
 # System Go is not required: a Go toolchain is vendored under third_party/llmd/go
 # and used to bootstrap; GOTOOLCHAIN=auto fetches the exact version the module
-# pins. Envoy is pulled as a static binary from its release container image
-# (docker is the only widely-available extraction path on bare-metal nodes).
+# pins. Envoy is extracted as a static binary from its release container image
+# WITHOUT docker: we build `crane` (pure-Go, talks straight to the OCI registry)
+# with the same vendored toolchain and use it to export the image filesystem.
+# This is the only step that previously required a docker daemon, which cluster
+# compute nodes don't have.
 set -euo pipefail
 
 LLMD_ROUTER_REPO="${LLMD_ROUTER_REPO:-https://github.com/S1ro1/llm-d-router.git}"
 LLMD_ROUTER_REF="${LLMD_ROUTER_REF:-1ca4243ec84c657b4a5f507a1776d6c15a618d5b}"
 GO_BOOTSTRAP_VERSION="${GO_BOOTSTRAP_VERSION:-1.23.4}"
 ENVOY_VERSION="${ENVOY_VERSION:-1.36.0}"
+ENVOY_IMAGE="${ENVOY_IMAGE:-envoyproxy/envoy:v${ENVOY_VERSION}}"
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
@@ -32,7 +36,8 @@ LLMD_DIR="$PROJECT_DIR/third_party/llmd"
 BIN_DIR="$LLMD_DIR/bin"
 GO_ROOT="$LLMD_DIR/go"
 SRC_DIR="$LLMD_DIR/src"
-mkdir -p "$BIN_DIR"
+GO_TOOLS_BIN="$LLMD_DIR/gotools/bin"
+mkdir -p "$BIN_DIR" "$GO_TOOLS_BIN"
 
 # --- Go toolchain (vendored bootstrap; auto-upgrades to the module's version) ---
 if [ ! -x "$GO_ROOT/bin/go" ]; then
@@ -60,11 +65,17 @@ echo "[install_llmd] building epp + pd-sidecar"
 ( cd "$SRC_DIR" && go build -o "$BIN_DIR/epp" ./cmd/epp && go build -o "$BIN_DIR/pd-sidecar" ./cmd/pd-sidecar )
 
 # --- Envoy static binary (extract from the release image; keep if present) ---
+# No docker: build crane with the vendored toolchain and export the image's
+# filesystem straight from the registry, then pull out the static envoy binary.
 if [ ! -x "$BIN_DIR/envoy" ]; then
-    echo "[install_llmd] extracting Envoy ${ENVOY_VERSION} from envoyproxy/envoy image"
-    cid=$(docker create "envoyproxy/envoy:v${ENVOY_VERSION}")
-    docker cp "${cid}:/usr/local/bin/envoy" "$BIN_DIR/envoy"
-    docker rm "$cid" >/dev/null
+    if [ ! -x "$GO_TOOLS_BIN/crane" ]; then
+        echo "[install_llmd] building crane (OCI registry client, no docker needed)"
+        GOBIN="$GO_TOOLS_BIN" GOFLAGS=-mod=mod \
+            go install github.com/google/go-containerregistry/cmd/crane@latest
+    fi
+    echo "[install_llmd] extracting Envoy ${ENVOY_VERSION} from ${ENVOY_IMAGE}"
+    "$GO_TOOLS_BIN/crane" export "$ENVOY_IMAGE" - \
+        | tar -xf - -O usr/local/bin/envoy > "$BIN_DIR/envoy"
     chmod +x "$BIN_DIR/envoy"
 fi
 
