@@ -2,28 +2,32 @@ from types import SimpleNamespace
 
 import torch.nn as nn
 
-from prime_rl.utils.vlm import get_packed_mm_disabled_reasons, get_packed_mm_position_strategy
+from prime_rl.utils.vlm import get_packed_mm_disabled_reasons, supports_packed_multimodal_training
 
 
 class _Model(nn.Module):
-    def __init__(self, *, strategy=None, model_type="qwen3_5_moe", is_vlm=True):
+    def __init__(self, *, supports_packed_mm=None):
         super().__init__()
-        self.config = SimpleNamespace(model_type=model_type)
-        self._is_vlm = is_vlm
-        if strategy is not None:
-            self.packed_mm_position_strategy = strategy
+        self.config = SimpleNamespace(model_type="qwen3_5_moe")
+        if supports_packed_mm is not None:
+            self.supports_packed_multimodal_training = supports_packed_mm
 
 
-def test_packed_mm_strategy_is_pass_1d_for_custom_qwen35_vlm():
-    assert get_packed_mm_position_strategy(_Model()) == "pass_1d"
+class _Wrapper(nn.Module):
+    def __init__(self, module):
+        super().__init__()
+        self.module = module
 
 
-def test_packed_mm_strategy_none_for_text_only_custom_qwen35():
-    assert get_packed_mm_position_strategy(_Model(is_vlm=False)) == "none"
+def test_packed_mm_support_reads_model_capability():
+    assert supports_packed_multimodal_training(_Model(supports_packed_mm=True))
+    assert supports_packed_multimodal_training(_Wrapper(_Model(supports_packed_mm=True)))
+    assert not supports_packed_multimodal_training(_Model(supports_packed_mm=False))
+    assert not supports_packed_multimodal_training(_Model())
 
 
 def test_packed_mm_gate_allows_only_supported_runtime():
-    model = _Model(strategy="pass_1d")
+    model = _Model(supports_packed_mm=True)
 
     assert (
         get_packed_mm_disabled_reasons(model, enabled=True, attn_impl="flash_attention_2", cp_enabled=False, cp_size=1)
@@ -36,9 +40,9 @@ def test_packed_mm_gate_allows_only_supported_runtime():
     ]
 
 
-def test_packed_mm_gate_rejects_hf_mrope_default_strategy():
-    model = _Model(strategy="none", model_type="qwen3_vl")
+def test_packed_mm_gate_rejects_models_without_capability():
+    model = _Model()
 
     assert get_packed_mm_disabled_reasons(model, enabled=True, attn_impl="flash_attention_2", cp_enabled=False) == [
-        "position_strategy=none"
+        "model_support=false"
     ]

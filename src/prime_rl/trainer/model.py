@@ -57,7 +57,6 @@ from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import (
     get_language_model,
-    get_packed_mm_position_strategy,
     get_vision_encoder,
     is_vlm_architecture,
 )
@@ -1159,11 +1158,10 @@ def forward(
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        # HF Qwen-style MRoPE models must compute 3D/4-row multimodal
-        # positions from ``image_grid_thw`` internally. Custom Prime VLMs with
-        # ``pass_1d`` consume reset 1D positions and derive packed boundaries
-        # from them, so they must receive trainer ``position_ids``.
-        if "image_grid_thw" not in mm_kwargs or get_packed_mm_position_strategy(model) == "pass_1d":
+        # Qwen-style MRoPE models compute 3D multimodal positions from
+        # ``image_grid_thw`` internally; trainer 2D positions are only valid for
+        # non-MRoPE multimodal models.
+        if "image_grid_thw" not in mm_kwargs:
             kwargs["position_ids"] = position_ids
         elif seq_lens is not None:
             kwargs["seq_lens"] = seq_lens

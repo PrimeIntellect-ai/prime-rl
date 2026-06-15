@@ -10,7 +10,6 @@ For custom models not in the registry, set overrides in config:
 """
 
 from dataclasses import dataclass
-from typing import Literal, TypeAlias
 
 import torch.nn as nn
 from transformers.configuration_utils import PretrainedConfig
@@ -24,7 +23,6 @@ class VLMModelInfo:
     language_model_attr: str
 
 
-PackedMMPositionStrategy: TypeAlias = Literal["none", "pass_1d"]
 PACKED_MM_ATTN_IMPLS = ("flash_attention_2", "flash_attention_3", "fa4")
 
 
@@ -91,24 +89,14 @@ def is_vlm_architecture(model_config: PretrainedConfig) -> bool:
     return _get_model_info_from_config(model_config) is not None
 
 
-def get_packed_mm_position_strategy(model: nn.Module) -> PackedMMPositionStrategy:
-    """Return the model's packed multimodal position strategy.
-
-    ``pass_1d`` is intentionally narrow: it means the VLM's language model
-    consumes reset 1D ``position_ids`` and derives packed attention boundaries
-    from them. HF Qwen-style MRoPE models need model-computed 3D/4-row positions
-    and therefore remain ``none`` until a dedicated builder exists.
-    """
+def supports_packed_multimodal_training(model: nn.Module) -> bool:
+    """Return whether the model advertises safe packed multimodal training."""
     for candidate in _iter_wrapped_modules(model):
-        strategy = getattr(candidate, "packed_mm_position_strategy", None)
-        if strategy in ("none", "pass_1d"):
-            return strategy
+        supported = getattr(candidate, "supports_packed_multimodal_training", None)
+        if supported is not None:
+            return bool(supported)
 
-        model_type = getattr(getattr(candidate, "config", None), "model_type", None)
-        if model_type == "qwen3_5_moe" and getattr(candidate, "_is_vlm", False):
-            return "pass_1d"
-
-    return "none"
+    return False
 
 
 def get_packed_mm_disabled_reasons(
@@ -120,12 +108,11 @@ def get_packed_mm_disabled_reasons(
     cp_size: int | None = None,
 ) -> list[str]:
     """Return reasons multimodal packing should be disabled for this runtime."""
-    strategy = get_packed_mm_position_strategy(model)
     reasons = []
     if not enabled:
         reasons.append("trainer.pack_multimodal=false")
-    if strategy != "pass_1d":
-        reasons.append(f"position_strategy={strategy}")
+    if not supports_packed_multimodal_training(model):
+        reasons.append("model_support=false")
     if attn_impl not in PACKED_MM_ATTN_IMPLS:
         reasons.append(f"attn={attn_impl}")
     if cp_enabled:

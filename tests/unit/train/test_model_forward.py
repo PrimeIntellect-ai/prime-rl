@@ -84,20 +84,21 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
     assert "seq_lens" not in model.kwargs
 
 
-def test_forward_keeps_position_ids_for_pass_1d_mrope_vlm():
-    """Custom Prime VLMs with packed 1D position support keep position_ids even
-    when Qwen-style image_grid_thw is present."""
+def test_forward_strips_position_ids_and_forwards_seq_lens_for_mrope_vlm():
+    """Qwen-style MRoPE VLMs build 3D positions internally from seq_lens."""
     model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
-    model.packed_mm_position_strategy = "pass_1d"
     input_ids = torch.tensor([[1, 10, 10, 2, 20, 20]])
     position_ids = torch.tensor([[0, 1, 2, 0, 1, 2]])
+    seq_lens = torch.tensor([3, 3])
 
     forward(
         model,
         input_ids,
         position_ids,
         mm_kwargs={"pixel_values": torch.ones(4, 3), "image_grid_thw": torch.tensor([[1, 1, 2], [1, 1, 2]])},
+        seq_lens=seq_lens,
     )
 
     assert model.kwargs is not None
-    torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
+    assert "position_ids" not in model.kwargs
+    torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
