@@ -193,6 +193,12 @@ def test_trainer_splits_rollout_and_micro_batch_transport_defaults():
     assert config.rollout_transport.type == "filesystem"
     assert config.micro_batch_transport.type == "zmq"
     assert config.micro_batch_transport.hwm == 64
+    assert config.missing_mm_image_policy == "placeholder_zero_loss"
+
+
+def test_trainer_missing_mm_image_policy_accepts_error_option():
+    config = TrainerConfig.model_validate({"missing_mm_image_policy": "error"})
+    assert config.missing_mm_image_policy == "error"
 
 
 def test_orchestrator_vlm_requires_renderer():

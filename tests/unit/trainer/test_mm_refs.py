@@ -21,6 +21,7 @@ from prime_rl.utils.mm import (
     materialize_mm_refs,
     pack_mm_kwargs_tensors,
     reconstruct_mm_pixels,
+    synthesize_placeholder_mm_kwargs,
 )
 
 
@@ -52,6 +53,24 @@ class _StubRenderer:
             h = hashes[i]
             new_items.append({"pixel_values": decoded[h], "image_grid_thw": item["image_grid_thw"]})
         return replace(mm_data, mm_items={**mm_data.mm_items, "image": new_items})
+
+
+class _FakeQwenImageProcessor:
+    patch_size = 2
+    temporal_patch_size = 2
+    image_mean = [0.0, 0.0, 0.0]
+
+
+class _FakeQwenProcessor:
+    image_processor = _FakeQwenImageProcessor()
+
+
+class _MissingImageRenderer:
+    def _get_processor(self):
+        return _FakeQwenProcessor()
+
+    def materialize_pixels(self, mm_data: MultiModalData, messages: list) -> MultiModalData:
+        raise FileNotFoundError("/missing-image.jpg")
 
 
 def _grid_payload(g: list[int]) -> dict:
@@ -114,6 +133,18 @@ def test_duplicate_image_decoded_once_populated_per_slot():
     assert pv.shape[0] == 2
     assert torch.equal(pv[0], pv[1])
     assert torch.equal(pv[0], torch.tensor([7.0, 8.0]))
+
+
+def test_placeholder_mm_kwargs_preserve_descriptor_geometry():
+    uris = ["file:///missing-a.jpg", "file:///missing-b.jpg"]
+    refs = MMRefs(descriptor=_descriptor(uris, [[1, 2, 4], [1, 1, 2]]), uris=uris)
+
+    kwargs = synthesize_placeholder_mm_kwargs(_MissingImageRenderer(), refs)
+
+    assert kwargs is not None
+    # feature_dim = channels * temporal_patch_size * patch_size**2 = 3 * 2 * 2**2
+    torch.testing.assert_close(kwargs["pixel_values"], torch.zeros((10, 24), dtype=torch.float32))
+    torch.testing.assert_close(kwargs["image_grid_thw"], torch.tensor([[1, 2, 4], [1, 1, 2]], dtype=torch.long))
 
 
 def test_mm_refs_msgpack_round_trip():
@@ -443,6 +474,77 @@ def test_data_loader_rejects_eager_mm_kwargs_transport():
 
     with pytest.raises(ValueError, match="Eager multimodal mm_kwargs transport is unsupported"):
         DataLoader._micro_batch_to_tensor(loader, mb)
+
+
+def test_data_loader_missing_mm_image_uses_zero_loss_placeholder_by_default():
+    from types import SimpleNamespace
+
+    from prime_rl.trainer.rl.data import DataLoader
+
+    uri = "file:///missing-placeholder.jpg"
+    mb = MicroBatch(
+        input_ids=[1, 2, 3, 4],
+        loss_mask=[False, True, True, True],
+        advantages=[0.0, 0.1, 0.2, 0.3],
+        inference_logprobs=[0.0, 0.0, 0.0, 0.0],
+        position_ids=[0, 1, 2, 3],
+        temperatures=[1.0, 1.0, 1.0, 1.0],
+        env_names=["e", "e", "e", "e"],
+        lora_num_tokens=[4],
+        mm_token_type_ids=[0, 1, 1, 0],
+        mm_refs=MMRefs(descriptor=_descriptor([uri], [[1, 2, 4]]), uris=[uri]),
+        run_id="run_cancelled",
+        run_step=7,
+    )
+    loader = DataLoader.__new__(DataLoader)
+    loader.multi_run_manager = SimpleNamespace(max_runs=1)
+    loader._renderer = _MissingImageRenderer()
+    loader.missing_mm_image_policy = "placeholder_zero_loss"
+    loader.last_mm_materialize_time = 0.0
+    loader.last_mm_images_materialized = 0
+    loader.last_mm_images_placeholdered = 0
+
+    tensor_batch = DataLoader._micro_batch_to_tensor(loader, mb)
+
+    assert not bool(tensor_batch["loss_mask"].any().item())
+    assert tensor_batch["mm_kwargs"] is not None
+    torch.testing.assert_close(tensor_batch["mm_kwargs"]["pixel_values"], torch.zeros((8, 24), dtype=torch.float32))
+    torch.testing.assert_close(tensor_batch["mm_kwargs"]["image_grid_thw"], torch.tensor([[1, 2, 4]]))
+    assert loader.last_mm_images_materialized == 0
+    assert loader.last_mm_images_placeholdered == 1
+
+
+def test_data_loader_missing_mm_image_error_policy_raises():
+    from types import SimpleNamespace
+
+    from prime_rl.trainer.rl.data import DataLoader
+
+    uri = "file:///missing-hard-fail.jpg"
+    mb = MicroBatch(
+        input_ids=[1, 2],
+        loss_mask=[True, True],
+        advantages=[0.0, 0.0],
+        inference_logprobs=[0.0, 0.0],
+        position_ids=[0, 1],
+        temperatures=[1.0, 1.0],
+        env_names=["e", "e"],
+        lora_num_tokens=[2],
+        mm_token_type_ids=[1, 1],
+        mm_refs=MMRefs(descriptor=_descriptor([uri], [[1, 1, 2]]), uris=[uri]),
+    )
+    loader = DataLoader.__new__(DataLoader)
+    loader.multi_run_manager = SimpleNamespace(max_runs=1)
+    loader._renderer = _MissingImageRenderer()
+    loader.missing_mm_image_policy = "error"
+    loader.last_mm_materialize_time = 0.0
+    loader.last_mm_images_materialized = 0
+    loader.last_mm_images_placeholdered = 0
+
+    with pytest.raises(FileNotFoundError):
+        DataLoader._micro_batch_to_tensor(loader, mb)
+
+    assert mb.loss_mask == [True, True]
+    assert loader.last_mm_images_placeholdered == 0
 
 
 def test_prepare_batch_rejects_truncated_multimodal_sample():

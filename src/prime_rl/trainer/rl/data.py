@@ -10,7 +10,7 @@ from renderers import RendererConfig
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.trainer import FakeDataLoaderConfig
+from prime_rl.configs.trainer import FakeDataLoaderConfig, MissingMMImagePolicy
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
@@ -181,6 +181,7 @@ class DataLoader:
         renderer_config: RendererConfig | None = None,
         pack_multimodal: bool = False,
         micro_batch_transport_config: TransportConfig | None = None,
+        missing_mm_image_policy: MissingMMImagePolicy = "placeholder_zero_loss",
     ):
         self.world = get_world()
         self._current_step = start_step
@@ -210,6 +211,7 @@ class DataLoader:
         # Deferred materialization: each rank builds its own renderer once and
         # materializes pixels from the shipped image references in get_batch.
         self.defer_mm_materialization = defer_mm_materialization
+        self.missing_mm_image_policy = missing_mm_image_policy
         self._renderer = None
         # Build the renderer only when one is configured. With default-on defer,
         # text-only runs leave renderer_config None and never receive mm_refs, so
@@ -221,6 +223,7 @@ class DataLoader:
         # Per-step materialization cost, surfaced as wandb time/mm_materialize.
         self.last_mm_materialize_time = 0.0
         self.last_mm_images_materialized = 0
+        self.last_mm_images_placeholdered = 0
 
     def _publish_status_key(self) -> str:
         return f"micro_batch_publish/{self._current_step}"
@@ -267,6 +270,7 @@ class DataLoader:
         micro_batches = self.receiver.receive()
         self.last_mm_materialize_time = 0.0
         self.last_mm_images_materialized = 0
+        self.last_mm_images_placeholdered = 0
         tensor_batches = [self._micro_batch_to_tensor(mb) for mb in micro_batches]
         self._current_step += 1
         return tensor_batches
@@ -291,19 +295,49 @@ class DataLoader:
                     "Received mm_refs but the trainer has no renderer: orchestrator/trainer "
                     "defer_mm_materialization config mismatch (trainer flag is off)."
                 )
-            from prime_rl.utils.mm import materialize_mm_refs
+            from prime_rl.utils.mm import materialize_mm_refs, missing_file_uris, synthesize_placeholder_mm_kwargs
 
+            materialize_start = time.perf_counter()
             try:
-                materialize_start = time.perf_counter()
                 mm_kwargs = materialize_mm_refs(self._renderer, micro_batch.mm_refs)
                 self.last_mm_materialize_time += time.perf_counter() - materialize_start
                 self.last_mm_images_materialized += len(micro_batch.mm_refs.uris)
+            except FileNotFoundError as exc:
+                self.last_mm_materialize_time += time.perf_counter() - materialize_start
+                run_idx = next((i for i, n in enumerate(micro_batch.lora_num_tokens or []) if n > 0), None)
+                if self.missing_mm_image_policy == "error":
+                    get_logger().error(
+                        f"mm materialization failed (run_idx={run_idx}, run_id={micro_batch.run_id}, "
+                        f"run_step={micro_batch.run_step}, uris={micro_batch.mm_refs.uris}): {exc!r}"
+                    )
+                    raise
+                placeholder_start = time.perf_counter()
+                try:
+                    mm_kwargs = synthesize_placeholder_mm_kwargs(self._renderer, micro_batch.mm_refs)
+                except Exception as placeholder_exc:
+                    get_logger().error(
+                        f"mm placeholder synthesis failed after missing image "
+                        f"(run_idx={run_idx}, run_id={micro_batch.run_id}, run_step={micro_batch.run_step}, "
+                        f"uris={micro_batch.mm_refs.uris}): {placeholder_exc!r}"
+                    )
+                    raise placeholder_exc from exc
+                self.last_mm_materialize_time += time.perf_counter() - placeholder_start
+                self.last_mm_images_placeholdered += len(micro_batch.mm_refs.uris)
+                micro_batch.loss_mask = [False] * len(micro_batch.loss_mask)
+                missing_uris = missing_file_uris(micro_batch.mm_refs.uris)
+                get_logger().warning(
+                    "mm materialization missing image(s); using zero-loss placeholder "
+                    f"(run_idx={run_idx}, run_id={micro_batch.run_id}, run_step={micro_batch.run_step}, "
+                    f"missing_uris={missing_uris or ['<unknown: disappeared during read>']}, "
+                    f"uris={micro_batch.mm_refs.uris})"
+                )
             except Exception as exc:
                 # The pre-forward all-reduce will fail-fast every rank, so make the
                 # culprit obvious: which run (from lora_num_tokens) and which images.
                 run_idx = next((i for i, n in enumerate(micro_batch.lora_num_tokens or []) if n > 0), None)
                 get_logger().error(
-                    f"mm materialization failed (run_idx={run_idx}, uris={micro_batch.mm_refs.uris}): {exc!r}"
+                    f"mm materialization failed (run_idx={run_idx}, run_id={micro_batch.run_id}, "
+                    f"run_step={micro_batch.run_step}, uris={micro_batch.mm_refs.uris}): {exc!r}"
                 )
                 raise
         routed_experts = None

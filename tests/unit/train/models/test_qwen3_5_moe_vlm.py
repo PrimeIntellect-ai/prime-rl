@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
 from transformers import AutoConfig
@@ -5,9 +7,12 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
 )
 
-from prime_rl.trainer.model import can_reinit_empty_buffers
+from prime_rl.trainer.model import can_reinit_empty_buffers, forward
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
+from prime_rl.trainer.rl.data import DataLoader
+from prime_rl.trainer.rl.loss import shift_tensor_left
+from prime_rl.transport.types import MicroBatch, MMRefs
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -67,6 +72,17 @@ def _make_mm_token_type_ids(input_ids, image_token_id):
     mm_token_type_ids = torch.zeros_like(input_ids)
     mm_token_type_ids[input_ids == image_token_id] = 1
     return mm_token_type_ids
+
+
+class _MissingImageRenderer:
+    def __init__(self, image_processor):
+        self._processor = SimpleNamespace(image_processor=image_processor)
+
+    def _get_processor(self):
+        return self._processor
+
+    def materialize_pixels(self, mm_data, messages):
+        raise FileNotFoundError("/data/outputs/run_cancelled/assets/images/missing.png")
 
 
 def test_vlm_forward():
@@ -145,6 +161,82 @@ def test_vlm_backward():
 
     assert model.model.language_model.embed_tokens.weight.grad is not None
     assert model.model.visual.patch_embed.proj.weight.grad is not None
+
+
+def test_missing_mm_image_placeholder_zero_loss_runs_vlm_forward_backward():
+    """A cancelled hosted run can lose its image file after packing; the trainer
+    should substitute descriptor-shaped zero pixels and keep the batch zero-loss."""
+    config = _tiny_vlm_config()
+    # Keep this focused on placeholder/MRoPE behavior; linear-attention kernel
+    # coverage lives in the regular VLM backward test above.
+    config.text_config.layer_types = ["full_attention"] * config.text_config.num_hidden_layers
+
+    image_grid_thw = [[1, 2, 2]]
+    seq_len = 11
+    input_ids = [10, 11, 12, 13, 14, config.image_token_id, 15, 16, 17, 18, 19]
+    mm_token_type_ids = [0] * seq_len
+    mm_token_type_ids[5] = 1
+    uri = "file:///data/outputs/run_cancelled/assets/images/missing.png"
+    refs = MMRefs(
+        descriptor={
+            "mm_items": {"image": [{"image_grid_thw": image_grid_thw}]},
+            "mm_hashes": {"image": ["missing-hash"]},
+        },
+        uris=[uri],
+    )
+    micro_batch = MicroBatch(
+        input_ids=input_ids,
+        loss_mask=[False] + [True] * (seq_len - 1),
+        advantages=[0.0] * seq_len,
+        inference_logprobs=[0.0] * seq_len,
+        position_ids=list(range(seq_len)),
+        temperatures=[1.0] * seq_len,
+        env_names=["cancelled-run"] * seq_len,
+        lora_num_tokens=[seq_len],
+        mm_token_type_ids=mm_token_type_ids,
+        mm_refs=refs,
+        seq_lens=[seq_len],
+        run_id="run_cancelled",
+        run_step=123,
+    )
+
+    loader = DataLoader.__new__(DataLoader)
+    loader.multi_run_manager = SimpleNamespace(max_runs=1)
+    loader._renderer = _MissingImageRenderer(config.vision_config)
+    loader.missing_mm_image_policy = "placeholder_zero_loss"
+    loader.last_mm_materialize_time = 0.0
+    loader.last_mm_images_materialized = 0
+    loader.last_mm_images_placeholdered = 0
+
+    tensor_batch = DataLoader._micro_batch_to_tensor(loader, micro_batch)
+
+    assert tensor_batch["mm_kwargs"] is not None
+    assert tensor_batch["mm_kwargs"]["pixel_values"].shape == (4, 1536)
+    assert tensor_batch["mm_kwargs"]["image_grid_thw"].tolist() == image_grid_thw
+    assert not bool(tensor_batch["loss_mask"].any().item())
+    assert loader.last_mm_images_placeholdered == 1
+
+    with torch.device("cuda"), default_dtype(torch.float32):
+        model = Qwen3_5MoeForCausalLM(config)
+    inject_prime_lm_head(model)
+    model.train()
+
+    input_ids_t = tensor_batch["input_ids"].cuda()
+    out = forward(
+        model,
+        input_ids_t,
+        tensor_batch["position_ids"].cuda(),
+        labels=shift_tensor_left(input_ids_t),
+        temperature=tensor_batch["temperatures"].cuda(),
+        mm_kwargs={k: v.cuda() for k, v in tensor_batch["mm_kwargs"].items()},
+        mm_token_type_ids=tensor_batch["mm_token_type_ids"].cuda(),
+        seq_lens=tensor_batch["seq_lens"].cuda(),
+    )
+
+    assert out["logits"].shape == (1, seq_len, config.text_config.vocab_size)
+    loss = out["logits"].sum() * 0.0
+    loss.backward()
+    assert model.model.language_model.embed_tokens.weight.grad is not None
 
 
 def test_vlm_weight_load_from_hf():

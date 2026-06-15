@@ -4,11 +4,109 @@ The orchestrator ships lightweight ``mm_refs``; trainer ranks reconstruct pixels
 from those refs and pack the resulting tensors into model forward kwargs.
 """
 
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import torch
 
 from prime_rl.transport.types import MMRefs
+
+
+def _decode_image_grid_thw(grid: Any) -> torch.Tensor:
+    from verifiers.utils.serve_utils import decode_tensor_payload
+
+    decoded = torch.as_tensor(decode_tensor_payload(grid), dtype=torch.long)
+    if decoded.ndim == 1:
+        decoded = decoded.unsqueeze(0)
+    if decoded.shape != (1, 3):
+        raise ValueError(f"image_grid_thw must have shape (1, 3), got {tuple(decoded.shape)}")
+    if bool((decoded <= 0).any().item()):
+        raise ValueError(f"image_grid_thw must be positive, got {decoded.tolist()}")
+    return decoded
+
+
+def _patch_area(patch_size: Any) -> int:
+    if isinstance(patch_size, (list, tuple)):
+        area = 1
+        for dim in patch_size:
+            area *= int(dim)
+        return area
+    size = int(patch_size)
+    return size * size
+
+
+def _temporal_patch_extent(temporal_patch_size: Any) -> int:
+    if isinstance(temporal_patch_size, (list, tuple)):
+        extent = 1
+        for dim in temporal_patch_size:
+            extent *= int(dim)
+        return extent
+    return int(temporal_patch_size)
+
+
+def _qwen_pixel_feature_dim(renderer: Any) -> int:
+    get_processor = getattr(renderer, "_get_processor", None)
+    processor = get_processor() if get_processor is not None else getattr(renderer, "_processor", None)
+    image_processor = getattr(processor, "image_processor", processor)
+    patch_size = getattr(image_processor, "patch_size", None)
+    temporal_patch_size = getattr(image_processor, "temporal_patch_size", None)
+    image_mean = getattr(image_processor, "image_mean", None)
+    channels = len(image_mean) if image_mean is not None else getattr(image_processor, "num_channels", 3)
+    if patch_size is None or temporal_patch_size is None:
+        raise ValueError("Cannot synthesize Qwen image placeholder without patch_size and temporal_patch_size")
+    return int(channels) * _temporal_patch_extent(temporal_patch_size) * _patch_area(patch_size)
+
+
+def missing_file_uris(uris: list[str]) -> list[str]:
+    """Return missing local ``file://`` image refs; non-file refs are ignored."""
+    missing: list[str] = []
+    for uri in uris:
+        parsed = urlparse(uri)
+        if parsed.scheme != "file":
+            continue
+        if not Path(unquote(parsed.path)).exists():
+            missing.append(uri)
+    return missing
+
+
+def synthesize_placeholder_mm_kwargs(renderer: Any, refs: MMRefs) -> "dict[str, torch.Tensor] | None":
+    """Build zero-valued Qwen image tensors from descriptor geometry.
+
+    This is only for missing-image recovery: it preserves the original
+    ``image_grid_thw`` so MRoPE and packed multimodal boundaries still see the
+    geometry used during rollout tokenization.
+    """
+    descriptor = refs.descriptor or {}
+    mm_items = descriptor.get("mm_items") or {}
+    mm_hashes = descriptor.get("mm_hashes") or {}
+    modalities = set(mm_items) | set(mm_hashes)
+    if modalities - {"image"}:
+        raise ValueError(f"Placeholder multimodal fallback supports image modality only, got {sorted(modalities)}")
+
+    image_items = mm_items.get("image") or []
+    if not image_items:
+        return None
+    hashes = mm_hashes.get("image") or []
+    if len(hashes) != len(image_items):
+        raise ValueError(
+            "Cannot synthesize image placeholders: mm_hashes/mm_items length mismatch "
+            f"({len(hashes)} vs {len(image_items)})"
+        )
+
+    feature_dim = _qwen_pixel_feature_dim(renderer)
+    pixel_values: list[torch.Tensor] = []
+    image_grid_thw: list[torch.Tensor] = []
+    for item in image_items:
+        grid = _decode_image_grid_thw(item.get("image_grid_thw"))
+        rows = int(grid.prod().item())
+        pixel_values.append(torch.zeros((rows, feature_dim), dtype=torch.float32))
+        image_grid_thw.append(grid)
+
+    return {
+        "pixel_values": torch.cat(pixel_values, dim=0).contiguous(),
+        "image_grid_thw": torch.cat(image_grid_thw, dim=0).contiguous(),
+    }
 
 
 def reconstruct_mm_pixels(renderer: Any, descriptor: dict, messages: list) -> Any:

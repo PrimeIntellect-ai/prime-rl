@@ -21,6 +21,7 @@ from prime_rl.utils.config import BaseConfig
 
 AttnImplementation: TypeAlias = Literal["eager", "sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
 EPCommBackend: TypeAlias = Literal["torch", "deepep"]
+MissingMMImagePolicy: TypeAlias = Literal["error", "placeholder_zero_loss"]
 
 # User-facing name -> internal name. Users set `flash_attention_4` in configs,
 # which gets rewritten to `fa4` before pydantic validation.
@@ -569,6 +570,9 @@ class TrainerConfig(BaseConfig):
 
     defer_mm_materialization: bool = True
     """Defer multimodal pixel materialization from the orchestrator to the trainer. VLM runs must keep this enabled so the trainer materializes shipped ``mm_refs`` in its data loader. A no-op for text-only runs (no ``mm_refs`` ever arrive)."""
+
+    missing_mm_image_policy: MissingMMImagePolicy = "placeholder_zero_loss"
+    """Policy when deferred multimodal image files disappear before trainer materialization. ``placeholder_zero_loss`` warns, synthesizes zero-valued image tensors with the original descriptor geometry, and masks out the affected microbatch loss; ``error`` preserves fail-fast behavior."""
 
     pack_multimodal: bool = True
     """Pack multimodal samples together when the active model path supports packed multimodal position boundaries. Default-on, but the trainer gates it off for unsupported VLM/HF MRoPE paths, non-varlen attention, or context parallelism."""
