@@ -27,9 +27,12 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = ["http://localhost:8001/v1"]
 
 # The student's renderer tokenizes the teacher's messages into the student's
-# token space (backfill) — the canonical messages -> ids path.
+# token space (backfill). Use `default` (wraps the student tokenizer's
+# apply_chat_template) so the CE target is faithful to the student's actual
+# chat template. The stock `qwen3` renderer injects an empty `<think></think>`
+# block this model's custom template never emits, corrupting the target.
 [orchestrator.renderer]
-name = "qwen3"
+name = "default"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128
