@@ -132,11 +132,12 @@ class TrainRollout(FinishedRollout):
 class RolloutView:
     """A finalized rollout as a writable handle — the single currency the
     scoring hooks operate on. Exposes what the env produced (``raw``), the
-    samples interleaving built (``samples``, carrying ``obs_spans``), and the
-    rollout's identity/reward; credit is written through
-    :meth:`assign_advantages`, which spreads over the samples' completion
-    tokens. Deliberately does *not* expose pipeline-internal lifecycle fields
-    (``is_filtered``, ``filter_results``, ``group_id``) or not-yet-assigned
+    samples interleaving built (``samples``, carrying ``obs_spans``), the
+    rollout's identity/reward, and its ``group_key`` (the safe cohort key for
+    partitioning a batch's survivors at the batch stage); credit is written
+    through :meth:`assign_advantages`, which spreads over the samples'
+    completion tokens. Deliberately does *not* expose pipeline-internal
+    lifecycle fields (``is_filtered``, ``filter_results``) or not-yet-assigned
     credit (``advantages``) — a hook can only touch what is valid at its
     stage."""
 
@@ -161,6 +162,14 @@ class RolloutView:
     @property
     def example_id(self) -> int | str:
         return self._rollout.example_id
+
+    @property
+    def group_key(self) -> uuid.UUID:
+        """The rollout's group identity — the safe key for partitioning a
+        batch's survivors back into their cohorts at the batch stage (the only
+        stage that sees more than one group). Use over ``example_id``, which
+        collides when an example is re-sampled."""
+        return self._rollout.group_id
 
     def assign_advantages(self, values: float | list[float]) -> None:
         """Write the rl advantage stream: a scalar broadcast over the

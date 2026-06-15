@@ -1,0 +1,65 @@
+# RLCSD (arXiv:2606.11709) on reverse-text: GRPO anchored by the verifier,
+# with a contrastive self-distillation signal modulating the advantage at
+# high-signal tokens. The teacher is the live policy conditioned on correct /
+# incorrect sibling rollouts — no extra server needed.
+#   uv run rl @ configs/debug/algorithms/rlcsd.toml
+
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "algorithms-debug"
+name = "debug-rlcsd"
+
+[orchestrator]
+batch_size = 128
+group_size = 16
+
+# The default template's continuation instruction is math-flavored
+# (\boxed{}); reverse-text just wants the answer re-attempted. Reverse-text's
+# reward is continuous (LCS) and exact reversals are rare at 0.6B, so the
+# binary-verifier default threshold of 1.0 would leave every correct-hint
+# pool empty — mostly-right reversals (>= 0.5) serve as positive hints.
+[orchestrator.algo.advantage]
+type = "rlcsd"
+correct_threshold = 0.5
+# Negative hints must be clearly failed reversals (< 0.2), not borderline:
+# the band in between serves as neither hint, so noise contrasts stop firing
+# as groups tighten around the threshold.
+min_contrast_gap = 0.3
+template = """{question}
+
+Here is a reference solution to this problem:
+=== Reference Solution Begin ===
+{hint}
+=== Reference Solution End ===
+
+After reading the reference solution above, answer the original problem yourself."""
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[orchestrator.eval]
+interval = 5
+num_examples = 128
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.eval.env]]
+id = "reverse-text"
+
+[trainer.optim]
+lr = 1e-6
+
+[inference]
+gpu_memory_utilization = 0.5

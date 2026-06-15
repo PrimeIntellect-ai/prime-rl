@@ -744,10 +744,10 @@ class OrchestratorConfig(BaseConfig):
         if self.renderer is not None:
             return self
         for env in self.train.env:
-            if env.algo is not None and env.algo.advantage.type == "opsd":
+            if env.algo is not None and env.algo.advantage.type in ("opsd", "rlcsd"):
                 raise ValueError(
-                    f"env '{env.resolved_name}' uses opsd, which renders its demo-conditioned "
-                    "scoring prefix client-side and requires orchestrator.renderer — remove "
+                    f"env '{env.resolved_name}' uses {env.algo.advantage.type}, which renders its "
+                    "hinted scoring prefixes client-side and requires orchestrator.renderer — remove "
                     "'renderer = \"None\"'."
                 )
             if env.algo is not None and env.algo.advantage.type == "echo":
