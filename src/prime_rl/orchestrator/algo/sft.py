@@ -18,5 +18,5 @@ class SFTDistillAlgorithm(Algorithm):
 
     action_loss_type = "ce"
 
-    def score_group(self, group: list[RolloutView]) -> None:
+    async def score_group(self, group: list[RolloutView]) -> None:
         assign_group_norm(group, None)

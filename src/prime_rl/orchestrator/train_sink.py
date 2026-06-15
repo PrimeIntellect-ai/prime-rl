@@ -133,7 +133,7 @@ class TrainSink:
             self.errors_by_env[env_name] += 1
         self.pending_groups[rollout.group_id].append(rollout)
         if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
-            self.process_group(rollout.group_id)
+            await self.process_group(rollout.group_id)
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
@@ -168,13 +168,13 @@ class TrainSink:
         # Arrival phase: rollout-local scoring (raw reward, echo observation
         # weighting) runs as soon as the rollout is tokenized — before its
         # group is complete.
-        finalize_rollout(self.train_envs.get(rollout.env_name).algorithm, rollout)
+        await finalize_rollout(self.train_envs.get(rollout.env_name).algorithm, rollout)
         # Offload base64 image bytes to disk as soon as the rollout is
         # tokenized, so memory stays flat instead of holding every buffered
         # rollout's images until the batch ships (no-op for text-only).
         await asyncio.to_thread(offload_images_to_disk, [raw], self.config.output_dir)
 
-    def process_group(self, group_id: uuid.UUID) -> None:
+    async def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
         when ``requires_group_scoring`` and any failed), assign advantages,
         run pre-batch filters, append survivors to ``pending_batch``."""
@@ -205,7 +205,7 @@ class TrainSink:
         # Advantages + per-sample wire stamping (advantage stream, loss
         # routing) are the algorithm's job; the sink only owns the grouping
         # mechanics.
-        finalize_group(env.algorithm, survivors)
+        await finalize_group(env.algorithm, survivors)
 
         # The env has a single sampling temperature; fan it out across each
         # sample's completion tokens (interleave leaves it empty).

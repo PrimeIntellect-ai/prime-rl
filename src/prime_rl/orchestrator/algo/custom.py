@@ -31,5 +31,5 @@ class CustomAlgorithm(Algorithm):
 
         self.advantage_fn = advantage_fn
 
-    def score_group(self, group: list[RolloutView]) -> None:
+    async def score_group(self, group: list[RolloutView]) -> None:
         apply_advantage_fn(group, self.advantage_fn)

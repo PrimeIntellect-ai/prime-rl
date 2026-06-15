@@ -66,7 +66,7 @@ class EchoAlgorithm(GRPOAlgorithm):
         if advantage.filter is not None:
             self.filter_fn = partial(import_object(advantage.filter.import_path), **advantage.filter.kwargs)
 
-    def score_rollout(self, rollout: RolloutView) -> None:
+    async def score_rollout(self, rollout: RolloutView) -> None:
         # Observation weighting is rollout-local; the group-relative GRPO
         # baseline is inherited unchanged as ``score_group``.
         self._weight_observations(rollout)

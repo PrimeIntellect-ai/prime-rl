@@ -17,5 +17,5 @@ class MaxRLAlgorithm(Algorithm):
     doubles as the truncation order of the likelihood expansion the gradient
     is unbiased for (REINFORCE at 1 → exact maximum likelihood as it grows)."""
 
-    def score_group(self, group: list[RolloutView]) -> None:
+    async def score_group(self, group: list[RolloutView]) -> None:
         apply_advantage_fn(group, max_rl_advantage_fn)

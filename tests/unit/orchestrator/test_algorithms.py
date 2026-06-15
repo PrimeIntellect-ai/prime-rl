@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from unittest.mock import MagicMock
 
@@ -264,7 +265,7 @@ def test_echo_weights_observations_by_role():
     }
     rollout = _echo_rollout(_two_step_rollout(attribution))
     algo = _echo_algorithm()  # the default table: tool bodies at 0.1
-    algo.score_rollout(RolloutView(rollout))
+    asyncio.run(algo.score_rollout(RolloutView(rollout)))
     sample = rollout.samples[0]
     assert sample.completion_ids == [3, 4, 5, 6, 7, 8]
     # [3,4] step-1 action, [5,6] observation, [7,8] step-2 action
@@ -275,12 +276,12 @@ def test_echo_weights_observations_by_role():
     attribution = {"message_indices": [0, 0, 1, 1, 2, 3], "message_roles": ["user", "assistant", "tool", "user"]}
     rollout = _echo_rollout(_two_step_rollout(attribution))
     algo = _echo_algorithm(roles={"tool": {"alpha": 0.1}, "user": {"alpha": 0.05}})
-    algo.score_rollout(RolloutView(rollout))
+    asyncio.run(algo.score_rollout(RolloutView(rollout)))
     assert rollout.samples[0].ce_weights == [0.0, 0.0] + [0.0, 0.0, 0.1, 0.05, 0.0, 0.0]
 
     # MITO rollouts carry no attribution: loud error, not a silent no-op.
     with pytest.raises(ValueError, match="attribution"):
-        _echo_algorithm().score_rollout(RolloutView(_echo_rollout(_two_step_rollout())))
+        asyncio.run(_echo_algorithm().score_rollout(RolloutView(_echo_rollout(_two_step_rollout()))))
 
 
 def test_echo_filter_narrows_selection():
@@ -292,15 +293,17 @@ def test_echo_filter_narrows_selection():
 
     rollout = _echo_rollout(_two_step_rollout(attribution))
     algo = _echo_algorithm(filter_fn=keep_last_only)
-    algo.score_rollout(RolloutView(rollout))
+    asyncio.run(algo.score_rollout(RolloutView(rollout)))
     assert rollout.samples[0].ce_weights == [0.0, 0.0] + [0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
 
     # Shape violations fail loudly: wrong step count, wrong per-step length.
     rollout = _echo_rollout(_two_step_rollout(attribution))
     with pytest.raises(ValueError, match="per trajectory step"):
-        _echo_algorithm(filter_fn=lambda output: [[True] * 4]).score_rollout(RolloutView(rollout))
+        asyncio.run(_echo_algorithm(filter_fn=lambda output: [[True] * 4]).score_rollout(RolloutView(rollout)))
     with pytest.raises(ValueError, match="prompt\\+completion"):
-        _echo_algorithm(filter_fn=lambda output: [[True] * 4, [True] * 6]).score_rollout(RolloutView(rollout))
+        asyncio.run(
+            _echo_algorithm(filter_fn=lambda output: [[True] * 4, [True] * 6]).score_rollout(RolloutView(rollout))
+        )
 
 
 def test_interleave_records_obs_spans():

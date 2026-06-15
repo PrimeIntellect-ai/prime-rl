@@ -12,15 +12,17 @@ orchestration between similar algorithms (e.g. OPD and OPSD) is accepted so
 each module stays self-contained.
 
 The three hooks are one scope-and-timing ladder — each wider scope is
-unlocked by a later barrier, so the two axes coincide:
+unlocked by a later barrier, so the two axes coincide. All three are
+``async`` (any stage may do I/O); a hook that only does advantage math never
+awaits:
 
 - ``score_rollout(rollout)`` — one rollout, on arrival: rollout-local signals
   (raw reward, process rewards, echo's observation weighting). No siblings.
 - ``score_group(group)`` — the cohort, on group completion, *before* filtering
   (filters read the streams): group-relative credit (GRPO/MaxRL baselines).
-- ``score_batch(batch)`` — the batch's survivors, *after* filtering, async:
-  the only stage with model access (``self.teacher_pool``), where reference
-  queries are batched for concurrency and dropped rollouts cost nothing.
+- ``score_batch(batch)`` — the batch's survivors, *after* filtering: the home
+  for reference I/O (``self.teacher_pool``), where queries are batched for
+  concurrency and — running after filtering — dropped rollouts cost nothing.
 
 How rollouts are *produced* is not the algorithm's concern: that is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`, and sample construction
@@ -82,17 +84,26 @@ class Algorithm:
       model, if it has one (``model_role``, e.g. "teacher");
     - lifecycle — :meth:`setup` connects client pools to the frozen models
       the algorithm declares, resolving each reference via :meth:`connect`;
-    - the three scoring hooks, each given a :class:`RolloutView` (a writable
-      handle exposing only what is valid at its stage):
+    - the three scoring hooks, each ``async`` and given a :class:`RolloutView`
+      (a writable handle exposing only what is valid at its stage). They are
+      async so any stage may do I/O — e.g. a process-reward model at arrival,
+      or a judge at group time whose signal a pre-batch filter then reads; a
+      hook that only does advantage math simply never awaits.
 
       - :meth:`score_rollout` — one rollout, on arrival: rollout-local credit
         or observation ce weights. Default: nothing.
       - :meth:`score_group` — the cohort, *before* filtering (filters read the
         streams): group-relative credit. Default: nothing — rollouts keep
         ``advantages=None``, so advantage-based filters skip them.
-      - :meth:`score_batch` — the batch's survivors, *after* filtering, async:
+      - :meth:`score_batch` — the batch's survivors, *after* filtering:
         query the algorithm's reference pool (e.g. ``self.teacher_pool``) and
         attach per-token results, or modulate advantages. Default: nothing.
+
+    ``score_batch`` is the home for reference I/O: it runs after filtering, so
+    only survivors cost reference compute. I/O in ``score_rollout`` /
+    ``score_group`` runs *before* the pre-batch filters — do it when a filter
+    must read the result, accepting that it pays compute on rollouts that may
+    then be filtered out.
 
     Constructed with the advantage component it interprets plus the two
     host-owned resources: the policy pool and the policy's renderer (the
@@ -123,12 +134,12 @@ class Algorithm:
         self.connected_pools.append(pool)
         return pool
 
-    def score_rollout(self, rollout: RolloutView) -> None:
+    async def score_rollout(self, rollout: RolloutView) -> None:
         """Arrival phase, one rollout, before its group is complete: write
         rollout-local credit (``rollout.assign_advantages``) or observation ce
         weights (echo). No siblings, no group stats."""
 
-    def score_group(self, group: list[RolloutView]) -> None:
+    async def score_group(self, group: list[RolloutView]) -> None:
         """Group phase, the finalized cohort, before filtering: write
         group-relative credit."""
 
@@ -138,17 +149,17 @@ class Algorithm:
         advantages."""
 
 
-def finalize_rollout(algorithm: Algorithm, rollout: TrainRollout) -> None:
+async def finalize_rollout(algorithm: Algorithm, rollout: TrainRollout) -> None:
     """Arrival phase: rollout-local scoring as each rollout is tokenized."""
     if rollout.samples:
-        algorithm.score_rollout(RolloutView(rollout))
+        await algorithm.score_rollout(RolloutView(rollout))
 
 
-def finalize_group(algorithm: Algorithm, rollouts: list[TrainRollout]) -> None:
+async def finalize_group(algorithm: Algorithm, rollouts: list[TrainRollout]) -> None:
     """Group phase: group-relative scoring, then stamp each sample's wire
     fields (the advantage stream + loss routing). After this the records are
     frozen — groups die at stamping."""
-    algorithm.score_group([RolloutView(rollout) for rollout in rollouts])
+    await algorithm.score_group([RolloutView(rollout) for rollout in rollouts])
     for rollout in rollouts:
         stamp_advantages(rollout)
         for sample in rollout.samples:

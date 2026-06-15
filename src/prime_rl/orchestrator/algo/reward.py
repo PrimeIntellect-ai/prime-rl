@@ -13,5 +13,5 @@ class RewardAlgorithm(Algorithm):
     rollout-local — no siblings needed — so it scores on arrival; action
     tokens feed the ``rl`` loss."""
 
-    def score_rollout(self, rollout: RolloutView) -> None:
+    async def score_rollout(self, rollout: RolloutView) -> None:
         rollout.assign_advantages(rollout.reward)
