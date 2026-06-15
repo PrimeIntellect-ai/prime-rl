@@ -985,7 +985,10 @@ class Orchestrator:
             path=step_path / f"eval_debate_metrics_{batch.env_name}.json",
             step=batch.step,
             monitor=self.monitor,
-            prefix=f"eval/{batch.env_name}/debate",
+            # Constant prefix (not env-namespaced) so eval debate metrics mirror the
+            # train panel's `debate/*` (orchestrator.py:733) — lets train-vs-eval
+            # overlay in one panel and stay comparable across runs regardless of env name.
+            prefix="eval/debate",
         )
 
         n_total = batch.metrics.n_rollouts

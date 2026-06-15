@@ -119,7 +119,7 @@ extra_body = { top_k = 20, min_p = 0.0, presence_penalty = 1.5 }
 
 [[orchestrator.train.env]]
 id = "gpqa-open-ended-debate"
-name = "gpqa-openended-debate-simul-bs512-train"
+name = "gpqa-openended-debate-bs512-train"
 args = { subset = "extended", prompts_ref = "selfplay_oe", num_eval_examples = 55, seed = 42 }
 
 [orchestrator.multi_agent.fixed.judge]
@@ -142,7 +142,7 @@ num_workers = 32
 #  length_bias_corr, mind_change_*, ...) are emitted at every eval interval.
 [[orchestrator.eval.env]]
 id = "gpqa-open-ended-debate"
-name = "gpqa-openended-debate-simul-bs512-eval"
+name = "gpqa-openended-debate-bs512-eval"
 num_examples = 55
 group_size = 4
 args = { subset = "extended", prompts_ref = "selfplay_oe", num_eval_examples = 55, seed = 42 }

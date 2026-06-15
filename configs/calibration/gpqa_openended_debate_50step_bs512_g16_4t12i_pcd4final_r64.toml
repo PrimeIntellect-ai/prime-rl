@@ -119,7 +119,7 @@ extra_body = { top_k = 20, min_p = 0.0, presence_penalty = 1.5 }
 
 [[orchestrator.train.env]]
 id = "gpqa-open-ended-debate"
-name = "gpqa-openended-debate-pcd4final-bs512-train"
+name = "gpqa-openended-debate-bs512-train"
 args = { subset = "extended", prompts_ref = "selfplay_oe_pcd4_final", num_eval_examples = 55, seed = 42, schedule = [{ slot_id = 0, agents = ["debater_a"], phase = "propose" }, { slot_id = 1, agents = ["debater_b"], phase = "critique" }, { slot_id = 2, agents = ["debater_a"], phase = "rebuttal" }, { slot_id = 3, agents = ["debater_b"], phase = "counter_critique" }, { slot_id = 4, agents = ["debater_a", "debater_b"], phase = "final" }, { slot_id = 5, agents = ["judge"], phase = "final" }] }
 
 [orchestrator.multi_agent.fixed.judge]
@@ -142,7 +142,7 @@ num_workers = 32
 #  length_bias_corr, mind_change_*, ...) are emitted at every eval interval.
 [[orchestrator.eval.env]]
 id = "gpqa-open-ended-debate"
-name = "gpqa-openended-debate-pcd4final-bs512-eval"
+name = "gpqa-openended-debate-bs512-eval"
 num_examples = 55
 # group_size 8: twc is computed on the resolvable non-tie subset (~10% of rollouts);
 # g4 gave n~20 -> SE~0.11, too noisy to read. g8 -> n~40, SE~0.08.
