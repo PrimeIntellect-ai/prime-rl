@@ -183,6 +183,9 @@ class TrainSink:
         if rollout.error is not None:
             return
         raw = rollout.raw
+        # Rewrite inline/base64 image bytes to file:// refs before tokenization
+        # and sample construction, so mm_refs never carry expensive payloads.
+        await asyncio.to_thread(offload_images_to_disk, [raw], self._mm_asset_root)
         needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
@@ -195,12 +198,6 @@ class TrainSink:
             env_name=rollout.env_name,
         )
         rollout.samples = samples or []
-        # Offload base64 image bytes to disk as soon as the rollout is
-        # tokenized, so memory stays flat instead of holding every buffered
-        # rollout's images until the batch ships (no-op for text-only). Images
-        # the env worker already offloaded to the same run dir are recognized
-        # and not re-copied.
-        await asyncio.to_thread(offload_images_to_disk, [raw], self._mm_asset_root)
 
     def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
