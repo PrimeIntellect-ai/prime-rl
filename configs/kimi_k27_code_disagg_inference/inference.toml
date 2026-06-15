@@ -1,0 +1,35 @@
+# Kimi-K2.7-Code — 1T MoE (DeepSeek-V3-style MLA, 384 experts, INT4 compressed-tensors).
+# Prefill/decode-disaggregated wide-EP serving on H200 (141 GiB) nodes, 130k context.
+#
+# Wide-EP: no [parallel] block -> tp=1 -> DP-replicated MLA attention + EP-sharded experts.
+# EP width per replica = (nodes / replicas) * gpus_per_node. Same pattern as
+# configs/glm5_disagg_inference. Memory per GPU ~= 22 GiB bf16 (attn/shared/embed/lm_head,
+# replicated) + 532 GiB INT4 experts sharded by EP width. KV cache (MLA) ~= 8.6 GiB per
+# full 130k sequence.
+#
+# Default: prefill EP32 (4 nodes) + decode EP16 (2 nodes) = 6 nodes / 48 H200.
+#   decode: ~24 experts/GPU, ~55 GiB weights/GPU, ~117 concurrent 130k sequences.
+# To scale out, prefer MORE replicas over wider EP (cheaper all-to-all, router load-balances),
+# e.g. 16 nodes as 2 x EP32 per role:
+#   num_prefill_nodes=8, num_prefill_replicas=2
+#   num_decode_nodes=8,  num_decode_replicas=2   (~590 concurrent 130k sequences)
+enable_expert_parallel = true
+enable_eplb = false
+use_deep_gemm = false               # INT4 compressed-tensors, NOT FP8 (DeepGEMM is FP8-only)
+gpu_memory_utilization = 0.90
+
+[model]
+name = "moonshotai/Kimi-K2.7-Code"
+max_model_len = 131072              # 128Ki, covers the 130k target
+tool_call_parser = "kimi_k2"
+reasoning_parser = "kimi_k2"
+
+[deployment]
+type = "disaggregated"
+num_prefill_nodes = 4               # 1 replica -> EP32 (12 experts/GPU)
+num_decode_nodes = 2                # 1 replica -> EP16 (24 experts/GPU)
+gpus_per_node = 8
+
+[slurm]
+job_name = "kimi-k2.7-code"
+partition = "cluster"
