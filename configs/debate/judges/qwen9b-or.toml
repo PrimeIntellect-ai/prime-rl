@@ -1,0 +1,7 @@
+[orchestrator.multi_agent.fixed.judge]
+members = ["judge"]
+model = "qwen/qwen3.5-9b"
+base_url = ["https://openrouter.ai/api/v1"]
+api_key_var = "OPENROUTER_API_KEY"
+request_mode = "chat"
+sampling = { temperature = 0.7, top_p = 0.8, max_completion_tokens = 4096, extra_body = { top_k = 20, min_p = 0.0, presence_penalty = 1.5, reasoning = { enabled = false }, provider = { order = ["DeepInfra", "Together", "Venice"], allow_fallbacks = true } } }

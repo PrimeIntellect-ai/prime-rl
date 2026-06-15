@@ -1,0 +1,45 @@
+[log]
+level = "info"
+
+[ckpt]
+interval = 50
+keep_last = 1
+
+[weight_broadcast]
+type = "filesystem"
+keep_all = true
+
+[orchestrator]
+training_mode = "rl"
+target_lag = 3
+batch_size = 512
+group_size = 16
+max_inflight_rollouts = 1424
+max_off_policy_steps = 8
+dump_trajectory = false
+dump_failed_train_rollouts = true
+dump_failed_train_trajectory = true
+
+[orchestrator.client]
+timeout = 3600
+
+[orchestrator.renderer]
+name = "auto"
+preserve_all_thinking = true
+
+[orchestrator.model.lora]
+name = "debate-r64"
+
+[orchestrator.advantage]
+type = "rae"
+beta = 0.9
+
+[orchestrator.train]
+num_workers = 64
+
+[orchestrator.eval]
+interval = 5
+skip_first_step = false
+num_examples = 55
+group_size = 4
+num_workers = 32
