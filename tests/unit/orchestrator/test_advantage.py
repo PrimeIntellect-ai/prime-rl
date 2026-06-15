@@ -122,6 +122,55 @@ def test_train_env_threads_max_seq_len_into_advantage_fn(monkeypatch):
     assert result.advantages == pytest.approx([0.1, -0.1], abs=1e-6)
 
 
+def test_per_env_linear_advantage_uses_runtime_schema():
+    config = OrchestratorConfig(
+        seq_len=100,
+        train={
+            "env": [
+                {
+                    "advantage": {
+                        "type": "default",
+                        "length_penalty": {"coef": 1.0},
+                    },
+                }
+            ],
+        },
+    )
+
+    advantage = config.train.env[0].advantage
+    assert isinstance(advantage, DefaultAdvantageConfig)
+    assert isinstance(advantage.length_penalty, LinearLengthPenaltyConfig)
+
+    fn = setup_advantage_fn(advantage, max_seq_len=config.seq_len)
+    result = fn(_make_group(rewards=[1.0, 1.0], completion_lengths=[10, 30]))
+
+    assert result.advantages == pytest.approx([0.1, -0.1], abs=1e-6)
+
+
+def test_per_env_custom_advantage_uses_runtime_schema():
+    config = OrchestratorConfig(
+        train={
+            "env": [
+                {
+                    "advantage": {
+                        "type": "custom",
+                        "import_path": "tests.unit.orchestrator.test_advantage._dummy_custom_advantage",
+                        "kwargs": {"scale": 3.0},
+                    },
+                }
+            ],
+        },
+    )
+
+    advantage = config.train.env[0].advantage
+    assert isinstance(advantage, CustomAdvantageConfig)
+
+    fn = setup_advantage_fn(advantage)
+    result = fn(_make_group(rewards=[1.0, 0.5], completion_lengths=[10, 20]))
+
+    assert result.advantages == pytest.approx([3.0, 1.5], abs=1e-6)
+
+
 def test_length_weighted_baseline():
     """Length-weighted baseline uses sum(len_i * reward_i) / sum(len_i) instead of the plain mean."""
     rewards = [1.0, 0.0, 0.0]
