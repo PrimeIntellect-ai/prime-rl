@@ -268,7 +268,7 @@ class Orchestrator:
         post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
 
         get_logger().info("Loading training environments")
-        self.train_envs = TrainEnvs(config.train.env)
+        self.train_envs = TrainEnvs(config.train.env, max_seq_len=config.seq_len)
         if config.training_mode == "sft":
             for env in self.train_envs:
                 env.sampling_args.pop("logprobs", None)

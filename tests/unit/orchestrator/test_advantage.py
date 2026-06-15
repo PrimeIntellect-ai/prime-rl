@@ -6,6 +6,7 @@ from prime_rl.configs.orchestrator import (
     CustomAdvantageConfig,
     DefaultAdvantageConfig,
     LinearLengthPenaltyConfig,
+    TrainEnvConfig,
 )
 from prime_rl.orchestrator.advantage import (
     AdvantageInputs,
@@ -14,6 +15,7 @@ from prime_rl.orchestrator.advantage import (
     default_advantage_fn,
     setup_advantage_fn,
 )
+from prime_rl.orchestrator.envs import Env, TrainEnv
 from prime_rl.orchestrator.types import TrainRollout
 
 
@@ -96,6 +98,27 @@ def test_setup_advantage_fn_threads_max_seq_len():
     penalized = [1.0 - 1.0 * pass_rate * (length / 100) for length in (10, 30)]
     mean = sum(penalized) / len(penalized)
     assert result.advantages == pytest.approx([p - mean for p in penalized], abs=1e-6)
+
+
+def test_train_env_threads_max_seq_len_into_advantage_fn(monkeypatch):
+    """TrainEnv-built advantage funcs use orchestrator seq_len for length penalties."""
+
+    def fake_env_init(self, config):
+        self.config = config
+        self._env = None
+        self._env_client = None
+        self._env_server_process = None
+
+    monkeypatch.setattr(Env, "__init__", fake_env_init)
+    config = TrainEnvConfig(
+        advantage=DefaultAdvantageConfig(length_penalty=LinearLengthPenaltyConfig(coef=1.0)),
+    )
+
+    env = TrainEnv(config, max_seq_len=100)
+    assert env.advantage_fn is not None
+    result = env.advantage_fn(_make_group(rewards=[1.0, 1.0], completion_lengths=[10, 30]))
+
+    assert result.advantages == pytest.approx([0.1, -0.1], abs=1e-6)
 
 
 def test_length_weighted_baseline():

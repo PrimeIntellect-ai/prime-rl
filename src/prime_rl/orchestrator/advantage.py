@@ -61,6 +61,8 @@ def default_advantage_fn(
     lengths = torch.tensor([get_model_completion_len(r) for r in inputs.rollouts], dtype=rewards.dtype)
 
     if length_penalty is not None:
+        if max_seq_len is None:
+            raise ValueError("max_seq_len is required when length_penalty is enabled")
         penalty = length_penalty.coef * rewards.mean() * (lengths / max_seq_len)
         if length_penalty.gate_by_correctness:
             penalty = penalty * rewards
