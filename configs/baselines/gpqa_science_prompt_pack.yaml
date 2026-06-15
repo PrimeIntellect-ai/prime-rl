@@ -79,21 +79,9 @@ _grader:
         data_collection: deny
         zdr: true
         require_parameters: true
+        allow_fallbacks: false
         only:
-          - Novita
           - AtlasCloud
-          - Fireworks
-          - Wafer
-          - Parasail
-          - Morph
-          - Venice
-          - Io Net
-          - AkashML
-          - DeepInfra
-          - Together
-          - NextBit
-          - Google
-          - Phala
   cache:
     rubric_family: gpqa_science_oe_final_answer_v1
     variant_id: deepseek-v4-flash-high_reference_anchored_oneword_v1
@@ -152,21 +140,9 @@ _matcher:
         data_collection: deny
         zdr: true
         require_parameters: true
+        allow_fallbacks: false
         only:
-          - Novita
           - AtlasCloud
-          - Fireworks
-          - Wafer
-          - Parasail
-          - Morph
-          - Venice
-          - Io Net
-          - AkashML
-          - DeepInfra
-          - Together
-          - NextBit
-          - Google
-          - Phala
   system: |
     Compare two answers for factual equivalence.
     SAME = identical claim (format/notation differences OK).
