@@ -1,0 +1,10 @@
+[orchestrator.multi_agent.fixed.judge]
+members = ["judge"]
+# judge == debater base model (Qwen3.5-35B-A3B), API-served via OpenRouter — the
+# frozen base judges its own LoRA-trained debaters (self-capability judge), vs the
+# weaker qwen9b-or judge. Same judge config as qwen9b-or; only the model differs.
+model = "qwen/qwen3.5-35b-a3b"
+base_url = ["https://openrouter.ai/api/v1"]
+api_key_var = "OPENROUTER_API_KEY"
+request_mode = "chat"
+sampling = { temperature = 0.7, top_p = 0.8, max_completion_tokens = 4096, extra_body = { top_k = 20, min_p = 0.0, presence_penalty = 1.5, reasoning = { enabled = false }, provider = { order = ["DeepInfra", "Together", "Venice"], allow_fallbacks = true } } }
