@@ -5,7 +5,7 @@
 # EP width per replica = (nodes / replicas) * gpus_per_node. Same pattern as
 # configs/glm5_disagg_inference. Memory per GPU ~= 22 GiB bf16 (attn/shared/embed/lm_head,
 # replicated) + 532 GiB INT4 experts sharded by EP width. KV cache (MLA) ~= 8.6 GiB per
-# full 130k sequence.
+# full 130k sequence (bf16).
 #
 # Default: prefill EP32 (4 nodes) + decode EP16 (2 nodes) = 6 nodes / 48 H200.
 #   decode: ~24 experts/GPU, ~55 GiB weights/GPU, ~117 concurrent 130k sequences.
@@ -13,9 +13,16 @@
 # e.g. 16 nodes as 2 x EP32 per role:
 #   num_prefill_nodes=8, num_prefill_replicas=2
 #   num_decode_nodes=8,  num_decode_replicas=2   (~590 concurrent 130k sequences)
+#
+# Auto-applied by the disaggregated launcher (no config needed): DeepEP all-to-all
+# (prefill deepep_high_throughput / decode deepep_low_latency), FULL_DECODE_ONLY decode
+# cudagraphs, NIXL KV transfer, and FlashMLA attention (Hopper). The W4A16 (INT4)
+# compressed-tensors MoE kernel is auto-selected; confirm it lands on Marlin/machete (not a
+# slow fallback) in the worker logs on first bring-up.
 enable_expert_parallel = true
 enable_eplb = false
 use_deep_gemm = false               # INT4 compressed-tensors, NOT FP8 (DeepGEMM is FP8-only)
+enable_prefix_caching = true        # reuse the shared codebase/system prefix across agentic turns
 gpu_memory_utilization = 0.90
 
 [model]
@@ -33,3 +40,12 @@ gpus_per_node = 8
 [slurm]
 job_name = "kimi-k2.7-code"
 partition = "cluster"
+
+# Optional levers (opt in during tuning):
+#   - fp8 KV cache: halves MLA KV -> ~2x decode concurrency (~234 vs ~117 seqs @130k), at a
+#     small long-context accuracy cost. FlashMLA supports it on Hopper. Add:
+#       [vllm_extra]
+#       kv_cache_dtype = "fp8"
+#   - chunked-prefill batch size for 130k prompts (balance prefill throughput vs activation
+#     memory): [vllm_extra] with max_num_batched_tokens = 16384 (sweep during bring-up).
+#   - enable_eplb = true to balance the 384 experts across EP ranks for sustained serving.
