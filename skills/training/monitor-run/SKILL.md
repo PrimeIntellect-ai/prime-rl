@@ -115,6 +115,7 @@ All metrics print to the console log (and W&B when configured).
 | trainer | `time/step` | total trainer step |
 | trainer | `time/wait_for_batch` | **high → orchestrator is bottleneck** |
 | trainer | `time/forward_backward`, `time/broadcast_weights`, `time/save_ckpt` | phase timings |
+| trainer | `sparse_update/{sparsity,changed_numel,patch_bytes}` | sparse filesystem weight-sync payload metrics when `trainer.weight_broadcast.sparse = true` |
 | trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU % |
 | orchestrator | `time/step`, `time/generate_completions`, `time/update_weights` | phase timings |
 | orchestrator | `time/wait_for_ckpt` | **high → trainer is bottleneck** |

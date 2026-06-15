@@ -228,6 +228,9 @@ def train(config: TrainerConfig):
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
 
+    if weight_broadcast is not None:
+        weight_broadcast.prepare_baseline(model, step=progress.step)
+
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
     if config.data.fake:
@@ -692,6 +695,10 @@ def train(config: TrainerConfig):
             "step": progress.step,
         }
         monitor.log(time_metrics, step=progress.step)
+
+        broadcast_metrics = getattr(weight_broadcast, "last_metrics", None)
+        if broadcast_metrics:
+            monitor.log({**broadcast_metrics, "step": progress.step}, step=progress.step)
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.output_dir)

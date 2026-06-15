@@ -115,6 +115,18 @@ save_adapter_separately = true
 
 LoRA pairs naturally with [multi-tenant training](#multi-tenant-training) — each tenant gets its own adapter and the backbone is shared across all of them in trainer memory.
 
+## Sparse Filesystem Weight Sync
+
+Filesystem weight broadcast defaults to writing a full HF-compatible checkpoint at each policy update. To send sparse BF16 value patches instead, enable sparse updates on the trainer filesystem broadcast config:
+
+```toml
+[trainer.weight_broadcast]
+type = "filesystem"
+sparse = true
+```
+
+Sparse sync captures the trainer's initial BF16 weight view after model load or checkpoint resume. Each later broadcast writes `sparse_update_manifest.json` plus sparse changed values under `broadcasts/step_N/`; inference reconstructs the dense BF16 view locally and reloads it through the normal vLLM path. This mode is for full-model filesystem broadcast and is not supported with LoRA adapter broadcast or multi-run training.
+
 ## Multi-Tenant Training
 
 Multi-tenant training lets a single trainer + inference deployment serve many concurrent LoRA "tenants" — each a fully isolated run with its own orchestrator, LoRA adapter, optimizer, scheduler, checkpoints, and progress tracking — sharing the same backbone weights and the same vLLM server. This is the topology behind hosted training on the [Prime Intellect platform (Lab)](https://app.primeintellect.ai). The trainer-side implementation is the `MultiRunManager` singleton, enabled by setting `trainer.max_concurrent_runs > 1`. For the full API surface, see [`src/prime_rl/trainer/runs.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/src/prime_rl/trainer/runs.py).

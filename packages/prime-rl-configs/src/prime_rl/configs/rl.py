@@ -313,6 +313,13 @@ class RLConfig(BaseConfig):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference."""
         if self.weight_broadcast is not None:
             if self.weight_broadcast.type == "nccl":
+                trainer_weight_broadcast = self.trainer.weight_broadcast
+                if (
+                    isinstance(trainer_weight_broadcast, TrainerFileSystemWeightBroadcastConfig)
+                    and trainer_weight_broadcast.sparse
+                ):
+                    raise ValueError("trainer.weight_broadcast.sparse = true requires filesystem weight broadcast.")
+
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
                 self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
@@ -329,7 +336,8 @@ class RLConfig(BaseConfig):
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
             elif self.weight_broadcast.type == "filesystem":
-                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
+                if self.trainer.weight_broadcast.type != "filesystem":
+                    self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
             if self.inference is not None:
                 self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)

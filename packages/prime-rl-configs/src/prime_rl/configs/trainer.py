@@ -471,6 +471,9 @@ class BaseWeightBroadcastConfig(BaseConfig):
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    sparse: bool = False
+    """Write sparse BF16 value patches instead of full HF-compatible checkpoints for filesystem weight broadcast."""
+
     save_sharded: bool = True
     """Save the weight checkpoint in sharded format."""
 

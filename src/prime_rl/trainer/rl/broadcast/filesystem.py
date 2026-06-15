@@ -3,7 +3,9 @@ import time
 from pathlib import Path
 from typing import Literal
 
+import torch
 import torch.nn as nn
+from torch import Tensor
 from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, LoRAConfig
@@ -17,6 +19,7 @@ from prime_rl.trainer.weights import (
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.sparse_update import SparseUpdateStats, save_sparse_update, to_compute_tensor
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
 
@@ -27,28 +30,59 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         self, output_dir: Path, config: FileSystemWeightBroadcastConfig, lora_config: LoRAConfig | None = None
     ):
         super().__init__(output_dir, lora_config)
+        self.sparse = config.sparse
         self.save_format: Literal["safetensors", "torch"] = config.save_format
         self.save_sharded = config.save_sharded if lora_config is None else False
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
+        self._sparse_update_previous_state_dict: dict[str, Tensor] | None = None
+        self._sparse_update_previous_step = 0
+        self.last_metrics: dict[str, float | int] = {}
+        if self.sparse:
+            if lora_config is not None:
+                raise ValueError("Sparse filesystem broadcast is only supported for full-model weight broadcasts.")
+            if self.multi_run_manager.max_runs > 1:
+                raise ValueError("Sparse filesystem broadcast is not supported with multi-run training.")
         self.logger.debug(
-            f"Filesystem broadcast initialized (save_format={config.save_format}, save_sharded={self.save_sharded})"
+            f"Filesystem broadcast initialized (sparse={self.sparse}, save_format={config.save_format}, "
+            f"save_sharded={self.save_sharded})"
         )
+
+    def _collect_model_state_dict(self, model: nn.Module) -> dict[str, Tensor]:
+        state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
+        if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
+            model.convert_to_hf(state_dict)
+        else:
+            from transformers.core_model_loading import revert_weight_conversion
+
+            state_dict = revert_weight_conversion(model, state_dict)
+        return state_dict
+
+    def prepare_baseline(self, model: nn.Module, step: int) -> None:
+        if not self.sparse:
+            return
+
+        state_dict = self._collect_model_state_dict(model)
+        if self.world.is_master:
+            self._sparse_update_previous_state_dict = {
+                name: to_compute_tensor(tensor, torch.bfloat16) for name, tensor in state_dict.items()
+            }
+            self._sparse_update_previous_step = step
+            total_numel = sum(tensor.numel() for tensor in self._sparse_update_previous_state_dict.values())
+            self.logger.info(
+                f"Prepared sparse update baseline at step {step} "
+                f"({len(self._sparse_update_previous_state_dict)} tensors, {total_numel:,} values)"
+            )
 
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.perf_counter()
+        self.last_metrics = {}
         adapter_only = self.lora_config is not None
 
         if not adapter_only:
-            state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
-            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
-                model.convert_to_hf(state_dict)
-            else:
-                from transformers.core_model_loading import revert_weight_conversion
-
-                state_dict = revert_weight_conversion(model, state_dict)
+            state_dict = self._collect_model_state_dict(model)
 
         for idx in self.multi_run_manager.ready_to_update_idxs:
             self.logger.debug(
@@ -75,7 +109,10 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     save_dir.mkdir(parents=True, exist_ok=True)
 
                     self.logger.debug(f"Saving weights for run {idx} to {save_dir}")
-                    save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
+                    if self.sparse and not adapter_only:
+                        self._save_sparse_update_patch(state_dict, save_dir, step)
+                    else:
+                        save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
                     if adapter_only:
                         orch_lora = self.multi_run_manager.config[idx].model.lora
                         save_lora_config(
@@ -103,12 +140,42 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         if self.world.is_master:
             self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
+    def _save_sparse_update_patch(self, state_dict: dict[str, Tensor], save_dir: Path, step: int) -> SparseUpdateStats:
+        if self._sparse_update_previous_state_dict is None:
+            raise RuntimeError("Sparse update baseline was not prepared before the first sparse broadcast.")
+
+        current_state = {name: to_compute_tensor(tensor, torch.bfloat16) for name, tensor in state_dict.items()}
+        stats = save_sparse_update(
+            self._sparse_update_previous_state_dict,
+            current_state,
+            save_dir,
+            step=step,
+            base_step=self._sparse_update_previous_step,
+            compute_dtype=torch.bfloat16,
+        )
+        self._sparse_update_previous_state_dict = current_state
+        self._sparse_update_previous_step = step
+        self.last_metrics = {
+            "sparse_update/total_numel": stats.total_numel,
+            "sparse_update/changed_numel": stats.changed_numel,
+            "sparse_update/sparsity": stats.sparsity,
+            "sparse_update/patch_bytes": stats.patch_bytes,
+            "sparse_update/patched_tensors": stats.patched_tensors,
+        }
+        self.logger.info(
+            f"Saved sparse update patch for step {step}: {stats.changed_numel:,}/{stats.total_numel:,} values changed "
+            f"(sparsity={stats.sparsity:.4%}, patch={stats.patch_bytes / 1024**2:.2f} MiB)"
+        )
+        return stats
+
     def _notify_orchestrator(self, save_dir: Path):
         """Notify the orchestrator that the weights have been broadcast by writing a 'STABLE' file to a shared filesystem."""
         stable_file = save_dir / "STABLE"
         stable_file.touch()
 
     def maybe_clean(self, interval_to_keep: int | None):
+        if self.sparse:
+            return
         for idx in self.multi_run_manager.used_idxs:
             maybe_clean(
                 get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
