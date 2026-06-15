@@ -25,13 +25,13 @@ info_keys = ["domain", "subdomain", "conversion_type"]
 prompts_ref = "/lus/lfs1aip2/projects/a6r/joanv.a6r/work/prime-rl/configs/baselines/gpqa_science_prompt_pack.yaml"
 prompt_role = "debater_a"
 prompt_phase = "propose"
-judge_base_url = "https://api.openai.com/v1"
-judge_api_key_var = "OPENAI_API_KEY"
+judge_base_url = "https://openrouter.ai/api/v1"
+judge_api_key_var = "OPENROUTER_API_KEY"
 judge_cache_enabled = true
 judge_cache_size = 50000
 judge_max_retries = 2
 judge_retry_delay_s = 0.5
-judge_persistent_cache_path = "outputs/baselines/judge-cache/gpqa-openended-gpt54mini-reference-anchored-v1.sqlite3"
+judge_persistent_cache_path = "outputs/baselines/judge-cache/gpqa-openended-deepseek-v4-flash-high-reference-anchored-v1.sqlite3"
 judge_persistent_cache_min_samples = 1
 
 [sampling]

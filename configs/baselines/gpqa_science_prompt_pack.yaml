@@ -68,13 +68,35 @@ fields:
           values: [debater_a, debater_b, tie]
 
 _grader:
-  model: gpt-5.4-mini
+  model: deepseek/deepseek-v4-flash
   sampling_args:
-    reasoning_effort: medium
-    max_completion_tokens: 1024
+    max_completion_tokens: 8192
+    extra_body:
+      reasoning:
+        effort: high
+        exclude: true
+      provider:
+        data_collection: deny
+        zdr: true
+        require_parameters: true
+        only:
+          - Novita
+          - AtlasCloud
+          - Fireworks
+          - Wafer
+          - Parasail
+          - Morph
+          - Venice
+          - Io Net
+          - AkashML
+          - DeepInfra
+          - Together
+          - NextBit
+          - Google
+          - Phala
   cache:
     rubric_family: gpqa_science_oe_final_answer_v1
-    variant_id: gpt-5.4-mini_reference_anchored_oneword_v1
+    variant_id: deepseek-v4-flash-high_reference_anchored_oneword_v1
   reward:
     mode: soft
     threshold: 0.5
@@ -119,6 +141,32 @@ _grader:
   negative: INCORRECT
 
 _matcher:
+  model: deepseek/deepseek-v4-flash
+  sampling_args:
+    max_completion_tokens: 8192
+    extra_body:
+      reasoning:
+        effort: high
+        exclude: true
+      provider:
+        data_collection: deny
+        zdr: true
+        require_parameters: true
+        only:
+          - Novita
+          - AtlasCloud
+          - Fireworks
+          - Wafer
+          - Parasail
+          - Morph
+          - Venice
+          - Io Net
+          - AkashML
+          - DeepInfra
+          - Together
+          - NextBit
+          - Google
+          - Phala
   system: |
     Compare two answers for factual equivalence.
     SAME = identical claim (format/notation differences OK).
