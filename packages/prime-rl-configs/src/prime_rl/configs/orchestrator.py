@@ -623,7 +623,7 @@ class OrchestratorConfig(BaseConfig):
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
 
     defer_mm_materialization: bool = True
-    """Defer multimodal pixel materialization to the trainer. When True, the orchestrator ships lightweight image references (``mm_refs``) instead of materializing pixels and shipping heavy ``mm_kwargs``. Must match the trainer's setting. A no-op for text-only runs; forced off for SFT."""
+    """Defer multimodal pixel materialization to the trainer. VLM runs must keep this enabled so the orchestrator ships lightweight image references (``mm_refs``) instead of materialized image payloads. A no-op for text-only runs; forced off for SFT."""
 
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
@@ -798,9 +798,9 @@ class OrchestratorConfig(BaseConfig):
     def vlm_requires_renderer(self):
         """VLMs (``[model.vlm]`` block set) must go through the renderer.
 
-        The renderer owns the processor per-slot, produces byte-identical
-        tokens, and ships generic ``mm_kwargs`` keyed by whatever the
-        model's forward signature expects.
+        The renderer owns the processor per-slot and produces byte-identical
+        tokens. Multimodal tensors are materialized later on trainer ranks from
+        ``mm_refs``.
         """
         if self.student.model.vlm is not None and self.renderer is None:
             raise ValueError(
@@ -851,7 +851,14 @@ class OrchestratorConfig(BaseConfig):
         in ``mm_refs`` is reproducible by the trainer's identical renderer."""
         # Only VLM runs emit mm_refs; text-only runs never do, so default-on is
         # a harmless no-op for them even if the renderer is opted out.
-        if self.defer_mm_materialization and self.renderer is None and self.student.model.vlm is not None:
+        if self.student.model.vlm is None:
+            return self
+        if not self.defer_mm_materialization:
+            raise ValueError(
+                "orchestrator.defer_mm_materialization=false is unsupported for VLM runs. "
+                "VLM runs must ship mm_refs and materialize images on trainer ranks."
+            )
+        if self.renderer is None:
             raise ValueError(
                 "orchestrator.defer_mm_materialization requires a renderer so the trainer can "
                 "materialize pixels identically from the shipped image references."

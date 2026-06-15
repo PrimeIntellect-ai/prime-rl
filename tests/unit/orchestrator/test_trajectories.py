@@ -1,4 +1,5 @@
 import base64
+import hashlib
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -22,16 +23,13 @@ def interleave_rollout(output, *args, **kwargs):
     return _interleave_rollout(output, *args, **kwargs)
 
 
-def _decode_mm_pixels(sample) -> list:
-    """Decode ``sample.mm_kwargs['pixel_values']`` to a nested list."""
-    p = sample.mm_kwargs["pixel_values"]
-    return np.frombuffer(p.data, dtype=np.dtype(p.dtype)).reshape(p.shape).tolist()
+def _uri_hash(uri: str) -> str:
+    return hashlib.sha256(uri.encode()).hexdigest()[:16]
 
 
-def _decode_mm_thw(sample) -> list:
-    """Decode ``sample.mm_kwargs['image_grid_thw']`` to a nested list."""
-    g = sample.mm_kwargs["image_grid_thw"]
-    return np.frombuffer(g.data, dtype=np.dtype(g.dtype)).reshape(g.shape).tolist()
+def _mm_ref_grids(sample) -> list:
+    assert sample.mm_refs is not None
+    return [item["image_grid_thw"] for item in sample.mm_refs.descriptor["mm_items"]["image"]]
 
 
 def _routed_experts_payload(data, start: int = 0) -> dict:
@@ -1280,15 +1278,14 @@ def test_interleave_rollout_none_routed_experts_stays_none():
 # =============================================================================
 
 
-def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
-    """``interleave_rollout`` packs renderer-emitted ``multi_modal_data``
-    (pixel_values / image_grid_thw / mm_token_type_ids) onto the
-    TrainingSample.
+def test_interleave_rollout_ships_mm_refs_from_renderer_mm_data():
+    """``interleave_rollout`` ships renderer-emitted ``multi_modal_data`` as
+    descriptor-only ``mm_refs`` plus ``mm_token_type_ids`` on the TrainingSample.
 
     verifiers' ``_delta_intermediate_mm_data`` ships per-step *delta*
     mm_data (each step contains only items not present in the prior
     step's cumulative set). Prime-rl unions across the sample's step
-    range to recover the cumulative set in image-placeholder order.
+    range to recover the cumulative descriptor in image-placeholder order.
     """
     import torch as _torch
     from renderers.base import MultiModalData, PlaceholderRange
@@ -1299,10 +1296,12 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
     item2_pv = _torch.tensor([[3.0, 4.0]], dtype=_torch.float32)
     item1_thw = _torch.tensor([[1, 2, 3]], dtype=_torch.int64)
     item2_thw = _torch.tensor([[1, 4, 4]], dtype=_torch.int64)
+    uri1 = "file:///image-1.jpg"
+    uri2 = "file:///image-2.jpg"
 
     # Step 0: image h1 (first time it's seen, included in delta).
     mm_step_0 = MultiModalData(
-        mm_hashes={"image": ["h1"]},
+        mm_hashes={"image": [_uri_hash(uri1)]},
         mm_placeholders={"image": [PlaceholderRange(offset=1, length=1)]},
         mm_items={"image": [{"pixel_values": item1_pv, "image_grid_thw": item1_thw}]},
     )
@@ -1310,7 +1309,7 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
     # the prior step's cumulative set). Renderer's bridge would have
     # produced cumulative [h1, h2] before verifiers' delta rewrite.
     mm_step_1 = MultiModalData(
-        mm_hashes={"image": ["h2"]},
+        mm_hashes={"image": [_uri_hash(uri2)]},
         mm_placeholders={"image": [PlaceholderRange(offset=4, length=1)]},
         mm_items={"image": [{"pixel_values": item2_pv, "image_grid_thw": item2_thw}]},
     )
@@ -1319,7 +1318,15 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Turn 1"}],
+                prompt=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": uri1}},
+                            {"type": "text", "text": "Turn 1"},
+                        ],
+                    }
+                ],
                 completion=[{"role": "assistant", "content": "Response 1"}],
                 response=MagicMock(),
                 tokens=vf.TrajectoryStepTokens(
@@ -1339,7 +1346,15 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
                 extras={},
             ),
             vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Turn 2"}],
+                prompt=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": uri2}},
+                            {"type": "text", "text": "Turn 2"},
+                        ],
+                    }
+                ],
                 completion=[{"role": "assistant", "content": "Response 2"}],
                 response=MagicMock(),
                 tokens=vf.TrajectoryStepTokens(
@@ -1365,7 +1380,7 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
 
     # Token 2 is the image placeholder, token 5 is the video placeholder.
     mm_mapping = {2: 1, 5: 2}
-    rollouts = interleave_rollout(output, mm_token_type_ids_mapping=mm_mapping)
+    rollouts = interleave_rollout(output, mm_token_type_ids_mapping=mm_mapping, defer_materialization=True)
 
     assert rollouts is not None and len(rollouts) == 1
     sample = rollouts[0]
@@ -1373,14 +1388,61 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
     # the union of step 0's delta ([h1]) and step 1's delta ([h2]).
     assert sample.prompt_ids == [1, 2]
     assert sample.completion_ids == [3, 4, 5, 6, 7]
-    # Pixel values packed by concatenating step 0's item then step 1's.
-    assert _decode_mm_pixels(sample) == [
-        [1.0, 2.0],
-        [3.0, 4.0],
-    ]
-    assert _decode_mm_thw(sample) == [[1, 2, 3], [1, 4, 4]]
+    assert sample.mm_kwargs is None
+    assert sample.mm_refs is not None
+    assert sample.mm_refs.uris == [uri1, uri2]
+    assert sample.mm_refs.descriptor["mm_hashes"]["image"] == [_uri_hash(uri1), _uri_hash(uri2)]
+    assert _mm_ref_grids(sample) == [[[1, 2, 3]], [[1, 4, 4]]]
     # mm_token_type_ids: image at token 2, video at token 5, rest 0.
     assert sample.mm_token_type_ids == [0, 1, 0, 0, 2, 0, 0]
+
+
+def test_interleave_rollout_rejects_multimodal_without_defer_materialization():
+    import torch as _torch
+    from renderers.base import MultiModalData, PlaceholderRange
+
+    uri = "file:///image.jpg"
+    output = vf.RolloutOutput(
+        example_id=1,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": [{"type": "image_url", "image_url": {"url": uri}}]}],
+                completion=[{"role": "assistant", "content": "Response"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    multi_modal_data=MultiModalData(
+                        mm_hashes={"image": [_uri_hash(uri)]},
+                        mm_placeholders={"image": [PlaceholderRange(offset=1, length=1)]},
+                        mm_items={
+                            "image": [
+                                {
+                                    "pixel_values": _torch.tensor([[1.0, 2.0]], dtype=_torch.float32),
+                                    "image_grid_thw": _torch.tensor([[1, 2, 3]], dtype=_torch.int64),
+                                }
+                            ]
+                        },
+                    ),
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            )
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    with pytest.raises(ValueError, match="defer_materialization=True"):
+        interleave_rollout(output, mm_token_type_ids_mapping={2: 1})
 
 
 def test_interleave_rollout_step_back_delta_sample_is_self_contained():
@@ -1397,18 +1459,21 @@ def test_interleave_rollout_step_back_delta_sample_is_self_contained():
     from verifiers.utils.save_utils import _delta_intermediate_mm_data
 
     image_token = 2
+    uri_a = "file:///image-a.jpg"
+    uri_b = "file:///image-b.jpg"
+    uri_c = "file:///image-c.jpg"
 
-    def mm(*hashes: str) -> MultiModalData:
+    def mm(*uris: str) -> MultiModalData:
         return MultiModalData(
-            mm_hashes={"image": list(hashes)},
-            mm_placeholders={"image": [PlaceholderRange(offset=i * 10, length=1) for i, _ in enumerate(hashes)]},
+            mm_hashes={"image": [_uri_hash(uri) for uri in uris]},
+            mm_placeholders={"image": [PlaceholderRange(offset=i * 10, length=1) for i, _ in enumerate(uris)]},
             mm_items={
                 "image": [
                     {
                         "pixel_values": _torch.tensor([[float(i)]], dtype=_torch.float32),
                         "image_grid_thw": _torch.tensor([[1, 2, 2]], dtype=_torch.int64),
                     }
-                    for i, _ in enumerate(hashes)
+                    for i, _ in enumerate(uris)
                 ]
             },
         )
@@ -1421,7 +1486,7 @@ def test_interleave_rollout_step_back_delta_sample_is_self_contained():
                 "completion_ids": [12],
                 "completion_mask": [True],
                 "completion_logprobs": [-0.1],
-                "multi_modal_data": mm("A"),
+                "multi_modal_data": mm(uri_a),
             }
         },
         {
@@ -1431,7 +1496,7 @@ def test_interleave_rollout_step_back_delta_sample_is_self_contained():
                 "completion_ids": [14],
                 "completion_mask": [True],
                 "completion_logprobs": [-0.2],
-                "multi_modal_data": mm("A", "B"),
+                "multi_modal_data": mm(uri_a, uri_b),
             }
         },
         {
@@ -1442,18 +1507,31 @@ def test_interleave_rollout_step_back_delta_sample_is_self_contained():
                 "completion_ids": [16],
                 "completion_mask": [True],
                 "completion_logprobs": [-0.3],
-                "multi_modal_data": mm("A", "C"),
+                "multi_modal_data": mm(uri_a, uri_c),
             }
         },
     ]
     delta_steps = _delta_intermediate_mm_data(raw_steps)
+    prompts = [
+        [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": uri_a}}]}],
+        [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": uri_b}}]}],
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": uri_a}},
+                    {"type": "image_url", "image_url": {"url": uri_c}},
+                ],
+            }
+        ],
+    ]
 
     trajectory = []
     for idx, raw_step in enumerate(delta_steps):
         t = raw_step["tokens"]
         trajectory.append(
             vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": f"turn {idx}"}],
+                prompt=prompts[idx],
                 completion=[{"role": "assistant", "content": f"response {idx}"}],
                 response=MagicMock(),
                 tokens=vf.TrajectoryStepTokens(
@@ -1482,19 +1560,25 @@ def test_interleave_rollout_step_back_delta_sample_is_self_contained():
             error=None,
         ),
         mm_token_type_ids_mapping={image_token: 1},
+        defer_materialization=True,
     )
 
     assert rollouts is not None and len(rollouts) == 2
     assert sum(x == image_token for x in rollouts[0].prompt_ids + rollouts[0].completion_ids) == 2
-    assert _decode_mm_thw(rollouts[0]) == [[1, 2, 2], [1, 2, 2]]
+    assert rollouts[0].mm_kwargs is None
+    assert rollouts[0].mm_refs is not None
+    assert rollouts[0].mm_refs.uris == [uri_a, uri_b]
+    assert _mm_ref_grids(rollouts[0]) == [[[1, 2, 2]], [[1, 2, 2]]]
     assert sum(x == image_token for x in rollouts[1].prompt_ids + rollouts[1].completion_ids) == 2
-    assert _decode_mm_thw(rollouts[1]) == [[1, 2, 2], [1, 2, 2]]
+    assert rollouts[1].mm_kwargs is None
+    assert rollouts[1].mm_refs is not None
+    assert rollouts[1].mm_refs.uris == [uri_a, uri_c]
+    assert _mm_ref_grids(rollouts[1]) == [[[1, 2, 2]], [[1, 2, 2]]]
 
 
-def test_interleave_rollout_skips_pixel_materialization_for_filtered_rollout():
-    """A filtered rollout's samples are dropped before the trainer, so
-    ``interleave_rollout`` must skip the expensive pixel reconstruction — the
-    sample is still produced (for metrics) but carries no mm_kwargs."""
+def test_interleave_rollout_skips_mm_refs_for_filtered_rollout():
+    """A filtered rollout's samples are dropped before the trainer, so the
+    sample is still produced for metrics but carries no multimodal sidecar."""
     import torch as _torch
     from renderers.base import MultiModalData, PlaceholderRange
 
@@ -1543,8 +1627,9 @@ def test_interleave_rollout_skips_pixel_materialization_for_filtered_rollout():
 
     # Sample still produced (token bookkeeping for metrics) ...
     assert rollouts is not None and len(rollouts) == 1
-    # ... but no pixels materialized/packed, since it won't reach the trainer.
+    # ... but no multimodal sidecar, since it won't reach the trainer.
     assert rollouts[0].mm_kwargs is None
+    assert rollouts[0].mm_refs is None
     assert rollouts[0].mm_token_type_ids is None
 
 

@@ -275,9 +275,7 @@ def train(config: TrainerConfig):
             # Pass the configured renderer (defaults to AutoRendererConfig). The
             # orchestrator ships mm_refs based on whether rollouts have images, NOT
             # on the trainer's model.vlm block (prod VLM configs may leave it None),
-            # so do NOT gate on model.vlm. data.py builds the renderer only when
-            # defer is on and renderer_config is not None, so an explicit
-            # renderer=None still opts out (and a text-only run never gets mm_refs).
+            # so do NOT gate on model.vlm. Text-only runs never receive mm_refs.
             renderer_config=config.renderer,
             pack_multimodal=pack_multimodal,
             micro_batch_transport_config=config.micro_batch_transport,

@@ -5,9 +5,7 @@ import msgspec
 TrainingMode = Literal["rl", "opd", "sft"]
 
 
-# Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
-# Mirrors verifiers.utils.serve_utils.msgpack_encoder so the same wire
-# shape is used end-to-end from renderer → orchestrator → trainer.
+# Legacy encoded tensor payload retained for wire compatibility.
 class EncodedTensor(msgspec.Struct, array_like=True, gc=False):
     dtype: str
     shape: list[int]
@@ -48,14 +46,8 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     advantage: float | None = None
     reward: float | None = None
 
-    # Generic multimodal kwargs: flat dict keyed by the kwarg names the
-    # model's forward expects (e.g. {"pixel_values": ..., "image_grid_thw":
-    # ...} for Qwen3-VL; just {"pixel_values": ...} for Gemma3). The
-    # orchestrator batches per-image renderer items by torch.cat along
-    # dim=0 generically — no model-specific knowledge in prime-rl. The
-    # trainer ``**`` -unpacks this into the model forward, so any VLM
-    # whose HF processor / forward agree on kwarg names works without
-    # touching this transport.
+    # Legacy eager multimodal kwargs. VLM training now ships mm_refs instead;
+    # eager mm_kwargs are rejected before training.
     mm_kwargs: dict[str, EncodedTensor] | None = None
 
     routed_experts: RoutedExperts | None = None

@@ -1,16 +1,14 @@
-"""Shared multimodal helpers used by both the orchestrator (flag-off path,
-materialize pixels then ship heavy mm_kwargs) and the trainer (flag-on path,
-ship lightweight mm_refs then materialize pixels in the data loader).
+"""Shared multimodal helpers for trainer-side deferred image materialization.
 
-Factoring these here keeps the two paths byte-identical and avoids a
-trainer→orchestrator import dependency.
+The orchestrator ships lightweight ``mm_refs``; trainer ranks reconstruct pixels
+from those refs and pack the resulting tensors into model forward kwargs.
 """
 
 from typing import Any
 
 import torch
 
-from prime_rl.transport.types import EncodedTensor, MMRefs
+from prime_rl.transport.types import MMRefs
 
 
 def reconstruct_mm_pixels(renderer: Any, descriptor: dict, messages: list) -> Any:
@@ -83,15 +81,6 @@ def pack_mm_kwargs_tensors(mm_data: Any) -> "dict[str, torch.Tensor] | None":
     return out
 
 
-def encode_mm_kwargs(tensors: dict[str, torch.Tensor]) -> dict[str, EncodedTensor]:
-    """Encode packed torch tensors into ``EncodedTensor`` wire payloads."""
-    out: dict[str, EncodedTensor] = {}
-    for key, cat in tensors.items():
-        arr = cat.detach().cpu().numpy()
-        out[key] = EncodedTensor(dtype=str(arr.dtype), shape=list(arr.shape), data=arr.tobytes())
-    return out
-
-
 def build_image_messages(uris: list[str]) -> list[dict]:
     """Minimal messages ``materialize_pixels`` hash-matches against. Order and
     duplicates are harmless — matching dedups by hash."""
@@ -140,7 +129,9 @@ def make_defer_mm_validation_hook(trainer_defers: bool, trainer_renderer: Any):
 
     def validate(orch_config: Any) -> "tuple[bool, str]":
         if not getattr(orch_config, "defer_mm_materialization", False):
-            return True, ""  # run ships pixels (mm_kwargs) — trainer handles regardless
+            if getattr(getattr(getattr(orch_config, "student", None), "model", None), "vlm", None) is not None:
+                return False, "VLM runs must use defer_mm_materialization=true and ship mm_refs"
+            return True, ""
         if not trainer_defers:
             return False, (
                 "run sets defer_mm_materialization=true but the trainer does not — the trainer has no "

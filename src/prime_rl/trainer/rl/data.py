@@ -278,13 +278,7 @@ class DataLoader:
             micro_batch.lora_num_tokens[0] = len(micro_batch.input_ids)
         mm_kwargs: dict[str, Tensor] | None = None
         if micro_batch.mm_kwargs:
-            # Each value is an EncodedTensor (dtype, shape, raw bytes).
-            # No batch dim — the orchestrator concatenates per-image along
-            # dim=0 generically, matching what each HF VLM's forward expects.
-            mm_kwargs = {
-                key: torch.frombuffer(bytearray(payload.data), dtype=_torch_dtype(payload.dtype)).reshape(payload.shape)
-                for key, payload in micro_batch.mm_kwargs.items()
-            }
+            raise ValueError("Eager multimodal mm_kwargs transport is unsupported; use mm_refs")
         elif micro_batch.mm_refs is not None:
             # Deferred path: materialize pixels here from the shipped image
             # references. Returns torch tensors directly (no decode needed).

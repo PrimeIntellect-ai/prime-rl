@@ -568,7 +568,7 @@ class TrainerConfig(BaseConfig):
     """Maximum number of concurrent runs to allow. If 1, only one run may run at a time."""
 
     defer_mm_materialization: bool = True
-    """Defer multimodal pixel materialization from the orchestrator to the trainer. When True, the orchestrator ships lightweight image references (``mm_refs``) and the trainer materializes pixels in its data loader. Must match the orchestrator's setting; requires ``renderer`` to be set for VLM runs. A no-op for text-only runs (no ``mm_refs`` ever arrive)."""
+    """Defer multimodal pixel materialization from the orchestrator to the trainer. VLM runs must keep this enabled so the trainer materializes shipped ``mm_refs`` in its data loader. A no-op for text-only runs (no ``mm_refs`` ever arrive)."""
 
     pack_multimodal: bool = True
     """Pack multimodal samples together when the active model path supports packed multimodal position boundaries. Default-on, but the trainer gates it off for unsupported VLM/HF MRoPE paths, non-varlen attention, or context parallelism."""
@@ -690,16 +690,19 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_defer_mm_materialization(self):
-        if not self.defer_mm_materialization:
+        if self.model.vlm is None:
             return self
+        if not self.defer_mm_materialization:
+            raise ValueError(
+                "trainer.defer_mm_materialization=false is unsupported for VLM runs. "
+                "VLM runs must receive mm_refs and materialize images on trainer ranks."
+            )
         # Multi-run IS supported: synchronous trainer-side materialization is
         # run-agnostic (all concurrent runs are LoRA adapters on the same base
         # model → same image processor; mm_refs are self-contained per sample),
         # and it does NOT touch the per-run ready_to_update/progress machinery in
         # the packer. (A future prefetch/late-commit path WOULD need the multi-run
         # ready_to_update state split — guard that there, not on the flag.)
-        # Only VLM runs materialize pixels; text-only runs never receive
-        # ``mm_refs``, so default-on is a harmless no-op for them.
         if self.renderer is None and self.model.vlm is not None:
             raise ValueError(
                 "defer_mm_materialization requires a renderer config so the trainer can "

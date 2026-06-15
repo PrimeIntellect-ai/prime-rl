@@ -1,24 +1,6 @@
 import copy
-import math
 
-from prime_rl.transport.types import EncodedTensor, MicroBatch, MMRefs, RoutedExperts, TrainingSample
-
-ENCODED_TENSOR_DTYPE_ITEMSIZE = {
-    "bool": 1,
-    "bool_": 1,
-    "float16": 2,
-    "bfloat16": 2,
-    "float32": 4,
-    "float64": 8,
-    "int8": 1,
-    "uint8": 1,
-    "int16": 2,
-    "uint16": 2,
-    "int32": 4,
-    "uint32": 4,
-    "int64": 8,
-    "uint64": 8,
-}
+from prime_rl.transport.types import MicroBatch, MMRefs, RoutedExperts, TrainingSample
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
     "uint8": 1,
@@ -67,53 +49,6 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts.shape[0] += padding_size
 
 
-def _encoded_tensor_dtype_itemsize(encoded: EncodedTensor) -> int:
-    dtype = encoded.dtype.replace("numpy.", "").replace("torch.", "")
-    if dtype not in ENCODED_TENSOR_DTYPE_ITEMSIZE:
-        raise ValueError(f"Unsupported EncodedTensor dtype for multimodal packing: {encoded.dtype}")
-    return ENCODED_TENSOR_DTYPE_ITEMSIZE[dtype]
-
-
-def _validate_encoded_tensor_payload(encoded: EncodedTensor) -> None:
-    expected_nbytes = math.prod(encoded.shape) * _encoded_tensor_dtype_itemsize(encoded)
-    if len(encoded.data) != expected_nbytes:
-        raise ValueError(
-            "EncodedTensor byte length does not match dtype and shape: "
-            f"dtype={encoded.dtype}, shape={encoded.shape}, "
-            f"data_nbytes={len(encoded.data)}, expected_nbytes={expected_nbytes}"
-        )
-
-
-def _append_encoded_tensor(dst: EncodedTensor, src: EncodedTensor, key: str) -> None:
-    _validate_encoded_tensor_payload(dst)
-    _validate_encoded_tensor_payload(src)
-    if dst.dtype != src.dtype:
-        raise ValueError(f"Cannot pack mm_kwargs[{key!r}] with different dtypes: {dst.dtype} vs {src.dtype}")
-    if len(dst.shape) == 0 or len(dst.shape) != len(src.shape) or dst.shape[1:] != src.shape[1:]:
-        raise ValueError(f"Cannot pack mm_kwargs[{key!r}] with incompatible shapes: {dst.shape} vs {src.shape}")
-    dst.data += src.data
-    dst.shape[0] += src.shape[0]
-
-
-def _append_mm_kwargs(dst: dict[str, EncodedTensor], src: dict[str, EncodedTensor]) -> None:
-    if set(dst) != set(src):
-        raise ValueError(f"Cannot pack mm_kwargs with different keys: {sorted(dst)} vs {sorted(src)}")
-    for key in dst:
-        _append_encoded_tensor(dst[key], src[key], key)
-
-
-def _can_pack_mm_kwargs(dst: dict[str, EncodedTensor] | None, src: dict[str, EncodedTensor] | None) -> bool:
-    if dst is None or src is None or set(dst) != set(src):
-        return False
-    return all(
-        dst[key].dtype == src[key].dtype
-        and len(dst[key].shape) > 0
-        and len(dst[key].shape) == len(src[key].shape)
-        and dst[key].shape[1:] == src[key].shape[1:]
-        for key in dst
-    )
-
-
 def _append_mm_ref_descriptor_list(dst_map: dict, src_map: dict, field: str) -> None:
     if set(dst_map) != set(src_map):
         raise ValueError(f"Cannot pack mm_refs descriptor {field} with different modalities")
@@ -140,10 +75,10 @@ def _append_mm_refs(dst: MMRefs, src: MMRefs) -> None:
 def _mm_sidecar_kind(sample: MicroBatch) -> str | None:
     if sample.mm_kwargs is not None and sample.mm_refs is not None:
         raise ValueError("A multimodal sample cannot carry both mm_kwargs and mm_refs")
+    if sample.mm_kwargs is not None:
+        raise ValueError("Eager multimodal mm_kwargs transport is unsupported; use mm_refs")
     if sample.mm_refs is not None:
         return "refs"
-    if sample.mm_kwargs is not None:
-        return "kwargs"
     return None
 
 
@@ -178,8 +113,6 @@ def _can_pack_sample(
     if not pack_multimodal or bin_mm_kind != sample_mm_kind:
         return False
     if _has_video_tokens(bin_content) or _has_video_tokens(sample):
-        return False
-    if bin_mm_kind == "kwargs" and not _can_pack_mm_kwargs(bin_content.mm_kwargs, sample.mm_kwargs):
         return False
     # Multimodal samples only pack with the same run: a multi-run microbatch would
     # break the MoE LoRA path (one adapter per microbatch). prepare_batch may be
@@ -225,12 +158,9 @@ def _append_micro_batch(bin_content: MicroBatch, sample: MicroBatch, idx: int) -
     assert bin_content.lora_num_tokens is not None
     bin_content.lora_num_tokens[idx] += sample_len
 
-    # Concatenate the multimodal sidecar. _can_pack_sample already guaranteed the
-    # bin and sample share the same kind, so dispatch on whichever is present.
     if bin_content.mm_refs is not None:
+        assert sample.mm_refs is not None
         _append_mm_refs(bin_content.mm_refs, sample.mm_refs)
-    elif bin_content.mm_kwargs is not None:
-        _append_mm_kwargs(bin_content.mm_kwargs, sample.mm_kwargs)
 
 
 def _extend_seq_lens(bin_content: MicroBatch, sample: MicroBatch, existing_len: int) -> None:
@@ -269,7 +199,10 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )
 
-    if (training_example.mm_kwargs is not None or training_example.mm_refs is not None) and len(input_ids) > seq_len:
+    if training_example.mm_kwargs is not None:
+        raise ValueError("Eager multimodal mm_kwargs transport is unsupported; use mm_refs")
+
+    if training_example.mm_refs is not None and len(input_ids) > seq_len:
         raise ValueError(
             "Cannot truncate multimodal training sample without also truncating its multimodal sidecars: "
             f"sample_len={len(input_ids)}, seq_len={seq_len}"
@@ -315,9 +248,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         assert len(mm_token_type_ids) == len(input_ids), (
             f"mm_token_type_ids: {len(mm_token_type_ids)}, input_ids: {len(input_ids)}"
         )
-    if training_example.mm_kwargs is not None and "image_grid_thw" in training_example.mm_kwargs:
+    if training_example.mm_refs is not None:
         if mm_token_type_ids is None:
-            raise ValueError("image_grid_thw multimodal samples require mm_token_type_ids")
+            raise ValueError("mm_refs multimodal samples require mm_token_type_ids")
     assert len(env_names) == len(input_ids), f"env_names: {len(env_names)}, input_ids: {len(input_ids)}"
 
     return MicroBatch(
@@ -332,21 +265,16 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
-        mm_kwargs=copy.deepcopy(training_example.mm_kwargs),
+        mm_kwargs=None,
         mm_refs=copy.deepcopy(training_example.mm_refs),
         training_mode=training_example.training_mode,
-        seq_lens=[len(input_ids)]
-        if training_example.mm_kwargs is not None or training_example.mm_refs is not None
-        else None,
+        seq_lens=[len(input_ids)] if training_example.mm_refs is not None else None,
     )
 
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
-    """Check if a sample contains multimodal data (images). A deferred sample
-    carries ``mm_refs`` and no ``mm_kwargs``; both count as multimodal so it is
-    not mis-packed as text (which would break the FSDP per-step modality
-    invariant)."""
-    return sample.mm_kwargs is not None or sample.mm_refs is not None
+    """Check if a sample contains multimodal data (images)."""
+    return _mm_sidecar_kind(sample) is not None
 
 
 def packed_samples_into_micro_bs(
@@ -358,8 +286,7 @@ def packed_samples_into_micro_bs(
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
     Multimodal samples are only packed when ``pack_multimodal`` is true. They
-    pack with other multimodal samples of the same sidecar representation
-    (deferred ``mm_refs`` or eager ``mm_kwargs``), never with text-only samples.
+    must carry deferred ``mm_refs`` and never pack with text-only samples.
     Packed multimodal batches preserve sample boundaries in ``seq_lens``.
     """
     # Sort by (lora_idx, -length) for packing efficiency

@@ -19,15 +19,10 @@ from prime_rl.utils.chat_template import (
     strip_message_content,
 )
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.mm import (
-    encode_mm_kwargs,
-    image_uris_from_messages,
-    pack_mm_kwargs_tensors,
-    reconstruct_mm_pixels,
-)
+from prime_rl.utils.mm import image_uris_from_messages
 
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
-# primitives are immutable. mm_kwargs payloads are not mutated after creation.
+# primitives are immutable. Multimodal samples carry mm_refs and materialize on trainer ranks.
 
 
 def align_routed_experts(
@@ -231,9 +226,9 @@ def interleave_rollout(
     Returns a list of samples - could be 1 (extension always held) or up to T
     (extension never held).
 
-    For VLM models, each renderer-produced trajectory step carries its
-    per-image processed tensors inline on ``multi_modal_data``; the last
-    merged step's sidecar covers every image in the sample.
+    For VLM models, each renderer-produced trajectory step carries
+    ``multi_modal_data``. The orchestrator ships descriptor-only ``mm_refs``;
+    trainer ranks materialize pixels from those refs.
     """
     logger = get_logger()
 
@@ -527,28 +522,13 @@ def interleave_rollout(
             renderer_mm = _union_step_mm_data(prepared_steps, step_indices)
             if renderer_mm is None:
                 continue
-            if defer_materialization:
-                # Ship lightweight refs; the trainer materializes pixels in its
-                # data loader from the descriptor + window image URIs.
-                sample.mm_refs = _collect_mm_refs(renderer_mm, trajectory, step_indices)
-            else:
-                # The env worker ships descriptor-only mm_data (no pixel_values)
-                # to keep its memory flat. Re-derive the pixels here from the
-                # offloaded images referenced in this sample's messages, matched
-                # by content hash with a grid_thw assert. ``renderer`` is the
-                # multimodal pool used for rollouts; absent (or already
-                # pixel-bearing in-process tests) → pass through unchanged.
-                if renderer is not None and _mm_needs_pixels(renderer_mm):
-                    renderer_mm = _reconstruct_mm_pixels(
-                        renderer, renderer_mm, _window_image_messages(trajectory, step_indices)
-                    )
-                mm_kwargs = _pack_mm_kwargs_from_renderer(renderer_mm)
-                if mm_kwargs is not None:
-                    sample.mm_kwargs = mm_kwargs
+            if not defer_materialization:
+                raise ValueError("Multimodal rollouts must use defer_materialization=True and ship mm_refs")
+            sample.mm_refs = _collect_mm_refs(renderer_mm, trajectory, step_indices)
             # ``mm_token_type_ids``: 1 for image-placeholder tokens, 2 for
             # video, 0 otherwise. Renderer-supplied via ``mm_token_type_id_map``
-            # (single source of truth). Computed in both paths.
-            if (sample.mm_kwargs is not None or sample.mm_refs is not None) and mm_token_type_ids_mapping is not None:
+            # (single source of truth).
+            if sample.mm_refs is not None and mm_token_type_ids_mapping is not None:
                 sample.mm_token_type_ids = [
                     mm_token_type_ids_mapping.get(token_id, 0) for token_id in sample.prompt_ids + sample.completion_ids
                 ]
@@ -595,15 +575,6 @@ def _union_step_mm_data(
     return {"mm_items": union_items, "mm_hashes": union_hashes}
 
 
-def _mm_needs_pixels(union_mm: dict[str, Any]) -> bool:
-    """True if any mm item lacks ``pixel_values`` (descriptor-only shape)."""
-    for items in (union_mm.get("mm_items") or {}).values():
-        for item in items or []:
-            if isinstance(item, dict) and item.get("pixel_values") is None:
-                return True
-    return False
-
-
 def _window_image_messages(trajectory: list[Any], step_indices: list[int]) -> list[Any]:
     """Collect the messages from the steps this sample covers.
 
@@ -621,21 +592,6 @@ def _window_image_messages(trajectory: list[Any], step_indices: list[int]) -> li
         if isinstance(prompt, list):
             messages.extend(prompt)
     return messages
-
-
-def _reconstruct_mm_pixels(renderer: Any, union_mm: dict[str, Any], messages: list[Any]) -> Any:
-    """Re-attach ``pixel_values`` to a descriptor-only union mm_data. Delegates
-    to ``utils.mm`` so the flag-off path matches the trainer's flag-on path."""
-    return reconstruct_mm_pixels(renderer, union_mm, messages)
-
-
-def _pack_mm_kwargs_from_renderer(mm_data: Any) -> "dict[str, Any] | None":
-    """Batch the renderer's per-image ``mm_items`` into ``EncodedTensor``
-    forward kwargs. Delegates to ``utils.mm`` (pack then encode)."""
-    tensors = pack_mm_kwargs_tensors(mm_data)
-    if tensors is None:
-        return None
-    return encode_mm_kwargs(tensors)
 
 
 def _grid_to_list(grid: Any) -> "list | None":
@@ -676,12 +632,26 @@ def _collect_mm_refs(union_mm: dict[str, Any], trajectory: list[Any], step_indic
             "defer_mm_materialization currently supports Qwen-style image descriptors only "
             "(items must carry image_grid_thw); got an image item without it — unsupported renderer family."
         )
+    image_items = items.get("image") or []
+    image_hashes = hashes.get("image") or []
+    if image_items and len(image_hashes) != len(image_items):
+        raise ValueError(
+            "defer_mm_materialization requires one image hash per image descriptor: "
+            f"items={len(image_items)}, hashes={len(image_hashes)}"
+        )
+    if any(h is None for h in image_hashes):
+        raise ValueError("defer_mm_materialization requires image descriptors to carry content hashes")
     norm_items = {
         modality: [{"image_grid_thw": _grid_to_list(item.get("image_grid_thw"))} for item in (lst or [])]
         for modality, lst in items.items()
     }
     norm_hashes = {m: [str(h) if h is not None else h for h in (hl or [])] for m, hl in hashes.items()}
     uris = image_uris_from_messages(_window_image_messages(trajectory, step_indices))
+    if image_items and not uris:
+        raise ValueError("defer_mm_materialization requires image URIs in the sample's prompt window")
+    non_file_uris = [uri for uri in uris if not uri.startswith("file://")]
+    if non_file_uris:
+        raise ValueError("defer_mm_materialization requires offloaded file:// image URIs")
     return MMRefs(descriptor={"mm_items": norm_items, "mm_hashes": norm_hashes}, uris=uris)
 
 

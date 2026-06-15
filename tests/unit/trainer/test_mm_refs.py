@@ -1,9 +1,8 @@
-"""Tests for deferred multimodal materialization (Phase 16a).
+"""Tests for deferred multimodal materialization.
 
 The orchestrator ships lightweight image references (``mm_refs``) and the
 trainer materializes pixels from them via ``prime_rl.utils.mm``, reusing the
-same materialize/pack code as the orchestrator's flag-off path so parity and
-the duplicate-image guarantee hold by construction.
+same materialize/pack code for packed and unpacked samples.
 """
 
 import hashlib
@@ -14,12 +13,12 @@ import pytest
 import torch
 from renderers.base import MultiModalData
 
-from prime_rl.orchestrator.trajectories import _collect_mm_refs, _pack_mm_kwargs_from_renderer, _reconstruct_mm_pixels
+from prime_rl.orchestrator.trajectories import _collect_mm_refs
 from prime_rl.trainer.batch import _is_multimodal_sample
 from prime_rl.transport.types import EncodedTensor, MicroBatch, MMRefs, TrainingSample
 from prime_rl.utils.mm import (
     build_image_messages,
-    encode_mm_kwargs,
+    materialize_mm_refs,
     pack_mm_kwargs_tensors,
     reconstruct_mm_pixels,
 )
@@ -69,9 +68,9 @@ def _descriptor(uris: list[str], grids: list[list[int]]) -> dict:
     }
 
 
-def test_golden_parity_trainer_matches_orchestrator():
-    """Trainer-side encode(pack(reconstruct)) is byte-identical to the
-    orchestrator's existing _pack_mm_kwargs_from_renderer(_reconstruct_mm_pixels)."""
+def test_materialize_mm_refs_matches_reconstruct_then_pack():
+    """Trainer-side materialization is exactly reconstructing pixels from refs
+    and packing the resulting renderer tensors for model forward."""
     uris = ["file:///a.jpg", "file:///b.jpg"]
     grids = [[1, 2, 3], [1, 4, 4]]
     pixels = {_uri_hash(uris[0]): torch.tensor([[1.0, 2.0]]), _uri_hash(uris[1]): torch.tensor([[3.0, 4.0]])}
@@ -79,17 +78,16 @@ def test_golden_parity_trainer_matches_orchestrator():
 
     descriptor = _descriptor(uris, grids)
     messages = build_image_messages(uris)
+    refs = MMRefs(descriptor=descriptor, uris=uris)
 
-    # Trainer path (utils.mm).
-    trainer_kwargs = encode_mm_kwargs(pack_mm_kwargs_tensors(reconstruct_mm_pixels(renderer, descriptor, messages)))
-    # Orchestrator path (trajectories delegates to the same code).
-    orch_kwargs = _pack_mm_kwargs_from_renderer(_reconstruct_mm_pixels(renderer, _descriptor(uris, grids), messages))
+    direct_kwargs = pack_mm_kwargs_tensors(reconstruct_mm_pixels(renderer, descriptor, messages))
+    refs_kwargs = materialize_mm_refs(renderer, refs)
 
-    assert trainer_kwargs.keys() == orch_kwargs.keys()
-    for key in trainer_kwargs:
-        assert trainer_kwargs[key].dtype == orch_kwargs[key].dtype
-        assert trainer_kwargs[key].shape == orch_kwargs[key].shape
-        assert trainer_kwargs[key].data == orch_kwargs[key].data
+    assert direct_kwargs is not None
+    assert refs_kwargs is not None
+    assert direct_kwargs.keys() == refs_kwargs.keys()
+    for key in direct_kwargs:
+        torch.testing.assert_close(direct_kwargs[key], refs_kwargs[key])
 
 
 def test_duplicate_image_decoded_once_populated_per_slot():
@@ -194,6 +192,20 @@ def test_collect_mm_refs_rejects_non_qwen_image_descriptor():
     union_mm = {"mm_items": {"image": [{"grid_thws": [[1, 2, 3]]}]}, "mm_hashes": {"image": ["h"]}}
     with pytest.raises(ValueError, match="Qwen-style image descriptors"):
         _collect_mm_refs(union_mm, [], [])
+
+
+def test_collect_mm_refs_requires_offloaded_file_uri():
+    """The refs-only transport is also offload-only: inline image payloads must
+    be rewritten to file:// before the orchestrator ships mm_refs."""
+    uri = "data:image/jpeg;base64,abc"
+    union_mm = {
+        "mm_items": {"image": [{"image_grid_thw": [[1, 2, 3]]}]},
+        "mm_hashes": {"image": [_uri_hash(uri)]},
+    }
+    trajectory = [{"prompt": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": uri}}]}]}]
+
+    with pytest.raises(ValueError, match="offloaded file:// image URIs"):
+        _collect_mm_refs(union_mm, trajectory, [0])
 
 
 def _mm_sample(uri: str, env: str = "e", n_prompt: int = 4, n_comp: int = 4):
@@ -392,69 +404,45 @@ def test_prepare_batch_does_not_pack_mm_refs_with_text_or_other_lora():
     assert [mb.lora_num_tokens for mb in mm_mbs] == [[4, 0], [0, 4]]
 
 
-def test_prepare_batch_does_not_pack_mm_refs_with_eager_mm_kwargs():
+def test_prepare_batch_rejects_eager_mm_kwargs():
     from prime_rl.trainer.batch import prepare_batch
 
     rollouts = [
         _mm_sample("file:///refs.jpg", n_prompt=2, n_comp=2),
         _mm_kwargs_sample(torch.tensor([[1.0, 2.0]], dtype=torch.float32)),
     ]
-    grid = prepare_batch(
-        rollouts,
-        seq_len=16,
-        num_train_workers=1,
-        idxs=[0, 0],
-        num_loras=1,
-        pack_multimodal=True,
+    with pytest.raises(ValueError, match="Eager multimodal mm_kwargs transport is unsupported"):
+        prepare_batch(
+            rollouts,
+            seq_len=16,
+            num_train_workers=1,
+            idxs=[0, 0],
+            num_loras=1,
+            pack_multimodal=True,
+        )
+
+
+def test_data_loader_rejects_eager_mm_kwargs_transport():
+    from types import SimpleNamespace
+
+    from prime_rl.trainer.rl.data import DataLoader
+
+    mb = MicroBatch(
+        input_ids=[1, 2],
+        loss_mask=[True, True],
+        advantages=[0.0, 0.0],
+        inference_logprobs=[0.0, 0.0],
+        position_ids=[0, 1],
+        temperatures=[1.0, 1.0],
+        env_names=["e", "e"],
+        mm_token_type_ids=[1, 0],
+        mm_kwargs={"pixel_values": _encoded_tensor(torch.tensor([[1.0, 2.0]], dtype=torch.float32))},
     )
+    loader = DataLoader.__new__(DataLoader)
+    loader.multi_run_manager = SimpleNamespace(max_runs=1)
 
-    mm_mbs = [mb for mb in grid[0] if _is_multimodal_sample(mb)]
-    assert len(mm_mbs) == 2
-    assert {("refs" if mb.mm_refs is not None else "kwargs") for mb in mm_mbs} == {"refs", "kwargs"}
-
-
-def test_prepare_batch_packs_eager_mm_kwargs_when_enabled():
-    from prime_rl.trainer.batch import prepare_batch
-
-    rollouts = [
-        _mm_kwargs_sample(torch.tensor([[1.0, 2.0]], dtype=torch.float32)),
-        _mm_kwargs_sample(torch.tensor([[3.0, 4.0]], dtype=torch.float32)),
-    ]
-    grid = prepare_batch(
-        rollouts,
-        seq_len=16,
-        num_train_workers=1,
-        idxs=[0, 0],
-        num_loras=1,
-        pack_multimodal=True,
-    )
-
-    mb = grid[0][0]
-    assert mb.mm_kwargs is not None and mb.mm_refs is None
-    pv = mb.mm_kwargs["pixel_values"]
-    assert pv.shape == [2, 2]
-    pixel_values = torch.frombuffer(bytearray(pv.data), dtype=torch.float32).reshape(pv.shape)
-    torch.testing.assert_close(pixel_values, torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
-    assert mb.position_ids == [0, 1, 2, 3, 0, 1, 2, 3]
-
-
-def test_prepare_batch_does_not_pack_incompatible_eager_mm_kwargs():
-    from prime_rl.trainer.batch import prepare_batch
-
-    grid = prepare_batch(
-        [
-            _mm_kwargs_sample(torch.tensor([[1.0, 2.0]], dtype=torch.float32)),
-            _mm_kwargs_sample(torch.tensor([[3.0, 4.0, 5.0]], dtype=torch.float32)),
-        ],
-        seq_len=16,
-        num_train_workers=1,
-        idxs=[0, 0],
-        num_loras=1,
-        pack_multimodal=True,
-    )
-
-    mm_mbs = [mb for mb in grid[0] if _is_multimodal_sample(mb)]
-    assert len(mm_mbs) == 2
+    with pytest.raises(ValueError, match="Eager multimodal mm_kwargs transport is unsupported"):
+        DataLoader._micro_batch_to_tensor(loader, mb)
 
 
 def test_prepare_batch_rejects_truncated_multimodal_sample():
@@ -508,23 +496,25 @@ def test_multirun_packing_preserves_mm_refs_modality_and_run_tagging():
 
 
 @pytest.mark.parametrize(
-    "trainer_defers, trainer_renderer_name, run_defers, run_renderer_name, expected_ok",
+    "trainer_defers, trainer_renderer_name, run_defers, run_renderer_name, run_vlm, expected_ok",
     [
-        # Run doesn't defer → always fine (ships pixels; trainer handles either way).
-        (True, "Qwen3VLRendererConfig", False, "Qwen3RendererConfig", True),
-        (False, None, False, None, True),
+        # Text-only/non-VLM runs can keep defer disabled.
+        (True, "Qwen3VLRendererConfig", False, "Qwen3RendererConfig", False, True),
+        (False, None, False, None, False, True),
+        # VLM runs must ship refs; eager pixels are no longer supported.
+        (True, "Qwen3VLRendererConfig", False, "Qwen3RendererConfig", True, False),
         # Run defers but trainer doesn't → reject (no renderer to materialize).
-        (False, None, True, "Qwen3VLRendererConfig", False),
+        (False, None, True, "Qwen3VLRendererConfig", True, False),
         # Both defer, same renderer family → ok.
-        (True, "Qwen3VLRendererConfig", True, "Qwen3VLRendererConfig", True),
+        (True, "Qwen3VLRendererConfig", True, "Qwen3VLRendererConfig", True, True),
         # Both defer, run uses Auto → ok (resolves against the shared base model).
-        (True, "Qwen3VLRendererConfig", True, "AutoRendererConfig", True),
+        (True, "Qwen3VLRendererConfig", True, "AutoRendererConfig", True, True),
         # Both defer, different renderer family → reject (wrong image processor).
-        (True, "Qwen3VLRendererConfig", True, "Qwen3RendererConfig", False),
+        (True, "Qwen3VLRendererConfig", True, "Qwen3RendererConfig", True, False),
     ],
 )
 def test_defer_mm_validation_hook_matrix(
-    trainer_defers, trainer_renderer_name, run_defers, run_renderer_name, expected_ok
+    trainer_defers, trainer_renderer_name, run_defers, run_renderer_name, run_vlm, expected_ok
 ):
     """Direct coverage of the discovery-time config rejection matrix."""
     from types import SimpleNamespace
@@ -537,7 +527,11 @@ def test_defer_mm_validation_hook_matrix(
         return getattr(renderers, name)() if name else None
 
     hook = make_defer_mm_validation_hook(trainer_defers, _cfg(trainer_renderer_name))
-    orch_config = SimpleNamespace(defer_mm_materialization=run_defers, renderer=_cfg(run_renderer_name))
+    orch_config = SimpleNamespace(
+        defer_mm_materialization=run_defers,
+        renderer=_cfg(run_renderer_name),
+        student=SimpleNamespace(model=SimpleNamespace(vlm=object() if run_vlm else None)),
+    )
     ok, msg = hook(orch_config)
     assert ok is expected_ok
     assert (msg == "") is expected_ok  # rejection carries a non-empty reason

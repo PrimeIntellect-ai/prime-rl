@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from prime_rl.trainer.batch import prepare_batch, prepare_sample
-from prime_rl.transport.types import EncodedTensor, RoutedExperts, TrainingSample
+from prime_rl.transport.types import MMRefs, RoutedExperts, TrainingSample
 
 
 def _routed_experts(data, dtype=np.uint8):
@@ -14,26 +14,18 @@ def _routed_experts(data, dtype=np.uint8):
     )
 
 
-def _encoded_tensor(data, dtype) -> EncodedTensor:
-    arr = np.asarray(data, dtype=dtype)
-    return EncodedTensor(dtype=str(arr.dtype), shape=list(arr.shape), data=arr.tobytes())
-
-
-def _decode_encoded_tensor(encoded: EncodedTensor):
-    return np.frombuffer(encoded.data, dtype=np.dtype(encoded.dtype)).reshape(encoded.shape).tolist()
-
-
 def _make_mm_training_example(
     *,
-    pixel_values,
     image_grid_thw,
     mm_token_type_ids,
     env_name,
+    image_uri=None,
     prompt_ids=None,
     completion_ids=None,
 ) -> TrainingSample:
     prompt_ids = [1, 250] if prompt_ids is None else prompt_ids
     completion_ids = [3, 4] if completion_ids is None else completion_ids
+    image_uri = f"file:///{env_name}.jpg" if image_uri is None else image_uri
     return TrainingSample(
         prompt_ids=prompt_ids,
         prompt_mask=[False] * len(prompt_ids),
@@ -44,10 +36,13 @@ def _make_mm_training_example(
         teacher_logprobs=[0.0] * (len(prompt_ids) + len(completion_ids)),
         advantage=1.0,
         env_name=env_name,
-        mm_kwargs={
-            "pixel_values": _encoded_tensor(pixel_values, np.float32),
-            "image_grid_thw": _encoded_tensor(image_grid_thw, np.int64),
-        },
+        mm_refs=MMRefs(
+            descriptor={
+                "mm_items": {"image": [{"image_grid_thw": image_grid_thw}]},
+                "mm_hashes": {"image": [env_name]},
+            },
+            uris=[image_uri],
+        ),
         mm_token_type_ids=mm_token_type_ids,
     )
 
@@ -151,13 +146,11 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
 
 def test_prepare_batch_packs_compatible_multimodal_samples():
     example1 = _make_mm_training_example(
-        pixel_values=[[1.0, 2.0, 3.0]],
         image_grid_thw=[[1, 2, 2]],
         mm_token_type_ids=[0, 1, 0, 0],
         env_name="mm-a",
     )
     example2 = _make_mm_training_example(
-        pixel_values=[[4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
         image_grid_thw=[[1, 4, 4]],
         mm_token_type_ids=[0, 0, 1, 0],
         env_name="mm-b",
@@ -179,18 +172,18 @@ def test_prepare_batch_packs_compatible_multimodal_samples():
     assert batch.position_ids == [0, 1, 2, 3, 0, 1, 2, 3]
     assert batch.mm_token_type_ids == [0, 1, 0, 0, 0, 0, 1, 0]
     assert batch.env_names == ["mm-a"] * 4 + ["mm-b"] * 4
-    assert batch.mm_kwargs is not None
-    assert _decode_encoded_tensor(batch.mm_kwargs["pixel_values"]) == [
-        [1.0, 2.0, 3.0],
-        [4.0, 5.0, 6.0],
-        [7.0, 8.0, 9.0],
+    assert batch.mm_kwargs is None
+    assert batch.mm_refs is not None
+    assert batch.mm_refs.uris == ["file:///mm-a.jpg", "file:///mm-b.jpg"]
+    assert batch.mm_refs.descriptor["mm_items"]["image"] == [
+        {"image_grid_thw": [[1, 2, 2]]},
+        {"image_grid_thw": [[1, 4, 4]]},
     ]
-    assert _decode_encoded_tensor(batch.mm_kwargs["image_grid_thw"]) == [[1, 2, 2], [1, 4, 4]]
+    assert batch.mm_refs.descriptor["mm_hashes"]["image"] == ["mm-a", "mm-b"]
 
 
 def test_prepare_batch_records_multimodal_padding_as_segment():
     example1 = _make_mm_training_example(
-        pixel_values=[[1.0, 2.0, 3.0]],
         image_grid_thw=[[1, 2, 2]],
         mm_token_type_ids=[0, 1, 0],
         env_name="mm-a",
@@ -198,7 +191,6 @@ def test_prepare_batch_records_multimodal_padding_as_segment():
         completion_ids=[250, 3],
     )
     example2 = _make_mm_training_example(
-        pixel_values=[[4.0, 5.0, 6.0]],
         image_grid_thw=[[1, 2, 2]],
         mm_token_type_ids=[0, 1, 0],
         env_name="mm-b",
@@ -223,6 +215,9 @@ def test_prepare_batch_records_multimodal_padding_as_segment():
     assert batch.position_ids == [0, 1, 2, 0, 1, 2, 0, 1]
     assert batch.mm_token_type_ids == [0, 1, 0, 0, 1, 0, 0, 0]
     assert batch.loss_mask[-2:] == [False, False]
+    assert batch.mm_kwargs is None
+    assert batch.mm_refs is not None
+    assert batch.mm_refs.uris == ["file:///mm-a.jpg", "file:///mm-b.jpg"]
 
 
 def test_prepare_sample_propagates_training_mode(make_training_example):
