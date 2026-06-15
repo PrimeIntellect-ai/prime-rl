@@ -6,7 +6,7 @@ from prime_rl.configs.orchestrator import (
     CustomAdvantageConfig,
     DefaultAdvantageConfig,
     LinearLengthPenaltyConfig,
-    TrainEnvConfig,
+    OrchestratorConfig,
 )
 from prime_rl.orchestrator.advantage import (
     AdvantageInputs,
@@ -110,11 +110,12 @@ def test_train_env_threads_max_seq_len_into_advantage_fn(monkeypatch):
         self._env_server_process = None
 
     monkeypatch.setattr(Env, "__init__", fake_env_init)
-    config = TrainEnvConfig(
+    config = OrchestratorConfig(
+        seq_len=100,
         advantage={"type": "default", "length_penalty": {"coef": 1.0}},
     )
 
-    env = TrainEnv(config, max_seq_len=100)
+    env = TrainEnv(config.train.env[0], max_seq_len=config.seq_len)
     assert env.advantage_fn is not None
     result = env.advantage_fn(_make_group(rewards=[1.0, 1.0], completion_lengths=[10, 30]))
 
