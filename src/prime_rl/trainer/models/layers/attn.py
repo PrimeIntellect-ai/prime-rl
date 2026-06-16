@@ -81,8 +81,10 @@ class FlashAttentionCore(nn.Module):
         self.att_core_func = self._funcs[flash_attn_version]
         self.func = self._funcs_varlen[flash_attn_version]
         self._flash_attn_call = self.func
+        
         if self._flash_attn_version == 4:
             self._flash_attn_call = torch._dynamo.disable(self.func)
+            self.att_core_func = torch._dynamo.disable(self.att_core_func)
 
     def _fa_installed(self):
         """Checks that flash attention is installed."""
