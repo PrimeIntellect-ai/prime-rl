@@ -251,15 +251,11 @@ def test_setup_filter_penalize_requires_penalty_config():
 
 def test_zero_advantage_rejects_penalize_action():
     with pytest.raises(ValidationError):
-        ZeroAdvantageFilterConfig(
-            action={"type": "penalize", "penalty": {"type": "set_reward", "reward": -1.0}}
-        )
+        ZeroAdvantageFilterConfig(action={"type": "penalize", "penalty": {"type": "set_reward", "reward": -1.0}})
 
 
 def test_apply_filters_penalize_sets_reward():
-    config = GibberishFilterConfig(
-        action={"type": "penalize", "penalty": {"type": "set_reward", "reward": -2.0}}
-    )
+    config = GibberishFilterConfig(action={"type": "penalize", "penalty": {"type": "set_reward", "reward": -2.0}})
     gibberish_filter = setup_filter(config, vocab_size=128_000)
 
     rollout = _make_rollout(
