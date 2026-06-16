@@ -120,6 +120,7 @@ class _RingFA3Varlen(torch.autograd.Function):
         group_name: str,
         window_size_left: int = -1,
         window_size_right: int = -1,
+        softmax_scale: int | None = None
     ) -> torch.Tensor:
         group = dist.group.WORLD
         for pg in dist.distributed_c10d._world.pg_map:
@@ -129,7 +130,10 @@ class _RingFA3Varlen(torch.autograd.Function):
 
         local_k_slice = slice(local_k_slice_start, local_k_slice_stop)
         window_size = (window_size_left, window_size_right)
-        softmax_scale = q.shape[-1] ** (-0.5)
+
+        if softmax_scale is None:
+            softmax_scale = q.shape[-1] ** (-0.5)
+
         out_list = []
         lse_list = []
 
@@ -292,6 +296,7 @@ def ring_fa3_varlen_func(
     heads_k_stride: int,
     group: dist.ProcessGroup,
     window_size: tuple[int, int] = (-1, -1),
+    softmax_scale: int | None = None
 ) -> torch.Tensor:
     return _RingFA3Varlen.apply(
         q,
@@ -308,6 +313,7 @@ def ring_fa3_varlen_func(
         group.group_name,
         window_size[0],
         window_size[1],
+        softmax_scale
     )
 
 
@@ -415,6 +421,7 @@ class _RingFA4Varlen(torch.autograd.Function):
         group_name: str,
         window_size_left: int = -1,
         window_size_right: int = -1,
+        softmax_scale: int | None = None,
     ) -> torch.Tensor:
         group = dist.group.WORLD
         for pg in dist.distributed_c10d._world.pg_map:
@@ -424,7 +431,8 @@ class _RingFA4Varlen(torch.autograd.Function):
 
         local_k_slice = slice(local_k_slice_start, local_k_slice_stop)
         window_size = (window_size_left, window_size_right)
-        softmax_scale = q.shape[-1] ** (-0.5)
+        if softmax_scale is None:
+            softmax_scale = q.shape[-1] ** (-0.5)
         out_list = []
         lse_list = []
 
@@ -587,6 +595,7 @@ def ring_fa4_varlen_func(
     heads_k_stride: int,
     group: dist.ProcessGroup,
     window_size: tuple[int, int] = (-1, -1),
+    softmax_scale: int | None = None
 ) -> torch.Tensor:
     return _RingFA4Varlen.apply(
         q,
@@ -603,4 +612,5 @@ def ring_fa4_varlen_func(
         group.group_name,
         window_size[0],
         window_size[1],
+        softmax_scale,
     )
