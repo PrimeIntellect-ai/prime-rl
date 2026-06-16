@@ -69,7 +69,7 @@ from prime_rl.orchestrator.utils import (
     setup_student_inference_pool,
     trim_process_memory,
 )
-from prime_rl.orchestrator.watcher import NoOpWeightWatcher, WeightWatcher
+from prime_rl.orchestrator.watcher import DebugWeightWatcher, WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
@@ -146,7 +146,7 @@ class Orchestrator:
     train_source: TrainSource
     train_sink: TrainSink
     dispatcher: RolloutDispatcher
-    watcher: WeightWatcher
+    watcher: WeightWatcher | DebugWeightWatcher
     metrics: MetricsBuilder
     lag_monitor: EventLoopLagMonitor
     periodic_logger: PeriodicLogger
@@ -220,8 +220,10 @@ class Orchestrator:
         with open(config_dir / "orch.toml", "wb") as f:
             tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
-        if config.debug.fake_tokenizer:
-            get_logger().warning("Using debug tokenizer stub; rollout tokens must be present in env output")
+        if config.debug.no_inference:
+            get_logger().warning(
+                "Using debug tokenizer stub for no-inference mode; token ids decode as space-separated integers"
+            )
             self.tokenizer = DebugTokenizer()  # type: ignore[assignment]
         else:
             get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
@@ -414,7 +416,7 @@ class Orchestrator:
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         if config.debug.no_trainer:
-            self.watcher = NoOpWeightWatcher(policy=self.policy)  # type: ignore[assignment]
+            self.watcher = DebugWeightWatcher(policy=self.policy, observers=[self.dispatcher, self])
         else:
             self.watcher = WeightWatcher(
                 config,
@@ -594,10 +596,11 @@ class Orchestrator:
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         if config.debug.no_trainer:
-            self.policy.version = max(self.policy.version, step + 1)
-        self.update_dispatch_gate()
+            await self.watcher.apply_policy_update(step + 1)
+        else:
+            self.update_dispatch_gate()
         trim_process_memory()
-        if config.debug.log_memory:
+        if config.debug.enabled:
             log_process_memory(f"after_step step={step}")
 
         metrics = self.metrics.build(

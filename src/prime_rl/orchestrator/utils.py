@@ -96,25 +96,22 @@ def trim_process_memory() -> None:
 
 def log_process_memory(label: str) -> None:
     """Debug-log RSS for the orchestrator process and its child processes."""
-    try:
-        import psutil
+    import psutil
 
-        proc = psutil.Process()
-        rss = proc.memory_info().rss
-        child_rss = 0
-        for child in proc.children(recursive=True):
-            try:
-                child_rss += child.memory_info().rss
-            except psutil.Error:
-                continue
-        total = rss + child_rss
-        gib = 1024**3
-        get_logger().debug(
-            f"Memory | {label} | rss={rss / gib:.3f} GiB | child_rss={child_rss / gib:.3f} GiB | "
-            f"total_rss={total / gib:.3f} GiB"
-        )
-    except Exception as exc:
-        get_logger().debug(f"Memory logging failed at {label}: {exc!r}")
+    proc = psutil.Process()
+    rss = proc.memory_info().rss
+    child_rss = 0
+    for child in proc.children(recursive=True):
+        try:
+            child_rss += child.memory_info().rss
+        except psutil.Error:
+            continue
+    total = rss + child_rss
+    gib = 1024**3
+    get_logger().debug(
+        f"Memory | {label} | rss={rss / gib:.3f} GiB | child_rss={child_rss / gib:.3f} GiB | "
+        f"total_rss={total / gib:.3f} GiB"
+    )
 
 
 async def compute_teacher_logprobs(
