@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from prime_rl.orchestrator.algo.advantage import assign_group_norm
+from prime_rl.orchestrator.algo.advantage import apply_advantage_fn, grpo_advantage
 from prime_rl.orchestrator.algo.base import Algorithm
 
 if TYPE_CHECKING:
@@ -19,4 +19,4 @@ class SFTDistillAlgorithm(Algorithm):
     action_loss_type = "ce"
 
     async def score_group(self, group: list[RolloutView]) -> None:
-        assign_group_norm(group, None)
+        apply_advantage_fn(group, grpo_advantage)

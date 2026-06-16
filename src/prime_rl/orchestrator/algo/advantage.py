@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import RolloutView
 
 from prime_rl.configs.algorithm import (
-    LengthPenaltyConfig,
+    LinearLengthPenaltyConfig,
     TokensLengthPenaltyConfig,
     TurnsLengthPenaltyConfig,
 )
@@ -31,30 +31,67 @@ over the rollout's completion tokens) or a per-token list aligned to them.
 """
 
 
-def default_advantage_fn(
-    group: list["RolloutView"],
-    length_penalty: LengthPenaltyConfig | None = None,
-) -> list[float]:
-    """Default GRPO advantage for a single group: reward minus per-group baseline.
+def grpo_advantage(group: list["RolloutView"], length_weighted_baseline: bool = False) -> list[float]:
+    """Plain GRPO advantage for a single group: reward minus the per-group
+    baseline (DR-GRPO without std normalization).
 
-    `length_penalty` enables correctness-gated efficiency shaping over a per-rollout
-    cost: tokens (weighted completion + tool-response) or trajectory turn count.
+    ``length_weighted_baseline`` uses the token-length-weighted mean reward
+    (``sum(len_i * reward_i) / sum(len_i)``) as the baseline instead of the plain
+    mean, centering advantages by per-token expected reward.
     """
     rewards = torch.tensor([v.reward for v in group], dtype=torch.float32)
+    if length_weighted_baseline:
+        lengths = torch.tensor([get_model_completion_len(v.raw) for v in group], dtype=rewards.dtype)
+        baseline = (lengths * rewards).sum() / lengths.sum()
+    else:
+        baseline = rewards.mean()
+    return (rewards - baseline).tolist()
 
-    if isinstance(length_penalty, TokensLengthPenaltyConfig):
-        w_c = length_penalty.completion_weight
-        w_t = length_penalty.tool_response_weight
+
+def length_penalty_advantage(
+    group: list["RolloutView"], config: LinearLengthPenaltyConfig, max_seq_len: int | None
+) -> list[float]:
+    """The linear length penalty as a standalone additive advantage term.
+
+    Each rollout's penalty is ``coef * pass_rate * (completion tokens / max_seq_len)``
+    (``pass_rate`` = group mean reward; optionally gated to correct rollouts), and
+    this returns the group-centered negative penalty ``-(penalty_i - mean(penalty))``.
+    Summed onto :func:`grpo_advantage` it is *identical* to subtracting the penalty
+    from each reward before centering — centering is linear, so
+    ``center(reward - penalty) = center(reward) + center(-penalty)``. Keeping it a
+    separate summand means the penalty owns ``max_seq_len`` and never touches the
+    GRPO baseline.
+    """
+    if max_seq_len is None:
+        raise ValueError("max_seq_len is required when the linear length penalty is enabled")
+    rewards = torch.tensor([v.reward for v in group], dtype=torch.float32)
+    lengths = torch.tensor([get_model_completion_len(v.raw) for v in group], dtype=rewards.dtype)
+    penalty = config.coef * rewards.mean() * (lengths / max_seq_len)
+    if config.gate_by_correctness:
+        penalty = penalty * rewards
+    return (penalty.mean() - penalty).tolist()
+
+
+def efficiency_shaping_advantage(
+    group: list["RolloutView"], config: TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig
+) -> list[float]:
+    """Correctness-gated efficiency shaping (the ``tokens`` / ``turns`` length
+    penalties) over a per-rollout cost: weighted completion + tool-response tokens,
+    or trajectory turn count. Unlike :func:`length_penalty_advantage` this is not an
+    additive term — it amplifies correct rewards (see :func:`_efficiency_shaping`) and
+    returns the full advantage, so it replaces the GRPO baseline rather than summing
+    with it.
+    """
+    rewards = torch.tensor([v.reward for v in group], dtype=torch.float32)
+    if isinstance(config, TokensLengthPenaltyConfig):
+        w_c, w_t = config.completion_weight, config.tool_response_weight
         costs = torch.tensor(
             [w_c * get_model_completion_len(v.raw) + w_t * get_tool_response_len(v.raw) for v in group],
             dtype=rewards.dtype,
         )
-        return _efficiency_shaping(rewards, costs).tolist()
-    if isinstance(length_penalty, TurnsLengthPenaltyConfig):
+    else:
         costs = torch.tensor([len(v.raw["trajectory"]) for v in group], dtype=rewards.dtype)
-        return _efficiency_shaping(rewards, costs).tolist()
-
-    return (rewards - rewards.mean()).tolist()
+    return _efficiency_shaping(rewards, costs).tolist()
 
 
 def max_rl_advantage_fn(group: list["RolloutView"]) -> list[float]:
@@ -117,9 +154,3 @@ def apply_advantage_fn(group: list["RolloutView"], advantage_fn: AdvantageFn) ->
     hook delegates here."""
     for view, advs in zip(group, advantage_fn(group), strict=True):
         view.assign_advantages(advs)
-
-
-def assign_group_norm(group: list["RolloutView"], length_penalty: LengthPenaltyConfig | None) -> None:
-    """Group-norm credit (the GRPO default), optionally length-shaped — shared
-    by the algorithms whose ``score_group`` is plain group normalization."""
-    apply_advantage_fn(group, lambda g: default_advantage_fn(g, length_penalty=length_penalty))

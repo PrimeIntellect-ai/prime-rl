@@ -97,8 +97,18 @@ class TurnsLengthPenaltyConfig(BaseConfig):
     type: Literal["turns"] = "turns"
 
 
+class LinearLengthPenaltyConfig(BaseConfig):
+    type: Literal["linear"] = "linear"
+
+    coef: float = Field(0.25, ge=0, allow_inf_nan=False)
+    """Scale on the linear length penalty. Each reward is reduced by ``coef * pass_rate * (model completion tokens / orchestrator.seq_len)`` — where ``pass_rate`` is the group's mean reward — before the GRPO baseline subtraction. Finite and non-negative."""
+
+    gate_by_correctness: bool = False
+    """When True, scale each rollout's penalty by its reward (``penalty * reward``), so correct rollouts (``reward == 1``) are penalized and incorrect ones (``reward == 0``) are not. When False, every rollout is penalized equally."""
+
+
 LengthPenaltyConfig: TypeAlias = Annotated[
-    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
+    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig | LinearLengthPenaltyConfig,
     Field(discriminator="type"),
 ]
 
@@ -112,7 +122,10 @@ class GRPOAdvantageConfig(BaseConfig):
     group_relative: ClassVar[bool] = True
 
     length_penalty: LengthPenaltyConfig | None = None
-    """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
+    """Length penalty layered onto the group-relative advantage; None disables it. ``tokens`` / ``turns`` are correctness-gated efficiency shaping over a per-rollout cost — in mixed groups lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched; in all-correct groups below-average-cost rollouts get advantage in [0, 1], others get 0. ``linear`` instead subtracts a ``coef * pass_rate * (completion tokens / orchestrator.seq_len)`` term from each reward before the baseline subtraction (``pass_rate`` = group mean reward), so solved-often problems get the strongest concision pressure and never-solved groups get none."""
+
+    length_weighted_baseline: bool = False
+    """When True, the GRPO baseline is the token-length-weighted mean reward (``sum(len_i * reward_i) / sum(len_i)``) instead of the plain group mean, centering advantages by per-token expected reward. Applies to the plain and ``linear``-penalty paths; the ``tokens`` / ``turns`` efficiency-shaping paths keep their own baseline."""
 
 
 class EchoRoleConfig(BaseConfig):

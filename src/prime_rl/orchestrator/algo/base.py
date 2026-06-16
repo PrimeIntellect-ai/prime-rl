@@ -117,6 +117,9 @@ class Algorithm:
         self.policy_pool = policy_pool
         self.renderer = renderer
         self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
+        # Training sequence length, injected by build_algorithm — the denominator
+        # of the GRPO linear length penalty. None when the host doesn't set it.
+        self.max_seq_len: int | None = None
 
     async def setup(self) -> None:
         """Connect client pools to the algorithm's frozen models — override

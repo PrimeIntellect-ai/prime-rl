@@ -32,7 +32,9 @@ from typing import TYPE_CHECKING
 from prime_rl.orchestrator.algo.advantage import (
     AdvantageFn,
     apply_advantage_fn,
-    default_advantage_fn,
+    efficiency_shaping_advantage,
+    grpo_advantage,
+    length_penalty_advantage,
     max_rl_advantage_fn,
 )
 from prime_rl.orchestrator.algo.base import (
@@ -73,12 +75,22 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
 }
 
 
-def build_algorithm(config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None) -> Algorithm:
+def build_algorithm(
+    config: AlgorithmConfig,
+    policy_pool: InferencePool,
+    renderer: Renderer | None,
+    max_seq_len: int | None = None,
+) -> Algorithm:
     cls = ALGORITHM_CLASSES[config.advantage.type]
     assert cls.action_loss_type == config.advantage.action_loss_type  # config and runtime declare in two places
     # The bundle dissolves at construction: the Algorithm is the advantage
     # component's runtime (its sibling Sampler interprets the sampling half).
-    return cls(config.advantage, policy_pool, renderer)
+    algorithm = cls(config.advantage, policy_pool, renderer)
+    # Host resource the constructor contract doesn't carry — only the GRPO
+    # linear length penalty reads it, so it's injected rather than threaded
+    # through every algorithm's __init__.
+    algorithm.max_seq_len = max_seq_len
+    return algorithm
 
 
 __all__ = [
@@ -96,10 +108,12 @@ __all__ = [
     "apply_advantage_fn",
     "build_algorithm",
     "connect_frozen_pool",
-    "default_advantage_fn",
+    "efficiency_shaping_advantage",
     "finalize_batch",
     "finalize_group",
     "finalize_rollout",
+    "grpo_advantage",
+    "length_penalty_advantage",
     "max_rl_advantage_fn",
     "stamp_advantages",
     "stamp_loss_routing",

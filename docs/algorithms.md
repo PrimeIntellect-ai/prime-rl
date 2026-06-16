@@ -292,14 +292,24 @@ The default advantage is per-group reward minus per-group baseline (DR-GRPO with
 
 This is intentionally simple — it does the right thing for most envs. Switch to a [custom advantage](#custom-advantage) when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …).
 
-Two built-in **length penalties** (`length_penalty` on the `grpo`-family strategies) can be layered on top to discourage rambling: `tokens` penalizes long completions by weighted token cost, `turns` penalizes long multi-turn rollouts by turn count.
+Three built-in **length penalties** (`length_penalty` on the `grpo`-family strategies) can be layered on top to discourage rambling. `tokens` and `turns` are correctness-gated efficiency shaping: in mixed groups the lower-cost correct rollouts get amplified advantage (`tokens` by weighted token cost, `turns` by turn count). `linear` instead subtracts a `coef * pass_rate * (completion tokens / orchestrator.seq_len)` term from every reward before the baseline subtraction, where `pass_rate` is the group's mean reward — so problems the model already solves reliably get the strongest push toward concise outputs, while rarely-solved problems are barely penalized (a never-solved group, mean reward 0, gets none). Set `gate_by_correctness = true` to apply the linear penalty only to correct rollouts (`reward == 1`):
 
 ```toml
 [orchestrator.advantage]
 type = "grpo"
 
 [orchestrator.advantage.length_penalty]
-type = "tokens"
+type = "linear"
+coef = 0.25                 # effective penalty is coef * pass_rate * (completion_tokens / seq_len)
+gate_by_correctness = false # when true, only penalize rollouts with reward == 1
+```
+
+By default the GRPO baseline is the plain group mean reward. Set `length_weighted_baseline = true` to instead use the token-length-weighted mean — `sum(len_i * reward_i) / sum(len_i)` — which centers advantages by per-token expected reward when rollouts vary a lot in length (it applies to the plain and `linear` paths; `tokens` / `turns` keep their own baseline):
+
+```toml
+[orchestrator.advantage]
+type = "grpo"
+length_weighted_baseline = true
 ```
 
 
