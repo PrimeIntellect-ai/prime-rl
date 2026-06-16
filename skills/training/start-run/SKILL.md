@@ -78,6 +78,17 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
+## `orchestrator` — standalone orchestrator/debug
+
+Use this entrypoint for orchestrator-only debug or ablation runs. It does not launch inference or trainer subprocesses.
+
+```bash
+uv run orchestrator @ configs/debug/orchestrator.toml --debug.no-inference --debug.no-trainer
+```
+
+- Config: `OrchestratorConfig` (`packages/prime-rl-configs/src/prime_rl/configs/orchestrator.py`)
+- Entrypoint: `src/prime_rl/entrypoints/orchestrator.py`
+
 ## Summary
 
 | Command | Purpose | Typical use |
@@ -85,6 +96,7 @@ curl http://localhost:8000/v1/chat/completions \
 | `rl` | Full RL pipeline | Production RL training |
 | `sft` | Supervised fine-tuning | SFT and hard-distill |
 | `inference` | vLLM server | Standalone serving / debugging |
+| `orchestrator` | Orchestrator process only | Debug ablations |
 
 ## Key paths
 

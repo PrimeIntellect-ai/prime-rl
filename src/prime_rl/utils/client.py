@@ -174,6 +174,10 @@ class NoOpInferencePool:
     def admin_clients(self) -> list[AsyncClient]:
         return []
 
+    @property
+    def eval_clients(self) -> list[vf.ClientConfig]:
+        return [self._client]
+
     def update_model_name(self, model_name: str) -> None:
         self.model_name = model_name
 

@@ -13,7 +13,6 @@ from prime_rl.configs.shared import (
     FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
-    NoOpTransportConfig,
     PrimeMonitorConfig,
     TransportConfig,
     WandbWithExtrasConfig,
@@ -504,13 +503,11 @@ class OrchestratorDebugConfig(BaseConfig):
     """Use an in-process no-op inference pool. Rollout environments must not call the model client."""
 
     no_trainer: bool = False
-    """Run without a trainer. Uses no-op batch sending and advances policy version locally."""
+    """Run without a trainer. Writes training batches to disk and advances policy version locally."""
 
-    fake_tokenizer: bool = False
-    """Use a tiny tokenizer stub. Only safe when rollouts already include tokens and sample monitors are disabled."""
-
-    log_memory: bool = False
-    """Log orchestrator and child-process RSS after each completed orchestrator step."""
+    @property
+    def enabled(self) -> bool:
+        return self.no_inference or self.no_trainer
 
 
 class RolloutModelConfig(BaseConfig):
@@ -935,9 +932,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_debug(self):
         if self.debug.no_trainer:
-            self.rollout_transport = NoOpTransportConfig()
-        if self.debug.fake_tokenizer and (self.wandb is not None or self.prime_monitor is not None):
-            raise ValueError("orchestrator.debug.fake_tokenizer requires wandb and prime_monitor to be disabled.")
+            self.rollout_transport = FileSystemTransportConfig()
         if self.debug.no_inference:
             self.renderer = None
             self.collect_inference_metrics = False
