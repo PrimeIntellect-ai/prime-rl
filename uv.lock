@@ -100,7 +100,7 @@ requires-dist = [
 [[package]]
 name = "aime24-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/aime24_v1" }
+source = { editable = "deps/verifiers/environments/aime24_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -183,7 +183,7 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.1.9" }]
 [[package]]
 name = "alphabet-sort-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/alphabet_sort_v1" }
+source = { editable = "deps/verifiers/environments/alphabet_sort_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -568,7 +568,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "code-golf-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/code_golf_v1" }
+source = { editable = "deps/verifiers/environments/code_golf_v1" }
 
 [[package]]
 name = "color-codeword"
@@ -588,7 +588,7 @@ requires-dist = [
 [[package]]
 name = "color-codeword-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/color_codeword_v1" }
+source = { editable = "deps/verifiers/environments/color_codeword_v1" }
 dependencies = [
     { name = "pillow", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -608,7 +608,7 @@ wheels = [
 [[package]]
 name = "compact"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/harnesses/compact" }
+source = { editable = "deps/verifiers/environments/compact" }
 
 [[package]]
 name = "compressed-tensors"
@@ -885,7 +885,7 @@ requires-dist = [
 [[package]]
 name = "deepwiki-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/deepwiki_v1" }
+source = { editable = "deps/verifiers/environments/deepwiki_v1" }
 
 [[package]]
 name = "depyf"
@@ -1415,7 +1415,7 @@ wheels = [
 [[package]]
 name = "glossary-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/glossary_v1" }
+source = { editable = "deps/verifiers/environments/glossary_v1" }
 
 [[package]]
 name = "googleapis-common-protos"
@@ -1484,7 +1484,7 @@ wheels = [
 [[package]]
 name = "gsm8k-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/gsm8k_v1" }
+source = { editable = "deps/verifiers/environments/gsm8k_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -2302,7 +2302,7 @@ requires-dist = [
 [[package]]
 name = "math-env-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/math_env_v1" }
+source = { editable = "deps/verifiers/environments/math_env_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -3718,30 +3718,30 @@ mamba-ssm = [
 requires-dist = [
     { name = "aime2024", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime2024" },
     { name = "aime2025", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime2025" },
-    { name = "aime24-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/aime24_v1" },
+    { name = "aime24-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/aime24_v1" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "alphabet-sort", marker = "extra == 'envs'", editable = "deps/verifiers/environments/alphabet_sort" },
-    { name = "alphabet-sort-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/alphabet_sort_v1" },
+    { name = "alphabet-sort-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/alphabet_sort_v1" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "code-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/code_env" },
-    { name = "code-golf-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/code_golf_v1" },
+    { name = "code-golf-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/code_golf_v1" },
     { name = "color-codeword", marker = "extra == 'envs'", editable = "deps/research-environments/environments/color_codeword" },
-    { name = "color-codeword-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/color_codeword_v1" },
-    { name = "compact", marker = "extra == 'envs'", editable = "deps/verifiers/examples/harnesses/compact" },
+    { name = "color-codeword-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/color_codeword_v1" },
+    { name = "compact", marker = "extra == 'envs'", editable = "deps/verifiers/environments/compact" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" },
     { name = "deepdive", marker = "extra == 'envs'", editable = "deps/research-environments/environments/deepdive" },
-    { name = "deepwiki-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/deepwiki_v1" },
+    { name = "deepwiki-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/deepwiki_v1" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "flash-attn-4", marker = "extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151" },
     { name = "flash-linear-attention", git = "https://github.com/fla-org/flash-linear-attention" },
     { name = "general-agent", marker = "extra == 'envs'", editable = "deps/research-environments/environments/general_agent" },
-    { name = "glossary-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/glossary_v1" },
+    { name = "glossary-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/glossary_v1" },
     { name = "gpqa", marker = "extra == 'envs'", editable = "deps/research-environments/environments/gpqa" },
-    { name = "gsm8k-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/gsm8k_v1" },
+    { name = "gsm8k-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/gsm8k_v1" },
     { name = "harnesses", marker = "extra == 'envs'", editable = "deps/verifiers/packages/harnesses" },
     { name = "hle", marker = "extra == 'envs'", editable = "deps/research-environments/environments/hle" },
     { name = "ifeval", marker = "extra == 'envs'", editable = "deps/research-environments/environments/ifeval" },
@@ -3752,7 +3752,7 @@ requires-dist = [
     { name = "logic-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/logic_env" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "math-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math_env" },
-    { name = "math-env-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/math_env_v1" },
+    { name = "math-env-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/math_env_v1" },
     { name = "math-python", marker = "extra == 'envs'", editable = "deps/verifiers/environments/math_python" },
     { name = "math500", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math500" },
     { name = "mini-swe-agent-plus", marker = "extra == 'envs'", editable = "deps/research-environments/environments/mini_swe_agent_plus" },
@@ -3785,22 +3785,22 @@ requires-dist = [
     { name = "pybase64", specifier = ">=1.4.2" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.4.1" },
-    { name = "r2e-gym-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/r2e_gym_v1" },
+    { name = "r2e-gym-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/r2e_gym_v1" },
     { name = "renderers", editable = "deps/renderers" },
     { name = "reverse-text", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text" },
-    { name = "reverse-text-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/reverse_text_v1" },
+    { name = "reverse-text-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text_v1" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
     { name = "rlm-swe", marker = "extra == 'envs'", editable = "deps/research-environments/environments/rlm_swe" },
-    { name = "scaleswe-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/scaleswe_v1" },
+    { name = "scaleswe-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/scaleswe_v1" },
     { name = "science-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/science_env" },
     { name = "setproctitle", specifier = ">=1.3.0" },
     { name = "simpleqa-verified", marker = "extra == 'envs'", editable = "deps/research-environments/environments/simpleqa_verified" },
-    { name = "swelego-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/swelego_v1" },
+    { name = "swelego-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/swelego_v1" },
     { name = "tasksets", marker = "extra == 'envs'", editable = "deps/verifiers/packages/tasksets" },
     { name = "tau2-bench", marker = "extra == 'envs'", editable = "deps/research-environments/environments/tau2_bench" },
     { name = "tenacity", specifier = ">=8.2.0" },
-    { name = "terminal-bench-2-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/terminal_bench_2_v1" },
+    { name = "terminal-bench-2-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/terminal_bench_2_v1" },
     { name = "tilelang", specifier = ">=0.1.8" },
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchaudio", index = "https://download.pytorch.org/whl/cu128" },
@@ -3816,10 +3816,10 @@ requires-dist = [
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wiki-search", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wiki_search" },
-    { name = "wiki-search-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/wiki_search_v1" },
-    { name = "wikispeedia-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/wikispeedia_v1" },
+    { name = "wiki-search-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wiki_search_v1" },
+    { name = "wikispeedia-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wikispeedia_v1" },
     { name = "wordle", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wordle" },
-    { name = "wordle-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/wordle_v1" },
+    { name = "wordle-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wordle_v1" },
 ]
 provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "envs", "disagg", "gpt-oss", "modelexpress", "quack", "all"]
 
@@ -4360,7 +4360,7 @@ wheels = [
 [[package]]
 name = "r2e-gym-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/r2e_gym_v1" }
+source = { editable = "deps/verifiers/environments/r2e_gym_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -4487,7 +4487,7 @@ requires-dist = [
 [[package]]
 name = "reverse-text-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/reverse_text_v1" }
+source = { editable = "deps/verifiers/environments/reverse_text_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -4601,7 +4601,7 @@ wheels = [
 [[package]]
 name = "scaleswe-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/scaleswe_v1" }
+source = { editable = "deps/verifiers/environments/scaleswe_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -4866,7 +4866,7 @@ wheels = [
 [[package]]
 name = "swelego-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/swelego_v1" }
+source = { editable = "deps/verifiers/environments/swelego_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -5014,7 +5014,7 @@ wheels = [
 [[package]]
 name = "terminal-bench-2-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/terminal_bench_2_v1" }
+source = { editable = "deps/verifiers/environments/terminal_bench_2_v1" }
 dependencies = [
     { name = "tasksets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -5639,23 +5639,23 @@ dev = [
     { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
 ]
 examples = [
-    { name = "aime24-v1", editable = "deps/verifiers/examples/tasksets/aime24_v1" },
-    { name = "alphabet-sort-v1", editable = "deps/verifiers/examples/tasksets/alphabet_sort_v1" },
-    { name = "code-golf-v1", editable = "deps/verifiers/examples/tasksets/code_golf_v1" },
-    { name = "color-codeword-v1", editable = "deps/verifiers/examples/tasksets/color_codeword_v1" },
-    { name = "compact", editable = "deps/verifiers/examples/harnesses/compact" },
-    { name = "deepwiki-v1", editable = "deps/verifiers/examples/tasksets/deepwiki_v1" },
-    { name = "glossary-v1", editable = "deps/verifiers/examples/tasksets/glossary_v1" },
-    { name = "gsm8k-v1", editable = "deps/verifiers/examples/tasksets/gsm8k_v1" },
-    { name = "math-env-v1", editable = "deps/verifiers/examples/tasksets/math_env_v1" },
-    { name = "r2e-gym-v1", editable = "deps/verifiers/examples/tasksets/r2e_gym_v1" },
-    { name = "reverse-text-v1", editable = "deps/verifiers/examples/tasksets/reverse_text_v1" },
-    { name = "scaleswe-v1", editable = "deps/verifiers/examples/tasksets/scaleswe_v1" },
-    { name = "swelego-v1", editable = "deps/verifiers/examples/tasksets/swelego_v1" },
-    { name = "terminal-bench-2-v1", editable = "deps/verifiers/examples/tasksets/terminal_bench_2_v1" },
-    { name = "wiki-search-v1", editable = "deps/verifiers/examples/tasksets/wiki_search_v1" },
-    { name = "wikispeedia-v1", editable = "deps/verifiers/examples/tasksets/wikispeedia_v1" },
-    { name = "wordle-v1", editable = "deps/verifiers/examples/tasksets/wordle_v1" },
+    { name = "aime24-v1", editable = "deps/verifiers/environments/aime24_v1" },
+    { name = "alphabet-sort-v1", editable = "deps/verifiers/environments/alphabet_sort_v1" },
+    { name = "code-golf-v1", editable = "deps/verifiers/environments/code_golf_v1" },
+    { name = "color-codeword-v1", editable = "deps/verifiers/environments/color_codeword_v1" },
+    { name = "compact", editable = "deps/verifiers/environments/compact" },
+    { name = "deepwiki-v1", editable = "deps/verifiers/environments/deepwiki_v1" },
+    { name = "glossary-v1", editable = "deps/verifiers/environments/glossary_v1" },
+    { name = "gsm8k-v1", editable = "deps/verifiers/environments/gsm8k_v1" },
+    { name = "math-env-v1", editable = "deps/verifiers/environments/math_env_v1" },
+    { name = "r2e-gym-v1", editable = "deps/verifiers/environments/r2e_gym_v1" },
+    { name = "reverse-text-v1", editable = "deps/verifiers/environments/reverse_text_v1" },
+    { name = "scaleswe-v1", editable = "deps/verifiers/environments/scaleswe_v1" },
+    { name = "swelego-v1", editable = "deps/verifiers/environments/swelego_v1" },
+    { name = "terminal-bench-2-v1", editable = "deps/verifiers/environments/terminal_bench_2_v1" },
+    { name = "wiki-search-v1", editable = "deps/verifiers/environments/wiki_search_v1" },
+    { name = "wikispeedia-v1", editable = "deps/verifiers/environments/wikispeedia_v1" },
+    { name = "wordle-v1", editable = "deps/verifiers/environments/wordle_v1" },
 ]
 harnesses = [{ name = "harnesses", editable = "deps/verifiers/packages/harnesses" }]
 tasksets = [{ name = "tasksets", editable = "deps/verifiers/packages/tasksets" }]
@@ -6199,7 +6199,7 @@ requires-dist = [
 [[package]]
 name = "wiki-search-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/wiki_search_v1" }
+source = { editable = "deps/verifiers/environments/wiki_search_v1" }
 dependencies = [
     { name = "chromadb", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -6214,7 +6214,7 @@ requires-dist = [
 [[package]]
 name = "wikispeedia-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/wikispeedia_v1" }
+source = { editable = "deps/verifiers/environments/wikispeedia_v1" }
 
 [[package]]
 name = "wordle"
@@ -6236,7 +6236,7 @@ requires-dist = [
 [[package]]
 name = "wordle-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/examples/tasksets/wordle_v1" }
+source = { editable = "deps/verifiers/environments/wordle_v1" }
 dependencies = [
     { name = "tasksets", extra = ["textarena"], marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
