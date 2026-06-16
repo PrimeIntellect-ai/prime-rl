@@ -148,14 +148,14 @@ sampling = { temperature = 0.7, top_p = 0.8, max_completion_tokens = 4096, extra
 [[orchestrator.train.env]]
 id = "gpqa-open-ended-debate"
 name = "gpqa-openended-debate-bs512-train"
-args = { subset = "extended", prompts_ref = "selfplay_oe", num_eval_examples = 55, seed = 42 }
+args = { subset = "extended", prompts_ref = "selfplay_oe", num_eval_examples = 55, seed = 42, judge_base_url = "https://openrouter.ai/api/v1", judge_model = "deepseek/deepseek-v4-flash", judge_api_key_var = "OPENROUTER_API_KEY" }
 
 [[orchestrator.eval.env]]
 id = "gpqa-open-ended-debate"
 name = "gpqa-openended-debate-bs512-eval"
 num_examples = 55
 group_size = 8
-args = { subset = "extended", prompts_ref = "selfplay_oe", num_eval_examples = 55, seed = 42 }
+args = { subset = "extended", prompts_ref = "selfplay_oe", num_eval_examples = 55, seed = 42, judge_base_url = "https://openrouter.ai/api/v1", judge_model = "deepseek/deepseek-v4-flash", judge_api_key_var = "OPENROUTER_API_KEY" }
 
 [[orchestrator.eval.env]]
 id = "hf-singleturn"

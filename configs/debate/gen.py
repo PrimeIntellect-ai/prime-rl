@@ -16,10 +16,13 @@ Launch:  uv run rl @ configs/debate/generated/<debater>__<judge>__<schedule>.tom
 """
 
 import pathlib
+import tomllib
 
 HERE = pathlib.Path(__file__).parent
 BASE = (HERE / "base.toml").read_text().rstrip()
 GRADER = (HERE / "grader-deepseek.txt").read_text().strip()  # the ONE grader, verbatim
+GRADER_ARGS = tomllib.loads(f"args = {GRADER}")["args"]
+DEBATE_GRADER_KEYS = ("judge_base_url", "judge_model", "judge_api_key_var")
 
 DEBATERS = {p.stem: p.read_text().rstrip() for p in sorted((HERE / "debaters").glob("*.toml"))}
 JUDGES = {p.stem: p.read_text().rstrip() for p in sorted((HERE / "judges").glob("*.toml"))}
@@ -46,7 +49,8 @@ out.mkdir(exist_ok=True)
 
 def debate_args(pref, sched):
     sk = f", schedule = {sched}" if sched else ""
-    return f'{{ subset = "extended", prompts_ref = "{pref}", num_eval_examples = 55, seed = 42{sk} }}'
+    gt_grader = "".join(f', {key} = "{GRADER_ARGS[key]}"' for key in DEBATE_GRADER_KEYS)
+    return f'{{ subset = "extended", prompts_ref = "{pref}", num_eval_examples = 55, seed = 42{gt_grader}{sk} }}'
 
 
 def grader_args(pref):

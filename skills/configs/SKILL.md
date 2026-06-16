@@ -70,6 +70,15 @@ enable_token_export = true
 
 Leave it unset for normal training. When enabled, it exports every sequence from each exporting rank.
 
+## Generated debate configs
+
+`configs/debate/gen.py` is the source of truth for generated debate matrix runs.
+The DeepSeek GT grader in `configs/debate/grader-deepseek.txt` must be wired into
+both `gpqa-open-ended-debate` train/eval env args and the `hf-singleturn` eval.
+Without the debate-env `judge_base_url`, `judge_model`, and `judge_api_key_var`,
+the debate reward still comes from the fixed debate judge, but GT diagnostics
+(`final_correct/*`, `judge_selected_correct`, `twc_*`, `position_bias`) disappear.
+
 ## Key files
 
 - `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`

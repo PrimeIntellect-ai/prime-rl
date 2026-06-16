@@ -145,14 +145,14 @@ sampling = { temperature = 0.7, top_p = 0.8, max_completion_tokens = 4096, extra
 [[orchestrator.train.env]]
 id = "gpqa-open-ended-debate"
 name = "gpqa-openended-debate-bs512-train"
-args = { subset = "extended", prompts_ref = "selfplay_oe_pcd4", num_eval_examples = 55, seed = 42, schedule = [{ slot_id = 0, agents = ["debater_a"], phase = "propose" }, { slot_id = 1, agents = ["debater_b"], phase = "critique" }, { slot_id = 2, agents = ["debater_a"], phase = "rebuttal" }, { slot_id = 3, agents = ["debater_b"], phase = "counter_proposal" }, { slot_id = 4, agents = ["judge"], phase = "final" }] }
+args = { subset = "extended", prompts_ref = "selfplay_oe_pcd4", num_eval_examples = 55, seed = 42, judge_base_url = "https://openrouter.ai/api/v1", judge_model = "deepseek/deepseek-v4-flash", judge_api_key_var = "OPENROUTER_API_KEY", schedule = [{ slot_id = 0, agents = ["debater_a"], phase = "propose" }, { slot_id = 1, agents = ["debater_b"], phase = "critique" }, { slot_id = 2, agents = ["debater_a"], phase = "rebuttal" }, { slot_id = 3, agents = ["debater_b"], phase = "counter_proposal" }, { slot_id = 4, agents = ["judge"], phase = "final" }] }
 
 [[orchestrator.eval.env]]
 id = "gpqa-open-ended-debate"
 name = "gpqa-openended-debate-bs512-eval"
 num_examples = 55
 group_size = 8
-args = { subset = "extended", prompts_ref = "selfplay_oe_pcd4", num_eval_examples = 55, seed = 42, schedule = [{ slot_id = 0, agents = ["debater_a"], phase = "propose" }, { slot_id = 1, agents = ["debater_b"], phase = "critique" }, { slot_id = 2, agents = ["debater_a"], phase = "rebuttal" }, { slot_id = 3, agents = ["debater_b"], phase = "counter_proposal" }, { slot_id = 4, agents = ["judge"], phase = "final" }] }
+args = { subset = "extended", prompts_ref = "selfplay_oe_pcd4", num_eval_examples = 55, seed = 42, judge_base_url = "https://openrouter.ai/api/v1", judge_model = "deepseek/deepseek-v4-flash", judge_api_key_var = "OPENROUTER_API_KEY", schedule = [{ slot_id = 0, agents = ["debater_a"], phase = "propose" }, { slot_id = 1, agents = ["debater_b"], phase = "critique" }, { slot_id = 2, agents = ["debater_a"], phase = "rebuttal" }, { slot_id = 3, agents = ["debater_b"], phase = "counter_proposal" }, { slot_id = 4, agents = ["judge"], phase = "final" }] }
 
 [[orchestrator.eval.env]]
 id = "hf-singleturn"

@@ -10,8 +10,10 @@ new model/judge/schedule is a one-file change.
   targets), `[deployment]` (topology), `[inference]` (MoE/routed-experts/kernels),
   `[orchestrator.train.sampling]`. The heavy, per-model block.
 - `judges/<name>.toml` — `[orchestrator.multi_agent.fixed.judge]` (winner → reward).
-- `grader-deepseek.txt` — the ONE GT-correctness grader (DeepSeek), injected into
-  every config's single-agent eval. Change it here, regenerate, all runs update.
+- `grader-deepseek.txt` — the ONE GT-correctness grader (DeepSeek). Its connection
+  fields are injected into debate train/eval envs for TWC diagnostics; the full
+  block is injected into every config's single-agent eval. Change it here,
+  regenerate, all runs update.
 - `gen.py` — the generator + the schedule spec.
 - `generated/` — emitted, launch-ready configs (committed). **Build artifacts —
   never hand-edit; edit a fragment or `gen.py` and regenerate.**
