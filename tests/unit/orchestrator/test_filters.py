@@ -1,7 +1,14 @@
 import math
 import uuid
 
-from prime_rl.configs.orchestrator import GibberishFilterConfig, RepetitionFilterConfig
+import pytest
+from pydantic import ValidationError
+
+from prime_rl.configs.orchestrator import (
+    GibberishFilterConfig,
+    RepetitionFilterConfig,
+    ZeroAdvantageFilterConfig,
+)
 from prime_rl.orchestrator.filters import (
     GibberishFilter,
     RepetitionFilter,
@@ -66,15 +73,31 @@ def _make_rollout(
     )
 
 
-def _make_gibberish_filter(vocab_size=128_000, token_id_threshold=100_000, logprob_offset=2.0, action="monitor"):
+def _make_gibberish_filter(
+    vocab_size=128_000,
+    token_id_threshold=100_000,
+    logprob_offset=2.0,
+    action="monitor",
+    reward_penalty_fn=None,
+):
     logprob_threshold = -math.log(vocab_size) - logprob_offset
     return GibberishFilter(
-        name="gibberish", token_id_threshold=token_id_threshold, logprob_threshold=logprob_threshold, action=action
+        name="gibberish",
+        token_id_threshold=token_id_threshold,
+        logprob_threshold=logprob_threshold,
+        action=action,
+        reward_penalty_fn=reward_penalty_fn,
     )
 
 
-def _make_repetition_filter(window=5, prob_threshold=0.99, action="monitor"):
-    return RepetitionFilter(name="repetition", window=window, logprob_threshold=math.log(prob_threshold), action=action)
+def _make_repetition_filter(window=5, prob_threshold=0.99, action="monitor", reward_penalty_fn=None):
+    return RepetitionFilter(
+        name="repetition",
+        window=window,
+        logprob_threshold=math.log(prob_threshold),
+        action=action,
+        reward_penalty_fn=reward_penalty_fn,
+    )
 
 
 # --- GibberishFilter tests ---
@@ -196,6 +219,7 @@ def test_setup_filter_gibberish():
     assert gibberish_filter.token_id_threshold == 100_000
     assert abs(gibberish_filter.logprob_threshold - (-math.log(128_000) - 2.0)) < 1e-10
     assert gibberish_filter.action == "monitor"
+    assert "penalty" not in config.action.model_dump()
 
 
 def test_setup_filter_gibberish_drop():
@@ -218,6 +242,40 @@ def test_setup_filter_repetition_drop():
     config = RepetitionFilterConfig(action="drop")
     repetition_filter = setup_filter(config, vocab_size=128_000)
     assert repetition_filter.action == "drop"
+
+
+def test_setup_filter_penalize_requires_penalty_config():
+    with pytest.raises(ValidationError):
+        GibberishFilterConfig(action="penalize")
+
+
+def test_zero_advantage_rejects_penalize_action():
+    with pytest.raises(ValidationError):
+        ZeroAdvantageFilterConfig(
+            action={"type": "penalize", "penalty": {"type": "set_reward", "reward": -1.0}}
+        )
+
+
+def test_apply_filters_penalize_sets_reward():
+    config = GibberishFilterConfig(
+        action={"type": "penalize", "penalty": {"type": "set_reward", "reward": -2.0}}
+    )
+    gibberish_filter = setup_filter(config, vocab_size=128_000)
+
+    rollout = _make_rollout(
+        completion_ids=[120_000],
+        completion_logprobs=[gibberish_filter.logprob_threshold - 1.0],
+        reward=1.0,
+    )
+
+    apply_filters([gibberish_filter], [rollout])
+
+    assert rollout.reward == -2.0
+    assert rollout.raw_reward == 1.0
+    assert rollout.reward_penalties == {
+        "gibberish": {"raw_reward": 1.0, "penalized_reward": -2.0, "detection_index": 0}
+    }
+    assert rollout.is_filtered is False
 
 
 def test_setup_filters_multiple():

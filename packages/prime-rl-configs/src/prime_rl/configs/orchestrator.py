@@ -425,14 +425,63 @@ class CheckpointConfig(BaseConfig):
 FilterAction: TypeAlias = Literal["monitor", "drop", "penalize"]
 
 
+class MonitorFilterActionConfig(BaseConfig):
+    type: Literal["monitor"] = "monitor"
+
+
+class DropFilterActionConfig(BaseConfig):
+    type: Literal["drop"] = "drop"
+
+
+class SetRewardPenaltyConfig(BaseConfig):
+    type: Literal["set_reward"] = "set_reward"
+
+    reward: float
+    """Reward assigned to detected rollouts."""
+
+
+class CustomRewardPenaltyConfig(BaseConfig):
+    type: Literal["custom"] = "custom"
+
+    import_path: str
+    """Import path to the reward penalty function (e.g. ``my_module.my_penalty``)."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Kwargs forwarded to the reward penalty function."""
+
+
+RewardPenaltyConfig: TypeAlias = Annotated[
+    SetRewardPenaltyConfig | CustomRewardPenaltyConfig,
+    Field(discriminator="type"),
+]
+
+
+class PenalizeFilterActionConfig(BaseConfig):
+    type: Literal["penalize"] = "penalize"
+
+    penalty: RewardPenaltyConfig
+    """Reward transform applied when this filter detects a rollout."""
+
+
+FilterActionConfig: TypeAlias = Annotated[
+    MonitorFilterActionConfig | DropFilterActionConfig | PenalizeFilterActionConfig,
+    Field(discriminator="type"),
+]
+
+
 class BaseFilterConfig(BaseConfig):
     """Shared action fields for rollout filters."""
 
-    action: FilterAction = "monitor"
-    """What to do when the filter detects a rollout. ``monitor``: only track detection metrics. ``drop``: skip the rollout entirely so it is not sent to the trainer. ``penalize``: cap the rollout's reward at ``penalty_reward`` before advantage computation while keeping it trainable."""
+    action: FilterActionConfig = MonitorFilterActionConfig()
+    """What to do when the filter detects a rollout. ``monitor`` only tracks detection metrics; ``drop`` skips the rollout so it is not sent to the trainer; ``penalize`` keeps it trainable and applies an explicit reward penalty strategy."""
 
-    penalty_reward: float = -1.0
-    """Reward cap applied when ``action="penalize"``: final reward = ``min(raw_reward, penalty_reward)``. Ignored by other actions."""
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_action(cls, data: Any):
+        if isinstance(data, dict) and isinstance(data.get("action"), str):
+            data = dict(data)
+            data["action"] = {"type": data["action"]}
+        return data
 
 
 # Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
@@ -463,7 +512,13 @@ class RepetitionFilterConfig(BaseFilterConfig):
 class ZeroAdvantageFilterConfig(BaseFilterConfig):
     type: Literal["zero_advantage"] = "zero_advantage"
 
-    action: FilterAction = "drop"
+    action: FilterActionConfig = DropFilterActionConfig()
+
+    @model_validator(mode="after")
+    def validate_action(self):
+        if isinstance(self.action, PenalizeFilterActionConfig):
+            raise ValueError("zero_advantage filters only support monitor/drop actions.")
+        return self
 
 
 FilterConfig: TypeAlias = Annotated[
@@ -565,8 +620,8 @@ class OrchestratorConfig(BaseConfig):
     """Filters applied *before* a rollout enters the training batch buffer.
     All three filter types are registered in monitor mode by default; set ``action="drop"`` per type
     to drop matching rollouts before they consume a slot in the batch (e.g. a zero-advantage group
-    never makes it into a training batch), or ``action="penalize"`` (gibberish/repetition) to cap the
-    rollout's reward at ``penalty_reward`` before advantage computation while keeping it trainable."""
+    never makes it into a training batch), or configure a ``penalize`` action (gibberish/repetition)
+    to transform detected rollout rewards before advantage computation while keeping them trainable."""
 
     post_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(),

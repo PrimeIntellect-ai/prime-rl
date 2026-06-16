@@ -3,7 +3,7 @@
 1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
    dispatcher producing more rollouts). Errored rollouts skip this.
 2. ``process_group`` — filters errored rollouts, runs the pre-advantage
-   pre-batch filter pass (``penalize`` reward caps land before the baseline),
+   pre-batch filter pass (``penalize`` reward transforms land before the baseline),
    computes advantages over survivors, runs the post-advantage pass.
 3. ``process_batch`` — applies post-batch filter annotations and assembles
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
@@ -172,7 +172,7 @@ class TrainSink:
     def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
         when ``requires_group_scoring`` and any failed), run pre-advantage
-        pre-batch filters (so ``penalize`` reward caps are visible to the
+        pre-batch filters (so ``penalize`` reward transforms are visible to the
         baseline), assign advantages, run post-advantage pre-batch filters,
         append survivors to ``pending_batch``."""
         group = self.pending_groups.pop(group_id, [])
@@ -200,8 +200,8 @@ class TrainSink:
             return
 
         # Pre-advantage filters run before advantage assignment so a
-        # `penalize` action's reward cap is visible to the group baseline —
-        # the penalized rollout ends up with a lower advantage than its
+        # `penalize` action's reward transform is visible to the group baseline —
+        # the penalized rollout can end up with a lower advantage than its
         # peers. Dropped rollouts still participate in the baseline (reward
         # untouched), matching prior behavior.
         pre_advantage_filters, post_advantage_filters = split_filters(self.pre_filters)
@@ -278,7 +278,7 @@ class TrainSink:
 
         if self.post_filters:
             apply_filters(self.post_filters, cohort)
-            # A post-batch ``penalize`` filter caps the rollout reward after
+            # A post-batch ``penalize`` filter transforms the rollout reward after
             # ``process_group`` already stamped it onto the samples — re-sync
             # so trainer-bound samples agree with the rollout reward used in
             # metrics. Advantage is intentionally untouched: post-batch runs

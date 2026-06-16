@@ -119,7 +119,7 @@ class TrainRollout(FinishedRollout):
     is_filtered: bool = False
     filter_results: dict[str, bool] = field(default_factory=dict)
     raw_reward: float | None = None
-    """Original env reward, recorded only when a ``penalize`` filter capped ``reward``."""
+    """Original env reward, recorded only when a ``penalize`` filter changed ``reward``."""
     reward_penalties: dict[str, dict] = field(default_factory=dict)
     """Per-filter penalty metadata (``raw_reward`` / ``penalized_reward`` / ``detection_index``), keyed by filter name."""
 
