@@ -279,8 +279,8 @@ class _RingFA3Varlen(torch.autograd.Function):
 
         # Grads for: q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,
         #            local_k_slice_start, local_k_slice_stop, heads_k_stride, causal, group_name,
-        #            window_size_left, window_size_right
-        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None
+        #            window_size_left, window_size_right, softmax_scale
+        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, 
 
 
 def ring_fa3_varlen_func(
@@ -578,8 +578,8 @@ class _RingFA4Varlen(torch.autograd.Function):
 
         # Grads for: q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,
         #            local_k_slice_start, local_k_slice_stop, heads_k_stride, causal, group_name,
-        #            window_size_left, window_size_right
-        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None
+        #            window_size_left, window_size_right, softmax_scale
+        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None
 
 
 def ring_fa4_varlen_func(
