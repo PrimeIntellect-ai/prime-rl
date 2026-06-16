@@ -388,8 +388,8 @@ else
 {% if orchestrator_on_inference %}ORCH_PROCID=$((NUM_INFER_NODES - 1)){% else %}ORCH_PROCID=$NUM_INFER_NODES{% endif %}
 if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
-    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.base-url $INFER_URLS"
-    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.admin-base-url $ADMIN_URLS"
+    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.base-url $INFER_URLS"
+    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.admin-base-url $ADMIN_URLS"
     {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
     {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
         2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
