@@ -43,7 +43,9 @@ class GRPOAlgorithm(Algorithm):
             # The linear length penalty is a separate advantage that sums onto GRPO's.
             advantages = grpo_advantage(group, self.length_weighted_baseline)
             if isinstance(length_penalty, LinearLengthPenaltyConfig):
-                penalty = length_penalty_advantage(group, length_penalty, self.max_seq_len)
+                penalty = length_penalty_advantage(
+                    group, length_penalty, self.max_seq_len, self.length_weighted_baseline
+                )
                 advantages = [a + p for a, p in zip(advantages, penalty, strict=True)]
         for view, advantage in zip(group, advantages, strict=True):
             view.assign_advantages(advantage)

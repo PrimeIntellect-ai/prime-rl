@@ -49,18 +49,22 @@ def grpo_advantage(group: list["RolloutView"], length_weighted_baseline: bool = 
 
 
 def length_penalty_advantage(
-    group: list["RolloutView"], config: LinearLengthPenaltyConfig, max_seq_len: int | None
+    group: list["RolloutView"],
+    config: LinearLengthPenaltyConfig,
+    max_seq_len: int | None,
+    length_weighted_baseline: bool = False,
 ) -> list[float]:
     """The linear length penalty as a standalone additive advantage term.
 
     Each rollout's penalty is ``coef * pass_rate * (completion tokens / max_seq_len)``
     (``pass_rate`` = group mean reward; optionally gated to correct rollouts), and
-    this returns the group-centered negative penalty ``-(penalty_i - mean(penalty))``.
+    this returns the group-centered negative penalty ``-(penalty_i - baseline)``.
     Summed onto :func:`grpo_advantage` it is *identical* to subtracting the penalty
     from each reward before centering — centering is linear, so
-    ``center(reward - penalty) = center(reward) + center(-penalty)``. Keeping it a
-    separate summand means the penalty owns ``max_seq_len`` and never touches the
-    GRPO baseline.
+    ``center(reward - penalty) = center(reward) + center(-penalty)`` — provided both
+    terms use the same baseline operator, hence ``length_weighted_baseline`` is
+    threaded here too (it picks the plain vs token-length-weighted mean, matching
+    :func:`grpo_advantage`).
     """
     if max_seq_len is None:
         raise ValueError("max_seq_len is required when the linear length penalty is enabled")
@@ -69,7 +73,8 @@ def length_penalty_advantage(
     penalty = config.coef * rewards.mean() * (lengths / max_seq_len)
     if config.gate_by_correctness:
         penalty = penalty * rewards
-    return (penalty.mean() - penalty).tolist()
+    baseline = (lengths * penalty).sum() / lengths.sum() if length_weighted_baseline else penalty.mean()
+    return (baseline - penalty).tolist()
 
 
 def efficiency_shaping_advantage(

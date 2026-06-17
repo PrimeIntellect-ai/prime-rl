@@ -349,6 +349,34 @@ def test_length_penalty_advantage_gate_by_correctness():
     assert penalty == pytest.approx([-0.0625, -0.0625, 0.0625, 0.0625], abs=1e-6)
 
 
+def test_linear_penalty_with_length_weighted_baseline_matches_folded():
+    """With length_weighted_baseline, GRPO + penalty still equals folding the penalty
+    into the reward before length-weighted centering (the original #2702 behavior)."""
+    rewards = [1.0, 1.0, 0.0, 0.0]
+    lengths = [100, 200, 100, 300]
+    group = _make_group(rewards=rewards, completion_lengths=lengths)
+    cfg = LinearLengthPenaltyConfig(coef=0.25)
+    summed = [
+        a + p
+        for a, p in zip(
+            grpo_advantage(group, length_weighted_baseline=True),
+            length_penalty_advantage(group, cfg, 1000, length_weighted_baseline=True),
+            strict=True,
+        )
+    ]
+
+    # folded reference: (reward - penalty) centered by the token-length-weighted mean
+    pass_rate = sum(rewards) / len(rewards)
+    penalty = [0.25 * pass_rate * (length / 1000) for length in lengths]
+    folded_raw = [r - p for r, p in zip(rewards, penalty)]
+    lw_mean = sum(length * x for length, x in zip(lengths, folded_raw)) / sum(lengths)
+    folded = [x - lw_mean for x in folded_raw]
+
+    assert summed == pytest.approx(folded, abs=1e-6)
+    # advantages are length-weighted-zero, like the folded original (float32 accumulation)
+    assert sum(length * a for length, a in zip(lengths, summed)) == pytest.approx(0.0, abs=1e-3)
+
+
 def test_length_penalty_advantage_requires_max_seq_len():
     """The linear penalty's denominator is orchestrator.seq_len — missing it is an error, not a guess."""
     group = _make_group(rewards=[1.0, 0.0], completion_lengths=[100, 100])
