@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 
@@ -51,6 +52,45 @@ def _ids(start: int, count: int, *, vocab_size: int) -> list[int]:
     return [100 + ((start + i) % usable) for i in range(count)]
 
 
+def _non_negative_float(name: str, value: float) -> float:
+    value = float(value)
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return value
+
+
+def _optional_non_negative_float(name: str, value: float | None) -> float | None:
+    if value is None:
+        return None
+    return _non_negative_float(name, value)
+
+
+def _normalize_delay_distribution(distribution: str) -> str:
+    normalized = distribution.lower().replace("-", "_")
+    if normalized == "none":
+        return normalized
+    if normalized in {"fixed", "uniform", "normal", "choice"}:
+        return normalized
+    raise ValueError("rollout_delay_distribution must be one of: none, fixed, uniform, normal, choice")
+
+
+def _parse_delay_choices(value: list[float] | str | None) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_choices = [part.strip() for part in value.split(",") if part.strip()]
+    else:
+        raw_choices = value
+    return [_non_negative_float("rollout_delay_choices_seconds item", choice) for choice in raw_choices]
+
+
+def _clamp_delay(value: float, *, min_seconds: float, max_seconds: float | None) -> float:
+    value = max(min_seconds, value)
+    if max_seconds is not None:
+        value = min(max_seconds, value)
+    return value
+
+
 def _routed_payload(length: int, layers: int, topk: int, n_experts: int, *, start: int, salt: int):
     if length <= 0:
         return None
@@ -81,6 +121,14 @@ class FakeR3TrajectoryEnv(vf.Environment):
         n_routed_experts: int = 256,
         num_examples: int = 16,
         vocab_size: int = 154_880,
+        rollout_delay_distribution: str = "none",
+        rollout_delay_seconds: float = 0.0,
+        rollout_delay_mean_seconds: float = 0.0,
+        rollout_delay_std_seconds: float = 0.0,
+        rollout_delay_min_seconds: float = 0.0,
+        rollout_delay_max_seconds: float | None = None,
+        rollout_delay_choices_seconds: list[float] | str | None = None,
+        rollout_delay_seed: int | None = 0,
         **kwargs,
     ) -> None:
         self.turns = turns
@@ -93,6 +141,25 @@ class FakeR3TrajectoryEnv(vf.Environment):
         self.n_routed_experts = n_routed_experts
         self.vocab_size = vocab_size
         self.plan = _token_plan(seq_len, turns, prompt_len, completion_fraction)
+        self.rollout_delay_distribution = _normalize_delay_distribution(rollout_delay_distribution)
+        self.rollout_delay_seconds = _non_negative_float("rollout_delay_seconds", rollout_delay_seconds)
+        self.rollout_delay_mean_seconds = _non_negative_float("rollout_delay_mean_seconds", rollout_delay_mean_seconds)
+        self.rollout_delay_std_seconds = _non_negative_float("rollout_delay_std_seconds", rollout_delay_std_seconds)
+        self.rollout_delay_min_seconds = _non_negative_float("rollout_delay_min_seconds", rollout_delay_min_seconds)
+        self.rollout_delay_max_seconds = _optional_non_negative_float(
+            "rollout_delay_max_seconds", rollout_delay_max_seconds
+        )
+        self.rollout_delay_choices_seconds = _parse_delay_choices(rollout_delay_choices_seconds)
+        if (
+            self.rollout_delay_max_seconds is not None
+            and self.rollout_delay_max_seconds < self.rollout_delay_min_seconds
+        ):
+            raise ValueError("rollout_delay_max_seconds must be >= rollout_delay_min_seconds")
+        if self.rollout_delay_distribution == "uniform" and self.rollout_delay_max_seconds is None:
+            raise ValueError("uniform rollout_delay_distribution requires rollout_delay_max_seconds")
+        if self.rollout_delay_distribution == "choice" and not self.rollout_delay_choices_seconds:
+            raise ValueError("choice rollout_delay_distribution requires rollout_delay_choices_seconds")
+        self.delay_rng = np.random.default_rng(rollout_delay_seed)
 
         rows = [
             {
@@ -106,6 +173,13 @@ class FakeR3TrajectoryEnv(vf.Environment):
                     "routed_layers": routed_layers,
                     "routed_topk": routed_topk,
                     "n_routed_experts": n_routed_experts,
+                    "rollout_delay_distribution": self.rollout_delay_distribution,
+                    "rollout_delay_seconds": self.rollout_delay_seconds,
+                    "rollout_delay_mean_seconds": self.rollout_delay_mean_seconds,
+                    "rollout_delay_std_seconds": self.rollout_delay_std_seconds,
+                    "rollout_delay_min_seconds": self.rollout_delay_min_seconds,
+                    "rollout_delay_max_seconds": self.rollout_delay_max_seconds,
+                    "rollout_delay_choices_seconds": self.rollout_delay_choices_seconds,
                     "glm5_num_hidden_layers": 78,
                     "glm5_sparse_moe_layers": 75,
                 },
@@ -156,11 +230,24 @@ class FakeR3TrajectoryEnv(vf.Environment):
         timing.setup.start = start_time
         timing.setup.end = start_time
 
+        delay_seconds = self._sample_rollout_delay_seconds()
+        info = state.get("info")
+        if isinstance(info, dict):
+            info["sampled_rollout_delay_seconds"] = delay_seconds
+        if delay_seconds > 0:
+            delay_start = time.time()
+            await asyncio.sleep(delay_seconds)
+            delay_end = time.time()
+            timing.env.spans.append(TimeSpan(start=delay_start, end=delay_end))
+
+        build_start = time.time()
         trajectory, completion, final_input_tokens, final_output_tokens = self._build_trajectory(
             state["trajectory_id"],
             model=model,
             example_id=int(state["example_id"]),
         )
+        build_end = time.time()
+        timing.model.spans.append(TimeSpan(start=build_start, end=build_end))
         state["trajectory"] = trajectory
         state["completion"] = completion
         state["is_completed"] = True
@@ -174,8 +261,28 @@ class FakeR3TrajectoryEnv(vf.Environment):
         }
         end_time = time.time()
         timing.generation.end = end_time
-        timing.model.spans.append(TimeSpan(start=start_time, end=end_time))
         return state
+
+    def _sample_rollout_delay_seconds(self) -> float:
+        distribution = self.rollout_delay_distribution
+        if distribution == "none":
+            return 0.0
+        if distribution == "fixed":
+            delay = self.rollout_delay_seconds
+        elif distribution == "uniform":
+            assert self.rollout_delay_max_seconds is not None
+            delay = float(self.delay_rng.uniform(self.rollout_delay_min_seconds, self.rollout_delay_max_seconds))
+        elif distribution == "normal":
+            delay = float(self.delay_rng.normal(self.rollout_delay_mean_seconds, self.rollout_delay_std_seconds))
+        elif distribution == "choice":
+            delay = float(self.delay_rng.choice(self.rollout_delay_choices_seconds))
+        else:
+            raise AssertionError(f"unhandled rollout delay distribution: {distribution}")
+        return _clamp_delay(
+            delay,
+            min_seconds=self.rollout_delay_min_seconds,
+            max_seconds=self.rollout_delay_max_seconds,
+        )
 
     def _build_trajectory(self, trajectory_id: str, *, model: str, example_id: int):
         prompt_tokens = _ids(example_id * 17, self.plan.prompt_len, vocab_size=self.vocab_size)
