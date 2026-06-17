@@ -77,7 +77,7 @@ class FlashAttentionCore(nn.Module):
         super().__init__()
         self.scaling = config.scaling
         self.is_causal = config.is_causal
-        self.window_size_left = config.window_size_left
+        self.sliding_window = config.window_size_left
 
         self._flash_attn_version = flash_attn_version
         self.func1 = self._funcs[flash_attn_version]
@@ -109,10 +109,11 @@ class FlashAttentionCore(nn.Module):
         """
 
         kwargs: dict = {"causal": True, "softmax_scale": softmax_scale}
-        window_size_left = getattr(self, "window_size_left", None)
 
-        if window_size_left is not None:
-            kwargs["window_size"] = (window_size_left - 1, 0)
+        sliding_window = getattr(self, "sliding_window", None)
+        if sliding_window is not None:
+            kwargs["window_size"] = (sliding_window - 1, 0)
+
         if self._flash_attn_version == 4:
             # FA4's flash_attn_varlen_func has qv as the 4th positional arg,
             # so cu_seqlens must be passed as keyword args to avoid misalignment.
@@ -147,10 +148,9 @@ class FlashAttentionCore(nn.Module):
             # Non-varlen: q/k/v are [bs, sl, nh, hdim]; FA returns same shape.
 
             window_size = (-1, -1)
-            window_size_left = getattr(self, "window_size_left", None)
-
-            if window_size_left is not None:
-                window_size = (window_size_left - 1, 0)
+            sliding_window = getattr(self, "sliding_window", None)
+            if sliding_window is not None:
+                window_size = (sliding_window - 1, 0)
 
             out = self._flash_attn_call(
                 query_states,
@@ -484,9 +484,9 @@ def substitute_ring_attn(
         from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
 
         window_size = (-1, -1)
-        window_size_left = getattr(self, "window_size_left", None)
-        if window_size_left is not None:
-            window_size = (window_size_left - 1, 0)
+        sliding_window = getattr(self, "sliding_window", None)
+        if sliding_window is not None:
+            window_size = (sliding_window - 1, 0)
 
         out = ring_func(
             q,
