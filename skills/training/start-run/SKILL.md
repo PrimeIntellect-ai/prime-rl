@@ -93,9 +93,8 @@ The fake R3 debug env can simulate slow heterogeneous rollouts with env args:
 id = "fake-r3-trajectory"
 
 [train.env.args]
-rollout_delay_distribution = "choice"
-rollout_delay_choices_seconds = [60, 600]
-rollout_delay_seed = 123
+rollout_delay_mean_seconds = 300
+rollout_delay_std_seconds = 240
 ```
 
 - Config: `OrchestratorConfig` (`packages/prime-rl-configs/src/prime_rl/configs/orchestrator.py`)
