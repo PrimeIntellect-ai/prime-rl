@@ -86,6 +86,11 @@ ARG TARGETARCH
 COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
 RUN if [ "$TARGETARCH" = "arm64" ]; then /app/scripts/docker-arm64-post-install.sh; fi
 
+# CUDA 13 runtime libs source
+FROM nvidia/cuda:13.0.1-runtime-ubuntu24.04 AS cuda13
+RUN mkdir -p /cu13 && cp -d $(find /usr/local \
+        -name 'libcudart.so.13*' -o -name 'libnvrtc.so.13*' -o -name 'libnvrtc-builtins.so.13*') /cu13/
+
 # Runtime image
 FROM nvidia/cuda:12.8.1-base-ubuntu24.04
 
@@ -120,24 +125,18 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# CUDA 12.8 toolkit
+# CUDA 12.8 toolkit (TileLang's runtime nvcc JIT) 
 COPY --from=builder /usr/local/cuda-12.8 /usr/local/cuda-12.8
-RUN ln -sfn /usr/local/cuda-12.8 /usr/local/cuda
+RUN ln -sfn /usr/local/cuda-12.8 /usr/local/cuda && test -x /usr/local/cuda/bin/nvcc
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH="/usr/local/cuda/bin:${PATH}"
 
 # CUDA 13 runtime libs for deep-gemm
-RUN apt-get update && apt-get install -y --no-install-recommends --allow-change-held-packages \
-        cuda-cudart-13-0 \
-        cuda-nvrtc-13-0 \
-    && { dirname "$(find /usr/local -name libcudart.so.13 | head -1)"; \
-         dirname "$(find /usr/local -name libnvrtc.so.13  | head -1)"; } \
-         | sort -u > /etc/ld.so.conf.d/cuda-13.conf \
+COPY --from=cuda13 /cu13/ /opt/cuda13/lib64/
+RUN echo /opt/cuda13/lib64 > /etc/ld.so.conf.d/cuda13.conf \
     && ldconfig \
     && ldconfig -p | grep -q libcudart.so.13 \
-    && ldconfig -p | grep -q libnvrtc.so.13 \
-    && apt-get clean autoclean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    && ldconfig -p | grep -q libnvrtc.so.13
 
 
 ARG USER_ID=1000
