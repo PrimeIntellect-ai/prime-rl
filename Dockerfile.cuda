@@ -86,6 +86,19 @@ ARG TARGETARCH
 COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
 RUN if [ "$TARGETARCH" = "arm64" ]; then /app/scripts/docker-arm64-post-install.sh; fi
 
+# Trim the CUDA toolkit to the nvcc-JIT essentials in a separate stage, so the runtime
+# COPY ships only the trimmed result (~1.5 GB) instead of the full ~6.6 GB. Drops the math
+# runtime libs (cublas/cusparse/cufft/cusolver/curand/npp/nvjpeg) and big static .a
+# archives since nvcc JIT (TileLang/FlashInfer build their own kernels) and torch
+# (uses pinned nvidia-* wheels) needs them. Keeps nvcc/nvvm/ptxas + headers +
+# libcudart/libnvrtc/libcudadevrt for JIT compile+link.
+FROM builder AS cuda-trim
+RUN find /usr/local/cuda-12.8/targets/*/lib \
+        \( -name 'libcublas*' -o -name 'libcusparse*' -o -name 'libcufft*' \
+           -o -name 'libcusolver*' -o -name 'libcurand*' -o -name 'libnpp*' \
+           -o -name 'libnvjpeg*' -o -name 'libnvblas*' \) -delete \
+    && find /usr/local/cuda-12.8 -name '*.a' ! -name 'libcudadevrt.a' ! -name 'libcudart_static.a' -delete
+
 # CUDA 13 runtime libs source
 FROM nvidia/cuda:13.0.1-runtime-ubuntu24.04 AS cuda13
 RUN mkdir -p /cu13 && cp -d $(find /usr/local \
@@ -125,8 +138,8 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# CUDA 12.8 toolkit (TileLang's runtime nvcc JIT) 
-COPY --from=builder /usr/local/cuda-12.8 /usr/local/cuda-12.8
+# CUDA 12.8 toolkit (TileLang's runtime nvcc JIT)
+COPY --from=cuda-trim /usr/local/cuda-12.8 /usr/local/cuda-12.8
 RUN ln -sfn /usr/local/cuda-12.8 /usr/local/cuda && test -x /usr/local/cuda/bin/nvcc
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH="/usr/local/cuda/bin:${PATH}"
