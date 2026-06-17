@@ -4,8 +4,9 @@ Each ``Env`` owns a v1 ``EnvServer`` (spawned as a child process, or an
 external one given by ``config.address``) and an ``EnvClient`` to drive it. The
 orchestrator never *runs* an environment: it asks the server for ``info``
 (``num_tasks`` + whether group scoring is needed), then runs rollouts purely by
-**task index**. The server returns a ``Trace`` (minus its computed fields) which we validate into a
-``Trace[WireTask]`` — a real ``vf.Trace`` (never a loose dict) whose task keeps the env's
+**task index**. The server returns a ``Trace`` (a plain ``model_dump`` — derived values are
+properties, not serialized) which we validate into a ``Trace[WireTask]`` — a real ``vf.Trace``
+(never a loose dict) whose task keeps the env's
 task-specific fields as extras (``WireTask`` allows them). The orchestrator never imports the
 env package: the env's *type* and *runtime* both live only in the server, and the orchestrator
 drives it purely by task index. (Nothing here reads typed env task fields — only ``task.idx``
@@ -175,7 +176,7 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return ROLLOUT_TYPE.model_validate(wire.to_wire())
+        return ROLLOUT_TYPE.model_validate(wire.model_dump())
 
     async def run_group(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
@@ -188,7 +189,7 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return [ROLLOUT_TYPE.model_validate(wire.to_wire()) for wire in wires]
+        return [ROLLOUT_TYPE.model_validate(wire.model_dump()) for wire in wires]
 
     def shutdown(self) -> None:
         if self._env_server_process is None:
