@@ -86,6 +86,18 @@ Use this entrypoint for orchestrator-only debug or ablation runs. It does not la
 uv run orchestrator @ configs/debug/orchestrator.toml --debug.no-inference --debug.no-trainer
 ```
 
+The fake R3 debug env can simulate slow heterogeneous rollouts with env args:
+
+```toml
+[[train.env]]
+id = "fake-r3-trajectory"
+
+[train.env.args]
+rollout_delay_distribution = "choice"
+rollout_delay_choices_seconds = [60, 600]
+rollout_delay_seed = 123
+```
+
 - Config: `OrchestratorConfig` (`packages/prime-rl-configs/src/prime_rl/configs/orchestrator.py`)
 - Entrypoint: `src/prime_rl/entrypoints/orchestrator.py`
 
