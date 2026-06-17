@@ -12,7 +12,9 @@ import torch.distributed as dist
 from prime_rl.trainer.models.layers.attn import (
     AttentionConfig,
     FlashAttention,
+    FlashAttentionCore,
     SDPAAttention,
+    SDPAAttentionCore,
     substitute_ring_attn,
 )
 
@@ -194,6 +196,64 @@ def generate_test_inputs(
     )
 
     return attn_inputs
+
+
+@pytest.mark.parametrize("window_size_left", [None, 32, 64])  # None = full attention
+def test_sliding_window_attention(window_size_left: int | None):
+
+    batch_size, seq_len, num_heads, head_dim = 2, 2048, 4, 64
+    dtype = torch.bfloat16
+    device = "cuda"
+
+    q = torch.randn(
+        batch_size, seq_len, num_heads, head_dim, device=device, dtype=dtype
+    )
+    k = torch.randn_like(q)
+    v = torch.randn_like(q)
+
+    config = AttentionConfig(
+        hidden_size=1024,
+        head_dim=head_dim,
+        num_attention_heads=num_heads,
+        num_key_value_heads=num_heads,
+        attention_bias=False,
+        use_qk_norm=False,
+        rms_norm_eps=1e-5,
+        scaling=None,
+        is_causal=True if window_size_left is None else False,
+        window_size_left=window_size_left,
+    )
+
+    flash_attn = FlashAttentionCore(config, flash_attn_version=2).to(device, dtype)
+    flash_out = flash_attn._attention_core(q, k, v)
+
+    # SDPA does NOT natively support sliding window, but you can construct the attention mask:
+    if window_size_left is not None:
+
+        mask = torch.full(
+            (seq_len, seq_len), float("-inf"), device=q.device, dtype=q.dtype
+        )
+        mask = torch.triu(mask, diagonal=1)  # causal
+
+        # sliding window: mask positions older than (window_size_left - 1) keys back
+        window = torch.tril(
+            torch.ones(seq_len, seq_len, device=q.device, dtype=torch.bool),
+            diagonal=-window_size_left,
+        )
+        mask.masked_fill_(window, float("-inf"))
+    else:
+        mask = None
+
+    sdpa_attn = SDPAAttentionCore(config).cuda().to(dtype)
+    sdpa_out = sdpa_attn._attention_core(
+        q.transpose(1, 2),
+        k.transpose(1, 2),
+        v.transpose(1, 2),
+        attn_mask=mask,
+    )
+
+    # Compare outputs
+    torch.testing.assert_close(flash_out, sdpa_out, rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize(("softmax_scale"), [(None), (1 / 15)])

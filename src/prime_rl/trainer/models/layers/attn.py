@@ -1,5 +1,5 @@
 import functools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import torch
@@ -46,6 +46,7 @@ class AttentionConfig:
     qk_norm_type: Literal["per_head", "per_layer"] = "per_head"
     output_bias: bool = False
     scaling: float | None = None
+    window_size_left: int | None = None
 
     def __post_init__(self):
         if self.scaling is None:
@@ -76,17 +77,20 @@ class FlashAttentionCore(nn.Module):
         super().__init__()
         self.scaling = config.scaling
         self.is_causal = config.is_causal
+        self.window_size_left = config.window_size_left
 
         self._flash_attn_version = flash_attn_version
-        self.att_core_func = self._funcs[flash_attn_version]
-        self.func = self._funcs_varlen[flash_attn_version]
-        self._flash_attn_call = self.func
-        
-        if self._flash_attn_version == 4:
-            self._flash_attn_call = torch._dynamo.disable(self.func)
-            self.att_core_func = torch._dynamo.disable(self.att_core_func)
+        self.func1 = self._funcs[flash_attn_version]
+        self.func2 = self._funcs_varlen[flash_attn_version]
 
-    def _fa_installed(self):
+        self._flash_attn_call = self.func1
+        self._varlen_flash_attn_call = self.func2
+
+        if self._flash_attn_version == 4:
+            self._flash_attn_call = torch._dynamo.disable(self.func1)
+            self._varlen_flash_attn_call = torch._dynamo.disable(self.func2)
+
+    def _fa_installed(self) -> bool:
         """Checks that flash attention is installed."""
         return self._funcs_varlen[self._flash_attn_version] is not None
 
@@ -105,17 +109,18 @@ class FlashAttentionCore(nn.Module):
         """
 
         kwargs: dict = {"causal": True, "softmax_scale": softmax_scale}
-        sliding_window = getattr(self, "sliding_window", None)
-        if sliding_window is not None:
-            kwargs["window_size"] = (sliding_window - 1, 0)
+        window_size_left = getattr(self, "window_size_left", None)
+
+        if window_size_left is not None:
+            kwargs["window_size"] = (window_size_left - 1, 0)
         if self._flash_attn_version == 4:
             # FA4's flash_attn_varlen_func has qv as the 4th positional arg,
             # so cu_seqlens must be passed as keyword args to avoid misalignment.
             kwargs["cu_seqlens_q"] = cu_seqlens
             kwargs["cu_seqlens_k"] = cu_seqlens
-            out = self._flash_attn_call(q, k, v, **kwargs)
+            out = self._varlen_flash_attn_call(q, k, v, **kwargs)
         else:
-            out = self._flash_attn_call(
+            out = self._varlen_flash_attn_call(
                 q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs
             )
         if isinstance(out, tuple):
@@ -137,14 +142,23 @@ class FlashAttentionCore(nn.Module):
             softmax_scale = self.scaling
 
         bs = query_states.shape[0]
+
         if cu_seqlens is None:
             # Non-varlen: q/k/v are [bs, sl, nh, hdim]; FA returns same shape.
-            out = self.att_core_func(
+
+            window_size = (-1, -1)
+            window_size_left = getattr(self, "window_size_left", None)
+
+            if window_size_left is not None:
+                window_size = (window_size_left - 1, 0)
+
+            out = self._flash_attn_call(
                 query_states,
                 key_states,
                 value_states,
                 causal=True,
                 softmax_scale=softmax_scale,
+                window_size=window_size,
             )
             if isinstance(out, tuple):
                 # 'fa4' returns tuple
@@ -188,8 +202,12 @@ class SDPAAttentionCore(nn.Module):
         key_states: torch.Tensor,
         value_states: torch.Tensor,
         softmax_scale: int | None = None,
+        attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-
+        """SDPA Attention wrapper
+        Inputs: q,k,v - [bs, nh, sl, hdim]
+        Returns: out - [bs, sl, nh, hdim]
+        """
         if softmax_scale is None:
             softmax_scale = self.scaling
 
@@ -201,8 +219,12 @@ class SDPAAttentionCore(nn.Module):
             value_states,
             scale=softmax_scale,
             is_causal=self.is_causal,
+            attn_mask=attn_mask,
         )
+
         out = out.transpose(1, 2).contiguous()
+
+        # returns out - [bs, sl, nh, hdim]
         return out.view(out.shape[0], out.shape[1], -1)
 
 
@@ -462,9 +484,9 @@ def substitute_ring_attn(
         from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
 
         window_size = (-1, -1)
-        sliding_window = getattr(self, "sliding_window", None)
-        if sliding_window is not None:
-            window_size = (sliding_window - 1, 0)
+        window_size_left = getattr(self, "window_size_left", None)
+        if window_size_left is not None:
+            window_size = (window_size_left - 1, 0)
 
         out = ring_func(
             q,

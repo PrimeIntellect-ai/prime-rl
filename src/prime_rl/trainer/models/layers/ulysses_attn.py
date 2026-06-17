@@ -157,9 +157,9 @@ def substitute_ulysses_attn(
         max_seqlen_full = ULYSSES_PARAMS["max_seqlen"]
 
         window_size = (-1, -1)
-        sliding_window = getattr(self, "sliding_window", None)
-        if sliding_window is not None:
-            window_size = (sliding_window - 1, 0)
+        window_size_left = getattr(self, "window_size_left", None)
+        if window_size_left is not None:
+            window_size = (window_size_left - 1, 0)
 
         return ulysses_flash_attn_varlen_func(
             flash_fn,
