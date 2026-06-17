@@ -11,3 +11,7 @@
 	path = deps/verifiers
 	url = git@github.com:PrimeIntellect-ai/verifiers.git
 	branch = feat/nano-as-v1
+[submodule "deps/prime"]
+	path = deps/prime
+	url = git@github.com:PrimeIntellect-ai/prime.git
+	branch = feat/nano-as-v1
