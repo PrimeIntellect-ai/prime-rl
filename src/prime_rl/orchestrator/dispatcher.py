@@ -492,7 +492,7 @@ class RolloutDispatcher:
             tb = traceback.format_exc()
             rollouts = [
                 Rollout(
-                    task=vf.Task(idx=task_idx, prompt=""),
+                    task=vf.Task(idx=task_idx, prompt=None),
                     errors=[vf.Error(type=type(exc).__name__, message=str(exc), traceback=tb)],
                     stop_condition="error",
                 )
@@ -563,7 +563,7 @@ class RolloutDispatcher:
         for _, meta in claimed:
             for _ in range(meta.rollout_count):
                 trace = Rollout(
-                    task=vf.Task(idx=task_idx, prompt=""),
+                    task=vf.Task(idx=task_idx, prompt=None),
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
                     stop_condition="error",
                 )
@@ -589,7 +589,7 @@ class RolloutDispatcher:
             unscheduled_cancelled = group.rollouts_to_schedule
             for _ in range(unscheduled_cancelled):
                 trace = Rollout(
-                    task=vf.Task(idx=task_idx, prompt=""),
+                    task=vf.Task(idx=task_idx, prompt=None),
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
                     stop_condition="error",
                 )
