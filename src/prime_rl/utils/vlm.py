@@ -105,6 +105,17 @@ def supports_packed_multimodal_training(model: nn.Module) -> bool:
     return bool(getattr(model, "supports_packed_multimodal_training", False))
 
 
+def supports_ulysses_vlm_cp_training(model: nn.Module) -> bool:
+    """Return whether the model can merge multimodal inputs before Ulysses CP sharding."""
+    for candidate in _iter_wrapped_modules(model):
+        supported = getattr(candidate, "supports_ulysses_vlm_cp_training", None)
+        prepare = getattr(candidate, "prepare_vlm_inputs_for_context_parallel", None)
+        if supported is not None:
+            return bool(supported) and callable(prepare)
+
+    return False
+
+
 def validate_multi_modal_pack(
     model: nn.Module,
     *,
@@ -156,3 +167,12 @@ def _resolve_attr(obj, dotted_path: str):
         if obj is None:
             return None
     return obj
+
+
+def _iter_wrapped_modules(model: nn.Module):
+    seen: set[int] = set()
+    current = model
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = getattr(current, "module", None)

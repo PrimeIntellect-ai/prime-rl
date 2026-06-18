@@ -1170,11 +1170,12 @@ def setup_model(
 
 def forward(
     model: nn.Module,
-    input_ids: Int[Tensor, "batch seq"],
-    position_ids: Int[Tensor, "batch seq"],
+    input_ids: Int[Tensor, "batch seq"] | None,
+    position_ids: Int[Tensor, "batch seq"] | None,
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
+    inputs_embeds: Tensor | None = None,
     # Generic multimodal kwargs (e.g. {"pixel_values": ...,
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
     # for Gemma3). Passed straight through to ``model(**kwargs)`` so
@@ -1184,13 +1185,22 @@ def forward(
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     seq_lens: Int[Tensor, "segments"] | None = None,
+    seq_lens_are_global: bool = False,
 ) -> PrimeLmOutput:
+    if input_ids is None and inputs_embeds is None:
+        raise ValueError("forward requires either input_ids or inputs_embeds")
+    if inputs_embeds is not None and mm_kwargs:
+        raise ValueError("forward does not support passing both inputs_embeds and mm_kwargs")
+
     # Build kwargs for model forward
     kwargs = {
-        "input_ids": input_ids,
         "labels": labels,
         "temperature": temperature,
     }
+    if inputs_embeds is None:
+        kwargs["input_ids"] = input_ids
+    else:
+        kwargs["inputs_embeds"] = inputs_embeds
 
     if mm_kwargs:
         # Forward the per-model multimodal tensors verbatim, plus the
@@ -1208,6 +1218,10 @@ def forward(
             kwargs["seq_lens"] = seq_lens
     else:
         kwargs["position_ids"] = position_ids
+        if seq_lens is not None:
+            kwargs["seq_lens"] = seq_lens
+        if seq_lens_are_global:
+            kwargs["seq_lens_are_global"] = True
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
@@ -1219,3 +1233,38 @@ def forward(
         return cast_float_and_contiguous(out)
 
     return cast_float_and_contiguous(PrimeLmOutput(logits=out.logits))
+
+
+def prepare_vlm_inputs_for_context_parallel(
+    model: nn.Module,
+    *,
+    input_ids: Tensor,
+    position_ids: Tensor | None,
+    mm_kwargs: dict[str, Tensor],
+    mm_token_type_ids: Tensor | None,
+    seq_lens: Tensor | None,
+) -> tuple[Tensor, Tensor]:
+    for candidate in _iter_wrapped_modules(model):
+        method = getattr(candidate, "prepare_vlm_inputs_for_context_parallel", None)
+        if callable(method):
+            return method(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                mm_token_type_ids=mm_token_type_ids,
+                seq_lens=seq_lens,
+                **mm_kwargs,
+            )
+
+    raise NotImplementedError(
+        "This VLM model does not implement prepare_vlm_inputs_for_context_parallel; "
+        "context parallelism is only supported for models with an explicit pre-shard multimodal merge path."
+    )
+
+
+def _iter_wrapped_modules(model: nn.Module):
+    seen: set[int] = set()
+    current = model
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = getattr(current, "module", None)

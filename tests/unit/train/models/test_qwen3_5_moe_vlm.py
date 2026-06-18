@@ -1,5 +1,10 @@
+import os
+import socket
+
 import pytest
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 from transformers import AutoConfig
 from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
@@ -8,16 +13,23 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
 from prime_rl.trainer.model import can_reinit_empty_buffers
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
+from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
 
 
-def _tiny_vlm_config():
+def _tiny_vlm_config(attn_implementation="sdpa"):
     """HF composite config shrunk for unit testing."""
-    config = AutoConfig.from_pretrained("Qwen/Qwen3.5-35B-A3B", trust_remote_code=True, attn_implementation="sdpa")
+    config = AutoConfig.from_pretrained(
+        "Qwen/Qwen3.5-35B-A3B",
+        trust_remote_code=True,
+        attn_implementation=attn_implementation,
+    )
     config.use_cache = False
+    config._attn_implementation = attn_implementation
     tc = config.text_config
+    tc._attn_implementation = attn_implementation
     tc.vocab_size = 256
     tc.hidden_size = 256
     tc.num_hidden_layers = 2
@@ -67,6 +79,111 @@ def _make_mm_token_type_ids(input_ids, image_token_id):
     mm_token_type_ids = torch.zeros_like(input_ids)
     mm_token_type_ids[input_ids == image_token_id] = 1
     return mm_token_type_ids
+
+
+def _free_tcp_port() -> int:
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def _make_packed_two_image_batch(config, *, dtype=torch.bfloat16):
+    device = "cuda"
+    vc = config.vision_config
+    patch_dim = vc.in_channels * vc.temporal_patch_size * vc.patch_size * vc.patch_size
+    image_grid_thw = torch.tensor([[1, 4, 4], [1, 4, 4]], device=device)
+    num_patches = int(image_grid_thw.prod(dim=1).sum().item())
+    pixel_values = torch.randn(num_patches, patch_dim, device=device, dtype=dtype)
+
+    image_tokens = torch.full((1, 4), config.image_token_id, device=device)
+    segment0 = torch.cat(
+        [torch.tensor([[10, 11]], device=device), image_tokens, torch.tensor([[12, 13]], device=device)], dim=1
+    )
+    segment1 = torch.cat(
+        [torch.tensor([[20, 21]], device=device), image_tokens, torch.tensor([[22, 23]], device=device)], dim=1
+    )
+    input_ids = torch.cat([segment0, segment1], dim=1)
+    return {
+        "input_ids": input_ids,
+        "pixel_values": pixel_values,
+        "image_grid_thw": image_grid_thw,
+        "mm_token_type_ids": _make_mm_token_type_ids(input_ids, config.image_token_id),
+        "seq_lens": torch.tensor([segment0.shape[1], segment1.shape[1]], device=device),
+        "temperatures": torch.ones_like(input_ids, dtype=torch.float32),
+    }
+
+
+def _qwen35_vlm_ulysses_equivalence_worker(rank: int, port: int):
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = str(port)
+    dist.init_process_group("gloo", rank=rank, world_size=2)
+    try:
+        torch.cuda.set_device(0)
+        pytest.importorskip("flash_attn")
+        from prime_rl.trainer.models.layers.ulysses_attn import substitute_ulysses_attn
+
+        config = _tiny_vlm_config(attn_implementation="flash_attention_2")
+        config.text_config.layer_types = ["full_attention"] * config.text_config.num_hidden_layers
+
+        torch.manual_seed(2026)
+        batch = _make_packed_two_image_batch(config)
+        input_ids = batch["input_ids"]
+
+        torch.manual_seed(1234)
+        with torch.device("cuda"), default_dtype(torch.bfloat16):
+            baseline = Qwen3_5MoeForCausalLM(config)
+        inject_prime_lm_head(baseline)
+        baseline.eval()
+
+        with torch.no_grad():
+            baseline_logits = baseline(
+                input_ids=input_ids,
+                pixel_values=batch["pixel_values"],
+                image_grid_thw=batch["image_grid_thw"],
+                mm_token_type_ids=batch["mm_token_type_ids"],
+                seq_lens=batch["seq_lens"],
+            )["logits"].float()
+
+        torch.manual_seed(1234)
+        with torch.device("cuda"), default_dtype(torch.bfloat16):
+            cp_model = Qwen3_5MoeForCausalLM(config)
+        inject_prime_lm_head(cp_model)
+        cp_model.eval()
+
+        substitute_ulysses_attn(dist.group.WORLD, attn_impl="flash_attention_2")
+        full_inputs_embeds, full_position_ids = cp_model.prepare_vlm_inputs_for_context_parallel(
+            input_ids=input_ids,
+            pixel_values=batch["pixel_values"],
+            image_grid_thw=batch["image_grid_thw"],
+            mm_token_type_ids=batch["mm_token_type_ids"],
+            seq_lens=batch["seq_lens"],
+        )
+        setup_cp_attention_params(
+            full_position_ids,
+            cp_group=dist.group.WORLD,
+            cp_style="ulysses",
+            seq_lens=batch["seq_lens"],
+        )
+
+        local_inputs_embeds = shard_for_cp(full_inputs_embeds, cp_rank=rank, cp_world_size=2)
+        local_position_ids = shard_position_ids_for_cp(full_position_ids, cp_rank=rank, cp_world_size=2)
+
+        with torch.no_grad():
+            local_logits = cp_model(
+                inputs_embeds=local_inputs_embeds,
+                position_ids=local_position_ids,
+                seq_lens=batch["seq_lens"],
+                seq_lens_are_global=True,
+            )["logits"].float()
+
+        gathered = [torch.empty_like(local_logits) for _ in range(2)]
+        dist.all_gather(gathered, local_logits)
+        cp_logits = torch.cat(gathered, dim=1)
+        torch.testing.assert_close(cp_logits, baseline_logits, rtol=5e-2, atol=5e-2)
+    finally:
+        dist.destroy_process_group()
 
 
 def test_vlm_forward():
@@ -123,6 +240,19 @@ def test_vlm_backward():
 
     assert model.model.language_model.embed_tokens.weight.grad is not None
     assert model.model.visual.patch_embed.proj.weight.grad is not None
+
+
+def test_vlm_ulysses_cp_matches_unsharded_packed_multimodal_forward():
+    pytest.importorskip("flash_attn")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for Ulysses VLM CP equivalence")
+
+    mp.start_processes(
+        _qwen35_vlm_ulysses_equivalence_worker,
+        args=(_free_tcp_port(),),
+        nprocs=2,
+        start_method="spawn",
+    )
 
 
 def test_vlm_weight_load_from_hf():
