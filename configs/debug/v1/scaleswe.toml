@@ -39,6 +39,9 @@ name = "Qwen/Qwen3.6-35B-A3B"
 
 [trainer.model]
 cp = 2
+# Qwen3.6 is a hybrid/linear-attention model — ring CP is unsupported; ulysses
+# all-to-all on Q/K/V works with the non-softmax kernels.
+cp_style = "ulysses"
 
 [trainer.model.ac]
 freq = 1
@@ -88,6 +91,9 @@ enable_prefix_caching = true
 
 [inference.model]
 max_model_len = 65536
+# Qwen3.6 is not matched by the auto tool-parser resolver; set explicitly so vLLM
+# enables auto tool choice (the scaleswe SWE agent sends tool_choice="auto").
+tool_call_parser = "qwen3_coder"
 
 [inference.parallel]
 dp = 2
