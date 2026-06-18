@@ -869,8 +869,6 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.env:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
-            assert env_cfg.algo is not None  # materialized by inherit_env_algorithms
-            env_cfg.algo.warn_group_size(env_cfg.group_size, env_cfg.resolved_name)
 
         # Resolve train env num_workers from max_inflight_rollouts
         for env_cfg in self.train.env:
