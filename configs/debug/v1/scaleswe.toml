@@ -67,6 +67,19 @@ harness = { id = "rlm", runtime = { type = "modal" } }
 
 [orchestrator.prime_monitor]
 
+# --- Eval: SWE-Bench Verified every 20 steps (like the v0 rlm_swe run), on the prime runtime ---
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+# SWE-bench Verified via the harbor swebench-verified-v1 taskset; rlm agent on the prime runtime,
+# pulling prime's prebuilt instance images (use_prime_registry needs GCP-cred prime sandboxes).
+taskset = { id = "swebench-verified-v1", use_prime_registry = true }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["scaleswe-qwen36-35b-a3b"] } }
+timeout = { rollout = 3600 }
+
 # --- Inference ---
 
 [inference]
