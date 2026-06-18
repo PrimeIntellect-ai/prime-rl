@@ -36,12 +36,19 @@ name = "Qwen/Qwen3.6-35B-A3B"
 # --- Trainer ---
 
 [trainer]
+# NCCL collective watchdog timeout — raised from default 600s: scaleswe's slow
+# multi-node startup (step-0 swebench eval + slow first SWE batch) was tripping the
+# 600s _ALLGATHER_BASE watchdog → SIGABRT trainer crash.
+dist_timeout_seconds = 3600
 
 [trainer.model]
 cp = 2
 # Qwen3.6 is a hybrid/linear-attention model — ring CP is unsupported; ulysses
 # all-to-all on Q/K/V works with the non-softmax kernels.
 cp_style = "ulysses"
+# Chunk the LM head over tokens to avoid materializing the full [seq, vocab] logits
+# (65k seq × large vocab) — big activation-memory saver. 1024 matches the SWE configs.
+fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
 freq = 1
@@ -66,22 +73,11 @@ temperature = 1.0
 name = "scaleswe"
 # v1 scaleswe SWE taskset; rlm agent in a modal sandbox using the row's injected Docker image.
 taskset = { id = "scaleswe-v1" }
-harness = { id = "rlm", runtime = { type = "modal" } }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["scaleswe-qwen36-35b-a3b"] } }
 
 [orchestrator.prime_monitor]
 
 # --- Eval: SWE-Bench Verified every 20 steps (like the v0 rlm_swe run), on the prime runtime ---
-
-[orchestrator.eval]
-interval = 20
-
-[[orchestrator.eval.env]]
-name = "swebench-verified"
-# SWE-bench Verified via the harbor swebench-verified-v1 taskset; rlm agent on the prime runtime,
-# pulling prime's prebuilt instance images from prod-sandbox/swebench/sweb.eval.*.
-taskset = { id = "swebench-verified-v1", use_prime_registry = true }
-harness = { id = "rlm", runtime = { type = "prime", labels = ["scaleswe-qwen36-35b-a3b"] } }
-timeout = { rollout = 3600 }
 
 # --- Inference ---
 
