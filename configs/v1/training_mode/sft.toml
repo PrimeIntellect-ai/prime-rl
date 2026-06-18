@@ -31,7 +31,7 @@ max_completion_tokens = 128
 
 [[orchestrator.train.env]]
 taskset = { id = "reverse-text-v1" }
-harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
+harness = { id = "default", runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
 interval = 1
@@ -42,7 +42,7 @@ max_completion_tokens = 128
 
 [[orchestrator.eval.env]]
 taskset = { id = "reverse-text-v1" }
-harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
+harness = { id = "default", runtime = { type = "subprocess" } }
 
 [orchestrator.teacher.model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
