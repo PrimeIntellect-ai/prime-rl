@@ -74,10 +74,9 @@ interval = 20
 
 [[orchestrator.eval.env]]
 name = "swebench-verified"
-# SWE-bench Verified via the harbor swebench-verified-v1 taskset; rlm agent on the prime runtime.
-# Public Docker Hub images (swebench/sweb.eval.*) — those instance images aren't mirrored into the
-# prime registry, so use_prime_registry stays off (flip it on once they're mirrored to prod-sandbox).
-taskset = { id = "swebench-verified-v1" }
+# SWE-bench Verified via the harbor swebench-verified-v1 taskset; rlm agent on the prime runtime,
+# pulling prime's prebuilt instance images from prod-sandbox/swebench/sweb.eval.*.
+taskset = { id = "swebench-verified-v1", use_prime_registry = true }
 harness = { id = "rlm", runtime = { type = "prime", labels = ["scaleswe-qwen36-35b-a3b"] } }
 timeout = { rollout = 3600 }
 
