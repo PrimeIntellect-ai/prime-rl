@@ -14,8 +14,11 @@ class _CaptureModel(nn.Module):
 
     def forward(self, **kwargs):
         self.kwargs = kwargs
-        input_ids = kwargs["input_ids"]
-        return {"logits": torch.zeros(*input_ids.shape, 4)}
+        if "input_ids" in kwargs:
+            shape = kwargs["input_ids"].shape
+        else:
+            shape = kwargs["inputs_embeds"].shape[:2]
+        return {"logits": torch.zeros(*shape, 4)}
 
 
 def test_forward_passes_renderer_mm_token_type_ids_through():
@@ -102,3 +105,26 @@ def test_forward_strips_position_ids_and_forwards_seq_lens_for_mrope_vlm():
     assert model.kwargs is not None
     assert "position_ids" not in model.kwargs
     torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
+
+
+def test_forward_accepts_premerged_inputs_embeds_for_vlm_context_parallel():
+    model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
+    inputs_embeds = torch.randn(1, 4, 8)
+    position_ids = torch.arange(12).view(3, 1, 4)
+    seq_lens = torch.tensor([2, 2])
+
+    forward(
+        model,
+        None,
+        position_ids,
+        inputs_embeds=inputs_embeds,
+        seq_lens=seq_lens,
+        seq_lens_are_global=True,
+    )
+
+    assert model.kwargs is not None
+    assert "input_ids" not in model.kwargs
+    torch.testing.assert_close(model.kwargs["inputs_embeds"], inputs_embeds)
+    torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
+    torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
+    assert model.kwargs["seq_lens_are_global"] is True

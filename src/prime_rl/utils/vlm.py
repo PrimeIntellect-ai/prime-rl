@@ -99,6 +99,17 @@ def supports_packed_multimodal_training(model: nn.Module) -> bool:
     return False
 
 
+def supports_ulysses_vlm_cp_training(model: nn.Module) -> bool:
+    """Return whether the model can merge multimodal inputs before Ulysses CP sharding."""
+    for candidate in _iter_wrapped_modules(model):
+        supported = getattr(candidate, "supports_ulysses_vlm_cp_training", None)
+        prepare = getattr(candidate, "prepare_vlm_inputs_for_context_parallel", None)
+        if supported is not None:
+            return bool(supported) and callable(prepare)
+
+    return False
+
+
 def get_packed_mm_disabled_reasons(
     model: nn.Module,
     *,
@@ -106,6 +117,7 @@ def get_packed_mm_disabled_reasons(
     attn_impl: str,
     cp_enabled: bool,
     cp_size: int | None = None,
+    cp_style: str | None = None,
 ) -> list[str]:
     """Return reasons multimodal packing should be disabled for this runtime."""
     reasons = []
@@ -115,7 +127,8 @@ def get_packed_mm_disabled_reasons(
         reasons.append("model_support=false")
     if attn_impl not in PACKED_MM_ATTN_IMPLS:
         reasons.append(f"attn={attn_impl}")
-    if cp_enabled:
+    cp_supported = cp_style == "ulysses" and supports_ulysses_vlm_cp_training(model)
+    if cp_enabled and not cp_supported:
         cp_label = cp_size if cp_size is not None else "enabled"
         reasons.append(f"cp={cp_label}")
     return reasons

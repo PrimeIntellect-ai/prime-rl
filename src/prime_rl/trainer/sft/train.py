@@ -142,7 +142,7 @@ def train(config: SFTConfig):
     if parallel_dims.cp_enabled:
         from prime_rl.utils.cp import assert_cp_style_supports_model
 
-        assert_cp_style_supports_model(config.model.cp_style, model)
+        assert_cp_style_supports_model(config.model.cp_style, model, cp_world_size=parallel_dims.cp)
         # sparse MLA is softmax (works with both ring and ulysses).
         setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
         # Linear-attn / Mamba layers are only configured under ulysses; with ring
