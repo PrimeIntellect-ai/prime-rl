@@ -29,7 +29,7 @@ seq_len = 8192
 [[orchestrator.train.env]]
 name = "hendrycks-math"
 taskset = { id = "math-env-v1", dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
-harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
+harness = { id = "default", runtime = { type = "subprocess" } }
 timeout = { scoring = 10 }
 
 [orchestrator.eval]
@@ -38,7 +38,7 @@ interval = 50
 [[orchestrator.eval.env]]
 name = "aime2024"
 taskset = { id = "aime24-v1" }
-harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
+harness = { id = "default", runtime = { type = "subprocess" } }
 timeout = { scoring = 10 }
 group_size = 32
 
