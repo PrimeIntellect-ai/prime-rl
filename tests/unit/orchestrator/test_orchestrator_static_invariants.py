@@ -174,7 +174,7 @@ def test_eval_path_reaches_debate_step_metrics():
     assert len(calls) == 1
     prefix_kw = _call_kw(calls[0], "prefix")
     assert prefix_kw is not None
-    assert ast.unparse(prefix_kw.value) == "f'eval/{batch.env_name}/debate'"
+    assert ast.unparse(prefix_kw.value) == "'eval/debate'"
     monitor_kw = _call_kw(calls[0], "monitor")
     assert monitor_kw is not None
     assert ast.unparse(monitor_kw.value) == "self.monitor"

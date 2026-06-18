@@ -58,8 +58,18 @@ def is_baseline_config(path: Path) -> bool:
 
 def is_composed_config_layer(path: Path) -> bool:
     """Composition overlays are valid only when loaded after a base config."""
-    return path.parts[:3] == ("configs", "sft", "overrides") or (
-        path.parts[:2] == ("configs", "sft") and path.name.startswith("isambard_")
+    # Debate run packs are layered: configs/debate/base.toml holds the shared
+    # orchestrator/broadcast settings (no [trainer]); debaters/* and judges/* are
+    # member overlays. Only the composed configs/debate/generated/* are complete
+    # standalone entrypoints. The layers are @-composed at launch, so they cannot
+    # parse alone -- skip them like the sft overlays.
+    debate_layer = path.parts[:2] == ("configs", "debate") and (
+        path.name == "base.toml" or path.parts[2:3] in (("debaters",), ("judges",))
+    )
+    return (
+        path.parts[:3] == ("configs", "sft", "overrides")
+        or (path.parts[:2] == ("configs", "sft") and path.name.startswith("isambard_"))
+        or debate_layer
     )
 
 
