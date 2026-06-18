@@ -139,6 +139,19 @@ class MetricsBuilder:
             "step": step,
         }
 
+        # Reward-penalty metrics: only emitted when a `penalize` filter fired
+        # somewhere in the batch (keeps dashboards clean otherwise)
+        penalized_names = sorted({name for r in rollouts for name in r.reward_penalties})
+        for name in penalized_names:
+            to_log[f"filters/all/{name}_penalized"] = sum(1.0 for r in rollouts if name in r.reward_penalties) / max(
+                num_rollouts, 1
+            )
+        if any(r.raw_reward is not None for r in rollouts):
+            raw_rewards = pd.Series([r.reward if r.raw_reward is None else r.raw_reward for r in rollouts])
+            to_log["raw_reward/all/mean"] = raw_rewards.mean()
+            to_log["raw_reward/all/max"] = raw_rewards.max()
+            to_log["raw_reward/all/min"] = raw_rewards.min()
+
         # Per-env metrics
         per_env_columns = [
             "seq_len",

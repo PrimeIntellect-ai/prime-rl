@@ -34,7 +34,7 @@ type = "repetition"
 
 [[orchestrator.post_batch_filters]]
 type = "zero_advantage"
-enforce = false
+action = "monitor"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 64

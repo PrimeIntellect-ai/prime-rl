@@ -103,6 +103,11 @@ class FinishedRollout:
             if f.name == "filter_results":
                 out["filters"] = dict(val)
                 continue
+            # Only surface penalty metadata when a penalty actually fired
+            if f.name == "raw_reward" and val is None:
+                continue
+            if f.name == "reward_penalties" and not val:
+                continue
             out[f.name] = str(val) if isinstance(val, uuid.UUID) else val
         return out
 
@@ -113,6 +118,10 @@ class TrainRollout(FinishedRollout):
     advantage: float | None = None
     is_filtered: bool = False
     filter_results: dict[str, bool] = field(default_factory=dict)
+    raw_reward: float | None = None
+    """Original env reward, recorded only when a ``penalize`` filter changed ``reward``."""
+    reward_penalties: dict[str, dict] = field(default_factory=dict)
+    """Per-filter penalty metadata (``raw_reward`` / ``penalized_reward`` / ``detection_index``), keyed by filter name."""
 
 
 @dataclass

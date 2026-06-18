@@ -2,8 +2,9 @@
 
 1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
    dispatcher producing more rollouts). Errored rollouts skip this.
-2. ``process_group`` — filters errored rollouts, computes advantages over
-   survivors, runs the pre-batch filter pass.
+2. ``process_group`` — filters errored rollouts, runs the pre-advantage
+   pre-batch filter pass (``penalize`` reward transforms land before the baseline),
+   computes advantages over survivors, runs the post-advantage pass.
 3. ``process_batch`` — applies post-batch filter annotations and assembles
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
@@ -20,7 +21,7 @@ from collections import defaultdict
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages
 from prime_rl.orchestrator.envs import TrainEnvs
-from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
+from prime_rl.orchestrator.filters import RolloutFilter, apply_filters, split_filters
 from prime_rl.orchestrator.trajectories import (
     backfill_rollout_tokens,
     interleave_rollout,
@@ -170,8 +171,10 @@ class TrainSink:
 
     def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
-        when ``requires_group_scoring`` and any failed), assign advantages,
-        run pre-batch filters, append survivors to ``pending_batch``."""
+        when ``requires_group_scoring`` and any failed), run pre-advantage
+        pre-batch filters (so ``penalize`` reward transforms are visible to the
+        baseline), assign advantages, run post-advantage pre-batch filters,
+        append survivors to ``pending_batch``."""
         group = self.pending_groups.pop(group_id, [])
         if not group:
             return
@@ -196,7 +199,19 @@ class TrainSink:
             )
             return
 
+        # Pre-advantage filters run before advantage assignment so a
+        # `penalize` action's reward transform is visible to the group baseline —
+        # the penalized rollout can end up with a lower advantage than its
+        # peers. Dropped rollouts still participate in the baseline (reward
+        # untouched), matching prior behavior.
+        pre_advantage_filters, post_advantage_filters = split_filters(self.pre_filters)
+        if pre_advantage_filters:
+            apply_filters(pre_advantage_filters, survivors)
+
         assign_advantages(survivors, self.train_envs.get(env_name).advantage_fn)
+
+        if post_advantage_filters:
+            apply_filters(post_advantage_filters, survivors)
 
         # Propagate to the pre-tokenized samples so the orchestrator can
         # collect samples at ship time without re-walking rollouts. The env
@@ -211,8 +226,7 @@ class TrainSink:
                 sample.training_mode = self.config.training_mode
                 sample.completion_temperatures = [temperature] * len(sample.completion_ids)
 
-        if self.pre_filters:
-            apply_filters(self.pre_filters, survivors)
+        drop_filter_names = {f.name for f in self.pre_filters if f.action == "drop"}
         filtered_by_name: dict[str, int] = {}
         num_filtered = 0
         for r in survivors:
@@ -221,7 +235,7 @@ class TrainSink:
                 self.pre_filter_dropped += 1
                 num_filtered += 1
                 for name, hit in r.filter_results.items():
-                    if hit:
+                    if hit and name in drop_filter_names:
                         self.pre_filter_dropped_by_name[name] = self.pre_filter_dropped_by_name.get(name, 0) + 1
                         filtered_by_name[name] = filtered_by_name.get(name, 0) + 1
                 continue
@@ -264,6 +278,16 @@ class TrainSink:
 
         if self.post_filters:
             apply_filters(self.post_filters, cohort)
+            # A post-batch ``penalize`` filter transforms the rollout reward after
+            # ``process_group`` already stamped it onto the samples — re-sync
+            # so trainer-bound samples agree with the rollout reward used in
+            # metrics. Advantage is intentionally untouched: post-batch runs
+            # after advantage computation, so a penalty here is metadata-only.
+            for r in cohort:
+                if not r.reward_penalties:
+                    continue
+                for sample in r.samples:
+                    sample.reward = r.reward
 
         # Samples are pre-built by ``process_rollout``; ``process_group``
         # already set advantage/reward on each sample
