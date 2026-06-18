@@ -21,7 +21,6 @@ in ``setup()`` and drives them from ``main_loop()``.
 from __future__ import annotations
 
 import asyncio
-import ctypes
 import logging
 import os
 import time
@@ -72,6 +71,7 @@ from prime_rl.orchestrator.utils import (
     save_rollouts,
     set_default_executor,
     setup_student_inference_pool,
+    trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
@@ -482,10 +482,7 @@ class Orchestrator:
                 get_logger().success("Orchestrator finished.")
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced).")
-            try:
-                ctypes.CDLL("libc.so.6").malloc_trim(0)
-            except Exception as e:
-                get_logger().debug(f"malloc_trim(0) failed: {e}")
+            trim_process_memory()
 
     async def main_loop(self) -> None:
         """Consume ``FinishedRollout``\\ s from the dispatcher and route them
@@ -614,6 +611,7 @@ class Orchestrator:
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.update_dispatch_gate()
+        trim_process_memory()
 
         metrics = self.metrics.build(
             step=step,
