@@ -1361,6 +1361,23 @@ requires-dist = [
 provides-extras = ["dev", "test"]
 
 [[package]]
+name = "general-agent-v1"
+version = "0.1.0"
+source = { editable = "deps/verifiers/environments/general_agent_v1" }
+dependencies = [
+    { name = "filelock", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "filelock" },
+    { name = "pydantic" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "gepa"
 version = "0.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3666,6 +3683,7 @@ envs = [
     { name = "deepdive", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "deepwiki-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "general-agent", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "general-agent-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "glossary-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "gpqa", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "gsm8k-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3759,6 +3777,7 @@ requires-dist = [
     { name = "flash-attn-4", marker = "extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151" },
     { name = "flash-linear-attention", git = "https://github.com/fla-org/flash-linear-attention" },
     { name = "general-agent", marker = "extra == 'envs'", editable = "deps/research-environments/environments/general_agent" },
+    { name = "general-agent-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/general_agent_v1" },
     { name = "glossary-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/glossary_v1" },
     { name = "gpqa", marker = "extra == 'envs'", editable = "deps/research-environments/environments/gpqa" },
     { name = "gsm8k-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/gsm8k_v1" },

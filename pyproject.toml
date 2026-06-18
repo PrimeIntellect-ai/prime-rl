@@ -115,6 +115,7 @@ envs = [
     "wiki-search-v1",
     "wikispeedia-v1",
     "wordle-v1",
+    "general-agent-v1",
     "tasksets",
     "harnesses",
     "compact",
@@ -275,6 +276,7 @@ swelego-v1 = { path = "deps/verifiers/environments/swelego_v1", editable = true 
 wiki-search-v1 = { path = "deps/verifiers/environments/wiki_search_v1", editable = true }
 wikispeedia-v1 = { path = "deps/verifiers/environments/wikispeedia_v1", editable = true }
 wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
+general-agent-v1 = { path = "deps/verifiers/environments/general_agent_v1", editable = true }
 compact = { path = "deps/verifiers/environments/compact", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
