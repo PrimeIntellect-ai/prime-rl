@@ -719,12 +719,13 @@ class Orchestrator:
         reward_mean = sum(r.reward for r in batch.rollouts) / max(n_survivors, 1)
         max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
         turns_mean = sum(r.num_turns for r in batch.rollouts) / max(n_survivors, 1)
+        branches_mean = sum(r.num_branches for r in batch.rollouts) / max(n_survivors, 1)
         truncation_rate = sum(1 for r in batch.rollouts if r.is_truncated) / max(n_survivors, 1)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
             f"Trainable {n_trainable}/{n_survivors} ({trainable_rate:.1%}) | "
-            f"Turns {turns_mean:.1f} | Max Off-Policy {max_off_policy} | "
+            f"Turns {turns_mean:.1f} | Branches {branches_mean:.1f} | Max Off-Policy {max_off_policy} | "
             f"Error {error_rate:.1%} | Truncation {truncation_rate:.1%}"
         )
         if len(self.train_envs) <= 1:
@@ -743,10 +744,11 @@ class Orchestrator:
             env_reward = (sum(r.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
             env_max_off_policy = max((r.off_policy_steps for r in env_rollouts), default=0)
             env_turns = sum(r.num_turns for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
+            env_branches = sum(r.num_branches for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
             env_truncation = sum(1 for r in env_rollouts if r.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "
-                f"Turns {env_turns:.1f} | Max Off-Policy {env_max_off_policy} | "
+                f"Turns {env_turns:.1f} | Branches {env_branches:.1f} | Max Off-Policy {env_max_off_policy} | "
                 f"Error {env_error_rate:.1%} | Truncation {env_truncation:.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
@@ -780,11 +782,12 @@ class Orchestrator:
         error_rate = ((batch.metrics.n_cancelled + batch.metrics.n_errored) / n_total) if n_total else 0.0
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
+        branches_mean = sum(r.num_branches for r in batch.rollouts) / len(batch.rollouts)
 
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {batch.metrics.reward_mean:.4f} | "
-            f"Turns {batch.metrics.num_turns_mean:.1f} | "
+            f"Turns {batch.metrics.num_turns_mean:.1f} | Branches {branches_mean:.1f} | "
             f"Error {error_rate:.1%} | Truncation {batch.metrics.truncation_rate:.1%}"
         )
 
