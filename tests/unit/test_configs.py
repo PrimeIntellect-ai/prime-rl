@@ -167,36 +167,23 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_env_advantage_shorthand_assembles_own_algorithm():
+def test_env_algo_overrides_top_level():
     config = OrchestratorConfig.model_validate(
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
-            "algo": {"advantage": {"type": "echo"}},
-            "train": {"env": [{"id": "a", "advantage": {"type": "reward"}}, {"id": "b"}]},
+            "algo": {"type": "echo"},
+            "train": {"env": [{"id": "a", "algo": {"type": "reward"}}, {"id": "b"}]},
         }
     )
     env_a, env_b = config.train.env
-    # The shorthand makes env a assemble its own algorithm (default sampling +
-    # the given advantage); only env b inherits the top-level echo algorithm.
-    assert env_a.algo is not None and env_a.algo.advantage.type == "reward"
-    assert env_b.algo is not None and env_b.algo.advantage.type == "echo"
+    # Env a sets its own algorithm; only env b inherits the top-level echo algorithm.
+    assert env_a.algo is not None and env_a.algo.type == "reward"
+    assert env_b.algo is not None and env_b.algo.type == "echo"
 
-    # The shorthand is write-only sugar: resolved configs dump without it and round-trip.
+    # Resolved configs round-trip.
     dumped = config.model_dump(exclude_none=True)
-    assert "advantage" not in dumped and "advantage" not in dumped["train"]["env"][0]
     reloaded = OrchestratorConfig.model_validate(dumped)
-    assert reloaded.train.env[0].algo is not None and reloaded.train.env[0].algo.advantage.type == "reward"
-
-
-def test_advantage_shorthand_conflicts_with_explicit_algo_advantage():
-    with pytest.raises(ValidationError, match="Set one"):
-        OrchestratorConfig.model_validate(
-            {
-                "renderer": None,
-                "advantage": {"type": "reward"},
-                "algo": {"advantage": {"type": "grpo"}},
-            }
-        )
+    assert reloaded.train.env[0].algo is not None and reloaded.train.env[0].algo.type == "reward"
 
 
 def test_trainer_enable_token_export_cli_flag():

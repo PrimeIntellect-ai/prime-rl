@@ -10,7 +10,7 @@ turns the signal half into runtime objects (the sampling half is the env's
   scoring hooks (``score_rollout`` / ``score_group`` / ``score_batch``) and
   declares what it needs (loss component, a "teacher", ...). One instance per
   env, built by :func:`build_algorithm`. Custom credit assignment plugs in
-  through the ``custom`` advantage type (:class:`CustomAlgorithm` imports a
+  through the ``custom`` algorithm type (:class:`CustomAlgorithm` imports a
   user function by path).
 - ``base`` — the :class:`Algorithm` base class and the pipeline phase
   functions (:func:`finalize_rollout` / :func:`finalize_group` /
@@ -59,8 +59,8 @@ if TYPE_CHECKING:
     from prime_rl.configs.algorithm import AlgorithmConfig
     from prime_rl.utils.client import InferencePool
 
-# Runtime dispatch is keyed on the advantage type — it names the algorithm,
-# and each config class's defaults are its vetted parameterization.
+# Runtime dispatch is keyed on ``algo.type`` — it names the algorithm, and
+# each config class's defaults are its vetted parameterization.
 ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "grpo": GRPOAlgorithm,
     "echo": EchoAlgorithm,
@@ -74,11 +74,11 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
 
 
 def build_algorithm(config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None) -> Algorithm:
-    cls = ALGORITHM_CLASSES[config.advantage.type]
-    assert cls.action_loss_type == config.advantage.action_loss_type  # config and runtime declare in two places
-    # The bundle dissolves at construction: the Algorithm is the advantage
-    # component's runtime (its sibling Sampler interprets the sampling half).
-    return cls(config.advantage, policy_pool, renderer)
+    cls = ALGORITHM_CLASSES[config.type]
+    assert cls.action_loss_type == config.action_loss_type  # config and runtime declare in two places
+    # The Algorithm is the runtime of the algorithm config's training signal
+    # (its sibling Sampler interprets the sampling half).
+    return cls(config, policy_pool, renderer)
 
 
 __all__ = [

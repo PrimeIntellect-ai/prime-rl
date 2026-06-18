@@ -19,7 +19,7 @@ batch_size = 32
 group_size = 1
 
 # reverse-text's demo lives in the "answer" column.
-[orchestrator.algo.advantage]
+[orchestrator.algo]
 type = "opsd"
 model = "policy"
 demo_key = "answer"

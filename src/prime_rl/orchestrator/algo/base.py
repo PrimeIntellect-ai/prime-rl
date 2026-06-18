@@ -44,7 +44,7 @@ import asyncio
 from collections import defaultdict
 from typing import TYPE_CHECKING, ClassVar
 
-from prime_rl.configs.algorithm import ActionLossType, AdvantageConfig, FrozenModelConfig, ModelReference
+from prime_rl.configs.algorithm import ActionLossType, AlgorithmConfig, FrozenModelConfig, ModelReference
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.types import RolloutView
 from prime_rl.utils.logger import get_logger
@@ -71,8 +71,8 @@ async def connect_frozen_pool(config: FrozenModelConfig) -> InferencePool:
 
 class Algorithm:
     """Base class for one env's training algorithm — the runtime of the
-    bundle's ``advantage`` component (its sibling :class:`Sampler` interprets
-    ``sampling``).
+    algorithm config's per-token training signal (its sibling :class:`Sampler`
+    interprets the ``sampling`` half).
 
     Everything on this class is yours to override; the pipeline drives the
     compilation through the module-level phase functions below
@@ -105,15 +105,15 @@ class Algorithm:
     must read the result, accepting that it pays compute on rollouts that may
     then be filtered out.
 
-    Constructed with the advantage component it interprets plus the two
+    Constructed with the algorithm config it interprets plus the two
     host-owned resources: the policy pool and the policy's renderer (the
     canonical messages → token ids path; ``None`` under MITO)."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
     model_role: ClassVar[str | None] = None
 
-    def __init__(self, advantage: AdvantageConfig, policy_pool: InferencePool, renderer: Renderer | None):
-        self.advantage = advantage
+    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+        self.config = config
         self.policy_pool = policy_pool
         self.renderer = renderer
         self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown

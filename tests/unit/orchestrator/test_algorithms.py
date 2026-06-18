@@ -2,6 +2,7 @@ import asyncio
 import uuid
 from unittest.mock import MagicMock
 
+import pydantic
 import pytest
 import verifiers as vf
 
@@ -13,6 +14,14 @@ from prime_rl.transport.types import TrainingSample
 
 FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
 
+_ALGO = pydantic.TypeAdapter(AlgorithmConfig)
+
+
+def _build(**kwargs) -> AlgorithmConfig:
+    """Validate an algorithm config — ``algo.type`` is the discriminator (the
+    bundle IS the algorithm)."""
+    return _ALGO.validate_python(kwargs)
+
 
 def _ref_kind(ref):
     """Collapse a resolved reference to a comparable marker."""
@@ -20,7 +29,7 @@ def _ref_kind(ref):
 
 
 @pytest.mark.parametrize(
-    ("advantage_type", "model", "source", "advantage_model", "action_loss_type"),
+    ("algorithm_type", "teacher", "source", "model_ref", "action_loss_type"),
     [
         ("grpo", None, "policy", None, "rl"),
         ("max_rl", None, "policy", None, "rl"),
@@ -30,69 +39,72 @@ def _ref_kind(ref):
         ("echo", None, "policy", None, "rl"),
     ],
 )
-def test_type_defaults_are_the_vetted_algorithms(advantage_type, model, source, advantage_model, action_loss_type):
-    algo = AlgorithmConfig(advantage={"type": advantage_type}, model=model)
+def test_type_defaults_are_the_vetted_algorithms(algorithm_type, teacher, source, model_ref, action_loss_type):
+    kwargs = {"type": algorithm_type}
+    if teacher is not None:
+        kwargs["teacher"] = teacher
+    algo = _build(**kwargs)
     assert _ref_kind(algo.sampling.source) == source
-    assert algo.advantage.type == advantage_type
-    assert _ref_kind(getattr(algo.advantage, "model", None)) == advantage_model
-    assert algo.advantage.action_loss_type == action_loss_type
+    assert algo.type == algorithm_type
+    assert _ref_kind(getattr(algo, "model", None)) == model_ref
+    assert algo.action_loss_type == action_loss_type
 
 
 def test_echo_roles_replace_the_default_table():
-    algo = AlgorithmConfig(advantage={"type": "echo", "roles": {"user": {"alpha": 0.5}}})
-    assert algo.advantage.type == "echo"
-    assert algo.advantage.roles.user.alpha == 0.5
+    algo = _build(type="echo", roles={"user": {"alpha": 0.5}})
+    assert algo.type == "echo"
+    assert algo.roles.user.alpha == 0.5
     # Setting any role replaces the whole table: the tool default is gone
-    assert algo.advantage.roles.tool is None
+    assert algo.roles.tool is None
 
 
 def test_echo_defaults_to_tool_bodies():
-    algo = AlgorithmConfig(advantage={"type": "echo"})
-    assert algo.advantage.roles.tool.alpha == 0.1
-    assert algo.advantage.roles.system is None
-    assert algo.advantage.roles.user is None
-    assert algo.advantage.roles.assistant is None
+    algo = _build(type="echo")
+    assert algo.roles.tool.alpha == 0.1
+    assert algo.roles.system is None
+    assert algo.roles.user is None
+    assert algo.roles.assistant is None
 
 
 def test_echo_roles_require_at_least_one():
     with pytest.raises(ValueError, match="at least one role"):
-        AlgorithmConfig(advantage={"type": "echo", "roles": {}})
+        _build(type="echo", roles={})
 
 
 def test_opd_requires_teacher():
     with pytest.raises(ValueError, match="needs a teacher"):
-        AlgorithmConfig(advantage={"type": "opd"})
+        _build(type="opd")
 
 
 def test_sft_requires_teacher():
     with pytest.raises(ValueError, match="needs a teacher to sample rollouts from"):
-        AlgorithmConfig(advantage={"type": "sft"})
+        _build(type="sft")
 
 
-def test_teacher_aliases_model_shorthand():
-    algo = AlgorithmConfig.model_validate({"advantage": {"type": "opd"}, "teacher": FROZEN})
-    assert isinstance(algo.advantage.model, FrozenModelConfig)
-    assert algo.advantage.model.name == "org/ref-model"
+def test_teacher_folds_into_model():
+    algo = _build(type="opd", teacher=FROZEN)
+    assert isinstance(algo.model, FrozenModelConfig)
+    assert algo.model.name == "org/ref-model"
 
 
-def test_model_shorthand_without_target_errors():
-    with pytest.raises(ValueError, match="no component reference accepts it"):
-        AlgorithmConfig(model=FROZEN)
+def test_teacher_without_target_errors():
+    with pytest.raises(ValueError, match="references no model"):
+        _build(type="grpo", teacher=FROZEN)
 
 
-def test_model_shorthand_redundant_but_consistent_is_accepted():
-    algo = AlgorithmConfig(model=FROZEN, advantage={"type": "opd", "model": FROZEN})
-    assert isinstance(algo.advantage.model, FrozenModelConfig)
+def test_teacher_redundant_but_consistent_is_accepted():
+    algo = _build(type="opd", teacher=FROZEN, model=FROZEN)
+    assert isinstance(algo.model, FrozenModelConfig)
 
 
 def test_opd_rejects_policy():
     with pytest.raises(ValueError, match="degenerate"):
-        AlgorithmConfig(advantage={"type": "opd"}, model="policy")
+        _build(type="opd", model="policy")
 
 
 def test_rl_loss_type_incompatible_with_frozen_sampling():
     with pytest.raises(ValueError, match="sampling.source is a frozen model"):
-        AlgorithmConfig(sampling={"source": FROZEN}, advantage={"type": "grpo"})
+        _build(type="grpo", sampling={"source": FROZEN})
 
 
 def _make_sample(ce_weights: list[float] | None = None) -> TrainingSample:
@@ -200,10 +212,10 @@ def test_stamp_advantages_rejects_misaligned():
 
 
 def _echo_algorithm(roles: dict | None = None, filter_fn=None) -> EchoAlgorithm:
-    advantage: dict = {"type": "echo"}
+    kwargs: dict = {"type": "echo"}
     if roles is not None:
-        advantage["roles"] = roles
-    algo = EchoAlgorithm(AlgorithmConfig(advantage=advantage).advantage, MagicMock(), MagicMock())
+        kwargs["roles"] = roles
+    algo = EchoAlgorithm(_build(**kwargs), MagicMock(), MagicMock())
     algo.filter_fn = filter_fn
     return algo
 

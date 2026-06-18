@@ -28,10 +28,10 @@ This page covers the math and the configurable algorithmic components: the algor
 
 ## The Algorithm Abstraction
 
-A training algorithm in `prime-rl` is a bundle of two components, configured under `[orchestrator.algo]`:
+A training algorithm in `prime-rl` is configured under `[orchestrator.algo]`, where **`type` names the algorithm** (`grpo`, `opd`, `sft`, …) and the class defaults are its vetted setting. It has two parts:
 
 1. **Sampling** (`algo.sampling`) — how train rollouts are produced: which model generates them. `source` is a [model reference](#model-references): `"policy"` (the live policy, the default) or an inline frozen hosted model. Group sizing stays on the env config (`group_size`).
-2. **Advantage** (`algo.advantage`) — the per-token training signal: credit assignment and loss routing, fused. One mapping from a finalized rollout to per-token *(loss component, weight)* pairs — the credit a token gets and the loss that consumes it are two coordinates of the same output. Group-relative strategies compute credit on the orchestrator and ship per-token advantage streams; reference-KL strategies query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The strategy determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`) and what happens to env-provided observation tokens in multi-turn rollouts (masked out by default; `echo` trains on them with weighted CE).
+2. **The per-token training signal** — credit assignment and loss routing, fused; the algorithm's own parameters sit directly on `algo`. One mapping from a finalized rollout to per-token *(loss component, weight)* pairs — the credit a token gets and the loss that consumes it are two coordinates of the same output. Group-relative algorithms compute credit on the orchestrator and ship per-token advantage streams; reference-KL algorithms query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The `type` determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`) and what happens to env-provided observation tokens in multi-turn rollouts (masked out by default; `echo` trains on them with weighted CE).
 
 The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, ref_kl), each normalized by its own global token count; per-token streams ship on the wire (the `rl_weights` / `ce_weights` / `ref_kl_weights` component weights plus the `advantages` stream on each training sample) and the trainer just executes them. Adding an algorithm never touches the dispatcher, packer, or trainer hot path.
 
@@ -40,26 +40,26 @@ The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, r
 `prime-rl` hosts exactly one model: the trainable policy (`[orchestrator.model]`). Every other model an algorithm uses is an external OpenAI-compatible endpoint, declared *inline on the component that uses it*. A model reference is either the string `"policy"` (the live policy) or a frozen hosted model (`name` + `base_url`):
 
 ```toml
-[orchestrator.algo.advantage]
+[orchestrator.algo]
 type = "opd"
 
-[orchestrator.algo.teacher]   # alias for `model`; folds into advantage.model
+[orchestrator.algo.teacher]   # shorthand; folds into the slot opd declares (model)
 name = "Qwen/Qwen3-32B"
 base_url = ["http://localhost:8001/v1"]
 ```
 
-Model *roles* are labels the algorithm itself declares over these references — the distillation algorithms declare their reference's role as `teacher`, so `[orchestrator.algo.teacher]` parses as an alias for the `model` shorthand and validation errors speak the same language ("advantage 'opd' needs a teacher"). No role exists outside the algorithm that declares it: the dispatcher, sink, and trainer branch on liveness alone, never on what an algorithm calls a model.
+Model *roles* are labels the algorithm itself declares over these references — the distillation algorithms declare their reference's role as `teacher`, so `[orchestrator.algo.teacher]` is the shorthand for that slot and validation errors speak the same language ("algorithm 'opd' needs a teacher"). No role exists outside the algorithm that declares it: the dispatcher, sink, and trainer branch on liveness alone, never on what an algorithm calls a model.
 
-`algo.model` (alias: `algo.teacher`) is shorthand for the slot the advantage type declares for its reference — `advantage.model` for `opd` / `opsd`, `sampling.source` for `sft` (its teacher is the sampling source). A slot you didn't set takes the shorthand; an explicit reference that already equals it is accepted, a disagreeing one is an error. Set the component fields directly for multi-model setups.
+`algo.teacher` is shorthand for the slot the algorithm declares for its reference — `algo.model` for `opd` / `opsd`, `sampling.source` for `sft` (its teacher is the sampling source). A slot you didn't set takes the shorthand; an explicit reference that already equals it is accepted, a disagreeing one is an error. For `opd` / `opsd` you can also set `algo.model` directly; set the component fields directly for multi-model setups.
 
 Liveness is a property of the reference, not of any role: rollouts sampled from `"policy"` get version-salted prefix caches, carry sampling logprobs for importance ratios, and age off-policy as weights update; rollouts and scores from frozen models get a stable prefix cache and never go stale. Frozen models are externally hosted (`base_url` is required) — `prime-rl` never launches or updates them, and each env's algorithm builds its own client pool to the endpoints it declares.
 
 ### The Algorithms
 
-The advantage `type` names the algorithm, and each type's class defaults are its vetted setting — picking a type with no other keys IS the algorithm:
+The `algo.type` names the algorithm, and each type's class defaults are its vetted setting — picking a type with no other keys IS the algorithm:
 
 ```toml
-[orchestrator.algo.advantage]
+[orchestrator.algo]
 type = "grpo"  # the default
 ```
 
@@ -81,17 +81,17 @@ Every key beyond `type` is visibly your own assembly — there is no preset laye
 ```toml
 # echo on tool AND user feedback tokens, each at its own weight.
 # Setting any role replaces the whole table.
-[orchestrator.algo.advantage]
+[orchestrator.algo]
 type = "echo"
 
-[orchestrator.algo.advantage.roles.tool]
+[orchestrator.algo.roles.tool]
 alpha = 0.25
 
-[orchestrator.algo.advantage.roles.user]
+[orchestrator.algo.roles.user]
 alpha = 0.05
 
 # or a custom advantage strategy:
-# [orchestrator.algo.advantage]
+# [orchestrator.algo]
 # type = "custom"
 # import_path = "my_module.normalized_advantage"
 ```
@@ -99,7 +99,7 @@ alpha = 0.05
 Echo also takes an optional user-supplied token filter that narrows the role selection per rollout — e.g. dropping warning lines from tool output, or tokens the sampler found unlikely:
 
 ```toml
-[orchestrator.algo.advantage.filter]
+[orchestrator.algo.filter]
 import_path = "my_module.drop_warnings"
 kwargs = { patterns = ["WARNING"] }
 ```
@@ -118,7 +118,7 @@ Component compatibility is validated at config time: frozen-model sampling can o
 Both components resolve per environment. Each env inherits `[orchestrator.algo]` unless it sets its own, so a single run can mix algorithms across envs — e.g. GRPO on math, ECHO on a terminal env:
 
 ```toml
-[orchestrator.algo.advantage]
+[orchestrator.algo]
 type = "grpo"
 
 [[orchestrator.train.env]]
@@ -126,14 +126,14 @@ id = "math-env"     # inherits grpo
 
 [[orchestrator.train.env]]
 id = "terminal-env"
-advantage = { type = "echo" }   # shorthand: the env assembles its own algorithm
+algo = { type = "echo" }   # this env runs its own algorithm
 ```
 
 ### The Algorithm Classes
 
-At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_rl.orchestrator.sampler`) from the `sampling` component — the pool rollouts are generated from, and the home of future sampling strategies like replay buffers or branching — and one of the named algorithm classes in `prime_rl.orchestrator.algo` (one module per algorithm: `algo/grpo.py`, `algo/opd.py`, …) from the `advantage` component. Algorithm dispatch is keyed on `advantage.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
+At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_rl.orchestrator.sampler`) from the `sampling` component — the pool rollouts are generated from, and the home of future sampling strategies like replay buffers or branching — and one of the named algorithm classes in `prime_rl.orchestrator.algo` (one module per algorithm: `algo/grpo.py`, `algo/opd.py`, …) from the algorithm config. Algorithm dispatch is keyed on `algo.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
 
-| `advantage.type` | Class | hook(s) — stage |
+| `algo.type` | Class | hook(s) — stage |
 |---|---|---|
 | `grpo` | `GRPOAlgorithm` | `score_group`: group-norm credit (optional length penalty) |
 | `echo` | `EchoAlgorithm` | `score_rollout`: weighted ce on observation tokens; `score_group`: group-norm credit (inherited) |
@@ -152,7 +152,7 @@ Each class owns its hooks outright — reading one top to bottom reads the algor
 
 The pipeline drives the hooks through three module-level phase functions it never looks inside: `finalize_rollout(algorithm, rollout)` per arrival, `finalize_group(algorithm, rollouts)` per group (scoring + wire stamping; after this the records are frozen — groups die at stamping), and `finalize_batch(train_envs, rollouts)` per batch. Sample construction (interleaving) is pure pipeline — it records the `obs_spans` provenance for any algorithm that trains on env-provided tokens.
 
-Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`) and what it calls its reference model (`model_role`, e.g. `"teacher"`). Every class is constructed with its advantage config — the component it interprets; the bundle dissolves at construction — plus the two host-owned resources: the policy pool and the policy's renderer. Text → token ids always goes through the renderer, the same path the policy's own prompts take (`opsd` requires one, validated at config time). The pipeline only ever calls the phase functions — writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs. For pure credit assignment, no subclass is needed: `advantage.type = "custom"` imports a plain advantage function (see [Custom Advantage](#custom-advantage)); custom reference scoring means forking one of the named classes. Shared math (group normalization, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
+Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`) and what it calls its reference model (`model_role`, e.g. `"teacher"`). Every class is constructed with its algorithm config plus the two host-owned resources: the policy pool and the policy's renderer. Text → token ids always goes through the renderer, the same path the policy's own prompts take (`opsd` requires one, validated at config time). The pipeline only ever calls the phase functions — writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs. For pure credit assignment, no subclass is needed: `algo.type = "custom"` imports a plain advantage function (see [Custom Advantage](#custom-advantage)); custom reference scoring means forking one of the named classes. Shared math (group normalization, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
 
 ## Async / Off-Policy Training
 
@@ -273,7 +273,7 @@ Anything you put in `metrics` is averaged across sequences and logged with the o
 
 ## Advantage
 
-The advantage strategy is the `advantage` component of the [algorithm](#the-algorithm-abstraction) — every training signal is a per-token advantage stream, varying in evaluation site (orchestrator vs. trainer). `[orchestrator.advantage]` (and per-env `advantage = {...}`) is shorthand for `algo.advantage`. Types:
+The per-token training signal is set by `algo.type` and the [algorithm](#the-algorithm-abstraction)'s parameters — every signal is a per-token advantage stream, varying in evaluation site (orchestrator vs. trainer). The `algo.type` values:
 
 | Type | Component | Effect |
 |---|---|---|
@@ -295,10 +295,10 @@ This is intentionally simple — it does the right thing for most envs. Switch t
 Two built-in **length penalties** (`length_penalty` on the `grpo`-family strategies) can be layered on top to discourage rambling: `tokens` penalizes long completions by weighted token cost, `turns` penalizes long multi-turn rollouts by turn count.
 
 ```toml
-[orchestrator.advantage]
+[orchestrator.algo]
 type = "grpo"
 
-[orchestrator.advantage.length_penalty]
+[orchestrator.algo.length_penalty]
 type = "tokens"
 ```
 
@@ -319,7 +319,7 @@ def normalized_advantage(group, eps: float = 1e-8) -> list[float]:
 ```
 
 ```toml
-[orchestrator.advantage]
+[orchestrator.algo]
 type = "custom"
 import_path = "my_module.normalized_advantage"
 kwargs = { eps = 1e-8 }
@@ -349,7 +349,7 @@ Each per-token list must match the rollout's completion-token count exactly — 
 - `opsd` — SDFT: rebuild the prompt with an expert demonstration woven into the last user message (`template`, with `{question}` / `{demonstration}` placeholders), score the policy's completion under that demo-conditioned context. `model = "policy"` scores under the live policy itself — the SDFT setting, no extra deployment. The demonstration is read from the example's `info[demo_key]`, falling back to a top-level rollout field of the same name (e.g. `answer`); single-step trajectories only.
 
 ```toml
-[orchestrator.algo.advantage]
+[orchestrator.algo]
 type = "opsd"
 model = "policy"
 demo_key = "demonstration"

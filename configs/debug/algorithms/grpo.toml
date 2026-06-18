@@ -12,7 +12,7 @@ name = "debug-rl"
 batch_size = 128
 group_size = 16
 
-[orchestrator.algo.advantage]
+[orchestrator.algo]
 type = "grpo"
 
 [orchestrator.renderer]

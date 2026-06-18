@@ -1,33 +1,41 @@
 """Algorithm abstraction: sampling and the per-token training signal.
 
-An algorithm is a bundle of two pieces:
+An algorithm is a named, self-contained config — a discriminated union keyed
+on ``type`` (``grpo``, ``max_rl``, ``opd``, ``opsd``, ``sft``, ``echo``,
+``reward``, ``custom``). The bundle *is* the algorithm: each variant carries
+its sampling component and its credit-assignment / loss-routing parameters,
+and its class defaults are the vetted setting — ``type = "opd"`` with a
+teacher IS on-policy distillation; any key you set is visibly your own
+assembly. There is no separate ``advantage`` sub-component and no preset layer.
 
-1. **Sampling** — which model generates train rollouts. ``source`` is a model
-   reference: ``"policy"`` (the live policy) or an inline frozen hosted model.
-2. **Advantage** — credit assignment and loss routing, fused: one mapping from
-   a finalized rollout to per-token ``(loss component, weight)``.
-   Group-relative strategies compute scalars on the orchestrator and ship
-   numbers; reference-KL strategies ship reference prefill logprobs and the
-   trainer evaluates the per-token signal against the live policy. The
-   strategy determines which loss component consumes the action tokens
-   (``rl`` / ``ce`` / ``ref_kl``) and what happens to env-provided observation
-   tokens (masked out by default; ``echo`` trains on them with weighted CE).
+Each algorithm fixes two things:
+
+1. **Sampling** — which model generates train rollouts. ``sampling.source`` is
+   a model reference: ``"policy"`` (the live policy) or an inline frozen hosted
+   model.
+2. **The per-token training signal** — credit assignment and loss routing,
+   fused: one mapping from a finalized rollout to per-token ``(loss component,
+   weight)``. Group-relative algorithms compute scalars on the orchestrator and
+   ship numbers; reference-KL algorithms ship reference prefill logprobs and the
+   trainer evaluates the per-token signal against the live policy. The algorithm
+   determines which loss component consumes the action tokens (``rl`` / ``ce`` /
+   ``ref_kl``, via the ``action_loss_type`` class declaration) and what happens
+   to env-provided observation tokens (masked out by default; ``echo`` trains on
+   them with weighted CE).
 
 prime-rl only ever hosts the trainable policy. Every other model an algorithm
 uses is an external OpenAI-compatible endpoint, declared inline on the
-component that uses it (a :class:`FrozenModelConfig`). Model roles like
+algorithm that uses it (a :class:`FrozenModelConfig`). Model roles like
 "teacher" are algorithm-local vocabulary over these references; the pipeline
-branches on liveness alone. The advantage ``type`` names the algorithm and its
-class defaults are the vetted setting — ``type = "opd"`` with nothing else IS
-on-policy distillation; any key you set is visibly your own assembly. The
-trainer is algorithm-blind: the loss is a sum of three components (rl, ce,
-ref_kl), each normalized by its own global token count; per-token component
-weights ship on the wire and the trainer just executes them.
+branches on liveness alone. The trainer is algorithm-blind: the loss is a sum
+of three components (rl, ce, ref_kl), each normalized by its own global token
+count; per-token component weights ship on the wire and the trainer just
+executes them.
 """
 
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import Field, model_validator
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.config import BaseConfig
@@ -65,7 +73,7 @@ ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
 
 
 # ---------------------------------------------------------------------------
-# Component 1: sampling
+# Sampling
 # ---------------------------------------------------------------------------
 
 
@@ -78,7 +86,7 @@ class SamplingConfig(BaseConfig):
 
 
 # ---------------------------------------------------------------------------
-# Component 2: advantage strategies
+# Shared sub-configs (length penalty, echo roles)
 # ---------------------------------------------------------------------------
 
 
@@ -100,17 +108,6 @@ LengthPenaltyConfig: TypeAlias = Annotated[
     TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
     Field(discriminator="type"),
 ]
-
-
-class GRPOAdvantageConfig(BaseConfig):
-    type: Literal["grpo"] = "grpo"
-    """GRPO: scalar advantage = reward minus the per-group mean baseline,
-    consumed by the ``rl`` loss component on the rollout's action tokens."""
-
-    action_loss_type: ClassVar[ActionLossType] = "rl"
-
-    length_penalty: LengthPenaltyConfig | None = None
-    """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
 
 
 class EchoRoleConfig(BaseConfig):
@@ -155,7 +152,109 @@ class EchoFilterConfig(BaseConfig):
     """Kwargs forwarded to the filter."""
 
 
-class EchoAdvantageConfig(GRPOAdvantageConfig):
+# ---------------------------------------------------------------------------
+# The algorithms (a discriminated union keyed on ``type``)
+# ---------------------------------------------------------------------------
+
+
+class BaseAlgorithmConfig(BaseConfig):
+    """Base for every algorithm: the shared sampling component, the ``teacher``
+    shorthand, and the reference-folding / compatibility validators. Each
+    subclass sets ``type`` (the discriminator), declares its loss routing
+    (``action_loss_type``), names its reference's role if it has one
+    (``model_role`` / ``source_role``), and adds its own parameters.
+
+    The bundle IS the algorithm — there is no separate ``advantage``
+    sub-component. ``algo.type`` names it, and the class defaults are the
+    vetted setting."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    sampling: SamplingConfig = SamplingConfig()
+    """Sampling component: which model generates train rollouts."""
+
+    teacher: ModelReference | None = Field(None, exclude=True)
+    """Reference-model shorthand: an inline frozen hosted model (``name`` +
+    ``base_url``). Folds into the slot the algorithm declares for it —
+    ``model`` for the distillation algorithms (opd/opsd), ``sampling.source``
+    for sft. ``grpo`` / ``max_rl`` / ``reward`` / ``custom`` take no teacher.
+    Write-only input sugar — folded by validation and excluded from dumps so
+    resolved configs round-trip."""
+
+    @model_validator(mode="after")
+    def fold_teacher(self):
+        """Fold the ``teacher`` shorthand into the slot the algorithm declares.
+
+        Fill-or-agree: the slot (the ``model`` field, or ``sampling.source``
+        for source-role algorithms) takes the shorthand when the user didn't
+        set it; an explicit reference already equal to it is
+        redundant-but-consistent; if no slot accepts it, that's an error."""
+        if self.teacher is None:
+            return self
+        matched = False
+        if "model" in type(self).model_fields:
+            if self.model is None or "model" not in self.model_fields_set:
+                self.model = self.teacher
+                matched = True
+            elif self.model == self.teacher:
+                matched = True
+        if getattr(self, "source_role", None) is not None:
+            if "source" not in self.sampling.model_fields_set:
+                self.sampling.source = self.teacher
+                matched = True
+            elif self.sampling.source == self.teacher:
+                matched = True
+        if not matched:
+            raise ValueError(
+                f"algorithm '{self.type}': 'teacher' is set but the algorithm references no model — "
+                "grpo / max_rl / reward / custom take no teacher. Remove it, or use a distillation type."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_references(self):
+        source_role = getattr(self, "source_role", None)
+        if source_role is not None and self.sampling.source == "policy":
+            raise ValueError(
+                f"algorithm '{self.type}' needs a {source_role} to sample rollouts from — "
+                f"CE on the policy's own tokens is not a distillation target. Set '{source_role}' on "
+                "the algorithm (an inline hosted model: name + base_url), or sampling.source explicitly."
+            )
+        if getattr(self, "model", "<absent>") is None:
+            role = getattr(self, "model_role", "reference model")
+            raise ValueError(
+                f"algorithm '{self.type}' needs a {role} — "
+                f"set '{role}' on the algorithm (an inline hosted model: name + base_url), "
+                "or set the model directly."
+            )
+        if isinstance(self, OPDAlgorithmConfig) and self.model == "policy":
+            raise ValueError(
+                "algorithm 'opd' with model='policy' is degenerate — the reference distribution "
+                "equals the policy, so the KL signal is zero. Point at a frozen hosted model, or "
+                "use 'opsd' for demo-conditioned self-teaching."
+            )
+        if self.action_loss_type in ("rl", "ref_kl") and self.sampling.source != "policy":
+            raise ValueError(
+                f"algorithm '{self.type}' trains with the "
+                f"{self.action_loss_type} loss type but sampling.source is a frozen model — "
+                "the importance ratio and trust region need the live policy's own sampling logprobs. "
+                "Use the 'sft' algorithm to distill frozen-model tokens."
+            )
+        return self
+
+
+class GRPOAlgorithmConfig(BaseAlgorithmConfig):
+    type: Literal["grpo"] = "grpo"
+    """GRPO: scalar advantage = reward minus the per-group mean baseline,
+    consumed by the ``rl`` loss component on the rollout's action tokens."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    length_penalty: LengthPenaltyConfig | None = None
+    """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
+
+
+class EchoAlgorithmConfig(GRPOAlgorithmConfig):
     type: Literal["echo"] = "echo"  # type: ignore[assignment]
     """ECHO: group-relative advantage on action tokens (GRPO), plus weighted
     CE on env-provided tokens of later turns (tool output, user feedback),
@@ -172,7 +271,7 @@ class EchoAdvantageConfig(GRPOAdvantageConfig):
     """Optional user-supplied filter narrowing the role-selected tokens."""
 
 
-class MaxRLAdvantageConfig(BaseConfig):
+class MaxRLAlgorithmConfig(BaseAlgorithmConfig):
     type: Literal["max_rl"] = "max_rl"
     """MaxRL (arXiv:2602.02710): scalar advantage = (reward − group mean) /
     group mean, consumed by the ``rl`` loss component. Normalizing by the
@@ -187,7 +286,7 @@ class MaxRLAdvantageConfig(BaseConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
 
-class RewardAdvantageConfig(BaseConfig):
+class RewardAlgorithmConfig(BaseAlgorithmConfig):
     type: Literal["reward"] = "reward"
     """Scalar advantage = raw reward, no group baseline. Consumed by the
     ``rl`` loss component."""
@@ -195,7 +294,7 @@ class RewardAdvantageConfig(BaseConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
 
-class OPDAdvantageConfig(BaseConfig):
+class OPDAlgorithmConfig(BaseAlgorithmConfig):
     type: Literal["opd"] = "opd"
     """On-policy distillation: the per-token signal is the reverse KL to
     a reference model, evaluated in the trainer from reference prefill
@@ -210,7 +309,7 @@ class OPDAdvantageConfig(BaseConfig):
 
     model: ModelReference | None = None
     """The teacher — an inline frozen hosted model (``name`` + ``base_url``).
-    Required — set it here or fold via ``algo.model`` / ``algo.teacher``.
+    Required — set it here or via the ``teacher`` shorthand.
     ``"policy"`` is rejected: scoring the policy under itself yields zero KL
     signal (use ``opsd`` for demo-conditioned self-teaching)."""
 
@@ -218,7 +317,7 @@ class OPDAdvantageConfig(BaseConfig):
     """Maximum concurrent prefill requests per batch."""
 
 
-class OPSDAdvantageConfig(BaseConfig):
+class OPSDAlgorithmConfig(BaseAlgorithmConfig):
     type: Literal["opsd"] = "opsd"
     """On-policy self-distillation (SDFT, https://arxiv.org/abs/2601.19897):
     the per-token signal is the reverse KL to a reference model conditioned on
@@ -255,7 +354,7 @@ class OPSDAdvantageConfig(BaseConfig):
     """Maximum concurrent prefill requests per batch."""
 
 
-class SFTAdvantageConfig(BaseConfig):
+class SFTAlgorithmConfig(BaseAlgorithmConfig):
     type: Literal["sft"] = "sft"
     """SFT distillation: cross-entropy on the sampled tokens. The ``ce`` loss
     ignores advantages and SFT assigns none — it trains on every sampled token.
@@ -269,7 +368,7 @@ class SFTAdvantageConfig(BaseConfig):
     tokens is rejected at validation."""
 
 
-class CustomAdvantageConfig(BaseConfig):
+class CustomAlgorithmConfig(BaseAlgorithmConfig):
     type: Literal["custom"] = "custom"
     """Custom advantage function, consumed by the ``rl`` loss component. Returns
     one scalar per rollout, optionally with per-token advantages aligned to
@@ -284,119 +383,26 @@ class CustomAdvantageConfig(BaseConfig):
     """Kwargs forwarded to the advantage function."""
 
 
-AdvantageConfig: TypeAlias = Annotated[
-    GRPOAdvantageConfig
-    | EchoAdvantageConfig
-    | MaxRLAdvantageConfig
-    | RewardAdvantageConfig
-    | OPDAdvantageConfig
-    | OPSDAdvantageConfig
-    | SFTAdvantageConfig
-    | CustomAdvantageConfig,
+AlgorithmConfig: TypeAlias = Annotated[
+    GRPOAlgorithmConfig
+    | EchoAlgorithmConfig
+    | MaxRLAlgorithmConfig
+    | RewardAlgorithmConfig
+    | OPDAlgorithmConfig
+    | OPSDAlgorithmConfig
+    | SFTAlgorithmConfig
+    | CustomAlgorithmConfig,
     Field(discriminator="type"),
 ]
+"""The training algorithm: sampling plus the per-token training signal (credit
+assignment and loss routing, fused). The ``type`` selects the algorithm, and
+its class defaults are the vetted setting.
 
-
-# ---------------------------------------------------------------------------
-# The algorithm bundle
-# ---------------------------------------------------------------------------
-
-
-class AlgorithmConfig(BaseConfig):
-    """The advantage ``type`` names the algorithm, and each type's class
-    defaults are its vetted setting — ``advantage = { type = "opd" }`` with a
-    teacher IS on-policy distillation; any other key you set is visibly your
-    own assembly.
-
-    The algorithms:
-
-    - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
-    - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
-    - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
-    - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy by default.
-    - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs ``teacher``.
-    - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
-    - ``reward`` / ``custom`` — raw-reward and user-supplied advantage functions.
-    """
-
-    model: ModelReference | None = Field(None, exclude=True, validation_alias=AliasChoices("model", "teacher"))
-    """Model reference shorthand: ``"policy"`` or an inline frozen hosted
-    model. Folds into the slot the advantage type declares for it —
-    ``advantage.model`` when the type has one (opd, opsd), ``sampling.source``
-    when the type's teacher is its sampling source (sft). A slot the user
-    didn't set takes the shorthand; an explicit reference that already equals
-    it is accepted, a disagreeing one is an error. ``teacher`` is an accepted
-    alias — the distillation algorithms declare their reference's role as
-    "teacher", and this is the slot it fills. Write-only input sugar — folded
-    by validation and excluded from dumps so resolved configs round-trip."""
-
-    sampling: SamplingConfig = SamplingConfig()
-    """Sampling component."""
-
-    advantage: AdvantageConfig = GRPOAdvantageConfig()
-    """The per-token training signal: credit assignment and loss routing,
-    fused. The ``type`` selects the algorithm."""
-
-    @model_validator(mode="after")
-    def fold_model(self):
-        """Fold the ``model`` shorthand into the component references.
-
-        Fill-or-agree: the slot the advantage type declares (``model`` field,
-        or ``sampling.source`` for source-role types) takes the shorthand
-        when the user didn't set it; an explicit reference that already
-        equals it is redundant-but-consistent; if no slot accepts it, that's
-        an error."""
-        if self.model is None:
-            return self
-        matched = False
-        advantage = self.advantage
-        if "model" in type(advantage).model_fields:
-            if advantage.model is None or "model" not in advantage.model_fields_set:
-                advantage.model = self.model
-                matched = True
-            elif advantage.model == self.model:
-                matched = True
-        if getattr(advantage, "source_role", None) is not None:
-            if "source" not in self.sampling.model_fields_set:
-                self.sampling.source = self.model
-                matched = True
-            elif self.sampling.source == self.model:
-                matched = True
-        if not matched:
-            raise ValueError(
-                f"advantage '{self.advantage.type}': 'model' is set but no component reference accepts it — "
-                "every reference is already explicitly set to a different value, or the algorithm "
-                "references no model. Set advantage.model / sampling.source directly instead."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_component_compatibility(self):
-        source_role = getattr(self.advantage, "source_role", None)
-        if source_role is not None and self.sampling.source == "policy":
-            raise ValueError(
-                f"advantage '{self.advantage.type}' needs a {source_role} to sample rollouts from — "
-                f"CE on the policy's own tokens is not a distillation target. Set '{source_role}' on "
-                "the algorithm (an inline hosted model: name + base_url), or sampling.source explicitly."
-            )
-        if getattr(self.advantage, "model", "<absent>") is None:
-            role = getattr(self.advantage, "model_role", "reference model")
-            raise ValueError(
-                f"advantage '{self.advantage.type}' needs a {role} — "
-                f"set '{role}' on the algorithm (an inline hosted model: name + base_url), "
-                "or advantage.model explicitly."
-            )
-        if isinstance(self.advantage, OPDAdvantageConfig) and self.advantage.model == "policy":
-            raise ValueError(
-                "advantage 'opd' with model='policy' is degenerate — the reference distribution "
-                "equals the policy, so the KL signal is zero. Point at a frozen hosted model, or "
-                "use 'opsd' for demo-conditioned self-teaching."
-            )
-        if self.advantage.action_loss_type in ("rl", "ref_kl") and self.sampling.source != "policy":
-            raise ValueError(
-                f"advantage '{self.advantage.type}' trains with the "
-                f"{self.advantage.action_loss_type} loss type but sampling.source is a frozen model — "
-                "the importance ratio and trust region need the live policy's own sampling logprobs. "
-                "Use the 'sft' advantage to distill frozen-model tokens."
-            )
-        return self
+- ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
+- ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
+- ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
+- ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy by default.
+- ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs ``teacher``.
+- ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
+- ``reward`` / ``custom`` — raw-reward and user-supplied advantage functions.
+"""

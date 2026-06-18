@@ -18,10 +18,10 @@ group_size = 4
 
 # alphabet-sort's feedback arrives as user messages, so train the user role
 # instead of echo's tool default.
-[orchestrator.algo.advantage]
+[orchestrator.algo]
 type = "echo"
 
-[orchestrator.algo.advantage.roles.user]
+[orchestrator.algo.roles.user]
 alpha = 0.1
 
 [[orchestrator.train.env]]

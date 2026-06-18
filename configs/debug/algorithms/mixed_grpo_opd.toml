@@ -22,7 +22,7 @@ name = "debug-mixed-grpo-opd"
 batch_size = 128
 group_size = 16
 
-[orchestrator.algo.advantage]
+[orchestrator.algo]
 type = "grpo"
 
 [orchestrator.renderer]
@@ -39,7 +39,7 @@ name = "reverse-text-grpo"
 id = "reverse-text"
 name = "reverse-text-opd"
 
-[orchestrator.train.env.algo.advantage]
+[orchestrator.train.env.algo]
 type = "opd"
 
 [orchestrator.train.env.algo.teacher]

@@ -1,4 +1,3 @@
-import copy
 import math
 import warnings
 from pathlib import Path
@@ -9,8 +8,8 @@ from pydantic_core.core_schema import SerializerFunctionWrapHandler
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
-    AdvantageConfig,
     AlgorithmConfig,
+    GRPOAlgorithmConfig,
 )
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -221,15 +220,8 @@ class TrainEnvConfig(EnvConfig):
 
     algo: AlgorithmConfig | None = None
     """Training algorithm for this env. Inherits from the top-level
-    ``orchestrator.algo`` when unset; set its components to give this env its
-    own algorithm."""
-
-    advantage: AdvantageConfig | None = Field(None, exclude=True)
-    """Shorthand for ``algo.advantage`` — the env assembles its own
-    algorithm around it instead of inheriting the top-level one. Setting both
-    this and an explicit ``algo.advantage`` to different values is an error.
-    Write-only input sugar — folded on raw input and excluded from dumps so
-    resolved configs round-trip."""
+    ``orchestrator.algo`` when unset; set ``type`` (and its params) to give
+    this env its own algorithm."""
 
 
 class EvalEnvConfig(EnvConfig):
@@ -475,10 +467,10 @@ class HostedModelConfig(ModelConfig):
 
 
 class OrchestratorConfig(BaseConfig):
-    algo: AlgorithmConfig = AlgorithmConfig()
-    """Training algorithm: sampling plus the advantage (credit assignment
-    and loss routing, fused — its ``type`` names the algorithm). Defaults to
-    ``grpo``. Override per env via ``[[orchestrator.train.env]]``'s
+    algo: AlgorithmConfig = GRPOAlgorithmConfig()
+    """Training algorithm: sampling plus the per-token training signal (credit
+    assignment and loss routing, fused — its ``type`` names the algorithm).
+    Defaults to ``grpo``. Override per env via ``[[orchestrator.train.env]]``'s
     ``algo``."""
 
     model: HostedModelConfig = HostedModelConfig()
@@ -522,11 +514,6 @@ class OrchestratorConfig(BaseConfig):
 
     eval: EvalConfig | None = None
     """Evaluation configuration."""
-
-    advantage: AdvantageConfig | None = Field(None, exclude=True)
-    """Shorthand for ``algo.advantage`` (and, through inheritance, for envs
-    without their own algorithm). Write-only input sugar — folded on raw
-    input and excluded from dumps so resolved configs round-trip."""
 
     pre_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(enforce=False),
@@ -614,53 +601,6 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def fold_advantage_shortcuts(cls, data: Any) -> Any:
-        """Fold the ``advantage`` shorthands into ``algo.advantage`` on raw
-        input, before any ``AlgorithmConfig`` is built — each algorithm then
-        validates exactly once with everything in place. Defined before
-        ``_env_to_train`` (before-validators run in reverse definition order)
-        so the legacy ``[[env]]`` layout is already translated.
-
-        ``advantage = None`` (or the string ``"None"``) selects the raw-reward advantage.
-        """
-        if not isinstance(data, dict):
-            return data
-
-        def fold(algo: Any, shorthand: Any, owner: str) -> None:
-            if not isinstance(algo, dict):
-                raise ValueError(
-                    f"{owner}: the 'advantage' shorthand needs 'algo' as plain config data — "
-                    "set 'algo.advantage' directly instead."
-                )
-            if shorthand is None or shorthand == "None":
-                shorthand = {"type": "reward"}
-            existing = algo.get("advantage")
-            if existing is not None and existing != shorthand:
-                raise ValueError(
-                    f"{owner}: 'advantage' shorthand conflicts with the explicit 'algo.advantage'. Set one."
-                )
-            algo["advantage"] = copy.deepcopy(shorthand)
-
-        if "advantage" in data:
-            fold(data.setdefault("algo", {}), data["advantage"], "orchestrator")
-
-        train = data.get("train")
-        envs = train.get("env") if isinstance(train, dict) else None
-        if not isinstance(envs, list):
-            return data
-        for env in envs:
-            if not isinstance(env, dict) or "advantage" not in env:
-                continue
-            # The shorthand makes the env assemble its own algorithm instead
-            # of inheriting-and-modifying the top-level one.
-            if env.get("algo") is None:
-                env["algo"] = {}
-            name = env.get("name") or str(env.get("id", "?")).split("@")[0]
-            fold(env["algo"], env["advantage"], f"env '{name}'")
-        return data
-
-    @model_validator(mode="before")
-    @classmethod
     def _env_to_train(cls, data: Any) -> Any:
         """Allow [[env]] and [sampling] as shorthand for [train] with [[train.env]] and [train.sampling]."""
         if not isinstance(data, dict):
@@ -722,10 +662,8 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def inherit_env_algorithms(self):
-        """Envs without their own algorithm inherit the top-level one (the
-        ``advantage`` shorthands are already folded in on raw input by
-        ``fold_advantage_shortcuts``). Declared before any validator that
-        reads ``algo``."""
+        """Envs without their own algorithm inherit the top-level one.
+        Declared before any validator that reads ``algo``."""
         for env_cfg in self.train.env:
             if env_cfg.algo is None:
                 env_cfg.algo = self.algo.model_copy(deep=True)
@@ -744,13 +682,13 @@ class OrchestratorConfig(BaseConfig):
         if self.renderer is not None:
             return self
         for env in self.train.env:
-            if env.algo is not None and env.algo.advantage.type == "opsd":
+            if env.algo is not None and env.algo.type == "opsd":
                 raise ValueError(
                     f"env '{env.resolved_name}' uses opsd, which renders its demo-conditioned "
                     "scoring prefix client-side and requires orchestrator.renderer — remove "
                     "'renderer = \"None\"'."
                 )
-            if env.algo is not None and env.algo.advantage.type == "echo":
+            if env.algo is not None and env.algo.type == "echo":
                 raise ValueError(
                     f"env '{env.resolved_name}' trains env-provided tokens by message role (echo), "
                     "which needs the renderer's per-token attribution — set orchestrator.renderer."

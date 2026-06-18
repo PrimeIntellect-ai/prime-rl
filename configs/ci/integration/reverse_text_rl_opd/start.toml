@@ -18,7 +18,7 @@ name = "ci-rl-opd"
 batch_size = 128
 group_size = 16
 
-[orchestrator.algo.advantage]
+[orchestrator.algo]
 type = "opd"
 
 [orchestrator.algo.teacher]

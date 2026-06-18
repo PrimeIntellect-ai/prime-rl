@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable
 
-from prime_rl.configs.algorithm import AdvantageConfig, EchoAdvantageConfig
+from prime_rl.configs.algorithm import AlgorithmConfig, EchoAlgorithmConfig
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.utils.utils import import_object
 
@@ -54,17 +54,17 @@ class EchoAlgorithm(GRPOAlgorithm):
     mask and its denominator. An optional user filter narrows the selection
     per rollout (e.g. dropping tool-output warnings)."""
 
-    def __init__(self, advantage: AdvantageConfig, policy_pool: InferencePool, renderer: Renderer | None):
-        super().__init__(advantage, policy_pool, renderer)
-        assert isinstance(advantage, EchoAdvantageConfig)
+    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+        super().__init__(config, policy_pool, renderer)
+        assert isinstance(config, EchoAlgorithmConfig)
         self.role_weights = {
             role: role_config.alpha
             for role in ("system", "user", "assistant", "tool")
-            if (role_config := getattr(advantage.roles, role)) is not None
+            if (role_config := getattr(config.roles, role)) is not None
         }
         self.filter_fn: Callable[..., list[list[bool]]] | None = None
-        if advantage.filter is not None:
-            self.filter_fn = partial(import_object(advantage.filter.import_path), **advantage.filter.kwargs)
+        if config.filter is not None:
+            self.filter_fn = partial(import_object(config.filter.import_path), **config.filter.kwargs)
 
     async def score_rollout(self, rollout: RolloutView) -> None:
         # Observation weighting is rollout-local; the group-relative GRPO

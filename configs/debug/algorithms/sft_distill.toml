@@ -19,7 +19,7 @@ name = "debug-sft"
 batch_size = 128
 group_size = 4
 
-[orchestrator.algo.advantage]
+[orchestrator.algo]
 type = "sft"
 
 [orchestrator.algo.teacher]

@@ -12,7 +12,7 @@ name = "debug-max-rl"
 batch_size = 128
 group_size = 16
 
-[orchestrator.algo.advantage]
+[orchestrator.algo]
 type = "max_rl"
 
 [orchestrator.renderer]

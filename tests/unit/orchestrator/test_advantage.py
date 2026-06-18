@@ -4,7 +4,7 @@ import uuid
 import pytest
 
 from prime_rl.configs.algorithm import (
-    AlgorithmConfig,
+    CustomAlgorithmConfig,
     TokensLengthPenaltyConfig,
     TurnsLengthPenaltyConfig,
 )
@@ -327,16 +327,11 @@ def test_apply_advantage_fn_singleton_group_is_zero():
 
 
 def test_custom_advantage_algorithm():
-    config = AlgorithmConfig.model_validate(
-        {
-            "advantage": {
-                "type": "custom",
-                "import_path": "tests.unit.orchestrator.test_advantage._dummy_custom_advantage",
-                "kwargs": {"scale": 2.0},
-            }
-        }
+    config = CustomAlgorithmConfig(
+        import_path="tests.unit.orchestrator.test_advantage._dummy_custom_advantage",
+        kwargs={"scale": 2.0},
     )
-    algorithm = CustomAlgorithm(config.advantage, policy_pool=None, renderer=None)
+    algorithm = CustomAlgorithm(config, policy_pool=None, renderer=None)
 
     group = _make_group(rewards=[1.0, 0.5, 0.8], completion_lengths=[10, 12, 8])
 

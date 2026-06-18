@@ -83,9 +83,9 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 
 ### Algorithms
 
-The RL entrypoint supports several training algorithms, switched via `[orchestrator.algo.advantage]` (see [Algorithms](algorithms.md#the-algorithm-abstraction) for the full reference, model references, and per-component customization):
+The RL entrypoint supports several training algorithms, switched via `[orchestrator.algo]`'s `type` (see [Algorithms](algorithms.md#the-algorithm-abstraction) for the full reference, model references, and per-algorithm customization):
 
-| `advantage.type` | Frozen model (`algo.teacher`) | Use case |
+| `algo.type` | Frozen model (`algo.teacher`) | Use case |
 |---|---|---|
 | `grpo` (default) | None | Standard group-relative RL |
 | `max_rl` | None | [MaxRL](https://arxiv.org/abs/2602.02710): GRPO with mean-normalized advantages (maximum-likelihood RL) |
