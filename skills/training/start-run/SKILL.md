@@ -86,11 +86,11 @@ Use this entrypoint for orchestrator-only debug or ablation runs. It does not la
 uv run orchestrator @ configs/debug/orchestrator.toml --debug.no-inference --debug.no-trainer
 ```
 
-The fake R3 debug env can simulate slow heterogeneous rollouts with env args:
+The no-inference debug env can simulate slow heterogeneous rollouts with env args:
 
 ```toml
 [[train.env]]
-id = "fake-r3-trajectory"
+id = "no-inference-env"
 
 [train.env.args]
 rollout_delay_mean_seconds = 300

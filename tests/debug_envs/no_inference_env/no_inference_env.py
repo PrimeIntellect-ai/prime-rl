@@ -74,7 +74,7 @@ def _routed_payload(length: int, layers: int, topk: int, n_experts: int, *, star
     }
 
 
-class FakeR3TrajectoryEnv(vf.Environment):
+class NoInferenceEnv(vf.Environment):
     def __init__(
         self,
         *,
@@ -82,7 +82,7 @@ class FakeR3TrajectoryEnv(vf.Environment):
         seq_len: int = 30_000,
         prompt_len: int = 128,
         completion_fraction: float = 0.70,
-        include_r3: bool = True,
+        include_routed_experts: bool = True,
         # Defaults mirror the GLM-5 routed-expert replay shape.
         routed_layers: int = 78,
         routed_topk: int = 8,
@@ -97,7 +97,7 @@ class FakeR3TrajectoryEnv(vf.Environment):
         self.seq_len = seq_len
         self.prompt_len = prompt_len
         self.completion_fraction = completion_fraction
-        self.include_r3 = include_r3
+        self.include_routed_experts = include_routed_experts
         self.routed_layers = routed_layers
         self.routed_topk = routed_topk
         self.n_routed_experts = n_routed_experts
@@ -109,13 +109,13 @@ class FakeR3TrajectoryEnv(vf.Environment):
 
         rows = [
             {
-                "question": f"Return the deterministic fake R3 trajectory for example {i}.",
+                "question": f"Return the deterministic no-inference trajectory for example {i}.",
                 "answer": "ok",
                 "info": {
-                    "fake_r3": True,
+                    "no_inference_env": True,
                     "seq_len": seq_len,
                     "turns": turns,
-                    "include_r3": include_r3,
+                    "include_routed_experts": include_routed_experts,
                     "routed_layers": routed_layers,
                     "routed_topk": routed_topk,
                     "n_routed_experts": n_routed_experts,
@@ -193,7 +193,7 @@ class FakeR3TrajectoryEnv(vf.Environment):
         state["completion"] = completion
         state["is_completed"] = True
         state["is_truncated"] = False
-        state["stop_condition"] = "fake_r3_complete"
+        state["stop_condition"] = "no_inference_complete"
         state["token_usage"] = {
             "input_tokens": float(sum(len(step["tokens"]["prompt_ids"]) for step in trajectory)),
             "output_tokens": float(sum(len(step["tokens"]["completion_ids"]) for step in trajectory)),
@@ -219,7 +219,7 @@ class FakeR3TrajectoryEnv(vf.Environment):
         current_messages = [
             {
                 "role": "system",
-                "content": "You are executing a deterministic fake R3 memory rollout.",
+                "content": "You are executing a deterministic no-inference memory rollout.",
             },
             {
                 "role": "user",
@@ -236,7 +236,7 @@ class FakeR3TrajectoryEnv(vf.Environment):
             token_cursor += completion_len
 
             has_tool_call = turn_idx % 3 != 1
-            tool_call_id = f"call_fake_{example_id}_{turn_idx}"
+            tool_call_id = f"call_no_inference_{example_id}_{turn_idx}"
             assistant_msg = {
                 "role": "assistant",
                 "content": f"Turn {turn_idx}: deterministic reasoning chunk.",
@@ -256,7 +256,7 @@ class FakeR3TrajectoryEnv(vf.Environment):
 
             routed = None
             routed_start = 0
-            if self.include_r3:
+            if self.include_routed_experts:
                 if turn_idx == 0:
                     routed_len = len(current_prompt_ids) + completion_len - 1
                 else:
@@ -286,7 +286,7 @@ class FakeR3TrajectoryEnv(vf.Environment):
             }
 
             response = vf.Response(
-                id=f"fake-r3-{example_id}-{turn_idx}",
+                id=f"no-inference-{example_id}-{turn_idx}",
                 created=int(time.time()),
                 model=model,
                 usage=vf.Usage(
@@ -316,7 +316,7 @@ class FakeR3TrajectoryEnv(vf.Environment):
                     advantage=None,
                     is_truncated=False,
                     trajectory_id=trajectory_id,
-                    extras={"turn_idx": turn_idx, "fake_r3": True},
+                    extras={"turn_idx": turn_idx, "no_inference_env": True},
                 )
             )
             completion_messages.append(assistant_msg)
@@ -348,4 +348,4 @@ class FakeR3TrajectoryEnv(vf.Environment):
 
 
 def load_environment(**kwargs) -> vf.Environment:
-    return FakeR3TrajectoryEnv(**kwargs)
+    return NoInferenceEnv(**kwargs)
