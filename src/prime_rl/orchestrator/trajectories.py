@@ -23,6 +23,51 @@ from prime_rl.utils.logger import get_logger
 # primitives are immutable. mm_kwargs payloads are not mutated after creation.
 
 
+def _safe_len(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return len(value)
+    except TypeError:
+        return None
+
+
+def prune_token_payload(tokens: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {"has_routed_experts": tokens.get("routed_experts") is not None}
+    for key in ("prompt_ids", "prompt_mask", "completion_ids", "completion_mask", "completion_logprobs"):
+        length = _safe_len(tokens.get(key))
+        if length is not None:
+            compact[f"{key}_len"] = length
+
+    routed = tokens.get("routed_experts")
+    if isinstance(routed, dict):
+        for key in ("shape", "dtype", "start"):
+            value = routed.get(key)
+            if value is not None:
+                compact[f"routed_experts_{key}"] = value
+    return compact
+
+
+def prune_train_rollout_payload(raw: dict[str, Any]) -> None:
+    """Replace raw trajectory token arrays with length and shape summaries."""
+    if raw.get("trajectory_payload_pruned"):
+        return
+
+    trajectory = raw.get("trajectory")
+    if not isinstance(trajectory, list):
+        return
+
+    for step in trajectory:
+        if not isinstance(step, dict):
+            continue
+        tokens = step.get("tokens")
+        if isinstance(tokens, dict):
+            step["tokens"] = prune_token_payload(tokens)
+        step.pop("response", None)
+
+    raw["trajectory_payload_pruned"] = True
+
+
 def align_routed_experts(
     routed_experts: np.ndarray | None,
     expected_len: int,
@@ -206,6 +251,7 @@ def interleave_rollout(
     mm_token_type_ids_mapping: dict[int, int] | None = None,
     *,
     env_name: str = "",
+    prune_raw_payload: bool = False,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -521,7 +567,10 @@ def interleave_rollout(
                         for token_id in sample.prompt_ids + sample.completion_ids
                     ]
 
-    return [sample for _, sample, _ in active_samples]
+    samples = [sample for _, sample, _ in active_samples]
+    if prune_raw_payload:
+        prune_train_rollout_payload(output)
+    return samples
 
 
 def _union_step_mm_data(

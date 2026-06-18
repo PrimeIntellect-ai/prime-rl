@@ -79,6 +79,7 @@ class FinishedRollout:
     policy_version: int
     off_policy_steps: int
     rollout_id: uuid.UUID = field(default_factory=uuid.uuid4)
+    num_turns: int | None = None
 
     @property
     def error(self) -> dict | None:
@@ -92,6 +93,12 @@ class FinishedRollout:
     def is_truncated(self) -> bool:
         return bool(self.raw.get("is_truncated", False))
 
+    @property
+    def turn_count(self) -> int:
+        if self.num_turns is not None:
+            return self.num_turns
+        return len(self.raw.get("trajectory") or [])
+
     def to_dict(self) -> vf.RolloutOutput:
         """``raw`` + metadata merged for I/O (``save_rollouts``,
         ``monitor.log_samples``). Shallow copy; never mutates ``self.raw``."""
@@ -102,6 +109,8 @@ class FinishedRollout:
             val = getattr(self, f.name)
             if f.name == "filter_results":
                 out["filters"] = dict(val)
+                continue
+            if f.name == "num_turns" and val is None:
                 continue
             out[f.name] = str(val) if isinstance(val, uuid.UUID) else val
         return out

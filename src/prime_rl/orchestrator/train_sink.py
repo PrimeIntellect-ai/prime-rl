@@ -153,6 +153,7 @@ class TrainSink:
         if rollout.error is not None:
             return
         raw = rollout.raw
+        rollout.num_turns = len(raw.get("trajectory") or [])
         needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
@@ -161,6 +162,7 @@ class TrainSink:
             raw,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             env_name=rollout.env_name,
+            prune_raw_payload=True,
         )
         rollout.samples = samples or []
         # Offload base64 image bytes to disk as soon as the rollout is

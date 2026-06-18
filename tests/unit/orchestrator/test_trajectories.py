@@ -9,6 +9,8 @@ from prime_rl.orchestrator.trajectories import (
     _deserialize_tool_calls,
     align_routed_experts,
     interleave_rollout,
+    prune_token_payload,
+    prune_train_rollout_payload,
 )
 
 _interleave_rollout = interleave_rollout
@@ -53,6 +55,133 @@ def test_deserialize_tool_calls_does_not_inject_missing_key():
     deserialized = _deserialize_tool_calls(messages)
 
     assert "tool_calls" not in deserialized[0]
+
+
+def test_prune_train_rollout_payload_compacts_heavy_token_arrays():
+    raw = {
+        "trajectory": [
+            {
+                "prompt": [{"role": "user", "content": "hello"}],
+                "completion": [{"role": "assistant", "content": "world"}],
+                "response": object(),
+                "tokens": {
+                    "prompt_ids": [1, 2, 3],
+                    "prompt_mask": [0, 0, 0],
+                    "completion_ids": [4, 5],
+                    "completion_mask": [1, 1],
+                    "completion_logprobs": [-0.1, -0.2],
+                    "routed_experts": {
+                        "data": "large-base64-payload",
+                        "shape": [5, 78, 8],
+                        "dtype": "uint8",
+                        "start": 0,
+                    },
+                    "overlong_prompt": False,
+                    "is_truncated": False,
+                    "debug_scalar": "drop-me",
+                },
+            }
+        ]
+    }
+
+    prune_train_rollout_payload(raw)
+
+    step = raw["trajectory"][0]
+    assert "response" not in step
+    assert raw["trajectory_payload_pruned"] is True
+    assert step["tokens"] == {
+        "prompt_ids_len": 3,
+        "prompt_mask_len": 3,
+        "completion_ids_len": 2,
+        "completion_mask_len": 2,
+        "completion_logprobs_len": 2,
+        "has_routed_experts": True,
+        "routed_experts_shape": [5, 78, 8],
+        "routed_experts_dtype": "uint8",
+        "routed_experts_start": 0,
+    }
+
+
+def test_prune_token_payload_returns_allowlisted_compact_fields_only():
+    compact = prune_token_payload(
+        {
+            "prompt_ids": [1, 2, 3],
+            "prompt_mask": [0, 0, 0],
+            "completion_ids": [4],
+            "completion_mask": [1],
+            "completion_logprobs": [-0.1],
+            "routed_experts": None,
+            "multi_modal_data": object(),
+        }
+    )
+
+    assert compact == {
+        "has_routed_experts": False,
+        "prompt_ids_len": 3,
+        "prompt_mask_len": 3,
+        "completion_ids_len": 1,
+        "completion_mask_len": 1,
+        "completion_logprobs_len": 1,
+    }
+
+
+def test_interleave_rollout_prunes_raw_payload_after_preparation():
+    raw = {
+        "example_id": 0,
+        "error": None,
+        "trajectory": [
+            {
+                "tokens": {
+                    "prompt_ids": [1, 2],
+                    "prompt_mask": [0, 0],
+                    "completion_ids": [3],
+                    "completion_mask": [1],
+                    "completion_logprobs": [-0.1],
+                    "routed_experts": _routed_experts_payload([[[7]], [[8]]]),
+                },
+                "response": object(),
+            }
+        ],
+    }
+
+    samples = interleave_rollout(raw, prune_raw_payload=True)
+
+    assert samples is not None
+    assert samples[0].routed_experts is not None
+    assert raw["trajectory_payload_pruned"] is True
+    step = raw["trajectory"][0]
+    assert "response" not in step
+    assert step["tokens"]["has_routed_experts"] is True
+    assert step["tokens"]["routed_experts_shape"] == [2, 1, 1]
+    assert "routed_experts" not in step["tokens"]
+
+
+def test_interleave_rollout_does_not_partially_prune_on_prepare_failure():
+    raw = {
+        "example_id": 0,
+        "error": None,
+        "trajectory": [
+            {
+                "tokens": {
+                    "prompt_ids": [1, 2],
+                    "prompt_mask": [0, 0],
+                    "completion_ids": [3],
+                    "completion_mask": [1],
+                    "completion_logprobs": [-0.1],
+                    "routed_experts": _routed_experts_payload([[[7]], [[8]]]),
+                },
+                "response": object(),
+            },
+            {"tokens": None},
+        ],
+    }
+
+    samples = interleave_rollout(raw, prune_raw_payload=True)
+
+    assert samples is None
+    assert "trajectory_payload_pruned" not in raw
+    assert "response" in raw["trajectory"][0]
+    assert "routed_experts" in raw["trajectory"][0]["tokens"]
 
 
 def test_deserialize_tool_calls_parses_arguments_when_present():

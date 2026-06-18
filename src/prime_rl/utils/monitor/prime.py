@@ -354,8 +354,16 @@ class PrimeMonitor(Monitor):
                     "reward": ts.get("reward"),
                     "advantage": ts.get("advantage"),
                     "extras": ts.get("extras", {}),
-                    "num_input_tokens": len(ts["tokens"]["prompt_ids"]) if ts.get("tokens") else None,
-                    "num_output_tokens": len(ts["tokens"]["completion_ids"]) if ts.get("tokens") else None,
+                    "num_input_tokens": (
+                        len(ts["tokens"]["prompt_ids"])
+                        if ts.get("tokens") and "prompt_ids" in ts["tokens"]
+                        else (ts["tokens"].get("prompt_ids_len") if ts.get("tokens") else None)
+                    ),
+                    "num_output_tokens": (
+                        len(ts["tokens"]["completion_ids"])
+                        if ts.get("tokens") and "completion_ids" in ts["tokens"]
+                        else (ts["tokens"].get("completion_ids_len") if ts.get("tokens") else None)
+                    ),
                 }
                 for ts in trajectory
             ]

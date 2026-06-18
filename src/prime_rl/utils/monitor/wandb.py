@@ -176,16 +176,28 @@ class WandbMonitor(Monitor):
             if not trajectory:
                 continue
             last_step = trajectory[-1]
-            tokens = last_step["tokens"]
-            full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
-            messages_text = self.tokenizer.decode(full_ids)
+            tokens = last_step.get("tokens") or {}
+            prompt_ids = tokens.get("prompt_ids")
+            completion_ids = tokens.get("completion_ids")
+            if prompt_ids is not None and completion_ids is not None:
+                full_ids = prompt_ids + completion_ids
+                messages_text = self.tokenizer.decode(full_ids)
+                input_ids = str(full_ids)
+            else:
+                messages_text = json.dumps(
+                    {
+                        "prompt": rollout.get("prompt"),
+                        "completion": rollout.get("completion"),
+                    }
+                )
+                input_ids = ""
             sample = {
                 "step": step,
                 "env_name": rollout.get("env_name"),
                 "task": rollout.get("task"),
                 "example_id": rollout["example_id"],
                 "messages": messages_text,
-                "input_ids": str(full_ids),
+                "input_ids": input_ids,
                 "reward": rollout["reward"],
             }
             assert list(sample.keys()) == self.samples_cols, (

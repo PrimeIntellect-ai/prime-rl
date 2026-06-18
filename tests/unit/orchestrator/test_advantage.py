@@ -17,6 +17,7 @@ from prime_rl.orchestrator.advantage import (
 )
 from prime_rl.orchestrator.envs import Env, TrainEnv
 from prime_rl.orchestrator.types import TrainRollout
+from prime_rl.orchestrator.utils import get_model_completion_len
 
 
 def _make_rollout(reward: float, completion_len: int = 0) -> dict:
@@ -181,6 +182,30 @@ def test_length_weighted_baseline():
     assert result.advantages == pytest.approx([r - baseline for r in rewards], abs=1e-6)
     # Token-weighted mean of advantages is zero
     assert sum(length * adv for length, adv in zip((10, 30, 60), result.advantages)) == pytest.approx(0.0, abs=1e-5)
+
+
+def test_length_penalty_uses_compacted_completion_lengths():
+    """``get_model_completion_len`` reads compacted ``completion_ids_len`` summaries
+    (raw token arrays pruned post-interleave) so length shaping still sees real lengths."""
+    rollout = _make_rollout(reward=1.0, completion_len=0)
+    rollout["trajectory"] = [
+        {"tokens": {"prompt_ids_len": 10, "completion_ids_len": 12}},
+        {"tokens": {"prompt_ids_len": 20, "completion_ids_len": 34}},
+    ]
+
+    assert get_model_completion_len(rollout) == 46
+
+    inputs = AdvantageInputs(
+        rollouts=[
+            rollout,
+            _make_rollout(reward=1.0, completion_len=92),
+            _make_rollout(reward=0.0, completion_len=46),
+        ]
+    )
+    result = default_advantage_fn(inputs, length_penalty=LinearLengthPenaltyConfig(coef=1.0), max_seq_len=100)
+
+    # Both reward-1 rollouts, but the compacted one is shorter (46 < 92) → higher advantage.
+    assert result.advantages[0] > result.advantages[1]
 
 
 def _train_rollouts(rewards: list[float]) -> list[TrainRollout]:
