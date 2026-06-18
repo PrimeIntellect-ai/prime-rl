@@ -624,6 +624,9 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
 
+    max_consecutive_errored_rollouts: int | None = Field(10, ge=1)
+    """Halt after this many consecutive terminal errored rollouts, counted after the verifiers retry budget is exhausted. None disables the guard."""
+
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
 
