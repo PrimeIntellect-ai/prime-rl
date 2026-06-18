@@ -610,8 +610,8 @@ class Orchestrator:
             teacher_logprobs_time = time.perf_counter() - t
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
+        self._release_train_batch_samples(batch)
         self.update_dispatch_gate()
-        trim_process_memory()
 
         metrics = self.metrics.build(
             step=step,
@@ -627,6 +627,7 @@ class Orchestrator:
         )
         self.monitor.log(metrics, step=step)
         self.monitor.log_samples(rollout_dicts, step=step)
+        rollout_dicts.clear()
         self.monitor.log_distributions(
             distributions={
                 "rewards": [r.reward for r in batch.rollouts],
@@ -661,6 +662,18 @@ class Orchestrator:
         self.train_sink.reset_pre_filter_stats()
         self.progress.step += 1
         self.maybe_trigger_eval(self.progress.step)
+        self._release_train_batch_rollouts(batch)
+        trim_process_memory()
+
+    @staticmethod
+    def _release_train_batch_samples(batch: TrainBatch) -> None:
+        batch.samples.clear()
+        for rollout in batch.rollouts:
+            rollout.samples.clear()
+
+    @staticmethod
+    def _release_train_batch_rollouts(batch: TrainBatch) -> None:
+        batch.rollouts.clear()
 
     def maybe_trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything
