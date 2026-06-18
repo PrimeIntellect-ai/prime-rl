@@ -31,7 +31,7 @@ max_inflight_rollouts = 256
 name = "hendrycks-math"
 taskset = { id = "math-env-v1", dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
 harness = { id = "default", runtime = { type = "subprocess" } }
-timeout = { scoring = 30 }
+timeout = { scoring = 300 }
 
 [orchestrator.eval]
 interval = 50
@@ -40,7 +40,7 @@ interval = 50
 name = "aime2024"
 taskset = { id = "aime24-v1" }
 harness = { id = "default", runtime = { type = "subprocess" } }
-timeout = { scoring = 30 }
+timeout = { scoring = 300 }
 group_size = 32
 
 [trainer.model]
