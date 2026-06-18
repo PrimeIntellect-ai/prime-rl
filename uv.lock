@@ -5641,6 +5641,7 @@ examples = [
     { name = "color-codeword-v1", editable = "deps/verifiers/environments/color_codeword_v1" },
     { name = "compact", editable = "deps/verifiers/environments/compact" },
     { name = "deepwiki-v1", editable = "deps/verifiers/environments/deepwiki_v1" },
+    { name = "general-agent-v1", editable = "deps/verifiers/environments/general_agent_v1" },
     { name = "glossary-v1", editable = "deps/verifiers/environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "deps/verifiers/environments/gsm8k_v1" },
     { name = "math-env-v1", editable = "deps/verifiers/environments/math_env_v1" },
