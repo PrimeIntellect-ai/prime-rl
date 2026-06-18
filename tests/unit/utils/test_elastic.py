@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 import verifiers as vf
 
 from prime_rl.utils.elastic import (
@@ -404,6 +405,127 @@ def test_get_loaded_adapter_handles_step_dash_format():
         assert result.step == 99
 
 
+def test_get_loaded_adapter_uses_model_client_when_present():
+    with patch("prime_rl.utils.elastic.get_logger"):
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+        mock_config.router_url = None
+        pool = ElasticInferencePool(client_config=mock_config, model_name="base-model")
+        pool._desired.name = "my-lora"
+
+        mock_admin = AsyncMock()
+        mock_model = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [
+                {"id": "my-lora", "parent": "base-model", "root": "/weights/step_7"},
+            ]
+        }
+        mock_model.get.return_value = mock_response
+        pool._admin_clients["10.0.0.1"] = mock_admin
+        pool._model_clients["10.0.0.1"] = mock_model
+
+        result = asyncio.run(pool._get_loaded_adapter("10.0.0.1"))
+
+        assert result is not None
+        assert result.step == 7
+        mock_admin.get.assert_not_called()
+        mock_model.get.assert_awaited_once_with("/v1/models")
+
+
+def test_check_server_health_uses_model_client_for_model_list():
+    with patch("prime_rl.utils.elastic.get_logger"):
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+        mock_config.router_url = None
+        pool = ElasticInferencePool(client_config=mock_config, model_name="base-model")
+
+        mock_admin = AsyncMock()
+        mock_model = AsyncMock()
+        mock_model_response = MagicMock()
+        mock_model_response.json.return_value = {"data": [{"id": "base-model"}]}
+        mock_model.get.return_value = mock_model_response
+
+        result = asyncio.run(pool._check_server_health(mock_admin, "10.0.0.1", mock_model))
+
+        assert result is True
+        mock_admin.get.assert_awaited_once_with("/health")
+        mock_model.get.assert_awaited_once_with("/v1/models")
+
+
+def test_create_admin_client_matches_dynamo_system_url_by_resolved_ip():
+    with patch("prime_rl.utils.elastic.get_logger"):
+        client_config = MagicMock()
+        client_config.elastic.hostname = "test.hostname"
+        client_config.elastic.port = 8000
+        client_config.elastic.sync_interval = 5.0
+        client_config.router_url = None
+        client_config.timeout = 1200
+        client_config.api_key_var = "PRIME_API_KEY"
+        client_config.headers = {}
+        client_config.headers_from_env = {}
+        client_config.backend = "dynamo"
+        client_config.rl_base_url = None
+        pool = ElasticInferencePool(client_config=client_config, model_name="base-model")
+
+        captured = []
+
+        def fake_setup_admin_clients(config):
+            captured.append(config)
+            return ["admin-client"]
+
+        def fake_gethostbyname_ex(hostname):
+            if hostname == "worker-b.local":
+                return hostname, [], ["10.0.0.2"]
+            return hostname, [], ["10.0.0.9"]
+
+        with (
+            patch(
+                "prime_rl.utils.elastic.discover_dynamo_admin_base_urls",
+                return_value=["http://worker-a.local:8081", "http://worker-b.local:8081"],
+            ),
+            patch("prime_rl.utils.elastic.socket.gethostbyname_ex", side_effect=fake_gethostbyname_ex),
+            patch("prime_rl.utils.elastic.setup_admin_clients", side_effect=fake_setup_admin_clients),
+        ):
+            result = asyncio.run(pool._create_admin_client("10.0.0.2"))
+
+        assert result == "admin-client"
+        assert captured[0].admin_base_url == ["http://worker-b.local:8081"]
+
+
+def test_create_admin_client_fails_without_matching_dynamo_system_url():
+    with patch("prime_rl.utils.elastic.get_logger"):
+        client_config = MagicMock()
+        client_config.elastic.hostname = "test.hostname"
+        client_config.elastic.port = 8000
+        client_config.elastic.sync_interval = 5.0
+        client_config.router_url = None
+        client_config.timeout = 1200
+        client_config.api_key_var = "PRIME_API_KEY"
+        client_config.headers = {}
+        client_config.headers_from_env = {}
+        client_config.backend = "dynamo"
+        client_config.rl_base_url = None
+        pool = ElasticInferencePool(client_config=client_config, model_name="base-model")
+
+        with (
+            patch(
+                "prime_rl.utils.elastic.discover_dynamo_admin_base_urls",
+                return_value=["http://worker-a.local:8081"],
+            ),
+            patch("prime_rl.utils.elastic.socket.gethostbyname_ex", return_value=("worker-a.local", [], ["10.0.0.9"])),
+            patch("prime_rl.utils.elastic.setup_admin_clients") as mock_setup_admin_clients,
+            pytest.raises(ValueError, match="matching inference pod 10.0.0.2"),
+        ):
+            asyncio.run(pool._create_admin_client("10.0.0.2"))
+
+        mock_setup_admin_clients.assert_not_called()
+
+
 def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
     with patch("prime_rl.utils.elastic.get_logger"):
         client_config = MagicMock()
@@ -452,3 +574,33 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
                 extra_headers_from_state={},
             )
         ]
+
+
+def test_elastic_clients_preserve_dynamo_backend_for_transport():
+    with patch("prime_rl.utils.elastic.get_logger"):
+        client_config = MagicMock()
+        client_config.elastic.hostname = "test.hostname"
+        client_config.elastic.port = 8000
+        client_config.elastic.sync_interval = 5.0
+        client_config.router_url = None
+        client_config.timeout = 1200
+        client_config.connect_timeout = 30.0
+        client_config.api_key_var = "PRIME_API_KEY"
+        client_config.headers = {}
+        client_config.headers_from_env = {}
+        client_config.extra_headers_from_state = {}
+        client_config.dp_rank_count = 1
+        client_config.backend = "dynamo"
+
+        pool = ElasticInferencePool(
+            client_config=client_config,
+            model_name="test-model",
+            train_client_type="openai_chat_completions_token",
+        )
+        pool._servers = {
+            "10.0.0.1": MagicMock(status="ready"),
+        }
+
+        clients = pool.train_clients
+
+        assert clients[0].renderer_transport == "dynamo"
