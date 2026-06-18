@@ -116,6 +116,7 @@ envs = [
     "wikispeedia-v1",
     "wordle-v1",
     "general-agent-v1",
+    "swebench-verified-v1",
     "tasksets",
     "harnesses",
     "compact",
@@ -277,6 +278,7 @@ wiki-search-v1 = { path = "deps/verifiers/environments/wiki_search_v1", editable
 wikispeedia-v1 = { path = "deps/verifiers/environments/wikispeedia_v1", editable = true }
 wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
 general-agent-v1 = { path = "deps/verifiers/environments/general_agent_v1", editable = true }
+swebench-verified-v1 = { path = "deps/verifiers/environments/swebench_verified_v1", editable = true }
 compact = { path = "deps/verifiers/environments/compact", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
