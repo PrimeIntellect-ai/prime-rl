@@ -1,5 +1,6 @@
 import asyncio
 import ctypes
+import gc
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -99,6 +100,7 @@ def set_default_executor(max_workers: int = 64) -> None:
 
 def trim_process_memory() -> None:
     """Return freed heap pages to the OS on glibc systems."""
+    gc.collect()
     try:
         ctypes.CDLL("libc.so.6").malloc_trim(0)
     except Exception as exc:
