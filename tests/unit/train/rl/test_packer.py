@@ -10,6 +10,7 @@ import prime_rl.trainer.runs as runs
 from prime_rl.configs.shared import FileSystemTransportConfig
 from prime_rl.trainer.rl.packer import MultiPacker
 from prime_rl.trainer.runs import setup_multi_run_manager
+from prime_rl.trainer.utils import build_bin_cost
 from prime_rl.trainer.world import reset_world
 from prime_rl.transport.types import TrainingSample
 
@@ -42,10 +43,13 @@ def create_run_with_config(output_dir: Path, run_name: str) -> Path:
 
 def make_training_sample() -> TrainingSample:
     return TrainingSample(
-        token_ids=[1, 2],
-        mask=[False, True],
-        logprobs=[0.0, -0.1],
-        temperatures=[1.0, 1.0],
+        prompt_ids=[1],
+        prompt_mask=[False],
+        completion_ids=[2],
+        completion_mask=[True],
+        completion_logprobs=[-0.1],
+        completion_temperatures=[1.0],
+        advantages=[0.0, 1.0],
         env_name="test-env",
     )
 
@@ -92,6 +96,7 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
         pad_to_multiple_of=1,
         tokenizer=None,
         config=FileSystemTransportConfig(),
+        bin_cost=build_bin_cost(None),
         start_step=0,
     )
 

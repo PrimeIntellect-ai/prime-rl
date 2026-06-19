@@ -167,6 +167,9 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     nodes_per_fsdp_group: int | None = None
     """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
+    orchestrator_on_inference: bool = False
+    """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
+
     @property
     def total_infer_nodes(self) -> int:
         return self.num_infer_nodes * self.num_infer_replicas
@@ -375,40 +378,40 @@ class RLConfig(BaseConfig):
             if self.trainer.weight_broadcast.type == "nccl":
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
 
-            if self.orchestrator.student.model.lora is None:
+            if self.orchestrator.model.lora is None:
                 from prime_rl.configs.orchestrator import LoRAConfig
 
-                self.orchestrator.student.model.lora = LoRAConfig()
+                self.orchestrator.model.lora = LoRAConfig()
 
             if (
-                self.orchestrator.student.model.lora.rank is not None
-                and self.orchestrator.student.model.lora.rank != self.trainer.model.lora.rank
+                self.orchestrator.model.lora.rank is not None
+                and self.orchestrator.model.lora.rank != self.trainer.model.lora.rank
             ):
                 raise ValueError(
-                    f"orchestrator.student.model.lora.rank ({self.orchestrator.student.model.lora.rank}) conflicts with "
+                    f"orchestrator.model.lora.rank ({self.orchestrator.model.lora.rank}) conflicts with "
                     f"trainer.model.lora.rank ({self.trainer.model.lora.rank}). "
-                    f"Remove orchestrator.student.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
+                    f"Remove orchestrator.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
                 )
 
             if (
-                self.orchestrator.student.model.lora.alpha is not None
-                and self.orchestrator.student.model.lora.alpha != self.trainer.model.lora.alpha
+                self.orchestrator.model.lora.alpha is not None
+                and self.orchestrator.model.lora.alpha != self.trainer.model.lora.alpha
             ):
                 raise ValueError(
-                    f"orchestrator.student.model.lora.alpha ({self.orchestrator.student.model.lora.alpha}) conflicts with "
+                    f"orchestrator.model.lora.alpha ({self.orchestrator.model.lora.alpha}) conflicts with "
                     f"trainer.model.lora.alpha ({self.trainer.model.lora.alpha}). "
-                    f"Remove orchestrator.student.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
+                    f"Remove orchestrator.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
                 )
 
-            if self.orchestrator.student.model.lora.rank is None:
-                self.orchestrator.student.model.lora.rank = self.trainer.model.lora.rank
+            if self.orchestrator.model.lora.rank is None:
+                self.orchestrator.model.lora.rank = self.trainer.model.lora.rank
 
-            if self.orchestrator.student.model.lora.alpha is None:
-                self.orchestrator.student.model.lora.alpha = self.trainer.model.lora.alpha
+            if self.orchestrator.model.lora.alpha is None:
+                self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
 
-            if self.orchestrator.student.model.lora.name is None:
-                self.orchestrator.student.model.lora.name = (
-                    f"r{self.orchestrator.student.model.lora.rank}-a{self.orchestrator.student.model.lora.alpha}"
+            if self.orchestrator.model.lora.name is None:
+                self.orchestrator.model.lora.name = (
+                    f"r{self.orchestrator.model.lora.rank}-a{self.orchestrator.model.lora.alpha}"
                 )
 
             if self.inference is not None:
@@ -606,23 +609,20 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_inference_client(self):
-        """Auto-configure orchestrator student client from the inference server config.
+        """Auto-configure the orchestrator policy client from the inference server config.
 
-        Direct single-node runs expose all local DP ranks behind one base URL,
-        so pin logical clients with ``X-data-parallel-rank``. Multi-node SLURM
-        runs expose a vllm-router URL instead; the router balances across
-        per-rank backend URLs and forwards request headers, so the orchestrator
-        must not inject a DP-rank header there.
+        Always sets dp_rank_count from inference DP size. When no train env
+        samples from the policy (e.g. sft_distill), also sets base_url —
+        policy-sourced algorithms rely on the ClientConfig default
+        (``["http://localhost:8000/v1"]``) which already matches the auto-launched
+        policy vLLM at inference.server.port = 8000.
         """
         if self.inference is None:
             return self
-        client = self.orchestrator.student.client
+        client = self.orchestrator.model.client
         if "dp_rank_count" not in client.model_fields_set:
-            if self.deployment.type == "multi_node":
-                client.dp_rank_count = 1
-            else:
-                client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
-        if self.orchestrator.training_mode == "sft" and "base_url" not in client.model_fields_set:
+            client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
+        if not self.orchestrator.any_policy_sourced and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
             client.base_url = [f"http://{host}:{port}/v1"]

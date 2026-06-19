@@ -12,7 +12,7 @@ from threading import Event, Thread
 import pynvml
 import tomli_w
 
-from prime_rl.configs.orchestrator import EnvConfig
+from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -162,16 +162,16 @@ def rl_local(config: RLConfig):
     }
 
     # Validate client port matches inference server port
-    if config.inference is not None and not config.orchestrator.student.client.is_elastic:
+    if config.inference is not None and not config.orchestrator.model.client.is_elastic:
         from urllib.parse import urlparse
 
-        base_url = config.orchestrator.student.client.base_url[0]
+        base_url = config.orchestrator.model.client.base_url[0]
         parsed = urlparse(base_url)
         client_port = parsed.port
         expected_port = config.inference.server.port
         if client_port != expected_port:
             raise ValueError(
-                f"orchestrator.student.client.base_url port ({client_port}) does not match "
+                f"orchestrator.model.client.base_url port ({client_port}) does not match "
                 f"inference.server.port ({expected_port}). "
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
@@ -225,19 +225,27 @@ def rl_local(config: RLConfig):
             monitor_threads.append(monitor_thread)
         else:
             logger.warning(
-                "No [inference] block configured - the student inference server will not be started here. "
-                "All training modes (rl/opd/sft) require a student inference pool for evals + weight sync; "
-                "make sure one is running at orchestrator.student.client.base_url "
-                f"({', '.join(config.orchestrator.student.client.base_url)}), otherwise the orchestrator "
+                "No [inference] block configured - the policy inference server will not be started here. "
+                "Every algorithm requires a policy inference pool for evals + weight sync; "
+                "make sure one is running at orchestrator.model.client.base_url "
+                f"({', '.join(config.orchestrator.model.client.base_url)}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
 
-        if config.orchestrator.teacher:
+        frozen_endpoints: list[str] = []
+        for env in config.orchestrator.train.env:
+            algo = env.algo
+            if algo is None:
+                continue
+            for ref in (algo.sampling.source, getattr(algo, "model", None)):
+                if isinstance(ref, FrozenModelConfig):
+                    frozen_endpoints.append(f"{ref.name} ({', '.join(ref.base_url)})")
+        if frozen_endpoints:
+            endpoints = ", ".join(dict.fromkeys(frozen_endpoints))
             logger.info(
-                "orchestrator.teacher is configured - the rl entrypoint does not start teacher inference "
-                "servers. Make sure your teacher endpoint at "
-                f"{', '.join(config.orchestrator.teacher.client.base_url)} is running before the "
-                "orchestrator starts, otherwise rollouts will hang."
+                "Frozen model references are configured - the rl entrypoint does not start them. "
+                f"Make sure these endpoints are serving before the orchestrator starts: {endpoints}; "
+                "otherwise rollouts will hang."
             )
 
         # Start one env server per env (before the orchestrator, which attaches to
@@ -455,6 +463,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            orchestrator_on_inference=config.deployment.orchestrator_on_inference,
         )
     else:
         script = template.render(
@@ -477,6 +486,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            orchestrator_on_inference=config.deployment.orchestrator_on_inference,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)

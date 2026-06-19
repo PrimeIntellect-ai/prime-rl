@@ -30,7 +30,8 @@ import verifiers.v1 as vf
 from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.algo import Algorithm, build_algorithm
+from prime_rl.orchestrator.sampler import Sampler
 from prime_rl.utils.logger import get_logger
 
 # Every wire trace validates into this type. WireTask (extra="allow") keeps the env's task
@@ -201,9 +202,14 @@ class Env:
 class TrainEnv(Env):
     config: TrainEnvConfig
 
-    def __init__(self, config: TrainEnvConfig):
+    def __init__(self, config: TrainEnvConfig, sampler: Sampler, algorithm: Algorithm):
         super().__init__(config)
-        self.sampling_args = config.sampling.to_sampling_args()
+        self.sampler = sampler
+        self.algorithm = algorithm
+        self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
+
+    def get_dataset(self, seed: int | None = None):
+        return self.env.get_dataset(seed=seed)
 
 
 class EvalEnv(Env):
@@ -272,12 +278,19 @@ class Envs(Generic[EnvT]):
 
 
 class TrainEnvs(Envs[TrainEnv]):
-    """Collection of training environments."""
+    """Collection of training environments, each paired with its rollout
+    :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
+    resolved algorithm config."""
 
-    def __init__(self, configs: Sequence[TrainEnvConfig]):
+    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
-            env = TrainEnv(config)
+            assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
+            env = TrainEnv(
+                config,
+                Sampler(config.algo.sampling, policy_pool),
+                build_algorithm(config.algo, policy_pool, renderer),
+            )
             self._envs[env.name] = env
 
 

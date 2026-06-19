@@ -149,10 +149,15 @@ def _create_optimizer(
     """Create optimizer. If lr is None, uses config.lr."""
     if lr is None:
         lr = config.lr
+    # Only hand trainable params to the optimizer. Frozen params (e.g. the DSA sparse
+    # indexer, which runs under no_grad) carry no optimizer state, and including them
+    # breaks strict checkpoint resume (DCP materializes state for every requires_grad
+    # param at load time, mismatching the saved state). Muon filters internally below.
+    trainable_params = [p for _, p in named_params if p.requires_grad]
     match config.type:
         case "sgd":
             return SGD(
-                params=[p for _, p in named_params],
+                params=trainable_params,
                 lr=lr,
                 weight_decay=config.weight_decay,
                 momentum=config.momentum,
@@ -160,7 +165,7 @@ def _create_optimizer(
             )
         case "adamw":
             return AdamW(
-                params=[p for _, p in named_params],
+                params=trainable_params,
                 lr=lr,
                 weight_decay=config.weight_decay,
                 betas=(config.betas1, config.betas2),
@@ -169,7 +174,7 @@ def _create_optimizer(
             return _create_muon_optimizer(config, named_params, parallel_dims, lr)
         case "sign_sgd":
             return SignSGD(
-                params=[p for _, p in named_params],
+                params=trainable_params,
                 lr=lr,
                 weight_decay=config.weight_decay,
             )
