@@ -178,18 +178,25 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
             shutil.rmtree(get_step_path(directory, step))
 
 
-def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
+def sync_wait_for_path(path: Path, interval: float = 1, log_interval: float = 10, timeout: float | None = None) -> None:
     logger = get_logger()
-    wait_time = 0
+    start_time = time.monotonic()
+    next_log_time = log_interval
     logger.debug(f"Waiting for path `{path}`")
     while True:
         if path.exists():
             logger.debug(f"Found path `{path}`")
             break
-        if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
-            logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
-        time.sleep(interval)
-        wait_time += interval
+        wait_time = time.monotonic() - start_time
+        if timeout is not None and wait_time >= timeout:
+            raise TimeoutError(f"Timed out waiting for path `{path}` after {timeout} seconds")
+        if wait_time >= next_log_time:
+            logger.debug(f"Waiting for path `{path}` for {wait_time:.1f} seconds")
+            next_log_time += log_interval
+        sleep_time = interval
+        if timeout is not None:
+            sleep_time = min(sleep_time, max(timeout - wait_time, 0))
+        time.sleep(sleep_time)
 
 
 async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:

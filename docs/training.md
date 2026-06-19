@@ -34,7 +34,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 |---|---|---|
 | `uv run rl` | Wraps the trainer, orchestrator, and inference server in one launch from a merged TOML. | The default for any RL run. Runs locally for single-node experiments; submits to SLURM for single- or multi-node when `[slurm]` is set (see [Scaling § SLURM](scaling.md#slurm)). |
 | `uv run sft` | Supervised fine-tuning on a HF dataset. | Launches torchrun internally; never call torchrun directly. |
-| `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
+| `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, `/update_lora`, and `/init_broadcaster`. |
 | `uv run trainer` | Standalone trainer process group. | Use only when launching the trainer separately from the orchestrator (e.g. multi-node RL without the `rl` wrapper). |
 | `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched trainer + inference. |
 
@@ -231,6 +231,8 @@ uv run rl @ rl.toml --max-steps 10 --ckpt
 uv run rl @ rl.toml --max-steps 20 --ckpt.resume-step 10
 ```
 
+For LoRA runs using NCCL weight broadcast, resume reuses the in-session update path: at startup the orchestrator arms `/update_lora` for the resumed step and the trainer answers with a one-shot broadcast of the checkpoint-restored adapter before generation resumes — nothing is read from the broadcast directory, which only holds marker files under NCCL. Keep `weight_broadcast.type = "nccl"` on all three roles and leave `trainer.max_concurrent_runs = 1`.
+
 ### Serving Checkpoints
 
 HF-compatible weight snapshots are written under `<output_dir>/weights/step_N/` whenever a full checkpoint runs (or you can write weights-only via `--ckpt.weights-only` for cheaper snapshots). Upload directly:
@@ -239,7 +241,7 @@ HF-compatible weight snapshots are written under `<output_dir>/weights/step_N/` 
 uv run hf upload <user>/<model>-RL outputs/weights/step_100
 ```
 
-For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write the raw adapter alongside the merged weights — useful when serving the adapter through a separate `/load_lora_adapter` call.
+For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write the raw adapter alongside the merged weights — useful when serving the adapter through a separate `/load_lora_adapter` call. This is independent of NCCL adapter broadcast; NCCL updates the live vLLM server during training, while checkpoints remain the durable resume/export artifact.
 
 ## Observability
 

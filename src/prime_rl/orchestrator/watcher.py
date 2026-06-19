@@ -41,6 +41,10 @@ class WeightWatcher:
         self.last_update_weights_time: float = 0.0
         self.last_wait_for_ckpt_time: float = 0.0
         self.update_count: int = 0
+        self.last_seen_broadcast_step: int = ckpt_step
+        self.next_ckpt_step: int = ckpt_step
+        self.current_update_step: int | None = None
+        self.last_error: str | None = None
 
         self.task: asyncio.Task | None = None
         self.update_lock = asyncio.Lock()
@@ -56,8 +60,9 @@ class WeightWatcher:
                 await asyncio.sleep(self.poll_interval)
         except asyncio.CancelledError:
             return
-        except Exception:
-            get_logger().exception("Weight watcher failed")
+        except Exception as exc:
+            self.last_error = repr(exc)
+            get_logger().exception("Weight watcher task failed")
             raise
 
     async def stop(self) -> None:
@@ -72,7 +77,9 @@ class WeightWatcher:
         published in ``broadcasts/``."""
         broadcast_dir = get_broadcast_dir(self.config.output_dir)
         latest_ckpt_step = get_latest_ckpt_step(broadcast_dir) or 0
-        return max(self.policy.version, latest_ckpt_step)
+        self.last_seen_broadcast_step = latest_ckpt_step
+        self.next_ckpt_step = max(self.policy.version, latest_ckpt_step)
+        return self.next_ckpt_step
 
     async def apply_policy_update(self, next_step: int) -> None:
         async with self.update_lock:
@@ -80,44 +87,57 @@ class WeightWatcher:
                 # Another caller raced us — bail without re-applying
                 return
 
-            broadcast_dir = get_broadcast_dir(self.config.output_dir)
-            weights_path = get_step_path(broadcast_dir, next_step)
-            stable_marker = weights_path / "STABLE"
-            if not stable_marker.exists():
-                get_logger().info(
-                    f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
-                    "Training is progressing normally."
-                )
-                t0 = time.perf_counter()
-                await wait_for_path(stable_marker)
-                self.last_wait_for_ckpt_time = time.perf_counter() - t0
-                get_logger().info(
-                    f"Orchestrator resumed: checkpoint {next_step} ready (after {format_time(self.last_wait_for_ckpt_time)})"
-                )
-
-            get_logger().debug(f"Updating weights to step {next_step}")
-            get_logger().info(f"Updating inference weights to checkpoint {next_step}")
-            t1 = time.perf_counter()
-            await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
-            self.last_update_weights_time = time.perf_counter() - t1
-            self.update_count += 1
-            get_logger().info(
-                f"Updated inference weights to checkpoint {next_step} in {format_time(self.last_update_weights_time)}"
-            )
-
-            self.ckpt_step = next_step
-            self.policy.version = next_step
-            if self.lora_name is not None:
-                self.inference.update_model_name(self.lora_name)
-                self.policy.model_name = self.lora_name
-
-            for observer in self.observers:
-                try:
-                    await observer.on_new_version(next_step)
-                except Exception as exc:
-                    get_logger().warning(
-                        f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
+            self.current_update_step = next_step
+            try:
+                broadcast_dir = get_broadcast_dir(self.config.output_dir)
+                weights_path = get_step_path(broadcast_dir, next_step)
+                stable_marker = weights_path / "STABLE"
+                if not stable_marker.exists():
+                    get_logger().info(
+                        f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
+                        "Training is progressing normally."
                     )
+                    t0 = time.perf_counter()
+                    await wait_for_path(stable_marker)
+                    self.last_wait_for_ckpt_time = time.perf_counter() - t0
+                    get_logger().info(
+                        f"Orchestrator resumed: checkpoint {next_step} ready "
+                        f"(after {format_time(self.last_wait_for_ckpt_time)})"
+                    )
+
+                get_logger().debug(f"Updating weights to step {next_step}")
+                t1 = time.perf_counter()
+                await self.inference.update_weights(
+                    weights_path,
+                    lora_name=self.lora_name,
+                    step=next_step,
+                    nccl_lora=self.lora_name is not None and self.config.weight_broadcast.type == "nccl",
+                )
+                self.last_update_weights_time = time.perf_counter() - t1
+                self.update_count += 1
+                self.last_error = None
+                get_logger().debug(
+                    f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}"
+                )
+
+                self.ckpt_step = next_step
+                self.policy.version = next_step
+                if self.lora_name is not None:
+                    self.inference.update_model_name(self.lora_name)
+                    self.policy.model_name = self.lora_name
+
+                for observer in self.observers:
+                    try:
+                        await observer.on_new_version(next_step)
+                    except Exception as exc:
+                        get_logger().warning(
+                            f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
+                        )
+            except Exception as exc:
+                self.last_error = repr(exc)
+                raise
+            finally:
+                self.current_update_step = None
 
     def gauges(self) -> dict[str, float]:
         return {
@@ -125,4 +145,9 @@ class WeightWatcher:
             "watcher/update_count": float(self.update_count),
             "watcher/last_update_weights_time": self.last_update_weights_time,
             "watcher/last_wait_for_ckpt_time": self.last_wait_for_ckpt_time,
+            "watcher/last_seen_broadcast_step": float(self.last_seen_broadcast_step),
+            "watcher/next_ckpt_step": float(self.next_ckpt_step),
+            "watcher/is_updating": float(self.current_update_step is not None),
+            "watcher/current_update_step": float(self.current_update_step or 0),
+            "watcher/healthy": float(self.last_error is None),
         }

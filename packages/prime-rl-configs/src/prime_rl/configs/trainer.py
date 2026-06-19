@@ -660,8 +660,10 @@ class TrainerConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
         if self.model.lora is not None and self.weight_broadcast.type == "nccl":
-            # TODO: Support this
-            raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+            if self.max_concurrent_runs != 1:
+                raise ValueError("NCCL LoRA broadcast currently requires max_concurrent_runs = 1.")
+            if self.weight_broadcast.quantize_in_weight_transfer:
+                raise ValueError("NCCL LoRA broadcast does not support quantize_in_weight_transfer.")
         return self
 
     @model_validator(mode="after")

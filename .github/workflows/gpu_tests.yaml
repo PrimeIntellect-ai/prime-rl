@@ -83,6 +83,9 @@ jobs:
           - test: reverse_text_lora
             runner: vm
             pytest_args: "tests/integration/test_reverse_text_lora.py"
+          - test: reverse_text_lora_nccl
+            runner: vm
+            pytest_args: "tests/integration/test_reverse_text_lora_nccl.py"
           - test: reverse_text_moe
             runner: vm
             pytest_args: "tests/integration/test_reverse_text_moe.py"

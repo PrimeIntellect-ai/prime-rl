@@ -379,7 +379,12 @@ class Orchestrator:
             weights_path = get_weight_dir(
                 config.output_dir, self.progress.step, check_exists=check_exists, wait_timeout=wait_timeout
             )
-            await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=self.progress.step)
+            await self.student_inference.update_weights(
+                weights_path,
+                lora_name=self.lora_name,
+                step=self.progress.step,
+                nccl_lora=self.lora_name is not None and config.weight_broadcast.type == "nccl",
+            )
             if self.lora_name is not None:
                 self.student_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name

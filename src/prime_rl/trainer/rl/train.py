@@ -223,6 +223,18 @@ def train(config: TrainerConfig):
     if checkpoint_step is not None:
         ckpt_manager.load(checkpoint_step, model, [optimizer], scheduler, progress)
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
+        if config.model.lora is not None and weight_broadcast is not None and config.weight_broadcast.type == "nccl":
+            # The orchestrator arms an NCCL receive for the restored step at startup. Full-FT
+            # answers it because its loop-top send is unconditional, but the LoRA send is gated
+            # on ready_to_update, which only the packer sets once a batch arrives — and no batch
+            # can arrive while the orchestrator is blocked on this receive. Seed a one-shot
+            # bootstrap broadcast of the restored adapter. Run 0 is guaranteed discovered here:
+            # setup_optimizer(lora=True) blocks on it. Flags are set on every rank to keep the
+            # SPMD invariant of _compute_notified_runs.
+            for idx in multi_run_manager.used_idxs:
+                multi_run_manager.ready_to_update[idx] = True
+            weight_broadcast.broadcast_weights(model, step=progress.step)
+            logger.info(f"Bootstrapped NCCL LoRA broadcast for resumed step {progress.step}")
 
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import Mapping
 from itertools import cycle
 from pathlib import Path
@@ -105,7 +106,9 @@ class InferencePool(Protocol):
         """Wait for inference pool to be ready."""
         ...
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+    async def update_weights(
+        self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0, nccl_lora: bool = False
+    ) -> None:
         """Update weights on all inference servers."""
         ...
 
@@ -187,8 +190,10 @@ class StaticInferencePool:
         )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+    async def update_weights(
+        self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0, nccl_lora: bool = False
+    ) -> None:
+        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step, nccl_lora=nccl_lora)
 
     def get_metrics(self) -> dict[str, float]:
         return {}
@@ -359,7 +364,11 @@ async def maybe_check_has_model(
         return
     logger = get_logger()
     logger.debug(f"Checking if model {model_name} is in the inference pool")
-    results = await asyncio.gather(*[admin_client.get("/v1/models") for admin_client in admin_clients])
+    results = await _gather_admin(
+        admin_clients,
+        [admin_client.get("/v1/models") for admin_client in admin_clients],
+        op_name="GET /v1/models",
+    )
     for admin_client, result in zip(admin_clients, results):
         models = result.json()["data"]
         if not any(model["id"] == model_name for model in models):
@@ -394,7 +403,64 @@ async def check_health(
         logger.error(msg)
         raise TimeoutError(msg)
 
-    await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
+    await _gather_admin(
+        admin_clients,
+        [_check_health(admin_client) for admin_client in admin_clients],
+        op_name="health check",
+    )
+
+
+class AdminGatherError(RuntimeError):
+    """One or more inference-server peers failed a fan-out admin operation.
+
+    Names the failing peers so an opaque first-exception death (the death
+    multiplier behind the weight-sync OOM incident: one bad peer raises and the
+    bare ``asyncio.gather`` kills the whole 16-node job with no attribution)
+    becomes an attributable, potentially-recoverable error.
+    """
+
+    def __init__(self, op_name: str, failures: list[tuple[AsyncClient, BaseException]], total: int) -> None:
+        self.op_name = op_name
+        self.failures = failures
+        self.total = total
+        peers = ", ".join(f"{client.base_url} ({type(exc).__name__}: {exc})" for client, exc in failures)
+        super().__init__(f"{op_name} failed on {len(failures)}/{total} inference peer(s): {peers}")
+
+
+async def _gather_admin(
+    admin_clients: list[AsyncClient],
+    coros: list,
+    *,
+    op_name: str,
+    raise_on_failure: bool = True,
+) -> list:
+    """Fan-out ``coros`` (one per admin client) and attribute per-peer failures.
+
+    ``return_exceptions=True`` is the *means* to inspect-and-attribute, not to
+    swallow: every failed peer is logged loudly with its base URL and error, an
+    ``asyncio.CancelledError`` is re-raised verbatim (cancellation is not a peer
+    failure), and -- when ``raise_on_failure`` -- an aggregated
+    :class:`AdminGatherError` naming the dead peer(s) is raised so the
+    orchestrator/watcher can act on *which* peer died instead of an opaque
+    first-exception. On full success the result list is returned unchanged so
+    callers that consume per-peer payloads (e.g. the model-presence check) keep
+    working exactly as before.
+    """
+    results = await asyncio.gather(*coros, return_exceptions=True)
+    failures: list[tuple[AsyncClient, BaseException]] = []
+    for admin_client, result in zip(admin_clients, results):
+        if isinstance(result, asyncio.CancelledError):
+            # Cancellation is not a peer failure -- never swallow it.
+            raise result
+        if isinstance(result, BaseException):
+            failures.append((admin_client, result))
+    if failures:
+        logger = get_logger()
+        for admin_client, exc in failures:
+            logger.error(f"{op_name} failed on inference peer {admin_client.base_url}: {exc!r}")
+        if raise_on_failure:
+            raise AdminGatherError(op_name, failures, total=len(admin_clients))
+    return results
 
 
 NCCL_READY_MARKER = "NCCL_READY"
@@ -449,8 +515,12 @@ async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
     logger.info(f"Updating policy in-flight to v{step}")
-    await asyncio.gather(
-        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
+    # Compose retry (per-peer _admin_post) with attribution (_gather_admin names
+    # the dead peer instead of an opaque first-exception that kills the job).
+    await _gather_admin(
+        admin_clients,
+        [_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients],
+        op_name="pause engines",
     )
     logger.debug("All inference engines paused")
 
@@ -462,7 +532,11 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     failures is safe; a dropped /resume would leave engines paused indefinitely.
     """
     logger = get_logger()
-    await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
+    await _gather_admin(
+        admin_clients,
+        [_admin_post(client, "/resume") for client in admin_clients],
+        op_name="resume engines",
+    )
     logger.debug("All inference engines resumed")
 
 
@@ -471,6 +545,7 @@ async def update_weights(
     weight_dir: Path | None,
     lora_name: str | None = None,
     step: int = 0,
+    nccl_lora: bool = False,
 ) -> None:
     """Update weights on static inference servers.
 
@@ -485,7 +560,11 @@ async def update_weights(
 
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-    if lora_name is not None and weight_dir is not None:
+    if lora_name is not None and nccl_lora:
+        if weight_dir is None:
+            raise ValueError("NCCL LoRA update requires a broadcast marker directory")
+        await update_lora_adapter(admin_clients, lora_name, weight_dir, step)
+    elif lora_name is not None and weight_dir is not None:
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
         # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
@@ -499,8 +578,9 @@ async def update_weights(
                 nccl_ready_file.touch()
                 logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
-            await asyncio.gather(
-                *[
+            await _gather_admin(
+                admin_clients,
+                [
                     _admin_post(
                         admin_client,
                         "/update_weights",
@@ -508,10 +588,62 @@ async def update_weights(
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                     )
                     for admin_client in admin_clients
-                ]
+                ],
+                op_name="update weights",
             )
         finally:
             await _resume_engines(admin_clients)
+
+
+LORA_UPDATE_STATUS_TIMEOUT_S = 300.0
+LORA_UPDATE_STATUS_INTERVAL_S = 0.2
+
+
+async def update_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, weight_dir: Path, step: int) -> None:
+    """Arm an NCCL LoRA update, release the trainer broadcast, and wait for completion."""
+    logger = get_logger()
+    adapters = [{"lora_name": lora_name, "lora_int_id": 1}]
+
+    async def _arm_lora_update(admin_client: AsyncClient) -> None:
+        # Arm is a pause-class drain op; route through _admin_post for the same
+        # bounded-timeout + transient-retry contract as the other admin sites.
+        await _admin_post(admin_client, "/update_lora", json={"step": step, "adapters": adapters})
+
+    async def _wait_lora_update(admin_client: AsyncClient) -> None:
+        deadline = time.monotonic() + LORA_UPDATE_STATUS_TIMEOUT_S
+        while time.monotonic() < deadline:
+            response = await admin_client.get(
+                "/update_lora/status",
+                params={"step": step},
+                timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == "ok":
+                    return
+            elif response.status_code >= 500:
+                response.raise_for_status()
+            await asyncio.sleep(LORA_UPDATE_STATUS_INTERVAL_S)
+        raise TimeoutError(f"Timed out waiting for NCCL LoRA update step {step}")
+
+    await _pause_engines(admin_clients, step=step)
+    try:
+        await _gather_admin(
+            admin_clients,
+            [_arm_lora_update(admin_client) for admin_client in admin_clients],
+            op_name="arm NCCL LoRA update",
+        )
+        nccl_ready_file = weight_dir / NCCL_READY_MARKER
+        nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+        nccl_ready_file.touch()
+        logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
+        await _gather_admin(
+            admin_clients,
+            [_wait_lora_update(admin_client) for admin_client in admin_clients],
+            op_name="await NCCL LoRA update",
+        )
+    finally:
+        await _resume_engines(admin_clients)
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
@@ -582,7 +714,11 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
             )
             raise
 
-    await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
+    await _gather_admin(
+        admin_clients,
+        [_load_lora_adapter(admin_client) for admin_client in admin_clients],
+        op_name="load LoRA adapter",
+    )
     logger.info(f"Loaded LoRA adapter {lora_name} on {len(admin_clients)} inference server(s)")
 
 
@@ -596,7 +732,12 @@ async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) 
         # TODO: The first one can fail, but subsequent ones should succeed.
         # response.raise_for_status()
 
-    await asyncio.gather(*[_unload_lora_adapter(admin_client) for admin_client in admin_clients])
+    await _gather_admin(
+        admin_clients,
+        [_unload_lora_adapter(admin_client) for admin_client in admin_clients],
+        op_name="unload LoRA adapter",
+        raise_on_failure=False,
+    )
 
 
 async def init_nccl_broadcast(
@@ -621,6 +762,17 @@ async def init_nccl_broadcast(
             f"inference_world_size not provided, defaulting to {inference_world_size} (one GPU per admin client)"
         )
 
+    if not admin_clients:
+        raise ValueError("Cannot initialize NCCL broadcast without inference admin clients")
+    if inference_world_size < 1:
+        raise ValueError(f"inference_world_size must be positive, got {inference_world_size}")
+    if inference_world_size % len(admin_clients) != 0:
+        num_servers = len(admin_clients)
+        raise ValueError(
+            f"inference_world_size ({inference_world_size}) must be divisible by the number of "
+            f"inference servers ({num_servers})"
+        )
+
     gpus_per_server = inference_world_size // len(admin_clients)
 
     logger.info(
@@ -629,27 +781,24 @@ async def init_nccl_broadcast(
     )
 
     async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
-        try:
-            response = await admin_client.post(
-                "/init_broadcaster",
-                json={
-                    "host": host,
-                    "port": port,
-                    "rank_offset": rank_offset,
-                    "inference_world_size": inference_world_size,
-                    "timeout": timeout,
-                    "quantize_in_weight_transfer": quantize_in_weight_transfer,
-                },
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.warning("The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization.")
-                return
+        response = await admin_client.post(
+            "/init_broadcaster",
+            json={
+                "host": host,
+                "port": port,
+                "rank_offset": rank_offset,
+                "inference_world_size": inference_world_size,
+                "timeout": timeout,
+                "quantize_in_weight_transfer": quantize_in_weight_transfer,
+            },
+        )
+        response.raise_for_status()
 
-    await asyncio.gather(
-        *[
+    await _gather_admin(
+        admin_clients,
+        [
             _init_nccl_broadcast(admin_client, client_num * gpus_per_server)
             for client_num, admin_client in enumerate(admin_clients)
-        ]
+        ],
+        op_name="init NCCL broadcaster",
     )

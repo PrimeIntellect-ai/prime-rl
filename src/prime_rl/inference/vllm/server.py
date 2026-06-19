@@ -13,6 +13,7 @@ from vllm.entrypoints.openai.engine.protocol import ErrorResponse
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
 from vllm.logger import init_logger
+from vllm.lora.request import LoRARequest
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
@@ -103,6 +104,107 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     return {"status": "ok"}
+
+
+def _lora_update_tasks(request: Request) -> dict[int, asyncio.Task]:
+    tasks = getattr(request.app.state, "lora_update_tasks", None)
+    if tasks is None:
+        tasks = {}
+        request.app.state.lora_update_tasks = tasks
+    return tasks
+
+
+def _lora_update_adapters(request: Request) -> dict[int, list[dict]]:
+    adapters = getattr(request.app.state, "lora_update_adapters", None)
+    if adapters is None:
+        adapters = {}
+        request.app.state.lora_update_adapters = adapters
+    return adapters
+
+
+def _registered_lora_update_steps(request: Request) -> set[int]:
+    steps = getattr(request.app.state, "registered_lora_update_steps", None)
+    if steps is None:
+        steps = set()
+        request.app.state.registered_lora_update_steps = steps
+    return steps
+
+
+def _normalize_lora_update_adapter(adapter: dict) -> dict:
+    adapter = dict(adapter)
+    if "lora_name" not in adapter and "name" in adapter:
+        adapter["lora_name"] = adapter["name"]
+    if "lora_name" not in adapter:
+        raise ValueError("LoRA update adapter is missing 'lora_name'")
+    adapter.setdefault("lora_int_id", 1)
+    return adapter
+
+
+def _register_lora_update_success(request: Request, step: int) -> None:
+    registered_steps = _registered_lora_update_steps(request)
+    if step in registered_steps:
+        return
+
+    adapters = _lora_update_adapters(request).get(step)
+    if not adapters:
+        raise RuntimeError(f"No LoRA adapter metadata stored for step {step}")
+    adapter = adapters[0]
+    lora_name = adapter["lora_name"]
+    # Sentinel path: the adapter was committed in-memory by the workers and must stay resident in
+    # their adapter caches. If vLLM ever evicts it and tries to reload from this path it fails
+    # loudly -- correct, since there is nothing on disk to reload.
+    lora_path = adapter.get("lora_path") or f"/__prime_rl_nccl_lora__/{step}/{lora_name}"
+    models(request).lora_requests[lora_name] = LoRARequest(
+        lora_name=lora_name,
+        lora_int_id=int(adapter["lora_int_id"]),
+        lora_path=lora_path,
+    )
+    registered_steps.add(step)
+
+
+@router.post("/update_lora")
+async def update_lora(request: Request):
+    data = await request.json()
+    step = data["step"]
+    try:
+        adapters = [_normalize_lora_update_adapter(adapter) for adapter in data.get("adapters", [])]
+    except ValueError as exc:
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
+    if len(adapters) != 1:
+        return JSONResponse(
+            {"status": "error", "message": "NCCL LoRA currently supports exactly one adapter per update"},
+            status_code=400,
+        )
+
+    header_expectation = {
+        "step": step,
+        "adapters": [
+            {
+                "lora_name": adapters[0]["lora_name"],
+                "lora_int_id": adapters[0]["lora_int_id"],
+            }
+        ],
+    }
+    await engine_client(request).collective_rpc("arm_lora_receive", args=(step, header_expectation))
+    task = asyncio.create_task(engine_client(request).collective_rpc("wait_lora_receive", args=(step,)))
+    _lora_update_tasks(request)[step] = task
+    _lora_update_adapters(request)[step] = adapters
+    return JSONResponse({"status": "receiving", "step": step}, status_code=202)
+
+
+@router.get("/update_lora/status")
+async def update_lora_status(request: Request, step: int):
+    task = _lora_update_tasks(request).get(step)
+    if task is None:
+        return JSONResponse({"status": "unknown", "step": step}, status_code=404)
+    if not task.done():
+        return {"status": "receiving", "step": step}
+    try:
+        await task
+    except Exception as exc:
+        return JSONResponse({"status": "error", "step": step, "message": repr(exc)}, status_code=500)
+    _register_lora_update_success(request, step)
+    return {"status": "ok", "step": step}
 
 
 @router.get("/liveness")

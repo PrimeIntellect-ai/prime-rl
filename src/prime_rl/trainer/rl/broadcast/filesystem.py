@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 from typing import Literal
 
+import torch
 import torch.nn as nn
 from torch.distributed.tensor import DTensor
 
@@ -63,7 +64,14 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     if isinstance(value, DTensor):
                         value = value.full_tensor()
                     if self.world.is_master:
-                        state_dict[key] = value.to("cpu", non_blocking=False)
+                        # Downcast the adapter to bf16 on the way to disk. The
+                        # optimizer master copy is fp32, but vLLM consumes the
+                        # adapter in bf16 anyway, so the fp32 -> bf16 -> (vLLM bf16)
+                        # round-trip is bit-identical to the fp32 file while halving
+                        # the safetensors written every step and read off shared
+                        # Lustre by every inference replica. Matches the NCCL sender,
+                        # which already broadcasts adapters in bf16.
+                        state_dict[key] = value.to("cpu", dtype=torch.bfloat16, non_blocking=False)
 
             # TODO: Broadcast ready to update in sync, then we dont need to gather on not ready
             if self.world.is_master:

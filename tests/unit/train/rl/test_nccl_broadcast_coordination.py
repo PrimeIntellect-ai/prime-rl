@@ -37,6 +37,9 @@ def test_master_clears_stale_state_then_barriers_before_waiting_for_inference(tm
     broadcast.world = SimpleNamespace(is_master=True, world_size=2)
     broadcast.multi_run_manager = FakeMultiRunManager(tmp_path)
     broadcast.logger = SimpleNamespace(debug=lambda *args, **kwargs: None)
+    # __new__ skips __init__; broadcast_weights now reads self.lora_config to route
+    # the LoRA vs full-weight path. This test exercises the non-LoRA coordination flow.
+    broadcast.lora_config = None
     calls = []
 
     broadcast._notify_orchestrator = lambda pending_runs: calls.append("notify")
@@ -55,6 +58,9 @@ def test_non_master_waits_for_nccl_ready_after_trainer_barrier(tmp_path):
     broadcast.world = SimpleNamespace(is_master=False, world_size=2)
     broadcast.multi_run_manager = FakeMultiRunManager(tmp_path)
     broadcast.logger = SimpleNamespace(debug=lambda *args, **kwargs: None)
+    # __new__ skips __init__; broadcast_weights now reads self.lora_config to route
+    # the LoRA vs full-weight path. This test exercises the non-LoRA coordination flow.
+    broadcast.lora_config = None
     calls = []
 
     broadcast._sync_trainer_ranks = lambda: calls.append("barrier")

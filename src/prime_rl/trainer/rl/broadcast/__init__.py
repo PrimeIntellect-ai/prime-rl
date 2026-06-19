@@ -12,7 +12,7 @@ def setup_weight_broadcast(
     output_dir: Path, config: WeightBroadcastConfig, lora_config: LoRAConfig | None = None
 ) -> WeightBroadcast:
     if config.type == "nccl":
-        return NCCLWeightBroadcast(output_dir, config, torch.cuda.current_device())
+        return NCCLWeightBroadcast(output_dir, config, torch.cuda.current_device(), lora_config=lora_config)
     elif config.type == "filesystem":
         return FileSystemWeightBroadcast(output_dir, config, lora_config)
     else:

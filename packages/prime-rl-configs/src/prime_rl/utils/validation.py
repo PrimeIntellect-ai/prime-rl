@@ -334,3 +334,15 @@ def validate_shared_weight_broadcast(
             f"Weight broadcast types must match across configured components, got {details}. "
             "Please specify the same weight broadcast type for all components."
         )
+    if trainer.weight_broadcast.type != "nccl":
+        return
+
+    for field in ("port", "inference_world_size", "timeout", "quantize_in_weight_transfer"):
+        trainer_value = getattr(trainer.weight_broadcast, field)
+        orchestrator_value = getattr(orchestrator.weight_broadcast, field)
+        if trainer_value != orchestrator_value:
+            raise ValueError(
+                f"Trainer weight broadcast {field} ({trainer_value}) and orchestrator weight broadcast {field} "
+                f"({orchestrator_value}) are not the same. Please specify the same NCCL weight broadcast {field} "
+                f"for both."
+            )

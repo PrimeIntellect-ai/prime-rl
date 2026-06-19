@@ -277,6 +277,41 @@ def clean_lora_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torc
     return clean_state_dict
 
 
+def build_lora_peft_config(model: nn.Module, rank: int, alpha: float, dropout: float) -> dict:
+    """Build the PEFT adapter_config payload for the model's LoRA modules.
+
+    Args:
+        model: Model with LoRA layers to introspect.
+        rank: LoRA rank
+        alpha: LoRA alpha scaling parameter
+        dropout: LoRA dropout rate
+    """
+    target_modules = set()
+    modules_to_save = set()
+
+    for name, module in model.named_modules():
+        if isinstance(module, MultiLoRAModule):
+            module_suffix = name.split(".")[-1]
+            target_modules.add(module_suffix)
+
+    for name, param in model.named_parameters():
+        if param.requires_grad and "lora_A" not in name and "lora_B" not in name:
+            module_name = name.rsplit(".", 1)[0].split(".")[-1]
+            modules_to_save.add(module_name)
+
+    return {
+        "peft_type": "LORA",
+        "task_type": "CAUSAL_LM",
+        "base_model_name_or_path": model.config._name_or_path,
+        "r": rank,
+        "lora_alpha": alpha,
+        "lora_dropout": dropout,
+        "bias": "none",
+        "target_modules": sorted(list(target_modules)),
+        "modules_to_save": sorted(list(modules_to_save)) if modules_to_save else None,
+    }
+
+
 def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropout: float) -> None:
     """
     Save LoRA configuration as JSON for adapter portability.
@@ -292,33 +327,7 @@ def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropo
     from pathlib import Path
 
     save_path = Path(save_path)
-
-    # Extract actual target modules from the model
-    target_modules = set()
-    modules_to_save = set()
-
-    for name, module in model.named_modules():
-        if isinstance(module, MultiLoRAModule):
-            module_suffix = name.split(".")[-1]
-            target_modules.add(module_suffix)
-
-    for name, param in model.named_parameters():
-        if param.requires_grad and "lora_A" not in name and "lora_B" not in name:
-            module_name = name.rsplit(".", 1)[0].split(".")[-1]
-            modules_to_save.add(module_name)
-
-    adapter_config = {
-        "peft_type": "LORA",
-        "task_type": "CAUSAL_LM",
-        "base_model_name_or_path": model.config._name_or_path,
-        "r": rank,
-        "lora_alpha": alpha,
-        "lora_dropout": dropout,
-        "bias": "none",
-        "target_modules": sorted(list(target_modules)),
-        "modules_to_save": sorted(list(modules_to_save)) if modules_to_save else None,
-    }
-
+    adapter_config = build_lora_peft_config(model, rank, alpha, dropout)
     config_path = save_path / "adapter_config.json"
     with open(config_path, "w") as f:
         json.dump(adapter_config, f, indent=2)

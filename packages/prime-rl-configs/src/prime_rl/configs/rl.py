@@ -481,9 +481,6 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_lora(self):
         if self.trainer.model.lora is not None:
-            if self.trainer.weight_broadcast.type == "nccl":
-                raise ValueError("NCCL weight broadcast does not support LoRA yet.")
-
             if self.orchestrator.student.model.lora is None:
                 from prime_rl.configs.orchestrator import LoRAConfig
 

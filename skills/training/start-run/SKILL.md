@@ -69,7 +69,7 @@ uv run sft @ examples/reverse_text/sft.toml --dry-run
 
 ## `inference` — vLLM server
 
-OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly.
+OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/update_lora`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly.
 
 ```bash
 uv run inference @ configs/debug/infer.toml
@@ -89,6 +89,7 @@ curl http://localhost:8000/v1/chat/completions \
 - Config: `InferenceConfig` (`packages/prime-rl-configs/src/prime_rl/configs/inference.py`)
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
+- NCCL LoRA: supported for single-run RL LoRA only (`trainer.max_concurrent_runs = 1`), with `weight_broadcast.type = "nccl"` on trainer, orchestrator, and inference. Multi-tenant LoRA still uses filesystem adapter updates.
 
 ## GH200 / vLLM 0.21 stress notes
 
