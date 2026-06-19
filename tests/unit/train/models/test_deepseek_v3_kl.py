@@ -1,57 +1,84 @@
 import torch
 from datasets import load_dataset
+from dataclasses import dataclass
 from tqdm.auto import tqdm
 import pytest
 from transformers import AutoTokenizer
+import pandas as pd
+
+
+@dataclass
+class MathProblem:
+    problem: str
+    solution: str
+    type: str
+    level: str
 
 
 def load_math_dataset(
     split: str = "test",
     max_samples: int = 512,
     dataset_name: str = "EleutherAI/hendrycks_math",
-):
+) -> list[MathProblem]:
     """
     Loads the Hendrycks MATH dataset with optional subsampling.
-
-    Returns:
-        list[dict]: Each dict has keys: "problem", "solution", "type", "level".
     """
     dataset = load_dataset(dataset_name, "algebra", split=split)
+
     if max_samples is not None:
         dataset = dataset.select(range(min(max_samples, len(dataset))))
 
     return [
-        {
-            "problem": row["problem"],
-            "solution": row["solution"],
-            "type": row["type"],
-            "level": row["level"],
-        }
+        MathProblem(**{k: row[k] for k in ["problem", "solution", "type", "level"]})
         for row in dataset
     ]
 
 
-def format_math_prompt(problem: str) -> str:
+def format_math_prompt(dataset: list[MathProblem]) -> str:
     """
-    Formats the MATH problem into a prompt ready for model generation.
-    Example: "Problem: <text>\nAnswer:"
+    Formats the MATH problem into a chat messages
     """
+
     return [
-        {"role": "system", "content": ""},
-        {"role": "user", "content": f"{problem}"},
+        [
+            {"role": "system", "content": ""},
+            {"role": "user", "content": f"{sample.problem}"},
+        ]
+        for sample in dataset
     ]
 
 
 def get_devices():
-    device1 = "cuda:0"  # prime model
-    device2 = "cuda:1"
-    return device1, device2
+    prime_device = "cuda:0"  # prime model
+    hf_device = "cuda:1"
+    return prime_device, hf_device
+
+
+def truncate_padding(input_ids: torch.Tensor, attention_mask: torch.Tensor, tokenizer):
+
+    # speed up calculation by removing pad_tokens
+    sl = input_ids.shape[1]
+    filt = (input_ids == tokenizer.pad_token_id).all(dim=0)
+    for i in range(sl):
+        if filt[-1 - i] != True:
+            break
+
+    # modifier to include eos token for longest sample
+    if tokenizer.eos_token_id == tokenizer.pad_token_id:
+        k_mod = 1
+    else:
+        k_mod = 0
+
+    input_ids = input_ids[:, : sl - i + k_mod]
+    attention_mask = attention_mask[:, : sl - i + k_mod]
+
+    return input_ids, attention_mask
 
 
 @pytest.mark.skip(reason="up to 20 min with 2 gpus A100 (80gb vram)")
 def test_kl_divergence_on_math(
     batch_size=64,
-    max_steps=20,  # number of batches (not generation steps)
+    max_steps=20,  # number of batches
     atol_kl=0.015,
 ):
     """
@@ -62,17 +89,19 @@ def test_kl_divergence_on_math(
     """
 
     # lazy import
-    from tests.unit.train.models.test_deepseek_v3 import get_model_pairs
+    from .test_deepseek_v3 import get_model_pairs
 
     math_dataset = load_math_dataset(split="train", max_samples=batch_size * max_steps)
+    prompts = format_math_prompt(math_dataset)
 
     device_prime, device_hf = get_devices()
     tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-V3")
 
-    # Pre-tokenize prompts
-    prompts = [format_math_prompt(d["problem"]) for d in math_dataset]
+    # DS_V3 defaults to "left" padding, but prime-rl doesn't support custom masks with "left" padding
+    tokenizer.padding_side = "right"
 
-    # offload to cpu
+    # Tokenize prompts
+    # don't preload on gpus
     with torch.device("cpu"):
         tokenized = tokenizer.apply_chat_template(
             prompts, return_tensors="pt", padding=True, truncation=True, max_length=1024
@@ -89,8 +118,7 @@ def test_kl_divergence_on_math(
     prime_model.eval()
 
     # Batched eval loop
-    all_kls = []
-    total_tokens = 0
+    outputs = []
     batch_idx = 0
 
     with torch.no_grad():
@@ -108,6 +136,11 @@ def test_kl_divergence_on_math(
             if batch_input_ids.size(0) == 0:
                 continue
 
+            # truncate to speed up inference
+            batch_input_ids, batch_attention_mask = truncate_padding(
+                batch_input_ids, batch_attention_mask, tokenizer
+            )
+
             # Run forward on full prompt (pre-fill only — no generation)
             hf_out = hf_model(
                 input_ids=batch_input_ids.to(device_hf),
@@ -119,7 +152,7 @@ def test_kl_divergence_on_math(
             logprobs_hf = torch.log_softmax(hf_out.logits, dim=-1).to("cpu")
             logprobs_prime = torch.log_softmax(prime_out["logits"], dim=-1).to("cpu")
 
-            # clean cache
+            # clean memory
             del hf_out, prime_out
 
             # Mask to avoid padding
@@ -130,17 +163,30 @@ def test_kl_divergence_on_math(
             # where p = softmax(logprobs_prime), q = softmax(logprobs_hf)
             kl_per_token = torch.exp(logprobs_prime) * (logprobs_prime - logprobs_hf)
             kl_batch = (kl_per_token * mask.unsqueeze(-1)).sum() / (num_valid + 1e-8)
-            all_kls.append(kl_batch.item())
-            total_tokens += num_valid.item()
 
+            kl_val = kl_batch.item()
+            assert (
+                kl_val < atol_kl
+            ), f"KL mismatch too high for step {i}: {kl_val:.10f} ≥ {atol_kl}."
+
+            batch_output = {
+                "step": batch_idx,
+                "batch_size": batch_input_ids.shape[0],
+                "num_tokens": num_valid.item(),
+                "kl_val": kl_val,
+            }
+            outputs.append(batch_output)
             batch_idx += 1
 
-    mean_kl = sum(all_kls) / len(all_kls) if all_kls else 0.0
+    total_tokens = sum([b["num_tokens"] for b in outputs])
+    mean_kl = sum([b["kl_val"] for b in outputs]) / len(outputs)
     print(
         f"\n[KL Mismatch Test] Avg KL per token = {mean_kl:.10f} over {batch_idx} batches"
     )
     print(f"Total tokens evaluated: {total_tokens}")
-    print(f"KL per batch: {all_kls}")
+
+    df = pd.DataFrame(outputs)
+    print(df)
 
     assert mean_kl < atol_kl, (
         f"KL mismatch too high: {mean_kl:.10f} ≥ {atol_kl}. "
