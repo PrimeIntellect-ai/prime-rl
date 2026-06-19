@@ -22,7 +22,6 @@
 from __future__ import annotations
 
 import asyncio
-import traceback
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -489,15 +488,9 @@ class RolloutDispatcher:
         except Exception as exc:
             get_logger().warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             task_idx = group.task_idx if group is not None else -1
-            tb = traceback.format_exc()
-            rollouts = [
-                Rollout(
-                    task=vf.Task(idx=task_idx, prompt=None),
-                    errors=[vf.Error(type=type(exc).__name__, message=str(exc), traceback=tb)],
-                    stop_condition="error",
-                )
-                for _ in range(meta.rollout_count)
-            ]
+            rollouts = [Rollout(task=vf.Task(idx=task_idx, prompt=None)) for _ in range(meta.rollout_count)]
+            for r in rollouts:
+                r.capture_error(exc)
             is_synth_exception = True
 
         for r in rollouts:
