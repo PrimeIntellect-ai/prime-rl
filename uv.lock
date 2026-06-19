@@ -3705,7 +3705,7 @@ envs = [
     { name = "opencode-swe", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "r2e-gym-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "reverse-text", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "rlm-search", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "reverse-text-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "rlm-swe", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "scaleswe-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "science-env", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3831,7 +3831,6 @@ requires-dist = [
     { name = "reverse-text-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text_v1" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
-    { name = "rlm-search", marker = "extra == 'envs'", editable = "deps/research-environments/environments/rlm_search" },
     { name = "rlm-swe", marker = "extra == 'envs'", editable = "deps/research-environments/environments/rlm_swe" },
     { name = "scaleswe-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/scaleswe_v1" },
     { name = "science-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/science_env" },
@@ -3918,16 +3917,16 @@ wheels = [
 
 [[package]]
 name = "prime-tunnel"
-version = "0.1.9"
+version = "0.1.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/36/de/0d17589b232708d1f5985372d1ca49e73493e0b08f860e6540d4885ce229/prime_tunnel-0.1.9.tar.gz", hash = "sha256:8d6c7fd7f5a98c47f50707edd606c4e7110e9dd1a08a1008b073be466408ac8d", size = 15162, upload-time = "2026-06-11T18:10:03.513Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9c/e7/557c7623bd8c9a7a9127d880dce2a3d8612d3a7df02bdde6f01c958a20b8/prime_tunnel-0.1.8.tar.gz", hash = "sha256:07803d5d5c6ec83c260bbef0ecd340f4f6acab0f6a254d5d34a4c6ddfc777c0b", size = 14576, upload-time = "2026-06-02T06:39:36.56Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/50/2a/4b370d5d7cf7cbd98ce2714b7d877d2a184cc1b00d599df498aca04bce2d/prime_tunnel-0.1.9-py3-none-any.whl", hash = "sha256:9ad888e26ba4d81e96c643d9d27687ed4737c873f3b80ed3da8f92d6d7a2a615", size = 16274, upload-time = "2026-06-11T18:10:01.463Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/5f/181fe0ca1ca8507c0a373e55363b411bdeab9ad904c68edec7d7b1bdea74/prime_tunnel-0.1.8-py3-none-any.whl", hash = "sha256:fab081f566e0887ce50c7b5872169e9f356fc3263d5f0493cfabb3150eb73b0a", size = 15843, upload-time = "2026-06-02T06:39:34.043Z" },
 ]
 
 [[package]]
@@ -4575,29 +4574,8 @@ wheels = [
 ]
 
 [[package]]
-name = "rlm-search"
-version = "0.1.2"
-source = { editable = "deps/research-environments/environments/rlm_search" }
-dependencies = [
-    { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "httpx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "openai", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "prime-sandboxes", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "verifiers", extra = ["packages"], marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets", specifier = ">=4.0.0" },
-    { name = "httpx" },
-    { name = "openai", specifier = ">=1.0" },
-    { name = "prime-sandboxes", specifier = ">=0.2.19" },
-    { name = "verifiers", specifier = ">=0.1.15.dev171" },
-]
-
-[[package]]
 name = "rlm-swe"
-version = "0.5.1"
+version = "0.4.4"
 source = { editable = "deps/research-environments/environments/rlm_swe" }
 dependencies = [
     { name = "multi-swe-bench", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4611,7 +4589,7 @@ requires-dist = [
     { name = "multi-swe-bench", specifier = ">=1.1.2" },
     { name = "prime-sandboxes", specifier = ">=0.2.19" },
     { name = "swebench", specifier = "==4.1.0" },
-    { name = "verifiers", extras = ["packages"], specifier = ">=0.1.15.dev17,<0.1.15.dev156" },
+    { name = "verifiers", extras = ["packages"], specifier = ">=0.1.15.dev17" },
 ]
 
 [[package]]
@@ -5643,9 +5621,9 @@ requires-dist = [
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-agents", specifier = ">=0.0.7" },
     { name = "peft", marker = "extra == 'rl'" },
-    { name = "pillow" },
-    { name = "prime-pydantic-config", extras = ["toml"] },
-    { name = "prime-sandboxes", specifier = ">=0.2.25" },
+    { name = "pillow", marker = "extra == 'quest'" },
+    { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.3.0.dev86" },
+    { name = "prime-sandboxes", specifier = ">=0.2.27" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pymupdf", marker = "extra == 'quest'" },

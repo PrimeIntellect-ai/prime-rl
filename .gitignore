@@ -23,8 +23,7 @@ configs/endpoints.py
 final_summary.json
 .pydantic_config
 .chroma_db
-deps/nixl_*
-nixl_workspace/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

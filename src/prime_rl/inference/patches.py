@@ -84,44 +84,6 @@ def monkey_patch_return_routed_experts_with_nixl_connector():
     logger.warning("Enabled vLLM routed-experts capture with NIXL connector patch.")
 
 
-def monkey_patch_strip_routed_experts_from_chat():
-    """Drop routed_experts from chat-completions responses.
-
-    routed_experts are only consumed via the serialized ``/generate``
-    (serving_tokens) path used for router-replay training, which encodes them as a
-    ``{data, shape, start}`` object the PD router can merge. The stock
-    chat-completions path instead encodes them as a base64 ``np.save`` *string*,
-    which the PD router rejects ("prefill routed_experts must be an object with
-    base64 data and shape") and fails every eval rollout (evals go through chat
-    completions). ``enable_return_routed_experts`` is a server-wide model-config
-    flag with no per-request toggle, so strip the field on the chat path here.
-    """
-    from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
-    from vllm.logger import init_logger
-
-    logger = init_logger(__name__)
-
-    if getattr(OpenAIServingChat.chat_completion_full_generator, "_prime_rl_strips_routed_experts", False):
-        return
-
-    _original = OpenAIServingChat.chat_completion_full_generator
-
-    async def _strip(result_generator):
-        async for res in result_generator:
-            for output in res.outputs:
-                output.routed_experts = None
-            yield res
-
-    async def _patched(self, request, result_generator, *args, **kwargs):
-        return await _original(self, request, _strip(result_generator), *args, **kwargs)
-
-    _patched._prime_rl_strips_routed_experts = True
-    OpenAIServingChat.chat_completion_full_generator = _patched
-    logger.info(
-        "Stripped routed_experts from chat-completions responses (PD router merges only the /generate object form)."
-    )
-
-
 @triton.jit
 def _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel(
     y_ptr,
@@ -892,36 +854,3 @@ def monkey_patch_fp32_lm_head():
     LogitsProcessor.__init__ = _patched_init
     LogitsProcessor._get_logits = _patched_get_logits
     logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")
-
-
-def monkey_patch_dp_coordinator_startup_timeout():
-    """Raise the DP coordinator startup timeout from vLLM's hard-coded 30s.
-
-    The coordinator child process is spawned on the DP-rank-0 API server while
-    every engine-core rank on the node is importing and loading weights, so its
-    own spawn-time re-import can take well over 30s under that CPU/IO
-    contention (seen on multi-node disaggregated GLM-5.1 launches). Configurable
-    via PRIME_DP_COORDINATOR_STARTUP_TIMEOUT (seconds, default 300).
-    """
-    import multiprocessing.connection
-    import os
-
-    from vllm.v1.engine.coordinator import DPCoordinator
-
-    timeout = float(os.environ.get("PRIME_DP_COORDINATOR_STARTUP_TIMEOUT", "300"))
-
-    def _patched_wait_for_zmq_addrs(self, zmq_addr_pipe):
-        try:
-            ready = multiprocessing.connection.wait([zmq_addr_pipe, self.proc.sentinel], timeout=timeout)
-            if not ready:
-                raise RuntimeError(
-                    f"DP Coordinator process failed to report ZMQ addresses within {timeout}s during startup."
-                )
-            try:
-                return zmq_addr_pipe.recv()
-            except EOFError:
-                raise RuntimeError("DP Coordinator process failed during startup.") from None
-        finally:
-            zmq_addr_pipe.close()
-
-    DPCoordinator._wait_for_zmq_addrs = _patched_wait_for_zmq_addrs
