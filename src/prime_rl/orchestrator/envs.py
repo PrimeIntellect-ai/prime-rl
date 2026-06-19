@@ -32,6 +32,7 @@ from verifiers.v1.serve import EnvClient
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.sampler import Sampler
+from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
 
 # Every wire trace validates into this type. WireTask (extra="allow") keeps the env's task
@@ -207,9 +208,6 @@ class TrainEnv(Env):
         self.sampler = sampler
         self.algorithm = algorithm
         self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
-
-    def get_dataset(self, seed: int | None = None):
-        return self.env.get_dataset(seed=seed)
 
 
 class EvalEnv(Env):

@@ -20,17 +20,14 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
 
 # Orchestrator -> Packer
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    """A single training example — one branch of a rollout as a flat token sequence.
+    """A single training example."""
 
-    There is no prompt/completion split: an agentic, multi-turn branch interleaves context and
-    model-sampled spans, so ``mask`` marks which tokens are trainable (model-sampled) and
-    ``logprobs`` / ``temperatures`` are aligned per token. All four arrays share the length of
-    ``token_ids``."""
-
-    token_ids: list[int]
-    mask: list[bool]  # per-token: True = model-sampled (trainable), False = context/scaffold
-    logprobs: list[float]  # per-token sampling logprobs (0.0 on non-sampled tokens)
-    temperatures: list[float]  # per-token temperature used during generation
+    prompt_ids: list[int]
+    prompt_mask: list[bool]
+    completion_ids: list[int]
+    completion_mask: list[bool]
+    completion_logprobs: list[float]
+    completion_temperatures: list[float]  # Per-token temperatures used during generation
     env_name: str
     ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl component)
     reward: float | None = None

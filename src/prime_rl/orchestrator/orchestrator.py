@@ -3,8 +3,7 @@
 ``Orchestrator`` owns the shared state (policy, progress, ckpt, monitor)
 and drives the pipeline. Components are single-purpose:
 
-- ``RolloutDispatcher`` schedules rollouts; emits ``TrainRollout`` /
-  ``EvalRollout`` on its queue.
+- ``RolloutDispatcher`` schedules rollouts; emits trace-backed ``Rollout`` objects on its queue.
 - ``TrainSink`` ingests train rollouts (tokenize → advantages → filters)
   and returns a ``TrainBatch`` when the threshold is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (with
@@ -59,12 +58,10 @@ from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     EvalBatch,
-    EvalRollout,
-    FinishedRollout,
     Policy,
     Progress,
+    Rollout,
     TrainBatch,
-    TrainRollout,
 )
 from prime_rl.orchestrator.utils import (
     get_weight_dir,
@@ -366,8 +363,6 @@ class Orchestrator:
         self.metrics = MetricsBuilder(config, start_step=self.progress.step)
         self.train_sink = TrainSink(
             config,
-            tokenizer=self.tokenizer,
-            renderer=self.renderer,
             train_envs=self.train_envs,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,
@@ -464,7 +459,7 @@ class Orchestrator:
                 get_logger().debug(f"malloc_trim(0) failed: {e}")
 
     async def main_loop(self) -> None:
-        """Consume ``FinishedRollout``\\ s from the dispatcher and route them
+        """Consume rollouts from the dispatcher and route them
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
@@ -474,18 +469,17 @@ class Orchestrator:
                 break
 
             try:
-                rollout: FinishedRollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                rollout: Rollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
 
-            if isinstance(rollout, EvalRollout):
+            if rollout.kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(rollout)
                 if eval_batch is not None:
                     await self.finalize_eval_batch(eval_batch)
                 continue
 
-            assert isinstance(rollout, TrainRollout)
             train_batch = await self.train_sink.add(rollout)
             # In drain mode any late-arriving train batch is dropped — we
             # don't want to ship past ``max_steps``
@@ -620,10 +614,7 @@ class Orchestrator:
 
         num_rollouts = len(batch.rollouts)
         num_unique_examples = len({r.group_id for r in batch.rollouts})
-        num_tokens = sum(
-            r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
-            for r in batch.rollouts
-        )
+        num_tokens = sum(r.total_tokens for r in batch.rollouts)
         self.progress.total_tokens += num_tokens
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples
@@ -730,7 +721,7 @@ class Orchestrator:
         trainable_rate = (n_trainable / n_survivors) if n_survivors else 0.0
         reward_mean = sum(r.reward for r in batch.rollouts) / max(n_survivors, 1)
         max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
-        turns_mean = sum(len(r.raw.get("trajectory") or []) for r in batch.rollouts) / max(n_survivors, 1)
+        turns_mean = sum(r.num_turns for r in batch.rollouts) / max(n_survivors, 1)
         truncation_rate = sum(1 for r in batch.rollouts if r.is_truncated) / max(n_survivors, 1)
 
         head = (
@@ -754,11 +745,7 @@ class Orchestrator:
             env_error_rate = (n_env_errors / n_env_arrivals) if n_env_arrivals else 0.0
             env_reward = (sum(r.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
             env_max_off_policy = max((r.off_policy_steps for r in env_rollouts), default=0)
-            env_turns = (
-                sum(len(r.raw.get("trajectory") or []) for r in env_rollouts) / len(env_rollouts)
-                if env_rollouts
-                else 0.0
-            )
+            env_turns = sum(r.num_turns for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
             env_truncation = sum(1 for r in env_rollouts if r.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "

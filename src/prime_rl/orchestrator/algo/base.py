@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from renderers.base import Renderer
 
     from prime_rl.orchestrator.envs import TrainEnvs
-    from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.orchestrator.types import Rollout
     from prime_rl.utils.client import InferencePool
 
 
@@ -149,13 +149,13 @@ class Algorithm:
         advantages."""
 
 
-async def finalize_rollout(algorithm: Algorithm, rollout: TrainRollout) -> None:
+async def finalize_rollout(algorithm: Algorithm, rollout: Rollout) -> None:
     """Arrival phase: rollout-local scoring as each rollout is tokenized."""
     if rollout.samples:
         await algorithm.score_rollout(RolloutView(rollout))
 
 
-async def finalize_group(algorithm: Algorithm, rollouts: list[TrainRollout]) -> None:
+async def finalize_group(algorithm: Algorithm, rollouts: list[Rollout]) -> None:
     """Group phase: group-relative scoring, then stamp each sample's wire
     fields (the advantage stream + loss routing). After this the records are
     frozen — groups die at stamping."""
@@ -168,11 +168,11 @@ async def finalize_group(algorithm: Algorithm, rollouts: list[TrainRollout]) -> 
             stamp_loss_routing(sample, algorithm.action_loss_type)
 
 
-async def finalize_batch(train_envs: TrainEnvs, rollouts: list[TrainRollout]) -> None:
+async def finalize_batch(train_envs: TrainEnvs, rollouts: list[Rollout]) -> None:
     """Ship phase: run each env's ``score_batch`` over its unfiltered rollouts
     (survivors), concurrently across envs. Per-env concurrency is bounded by
     the algorithm's own config; envs without references return immediately."""
-    by_env: dict[str, list[TrainRollout]] = defaultdict(list)
+    by_env: dict[str, list[Rollout]] = defaultdict(list)
     for rollout in rollouts:
         if not rollout.is_filtered:
             by_env[rollout.env_name].append(rollout)

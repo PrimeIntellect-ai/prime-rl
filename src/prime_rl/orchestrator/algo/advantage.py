@@ -14,7 +14,6 @@ from prime_rl.configs.algorithm import (
     TokensLengthPenaltyConfig,
     TurnsLengthPenaltyConfig,
 )
-from prime_rl.orchestrator.utils import get_model_completion_len, get_tool_response_len
 
 AdvantageFn = Callable[..., list[float | list[float]]]
 """Type for an advantage function.
@@ -46,12 +45,12 @@ def default_advantage_fn(
         w_c = length_penalty.completion_weight
         w_t = length_penalty.tool_response_weight
         costs = torch.tensor(
-            [w_c * get_model_completion_len(v.raw) + w_t * get_tool_response_len(v.raw) for v in group],
+            [w_c * v.completion_len + w_t * v.tool_response_len for v in group],
             dtype=rewards.dtype,
         )
         return _efficiency_shaping(rewards, costs).tolist()
     if isinstance(length_penalty, TurnsLengthPenaltyConfig):
-        costs = torch.tensor([len(v.raw["trajectory"]) for v in group], dtype=rewards.dtype)
+        costs = torch.tensor([v.num_turns for v in group], dtype=rewards.dtype)
         return _efficiency_shaping(rewards, costs).tolist()
 
     return (rewards - rewards.mean()).tolist()
