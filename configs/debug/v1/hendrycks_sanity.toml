@@ -16,7 +16,7 @@ num_infer_gpus = 4
 
 [slurm]
 job_name = "v1-subprocess"
-partition = "cluster"
+partition = "all"
 
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
