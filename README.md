@@ -241,6 +241,7 @@ Check out the [docs](docs) directory for in-depth guides on how to use PRIME-RL.
 - [**Training**](docs/training.md) - RL, SFT, evals, checkpointing, observability, rules of thumb
 - [**Scaling**](docs/scaling.md) - Single-GPU through multi-node, FSDP/EP/CP, SLURM, benchmarking
 - [**Algorithms**](docs/algorithms.md) - Async/off-policy training, the AIPO loss, advantage and filter plugins, trajectory merging
+- [**Transcript Analysis**](docs/transcript-analysis.md) - Full rollout snapshots and Docent analysis plans for transcript/failure analysis
 - [**Advanced**](docs/advanced.md) - Custom modeling, multimodal training, LoRA, multi-tenant training
 - [**Development**](docs/development.md) - Test suite, pre-commit hooks, adding a new model
 

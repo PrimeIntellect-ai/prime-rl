@@ -712,6 +712,9 @@ class OrchestratorConfig(BaseConfig):
     output_dir: Path = Path("outputs/run_default")
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
 
+    save_full_rollouts: bool = False
+    """When True, also save rollout JSONL snapshots that preserve full trajectories for transcript analysis. Defaults to False because trajectories can be large."""
+
     tasks_per_minute: int | None = Field(None, ge=1)
     """Rate limit per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. With multiple workers, the effective total rate is ``workers × this value``. None disables rate limiting."""
 

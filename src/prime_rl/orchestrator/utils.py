@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import cycle
@@ -74,11 +75,17 @@ def get_tool_response_len(output: vf.RolloutOutput) -> int:
 def save_rollouts(rollouts: list[vf.RolloutOutput], path: Path, exclude_keys: set[str] | None = None) -> None:
     """Save rollouts to a JSONL file using verifiers serialization."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
     opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
-    with open(path, "wb") as f:
-        for rollout in rollouts:
-            row = {k: v for k, v in rollout.items() if k not in exclude_keys} if exclude_keys else rollout
-            f.write(orjson.dumps(row, default=make_serializable, option=opts))
+    try:
+        with open(tmp_path, "wb") as f:
+            for rollout in rollouts:
+                row = {k: v for k, v in rollout.items() if k not in exclude_keys} if exclude_keys else rollout
+                f.write(orjson.dumps(row, default=make_serializable, option=opts))
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 def append_rollouts(rollouts: list[vf.RolloutOutput], path: Path, exclude_keys: set[str] | None = None) -> None:

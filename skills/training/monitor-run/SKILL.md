@@ -138,8 +138,10 @@ curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
 
 ```
 {output_dir}/rollouts/step_N/
-├── train_rollouts.jsonl   # all train rollouts (vf.RolloutOutput, trajectory excluded)
-├── eval_rollouts.jsonl    # only present when eval ran
+├── train_rollouts.jsonl             # all train rollouts (vf.RolloutOutput, trajectory excluded)
+├── train_rollouts_full.jsonl        # only when save_full_rollouts=true
+├── eval_rollouts_<env>.jsonl        # only present when eval ran (trajectory excluded)
+├── eval_rollouts_<env>.full.jsonl   # only when eval ran and save_full_rollouts=true
 └── train_rollouts.bin     # binary batch consumed by the trainer
 ```
 

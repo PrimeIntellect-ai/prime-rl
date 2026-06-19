@@ -770,6 +770,8 @@ class Orchestrator:
             step_path / "train_rollouts.jsonl",
             exclude_keys=None if config.dump_trajectory else {"trajectory"},
         )
+        if config.save_full_rollouts:
+            await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts_full.jsonl")
         # Debate telemetry rides the same logged-rollout payload. The gate is
         # the data itself: only rollouts whose ``mar_score.episode_categorical``
         # carries a winner are counted, so a non-debate batch yields no metrics
@@ -1062,6 +1064,12 @@ class Orchestrator:
             step_path / f"eval_rollouts_{batch.env_name}.jsonl",
             exclude_keys=None if self.config.dump_trajectory else {"trajectory"},
         )
+        if self.config.save_full_rollouts:
+            await asyncio.to_thread(
+                save_rollouts,
+                rollout_dicts,
+                step_path / f"eval_rollouts_{batch.env_name}.full.jsonl",
+            )
         self.monitor.log_eval_samples(rollout_dicts, env_name=batch.env_name, step=batch.step)
         policy_versions = {r.policy_version for r in batch.rollouts}
         policy_version = min(policy_versions)

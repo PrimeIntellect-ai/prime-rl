@@ -344,6 +344,11 @@ def test_trainer_enable_token_export_cli_flag():
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
 
 
+def test_orchestrator_save_full_rollouts_cli_flag():
+    assert not cli(OrchestratorConfig, args=[]).save_full_rollouts
+    assert cli(OrchestratorConfig, args=["--save-full-rollouts"]).save_full_rollouts
+
+
 def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="orchestrator.renderer must be set when model.vlm is set"):
         OrchestratorConfig.model_validate(

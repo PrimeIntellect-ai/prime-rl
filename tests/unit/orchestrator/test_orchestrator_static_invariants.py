@@ -113,9 +113,12 @@ def test_train_rollout_persistence_honors_dump_trajectory():
         and node.args
         and ast.unparse(node.args[0]) == "save_rollouts"
     ]
-    assert len(calls) == 1
-    exclude_kw = _call_kw(calls[0], "exclude_keys")
-    assert exclude_kw is not None
+    # ``save_full_rollouts`` may add a second (full-trajectory) dump; the pin
+    # asserts the trajectory-honoring dump exists and excludes correctly, not a
+    # total call count.
+    honoring = [c for c in calls if _call_kw(c, "exclude_keys") is not None]
+    assert len(honoring) == 1
+    exclude_kw = _call_kw(honoring[0], "exclude_keys")
     assert ast.unparse(exclude_kw.value) == "None if config.dump_trajectory else {'trajectory'}"
 
 
@@ -128,9 +131,12 @@ def test_eval_rollout_persistence_honors_dump_trajectory():
         and node.args
         and ast.unparse(node.args[0]) == "save_rollouts"
     ]
-    assert len(calls) == 1
-    exclude_kw = _call_kw(calls[0], "exclude_keys")
-    assert exclude_kw is not None
+    # ``save_full_rollouts`` may add a second (full-trajectory) dump; the pin
+    # asserts the trajectory-honoring dump exists and excludes correctly, not a
+    # total call count.
+    honoring = [c for c in calls if _call_kw(c, "exclude_keys") is not None]
+    assert len(honoring) == 1
+    exclude_kw = _call_kw(honoring[0], "exclude_keys")
     assert ast.unparse(exclude_kw.value) == "None if self.config.dump_trajectory else {'trajectory'}"
 
 
