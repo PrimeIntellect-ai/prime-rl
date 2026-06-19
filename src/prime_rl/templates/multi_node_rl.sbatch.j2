@@ -187,7 +187,7 @@ CLEANUP_SH
 # --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other
 # tasks so a crashed component terminates the SLURM job instead of leaving the
 # surviving ranks holding nodes.
-srun --kill-on-bad-exit=1 bash -c '
+srun --export=ALL --kill-on-bad-exit=1 bash -c '
     # pipefail ensures `cmd | tee log` propagates `cmd` failures, and the
     # wait/cleanup block at the end of this script surfaces background
     # process crashes (router, orchestrator) as task failures.
@@ -198,6 +198,7 @@ srun --kill-on-bad-exit=1 bash -c '
     [ -f .env ] && source .env
     source .venv/bin/activate
     # Do not sync to avoid conflicts with lockfile
+    export VF_RENDERER_RESPONSE_DUMP_DIR=/root/outputs/nemotron-nano-swe/raw-dumps/live
 
     # Higher ulimit
     ulimit -n 65536

@@ -387,10 +387,8 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the rollout pool (teacher in SFT) via the
-        # renderer/token train client. Eval always evaluates the student and
-        # goes through the eval client (chat-completions) — the same path the
-        # legacy orchestrator used, so eval scores stay comparable.
+        # Train rollouts use the rollout pool (teacher in SFT). Eval always
+        # evaluates the student through the pool's configured eval client.
         if group.kind == "eval":
             pool, model_name = self.eval_inference, self.policy.model_name
         else:

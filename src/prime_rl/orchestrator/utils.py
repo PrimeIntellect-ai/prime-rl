@@ -37,7 +37,7 @@ async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer)
             client_config,
             model_name=model_name,
             train_client_type="renderer",
-            eval_client_type="openai_chat_completions",
+            eval_client_type="renderer",
             renderer_config=config.renderer,
             pool_size=config.pool_size,
         )
