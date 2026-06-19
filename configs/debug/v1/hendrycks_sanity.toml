@@ -1,10 +1,10 @@
 # v1 analog of examples/hendrycks_sanity/rl.toml — identical config with only
 # the env sections swapped to v1 taskset/harness syntax (math-env taskset,
-# default harness, subprocess runtime). Submits to slurm by default; pass --no-slurm
+# default harness, modal runtime). Submits to slurm by default; pass --no-slurm
 # to run locally.
 
-output_dir = "/beegfs/mika/hendrycks-sanity-v1-subprocess"
-max_steps = 5000
+output_dir = "/beegfs/mika/hendrycks-sanity-v1"
+max_steps = 200
 
 [wandb]
 project = "hendrycks-sanity"
@@ -15,7 +15,7 @@ num_train_gpus = 4
 num_infer_gpus = 4
 
 [slurm]
-job_name = "v1-subprocess"
+job_name = "hendrycks-modal"
 partition = "all"
 
 [model]
@@ -30,7 +30,7 @@ max_inflight_rollouts = 256
 [[orchestrator.train.env]]
 name = "hendrycks-math"
 taskset = { id = "math-env-v1", dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "default", runtime = { type = "modal" } }
 timeout = { scoring = 300 }
 
 [orchestrator.eval]
@@ -39,7 +39,7 @@ interval = 50
 [[orchestrator.eval.env]]
 name = "aime2024"
 taskset = { id = "aime24-v1" }
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "default", runtime = { type = "modal" } }
 timeout = { scoring = 300 }
 group_size = 32
 
