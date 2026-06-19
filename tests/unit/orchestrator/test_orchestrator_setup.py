@@ -12,7 +12,6 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
         tokenizer = object()
         renderer_settings = Qwen3VLRendererConfig()
         config = SimpleNamespace(
-            training_mode="rl",
             student=SimpleNamespace(
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
                 model=SimpleNamespace(name="student-model"),

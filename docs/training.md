@@ -1,6 +1,6 @@
 # Training
 
-This page covers everything you need to launch, observe, checkpoint, and recover a `prime-rl` training run — the RL trainer, the SFT trainer, and the related on-policy distillation mode. For multi-node and cluster layouts, see [Scaling](scaling.md). For the loss math and algorithm knobs, see [Algorithms](algorithms.md).
+This page covers everything you need to launch, observe, checkpoint, and recover a `prime-rl` training run — the RL trainer, the SFT trainer, and advantage patterns such as OPD. For multi-node and cluster layouts, see [Scaling](scaling.md). For the loss math and algorithm knobs, see [Algorithms](algorithms.md).
 
 > **AI agents working in this repo:** the equivalent runbooks are at [`skills/training/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/skills/training) — top-level routing in [`skills/training/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/training/SKILL.md), launch details in [`skills/training/start-run/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/training/start-run/SKILL.md), and check-in / restart procedures in [`skills/training/monitor-run/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/training/monitor-run/SKILL.md).
 
@@ -10,7 +10,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [RL Trainer](#rl-trainer)
   - [Launch](#launch)
   - [Useful Knobs](#useful-knobs)
-  - [Training Modes (RL / OPD / SFT)](#training-modes-rl--opd--sft)
+  - [Advantage Functions and Actors](#advantage-functions-and-actors)
   - [Important Metrics](#important-metrics)
 - [SFT Trainer](#sft-trainer)
   - [Dataset Format](#dataset-format)
@@ -59,7 +59,8 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
-| `orchestrator.training_mode` | `rl` (default), `opd`, or `sft`. See [Training modes](#training-modes-rl--opd--sft). |
+| `orchestrator.advantage.name` | Built-in advantage key or dotted import path. Defaults to `grpo`. See [Algorithms § Advantage](algorithms.md#advantage). |
+| `orchestrator.actor` | Model key used for train rollouts. Defaults to `policy`. Set to a key from `orchestrator.models` when another token-capable endpoint should act. |
 | `[[orchestrator.train.env]]` | Training environments. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Environments](configuration.md#environments-orchestratortrainenv). |
 | `[[orchestrator.eval.env]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
@@ -81,24 +82,55 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
 | `--dry-run` | Resolve + validate the full config, write per-process TOMLs to `<output_dir>/configs/`, and exit without launching. The fastest way to debug a misbehaving config. |
 
-### Training Modes (RL / OPD / SFT)
+### Advantage Functions and Actors
 
-The RL entrypoint supports three training modes, switched via `orchestrator.training_mode`:
+The RL entrypoint always trains the policy model. Train rollouts are sampled by `orchestrator.actor`, which defaults to `policy`. Additional endpoints are declared under `orchestrator.models.<key>` and are stamped into each trace for advantage functions.
 
-| Mode | Student | Teacher | Use case |
-|---|---|---|---|
-| `rl` | Required | Forbidden | Standard RL |
-| `opd` | Required | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): student generates rollouts, trainer minimizes KL to teacher logprobs |
-| `sft` | Required | Required, any OpenAI-compatible endpoint | Hard-distill: teacher generates rollouts, student trains on them |
+Standard RL needs no extra model:
 
-The `rl` entrypoint only manages student-policy inference. For OPD and (local-vLLM) SFT, start the teacher inference server manually and point `[orchestrator.teacher.client]` at it:
+```toml
+[orchestrator.advantage]
+name = "grpo"
+```
+
+OPD keeps policy rollouts but computes token weights against another token-capable endpoint. The built-in `opd` function expects a model key named `teacher`:
+
+```toml
+[orchestrator.advantage]
+name = "opd"
+
+[orchestrator.models.teacher]
+type = "train"
+model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+base_url = "http://localhost:8001/v1"
+```
+
+SFT-style hard distillation is CE over traces sampled by another token-capable endpoint:
+
+```toml
+[orchestrator]
+actor = "teacher"
+
+[orchestrator.advantage]
+name = "sft"
+
+[orchestrator.models.teacher]
+type = "train"
+model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+base_url = "http://localhost:8001/v1"
+
+[orchestrator.models.teacher.renderer]
+name = "qwen3"
+```
+
+Start any local auxiliary endpoint separately:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \
-  --model.name <teacher> --server.port 8001
+  --model.name <model> --server.port 8001
 ```
 
-The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no teacher, no orchestrator. Use `orchestrator.training_mode = "sft"` only when you want a teacher to generate the supervision on the fly.
+The standalone `uv run sft` entrypoint is the traditional dataset-based SFT path. Use the RL entrypoint with `advantage.name = "sft"` when supervision comes from online environment rollouts.
 
 ### Important Metrics
 

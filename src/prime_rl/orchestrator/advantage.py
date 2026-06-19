@@ -1,148 +1,264 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+import inspect
+import os
+from collections.abc import Awaitable, Callable
+from typing import Literal, cast
 
-import torch
-from jaxtyping import Float
-from torch import Tensor
+import httpx
+import verifiers.v1 as vf
+from openai import AsyncOpenAI
+from renderers import create_renderer_pool
+from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 
-if TYPE_CHECKING:
-    import verifiers.v1 as vf
-
-    from prime_rl.orchestrator.types import Rollout
-
-from prime_rl.configs.orchestrator import (
-    AdvantageConfig,
-    CustomAdvantageConfig,
-    LengthPenaltyConfig,
-    TokensLengthPenaltyConfig,
-    TurnsLengthPenaltyConfig,
-)
-from prime_rl.orchestrator.utils import get_tool_response_len
 from prime_rl.utils.utils import import_object
 
-
-@dataclass
-class AdvantageInputs:
-    """Inputs for advantage computation of a single group (one example × N rollouts)."""
-
-    rollouts: list[vf.Trace]
+AdvantageLoss = Literal["rl", "ce"]
+AdvantageScope = Literal["rollout", "group"]
+TraceAdvantageFn = Callable[[list[vf.Trace]], list[vf.Trace] | Awaitable[list[vf.Trace]]]
 
 
-@dataclass
-class AdvantageOutputs:
-    """Outputs from advantage computation of a single group."""
-
-    advantages: list[float]
-
-
-AdvantageFn = Callable[..., AdvantageOutputs]
-"""Type for an advantage function.
-
-Expected signature:
-    def my_advantage(inputs: AdvantageInputs, **kwargs) -> AdvantageOutputs:
-        ...
-
-The function receives a single group and returns a list of advantages with one
-entry per rollout. `assign_advantages` calls it on one already-grouped cohort.
-"""
+@vf.advantage(loss="rl", scope="group")
+async def grpo(traces: list[vf.Trace]) -> list[vf.Trace]:
+    rewards = [trace.reward for trace in traces]
+    mean = sum(rewards) / len(rewards) if rewards else 0.0
+    for trace, reward in zip(traces, rewards, strict=True):
+        advantage = reward - mean
+        for branch in trace.branches:
+            branch.advantages = [advantage if sampled else 0.0 for sampled in branch.sampled_mask]
+            branch.mask = list(branch.sampled_mask)
+    return traces
 
 
-def default_advantage_fn(
-    inputs: AdvantageInputs,
-    length_penalty: LengthPenaltyConfig | None = None,
-) -> AdvantageOutputs:
-    """Default GRPO advantage for a single group: reward minus per-group baseline.
+@vf.advantage(loss="rl", scope="group")
+async def max_rl(traces: list[vf.Trace]) -> list[vf.Trace]:
+    rewards = [trace.reward for trace in traces]
+    mean = sum(rewards) / len(rewards) if rewards else 0.0
+    for trace, reward in zip(traces, rewards, strict=True):
+        advantage = 0.0 if mean <= 0 else (reward - mean) / mean
+        for branch in trace.branches:
+            branch.advantages = [advantage if sampled else 0.0 for sampled in branch.sampled_mask]
+            branch.mask = list(branch.sampled_mask)
+    return traces
 
-    `length_penalty` enables correctness-gated efficiency shaping over a per-rollout
-    cost: tokens (weighted completion + tool-response) or trajectory turn count.
-    """
-    rewards = torch.tensor([r.reward for r in inputs.rollouts], dtype=torch.float32)
 
-    if isinstance(length_penalty, TokensLengthPenaltyConfig):
-        w_c = length_penalty.completion_weight
-        w_t = length_penalty.tool_response_weight
-        costs = torch.tensor(
-            [w_c * r.completion_len + w_t * get_tool_response_len(r) for r in inputs.rollouts],
-            dtype=rewards.dtype,
+@vf.advantage(loss="rl", scope="rollout")
+async def reward(traces: list[vf.Trace]) -> list[vf.Trace]:
+    for trace in traces:
+        for branch in trace.branches:
+            branch.advantages = [trace.reward if sampled else 0.0 for sampled in branch.sampled_mask]
+            branch.mask = list(branch.sampled_mask)
+    return traces
+
+
+@vf.advantage(loss="ce", scope="rollout")
+async def sft(traces: list[vf.Trace]) -> list[vf.Trace]:
+    for trace in traces:
+        for branch in trace.branches:
+            branch.advantages = [1.0 if sampled else 0.0 for sampled in branch.sampled_mask]
+            branch.mask = list(branch.sampled_mask)
+    return traces
+
+
+@vf.advantage(loss="ce", scope="rollout")
+async def echo(traces: list[vf.Trace]) -> list[vf.Trace]:
+    selected_roles = {"system", "user", "tool"}
+    for trace in traces:
+        for branch in trace.branches:
+            advantages: list[float] = []
+            mask: list[bool] = []
+            for node in branch.nodes:
+                role = getattr(node.message, "role", "")
+                selected = role in selected_roles and not node.sampled
+                advantages.extend([1.0 if selected else 0.0] * len(node.token_ids))
+                mask.extend([selected] * len(node.token_ids))
+            branch.advantages = advantages
+            branch.mask = mask
+    return traces
+
+
+@vf.advantage(loss="rl", scope="group")
+async def opd(traces: list[vf.Trace]) -> list[vf.Trace]:
+    for trace in traces:
+        model_config = trace.models.get("teacher")
+        if model_config is None:
+            raise ValueError("opd requires trace.models['teacher'].")
+        if not isinstance(model_config, vf.TrainClientConfig):
+            raise ValueError("opd requires trace.models['teacher'] to be a train client.")
+        if model_config.model is None:
+            raise ValueError("opd requires trace.models['teacher'].model.")
+        client = AsyncOpenAI(
+            base_url=model_config.base_url,
+            api_key=os.environ.get(model_config.api_key_var, "EMPTY"),
+            default_headers=model_config.headers or None,
         )
-        return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
-    if isinstance(length_penalty, TurnsLengthPenaltyConfig):
-        costs = torch.tensor([r.num_turns for r in inputs.rollouts], dtype=rewards.dtype)
-        return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
-
-    return AdvantageOutputs(advantages=(rewards - rewards.mean()).tolist())
-
-
-def _efficiency_shaping(
-    rewards: Float[Tensor, "group_size"],
-    costs: Float[Tensor, "group_size"],
-) -> Float[Tensor, "group_size"]:
-    """Correctness-gated efficiency shaping with bounded advantages.
-
-    Shapes rewards with a bounded efficiency bonus before standard GRPO subtraction,
-    preserving zero-mean advantages within the group. `costs` is a per-rollout cost
-    (e.g., completion length in tokens or number of turns).
-
-    Correct rollouts get reward amplified by up to 2x based on relative efficiency.
-    Incorrect rollouts are untouched. Lower-cost correct rollouts get higher advantage.
-    """
-    max_reward = rewards.max()
-    correct_mask = rewards >= max_reward
-    num_correct = correct_mask.sum()
-
-    # No shaping when max reward is 0 — no correct rollouts to differentiate
-    if max_reward <= 0:
-        return rewards - rewards.mean()
-
-    # Mean cost of correct rollouts
-    mean_correct_cost = (costs * correct_mask).sum() / num_correct.clamp(min=1)
-
-    # Bounded efficiency bonus: [0, 1], positive for below-average cost, zero for above.
-    # When mean_correct_cost is 0 (e.g. tool-only shaping with no harness metric, or
-    # all-zero turn counts), no rollouts can be differentiated — fall back to no bonus.
-    if mean_correct_cost <= 0:
-        return rewards - rewards.mean()
-
-    bonus = (1 - costs / mean_correct_cost).clamp(0, 1)
-
-    # Shape rewards: correct rollouts amplified by up to 2x, incorrect untouched
-    shaped_rewards = rewards * (1 + bonus * correct_mask)
-    return shaped_rewards - shaped_rewards.mean()
+        base = str(client.base_url).rstrip("/").removesuffix("/v1")
+        for branch in trace.branches:
+            response = await client.post(
+                f"{base}/inference/v1/generate",
+                cast_to=httpx.Response,
+                body={
+                    "model": model_config.model,
+                    "token_ids": list(branch.token_ids),
+                    "sampling_params": {
+                        "max_tokens": 1,
+                        "temperature": 1.0,
+                        "top_p": 1.0,
+                        "prompt_logprobs": 1,
+                    },
+                },
+            )
+            parsed = GenerateResponse.model_validate_json(response.content)
+            model_logprobs: list[float] = []
+            for entry in parsed.prompt_logprobs or []:
+                if not entry:
+                    model_logprobs.append(0.0)
+                    continue
+                first = next(iter(entry.values()))
+                lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
+                model_logprobs.append(float(lp) if lp is not None else 0.0)
+            if len(model_logprobs) != len(branch.token_ids):
+                raise ValueError(
+                    f"opd prefill returned {len(model_logprobs)} logprobs for {len(branch.token_ids)} tokens."
+                )
+            branch.advantages = [
+                model_lp - actor_lp if sampled else 0.0
+                for model_lp, actor_lp, sampled in zip(
+                    model_logprobs, branch.logprobs, branch.sampled_mask, strict=True
+                )
+            ]
+            branch.mask = list(branch.sampled_mask)
+    return traces
 
 
-def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
-    """Setup advantage function from config."""
-    if isinstance(config, CustomAdvantageConfig):
-        custom_fn = import_object(config.import_path)
-        kwargs = config.kwargs
+@vf.advantage(loss="rl", scope="group")
+async def opsd(traces: list[vf.Trace]) -> list[vf.Trace]:
+    template = (
+        "{question}\n\n"
+        "Here is an example of an expert response:\n"
+        "<demonstration>\n{demonstration}\n</demonstration>\n\n"
+        "Answer with a response of your own."
+    )
+    for trace in traces:
+        model_config = trace.models.get("policy")
+        if model_config is None:
+            raise ValueError("opsd requires trace.models['policy'].")
+        if not isinstance(model_config, vf.TrainClientConfig):
+            raise ValueError("opsd requires trace.models['policy'] to be a train client.")
+        if model_config.model is None:
+            raise ValueError("opsd requires trace.models['policy'].model.")
+        client = AsyncOpenAI(
+            base_url=model_config.base_url,
+            api_key=os.environ.get(model_config.api_key_var, "EMPTY"),
+            default_headers=model_config.headers or None,
+        )
+        base = str(client.base_url).rstrip("/").removesuffix("/v1")
+        demonstration = trace.info.get("demonstration", trace.info.get("answer"))
+        if demonstration is None:
+            demonstration = getattr(trace.task, "demonstration", None)
+        if demonstration is None:
+            demonstration = getattr(trace.task, "answer", None)
+        if not isinstance(demonstration, str):
+            raise ValueError(
+                "opsd requires a string demonstration on trace.info['demonstration'], "
+                "trace.info['answer'], trace.task.demonstration, or trace.task.answer."
+            )
+        renderer = create_renderer_pool(
+            model_config.renderer_model_name or model_config.model,
+            model_config.renderer,
+            size=model_config.pool_size,
+        )
+        for branch in trace.branches:
+            sampled_nodes = [node for node in branch.nodes if node.sampled]
+            if len(sampled_nodes) != 1:
+                raise ValueError(f"opsd requires exactly one sampled message per branch, got {len(sampled_nodes)}.")
+            sampled_index = next(idx for idx, node in enumerate(branch.nodes) if node.sampled)
+            prompt_nodes = branch.nodes[:sampled_index]
+            messages = [node.message.model_dump(exclude_none=True) for node in prompt_nodes]
+            user_indices = [idx for idx, message in enumerate(messages) if message.get("role") == "user"]
+            if not user_indices:
+                raise ValueError("opsd found no user message to condition.")
+            last_user = messages[user_indices[-1]]
+            question = last_user.get("content")
+            if not isinstance(question, str):
+                raise ValueError("opsd supports text-only user prompts.")
+            last_user["content"] = template.format(question=question, demonstration=demonstration)
+            prefix_ids = renderer.render_ids(messages, add_generation_prompt=True)
+            sampled_token_ids = [
+                token_id for token_id, sampled in zip(branch.token_ids, branch.sampled_mask, strict=True) if sampled
+            ]
+            response = await client.post(
+                f"{base}/inference/v1/generate",
+                cast_to=httpx.Response,
+                body={
+                    "model": model_config.model,
+                    "token_ids": list(prefix_ids) + sampled_token_ids,
+                    "sampling_params": {
+                        "max_tokens": 1,
+                        "temperature": 1.0,
+                        "top_p": 1.0,
+                        "prompt_logprobs": 1,
+                    },
+                },
+            )
+            parsed = GenerateResponse.model_validate_json(response.content)
+            model_logprobs: list[float] = []
+            for entry in parsed.prompt_logprobs or []:
+                if not entry:
+                    model_logprobs.append(0.0)
+                    continue
+                first = next(iter(entry.values()))
+                lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
+                model_logprobs.append(float(lp) if lp is not None else 0.0)
+            if len(model_logprobs) != len(prefix_ids) + len(sampled_token_ids):
+                raise ValueError(
+                    f"opsd prefill returned {len(model_logprobs)} logprobs for "
+                    f"{len(prefix_ids) + len(sampled_token_ids)} tokens."
+                )
+            completion_logprobs = model_logprobs[-len(sampled_token_ids) :] if sampled_token_ids else []
+            completion_index = 0
+            advantages: list[float] = []
+            for actor_lp, sampled in zip(branch.logprobs, branch.sampled_mask, strict=True):
+                if sampled:
+                    advantages.append(completion_logprobs[completion_index] - actor_lp)
+                    completion_index += 1
+                else:
+                    advantages.append(0.0)
+            branch.advantages = advantages
+            branch.mask = list(branch.sampled_mask)
+    return traces
 
-        def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
-            return custom_fn(inputs, **kwargs)
 
-        return advantage_fn
+BUILTIN_ADVANTAGES: dict[str, TraceAdvantageFn] = {
+    grpo.__name__: grpo,
+    max_rl.__name__: max_rl,
+    reward.__name__: reward,
+    sft.__name__: sft,
+    echo.__name__: echo,
+    opd.__name__: opd,
+    opsd.__name__: opsd,
+}
 
-    def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
-        return default_advantage_fn(inputs, length_penalty=config.length_penalty)
 
-    return advantage_fn
+def load_advantage(name: str) -> TraceAdvantageFn:
+    fn = BUILTIN_ADVANTAGES.get(name)
+    if fn is None:
+        fn = cast(TraceAdvantageFn, import_object(name))
+    if not callable(fn) or not getattr(fn, "advantage", False):
+        raise ValueError(f"Advantage {name!r} must be decorated with @vf.advantage.")
+    return fn
 
 
-def assign_advantages(
-    rollouts: list[Rollout],
-    advantage_fn: AdvantageFn | None,
-) -> None:
-    """Compute and assign advantages for one finished group of rollouts
-    (``TrainSink.process_group`` hands in a single group's surviving rollouts).
-    ``advantage_fn=None`` is the trivial case (advantage = reward); a custom
-    ``advantage_fn`` receives the ``vf.Trace``\\ s via
-    ``AdvantageInputs.rollouts``.
-    """
-    if advantage_fn is None:
-        for rollout in rollouts:
-            rollout.advantage = rollout.reward
-        return
-    result = advantage_fn(AdvantageInputs(rollouts=[r for r in rollouts]))
-    for rollout, advantage in zip(rollouts, result.advantages):
-        rollout.advantage = advantage
+def advantage_loss(fn: TraceAdvantageFn) -> AdvantageLoss:
+    return cast(AdvantageLoss, getattr(fn, "advantage_loss"))
+
+
+def advantage_scope(fn: TraceAdvantageFn) -> AdvantageScope:
+    return cast(AdvantageScope, getattr(fn, "advantage_scope"))
+
+
+async def run_advantage(fn: TraceAdvantageFn, traces: list[vf.Trace]) -> list[vf.Trace]:
+    result = fn(traces)
+    if inspect.isawaitable(result):
+        return await result
+    return result

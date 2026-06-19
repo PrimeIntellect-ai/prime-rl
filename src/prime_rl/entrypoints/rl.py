@@ -226,18 +226,17 @@ def rl_local(config: RLConfig):
         else:
             logger.warning(
                 "No [inference] block configured - the student inference server will not be started here. "
-                "All training modes (rl/opd/sft) require a student inference pool for evals + weight sync; "
+                "Training requires a policy inference pool for evals + weight sync; "
                 "make sure one is running at orchestrator.student.client.base_url "
                 f"({', '.join(config.orchestrator.student.client.base_url)}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
 
-        if config.orchestrator.teacher:
+        for key, model in config.orchestrator.models.items():
             logger.info(
-                "orchestrator.teacher is configured - the rl entrypoint does not start teacher inference "
-                "servers. Make sure your teacher endpoint at "
-                f"{', '.join(config.orchestrator.teacher.client.base_url)} is running before the "
-                "orchestrator starts, otherwise rollouts will hang."
+                f"orchestrator.models.{key} is configured - the rl entrypoint does not start "
+                f"that endpoint. Make sure {model.model or key} at {model.base_url} is running "
+                "before the orchestrator starts if an advantage function or actor uses it."
             )
 
         # Start one env server per env (before the orchestrator, which attaches to

@@ -130,19 +130,20 @@ class RolloutDispatcher:
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
-        training_mode: Literal["rl", "opd", "sft"],
+        actor: str,
+        models: dict[str, vf.ClientConfig],
         use_cache_salt: bool = True,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
         self.eval_envs = eval_envs
-        # Train rollouts go to ``inference`` (the teacher in SFT mode);
-        # eval always evaluates the student, so it uses ``eval_inference``.
+        # Train rollouts go to the configured actor; eval always evaluates the policy.
         self.inference = inference
         self.eval_inference = eval_inference
         self.train_source = train_source
         self.eval_source = eval_source
-        self.training_mode = training_mode
+        self.actor = actor
+        self.models = models
         self.use_cache_salt = use_cache_salt
         self.max_off_policy_steps = max_off_policy_steps
 
@@ -175,11 +176,11 @@ class RolloutDispatcher:
 
     @property
     def train_model_name(self) -> str:
-        """Model name for *train* rollouts. In SFT mode train data comes from
-        the teacher pool, so use its model name; otherwise the live student
-        policy. (Eval always uses ``policy.model_name`` — the student.)"""
-        if self.training_mode == "sft":
-            return self.inference.model_name
+        """Model name for train rollouts. Eval always uses ``policy.model_name``."""
+        if self.actor != "policy":
+            model_name = self.models[self.actor].model
+            assert model_name is not None
+            return model_name
         return self.policy.model_name
 
     @property
@@ -385,20 +386,22 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the rollout pool (teacher in SFT) via the
-        # renderer/token train client. Eval always evaluates the student and
-        # goes through the eval client (chat-completions) — the same path the
-        # legacy orchestrator used, so eval scores stay comparable.
         if group.kind == "eval":
             pool, model_name = self.eval_inference, self.policy.model_name
+        elif self.actor != "policy":
+            pool, model_name = None, self.train_model_name
         else:
             pool, model_name = self.inference, self.train_model_name
 
         # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
             if group.kind == "eval":
+                assert pool is not None
                 client = await pool.get_eval_client()
+            elif self.actor != "policy":
+                client = self.models[self.actor]
             else:
+                assert pool is not None
                 load = Counter(
                     client_identity(m.client_config) for m in self.inflight.values() if m.client_config is not None
                 )
@@ -524,6 +527,14 @@ class RolloutDispatcher:
         rollout.group_id = meta.group_id
         rollout.policy_version = policy_version
         rollout.off_policy_steps = meta.off_policy_steps
+        rollout.actor = "policy" if meta.kind == "eval" else self.actor
+        rollout.models = {key: model.model_copy() for key, model in self.models.items()}
+        if self.inference.train_clients:
+            rollout.models["policy"] = self.inference.train_clients[0].model_copy(
+                update={"model": self.policy.model_name}
+            )
+        if rollout.actor != "policy" and meta.client_config is not None:
+            rollout.models[rollout.actor] = meta.client_config.model_copy(update={"model": self.train_model_name})
         if meta.kind == "eval":
             assert eval_step is not None, "eval rollout missing eval_step"
             rollout.eval_step = eval_step

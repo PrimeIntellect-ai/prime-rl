@@ -2,7 +2,7 @@ from typing import Literal
 
 import msgspec
 
-TrainingMode = Literal["rl", "opd", "sft"]
+TrainingMode = Literal["rl", "sft"]
 
 
 # Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
@@ -36,8 +36,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     logprobs: list[float]  # per-token sampling logprobs (0.0 on non-sampled tokens)
     temperatures: list[float]  # per-token temperature used during generation
     env_name: str
-    teacher_logprobs: list[float] | None = None
-    advantage: float | None = None
+    advantages: list[float] | None = None
     reward: float | None = None
 
     # Generic multimodal kwargs: flat dict keyed by the kwarg names the
@@ -55,8 +54,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 
-    # Loss dispatch is batch-driven: rl/opd use default_loss_fn (with mode-specific
-    # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
+    # Loss dispatch is batch-driven: rl uses the configured RL loss; sft uses masked CE.
     training_mode: TrainingMode = "rl"
 
 
@@ -79,7 +77,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     position_ids: list[int]
     temperatures: list[float]  # Per-token temperatures used during generation
     env_names: list[str]
-    teacher_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None
 
@@ -88,8 +85,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 
-    # Loss dispatch is batch-driven (rl/opd → default loss with mode-specific taus,
-    # sft → sft loss). All samples packed into a micro batch share the same mode.
+    # Loss dispatch is batch-driven. All samples packed into a micro batch share the same mode.
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
 

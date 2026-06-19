@@ -60,7 +60,6 @@ from prime_rl.orchestrator.types import (
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
-    compute_teacher_logprobs,
     get_weight_dir,
     intercept_vf_logging,
     save_rollouts,
@@ -72,7 +71,7 @@ from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
-from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
+from prime_rl.utils.client import init_nccl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
@@ -139,7 +138,6 @@ class Orchestrator:
     # Set by ``setup()`` only when relevant config is present
     renderer: Renderer | None
     mm_token_type_ids_mapping: dict[int, int] | None
-    teacher_inference: InferencePool | None
     heart: Heartbeat | None
     usage_reporter: UsageReporter | None
     inference_metrics: InferenceMetricsCollector | None
@@ -156,7 +154,7 @@ class Orchestrator:
         # Route the in-process v1 library logging through our handler. The
         # env server runs in a child process, so its logging is separate.
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
-        get_logger().info(f"Starting orchestrator ({config.training_mode})")
+        get_logger().info(f"Starting orchestrator (actor={config.actor}, advantage={config.advantage.name})")
 
         if config.bench:
             get_logger().warning(f"Running in benchmark mode (max_steps={config.max_steps})")
@@ -180,7 +178,6 @@ class Orchestrator:
         # config is present
         self.renderer = None
         self.mm_token_type_ids_mapping = None
-        self.teacher_inference = None
         self.heart = None
         self.usage_reporter = None
         self.inference_metrics = None
@@ -226,21 +223,6 @@ class Orchestrator:
         if self.mm_token_type_ids_mapping == {}:
             self.mm_token_type_ids_mapping = None
 
-        if config.teacher is not None:
-            get_logger().info(
-                f"Initializing teacher inference pool (base_url={', '.join(config.teacher.client.base_url)}, "
-                f"model={config.teacher.model.name})"
-            )
-            self.teacher_inference = await setup_inference_pool(
-                config.teacher.client,
-                model_name=config.teacher.model.name,
-                # SFT rolls the teacher out through the renderer client (token-in/out) so its
-                # rollouts carry tokens directly — training is renderer-only. (OPD reads teacher
-                # logprobs via prefill, so its pool client type is moot.)
-                train_client_type="renderer",
-                renderer_config=config.renderer,
-            )
-
         get_logger().info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
         self.monitor = setup_monitor(
             wandb_config=config.wandb,
@@ -265,9 +247,6 @@ class Orchestrator:
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(config.train.env)
-        if config.training_mode == "sft":
-            for env in self.train_envs:
-                env.sampling_args.pop("logprobs", None)
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
         )
@@ -301,12 +280,6 @@ class Orchestrator:
         get_logger().info("Waiting for student inference pool to be ready")
         await self.student_inference.wait_for_ready(config.student.model.name)
         get_logger().success("Student inference pool ready")
-        if self.teacher_inference is not None:
-            assert config.teacher is not None
-            get_logger().info("Waiting for teacher inference pool to be ready")
-            await self.teacher_inference.wait_for_ready(config.teacher.model.name)
-            get_logger().success("Teacher inference pool ready")
-
         if config.wandb is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(
                 self.student_inference.admin_clients,
@@ -346,15 +319,6 @@ class Orchestrator:
         else:
             get_logger().info("Training from scratch")
 
-        # SFT train rollouts come from the teacher when configured; otherwise
-        # they use the existing student rollout pool.
-        if config.training_mode == "sft" and self.teacher_inference is not None:
-            rollout_inference = self.teacher_inference
-            use_cache_salt = False
-        else:
-            rollout_inference = self.student_inference
-            use_cache_salt = True
-
         self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source: EvalSource | None = (
             EvalSource(
@@ -374,14 +338,15 @@ class Orchestrator:
             eval_envs=self.eval_envs,
             train_source=self.train_source,
             eval_source=self.eval_source,
-            inference=rollout_inference,
+            inference=self.student_inference,
             eval_inference=self.student_inference,
             policy=self.policy,
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
-            training_mode=config.training_mode,
-            use_cache_salt=use_cache_salt,
+            actor=config.actor,
+            models=config.models,
+            use_cache_salt=config.actor == "policy",
         )
         self.metrics = MetricsBuilder(config)
         self.train_sink = TrainSink(
@@ -391,7 +356,6 @@ class Orchestrator:
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
-            advantage_config=config.advantage,
             pre_filters=pre_filters,
             post_filters=post_filters,
         )
@@ -509,7 +473,7 @@ class Orchestrator:
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
-        side-effects (ckpt, save_rollouts, teacher logprobs, sender.send,
+        side-effects (ckpt, save_rollouts, sender.send,
         metrics, heartbeat, progress, eval trigger). The sink has already
         done all data-transformation work."""
         config = self.config
@@ -559,19 +523,6 @@ class Orchestrator:
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
 
-        teacher_logprobs_time = 0.0  # opd only
-        if config.training_mode == "opd" and self.teacher_inference is not None:
-            assert config.teacher is not None
-            t = time.perf_counter()
-            teacher_logprobs_list = await compute_teacher_logprobs(
-                clients=self.teacher_inference.train_clients,
-                model_name=config.teacher.model.name,
-                samples=batch.samples,
-            )
-            for ex, lp in zip(batch.samples, teacher_logprobs_list):
-                ex.teacher_logprobs = lp
-            teacher_logprobs_time = time.perf_counter() - t
-
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.update_dispatch_gate()
 
@@ -582,7 +533,6 @@ class Orchestrator:
             progress=self.progress,
             step_time=step_time,
             save_ckpt_time=save_ckpt_time,
-            teacher_logprobs_time=teacher_logprobs_time,
             pre_filter_seen=self.train_sink.pre_filter_seen,
             pre_filter_dropped=self.train_sink.pre_filter_dropped,
             pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
@@ -592,7 +542,13 @@ class Orchestrator:
         self.monitor.log_distributions(
             distributions={
                 "rewards": [r.reward for r in batch.rollouts],
-                "advantages": [r.advantage for r in batch.rollouts if r.advantage is not None],
+                "advantages": [
+                    advantage
+                    for r in batch.rollouts
+                    for branch in r.branches
+                    for advantage, keep in zip(branch.advantages, branch.mask, strict=True)
+                    if keep
+                ],
             },
             step=step,
         )
@@ -861,8 +817,6 @@ class Orchestrator:
                 await self.inference_metrics.stop()
             if self.student_inference is not None:
                 await self.student_inference.stop()
-            if self.teacher_inference is not None:
-                await self.teacher_inference.stop()
             if self.train_envs is not None:
                 self.train_envs.shutdown()
             if self.eval_envs is not None:

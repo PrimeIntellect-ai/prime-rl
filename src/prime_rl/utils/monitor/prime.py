@@ -346,12 +346,24 @@ class PrimeMonitor(Monitor):
                 {
                     "messages": [m.model_dump(mode="json") for m in branch.messages],
                     "reward": rollout.reward,
-                    "advantage": rollout.advantage,
+                    "advantage": (
+                        sum(advantage for advantage, keep in zip(branch.advantages, branch.mask, strict=True) if keep)
+                        / max(sum(branch.mask), 1)
+                    )
+                    if branch.advantages and branch.mask
+                    else None,
                     "num_input_tokens": branch.prompt_len,
                     "num_output_tokens": branch.completion_len,
                 }
                 for branch in branches
             ]
+            active_advantages = [
+                advantage
+                for branch in branches
+                for advantage, keep in zip(branch.advantages, branch.mask, strict=True)
+                if keep
+            ]
+            mean_advantage = sum(active_advantages) / len(active_advantages) if active_advantages else None
 
             rows.append(
                 {
@@ -368,7 +380,7 @@ class PrimeMonitor(Monitor):
                     "task": json.dumps(rollout.task.model_dump(mode="json")),
                     "info": "",
                     "reward": rollout.reward,
-                    "advantage": rollout.advantage,
+                    "advantage": mean_advantage,
                     "metrics": json.dumps(rollout.metrics),
                     "timing": json.dumps(rollout.timing.model_dump(mode="json")),
                     "num_input_tokens": branches[-1].prompt_len,

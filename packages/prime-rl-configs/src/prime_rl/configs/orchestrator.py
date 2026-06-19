@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
+from verifiers.v1.clients.config import TrainClientConfig
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -217,6 +218,12 @@ class EnvConfig(vf.EnvServerConfig):
         return self
 
 
+class AdvantageConfig(BaseConfig):
+    name: str = "grpo"
+    """Registered advantage name or dotted import path. The callable must be decorated with
+    ``@vf.advantage`` and have signature ``list[Trace] -> list[Trace]``."""
+
+
 class TrainEnvConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
@@ -224,6 +231,9 @@ class TrainEnvConfig(EnvConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
+
+    advantage: AdvantageConfig | None = None
+    """Per-env advantage override. Defaults to ``orchestrator.advantage``."""
 
 
 class EvalEnvConfig(EnvConfig):
@@ -370,49 +380,6 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the progress from checkpoint."""
 
 
-class TokensLengthPenaltyConfig(BaseConfig):
-    type: Literal["tokens"] = "tokens"
-
-    completion_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on model completion tokens. Finite and non-negative."""
-
-    tool_response_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on tool-response tokens (read from the rollout's ``*_total_tool_response_tokens`` harness metric; 0 if absent). Finite and non-negative."""
-
-
-class TurnsLengthPenaltyConfig(BaseConfig):
-    type: Literal["turns"] = "turns"
-
-
-LengthPenaltyConfig: TypeAlias = Annotated[
-    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
-    Field(discriminator="type"),
-]
-
-
-class DefaultAdvantageConfig(BaseConfig):
-    type: Literal["default"] = "default"
-
-    length_penalty: LengthPenaltyConfig | None = None
-    """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
-
-
-class CustomAdvantageConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Import path to the advantage function (e.g. ``my_module.my_advantage``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the advantage function."""
-
-
-AdvantageConfig: TypeAlias = Annotated[
-    DefaultAdvantageConfig | CustomAdvantageConfig,
-    Field(discriminator="type"),
-]
-
-
 # Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
 class GibberishFilterConfig(BaseConfig):
     type: Literal["gibberish"] = "gibberish"
@@ -496,14 +463,16 @@ class RolloutModelConfig(BaseConfig):
 
 
 class OrchestratorConfig(BaseConfig):
-    training_mode: Literal["rl", "opd", "sft"] = "rl"
-    """Training mode. ``rl``: student generates rollouts, no teacher. ``opd``: student generates rollouts, teacher computes logprobs (teacher_tau > 0). ``sft``: teacher generates rollouts, student inference pool used for evals and weight sync."""
-
     student: RolloutModelConfig = Field(RolloutModelConfig(), validation_alias=AliasChoices("student", "model"))
-    """Student rollout participant (model + client) — the model being trained."""
+    """Policy model: the model being trained."""
 
-    teacher: RolloutModelConfig | None = Field(None, validation_alias=AliasChoices("teacher", "teacher_model"))
-    """Teacher rollout participant (model + client). Role depends on ``training_mode``: ``opd`` — teacher computes logprobs; ``sft`` — teacher generates rollouts."""
+    actor: str = "policy"
+    """Model key used for train rollouts. ``policy`` means the live policy pool; any other value
+    must be present in ``models``."""
+
+    models: dict[str, vf.ClientConfig] = Field(default_factory=dict)
+    """Named model endpoint descriptors exposed to trace-native advantage functions as
+    ``trace.models``. Keys are user-defined; ``policy`` is reserved for the live policy."""
 
     train: TrainConfig = TrainConfig()
 
@@ -512,8 +481,7 @@ class OrchestratorConfig(BaseConfig):
     renderer: RendererConfig = AutoRendererConfig()
     """Typed renderer config (``renderers.RendererConfig`` discriminated union), required —
     training is renderer-only. Defaults to ``"auto"``, which resolves from
-    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
-    client; SFT uses it to backfill tokens for its chat-completions teacher."""
+    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``."""
 
     pool_size: int | None = Field(None, ge=1)
     """Number of renderer slots shared across concurrent rollouts. Bump
@@ -526,7 +494,7 @@ class OrchestratorConfig(BaseConfig):
     eval: EvalConfig | None = None
     """Evaluation configuration."""
 
-    advantage: AdvantageConfig | None = DefaultAdvantageConfig()
+    advantage: AdvantageConfig = AdvantageConfig()
 
     pre_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(enforce=False),
@@ -624,9 +592,7 @@ class OrchestratorConfig(BaseConfig):
         - [orchestrator.model.<k>]    -> [orchestrator.student.model.<k>]
           (where <k> is any ModelConfig field)
 
-        Teacher must always be configured under [orchestrator.teacher.*]
-        (no equivalent shortcut), because rl mode forbids a teacher and we
-        don't want the same shortcut to silently route to two different roles.
+        Additional model endpoints live under [orchestrator.models.<key>].
         """
         if not isinstance(data, dict):
             return data
@@ -735,13 +701,25 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_training_mode(self):
-        """Enforce training mode invariants that involve only orchestrator fields."""
-        has_teacher = self.teacher is not None
-        if self.training_mode == "rl" and has_teacher:
-            raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
-        if self.training_mode in ("opd", "sft") and not has_teacher:
-            raise ValueError(f"orchestrator.teacher must be configured when training_mode = '{self.training_mode}'.")
+    def validate_models(self):
+        if "policy" in self.models:
+            raise ValueError(
+                "orchestrator.models.policy is reserved; configure the trained model under orchestrator.student."
+            )
+        if self.actor != "policy":
+            actor = self.models.get(self.actor)
+            if actor is None:
+                raise ValueError(f"orchestrator.actor={self.actor!r} but orchestrator.models has no matching key.")
+            if not isinstance(actor, TrainClientConfig):
+                raise ValueError(
+                    f"orchestrator.actor={self.actor!r} must reference a token-capable train client "
+                    "(set orchestrator.models.<key>.type = 'train')."
+                )
+            if actor.model is None:
+                raise ValueError(f"orchestrator.models.{self.actor}.model is required when used as actor.")
+        for key, model in self.models.items():
+            if isinstance(model, TrainClientConfig) and model.model is None:
+                raise ValueError(f"orchestrator.models.{key}.model is required for train clients.")
         return self
 
     @model_validator(mode="after")
@@ -837,9 +815,9 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_env_config(self):
         """Set vLLM sampling defaults on each train env from top-level fields."""
-        if self.training_mode == "sft":
-            return self
         for env in self.train.env:
+            if env.advantage is None:
+                env.advantage = self.advantage
             env.sampling.extra_body.setdefault("top_k", -1)
             env.sampling.extra_body.setdefault("min_p", 0.0)
             env.sampling.extra_body.setdefault("return_token_ids", True)

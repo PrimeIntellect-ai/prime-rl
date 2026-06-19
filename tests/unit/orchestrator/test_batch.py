@@ -26,8 +26,7 @@ def make_training_example():
             mask=[False, False, True, True],
             logprobs=[0.0, 0.0, -0.1, -0.2],
             temperatures=[temperature, temperature, temperature, temperature],
-            teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
-            advantage=1.0,
+            advantages=[1.0, 1.0, 1.0, 1.0],
             env_name=env_name,
             training_mode=training_mode,
         )
@@ -42,7 +41,6 @@ def test_training_sample_requires_env_name():
             mask=[False, False, True, True],
             logprobs=[0.0, 0.0, -0.1, -0.2],
             temperatures=[1.0, 1.0, 1.0, 1.0],
-            advantage=1.0,
         )
 
 
@@ -140,7 +138,7 @@ def test_prepare_sample_with_routed_experts():
         mask=[False, False, True, True],
         logprobs=[0.0, 0.0, -0.1, -0.2],
         temperatures=[1.0, 1.0, 1.0, 1.0],
-        advantage=1.0,
+        advantages=[1.0, 1.0, 1.0, 1.0],
         env_name="test-env",
         routed_experts=routed_payload,
     )
@@ -160,7 +158,7 @@ def test_prepare_sample_truncates_routed_experts():
         mask=[False, False, True, True],
         logprobs=[0.0, 0.0, -0.1, -0.2],
         temperatures=[1.0, 1.0, 1.0, 1.0],
-        advantage=1.0,
+        advantages=[1.0, 1.0, 1.0, 1.0],
         env_name="test-env",
         routed_experts=routed_payload,
     )
@@ -188,7 +186,7 @@ def test_prepare_sample_truncates_mm_at_image_boundary():
         mask=[False, False, False, False, False, True, True],
         logprobs=[0.0] * 7,
         temperatures=[1.0] * 7,
-        advantage=1.0,
+        advantages=[1.0] * 7,
         env_name="test-env",
         mm_token_type_ids=mm_token_type_ids,
         mm_kwargs={"pixel_values": _encoded(pixel_values), "image_grid_thw": _encoded(grid)},
@@ -215,7 +213,7 @@ def test_prepare_sample_none_routed_experts():
         mask=[False, False, True, True],
         logprobs=[0.0, 0.0, -0.1, -0.2],
         temperatures=[1.0, 1.0, 1.0, 1.0],
-        advantage=1.0,
+        advantages=[1.0, 1.0, 1.0, 1.0],
         env_name="test-env",
     )
 

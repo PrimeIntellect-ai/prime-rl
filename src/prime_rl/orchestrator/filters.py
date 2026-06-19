@@ -101,7 +101,12 @@ class ZeroAdvantageFilter:
     enforce: bool = True
 
     def check(self, rollout: "Rollout") -> FilterResult:
-        if rollout.advantage is not None and rollout.advantage == 0.0:
+        active_advantages: list[float] = []
+        for branch in rollout.branches:
+            active_advantages.extend(
+                advantage for advantage, keep in zip(branch.advantages, branch.mask, strict=True) if keep
+            )
+        if active_advantages and all(advantage == 0.0 for advantage in active_advantages):
             return FilterResult(detected=True)
         return FilterResult(detected=False)
 

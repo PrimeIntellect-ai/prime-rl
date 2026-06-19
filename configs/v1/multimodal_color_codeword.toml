@@ -24,7 +24,6 @@ project = "multimodal-color-codeword-debug"
 name = "v1"
 
 [orchestrator]
-training_mode = "rl"
 batch_size = 256
 group_size = 16
 # Image processor is CPU-bound and dominates for VLMs; returns diminish past 4.

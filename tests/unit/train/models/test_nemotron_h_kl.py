@@ -99,7 +99,6 @@ def test_kl_zero_when_identical():
         inputs = LossInputs(
             trainer_logprobs=logprobs[i],
             inference_logprobs=logprobs[i],
-            teacher_logprobs=None,
             advantages=advantages,
             loss_mask=loss_mask,
         )
@@ -133,7 +132,6 @@ def test_kl_positive_after_perturbation():
         inputs = LossInputs(
             trainer_logprobs=policy_logprobs[i],
             inference_logprobs=ref_logprobs[i],
-            teacher_logprobs=None,
             advantages=advantages,
             loss_mask=loss_mask,
         )

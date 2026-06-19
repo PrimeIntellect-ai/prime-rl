@@ -81,7 +81,6 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
-    advantage: float | None = Field(default=None, exclude=True)
     is_filtered: bool = Field(default=False, exclude=True)
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
     eval_step: int | None = Field(default=None, exclude=True)

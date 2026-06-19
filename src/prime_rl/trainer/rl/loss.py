@@ -16,7 +16,6 @@ class LossInputs:
 
     trainer_logprobs: Float[Tensor, " seq"]
     inference_logprobs: Float[Tensor, " seq"]
-    teacher_logprobs: Float[Tensor, " seq"] | None
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
 
@@ -165,59 +164,6 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
-    """
-    On-policy distillation loss: the default DPPO+KL math with the tau knobs
-    hardcoded to drop the reward signal and use the teacher KL as the
-    per-token policy-gradient signal.
-    """
-    trainer_logprobs = inputs.trainer_logprobs
-    inference_logprobs = inputs.inference_logprobs
-    teacher_logprobs = inputs.teacher_logprobs
-    advantages = inputs.advantages
-    loss_mask = inputs.loss_mask
-
-    if teacher_logprobs is None:
-        raise ValueError("opd_loss_fn requires teacher_logprobs - configure a teacher for opd mode.")
-
-    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-        trainer_logprobs, inference_logprobs
-    )
-
-    probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
-    dppo_invalid_mask_high = probs_diff > 0.2
-    dppo_invalid_mask_low = probs_diff < -0.2
-    positive_advantages = advantages > 0
-    negative_advantages = advantages < 0
-    dppo_invalid_mask = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
-
-    is_masked = dppo_invalid_mask
-    is_masked_high = positive_advantages & dppo_invalid_mask_high
-    is_masked_low = negative_advantages & dppo_invalid_mask_low
-    drop_mask = loss_mask & is_masked
-    keep_mask = loss_mask & ~is_masked
-
-    teacher_kl = teacher_logprobs - trainer_logprobs
-    advantages = 0.0 * advantages + 1.0 * teacher_kl.detach()
-
-    pg_loss = keep_mask * advantages * importance_ratio
-    kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + 1e-3 * kl_loss).sum()
-
-    metrics = {
-        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),
-        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
-        "is_masked": _safe_mean(is_masked, loss_mask),
-        "is_masked_low": _safe_mean(is_masked_low, loss_mask),
-        "is_masked_high": _safe_mean(is_masked_high, loss_mask),
-        "masked_advantage_positive": _safe_mean(positive_advantages, drop_mask),
-        "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
-        "teacher_kl": _safe_mean(teacher_kl, loss_mask),
-    }
-
-    return LossOutputs(loss=loss, metrics=metrics)
-
-
 def sft_loss_fn(inputs: LossInputs) -> LossOutputs:
     """SFT-style masked negative log-likelihood over trainable tokens."""
     trainer_logprobs = inputs.trainer_logprobs
@@ -233,16 +179,14 @@ def sft_loss_fn(inputs: LossInputs) -> LossOutputs:
 def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
     """Build the per-training-mode loss fn dispatch table.
 
-    Always returns all three modes - the trainer is mode-agnostic and routes
+    Always returns the active modes - the trainer is mode-agnostic and routes
     per batch from ``TrainingSample.training_mode``:
 
-    - ``"sft"`` → ``sft_loss_fn`` (masked NLL on teacher tokens)
-    - ``"opd"`` → ``opd_loss_fn`` (teacher KL as gradient signal, hardcoded
-      DPPO + KL knobs)
+    - ``"sft"`` → ``sft_loss_fn`` (masked NLL)
     - ``"rl"``  → ``default_loss_fn(loss_config)`` for ``DefaultLossConfig``,
       or the imported function for ``CustomLossConfig``.
 
-    ``trainer.loss`` only affects the rl path - opd and sft are independent.
+    ``trainer.loss`` only affects the rl path; sft is fixed masked CE.
     """
     if isinstance(loss_config, CustomLossConfig):
         custom_fn = import_object(loss_config.import_path)
@@ -255,13 +199,12 @@ def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return default_loss_fn(inputs, loss_config)
 
-    return {"sft": sft_loss_fn, "opd": opd_loss_fn, "rl": rl_fn}
+    return {"sft": sft_loss_fn, "rl": rl_fn}
 
 
 def compute_loss(
     trainer_logprobs: list[Float[Tensor, " seq_i"]],
     inference_logprobs: list[Float[Tensor, " seq_i"]],
-    teacher_logprobs: list[Float[Tensor, " seq_i"]] | None,
     advantages: list[Float[Tensor, " seq_i"]],
     loss_mask: list[Bool[Tensor, " seq_i"]],
     loss_fns: dict[str, LossFn],
@@ -272,13 +215,12 @@ def compute_loss(
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
     Loss dispatch is batch-driven: ``training_mode`` selects the loss fn from
-    ``loss_fns`` (built by ``setup_loss_fns``). sft → sft_loss_fn, opd →
-    opd_loss_fn, rl → the configured default/custom loss.
+    ``loss_fns`` (built by ``setup_loss_fns``). sft → masked CE; rl → the
+    configured default/custom RL loss.
 
     Args:
         trainer_logprobs: Log probabilities for each sequence
         inference_logprobs: Reference log probabilities for each sequence
-        teacher_logprobs: Teacher log probabilities for each sequence, or None
         advantages: Advantages for each sequence
         loss_mask: Loss mask for each sequence
         loss_fns: Per-mode loss fn dispatch table from setup_loss_fns()
@@ -299,20 +241,15 @@ def compute_loss(
     total_loss = 0.0
     all_metrics: dict[str, list[Tensor]] = {}
 
-    if teacher_logprobs is None:
-        teacher_logprobs = [None] * len(trainer_logprobs)
-
-    for t_logp, i_logp, teach_logp, adv, mask in zip(
+    for t_logp, i_logp, adv, mask in zip(
         trainer_logprobs,
         inference_logprobs,
-        teacher_logprobs,
         advantages,
         loss_mask,
     ):
         inputs = LossInputs(
             trainer_logprobs=t_logp,
             inference_logprobs=i_logp,
-            teacher_logprobs=teach_logp,
             advantages=adv,
             loss_mask=mask,
         )

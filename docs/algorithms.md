@@ -69,13 +69,12 @@ The knobs (under `[trainer.loss]` with `type = "default"`):
 | `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 for pure distillation (no RL signal). |
 | `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
 
-The trainer dispatches automatically based on the batch's training mode (set by the orchestrator via `orchestrator.training_mode`):
+The trainer dispatches automatically based on each training sample's internal batch mode:
 
-- `rl` mode → DPPO + KL with the advantage signal.
-- `opd` mode → KL distillation against the teacher's per-token logprobs. The teacher must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
-- `sft` mode → standard token-level NLL on teacher-generated rollouts.
+- `rl` → DPPO + KL with the token-level advantage signal.
+- `sft` → masked token-level negative log-likelihood.
 
-Set `[trainer.loss] type = "default"` and configure via the knobs above. SFT and OPD modes ignore the policy-gradient–specific fields.
+The orchestrator sets this internal mode from the selected advantage function's `@vf.advantage(loss=...)` metadata. OPD-style algorithms are ordinary `rl` batches: the advantage function computes token weights, then the trainer applies the same RL loss.
 
 ### Custom Loss
 
@@ -116,7 +115,6 @@ The dataclasses:
 class LossInputs:
     trainer_logprobs: Float[Tensor, "seq"]      # current policy
     inference_logprobs: Float[Tensor, "seq"]    # rollout-time policy
-    teacher_logprobs: Float[Tensor, "seq"] | None  # only set in OPD mode
     advantages: Float[Tensor, "seq"]
     loss_mask: Bool[Tensor, "seq"]
 
@@ -132,40 +130,48 @@ Anything you put in `metrics` is averaged across sequences and logged with the o
 
 ### Default Advantage
 
-The default advantage is per-group reward minus per-group baseline (DR-GRPO without std normalization). For each prompt's group of `group_size` rollouts, every token in rollout $i$ receives advantage $s_i - \bar{s}$ where $\bar{s}$ is the group mean.
+The default advantage is `grpo`: per-group reward minus per-group baseline (DR-GRPO without std normalization). For each prompt's group of `group_size` rollouts, every sampled token in rollout $i$ receives advantage $s_i - \bar{s}$ where $\bar{s}$ is the group mean. Non-sampled tokens get advantage `0.0` and are masked out.
 
-This is intentionally simple — it does the right thing for most envs. Switch to a [custom advantage](#custom-advantage) when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …).
+Built-ins are registered by name:
 
-Two built-in **length penalties** can be layered on top of any advantage to discourage rambling:
-
-- `[orchestrator.length_penalty] type = "tokens"` — penalizes long completions in tokens, with configurable target and slope.
-- `[orchestrator.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
-
+| Name | Loss | Scope | Effect |
+|---|---|---|---|
+| `grpo` | `rl` | `group` | Reward minus group mean. |
+| `max_rl` | `rl` | `group` | Reward minus group mean, divided by positive group mean. |
+| `reward` | `rl` | `rollout` | Raw rollout reward on sampled tokens. |
+| `sft` | `ce` | `rollout` | Unit CE weights on sampled tokens. |
+| `echo` | `ce` | `rollout` | Unit CE weights on non-sampled system/user/tool tokens. |
+| `opd` | `rl` | `group` | Token weights from a configured `trace.models["teacher"]` token-capable endpoint. |
+| `opsd` | `rl` | `group` | Token weights from the policy endpoint and trace-provided demonstration metadata. |
 
 ### Custom Advantage
 
-Advantages are computed **per group**. You write a function that takes one group of rollouts and returns one advantage scalar per rollout. The orchestrator handles groups of varying size automatically — partial-group training kicks in when some rollouts in a group errored.
+Advantages are trace transforms. You write a function decorated with `@vf.advantage`; it receives either one rollout or one group, mutates each branch's `advantages` and `mask` lists in place, and returns the same traces. Both lists must align exactly to `branch.token_ids`.
 
 ```python
 # my_module.py
 import statistics
-from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs
+import verifiers.v1 as vf
 
-def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> AdvantageOutputs:
-    rewards = [r["reward"] for r in inputs.rollouts]
+@vf.advantage(loss="rl", scope="group")
+def normalized_advantage(traces: list[vf.Trace]) -> list[vf.Trace]:
+    rewards = [trace.reward for trace in traces]
     mean = statistics.fmean(rewards)
     std = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
-    return AdvantageOutputs(advantages=[(r - mean) / (std + eps) for r in rewards])
+    for trace, reward in zip(traces, rewards, strict=True):
+        advantage = (reward - mean) / (std + 1e-8)
+        for branch in trace.branches:
+            branch.advantages = [advantage if sampled else 0.0 for sampled in branch.sampled_mask]
+            branch.mask = list(branch.sampled_mask)
+    return traces
 ```
 
 ```toml
 [orchestrator.advantage]
-type = "custom"
-import_path = "my_module.normalized_advantage"
-kwargs = { eps = 1e-8 }
+name = "my_module.normalized_advantage"
 ```
 
-`AdvantageInputs.rollouts` is a list of `verifiers.RolloutOutput`, so you have access to the full rollout (turns, tool calls, custom metadata) — not just the reward. Use this for anything reward-shaping-like that needs trajectory context.
+The public authoring surface is `verifiers.v1`; custom advantage modules should not import `prime_rl`. Prime-rl stamps model endpoint metadata into each trace as `trace.actor` and `trace.models`, so an advantage function can connect to any configured endpoint by key when it needs token-mode calls.
 
 ### Per-Env Advantage
 
@@ -173,14 +179,14 @@ kwargs = { eps = 1e-8 }
 
 ```toml
 [orchestrator.advantage]
-type = "default"  # the default every env inherits unless it overrides
+name = "grpo"  # the default every env inherits unless it overrides
 
 [[orchestrator.train.env]]
 id = "math-env"   # inherits the default above
 
 [[orchestrator.train.env]]
 id = "agent-env"
-advantage = { type = "custom", import_path = "my_module.normalized_advantage" }
+advantage = { name = "my_module.normalized_advantage" }
 ```
 
 ## Filters

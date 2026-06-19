@@ -111,7 +111,10 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     input_ids = training_example.token_ids
     loss_mask = training_example.mask
     inference_logprobs = training_example.logprobs
-    advantages = [training_example.advantage] * len(input_ids)
+    if training_example.advantages is None:
+        advantages = [0.0] * len(input_ids)
+    else:
+        advantages = list(training_example.advantages)
     reward = training_example.reward if training_example.reward is not None else float("nan")
     rewards = [reward] * len(input_ids)
     position_ids = list(range(len(input_ids)))
@@ -123,9 +126,6 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # Per-token sampling temperatures (context tokens are masked out, so theirs are don't-care).
     temperatures = training_example.temperatures
 
-    # Teacher logprobs already cover the full sequence (prompt + completion),
-    # computed via prefill in the orchestrator when a teacher model is configured
-    teacher_logprobs = training_example.teacher_logprobs
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )
@@ -143,8 +143,6 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         advantages = advantages[:cut]
         rewards = rewards[:cut]
         temperatures = temperatures[:cut]
-        if teacher_logprobs is not None:
-            teacher_logprobs = teacher_logprobs[:cut]
         if routed_experts is not None:
             routed_experts = _slice_routed_experts(routed_experts, cut)
         if mm_token_type_ids is not None:
@@ -162,8 +160,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     ), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, rewards: {len(rewards)}, temperatures: {len(temperatures)}"
     )
-    if teacher_logprobs is not None:
-        assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
+    if len(advantages) != len(input_ids):
+        raise ValueError(f"advantages: {len(advantages)}, input_ids: {len(input_ids)}")
 
     if routed_experts is not None:
         assert routed_experts.shape[0] == len(input_ids), (
@@ -183,7 +181,6 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         loss_mask=loss_mask,
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
-        teacher_logprobs=teacher_logprobs,
         temperatures=temperatures,
         rewards=rewards,
         routed_experts=routed_experts,
@@ -246,10 +243,6 @@ def packed_samples_into_micro_bs(
                     bin_content.rewards.extend([float("nan")] * len(sample.input_ids))
                 bin_content.inference_logprobs.extend(sample.inference_logprobs)
                 bin_content.temperatures.extend(sample.temperatures)
-                if sample.teacher_logprobs is not None:
-                    if bin_content.teacher_logprobs is None:
-                        bin_content.teacher_logprobs = []
-                    bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
                 assert (bin_content.routed_experts is None) == (sample.routed_experts is None)
                 if sample.routed_experts is not None:
                     if bin_content.routed_experts is None:
@@ -303,8 +296,6 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.inference_logprobs.extend([0.0] * padding_size)
     # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)
     micro_batch.temperatures.extend([1.0] * padding_size)
-    if micro_batch.teacher_logprobs is not None:
-        micro_batch.teacher_logprobs.extend([0.0] * padding_size)
     micro_batch.lora_num_tokens[-1] += (
         padding_size  # We send padding to the last lora so that tokens have ascending lora idx
     )

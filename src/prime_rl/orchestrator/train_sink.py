@@ -8,17 +8,16 @@
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
 ``add()`` returns ``TrainBatch | None``. I/O concerns (ship to trainer,
-save_rollouts, monitor.log, teacher logprobs) live on the orchestrator.
+save_rollouts, monitor.log) live on the orchestrator.
 """
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from collections import defaultdict
 
-from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
-from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
+from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.advantage import advantage_loss, advantage_scope, load_advantage, run_advantage
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import trace_to_samples
@@ -39,7 +38,6 @@ class TrainSink:
         mm_token_type_ids_mapping: dict[int, int] | None,
         batch_size: int | None,
         token_batch_size: int | None,
-        advantage_config: AdvantageConfig | None,
         pre_filters: list[RolloutFilter],
         post_filters: list[RolloutFilter],
     ) -> None:
@@ -52,9 +50,15 @@ class TrainSink:
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
-        # Built once — custom advantage funcs do an ``import_object`` and
-        # we don't want to pay that per group. ``None`` = reward-only path
-        self.advantage_fn = setup_advantage_fn(advantage_config) if advantage_config is not None else None
+        self.advantage_fns = {}
+        self.advantage_losses = {}
+        self.advantage_scopes = {}
+        for env in config.train.env:
+            assert env.advantage is not None
+            fn = load_advantage(env.advantage.name)
+            self.advantage_fns[env.resolved_name] = fn
+            self.advantage_losses[env.resolved_name] = advantage_loss(fn)
+            self.advantage_scopes[env.resolved_name] = advantage_scope(fn)
         self.pre_filters = pre_filters
         self.post_filters = post_filters
 
@@ -127,7 +131,7 @@ class TrainSink:
             self.errors_by_env[env_name] += 1
         self.pending_groups[rollout.group_id].append(rollout)
         if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
-            self.process_group(rollout.group_id)
+            await self.process_group(rollout.group_id)
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
@@ -138,21 +142,11 @@ class TrainSink:
         return None
 
     async def process_rollout(self, rollout: Rollout) -> None:
-        """Build training samples from the rollout's Trace (one per branch), walking the
-        message graph. Training is renderer-only across all modes (RL/OPD student, SFT teacher),
-        so every node already carries its tokens. Errored rollouts are dropped at the group
-        level, so skip them here."""
-        if rollout.has_error:
-            return
-        samples = await asyncio.to_thread(
-            trace_to_samples,
-            rollout,
-            env_name=rollout.env_name,
-            mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
-        )
-        rollout.samples = samples or []
+        """Rollout-local work lives in advantage functions. Sample materialization is delayed
+        until a rollout survives both filter barriers."""
+        return
 
-    def process_group(self, group_id: uuid.UUID) -> None:
+    async def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
         when ``requires_group_scoring`` and any failed), assign advantages,
         run pre-batch filters, append survivors to ``pending_batch``."""
@@ -180,20 +174,12 @@ class TrainSink:
             )
             return
 
-        assign_advantages(survivors, self.advantage_fn)
-
-        # Propagate to the pre-tokenized samples so the orchestrator can
-        # collect samples at ship time without re-walking rollouts. The env
-        # has a single sampling temperature; fan it out per token (context
-        # tokens are masked out, so their temperature is don't-care).
-        temperature = env.sampling_args["temperature"]
-        for r in survivors:
-            for sample in r.samples:
-                sample.advantage = r.advantage
-                sample.reward = r.reward
-                sample.env_name = r.env_name
-                sample.training_mode = self.config.training_mode
-                sample.temperatures = [temperature] * len(sample.token_ids)
+        fn = self.advantage_fns[env_name]
+        if self.advantage_scopes[env_name] == "rollout":
+            for rollout in survivors:
+                await run_advantage(fn, [rollout])
+        else:
+            await run_advantage(fn, survivors)
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)
@@ -249,8 +235,6 @@ class TrainSink:
         if self.post_filters:
             apply_filters(self.post_filters, cohort)
 
-        # Samples are pre-built by ``process_rollout``; ``process_group``
-        # already set advantage/reward on each sample
         samples: list[TrainingSample] = []
         prefill_lens: list[int] = []
         decode_lens: list[int] = []
@@ -258,6 +242,12 @@ class TrainSink:
         num_prefill = 0
         num_decode = 0
         for r in cohort:
+            if not r.is_filtered:
+                r.samples = trace_to_samples(
+                    r,
+                    env_name=r.env_name,
+                    mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
+                )
             samples_per_rollout.append(len(r.samples))
             prefill = 0
             decode = 0
@@ -267,6 +257,11 @@ class TrainSink:
                 decode += sample_decode
                 prefill += sample_prefill
                 if not r.is_filtered:
+                    temperature = self.train_envs.get(r.env_name).sampling_args["temperature"]
+                    sample.reward = r.reward
+                    sample.env_name = r.env_name
+                    sample.training_mode = "sft" if self.advantage_losses[r.env_name] == "ce" else "rl"
+                    sample.temperatures = [temperature] * len(sample.token_ids)
                     samples.append(sample)
             prefill_lens.append(prefill)
             decode_lens.append(decode)

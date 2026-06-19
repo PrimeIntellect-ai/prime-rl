@@ -41,7 +41,7 @@ uv run rl @ rl.toml \
   --inference.parallel.dp 6
 ```
 
-The launcher allocates GPUs in order from `CUDA_VISIBLE_DEVICES` (or all visible GPUs): inference first, trainer next, teacher last. To target a specific physical subset, pin `CUDA_VISIBLE_DEVICES` before launching.
+The launcher allocates GPUs in order from `CUDA_VISIBLE_DEVICES` (or all visible GPUs): policy inference first, then trainer. Auxiliary endpoints declared under `orchestrator.models` are not auto-launched by this placement logic. To target a specific physical subset, pin `CUDA_VISIBLE_DEVICES` before launching.
 
 For quick A/B ablations on the same node, run two RL instances side-by-side in separate tmux sessions, each pinned to half the GPUs and a separate inference port:
 

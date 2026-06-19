@@ -622,10 +622,6 @@ class RLConfig(BaseConfig):
                 client.dp_rank_count = 1
             else:
                 client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
-        if self.orchestrator.training_mode == "sft" and "base_url" not in client.model_fields_set:
-            host = self.inference.server.host or "localhost"
-            port = self.inference.server.port
-            client.base_url = [f"http://{host}:{port}/v1"]
         return self
 
     @model_validator(mode="after")

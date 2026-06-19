@@ -7,8 +7,7 @@ entry (a root→leaf path) is first-class and carries its own flat token sequenc
 training sample directly. Token-length readers (`completion_len`, `total_tokens`, `num_turns`)
 live on `vf.Trace` itself.
 
-Training is renderer-only across every mode (RL/OPD student, SFT teacher), so every node
-always carries its tokens — no backfill needed. For multimodal rollouts the branch also carries
+Training is renderer-only for trainable traces, so every node carries its tokens. For multimodal rollouts the branch also carries
 the images it introduced (`branch.multi_modal_data`), rebuilt here into the flat `mm_kwargs` /
 `mm_token_type_ids` the trainer forwards.
 """
@@ -83,7 +82,14 @@ def trace_to_samples(
     has_error = trace.has_error
     samples: list[TrainingSample] = []
     for branch in trace.branches:
-        mask = branch.sampled_mask
+        mask = branch.mask
+        advantages = branch.advantages
+        if len(mask) != len(branch.token_ids):
+            raise ValueError(f"branch.mask must align with branch.token_ids ({len(mask)} != {len(branch.token_ids)}).")
+        if len(advantages) != len(branch.token_ids):
+            raise ValueError(
+                f"branch.advantages must align with branch.token_ids ({len(advantages)} != {len(branch.token_ids)})."
+            )
         if not any(mask):
             continue
         token_ids = branch.token_ids
@@ -100,8 +106,7 @@ def trace_to_samples(
                 mask=[m and not has_error for m in mask],
                 logprobs=branch.logprobs,
                 temperatures=[],  # filled by TrainSink.process_group
-                teacher_logprobs=None,
-                advantage=None,
+                advantages=list(advantages),
                 env_name=env_name,
                 mm_kwargs=mm_kwargs,
                 mm_token_type_ids=mm_token_type_ids,

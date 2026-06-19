@@ -16,11 +16,14 @@ project = "reverse-text-debug"
 name = "debug-sft-lora"
 
 [orchestrator]
-training_mode = "sft"
+actor = "teacher"
 batch_size = 128
 group_size = 4
 
-# Teacher rolls out over plain chat-completions (no tokens); the renderer backfills them.
+[orchestrator.advantage]
+name = "sft"
+
+# The teacher model key uses a token-capable train client for actor rollouts.
 [orchestrator.renderer]
 name = "qwen3"
 
@@ -40,11 +43,13 @@ max_completion_tokens = 128
 [[orchestrator.eval.env]]
 id = "reverse-text"
 
-[orchestrator.teacher.model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+[orchestrator.models.teacher]
+type = "train"
+model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+base_url = "http://localhost:8001/v1"
 
-[orchestrator.teacher.client]
-base_url = ["http://localhost:8001/v1"]
+[orchestrator.models.teacher.renderer]
+name = "qwen3"
 
 [trainer.optim]
 lr = 1e-4

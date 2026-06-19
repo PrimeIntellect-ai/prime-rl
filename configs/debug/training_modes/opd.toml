@@ -16,9 +16,11 @@ project = "reverse-text-debug"
 name = "debug-opd"
 
 [orchestrator]
-training_mode = "opd"
 batch_size = 128
 group_size = 16
+
+[orchestrator.advantage]
+name = "opd"
 
 [orchestrator.renderer]
 name = "qwen3"
@@ -39,11 +41,10 @@ max_completion_tokens = 128
 [[orchestrator.eval.env]]
 id = "reverse-text"
 
-[orchestrator.teacher.model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
-
-[orchestrator.teacher.client]
-base_url = ["http://localhost:8001/v1"]
+[orchestrator.models.teacher]
+type = "train"
+model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+base_url = "http://localhost:8001/v1"
 
 [trainer.optim]
 lr = 3e-6

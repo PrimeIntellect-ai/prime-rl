@@ -83,7 +83,7 @@ def rl_sft_process(
     wandb_project: str,
     wandb_name: str,
 ) -> ProcessResult:
-    """Run the RL entrypoint with training_mode = "sft"; teacher_inference is
+    """Run the RL entrypoint with advantage.name = "sft" and actor = "teacher"; teacher_inference is
     a fixture-managed external vLLM at http://localhost:8001/v1."""
     cmd = [
         "uv",

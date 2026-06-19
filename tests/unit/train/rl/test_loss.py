@@ -10,7 +10,6 @@ pytestmark = [pytest.mark.gpu]
 def test_grpo_loss():
     trainer_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
     inference_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
-    teacher_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
     advantages = [torch.randn(50).cuda(), torch.randn(30).cuda()]
     loss_mask = [torch.ones(50, dtype=torch.bool).cuda(), torch.ones(30, dtype=torch.bool).cuda()]
 
@@ -18,7 +17,6 @@ def test_grpo_loss():
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
-        teacher_logprobs,
         advantages,
         loss_mask=loss_mask,
         loss_fns=loss_fns,
@@ -30,7 +28,6 @@ def test_grpo_loss():
 def test_gspo_loss():
     trainer_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
     inference_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
-    teacher_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
     advantages = [torch.randn(40).cuda(), torch.randn(60).cuda()]
     loss_mask = [torch.ones(40, dtype=torch.bool).cuda(), torch.ones(60, dtype=torch.bool).cuda()]
 
@@ -38,7 +35,6 @@ def test_gspo_loss():
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
-        teacher_logprobs,
         advantages,
         loss_mask=loss_mask,
         loss_fns=loss_fns,
@@ -64,7 +60,6 @@ def test_setup_loss_fns_with_custom_config():
     inputs = LossInputs(
         trainer_logprobs=torch.randn(50, dtype=torch.float32).cuda(),
         inference_logprobs=torch.randn(50, dtype=torch.float32).cuda(),
-        teacher_logprobs=None,
         advantages=torch.randn(50).cuda(),
         loss_mask=torch.ones(50, dtype=torch.bool).cuda(),
     )
@@ -85,7 +80,6 @@ def test_sft_loss_matches_masked_nll():
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
-        teacher_logprobs=None,
         advantages=advantages,
         loss_mask=loss_mask,
         loss_fns=loss_fns,
@@ -108,7 +102,6 @@ def test_sft_loss_override_uses_masked_nll_with_default_loss_config():
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
-        teacher_logprobs=None,
         advantages=advantages,
         loss_mask=loss_mask,
         loss_fns=loss_fns,
