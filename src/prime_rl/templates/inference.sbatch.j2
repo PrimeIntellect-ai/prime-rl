@@ -58,8 +58,9 @@ ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
-export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
-export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
+# Compile/JIT caches (triton/inductor/vllm/xdg) are pinned node-local per worker
+# inside the srun block below via scripts/env/cache-node-local.sh — never here,
+# where $(hostname -s) would resolve to the submit/head host.
 
 # Setup environment
 cd $PROJECT_DIR
@@ -145,7 +146,12 @@ srun bash -s <<'CLEANUP_SH'
     pkill -9 -x mooncake_master 2>/dev/null
     pkill -9 -x mooncake_client 2>/dev/null
     sleep 2
-    rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
+    rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
+    # Node-local compile caches from this job on this host (see cache-node-local.sh).
+    rm -rf /tmp/torch_inductor_${SLURM_JOB_ID}_$(hostname -s) \
+           /tmp/triton_cache_${SLURM_JOB_ID}_$(hostname -s) \
+           /tmp/vllm_cache_${SLURM_JOB_ID}_$(hostname -s) \
+           /tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname -s) 2>/dev/null
     procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::|mooncake_" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
     echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
@@ -165,7 +171,10 @@ srun --kill-on-bad-exit=1 bash -c '
     set -a
     [ -f .env ] && source .env
     set +a
+    source "$PROJECT_DIR/scripts/env/cache-node-local.sh"
     source .venv/bin/activate
+
+    GPU_FAULT_LOG_DIR="$OUTPUT_DIR/logs/inference" source "$PROJECT_DIR/scripts/env/gpu-fault-capture.sh"
 
     # Infiniband setup
     IB_HCA=$(ibv_devinfo 2>/dev/null | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" | paste -sd,)

@@ -243,13 +243,8 @@ def _offline_eval_env_script(args: argparse.Namespace, *, command: Sequence[str]
         {host_setup}
 
         export PYTHONPATH="{_q(args.patched_verifiers)}:{_q(args.omni_env_path)}${{PYTHONPATH:+:$PYTHONPATH}}"
-        export XDG_CACHE_HOME="${{XDG_CACHE_HOME:-/projects/a6r/joanv.a6r/tmp/xdg-cache}}"
         export XDG_CONFIG_HOME="${{XDG_CONFIG_HOME:-/projects/a6r/joanv.a6r/tmp/xdg-config}}"
-        export VLLM_CACHE_ROOT="${{VLLM_CACHE_ROOT:-/projects/a6r/joanv.a6r/tmp/vllm-cache}}"
-        export TRITON_CACHE_DIR="${{TRITON_CACHE_DIR:-/tmp/triton-cache-${{SLURM_JOB_ID:-offline-eval}}}}"
-        export TORCHINDUCTOR_CACHE_DIR="${{TORCHINDUCTOR_CACHE_DIR:-/tmp/inductor-cache-${{SLURM_JOB_ID:-offline-eval}}}}"
-        export INDUCTOR_CACHE_DIR="${{INDUCTOR_CACHE_DIR:-$TORCHINDUCTOR_CACHE_DIR}}"
-        export VLLM_TORCH_COMPILE_CACHE_DIR="${{VLLM_TORCH_COMPILE_CACHE_DIR:-/tmp/vllm-compile-${{SLURM_JOB_ID:-offline-eval}}}}"
+        source scripts/env/cache-node-local.sh
         export VLLM_NO_USAGE_STATS=1
         export PRIME_RL_DISABLE_VLLM_ROUTER="{int(args.disable_router)}"
         export PRIME_RL_VLLM_ROUTER_POLICY="{args.router_policy}"

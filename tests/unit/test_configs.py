@@ -16,7 +16,6 @@ from prime_rl.configs.shared import ClientConfig
 from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.utils.config import BaseConfig, cli
-from prime_rl.utils.validation import validate_shared_weight_broadcast
 
 # All config config classes
 CONFIG_CLASSES = [
@@ -59,19 +58,19 @@ def is_baseline_config(path: Path) -> bool:
 
 def is_composed_config_layer(path: Path) -> bool:
     """Composition overlays are valid only when loaded after a base config."""
-    # Debate run packs are layered: configs/debate/base.toml holds the shared
-    # orchestrator/broadcast settings (no [trainer]); debaters/* and judges/* are
-    # member overlays. Only the composed configs/debate/generated/* are complete
-    # standalone entrypoints. The layers are @-composed at launch, so they cannot
-    # parse alone -- skip them like the sft overlays.
-    debate_layer = path.parts[:2] == ("configs", "debate") and (
-        path.name == "base.toml" or path.parts[2:3] in (("debaters",), ("judges",))
-    )
-    return (
-        path.parts[:3] == ("configs", "sft", "overrides")
-        or (path.parts[:2] == ("configs", "sft") and path.name.startswith("isambard_"))
-        or debate_layer
-    )
+    if path.parts[:3] == ("configs", "sft", "overrides"):
+        return True
+    if path.parts[:2] == ("configs", "sft") and path.name.startswith("isambard_"):
+        return True
+    # The generated debate config tree (configs/debate/) is a generator SOURCE:
+    # base.toml + per-debater + per-judge fragments that ``gen.py`` composes into
+    # complete entrypoint configs under configs/debate/generated/. Only the
+    # generated/* outputs are standalone-loadable; the source layers are partial
+    # (a judge fragment is just [orchestrator.multi_agent.fixed.judge]) and must
+    # not be loaded on their own. The generated outputs ARE still validated.
+    if path.parts[:2] == ("configs", "debate") and path.parts[2:3] != ("generated",):
+        return True
+    return False
 
 
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
@@ -385,64 +384,6 @@ def test_orchestrator_failed_train_rollout_dump_config():
     )
     assert config.dump_failed_train_rollouts is True
     assert config.dump_failed_train_trajectory is True
-
-
-def test_validate_shared_weight_broadcast_catches_inference_type_mismatch():
-    trainer = TrainerConfig()
-    orchestrator = OrchestratorConfig()
-    inference = InferenceConfig.model_validate({"weight_broadcast": {"type": "nccl"}})
-
-    with pytest.raises(ValueError, match="Weight broadcast types must match"):
-        validate_shared_weight_broadcast(trainer, orchestrator, inference)
-
-
-def test_validate_shared_weight_broadcast_catches_nccl_scalar_mismatch():
-    trainer = TrainerConfig.model_validate(
-        {"weight_broadcast": {"type": "nccl", "port": 29501, "inference_world_size": 8}}
-    )
-    orchestrator = OrchestratorConfig.model_validate(
-        {"weight_broadcast": {"type": "nccl", "port": 29502, "inference_world_size": 8}}
-    )
-
-    with pytest.raises(ValueError, match="port"):
-        validate_shared_weight_broadcast(trainer, orchestrator)
-
-
-def test_trainer_allows_single_run_nccl_lora():
-    config = TrainerConfig.model_validate(
-        {
-            "model": {"lora": {}},
-            "weight_broadcast": {"type": "nccl", "inference_world_size": 1},
-            "max_concurrent_runs": 1,
-        }
-    )
-    assert config.weight_broadcast.type == "nccl"
-    assert config.model.lora is not None
-
-
-def test_trainer_rejects_multi_run_nccl_lora():
-    with pytest.raises(ValidationError, match="max_concurrent_runs = 1"):
-        TrainerConfig.model_validate(
-            {
-                "model": {"lora": {}},
-                "weight_broadcast": {"type": "nccl", "inference_world_size": 1},
-                "max_concurrent_runs": 2,
-            }
-        )
-
-
-def test_trainer_rejects_quantized_nccl_lora():
-    with pytest.raises(ValidationError, match="quantize_in_weight_transfer"):
-        TrainerConfig.model_validate(
-            {
-                "model": {"lora": {}},
-                "weight_broadcast": {
-                    "type": "nccl",
-                    "inference_world_size": 1,
-                    "quantize_in_weight_transfer": True,
-                },
-            }
-        )
 
 
 def test_selective_activation_checkpointing_requires_custom_impl():

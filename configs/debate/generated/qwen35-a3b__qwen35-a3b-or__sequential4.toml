@@ -162,4 +162,4 @@ id = "hf-singleturn"
 name = "gpqa-openended-singleagent-eval"
 num_examples = 55
 group_size = 4
-args = { dataset_name = "joanvelja/gpqa-open-ended", dataset_subset = "extended", task_type = "open_ended", judge_base_url = "https://openrouter.ai/api/v1", judge_model = "deepseek/deepseek-v4-flash", judge_api_key_var = "OPENROUTER_API_KEY", judge_prompt_pack = "gpqa_oe", judge_sampling_args = { max_completion_tokens = 8192, extra_body = { reasoning = { effort = "high", exclude = true }, provider = { data_collection = "deny", zdr = true, require_parameters = true, allow_fallbacks = false, only = ["AtlasCloud"] } } }, prompts_ref = "selfplay_oe_sequential4", num_eval_examples = 55, seed = 42 }
+args = { dataset_name = "joanvelja/gpqa-open-ended", dataset_subset = "extended", task_type = "open_ended", judge_base_url = "https://openrouter.ai/api/v1", judge_model = "deepseek/deepseek-v4-flash", judge_api_key_var = "OPENROUTER_API_KEY", judge_prompt_pack = "gpqa_oe", prompts_ref = "selfplay_oe_sequential4", num_eval_examples = 55, seed = 42 }

@@ -40,7 +40,9 @@ ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
-export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
+# Compile/JIT caches (triton/inductor/vllm/xdg) are pinned node-local per worker
+# inside the srun block below via scripts/env/cache-node-local.sh — never here at
+# the head node, where $(hostname -s) would resolve to the wrong host.
 
 # Networking
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
@@ -84,7 +86,12 @@ srun bash -s <<'CLEANUP_SH'
     pkill -9 "vllm" 2>/dev/null
     pkill -9 "vllm::.*" 2>/dev/null
     sleep 2
-    rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
+    rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
+    # Node-local compile caches from this job on this host (see cache-node-local.sh).
+    rm -rf /tmp/torch_inductor_${SLURM_JOB_ID}_$(hostname -s) \
+           /tmp/triton_cache_${SLURM_JOB_ID}_$(hostname -s) \
+           /tmp/vllm_cache_${SLURM_JOB_ID}_$(hostname -s) \
+           /tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname -s) 2>/dev/null
     procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
     echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
@@ -101,6 +108,7 @@ srun --kill-on-bad-exit=1 bash -c '
     set -a
     [ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
     set +a
+    source "$PROJECT_DIR/scripts/env/cache-node-local.sh"
     source $PROJECT_DIR/.venv/bin/activate
 
     # Higher ulimit

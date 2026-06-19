@@ -23,24 +23,20 @@ def test_generated_debate_envs_wire_gt_grader() -> None:
             assert args["judge_api_key_var"] == "OPENROUTER_API_KEY", path
 
 
-def test_generated_single_agent_eval_uses_deepseek_provider_args() -> None:
+def test_generated_single_agent_eval_uses_deepseek_grader() -> None:
+    # The grader sampling/provider policy was hoisted out of the per-config TOML
+    # into the shared gpqa_oe prompt pack (single source of truth); the eval now
+    # references it via ``judge_prompt_pack``. The policy itself is asserted in
+    # ``test_debate_prompt_pack_uses_same_deepseek_sampling_policy``.
     for path in sorted(GENERATED.glob("*.toml")):
         config = tomllib.loads(path.read_text())
         (single_eval,) = [env for env in config["orchestrator"]["eval"]["env"] if env["id"] == "hf-singleturn"]
         args = single_eval["args"]
-        sampling = args["judge_sampling_args"]
-        extra_body = sampling["extra_body"]
-        provider = extra_body["provider"]
 
         assert args["judge_prompt_pack"] == "gpqa_oe", path
         assert args["judge_model"] == "deepseek/deepseek-v4-flash", path
-        assert sampling["max_completion_tokens"] == 8192, path
-        assert extra_body["reasoning"] == {"effort": "high", "exclude": True}, path
-        assert provider["only"] == ["AtlasCloud"], path
-        assert provider["allow_fallbacks"] is False, path
-        assert provider["require_parameters"] is True, path
-        assert provider["zdr"] is True, path
-        assert provider["data_collection"] == "deny", path
+        assert args["judge_base_url"] == "https://openrouter.ai/api/v1", path
+        assert args["judge_api_key_var"] == "OPENROUTER_API_KEY", path
 
 
 def test_debate_prompt_pack_uses_same_deepseek_sampling_policy() -> None:
@@ -50,7 +46,11 @@ def test_debate_prompt_pack_uses_same_deepseek_sampling_policy() -> None:
     assert text.count("max_completion_tokens: 8192") == 2
     assert text.count("effort: high") == 2
     assert text.count("exclude: true") == 2
-    assert text.count("allow_fallbacks: false") == 2
+    # ZDR-constrained provider POOL with fallbacks (was: single pinned provider,
+    # allow_fallbacks false). zdr:true + data_collection:deny still filter every
+    # provider in the pool, so the privacy guarantee holds while a single dead
+    # provider no longer fails every grade (the grader_error=1.0 incident).
+    assert text.count("allow_fallbacks: true") == 2
     assert text.count("require_parameters: true") == 2
     assert text.count("zdr: true") == 2
     assert text.count("data_collection: deny") == 2

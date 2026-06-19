@@ -521,6 +521,18 @@ class InferenceConfig(BaseConfig):
         if kv_transfer_config is not None:
             rsetattr(namespace, "kv_transfer_config", kv_transfer_config)
 
+        # Disable the flashinfer all-reduce + RMSNorm fusion pass. On Hopper/Blackwell
+        # with flashinfer present, vLLM auto-enables it at optimization level >= O2,
+        # whose workspace creation drives `trtllm_create_ipc_workspace_for_all_reduce_fusion`
+        # — a CUDA-IPC barrier that deadlocks during TP engine startup on the Slingshot
+        # fabric. Set explicitly to False so vLLM's None-sentinel default resolution skips
+        # the pass entirely (AllReduceFusionPass is never built); TP all-reduce falls back
+        # to custom/pynccl. Merge into any existing compilation_config rather than clobber.
+        compilation_config = getattr(namespace, "compilation_config", None) or {}
+        pass_config = compilation_config.setdefault("pass_config", {})
+        pass_config["fuse_allreduce_rms"] = False
+        rsetattr(namespace, "compilation_config", compilation_config)
+
         # Pass prime-rl-specific flags through vLLM's additional_config dict;
         # workers read these via get_current_vllm_config().additional_config.
         if self.enable_fp32_lm_head:

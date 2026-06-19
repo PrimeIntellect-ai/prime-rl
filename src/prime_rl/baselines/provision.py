@@ -281,16 +281,9 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
 # are pre-cached at HF_HUB_CACHE (Lustre), so offline mode is safe.
 export HF_HUB_OFFLINE="${{HF_HUB_OFFLINE:-1}}"
 export TRANSFORMERS_OFFLINE="${{TRANSFORMERS_OFFLINE:-1}}"
-# Put torch.compile / triton caches on each node's local tmpfs to avoid the
-# Lustre "Stale file handle" race when 32 workers autotune the same kernels
-# in parallel on a cold cache. /tmp is 334G tmpfs per node on Isambard.
-# Include job + hostname so concurrent jobs on shared nodes don't collide.
-export TORCHINDUCTOR_CACHE_DIR="${{TORCHINDUCTOR_CACHE_DIR:-/tmp/torch_inductor_${{SLURM_JOB_ID:-${{USER}}}}_$(hostname -s)}}"
-export TRITON_CACHE_DIR="${{TRITON_CACHE_DIR:-/tmp/triton_cache_${{SLURM_JOB_ID:-${{USER}}}}_$(hostname -s)}}"
-# vLLM keeps its own torch.compile cache at $VLLM_CACHE_ROOT/torch_compile_cache;
-# default is ~/.cache/vllm (Lustre on Isambard). Redirect to /tmp too.
-export VLLM_CACHE_ROOT="${{VLLM_CACHE_ROOT:-/tmp/vllm_cache_${{SLURM_JOB_ID:-${{USER}}}}_$(hostname -s)}}"
-mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$VLLM_CACHE_ROOT"
+# Pin torch.compile / triton / inductor / vLLM compile caches to each node's
+# local tmpfs (single source of truth — same helper every launch path sources).
+source "$PROJECT_DIR/scripts/env/cache-node-local.sh"
 
 # Slingshot/Cassini NCCL fabric (single source of truth). Loads brics/nccl ->
 # NCCL_NET="AWS Libfabric", cxi provider, GPUDirect RDMA. NOT InfiniBand, so no

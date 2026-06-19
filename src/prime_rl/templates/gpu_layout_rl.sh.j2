@@ -60,6 +60,7 @@ set -a
 set +a
 source .venv/bin/activate
 source "$PROJECT_DIR/scripts/env/isambard-fabric.sh"
+source "$PROJECT_DIR/scripts/env/cache-node-local.sh"
 if [ -d "$PROJECT_DIR/environments" ]; then
     while IFS= read -r env_dir; do
         export PYTHONPATH="$env_dir${PYTHONPATH:+:$PYTHONPATH}"
@@ -109,6 +110,10 @@ cleanup() {
     done
 }
 trap cleanup EXIT TERM INT
+
+# Per-node GPU fault capture (chains onto the cleanup EXIT trap). Snapshots GPU
+# health into logs/inference so the next CUDA/engine fault is diagnosable.
+GPU_FAULT_LOG_DIR="$OUTPUT_DIR/logs/inference" source "$PROJECT_DIR/scripts/env/gpu-fault-capture.sh"
 
 for spec in "${INFERENCE_SPECS[@]}"; do
     IFS=: read -r gpu_id port server_idx <<< "$spec"

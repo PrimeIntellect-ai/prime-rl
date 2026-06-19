@@ -313,7 +313,21 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
     namespace = config.to_vllm()
     if vllm_extra:
         for key, value in vllm_extra.items():
-            setattr(namespace, key, value)
+            # Deep-merge nested compilation_config so vllm_extra (e.g. the
+            # disaggregated decode role's cudagraph_mode) augments rather than
+            # clobbers the namespace defaults set in to_vllm() — notably the
+            # `pass_config.fuse_allreduce_rms = False` that disables the flashinfer
+            # trtllm all-reduce-fusion workspace barrier (deadlocks at TP startup).
+            if key == "compilation_config" and isinstance(value, dict):
+                merged = getattr(namespace, "compilation_config", None) or {}
+                for cc_key, cc_value in value.items():
+                    if cc_key == "pass_config" and isinstance(cc_value, dict):
+                        merged.setdefault("pass_config", {}).update(cc_value)
+                    else:
+                        merged[cc_key] = cc_value
+                setattr(namespace, "compilation_config", merged)
+            else:
+                setattr(namespace, key, value)
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)

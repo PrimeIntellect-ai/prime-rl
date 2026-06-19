@@ -75,7 +75,9 @@ echo "LANE_HOSTS=${LANE_HOSTS[*]} LANE_NNODES=${LANE_NNODES} PORT_BASE=${PORT_BA
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
-export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$LANE_TAG
+# Compile/JIT caches (triton/inductor/vllm/xdg) are pinned node-local per worker
+# inside the srun block below via scripts/env/cache-node-local.sh — never here at
+# the head node, where $(hostname -s) would resolve to the wrong host.
 
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_RUN_ID=$(python3 -c "import uuid; print(uuid.uuid4().hex)")
@@ -206,8 +208,12 @@ srun "${LANE_SRUN_OPTS[@]}" \
     pkill -9 -x mooncake_master 2>/dev/null
     pkill -9 -x mooncake_client 2>/dev/null
     sleep 2
-    rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
-    rm -rf /tmp/triton-cache-$USER-$LANE_TAG 2>/dev/null
+    rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
+    # Node-local compile caches from this job on this host (see cache-node-local.sh).
+    rm -rf /tmp/torch_inductor_${SLURM_JOB_ID}_$(hostname -s) \
+           /tmp/triton_cache_${SLURM_JOB_ID}_$(hostname -s) \
+           /tmp/vllm_cache_${SLURM_JOB_ID}_$(hostname -s) \
+           /tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname -s) 2>/dev/null
     procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::|mooncake_" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
     echo "[node-cleanup] $(hostname) lane=$LANE_TAG procs=$procs gpu_mem=${gpu}MiB"
@@ -230,6 +236,7 @@ srun "${LANE_SRUN_OPTS[@]}" \
     [ -f .env ] && source .env
     set +a
     source "$PROJECT_DIR/scripts/env/isambard-fabric.sh"
+    source "$PROJECT_DIR/scripts/env/cache-node-local.sh"
     source .venv/bin/activate
     # Do not sync to avoid conflicts with lockfile
 
@@ -260,6 +267,7 @@ if [ "$LANE_NODE_RANK" -lt "$NUM_INFER_NODES" ]; then
     INFER_NODE_RANK=$LANE_NODE_RANK
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
+    GPU_FAULT_LOG_DIR="$OUTPUT_DIR/logs/inference" source "$PROJECT_DIR/scripts/env/gpu-fault-capture.sh"
 
 {%- if kv_offload %}
     ulimit -l unlimited

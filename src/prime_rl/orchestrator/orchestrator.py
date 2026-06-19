@@ -22,11 +22,13 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import gc
 import logging
 import os
 import time
 from typing import TYPE_CHECKING
 
+import psutil
 import tomli_w
 
 if TYPE_CHECKING:
@@ -119,6 +121,37 @@ TARGET_LAG = 1
 # token-export steps it hadn't flushed yet, and how often to poll for them.
 TOKEN_EXPORT_DRAIN_TIMEOUT_S = 300.0
 TOKEN_EXPORT_DRAIN_POLL_S = 2.0
+
+
+def _release_unused_memory() -> None:
+    """Return freed heap pages to the OS. The orchestrator's per-step churn
+    (rollout buffers, b64-decoded routed_experts, batch dict materialization)
+    fragments glibc arenas; without this the freed pages are never reclaimed
+    mid-run and RSS ratchets to a host-OOM. Call off the event loop via
+    ``asyncio.to_thread`` — ``malloc_trim`` walks every arena and can block."""
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError) as e:
+        get_logger().debug(f"malloc_trim(0) unavailable: {e}")
+
+
+# Host-RAM attribution gauges, sampled on the pipeline tick. With
+# ``orchestrator_on_inference`` the orchestrator shares a node with a vLLM
+# engine + env-worker children, so a host-OOM here is invisible to step-axis
+# metrics (the step that OOMs never finishes). Split node RAM into the
+# orchestrator process tree (main proc + recursive children = env workers) vs
+# everything else (``node_other`` ≈ the co-located vLLM engine + system).
+_MEM_GAUGE_KEYS = (
+    "mem/orch_proc_gb",
+    "mem/orch_children_gb",
+    "mem/orch_tree_gb",
+    "mem/orch_children_n",
+    "mem/node_used_gb",
+    "mem/node_available_gb",
+    "mem/node_percent",
+    "mem/node_other_gb",
+)
 
 
 class Orchestrator:
@@ -472,6 +505,7 @@ class Orchestrator:
                 "event_loop_lag/p99",
                 "event_loop_lag/max",
                 "event_loop_lag/n",
+                *_MEM_GAUGE_KEYS,
             ],
             interval=log_interval,
             wandb_enabled=wandb_enabled,
@@ -550,10 +584,7 @@ class Orchestrator:
                 get_logger().success("Orchestrator finished.")
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced).")
-            try:
-                ctypes.CDLL("libc.so.6").malloc_trim(0)
-            except Exception as e:
-                get_logger().debug(f"malloc_trim(0) failed: {e}")
+            await asyncio.to_thread(_release_unused_memory)
 
     async def main_loop(self) -> None:
         """Consume ``FinishedRollout``\\ s from the dispatcher and route them
@@ -587,20 +618,34 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 continue
 
-            if isinstance(rollout, EvalRollout):
-                assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
-                eval_batch = self.eval_sink.add(rollout)
-                if eval_batch is not None:
-                    await self.finalize_eval_batch(eval_batch)
-                continue
+            train_batch = None
+            eval_batch = None
+            should_release_memory = False
+            try:
+                if isinstance(rollout, EvalRollout):
+                    assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
+                    eval_batch = self.eval_sink.add(rollout)
+                    if eval_batch is not None:
+                        should_release_memory = True
+                        await self.finalize_eval_batch(eval_batch)
+                    continue
 
-            assert isinstance(rollout, TrainRollout)
-            await self.maybe_save_failed_train_rollout(rollout)
-            train_batch = await self.train_sink.add(rollout)
-            # In drain mode any late-arriving train batch is dropped — we
-            # don't want to ship past ``max_steps``
-            if train_batch is not None and not self.draining and not self.stopped.is_set():
-                await self.finalize_train_batch(train_batch)
+                assert isinstance(rollout, TrainRollout)
+                await self.maybe_save_failed_train_rollout(rollout)
+                train_batch = await self.train_sink.add(rollout)
+                # In drain mode any late-arriving train batch is dropped — we
+                # don't want to ship past ``max_steps``
+                if train_batch is not None:
+                    should_release_memory = True
+                if train_batch is not None and not self.draining and not self.stopped.is_set():
+                    await self.finalize_train_batch(train_batch)
+            finally:
+                # Free the just-processed rollout/batch and return heap pages to
+                # the OS once per shipped batch — the per-step arena reclaim the
+                # orchestrator lacked (shutdown-only trim let RSS ratchet to OOM).
+                del train_batch, eval_batch, rollout
+                if should_release_memory:
+                    await asyncio.to_thread(_release_unused_memory)
 
     def check_pipeline_health(self) -> None:
         """Crash instead of stalling silently. The dispatcher and watcher run
@@ -906,7 +951,51 @@ class Orchestrator:
             payload["event_loop_lag/p99"] = lag_stats.p99
             payload["event_loop_lag/max"] = lag_stats.max
             payload["event_loop_lag/n"] = float(lag_stats.n)
+        try:
+            mem_body, mem_gauges = self._collect_memory()
+            body += " || " + mem_body
+            payload.update(mem_gauges)
+        except Exception as e:
+            # Observability must never take down the pipeline logger.
+            get_logger().debug(f"memory gauge failed: {e}")
         return body, payload
+
+    @staticmethod
+    def _collect_memory() -> tuple[str, dict[str, float]]:
+        """Host-RAM attribution for the orchestrator node (keys = ``_MEM_GAUGE_KEYS``).
+        Returns ``(console_fragment, gauges)``. ``orch_tree`` is this process plus
+        its recursive children (the env workers); ``node_other`` is node ``used``
+        minus that tree, i.e. ≈ the co-located vLLM engine + system."""
+        gib = float(1 << 30)
+        proc = psutil.Process()
+        main_rss = proc.memory_info().rss
+        children = proc.children(recursive=True)
+        children_rss = 0
+        for child in children:
+            try:
+                children_rss += child.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+        tree_rss = main_rss + children_rss
+        vm = psutil.virtual_memory()
+        node_other = max(0.0, (vm.used - tree_rss) / gib)
+        gauges = {
+            "mem/orch_proc_gb": main_rss / gib,
+            "mem/orch_children_gb": children_rss / gib,
+            "mem/orch_tree_gb": tree_rss / gib,
+            "mem/orch_children_n": float(len(children)),
+            "mem/node_used_gb": vm.used / gib,
+            "mem/node_available_gb": vm.available / gib,
+            "mem/node_percent": vm.percent,
+            "mem/node_other_gb": node_other,
+        }
+        body = (
+            f"mem node {vm.percent:.0f}% ({vm.used / gib:.0f}/{vm.total / gib:.0f}G, "
+            f"avail {vm.available / gib:.0f}G) | orch-tree {tree_rss / gib:.0f}G "
+            f"(proc {main_rss / gib:.0f}G + {len(children)} kids {children_rss / gib:.0f}G) "
+            f"| other {node_other:.0f}G"
+        )
+        return body, gauges
 
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
         """Per-step ``Step …`` success line. Multi-env runs append an
