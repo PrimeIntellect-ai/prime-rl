@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 import torch
+import torch.distributed as dist
+import torch.distributed.nn as dist_nn
 import torch.nn.functional as F
 from torch import Tensor, nn
 from transformers.cache_utils import Cache
@@ -281,12 +283,45 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
+        # Context parallelism halo exchange: the causal conv1d needs each token's
+        # (kernel-1) predecessors as left context. CP shards the sequence, so on
+        # ranks past the start of a sequence the first tokens would otherwise be
+        # zero-padded instead of seeing the previous rank's tail — corrupting the
+        # conv and, through the recurrence, the entire rank. Exchange a small halo
+        # of boundary tokens (pre-conv) across CP ranks before convolving.
+        n_halo = 0
+        conv_cu_seqlens = cu_seqlens
+        if cp_context is not None and self.cp_world_size > 1 and self.conv_kernel_size > 1:
+            k1 = self.conv_kernel_size - 1
+            tail = mixed_qkv[:, :, -k1:].contiguous()
+            # Differentiable all_gather: its backward routes each rank's halo
+            # gradient back to the source rank's tail tokens, so the boundary
+            # tokens get the correct gradient contribution from the next rank.
+            gathered = dist_nn.all_gather(tail, group=self.cp_group)
+            # Every rank must keep the gathered result in its autograd graph so the
+            # all_gather backward collective fires on ALL ranks in lockstep. Ranks
+            # that need no halo (a sequence starts exactly at their first token)
+            # would otherwise never use `gathered`, skip its backward, and deadlock
+            # the ranks that do. A zero-weighted reference keeps the edge alive
+            # without changing the forward value.
+            left_full = gathered[(self.cp_rank - 1) % self.cp_world_size]
+            mixed_qkv = mixed_qkv + 0.0 * left_full.sum()
+            # How many tokens of this rank's first sequence live on earlier ranks
+            # (0 when this rank starts a fresh sequence -> zero-pad is correct).
+            pre = int(getattr(cp_context, "pre_num_conv_tokens", 0) or 0)
+            n_halo = min(k1, pre)
+            if n_halo > 0:
+                mixed_qkv = torch.cat([left_full[:, :, -n_halo:], mixed_qkv], dim=2)
+                if cu_seqlens is not None:
+                    conv_cu_seqlens = cu_seqlens.clone()
+                    conv_cu_seqlens[1:] = conv_cu_seqlens[1:] + n_halo
+
         # Causal conv1d — must reset at sequence boundaries for packed batches,
         # otherwise the kernel-1 left pad leaks state across sequences.
         if self._causal_conv1d_fn is not None:
             seq_idx = None
-            if cu_seqlens is not None:
-                seg_lens = cu_seqlens[1:] - cu_seqlens[:-1]
+            if conv_cu_seqlens is not None:
+                seg_lens = conv_cu_seqlens[1:] - conv_cu_seqlens[:-1]
                 seq_idx = torch.repeat_interleave(
                     torch.arange(seg_lens.numel(), dtype=torch.int32, device=hidden_states.device),
                     seg_lens,
@@ -298,8 +333,8 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
                 activation=self.activation,
                 seq_idx=seq_idx,
             )
-        elif cu_seqlens is not None:
-            cu = cu_seqlens.tolist()
+        elif conv_cu_seqlens is not None:
+            cu = conv_cu_seqlens.tolist()
             conv_outs = []
             for i in range(len(cu) - 1):
                 s, e = cu[i], cu[i + 1]
@@ -309,6 +344,10 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
             mixed_qkv = F.silu(torch.cat(conv_outs, dim=-1))
         else:
             mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len])
+
+        # Drop the prepended halo tokens, restoring the local sequence length.
+        if n_halo > 0:
+            mixed_qkv = mixed_qkv[:, :, n_halo:]
 
         mixed_qkv = mixed_qkv.transpose(1, 2)
         query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
