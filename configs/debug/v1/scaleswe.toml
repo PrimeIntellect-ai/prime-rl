@@ -74,13 +74,24 @@ temperature = 1.0
 
 [[orchestrator.train.env]]
 name = "scaleswe"
-# v1 scaleswe SWE taskset; rlm agent in a modal sandbox using the row's injected Docker image.
+# v1 scaleswe SWE taskset; mini-swe-agent in a prime sandbox using the row's injected Docker image.
 taskset = { id = "scaleswe-v1" }
-harness = { id = "rlm", runtime = { type = "prime", labels = ["scaleswe-qwen36-35b-a3b"] } }
+harness = { id = "mini-swe-agent", runtime = { type = "prime", labels = ["scaleswe-qwen36-35b-a3b"] } }
 
 [orchestrator.prime_monitor]
 
-# --- Eval: SWE-Bench Verified every 20 steps (like the v0 rlm_swe run), on the prime runtime ---
+# --- Eval: SWE-Bench Verified (first 100 tasks) every 20 steps, mini-swe-agent on prime ---
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+taskset = { id = "swebench-verified-v1", use_prime_registry = true }
+harness = { id = "mini-swe-agent", runtime = { type = "prime", labels = ["scaleswe-qwen36-35b-a3b"] } }
+num_examples = 100
+group_size = 1
+timeout = { rollout = 3600 }
 
 # --- Inference ---
 
