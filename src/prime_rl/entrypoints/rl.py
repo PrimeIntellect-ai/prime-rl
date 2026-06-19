@@ -102,6 +102,9 @@ def setup_env_servers(config: RLConfig, config_dir: Path) -> list[dict]:
             if config.log.level is not None:
                 server_dict["log"] = {"level": config.log.level}
             toml_path = config_dir / f"env_server_{kind}_{env.resolved_name}.toml"
+            # resolved_name can be namespaced (e.g. "primeintellect/wiki-search"), making the
+            # filename a nested path — ensure the parent dir exists before writing.
+            toml_path.parent.mkdir(parents=True, exist_ok=True)
             with open(toml_path, "wb") as f:
                 tomli_w.dump(server_dict, f)
             specs.append(
