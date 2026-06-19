@@ -42,15 +42,6 @@ async def max_rl(traces: list[vf.Trace]) -> list[vf.Trace]:
     return traces
 
 
-@vf.advantage(loss="rl", scope="rollout")
-async def reward(traces: list[vf.Trace]) -> list[vf.Trace]:
-    for trace in traces:
-        for branch in trace.branches:
-            branch.advantages = [trace.reward if sampled else 0.0 for sampled in branch.sampled_mask]
-            branch.mask = list(branch.sampled_mask)
-    return traces
-
-
 @vf.advantage(loss="ce", scope="rollout")
 async def sft(traces: list[vf.Trace]) -> list[vf.Trace]:
     for trace in traces:
@@ -232,7 +223,6 @@ async def opsd(traces: list[vf.Trace]) -> list[vf.Trace]:
 BUILTIN_ADVANTAGES: dict[str, TraceAdvantageFn] = {
     grpo.__name__: grpo,
     max_rl.__name__: max_rl,
-    reward.__name__: reward,
     sft.__name__: sft,
     echo.__name__: echo,
     opd.__name__: opd,

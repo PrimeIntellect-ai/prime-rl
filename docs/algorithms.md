@@ -138,7 +138,6 @@ Built-ins are registered by name:
 |---|---|---|---|
 | `grpo` | `rl` | `group` | Reward minus group mean. |
 | `max_rl` | `rl` | `group` | Reward minus group mean, divided by positive group mean. |
-| `reward` | `rl` | `rollout` | Raw rollout reward on sampled tokens. |
 | `sft` | `ce` | `rollout` | Unit CE weights on sampled tokens. |
 | `echo` | `ce` | `rollout` | Unit CE weights on non-sampled system/user/tool tokens. |
 | `opd` | `rl` | `group` | Token weights from a configured `trace.models["teacher"]` token-capable endpoint. |
