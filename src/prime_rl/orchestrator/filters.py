@@ -53,9 +53,9 @@ class GibberishFilter:
         global_idx = 0
         for sample in rollout.samples:
             for token_id, logprob, sampled in zip(
-                sample.completion_ids,
-                sample.completion_logprobs,
-                sample.completion_mask,
+                sample.token_ids,
+                sample.logprobs,
+                sample.mask,
                 strict=True,
             ):
                 if not sampled:
@@ -87,7 +87,7 @@ class RepetitionFilter:
         consecutive = 0
         global_idx = 0
         for sample in rollout.samples:
-            for logprob, sampled in zip(sample.completion_logprobs, sample.completion_mask, strict=True):
+            for logprob, sampled in zip(sample.logprobs, sample.mask, strict=True):
                 if not sampled:
                     continue
                 if logprob > self.logprob_threshold:

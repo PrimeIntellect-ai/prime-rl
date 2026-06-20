@@ -167,23 +167,20 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_env_algo_overrides_top_level():
+def test_env_advantages_override_top_level():
     config = OrchestratorConfig.model_validate(
         {
-            "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
-            "algo": {"type": "echo"},
-            "train": {"env": [{"id": "a", "algo": {"type": "reward"}}, {"id": "b"}]},
+            "advantages": ["echo"],
+            "train": {"env": [{"id": "a", "advantages": ["rl"]}, {"id": "b"}]},
         }
     )
     env_a, env_b = config.train.env
-    # Env a sets its own algorithm; only env b inherits the top-level echo algorithm.
-    assert env_a.algo is not None and env_a.algo.type == "reward"
-    assert env_b.algo is not None and env_b.algo.type == "echo"
+    assert env_a.advantages == ["rl"]
+    assert env_b.advantages == ["echo"]
 
-    # Resolved configs round-trip.
     dumped = config.model_dump(exclude_none=True)
     reloaded = OrchestratorConfig.model_validate(dumped)
-    assert reloaded.train.env[0].algo is not None and reloaded.train.env[0].algo.type == "reward"
+    assert reloaded.train.env[0].advantages == ["rl"]
 
 
 def test_trainer_enable_token_export_cli_flag():
@@ -211,7 +208,7 @@ def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
     assert config.orchestrator.model.client.dp_rank_count == 2
 
 
-def test_multi_node_auto_inference_client_dp_rank_count_matches_local_dp():
+def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
     config = RLConfig.model_validate(
         {
             "trainer": {},
@@ -543,7 +540,8 @@ def test_orchestrator_explicit_renderer_skips_unmapped_check():
     assert config.renderer.name == "qwen3"
 
 
-def test_orchestrator_renderer_none_allows_text_mito():
+def test_orchestrator_renderer_none_skips_unmapped_check():
+    """renderer=None opts into the non-renderer path and skips auto renderer resolution."""
     config = OrchestratorConfig.model_validate(
         {
             "model": {"name": "not-a-real-org/not-a-real-model"},

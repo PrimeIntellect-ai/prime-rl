@@ -191,7 +191,7 @@ class PrimeMonitor(Monitor):
             frontend_url = prime_config.frontend_url
 
         payload: dict[str, Any] = {
-            "base_model": run_config.student.model.name if run_config else "unknown",
+            "base_model": run_config.model.name if run_config else "unknown",
             "max_steps": (run_config.max_steps if run_config else None) or 0,
         }
         if run_config:

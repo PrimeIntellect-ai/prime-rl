@@ -18,19 +18,16 @@ name = "debug-sft-lora"
 [orchestrator]
 batch_size = 128
 group_size = 4
+actor = "reference"
+advantages = ["sft"]
 
-[orchestrator.algo]
-type = "sft"
-
-[orchestrator.algo.teacher]
+[orchestrator.models.reference]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+tokens = true
+
+[orchestrator.models.reference.client]
 base_url = ["http://localhost:8001/v1"]
 
-# The student's renderer tokenizes the teacher's messages into the student's
-# token space (backfill). Use `default` (wraps the student tokenizer's
-# apply_chat_template) so the CE target is faithful to the student's actual
-# chat template. The stock `qwen3` renderer injects an empty `<think></think>`
-# block this model's custom template never emits, corrupting the target.
 [orchestrator.renderer]
 name = "default"
 

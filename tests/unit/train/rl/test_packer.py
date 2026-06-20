@@ -12,7 +12,7 @@ from prime_rl.trainer.rl.packer import MultiPacker
 from prime_rl.trainer.runs import setup_multi_run_manager
 from prime_rl.trainer.utils import build_bin_cost
 from prime_rl.trainer.world import reset_world
-from prime_rl.transport.types import TrainingSample
+from prime_rl.transport.types import TrainingAdvantage, TrainingSample
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -43,13 +43,11 @@ def create_run_with_config(output_dir: Path, run_name: str) -> Path:
 
 def make_training_sample() -> TrainingSample:
     return TrainingSample(
-        prompt_ids=[1],
-        prompt_mask=[False],
-        completion_ids=[2],
-        completion_mask=[True],
-        completion_logprobs=[-0.1],
-        completion_temperatures=[1.0],
-        advantages=[0.0, 1.0],
+        token_ids=[1, 2],
+        mask=[False, True],
+        logprobs=[0.0, -0.1],
+        temperatures=[1.0, 1.0],
+        advantages=[TrainingAdvantage(loss="rl", values=[0.0, 1.0], mask=[False, True])],
         env_name="test-env",
     )
 

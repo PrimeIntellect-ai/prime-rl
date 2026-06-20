@@ -27,11 +27,9 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
-from verifiers.v1.serve import EnvClient
+from verifiers.v1.serve import EnvClient, ModelRuntimeConfig, TraceAdvantages, env_config_data
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
-from prime_rl.orchestrator.algo import Algorithm, build_algorithm
-from prime_rl.orchestrator.sampler import Sampler
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
 
@@ -135,7 +133,7 @@ class Env:
                 extra_env_kwargs=self.config.extra_env_kwargs,
             )
             if self.config.is_legacy
-            else dict(legacy=False, config=self.config)
+            else dict(legacy=False, config_data=env_config_data(self.config))
         )
         process = ctx.Process(
             target=_run_env_server,
@@ -174,9 +172,7 @@ class Env:
         """Run a single rollout for ``task_idx``; return a typed Trace."""
         wire = await self.env_client.run_rollout(
             task_idx=task_idx,
-            client=client,
-            model=model_name,
-            sampling=self._sampling(cache_salt),
+            actor=ModelRuntimeConfig(client=client, model=model_name, sampling=self._sampling(cache_salt)),
         )
         return ROLLOUT_TYPE.model_validate(wire.model_dump())
 
@@ -187,11 +183,18 @@ class Env:
         wires = await self.env_client.run_group(
             task_idx=task_idx,
             n=group_size,
-            client=client,
-            model=model_name,
-            sampling=self._sampling(cache_salt),
+            actor=ModelRuntimeConfig(client=client, model=model_name, sampling=self._sampling(cache_salt)),
         )
         return [ROLLOUT_TYPE.model_validate(wire.model_dump()) for wire in wires]
+
+    async def run_advantages(
+        self,
+        refs: list[str],
+        traces: list[Rollout],
+        models: dict[str, ModelRuntimeConfig],
+    ) -> list[TraceAdvantages]:
+        """Run env-owned advantage refs inside the env server."""
+        return await self.env_client.run_advantages(refs, traces, models)
 
     def shutdown(self) -> None:
         if self._env_server_process is None:
@@ -203,11 +206,9 @@ class Env:
 class TrainEnv(Env):
     config: TrainEnvConfig
 
-    def __init__(self, config: TrainEnvConfig, sampler: Sampler, algorithm: Algorithm):
+    def __init__(self, config: TrainEnvConfig):
         super().__init__(config)
-        self.sampler = sampler
-        self.algorithm = algorithm
-        self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
+        self.sampling_args = config.sampling.to_sampling_args()
 
 
 class EvalEnv(Env):
@@ -276,19 +277,12 @@ class Envs(Generic[EnvT]):
 
 
 class TrainEnvs(Envs[TrainEnv]):
-    """Collection of training environments, each paired with its rollout
-    :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
-    resolved algorithm config."""
+    """Collection of training environments."""
 
-    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer):
+    def __init__(self, configs: Sequence[TrainEnvConfig]):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
-            assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
-            env = TrainEnv(
-                config,
-                Sampler(config.algo.sampling, policy_pool),
-                build_algorithm(config.algo, policy_pool, renderer),
-            )
+            env = TrainEnv(config)
             self._envs[env.name] = env
 
 

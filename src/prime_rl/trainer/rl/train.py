@@ -27,6 +27,8 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
+    LossChannel,
+    ce_loss_fn,
     compute_entropy,
     compute_loss,
     compute_importance_ratio_and_mismatch_kl,
@@ -149,9 +151,12 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
-    # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
+    # Set up the loss functions. ``trainer.loss`` selects only the RL stability policy;
+    # CE is fixed and uses the advantage values as per-token weights.
     logger.info(f"Setting up loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
+    loss_fns = {"rl": rl_loss_fn, "ce": ce_loss_fn}
+    loss_names = tuple(loss_fns)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -358,23 +363,18 @@ def train(config: TrainerConfig):
         # contribution after FSDP averaging. FSDP's per-rank divide is undone after the
         # microbatch loop via fsdp_gradient_divide_factor. One batched collective keeps every
         # rank issuing the same op regardless of which components its samples carry.
-        local_rl_scale = 0
-        local_ce_scale = 0
-        local_ref_kl_scale = 0
+        local_loss_scales = {name: 0 for name in loss_names}
         for micro_batch in micro_batches:
-            mask = micro_batch["loss_mask"]
-            rl_w = micro_batch["rl_weights"]
-            local_rl_scale += int((mask & (rl_w != 0)).sum()) if rl_w is not None else int(mask.sum())
-            if micro_batch["ce_weights"] is not None:
-                local_ce_scale += int((micro_batch["ce_weights"] != 0).sum())
-            if micro_batch["ref_kl_weights"] is not None:
-                local_ref_kl_scale += int((micro_batch["ref_kl_weights"] != 0).sum())
-        global_scales = torch.tensor(
-            [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.int64, device="cuda"
-        )
+            for channel in micro_batch["advantages"]:
+                if channel["loss"] not in loss_fns:
+                    raise ValueError(
+                        f"Unknown loss channel {channel['loss']!r}; configured losses are {sorted(loss_fns)}"
+                    )
+                local_loss_scales[channel["loss"]] += int(channel["mask"].sum())
+        global_scales = torch.tensor([local_loss_scales[name] for name in loss_names], dtype=torch.int64, device="cuda")
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
         dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        rl_scale, ce_scale, ref_kl_scale = (max(scale, 1) for scale in global_scales.tolist())
+        loss_scales = {name: max(scale, 1) for name, scale in zip(loss_names, global_scales.tolist(), strict=True)}
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -386,15 +386,21 @@ def train(config: TrainerConfig):
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
-            advantages = micro_batch["advantages"].to("cuda")
-            loss_mask = micro_batch["loss_mask"].to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
-            ref_logprobs = micro_batch["ref_logprobs"].to("cuda") if micro_batch["ref_logprobs"] is not None else None
-            rl_weights = micro_batch["rl_weights"].to("cuda") if micro_batch["rl_weights"] is not None else None
-            ce_weights = micro_batch["ce_weights"].to("cuda") if micro_batch["ce_weights"] is not None else None
-            ref_kl_weights = (
-                micro_batch["ref_kl_weights"].to("cuda") if micro_batch["ref_kl_weights"] is not None else None
-            )
+            advantage_channels = [
+                {
+                    "loss": channel["loss"],
+                    "values": channel["values"].to("cuda"),
+                    "mask": channel["mask"].to("cuda"),
+                }
+                for channel in micro_batch["advantages"]
+            ]
+            training_mask = torch.zeros_like(inference_logprobs, dtype=torch.bool)
+            rl_mask = torch.zeros_like(inference_logprobs, dtype=torch.bool)
+            for channel in advantage_channels:
+                training_mask = training_mask | channel["mask"]
+                if channel["loss"] == "rl":
+                    rl_mask = rl_mask | channel["mask"]
             routed_experts = (
                 micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
             )
@@ -493,18 +499,18 @@ def train(config: TrainerConfig):
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
             loss, loss_tensors = compute_loss(
-                trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
-                inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
-                ref_logprobs=ref_logprobs.squeeze().split(sequence_lengths) if ref_logprobs is not None else None,
-                advantages=advantages.squeeze().split(sequence_lengths),
-                loss_mask=loss_mask.squeeze().split(sequence_lengths),
-                rl_weights=rl_weights.squeeze().split(sequence_lengths) if rl_weights is not None else None,
-                ce_weights=ce_weights.squeeze().split(sequence_lengths) if ce_weights is not None else None,
-                ref_kl_weights=ref_kl_weights.squeeze().split(sequence_lengths) if ref_kl_weights is not None else None,
-                rl_loss_fn=rl_loss_fn,
-                rl_scale=rl_scale,
-                ce_scale=ce_scale,
-                ref_kl_scale=ref_kl_scale,
+                trainer_logprobs=out["logprobs"].squeeze(0).split(sequence_lengths),
+                inference_logprobs=inference_logprobs.squeeze(0).split(sequence_lengths),
+                channels=[
+                    LossChannel(
+                        loss=channel["loss"],
+                        advantages=channel["values"].squeeze(0).split(sequence_lengths),
+                        mask=channel["mask"].squeeze(0).split(sequence_lengths),
+                    )
+                    for channel in advantage_channels
+                ],
+                loss_fns=loss_fns,
+                loss_scales=loss_scales,
             )
 
             # Backward pass
@@ -512,12 +518,12 @@ def train(config: TrainerConfig):
                 loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
-            entropy = out["entropy"][loss_mask].detach().to("cpu")
+            entropy = out["entropy"][training_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             env_names = micro_batch["env_names"]
-            masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
+            masked_env_names = [env_name for env_name, keep in zip(env_names, training_mask.flatten().tolist()) if keep]
             env_to_indices: dict[str, list[int]] = {}
             for idx, env_name in enumerate(masked_env_names):
                 env_to_indices.setdefault(env_name, []).append(idx)
@@ -525,18 +531,10 @@ def train(config: TrainerConfig):
             for env_name, indices in env_to_indices.items():
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
 
-            # Mismatch KL is only meaningful where sampling logprobs exist —
-            # keep rl/ref_kl member tokens (policy-sampled), exclude tokens
-            # whose action component is ce (frozen-model tokens).
-            if rl_weights is None and ref_kl_weights is None:
-                mismatch_mask = loss_mask
-                has_mismatch_tokens = True
-            else:
-                sampled_mask = (rl_weights != 0) if rl_weights is not None else loss_mask
-                if ref_kl_weights is not None:
-                    sampled_mask = sampled_mask | (ref_kl_weights != 0)
-                mismatch_mask = loss_mask & sampled_mask
-                has_mismatch_tokens = bool(mismatch_mask.any())
+            # Mismatch KL is the RL trainer/policy drift metric. CE-only tokens
+            # may come from arbitrary actors and do not participate.
+            mismatch_mask = rl_mask
+            has_mismatch_tokens = bool(mismatch_mask.any())
             if has_mismatch_tokens:
                 with torch.no_grad():
                     _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)

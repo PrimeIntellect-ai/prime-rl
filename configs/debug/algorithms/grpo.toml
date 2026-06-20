@@ -11,9 +11,7 @@ name = "debug-rl"
 [orchestrator]
 batch_size = 128
 group_size = 16
-
-[orchestrator.algo]
-type = "grpo"
+advantages = ["grpo"]
 
 [orchestrator.renderer]
 name = "qwen3"

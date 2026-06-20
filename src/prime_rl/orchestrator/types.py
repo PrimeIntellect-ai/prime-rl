@@ -77,6 +77,7 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
+    actor: str = Field(default="policy", exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
     advantages: list[float] | None = Field(default=None, exclude=True)
     is_filtered: bool = Field(default=False, exclude=True)
@@ -98,6 +99,7 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
                 "group_id": str(self.group_id),
                 "policy_version": self.policy_version,
                 "off_policy_steps": self.off_policy_steps,
+                "actor": self.actor,
                 "filters": dict(self.filter_results),
             }
         )
@@ -106,70 +108,6 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
         if self.advantage is not None:
             out["advantage"] = self.advantage
         return out
-
-
-@dataclass(frozen=True)
-class RolloutView:
-    """A finalized rollout as a writable handle — the single currency the
-    scoring hooks operate on. Exposes what the env produced (``raw``), the
-    samples interleaving built (``samples``, carrying ``obs_spans``), and the
-    rollout's identity/reward; credit is written through
-    :meth:`assign_advantages`, which spreads over the samples' completion
-    tokens. Deliberately does *not* expose pipeline-internal lifecycle fields
-    (``is_filtered``, ``filter_results``, ``group_id``) or not-yet-assigned
-    credit (``advantages``) — a hook can only touch what is valid at its
-    stage."""
-
-    _rollout: Rollout
-
-    @property
-    def trace(self) -> Rollout:
-        return self._rollout
-
-    @property
-    def samples(self) -> list[TrainingSample]:
-        return self._rollout.samples
-
-    @property
-    def reward(self) -> float:
-        return self._rollout.reward
-
-    @property
-    def env_name(self) -> str:
-        return self._rollout.env_name
-
-    @property
-    def example_id(self) -> int | str:
-        return self._rollout.task.idx
-
-    @property
-    def completion_len(self) -> int:
-        return self._rollout.completion_len
-
-    @property
-    def tool_response_len(self) -> int:
-        return sum(len(node.token_ids) for node in self._rollout.nodes if getattr(node.message, "role", None) == "tool")
-
-    @property
-    def num_turns(self) -> int:
-        return self._rollout.num_turns
-
-    def assign_advantages(self, values: float | list[float]) -> None:
-        """Write the rl advantage stream: a scalar broadcast over the
-        rollout's completion tokens, or a per-token list aligned to them
-        (concatenated across samples in step order). Prompt positions are
-        padded at stamping; a rollout never assigned ships no advantage
-        stream."""
-        total = sum(len(sample.completion_ids) for sample in self._rollout.samples)
-        if isinstance(values, (int, float)):
-            self._rollout.advantages = [float(values)] * total
-            return
-        if len(values) != total:
-            raise ValueError(
-                f"per-token advantages must align with the rollout's completion tokens: "
-                f"got {len(values)}, expected {total} (env '{self._rollout.env_name}')."
-            )
-        self._rollout.advantages = [float(v) for v in values]
 
 
 @dataclass

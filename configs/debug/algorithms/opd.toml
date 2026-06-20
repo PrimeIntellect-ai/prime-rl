@@ -18,15 +18,15 @@ name = "debug-opd"
 [orchestrator]
 batch_size = 128
 group_size = 16
+advantages = ["opd"]
 
-[orchestrator.algo]
-type = "opd"
-
-[orchestrator.algo.teacher]
+[orchestrator.models.reference]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+tokens = true
+
+[orchestrator.models.reference.client]
 base_url = ["http://localhost:8001/v1"]
 
-# Teacher rolls out over plain chat-completions (no tokens); the renderer backfills them.
 [orchestrator.renderer]
 name = "qwen3"
 

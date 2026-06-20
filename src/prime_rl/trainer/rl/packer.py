@@ -160,26 +160,21 @@ class MultiPacker(BasePacker):
 
     def _validate_sample(self, sample: TrainingSample) -> tuple[bool, str | None]:
         """Validate a sample to ensure it won't crash the trainer."""
-        sample_length = len(sample.prompt_ids) + len(sample.completion_ids)
-        if len(sample.prompt_mask) != len(sample.prompt_ids):
+        sample_length = len(sample.token_ids)
+        if len(sample.mask) != sample_length:
             return (
                 False,
-                f"Run wrote a sample with prompt mask length != prompt ids length ({len(sample.prompt_mask)} != {len(sample.prompt_ids)})",
+                f"Run wrote a sample with mask length != token ids length ({len(sample.mask)} != {sample_length})",
             )
-        if len(sample.completion_mask) != len(sample.completion_ids):
+        if len(sample.logprobs) != sample_length:
             return (
                 False,
-                f"Run wrote a sample with completion mask length != completion ids length ({len(sample.completion_mask)} != {len(sample.completion_ids)})",
+                f"Run wrote a sample with logprobs length != token ids length ({len(sample.logprobs)} != {sample_length})",
             )
-        if len(sample.completion_logprobs) != len(sample.completion_ids):
+        if len(sample.temperatures) != sample_length:
             return (
                 False,
-                f"Run wrote a sample with completion logprobs length != completion ids length ({len(sample.completion_logprobs)} != {len(sample.completion_ids)})",
-            )
-        if len(sample.completion_temperatures) != len(sample.completion_ids):
-            return (
-                False,
-                f"Run wrote a sample with completion temperatures length != completion ids length ({len(sample.completion_temperatures)} != {len(sample.completion_ids)})",
+                f"Run wrote a sample with temperatures length != token ids length ({len(sample.temperatures)} != {sample_length})",
             )
         if sample_length == 0:
             return False, "Run wrote a sample with no tokens"
@@ -188,11 +183,23 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with length {sample_length} which exceeds max sequence length {self.seq_len}",
             )
-        if sample.ref_logprobs is not None and len(sample.ref_logprobs) != sample_length:
-            return (
-                False,
-                f"Run wrote a sample with ref logprobs length != sample length ({len(sample.ref_logprobs)} != {sample_length})",
-            )
+        if not sample.advantages:
+            return False, "Run wrote a sample with no advantage channels"
+        seen_losses: set[str] = set()
+        for channel in sample.advantages:
+            if channel.loss in seen_losses:
+                return False, f"Run wrote duplicate advantage channel {channel.loss!r}"
+            seen_losses.add(channel.loss)
+            if len(channel.values) != sample_length:
+                return (
+                    False,
+                    f"Run wrote advantage channel {channel.loss!r} with values length != token ids length ({len(channel.values)} != {sample_length})",
+                )
+            if len(channel.mask) != sample_length:
+                return (
+                    False,
+                    f"Run wrote advantage channel {channel.loss!r} with mask length != token ids length ({len(channel.mask)} != {sample_length})",
+                )
         return True, None
 
     def _get_batch(self) -> None:
@@ -228,7 +235,7 @@ class MultiPacker(BasePacker):
             for sample, step in buffer:
                 if step > current_step:
                     break
-                tokens += len(sample.prompt_ids) + len(sample.completion_ids)
+                tokens += len(sample.token_ids)
                 if threshold is not None and tokens >= threshold:
                     return tokens
         return tokens
@@ -265,10 +272,10 @@ class MultiPacker(BasePacker):
                 if step > current_step:
                     # Samples from different steps should be consumed later
                     break
-                tokens_collected += len(sample.prompt_ids) + len(sample.completion_ids)
+                tokens_collected += len(sample.token_ids)
                 if tokens_collected > token_budget:
-                    if tokens_collected == (len(sample.prompt_ids) + len(sample.completion_ids)):
-                        tokens_collected -= len(sample.prompt_ids) + len(sample.completion_ids)
+                    if tokens_collected == len(sample.token_ids):
+                        tokens_collected -= len(sample.token_ids)
                         # This means we have a sample that has more tokens than max seqlen
                         self.buffers[run_idx].popleft()
                         continue
@@ -322,7 +329,7 @@ class MultiPacker(BasePacker):
                 assert steps_by_run[run_idx] == step, "Micro batches for a run must come from a single run step"
             samples_by_run[run_idx].append(sample)
 
-            num_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
+            num_tokens = len(sample.token_ids)
             if run_idx in per_run_stats:
                 cur_samples, cur_tokens = per_run_stats[run_idx]
                 per_run_stats[run_idx] = (cur_samples + 1, cur_tokens + num_tokens)

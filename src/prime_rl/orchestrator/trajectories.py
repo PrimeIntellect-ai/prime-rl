@@ -1,9 +1,4 @@
-"""Convert v1 traces into trainer samples.
-
-The base branch keeps the existing algorithm-class transport shape while moving
-the env/orchestrator boundary to `vf.Trace`. Each trace branch becomes one
-`TrainingSample`; sampled tokens are selected by `completion_mask`.
-"""
+"""Convert v1 traces into trainer samples."""
 
 from __future__ import annotations
 
@@ -54,13 +49,7 @@ def trace_to_samples(
     env_name: str = "",
     mm_token_type_ids_mapping: dict[int, int] | None = None,
 ) -> list[TrainingSample]:
-    """Build one training sample per trace branch.
-
-    The old algo-branch transport splits samples into prompt/completion arrays.
-    A trace branch is already a flat sequence, so the prompt side stays empty
-    and the full branch lives in `completion_ids`; `completion_mask` carries
-    the real sampled-token eligibility.
-    """
+    """Build one training sample per trace branch."""
     samples: list[TrainingSample] = []
     for branch in trace.branches:
         token_ids = branch.token_ids
@@ -80,14 +69,12 @@ def trace_to_samples(
 
         samples.append(
             TrainingSample(
-                prompt_ids=[],
-                prompt_mask=[],
-                completion_ids=token_ids,
-                completion_mask=[sampled and not trace.has_error for sampled in sampled_mask],
-                completion_logprobs=branch.logprobs,
-                completion_temperatures=[],
-                ref_logprobs=None,
+                token_ids=token_ids,
+                mask=[sampled and not trace.has_error for sampled in sampled_mask],
+                logprobs=branch.logprobs,
+                temperatures=[],
                 env_name=env_name,
+                advantages=[],
                 mm_kwargs=mm_kwargs,
                 mm_token_type_ids=mm_token_type_ids,
                 routed_experts=_encode_routed_experts(branch.routed_experts, len(token_ids)),

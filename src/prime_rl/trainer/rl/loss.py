@@ -1,5 +1,5 @@
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import torch
 from beartype import beartype as typechecker
@@ -14,18 +14,15 @@ from prime_rl.utils.utils import import_object
 class LossInputs:
     """Inputs for computing loss on a single sample.
 
-    ``loss_mask`` already selects the tokens that belong to the receiving
-    component — the component loss functions never re-derive eligibility.
-    ``loss_weights`` is the component's per-token weight stream (None means
-    1.0 everywhere).
+    ``loss_mask`` selects the tokens that belong to this loss channel.
+    ``advantages`` is the channel's per-token value stream; for CE it is the
+    per-token weight.
     """
 
     trainer_logprobs: Float[Tensor, " seq"]
     inference_logprobs: Float[Tensor, " seq"]
-    ref_logprobs: Float[Tensor, " seq"] | None
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
-    loss_weights: Float[Tensor, " seq"] | None = field(default=None)
 
 
 @dataclass
@@ -36,13 +33,13 @@ class LossOutputs:
     metrics: dict[str, Tensor]
 
 
-LossFn = Callable[..., LossOutputs]
+LossFn = Callable[[LossInputs], LossOutputs]
 """Type for a per-sample loss function.
 
-Expected signature:
-    def my_loss(inputs: LossInputs, **kwargs) -> LossOutputs:
+    Expected signature:
+        def my_loss(inputs: LossInputs) -> LossOutputs:
         ...
-"""
+    """
 
 
 @jaxtyped(typechecker=typechecker)
@@ -158,8 +155,6 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
     per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
-    if inputs.loss_weights is not None:
-        per_token_loss = per_token_loss * inputs.loss_weights
     loss = per_token_loss.sum()
 
     metrics = {
@@ -197,8 +192,6 @@ def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
     per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
-    if inputs.loss_weights is not None:
-        per_token_loss = per_token_loss * inputs.loss_weights
     loss = per_token_loss.sum()
 
     metrics = {
@@ -210,65 +203,18 @@ def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
-    """
-    Ref-KL loss type (on-policy distillation): the reverse KL to the reference
-    model is the per-token policy-gradient signal, with the importance ratio
-    correcting trainer/inference mismatch and staleness. A one-sided trust
-    region drops tokens whose trainer probability fell more than 0.2 below the
-    inference probability; a squared-log-ratio term regularizes drift. Scalar
-    advantages are not read — ref_kl algorithms ship none.
-    """
-    trainer_logprobs = inputs.trainer_logprobs
-    inference_logprobs = inputs.inference_logprobs
-    ref_logprobs = inputs.ref_logprobs
-    loss_mask = inputs.loss_mask
-
-    if ref_logprobs is None:
-        raise ValueError("ref_kl loss type requires ref_logprobs — use an 'opd' or 'opsd' advantage strategy.")
-
-    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-        trainer_logprobs, inference_logprobs
-    )
-
-    probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
-    is_masked = probs_diff < -0.2
-    drop_mask = loss_mask & is_masked
-    keep_mask = loss_mask & ~is_masked
-
-    ref_kl = ref_logprobs - trainer_logprobs
-
-    pg_loss = keep_mask * ref_kl.detach() * importance_ratio
-    kl_loss = loss_mask * log_importance_ratio**2
-    per_token_loss = -pg_loss + 1e-3 * kl_loss
-    if inputs.loss_weights is not None:
-        per_token_loss = per_token_loss * inputs.loss_weights
-    loss = per_token_loss.sum()
-
-    # Namespaced: the rl loss fn emits same-named trust-region metrics with a
-    # different definition, and mixed batches run both fns in one step.
-    metrics = {
-        "ref_kl/masked_mismatch_kl": _safe_mean(mismatch_kl, drop_mask),
-        "ref_kl/unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
-        "ref_kl/is_masked": _safe_mean(is_masked, loss_mask),
-        "ref_kl": _safe_mean(ref_kl, loss_mask),
-    }
-
-    return LossOutputs(loss=loss, metrics=metrics)
-
-
 def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
     """Cross-entropy loss type: masked negative log-likelihood (SFT / ECHO
     observation prediction)."""
     trainer_logprobs = inputs.trainer_logprobs
+    advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
     nll = -trainer_logprobs
-    if inputs.loss_weights is not None:
-        nll = nll * inputs.loss_weights
-    loss = nll[loss_mask].sum()
+    loss = (nll * advantages)[loss_mask].sum()
     metrics = {
         "nll": _safe_mean(-trainer_logprobs, loss_mask),
+        "ce_weight": _safe_mean(advantages, loss_mask),
     }
     return LossOutputs(loss=loss, metrics=metrics)
 
@@ -277,7 +223,7 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
     """Build the loss fn for the rl component from ``trainer.loss``:
     ``default_loss_fn`` (``DefaultLossConfig``), ``ipo_loss_fn``
     (``IPOLossConfig``), or the imported function (``CustomLossConfig``).
-    The ce / ref_kl loss types are fixed and unaffected by ``trainer.loss``."""
+    The ce loss is fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
         custom_fn = import_object(loss_config.import_path)
         kwargs = loss_config.kwargs
@@ -296,65 +242,27 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
     return rl_fn
 
 
+@dataclass
+class LossChannel:
+    loss: str
+    advantages: list[Float[Tensor, " seq_i"]]
+    mask: list[Bool[Tensor, " seq_i"]]
+
+
 def compute_loss(
     trainer_logprobs: list[Float[Tensor, " seq_i"]],
     inference_logprobs: list[Float[Tensor, " seq_i"]],
-    ref_logprobs: list[Float[Tensor, " seq_i"]] | None,
-    advantages: list[Float[Tensor, " seq_i"]],
-    loss_mask: list[Bool[Tensor, " seq_i"]],
-    rl_weights: list[Float[Tensor, " seq_i"]] | None,
-    ce_weights: list[Float[Tensor, " seq_i"]] | None,
-    ref_kl_weights: list[Float[Tensor, " seq_i"]] | None,
-    rl_loss_fn: LossFn,
-    rl_scale: int,
-    ce_scale: int,
-    ref_kl_scale: int,
-) -> tuple[Float[Tensor, ""], dict[str, Any]]:
+    channels: list[LossChannel],
+    loss_fns: dict[str, LossFn],
+    loss_scales: dict[str, int],
+) -> tuple[Float[Tensor, ""], dict[str, Tensor]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
-    The loss is a sum of three components, each running over its own per-token
-    weight stream and normalized by its own global token count:
-
-    - rl → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``) on
-      ``loss_mask & (rl_weights != 0)``; an absent stream means weight 1.0 on
-      the full loss mask (the hot path — no extra device syncs).
-    - ce → ``ce_loss_fn`` (masked NLL) on ``ce_weights != 0``.
-    - ref_kl → ``ref_kl_loss_fn`` on ``ref_kl_weights != 0``.
-
-    A weight scales its component's per-token loss; 0.0 removes the token from
-    the component's mask and denominator. Per-component normalization keeps the
-    components from diluting each other: a token only enters the denominator of
-    the components it belongs to.
-
-    Args:
-        trainer_logprobs: Log probabilities for each sequence
-        inference_logprobs: Sampling-policy log probabilities for each sequence
-        ref_logprobs: Reference-model log probabilities for each sequence, or None
-        advantages: Advantages for each sequence
-        loss_mask: Loss mask for each sequence
-        rl_weights: Per-token rl weights for each sequence, or None (1.0 on the loss mask)
-        ce_weights: Per-token ce weights for each sequence, or None (no ce component)
-        ref_kl_weights: Per-token ref_kl weights for each sequence, or None (no ref_kl component)
-        rl_loss_fn: Loss fn for the rl component from setup_rl_loss_fn()
-        rl_scale: Global rl-token count normalizing the rl component
-        ce_scale: Global ce-token count normalizing the ce component
-        ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
-
-    Returns:
-        Tuple of (scaled_loss, aggregated_metrics)
+    Each channel names a loss function and carries its own per-token values and
+    mask. Channels are normalized by their own global token counts.
     """
     all_metrics: dict[str, list[Tensor]] = {}
-
-    n = len(trainer_logprobs)
-    if ref_logprobs is None:
-        ref_logprobs = [None] * n
-    if rl_weights is None:
-        rl_weights = [None] * n
-    if ce_weights is None:
-        ce_weights = [None] * n
-    if ref_kl_weights is None:
-        ref_kl_weights = [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
@@ -366,48 +274,45 @@ def compute_loss(
     # truncated distillation sample, whose stamped streams survive as all-zero
     # prefixes) must still return a backward-able loss so every rank runs
     # backward and FSDP collectives stay in sync.
-    rl_loss = trainer_logprobs[0].sum() * 0.0
-    ce_loss = 0.0
-    ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
-        trainer_logprobs,
-        inference_logprobs,
-        ref_logprobs,
-        advantages,
-        loss_mask,
-        rl_weights,
-        ce_weights,
-        ref_kl_weights,
-    ):
-
-        def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
-            return LossInputs(
-                trainer_logprobs=t_logp,
-                inference_logprobs=i_logp,
-                ref_logprobs=ref_logp,
-                advantages=adv,
-                loss_mask=component_mask,
-                loss_weights=weights,
+    scaled_loss = trainer_logprobs[0].sum() * 0.0
+    loss_totals: dict[str, Tensor] = {}
+    n = len(trainer_logprobs)
+    for channel in channels:
+        if channel.loss not in loss_fns:
+            raise ValueError(f"Unknown loss channel {channel.loss!r}; configured losses are {sorted(loss_fns)}")
+        if len(channel.advantages) != n or len(channel.mask) != n:
+            raise ValueError(
+                f"Loss channel {channel.loss!r} has {len(channel.advantages)} value splits and "
+                f"{len(channel.mask)} mask splits for {n} packed sequences"
             )
+        loss_fn = loss_fns[channel.loss]
+        total = loss_totals.get(channel.loss)
+        if total is None:
+            total = scaled_loss
+        for t_logp, i_logp, adv, mask in zip(
+            trainer_logprobs,
+            inference_logprobs,
+            channel.advantages,
+            channel.mask,
+            strict=True,
+        ):
+            if not bool(mask.any()):
+                continue
+            total = total + run_loss_fn(
+                loss_fn,
+                LossInputs(
+                    trainer_logprobs=t_logp,
+                    inference_logprobs=i_logp,
+                    advantages=adv,
+                    loss_mask=mask,
+                ),
+            )
+        loss_totals[channel.loss] = total
 
-        if rl_w is None:
-            rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(mask, None))
-        else:
-            rl_mask = mask & (rl_w != 0)
-            if bool(rl_mask.any()):
-                rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(rl_mask, rl_w))
-        if ce_w is not None:
-            ce_mask = ce_w != 0
-            if bool(ce_mask.any()):
-                ce_loss = ce_loss + run_loss_fn(ce_loss_fn, make_inputs(ce_mask, ce_w))
-        if ref_kl_w is not None:
-            ref_kl_mask = ref_kl_w != 0
-            if bool(ref_kl_mask.any()):
-                ref_kl_loss = ref_kl_loss + run_loss_fn(ref_kl_loss_fn, make_inputs(ref_kl_mask, ref_kl_w))
+    for loss_name, total in loss_totals.items():
+        scaled_loss = scaled_loss + total / max(loss_scales.get(loss_name, 1), 1)
 
-    scaled_loss = rl_loss / rl_scale + ce_loss / ce_scale + ref_kl_loss / ref_kl_scale
-
-    aggregated: dict[str, Any] = {}
+    aggregated: dict[str, Tensor] = {}
     for k, v in all_metrics.items():
         if v[0].dim() == 0:
             aggregated[k] = torch.stack(v)
