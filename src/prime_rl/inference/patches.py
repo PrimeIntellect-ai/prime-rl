@@ -45,7 +45,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     asserting — their blocks are freed either way, so dropping the stale
     notification is safe.
 
-    Upstream issue: https://github.com/vllm-project/vllm/issues/PLACEHOLDER
+    Upstream issue: https://github.com/vllm-project/vllm/issues/46240
     """
     from vllm.logger import init_logger
     from vllm.v1.core.sched.scheduler import Scheduler
