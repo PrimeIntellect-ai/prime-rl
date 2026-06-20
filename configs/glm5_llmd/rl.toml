@@ -1,7 +1,6 @@
 max_steps = 10000000
-# BUMP TO 131K IF you have 16 nodes for trainer
-seq_len = 42000
-output_dir = "/shared/outputs/the-one"
+seq_len = 42000 # BUMP TO 131K IF you have 16 nodes for trainer
+output_dir = "/shared/outputs/blog" # FILL IN
 clean_output_dir = true
 
 [log]
@@ -19,8 +18,7 @@ quantize_in_weight_transfer = true
 
 [deployment]
 type = "multi_node"
-# BUMP to 16 if GPU rich
-num_train_nodes = 12
+num_train_nodes = 12 # BUMP TO 16 IF 131K
 num_infer_nodes = 16
 gpus_per_node = 8
 num_infer_replicas = 1
@@ -41,19 +39,15 @@ decode_vllm_overrides = {"max_num_batched_tokens"=96, "max_num_seqs"=96}
 
 [inference.deployment.router]
 type = "llm-d"
-# need some prefix-cache routing, however due to shared mooncake pool do low prio
-scorers = { "prefix-cache-scorer" = 3.0 }
-# prefill creates queues quite heavily, queue scorer to 4.0, active request at 5.0 is needed due to burstiness of early pipeline RL fill
-prefill_scorer_overrides = { "queue-scorer" = 4.0, "active-request-scorer" = 5.0 }
-# decode doesn't really create queue, it fills in KV cache fast, give 4.0
-decode_scorer_overrides = { "active-request-scorer" = 5.0, "kv-cache-utilization-scorer" = 4.0, "queue-scorer" = 3.0 }
-# if <128 tokens, skip prefill go to decode immediately
-non_cached_tokens = 128
+scorers = { "prefix-cache-scorer" = 3.0 } # need some prefix-cache routing, however due to shared mooncake pool do low prio
+
+prefill_scorer_overrides = { "queue-scorer" = 4.0, "active-request-scorer" = 5.0 } # prefill creates queues quite heavily, queue scorer to 4.0, active request at 5.0 is needed due to burstiness of early pipeline RL fill
+decode_scorer_overrides = { "active-request-scorer" = 5.0, "kv-cache-utilization-scorer" = 4.0, "queue-scorer" = 3.0 } # decode doesn't really create queue, it fills in KV cache fast, give 4.0
+non_cached_tokens = 128 # if <128 tokens, skip prefill go to decode immediately
 
 [slurm]
 job_name = "blog"
-# fill in
-partition = "all"
+partition = "all" # FILL IN
 
 [trainer]
 dist_timeout_seconds = 1800
@@ -118,8 +112,7 @@ type = "default"
 
 [inference]
 enable_expert_parallel = true
-# <0.85 because glm5 layers are too large for 0.85; 0.75 works as we skip
-# deep-gemm precompile and JIT instead.
+# <0.80 because glm5 layers are too large for 0.85
 gpu_memory_utilization = 0.75
 enable_eplb = false
 use_deep_gemm = true
