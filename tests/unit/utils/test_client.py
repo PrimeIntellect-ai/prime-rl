@@ -49,15 +49,14 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     )
 
 
-def test_setup_clients_creates_one_renderer_client_per_url():
+def test_setup_clients_assigns_renderer_and_dp_rank_headers():
     from renderers import Qwen3VLRendererConfig
 
-    # External-LB: base_url is the list of per-rank endpoints (the URL is the rank
-    # selector), so each URL maps to exactly one client with no rank header.
     client_config = ClientConfig(
-        base_url=["http://worker-a:8000/v1", "http://worker-a:8001/v1"],
+        base_url=["http://worker-a:8000/v1"],
         api_key_var="PRIME_API_KEY",
         headers={"X-Test": "test"},
+        dp_rank_count=2,
         extra_headers_from_state={"X-Session-ID": "session_id"},
     )
 
@@ -71,11 +70,8 @@ def test_setup_clients_creates_one_renderer_client_per_url():
     assert [client.client_type for client in clients] == ["renderer", "renderer"]
     assert [client.renderer_config for client in clients] == [renderer_settings, renderer_settings]
     assert [client.renderer_model_name for client in clients] == [None, None]
-    assert [client.api_base_url for client in clients] == [
-        "http://worker-a:8000/v1",
-        "http://worker-a:8001/v1",
-    ]
-    assert all("X-data-parallel-rank" not in client.extra_headers for client in clients)
+    assert [client.api_base_url for client in clients] == ["http://worker-a:8000/v1"] * 2
+    assert [client.extra_headers["X-data-parallel-rank"] for client in clients] == ["0", "1"]
     assert clients[0].extra_headers["X-Test"] == "test"
     assert clients[0].extra_headers_from_state == {"X-Session-ID": "session_id"}
 

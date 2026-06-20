@@ -17,15 +17,15 @@ from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attemp
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
-# Identity used by ``select_train_client`` to key load counts. With external-LB
-# data parallelism each DP rank is its own endpoint, so ``api_base_url`` alone
-# uniquely identifies an inference target.
-ClientIdentity = str
+# Identity tuple used by ``select_train_client`` to key load counts. ``api_base_url``
+# distinguishes servers; ``X-data-parallel-rank`` distinguishes DP shards within a
+# server, since the router uses that header to route to specific GPU ranks.
+ClientIdentity = tuple[str, str | None]
 
 
 def client_identity(client: vf.ClientConfig) -> ClientIdentity:
     """Stable identity for load balancing across inference clients."""
-    return client.api_base_url
+    return (client.api_base_url, client.extra_headers.get("X-data-parallel-rank"))
 
 
 @runtime_checkable
@@ -200,24 +200,27 @@ def setup_clients(
         k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
     }
     for base_url in client_config.base_url:
-        headers = {**client_config.headers, **env_headers}
-        clients.append(
-            vf.ClientConfig(
-                client_idx=client_idx,
-                client_type=client_type,
-                api_base_url=base_url,
-                api_key_var=client_config.api_key_var,
-                timeout=client_config.timeout,
-                connect_timeout=client_config.connect_timeout,
-                max_connections=8192,
-                max_keepalive_connections=8192,
-                max_retries=10,
-                extra_headers=headers,
-                extra_headers_from_state=client_config.extra_headers_from_state,
-                **renderer_extra,
+        for dp_rank in range(client_config.dp_rank_count):
+            headers = {**client_config.headers, **env_headers}
+            if client_config.dp_rank_count > 1:
+                headers["X-data-parallel-rank"] = str(dp_rank)
+            clients.append(
+                vf.ClientConfig(
+                    client_idx=client_idx,
+                    client_type=client_type,
+                    api_base_url=base_url,
+                    api_key_var=client_config.api_key_var,
+                    timeout=client_config.timeout,
+                    connect_timeout=client_config.connect_timeout,
+                    max_connections=8192,
+                    max_keepalive_connections=8192,
+                    max_retries=10,
+                    extra_headers=headers,
+                    extra_headers_from_state=client_config.extra_headers_from_state,
+                    **renderer_extra,
+                )
             )
-        )
-        client_idx += 1
+            client_idx += 1
     return clients
 
 

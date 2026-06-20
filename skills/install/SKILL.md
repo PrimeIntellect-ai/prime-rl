@@ -27,7 +27,7 @@ uv sync --group dev        # + pytest, ruff, pre-commit
 uv sync --all-extras       # recommended: envs, flash-attn, flash-attn-cute, etc.
 ```
 
-The `envs` extra installs every env workspace listed in `[tool.uv.workspace]`. Adding a new env means adding it to `members`, the `envs` extra, and `[tool.uv.sources]`.
+The `envs` extra installs environments listed under `[project.optional-dependencies].envs`, resolved through `[tool.uv.sources]`. Adding a new env means adding its package name to `envs` and its editable source path to `[tool.uv.sources]`.
 
 When bumping a package past the workspace-wide `exclude-newer = "7 days"` window, add it (and any newly-required transitives) to `[tool.uv.exclude-newer-package]` before refreshing `uv.lock`.
 
