@@ -876,6 +876,10 @@ class Orchestrator:
                 get_logger().info("Resuming dispatcher")
             gate.set()
 
+    async def on_version_pending(self, step: int) -> None:
+        """No-op: the dispatch gate is re-evaluated in ``on_new_version`` once
+        the new policy version is live."""
+
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""

@@ -202,7 +202,12 @@ class EvalBatch:
 
 
 class VersionObserver(Protocol):
-    """Notified after each policy update; walked by the watcher after it
-    mutates ``Policy``."""
+    """Notified around each policy update; walked by the watcher.
+
+    ``on_version_pending`` fires *before* the inference engines are paused for
+    the weight update; ``on_new_version`` fires *after* the new weights are live
+    and ``Policy`` has been mutated."""
+
+    async def on_version_pending(self, step: int) -> None: ...
 
     async def on_new_version(self, step: int) -> None: ...
