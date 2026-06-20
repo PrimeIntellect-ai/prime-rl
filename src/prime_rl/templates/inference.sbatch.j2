@@ -254,7 +254,7 @@ srun --kill-on-bad-exit=1 bash -c '
 {% for key, value in prefill_env_overrides.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
-        ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\""
+        ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
     else
         # ── Decode node ──
         export UCX_NET_DEVICES=mlx5_0:1
@@ -269,7 +269,7 @@ srun --kill-on-bad-exit=1 bash -c '
 {% for key, value in decode_env_overrides.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
-        ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG"
+        ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG{{ decode_vllm_extra_json }}"
     fi
 
     echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT LOCAL_IP=$LOCAL_IP" \

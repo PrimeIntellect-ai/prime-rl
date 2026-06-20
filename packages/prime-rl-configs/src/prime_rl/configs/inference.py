@@ -306,6 +306,12 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     decode_env_overrides: dict[str, str] = {}
     """Extra environment variables exported only on decode nodes."""
 
+    prefill_vllm_overrides: dict[str, Any] = {}
+    """Extra vLLM config options merged into --vllm-extra only for prefill ranks (SLURM only)."""
+
+    decode_vllm_overrides: dict[str, Any] = {}
+    """Extra vLLM config options merged into --vllm-extra only for decode ranks (SLURM only)."""
+
     @property
     def num_nodes(self) -> int:
         return self.num_prefill_nodes + self.num_decode_nodes

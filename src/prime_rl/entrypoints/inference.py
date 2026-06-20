@@ -1,6 +1,8 @@
+import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import tomli_w
 
@@ -12,6 +14,17 @@ from prime_rl.utils.process import set_proc_title
 
 INFERENCE_TOML = "inference.toml"
 INFERENCE_SBATCH = "inference.sbatch"
+
+
+def vllm_overrides_fragment(overrides: dict[str, Any]) -> str:
+    """Render per-role vLLM overrides as a JSON fragment for the ROLE_EXTRA bash string.
+
+    Returns a leading-comma fragment with quotes escaped for the double-quoted assignment
+    (e.g. `, \\"max_num_seqs\\": 256`), or an empty string when there are no overrides.
+    """
+    if not overrides:
+        return ""
+    return ", " + json.dumps(overrides)[1:-1].replace('"', '\\"')
 
 
 def write_config(config: InferenceConfig, output_dir: Path, exclude: set[str] | None = None) -> Path:
@@ -70,6 +83,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             use_deep_gemm=config.use_deep_gemm,
             prefill_env_overrides=config.deployment.prefill_env_overrides,
             decode_env_overrides=config.deployment.decode_env_overrides,
+            prefill_vllm_extra_json=vllm_overrides_fragment(config.deployment.prefill_vllm_overrides),
+            decode_vllm_extra_json=vllm_overrides_fragment(config.deployment.decode_vllm_overrides),
         )
     elif is_multi_node:
         template_vars.update(

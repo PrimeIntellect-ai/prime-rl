@@ -14,6 +14,7 @@ import tomli_w
 
 from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.rl import RLConfig
+from prime_rl.entrypoints.inference import vllm_overrides_fragment
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
@@ -380,6 +381,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             use_deep_gemm=config.inference.use_deep_gemm,
             prefill_env_overrides=infer_deploy.prefill_env_overrides,
             decode_env_overrides=infer_deploy.decode_env_overrides,
+            prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
+            decode_vllm_extra_json=vllm_overrides_fragment(infer_deploy.decode_vllm_overrides),
             dp_per_node=config.deployment.gpus_per_node // config.inference.parallel.tp,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
