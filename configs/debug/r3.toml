@@ -2,9 +2,8 @@
 # Router replay is wired end-to-end: trainer.enable_router_replay replays the
 # routed-expert decisions returned by inference (enable_return_routed_experts).
 
-max_steps = 10000000
+max_steps = 100
 seq_len = 65536
-output_dir = "/beegfs/outputs/qwen30b-r3-debug"
 
 [log]
 level = "debug"
