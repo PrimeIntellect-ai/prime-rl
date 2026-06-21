@@ -22,6 +22,7 @@ from prime_rl.orchestrator.advantage import assign_advantages
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import (
+    RoutedExpertsReconstructionError,
     backfill_rollout_tokens,
     interleave_rollout,
     offload_images_to_disk,
@@ -156,12 +157,29 @@ class TrainSink:
         needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
-        samples = await asyncio.to_thread(
-            interleave_rollout,
-            raw,
-            mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
-            env_name=rollout.env_name,
-        )
+        try:
+            samples = await asyncio.to_thread(
+                interleave_rollout,
+                raw,
+                mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
+                env_name=rollout.env_name,
+            )
+        except RoutedExpertsReconstructionError as e:
+            # Routed-experts deltas couldn't be reconstructed for this rollout
+            # (corrupt/misaligned routing payload). Promote to an explicit error
+            # so the group logic drops it like any other failure, instead of
+            # crashing the orchestrator. Mirrors the EmptyTrajectory promotion
+            # in the dispatcher.
+            raw["error"] = {
+                "error": "RoutedExpertsReconstructionError",
+                "error_chain_repr": str(e),
+                "error_chain_str": str(e),
+            }
+            get_logger().warning(
+                f"Dropping rollout (env={rollout.env_name}, example_id={rollout.example_id}): "
+                f"routed-experts reconstruction failed — {e}"
+            )
+            samples = []
         rollout.samples = samples or []
         # Offload base64 image bytes to disk as soon as the rollout is
         # tokenized, so memory stays flat instead of holding every buffered

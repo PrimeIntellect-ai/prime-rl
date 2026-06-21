@@ -19,6 +19,15 @@ from prime_rl.utils.chat_template import (
 )
 from prime_rl.utils.logger import get_logger
 
+
+class RoutedExpertsReconstructionError(Exception):
+    """A rollout's routed-experts deltas could not be reconstructed.
+
+    Raised instead of asserting so the sink can drop the offending rollout
+    (like any other failed rollout) rather than crashing the orchestrator.
+    """
+
+
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
 # primitives are immutable. mm_kwargs payloads are not mutated after creation.
 
@@ -316,15 +325,17 @@ def interleave_rollout(
         step_routed = tokens.get("routed_experts")
         if step_routed is not None:
             routed_start = tokens["routed_experts_start"]
-            assert routed_start is not None, f"Missing routed_experts_start for step {step_idx}"
+            if routed_start is None:
+                raise RoutedExpertsReconstructionError(f"Missing routed_experts_start for step {step_idx}")
             chunks: list[np.ndarray] = []
             running_len = 0
             if routed_start > 0:
                 source_len = routed_start + 1
-                assert source_len in routed_prefix_states, (
-                    f"Missing routed prefix state for step {step_idx}: "
-                    f"routed_start={routed_start}, prompt_len={len(tokens['prompt_ids'])}"
-                )
+                if source_len not in routed_prefix_states:
+                    raise RoutedExpertsReconstructionError(
+                        f"Missing routed prefix state for step {step_idx}: "
+                        f"routed_start={routed_start}, prompt_len={len(tokens['prompt_ids'])}"
+                    )
                 source_state = None
                 for prompt_ids, completion_ids, candidate_state in routed_prefix_states[source_len]:
                     prompt_len = len(prompt_ids)
@@ -334,14 +345,16 @@ def interleave_rollout(
                     ):
                         source_state = candidate_state
                         break
-                assert source_state is not None, (
-                    f"No matching routed prefix for step {step_idx}: "
-                    f"routed_start={routed_start}, prompt_len={len(tokens['prompt_ids'])}"
-                )
-                assert source_state["running_len"] >= routed_start, (
-                    f"Routed prefix too short for step {step_idx}: "
-                    f"running_len={source_state['running_len']}, routed_start={routed_start}"
-                )
+                if source_state is None:
+                    raise RoutedExpertsReconstructionError(
+                        f"No matching routed prefix for step {step_idx}: "
+                        f"routed_start={routed_start}, prompt_len={len(tokens['prompt_ids'])}"
+                    )
+                if source_state["running_len"] < routed_start:
+                    raise RoutedExpertsReconstructionError(
+                        f"Routed prefix too short for step {step_idx}: "
+                        f"running_len={source_state['running_len']}, routed_start={routed_start}"
+                    )
                 remaining = routed_start
                 for chunk in source_state["chunks"]:
                     if remaining == 0:
@@ -349,10 +362,11 @@ def interleave_rollout(
                     take = min(remaining, int(chunk.shape[0]))
                     chunks.append(chunk[:take])
                     remaining -= take
-                assert remaining == 0, (
-                    f"Could not reconstruct routed prefix for step {step_idx}: "
-                    f"remaining={remaining}, routed_start={routed_start}"
-                )
+                if remaining != 0:
+                    raise RoutedExpertsReconstructionError(
+                        f"Could not reconstruct routed prefix for step {step_idx}: "
+                        f"remaining={remaining}, routed_start={routed_start}"
+                    )
                 running_len = routed_start
             chunks.append(step_routed)
             running_len += int(step_routed.shape[0])
@@ -387,14 +401,20 @@ def interleave_rollout(
 
         step_routed = tokens.get("routed_experts")
         state = sample_routed_state.get(id(sample))
-        if state is not None:
-            assert step_routed is not None, f"Missing routed experts for routed sample extension at step {step_idx}"
-        if step_routed is not None:
-            assert state is not None, f"Unexpected routed experts for unrouted sample at step {step_idx}"
-            assert tokens["routed_experts_start"] == prefix_len - 1, (
-                f"Routed experts delta start mismatch at step {step_idx}: "
-                f"start={tokens['routed_experts_start']}, expected={prefix_len - 1}, prefix_len={prefix_len}"
+        if state is not None and step_routed is None:
+            raise RoutedExpertsReconstructionError(
+                f"Missing routed experts for routed sample extension at step {step_idx}"
             )
+        if step_routed is not None:
+            if state is None:
+                raise RoutedExpertsReconstructionError(
+                    f"Unexpected routed experts for unrouted sample at step {step_idx}"
+                )
+            if tokens["routed_experts_start"] != prefix_len - 1:
+                raise RoutedExpertsReconstructionError(
+                    f"Routed experts delta start mismatch at step {step_idx}: "
+                    f"start={tokens['routed_experts_start']}, expected={prefix_len - 1}, prefix_len={prefix_len}"
+                )
             # Delta payloads start at prefix_len - 1. Row 0 fills the boundary
             # token missing from the previous request; the rest is the new suffix.
             if prefix_len > 0:
