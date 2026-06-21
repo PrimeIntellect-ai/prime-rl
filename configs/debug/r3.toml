@@ -71,7 +71,7 @@ weight_decay = 0.0
 [orchestrator]
 batch_size = 256
 group_size = 8
-max_inflight_rollouts = 1024
+max_inflight_rollouts = 512
 max_off_policy_steps = 16
 
 [orchestrator.renderer]
