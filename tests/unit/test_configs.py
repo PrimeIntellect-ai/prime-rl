@@ -371,6 +371,37 @@ def test_tokenizer_chat_template_mismatch_raises():
         )
 
 
+def test_weight_broadcast_inference_mismatch_raises():
+    """When the shared [weight_broadcast] is unset, the per-component types must
+    all agree. The chained ``trainer != orchestrator != inference`` comparison
+    never compared inference against trainer, so a config where trainer and
+    orchestrator match but inference differs was silently accepted and broke
+    weight sync at runtime."""
+    with pytest.raises(ValidationError, match="weight broadcast type"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "PrimeIntellect/test-model"},
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+                "inference": {"weight_broadcast": {"type": "nccl"}},
+            }
+        )
+
+
+def test_weight_broadcast_all_matching_passes():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "PrimeIntellect/test-model"},
+            "trainer": {"weight_broadcast": {"type": "nccl"}},
+            "orchestrator": {"renderer": None, "weight_broadcast": {"type": "nccl"}},
+            "inference": {"weight_broadcast": {"type": "nccl"}},
+        }
+    )
+    assert config.trainer.weight_broadcast.type == "nccl"
+    assert config.orchestrator.weight_broadcast.type == "nccl"
+    assert config.inference is not None and config.inference.weight_broadcast.type == "nccl"
+
+
 def test_shared_seq_len_propagates_to_subconfigs():
     config = RLConfig.model_validate(
         {
