@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import gc
 import logging
 import os
 import time
@@ -112,6 +113,14 @@ TARGET_LAG = 1
 # token-export steps it hadn't flushed yet, and how often to poll for them.
 TOKEN_EXPORT_DRAIN_TIMEOUT_S = 300.0
 TOKEN_EXPORT_DRAIN_POLL_S = 2.0
+
+
+def _release_unused_memory() -> None:
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError) as e:
+        get_logger().debug(f"malloc_trim(0) unavailable: {e}")
 
 
 class Orchestrator:
@@ -482,10 +491,7 @@ class Orchestrator:
                 get_logger().success("Orchestrator finished.")
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced).")
-            try:
-                ctypes.CDLL("libc.so.6").malloc_trim(0)
-            except Exception as e:
-                get_logger().debug(f"malloc_trim(0) failed: {e}")
+            await asyncio.to_thread(_release_unused_memory)
 
     async def main_loop(self) -> None:
         """Consume ``FinishedRollout``\\ s from the dispatcher and route them
@@ -502,19 +508,30 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 continue
 
-            if isinstance(rollout, EvalRollout):
-                assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
-                eval_batch = self.eval_sink.add(rollout)
-                if eval_batch is not None:
-                    await self.finalize_eval_batch(eval_batch)
-                continue
+            train_batch = None
+            eval_batch = None
+            should_release_memory = False
+            try:
+                if isinstance(rollout, EvalRollout):
+                    assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
+                    eval_batch = self.eval_sink.add(rollout)
+                    if eval_batch is not None:
+                        should_release_memory = True
+                        await self.finalize_eval_batch(eval_batch)
+                    continue
 
-            assert isinstance(rollout, TrainRollout)
-            train_batch = await self.train_sink.add(rollout)
-            # In drain mode any late-arriving train batch is dropped — we
-            # don't want to ship past ``max_steps``
-            if train_batch is not None and not self.draining and not self.stopped.is_set():
-                await self.finalize_train_batch(train_batch)
+                assert isinstance(rollout, TrainRollout)
+                train_batch = await self.train_sink.add(rollout)
+                # In drain mode any late-arriving train batch is dropped — we
+                # don't want to ship past ``max_steps``
+                if train_batch is not None:
+                    should_release_memory = True
+                if train_batch is not None and not self.draining and not self.stopped.is_set():
+                    await self.finalize_train_batch(train_batch)
+            finally:
+                del train_batch, eval_batch, rollout
+                if should_release_memory:
+                    await asyncio.to_thread(_release_unused_memory)
 
     async def _drain_token_export_metrics(self) -> None:
         """Token exports lag the orchestrator, so once the loop ends the trainer is
