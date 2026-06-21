@@ -10,7 +10,7 @@ output_dir = "/beegfs/outputs/qwen30b-r3-debug"
 level = "debug"
 
 [wandb]
-project = "RLM-Qwen30B-debug"
+project = "r3-debug"
 name = "qwen30b-r3"
 
 [model]
