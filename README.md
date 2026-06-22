@@ -38,6 +38,7 @@ PRIME-RL is a framework for large-scale reinforcement learning. It is designed t
 5. Multi-node deployment with Slurm and Kubernetes support.
 6. Multimodal support for VLMs such as Qwen3-VL.
 7. Hackable, modular, and extensible by design.
+8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](examples/glm5_llmd/README.md).
 
 
 ## Models support
