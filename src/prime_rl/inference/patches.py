@@ -15,12 +15,15 @@ def transformers_v5_compat():
     if not hasattr(Qwen3VLMoeTextConfig, "tie_word_embeddings"):
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
+    from prime_rl.inference.vllm.sampler_perf import apply_sampler_perf_patches
+
     _patch_qwen35_lora()
     _patch_lora_key_prefix()
     monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
+    apply_sampler_perf_patches()
 
 
 def monkey_patch_nano_v3_reasoning_parser():
