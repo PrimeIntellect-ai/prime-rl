@@ -37,7 +37,6 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
-from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import indexer_types_to_topk_pattern
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.checkpointing import (
     get_supported_targets,
@@ -511,16 +510,17 @@ def get_model(
         model_config.use_index_cache = True
         model_config.index_topk_freq = config.index_cache.topk_freq
         model_config.index_topk_pattern = config.index_cache.topk_pattern
+        # Explicit override supersedes the model's native IndexShare schedule.
+        model_config.indexer_types = None
     else:
-        # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2), so shared
-        # layers reuse cached top-k indices and carry no indexer weights.
-        auto_pattern = indexer_types_to_topk_pattern(getattr(model_config, "indexer_types", None))
-        if auto_pattern is not None:
+        # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
+        # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
+        indexer_types = getattr(model_config, "indexer_types", None)
+        if indexer_types and any(t == "shared" for t in indexer_types):
             model_config.use_index_cache = True
-            model_config.index_topk_pattern = auto_pattern
             logger.info(
                 f"Auto-enabled IndexShare from indexer_types schedule "
-                f"({auto_pattern.count('F')}/{len(auto_pattern)} full layers)"
+                f"({sum(t == 'full' for t in indexer_types)}/{len(indexer_types)} full layers)"
             )
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).

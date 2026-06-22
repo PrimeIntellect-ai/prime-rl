@@ -11,19 +11,11 @@ def _index_cache_skip_topk(config, layer_idx: int) -> bool:
     if index_topk_pattern is not None:
         return layer_idx < len(index_topk_pattern) and index_topk_pattern[layer_idx] == "S"
 
+    indexer_types = getattr(config, "indexer_types", None)
+    if indexer_types is not None:
+        return layer_idx < len(indexer_types) and indexer_types[layer_idx] == "shared"
+
     return layer_idx % getattr(config, "index_topk_freq", 1) != 0
-
-
-def indexer_types_to_topk_pattern(indexer_types: list[str] | None) -> str | None:
-    """Translate a GLM-5.2 ``indexer_types`` schedule into an ``index_topk_pattern`` string.
-
-    ``"full"`` layers compute fresh DSA indices (``"F"``); ``"shared"`` layers reuse the
-    previous full layer's indices (``"S"``). Returns ``None`` when no layer shares, i.e.
-    IndexShare is not in use (e.g. GLM-5).
-    """
-    if not indexer_types or not any(t == "shared" for t in indexer_types):
-        return None
-    return "".join("S" if t == "shared" else "F" for t in indexer_types)
 
 
 class GlmMoeDsaConfig(PretrainedConfig):
