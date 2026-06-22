@@ -1,100 +1,144 @@
 # Algorithms
 
-This page covers the RL training signal: advantage functions, model runtime keys, loss channels, filters, and how traces become trainer samples.
+This page covers the RL training signal: algorithms, model runtime keys, loss channels, filters, and how traces become trainer samples.
 
-## Advantage Functions
+## Configuration
 
-RL runs select one or more advantage functions:
+RL runs select one or more algorithms:
 
 ```toml
 [orchestrator]
-advantages = ["grpo"]
+
+[[orchestrator.algorithms]]
+id = "grpo"
 
 [[orchestrator.train.env]]
 id = "reverse-text"
 
 [[orchestrator.train.env]]
 id = "terminal-env"
-advantages = ["grpo", "echo"]
+
+[[orchestrator.train.env.algorithms]]
+id = "grpo"
+
+[[orchestrator.train.env.algorithms]]
+id = "echo"
 ```
 
-Top-level `orchestrator.advantages` is the default for every train env. An env can override it with its own `advantages` list. Each entry is either a prime-rl builtin name or an import path for a function installed with the env package.
+Top-level `orchestrator.algorithms` is the default for every train env. An env can override it with its own `algorithms` tables. Builtin ids run in the prime-rl process; env-owned ids are sent to the env server, which resolves the algorithm in the environment package.
 
-Advantage functions are decorated in `verifiers`:
+Algorithm config is flat. There is no nested `config` field:
+
+```toml
+[[orchestrator.algorithms]]
+id = "opd"
+model = "reference"
+```
+
+## Authoring
+
+Algorithms are classes over `verifiers` traces:
 
 ```python
 import verifiers.v1 as vf
 
 
-@vf.advantage(loss="rl", scope="group")
-def length_penalized_grpo(traces: list[vf.Trace]) -> list[vf.Trace]:
-    rewards = [trace.reward - 0.01 * trace.completion_len for trace in traces]
-    baseline = sum(rewards) / len(rewards)
-    for trace, reward in zip(traces, rewards, strict=True):
-        value = reward - baseline
-        for branch in trace.branches:
-            branch.mask = [sampled and not trace.has_error for sampled in branch.sampled_mask]
-            branch.advantages = [float(value) if keep else 0.0 for keep in branch.mask]
-    return traces
+class LengthGRPOConfig(vf.AlgorithmConfig):
+    id: str = "my_env.length_grpo"
+    penalty: float = 0.01
+
+
+class LengthGRPO(vf.Algorithm[LengthGRPOConfig]):
+    async def setup(self, models: dict[str, vf.ModelRuntime]) -> None:
+        pass
+
+    def loss(self) -> str:
+        return "rl"
+
+    async def advantage(self, traces: list[vf.Trace]) -> list[vf.Trace]:
+        rewards = [trace.reward - self.config.penalty * trace.completion_len for trace in traces]
+        baseline = sum(rewards) / len(rewards)
+        for trace, reward in zip(traces, rewards, strict=True):
+            value = reward - baseline
+            for branch in trace.branches:
+                branch.mask = [sampled and not trace.has_error for sampled in branch.sampled_mask]
+                branch.advantages = [float(value) if keep else 0.0 for keep in branch.mask]
+        return traces
 ```
 
-The authoring contract is intentionally direct:
-
-- The function receives `traces: list[vf.Trace]` and returns the same shape.
-- It writes `branch.advantages: list[float]` and `branch.mask: list[bool]` in place.
-- Both lists must align exactly with `branch.token_ids`.
-- `scope="rollout"` runs once per trace; `scope="group"` runs once per completed group.
-- `loss="rl"` routes values to the configured RL loss. `loss="ce"` routes values to cross-entropy, where advantages are per-token weights.
-
-An advantage function can also declare `models` when it needs live clients:
+Export one algorithm class from the module:
 
 ```python
-@vf.advantage(loss="rl", scope="rollout")
-async def reference_reverse_kl(
-    traces: list[vf.Trace],
-    models: dict[str, vf.ModelRuntime],
-) -> list[vf.Trace]:
-    reference = models["reference"]
-    if not isinstance(reference.client, vf.TrainClient):
-        raise TypeError("models['reference'] must be token-capable")
-
-    for trace in traces:
-        for branch in trace.branches:
-            reference_logprobs = await reference.client.prefill_logprobs(reference.model, branch.token_ids)
-            branch.mask = [sampled and not trace.has_error for sampled in branch.sampled_mask]
-            branch.advantages = [
-                float(ref_logprob - rollout_logprob) if keep else 0.0
-                for ref_logprob, rollout_logprob, keep in zip(
-                    reference_logprobs,
-                    branch.logprobs,
-                    branch.mask,
-                    strict=True,
-                )
-            ]
-    return traces
+__all__ = ["LengthGRPO"]
 ```
 
-The trace carries rollout data. It does not carry live clients or client configs. The orchestrator sends model runtime configs to the env server, and the env server materializes cached `vf.ModelRuntime` objects for custom advantage functions.
+The contract is intentionally direct:
+
+- `setup(models)` receives live `vf.ModelRuntime` objects keyed by model id.
+- `loss()` returns the trainer loss channel string, such as `"rl"` or `"ce"`.
+- `advantage(traces)` mutates `branch.advantages: list[float]` and `branch.mask: list[bool]` in place.
+- Both branch lists must align exactly with `branch.token_ids`.
+- Algorithms receive a completed rollout group as `list[vf.Trace]`; per-rollout behavior is just a loop over that list.
+
+Algorithms that need model logprobs use the runtime clients:
+
+```python
+class ReferenceKLConfig(vf.AlgorithmConfig):
+    id: str = "my_env.reference_kl"
+    model: str = "reference"
+
+
+class ReferenceKL(vf.Algorithm[ReferenceKLConfig]):
+    def __init__(self, config: ReferenceKLConfig) -> None:
+        super().__init__(config)
+        self.runtime: vf.ModelRuntime | None = None
+
+    async def setup(self, models: dict[str, vf.ModelRuntime]) -> None:
+        runtime = models[self.config.model]
+        if not isinstance(runtime.client, vf.TrainClient):
+            raise TypeError(f"models[{self.config.model!r}] must be token-capable")
+        self.runtime = runtime
+
+    async def advantage(self, traces: list[vf.Trace]) -> list[vf.Trace]:
+        if self.runtime is None:
+            raise RuntimeError("setup() must run before advantage()")
+        for trace in traces:
+            for branch in trace.branches:
+                reference_logprobs = await self.runtime.client.prefill_logprobs(self.runtime.model, branch.token_ids)
+                branch.mask = [sampled and not trace.has_error for sampled in branch.sampled_mask]
+                branch.advantages = [
+                    float(reference_logprob - rollout_logprob) if keep else 0.0
+                    for reference_logprob, rollout_logprob, keep in zip(
+                        reference_logprobs,
+                        branch.logprobs,
+                        branch.mask,
+                        strict=True,
+                    )
+                ]
+        return traces
+```
+
+The trace carries rollout data. It does not carry live clients or client configs. The orchestrator sends model runtime configs to the env server, and the env server materializes cached `vf.ModelRuntime` objects for env-owned algorithms.
 
 ## Builtins
 
-Builtins live in `prime_rl.orchestrator.advantages` and are selected by name:
+Builtins live in `prime_rl.orchestrator.algorithms` and are selected by registry id:
 
-| Name | Loss | Scope | Behavior |
-|---|---|---|---|
-| `grpo` | `rl` | group | Group mean baseline: `reward - mean(group rewards)`. |
-| `max_rl` | `rl` | group | Mean-normalized group baseline. |
-| `rl` | `rl` | rollout | Raw trace reward on sampled tokens. |
-| `sft` | `ce` | rollout | CE weight `1.0` on sampled tokens. |
-| `echo` | `ce` | rollout | CE weight `0.1` on unsampled tool-message tokens. |
-| `opd` | `rl` | rollout | Scores each branch under `models["reference"]`; writes reference-vs-rollout logprob deltas as RL advantages. |
-| `opsd` | `rl` | rollout | Scores a demonstration-conditioned branch under `models["reference"]` when present, otherwise `models["policy"]`. |
+| ID | Loss | Behavior |
+|---|---|---|
+| `grpo` | `rl` | Group mean baseline: `reward - mean(group rewards)`. |
+| `max_rl` | `rl` | Mean-normalized group baseline. |
+| `rl` | `rl` | Raw trace reward on sampled tokens. |
+| `sft` | `ce` | CE weight `1.0` on sampled tokens. |
+| `echo` | `ce` | CE weight `0.1` on unsampled tool-message tokens. |
+| `opd` | `rl` | Scores each branch under the configured model key; writes reference-vs-rollout logprob deltas as RL advantages. |
+| `opsd` | `rl` | Scores a demonstration-conditioned branch under the configured model key. |
 
 `opd` and `opsd` do not use a special trainer loss. They fold fixed reference-model logprob information into the advantage stream, then train through the normal `rl` loss.
 
 ## Models And Actor
 
-The trained model is configured at `orchestrator.model` and is always available to advantage functions as `models["policy"]`.
+The trained model is configured at `orchestrator.model` and is always available to algorithms as `models["policy"]`.
 
 ```toml
 [model]
@@ -113,7 +157,9 @@ Additional model endpoints are keyed under `orchestrator.models`. The keys are u
 ```toml
 [orchestrator]
 actor = "reference"
-advantages = ["sft"]
+
+[[orchestrator.algorithms]]
+id = "sft"
 
 [orchestrator.models.reference]
 name = "Qwen/Qwen3-32B"
@@ -123,7 +169,7 @@ tokens = true
 base_url = ["http://localhost:8001/v1"]
 ```
 
-Token-capable models set `tokens = true` and must expose renderer-backed generation, token ids, sampled logprobs, and prefill logprobs. They can be actors and can be used by advantage functions such as `opd`.
+Token-capable models set `tokens = true` and must expose renderer-backed generation, token ids, sampled logprobs, and prefill logprobs. They can be actors and can be used by algorithms such as `opd`.
 
 Generic OpenAI-compatible endpoints leave `tokens = false`. They are available to env code as model clients, but they are not actors for RL training because trainer samples require token ids and sampled logprobs.
 
@@ -152,7 +198,7 @@ Custom `[trainer.loss] type = "custom"` replaces only the `rl` loss function. Th
 
 ## Filters
 
-Filters run between advantage computation and trainer shipping. The default pre-batch filters monitor only; the default post-batch filters enforce.
+Filters run between algorithm execution and trainer shipping. The default pre-batch filters monitor only; the default post-batch filters enforce.
 
 ```toml
 [[post_batch_filters]]
@@ -171,14 +217,14 @@ For each branch:
 - `branch.token_ids` becomes `TrainingSample.token_ids`.
 - `branch.sampled_mask` becomes the sample mask.
 - `branch.logprobs` becomes rollout/inference logprobs.
-- Advantage functions write branch-level `advantages` and `mask`; the orchestrator routes those into `TrainingAdvantage` channels.
+- Algorithms write branch-level `advantages` and `mask`; the orchestrator routes those into `TrainingAdvantage` channels.
 
-This is why advantage functions are branch-aware but not task-type-aware: task-specific data can live in `trace.task` or `trace.info`, while training signals always align to branch tokens.
+This is why algorithms are branch-aware but not task-type-aware: task-specific data can live in `trace.task` or `trace.info`, while training signals always align to branch tokens.
 
 ## Multi-Turn And Renderers
 
 Token-capable rollouts use the `verifiers` train client, which renders prompts through `renderers` and calls a vLLM-compatible `/inference/v1/generate` endpoint. This path records exact token ids, sampled logprobs, message spans, multimodal sidecars, and routed experts when available.
 
-Renderer pools are owned by the env server and cached for the server lifetime. A model runtime exposes the actual `RendererPool` as `models[key].renderer` when the client is renderer-backed. Advantage functions that need to render alternate prompts can use that object directly.
+Renderer pools are owned by the env server and cached for the server lifetime. A model runtime exposes the actual `RendererPool` as `models[key].renderer` when the client is renderer-backed. Algorithms that need to render alternate prompts can use that object directly.
 
 Prefill is not a separate algorithm concept. It is just `TrainClient.prefill_logprobs(model, token_ids)` on token-capable clients.

@@ -1,8 +1,8 @@
-# Advantage — Debug Configs
+# Algorithms — Debug Configs
 
-Minimal end-to-end configs for builtin advantage functions against bundled verifiers envs, using `PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT` as the policy.
+Minimal end-to-end configs for builtin algorithms against bundled verifiers envs, using `PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT` as the policy.
 
-| Config | Advantages | Extra model | Notes |
+| Config | Algorithms | Extra model | Notes |
 |---|---|---|---|
 | `grpo.toml` | `grpo` | none | |
 | `max_rl.toml` | `max_rl` | none | GRPO with mean-normalized advantages (maximum-likelihood RL) |
@@ -17,7 +17,7 @@ Minimal end-to-end configs for builtin advantage functions against bundled verif
 
 The policy inference server is auto-launched on GPU 0 at `http://localhost:8000/v1` with `gpu_memory_utilization=0.5`. The local `reference` endpoint (used by `opd*.toml`, `sft_distill.toml` / `sft_distill_lora.toml`, and `mixed_grpo_opd.toml`) is **not** auto-launched — start it manually on GPU 1.
 
-Extra endpoints are declared under `[orchestrator.models.<key>]`. `actor = "reference"` selects an endpoint for rollouts; OPD keeps `actor = "policy"` and uses `models["reference"]` inside the advantage function.
+Extra endpoints are declared under `[orchestrator.models.<key>]`. `actor = "reference"` selects an endpoint for rollouts; OPD keeps `actor = "policy"` and uses `models["reference"]` inside the algorithm.
 
 ## Start the local reference endpoint
 
@@ -58,8 +58,8 @@ uv run rl @ configs/debug/algorithms/self_distill.toml
 # ECHO (no extra model; multi-turn env)
 uv run rl @ configs/debug/algorithms/echo.toml
 
-# Mixed per-env advantages: GRPO + OPD in one run (needs the reference endpoint on port 8001)
+# Mixed per-env algorithms: GRPO + OPD in one run (needs the reference endpoint on port 8001)
 uv run rl @ configs/debug/algorithms/mixed_grpo_opd.toml
 ```
 
-See [docs/algorithms.md](../../../docs/algorithms.md) for what each advantage does and how to compose custom ones.
+See [docs/algorithms.md](../../../docs/algorithms.md) for what each algorithm does and how to compose custom ones.

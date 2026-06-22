@@ -25,7 +25,7 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     The renderer object and the renderer *client* are decoupled: the object
     is the canonical messages → token ids path and exists whenever configured;
     the renderer-client path makes the policy token-capable for both rollouts
-    and advantage functions. Eval still uses chat-completions."""
+    and algorithms. Eval still uses chat-completions."""
     from renderers.base import create_renderer
 
     client_config = config.model.client

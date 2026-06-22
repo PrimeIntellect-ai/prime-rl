@@ -51,7 +51,7 @@ CLI: `--env.0.id reverse-text --env.1.id math-env`.
 
 **Discriminated unions** — set the `type` field to pick the variant (`[orchestrator.advantage] type = "max_rl"`). Omit `type` to keep the default variant.
 
-**Algorithms** — `orchestrator.advantages = ["grpo"]` selects advantage functions. Builtin names include `grpo`, `max_rl`, `rl`, `opd`, `opsd`, `sft`, and `echo`; import refs run inside the env server. Per-env override: `[[orchestrator.train.env]] advantages = ["echo"]`. The trained model is `orchestrator.model` and is exposed as model key `policy`; `orchestrator.actor` selects the rollout model and defaults to `policy`. Additional endpoints live under `[orchestrator.models.<key>]` with `tokens = true` for renderer/token/logprob-capable train clients. See `docs/algorithms.md`.
+**Algorithms** — `[[orchestrator.algorithms]] id = "grpo"` selects algorithms. Builtin ids include `grpo`, `max_rl`, `rl`, `opd`, `opsd`, `sft`, and `echo`; env-owned ids run inside the env server. Per-env override: `[[orchestrator.train.env.algorithms]] id = "echo"`. The trained model is `orchestrator.model` and is exposed as model key `policy`; `orchestrator.actor` selects the rollout model and defaults to `policy`. Additional endpoints live under `[orchestrator.models.<key>]` with `tokens = true` for renderer/token/logprob-capable train clients. See `docs/algorithms.md`.
 
 **`BaseModel | None` fields** — bare flag enables defaults; nested override enables and sets:
 

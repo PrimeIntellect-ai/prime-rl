@@ -187,14 +187,14 @@ class Env:
         )
         return [ROLLOUT_TYPE.model_validate(wire.model_dump()) for wire in wires]
 
-    async def run_advantages(
+    async def run_algorithms(
         self,
-        refs: list[str],
+        algorithms: list[vf.AlgorithmConfig],
         traces: list[Rollout],
         models: dict[str, ModelRuntimeConfig],
     ) -> list[TraceAdvantages]:
-        """Run env-owned advantage refs inside the env server."""
-        return await self.env_client.run_advantages(refs, traces, models)
+        """Run env-owned algorithms inside the env server."""
+        return await self.env_client.run_algorithms(algorithms, traces, models)
 
     def shutdown(self) -> None:
         if self._env_server_process is None:

@@ -241,7 +241,7 @@ def rl_local(config: RLConfig):
             logger.info(
                 "Additional model endpoints are configured - the rl entrypoint does not start them. "
                 f"Make sure these endpoints are serving before the orchestrator starts: {endpoints}; "
-                "otherwise actor rollouts or advantage functions that use them may fail."
+                "otherwise actor rollouts or algorithms that use them may fail."
             )
 
         # Start one env server per env (before the orchestrator, which attaches to

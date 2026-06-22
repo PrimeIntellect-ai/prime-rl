@@ -3,8 +3,9 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, ConfigDict, Field, SerializeAsAny, model_validator
 from renderers import AutoRendererConfig, RendererConfig
+from verifiers.v1 import AlgorithmConfig
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -142,6 +143,67 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
+class BuiltinAlgorithmConfig(AlgorithmConfig):
+    model_config = ConfigDict(extra="forbid")
+
+
+class GRPOConfig(BuiltinAlgorithmConfig):
+    id: Literal["grpo"] = "grpo"
+
+
+class MaxRLConfig(BuiltinAlgorithmConfig):
+    id: Literal["max_rl"] = "max_rl"
+
+
+class RLAlgorithmConfig(BuiltinAlgorithmConfig):
+    id: Literal["rl"] = "rl"
+
+
+class SFTAlgorithmConfig(BuiltinAlgorithmConfig):
+    id: Literal["sft"] = "sft"
+
+
+class EchoAlgorithmConfig(BuiltinAlgorithmConfig):
+    id: Literal["echo"] = "echo"
+
+
+class OPDAlgorithmConfig(BuiltinAlgorithmConfig):
+    id: Literal["opd"] = "opd"
+    model: str = "reference"
+
+
+class OPSDAlgorithmConfig(BuiltinAlgorithmConfig):
+    id: Literal["opsd"] = "opsd"
+    model: str = "reference"
+
+
+BUILTIN_ALGORITHM_CONFIGS: dict[str, type[AlgorithmConfig]] = {
+    "grpo": GRPOConfig,
+    "max_rl": MaxRLConfig,
+    "rl": RLAlgorithmConfig,
+    "sft": SFTAlgorithmConfig,
+    "echo": EchoAlgorithmConfig,
+    "opd": OPDAlgorithmConfig,
+    "opsd": OPSDAlgorithmConfig,
+}
+
+
+def resolve_algorithm_config(data: object) -> AlgorithmConfig:
+    if isinstance(data, AlgorithmConfig):
+        raw = data.model_dump()
+    elif isinstance(data, str):
+        raw = {"id": data}
+    elif isinstance(data, dict):
+        raw = data
+    else:
+        raise TypeError(f"Algorithm config must be a string or table, got {type(data).__name__}")
+    ident = raw.get("id")
+    if not isinstance(ident, str) or not ident:
+        raise ValueError("Algorithm config must set non-empty `id`")
+    config_type = BUILTIN_ALGORITHM_CONFIGS.get(ident, AlgorithmConfig)
+    return config_type.model_validate(raw)
+
+
 class EnvConfig(vf.EnvServerConfig):
     """A v1 environment: vf owns the taskset, harness, timeout, token limits, and
     worker-pool config; prime-rl adds orchestration fields and legacy-v0 bridge
@@ -208,9 +270,17 @@ class TrainEnvConfig(EnvConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Rollouts generated per example. Inherits from ``orchestrator.group_size`` when unset."""
 
-    advantages: list[str] | None = None
-    """Advantage refs for this env. Builtin names run in prime-rl; import refs run inside the env server.
-    Inherits from ``orchestrator.advantages`` when unset."""
+    algorithms: list[SerializeAsAny[AlgorithmConfig]] | None = None
+    """Algorithms for this env. Builtin ids run in prime-rl; env-owned ids run inside the env server.
+    Inherits from ``orchestrator.algorithms`` when unset."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_algorithm_configs(cls, data):
+        if isinstance(data, dict) and "algorithms" in data and data["algorithms"] is not None:
+            data = dict(data)
+            data["algorithms"] = [resolve_algorithm_config(item) for item in data["algorithms"]]
+        return data
 
 
 class EvalEnvConfig(EnvConfig):
@@ -446,15 +516,15 @@ class OrchestratorConfig(BaseConfig):
     model: HostedModelConfig = HostedModelConfig()
     """The model being trained: its model fields plus the client of the live
     vLLM deployment (``[orchestrator.model] name = ...`` with
-    ``[orchestrator.model.client]``). Advantage functions reference it as
+    ``[orchestrator.model.client]``). Algorithms reference it as
     ``models["policy"]``."""
 
     actor: str = "policy"
     """Model key used for train rollouts. ``"policy"`` means ``orchestrator.model``; any other value
     must be present in ``orchestrator.models`` and token-capable."""
 
-    advantages: list[str] = Field(default_factory=lambda: ["grpo"])
-    """Default advantage refs for train envs. Builtin names run in prime-rl; import refs run inside the env server."""
+    algorithms: list[SerializeAsAny[AlgorithmConfig]] = Field(default_factory=lambda: [GRPOConfig()])
+    """Default algorithms for train envs. Builtin ids run in prime-rl; env-owned ids run inside the env server."""
 
     models: dict[str, HostedModelConfig] = Field(default_factory=dict)
     """Additional model endpoints keyed by user-facing id. ``policy`` is reserved for ``orchestrator.model``."""
@@ -628,12 +698,20 @@ class OrchestratorConfig(BaseConfig):
                 )
         return self
 
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_algorithm_configs(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "algorithms" in data and data["algorithms"] is not None:
+            data = dict(data)
+            data["algorithms"] = [resolve_algorithm_config(item) for item in data["algorithms"]]
+        return data
+
     @model_validator(mode="after")
-    def inherit_env_advantages(self):
-        """Envs without explicit advantage refs inherit the top-level refs."""
+    def inherit_env_algorithms(self):
+        """Envs without explicit algorithms inherit the top-level algorithms."""
         for env_cfg in self.train.env:
-            if env_cfg.advantages is None:
-                env_cfg.advantages = list(self.advantages)
+            if env_cfg.algorithms is None:
+                env_cfg.algorithms = [algorithm.model_copy(deep=True) for algorithm in self.algorithms]
         return self
 
     @model_validator(mode="after")

@@ -19,7 +19,8 @@ name = "debug-sft"
 batch_size = 128
 group_size = 4
 actor = "reference"
-advantages = ["sft"]
+[[orchestrator.algorithms]]
+id = "sft"
 
 [orchestrator.models.reference]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"

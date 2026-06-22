@@ -167,20 +167,23 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_env_advantages_override_top_level():
+def test_env_algorithms_override_top_level():
     config = OrchestratorConfig.model_validate(
         {
-            "advantages": ["echo"],
-            "train": {"env": [{"id": "a", "advantages": ["rl"]}, {"id": "b"}]},
+            "algorithms": [{"id": "echo"}],
+            "train": {"env": [{"id": "a", "algorithms": [{"id": "rl"}]}, {"id": "b"}]},
         }
     )
     env_a, env_b = config.train.env
-    assert env_a.advantages == ["rl"]
-    assert env_b.advantages == ["echo"]
+    assert env_a.algorithms is not None
+    assert env_b.algorithms is not None
+    assert [algorithm.id for algorithm in env_a.algorithms] == ["rl"]
+    assert [algorithm.id for algorithm in env_b.algorithms] == ["echo"]
 
     dumped = config.model_dump(exclude_none=True)
     reloaded = OrchestratorConfig.model_validate(dumped)
-    assert reloaded.train.env[0].advantages == ["rl"]
+    assert reloaded.train.env[0].algorithms is not None
+    assert [algorithm.id for algorithm in reloaded.train.env[0].algorithms] == ["rl"]
 
 
 def test_trainer_enable_token_export_cli_flag():

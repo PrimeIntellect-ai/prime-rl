@@ -1,4 +1,4 @@
-# Mixed per-env advantages in one run: a GRPO env and an OPD env, both on
+# Mixed per-env algorithms in one run: a GRPO env and an OPD env, both on
 # reverse-text. Exercises heterogeneous loss channels in one train batch.
 # Start the frozen reference server first (on a separate GPU):
 #   CUDA_VISIBLE_DEVICES=1 uv run inference \
@@ -20,7 +20,9 @@ name = "debug-mixed-grpo-opd"
 [orchestrator]
 batch_size = 128
 group_size = 16
-advantages = ["grpo"]
+
+[[orchestrator.algorithms]]
+id = "grpo"
 
 [orchestrator.models.reference]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
@@ -42,7 +44,9 @@ name = "reverse-text-grpo"
 [[orchestrator.train.env]]
 id = "reverse-text"
 name = "reverse-text-opd"
-advantages = ["opd"]
+
+[[orchestrator.train.env.algorithms]]
+id = "opd"
 
 [orchestrator.eval]
 interval = 5

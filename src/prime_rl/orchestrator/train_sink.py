@@ -2,8 +2,8 @@
 
 1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
    dispatcher producing more rollouts). Errored rollouts skip this.
-2. ``process_group`` — filters errored rollouts, runs configured advantage
-   functions, and runs the pre-batch filter pass.
+2. ``process_group`` — filters errored rollouts, runs configured algorithms,
+   and runs the pre-batch filter pass.
 3. ``process_batch`` — applies post-batch filter annotations and assembles
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
@@ -13,16 +13,14 @@ save_rollouts, monitor.log, reference scoring) live on the orchestrator.
 
 from __future__ import annotations
 
-import inspect
 import uuid
 from collections import defaultdict
 
 import verifiers.v1 as vf
-from verifiers.v1.decorators import invoke
 from verifiers.v1.serve import ModelRuntimeConfig
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.advantages import BUILTIN_ADVANTAGES
+from prime_rl.orchestrator.algorithms import BUILTIN_ALGORITHMS
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import trace_to_samples
@@ -178,49 +176,34 @@ class TrainSink:
             return
 
         channels_by_branch: dict[tuple[str, int], dict[str, TrainingAdvantage]] = defaultdict(dict)
-        advantage_refs = env.config.advantages or []
-        for ref in advantage_refs:
-            if ref in BUILTIN_ADVANTAGES:
-                fn = BUILTIN_ADVANTAGES[ref]
-                loss = getattr(fn, "advantage_loss", "rl")
-                scope = getattr(fn, "advantage_scope", "group")
+        algorithm_configs = env.config.algorithms or []
+        for algorithm_config in algorithm_configs:
+            input_count = len(survivors)
+            if algorithm_config.id in BUILTIN_ALGORITHMS:
+                algorithm = BUILTIN_ALGORITHMS[algorithm_config.id](algorithm_config)
+                await algorithm.setup(self.model_runtimes)
+                loss = algorithm.loss()
                 for trace in survivors:
                     for branch in trace.branches:
                         branch.advantages = []
                         branch.mask = []
-                if scope == "rollout":
-                    transformed: list[Rollout] = []
-                    for trace in survivors:
-                        result = invoke(fn, {"traces": [trace], "models": self.model_runtimes})
-                        if inspect.isawaitable(result):
-                            result = await result
-                        if len(result) != 1:
-                            raise ValueError(f"rollout-scope advantage {ref!r} returned {len(result)} traces")
-                        transformed.append(result[0])
-                    survivors = transformed
-                elif scope == "group":
-                    result = invoke(fn, {"traces": survivors, "models": self.model_runtimes})
-                    if inspect.isawaitable(result):
-                        result = await result
-                    if len(result) != len(survivors):
-                        raise ValueError(
-                            f"group-scope advantage {ref!r} returned {len(result)} traces for {len(survivors)} inputs"
-                        )
-                    survivors = result
-                else:
-                    raise ValueError(f"advantage {ref!r} has unsupported scope {scope!r}")
+                survivors = await algorithm.advantage(survivors)
+                if len(survivors) != input_count:
+                    raise ValueError(
+                        f"algorithm {algorithm_config.id!r} returned {len(survivors)} traces for {input_count} inputs"
+                    )
                 for trace in survivors:
                     for branch in trace.branches:
                         if not branch.advantages and not branch.mask:
                             continue
                         if len(branch.advantages) != len(branch.mask):
                             raise ValueError(
-                                f"advantage {ref!r} wrote mismatched values/mask on trace {trace.id} "
+                                f"algorithm {algorithm_config.id!r} wrote mismatched values/mask on trace {trace.id} "
                                 f"branch {branch.index}: {len(branch.advantages)} != {len(branch.mask)}"
                             )
                         if len(branch.advantages) != len(branch.token_ids):
                             raise ValueError(
-                                f"advantage {ref!r} wrote {len(branch.advantages)} values for trace {trace.id} "
+                                f"algorithm {algorithm_config.id!r} wrote {len(branch.advantages)} values for trace {trace.id} "
                                 f"branch {branch.index} with {len(branch.token_ids)} tokens"
                             )
                         by_loss = channels_by_branch[(trace.id, branch.index)]
@@ -245,23 +228,23 @@ class TrainSink:
                             ]
                 continue
 
-            env_results = await env.run_advantages([ref], survivors, self.model_runtime_configs)
+            env_results = await env.run_algorithms([algorithm_config], survivors, self.model_runtime_configs)
             if len(env_results) != len(survivors):
                 raise ValueError(
-                    f"env advantage {ref!r} returned {len(env_results)} traces for {len(survivors)} inputs"
+                    f"env algorithm {algorithm_config.id!r} returned {len(env_results)} traces for {len(survivors)} inputs"
                 )
             for trace, trace_result in zip(survivors, env_results, strict=True):
                 for branch_result in trace_result.branches:
                     branch = trace.branches[branch_result.branch_index]
                     if len(branch_result.advantages) != len(branch_result.mask):
                         raise ValueError(
-                            f"env advantage {ref!r} wrote mismatched values/mask on trace {trace.id} "
+                            f"env algorithm {algorithm_config.id!r} wrote mismatched values/mask on trace {trace.id} "
                             f"branch {branch_result.branch_index}: "
                             f"{len(branch_result.advantages)} != {len(branch_result.mask)}"
                         )
                     if len(branch_result.advantages) != len(branch.token_ids):
                         raise ValueError(
-                            f"env advantage {ref!r} wrote {len(branch_result.advantages)} values for trace {trace.id} "
+                            f"env algorithm {algorithm_config.id!r} wrote {len(branch_result.advantages)} values for trace {trace.id} "
                             f"branch {branch_result.branch_index} with {len(branch.token_ids)} tokens"
                         )
                     by_loss = channels_by_branch[(trace.id, branch_result.branch_index)]

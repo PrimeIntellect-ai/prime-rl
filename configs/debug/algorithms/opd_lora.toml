@@ -18,7 +18,8 @@ name = "debug-opd-lora"
 [orchestrator]
 batch_size = 128
 group_size = 16
-advantages = ["opd"]
+[[orchestrator.algorithms]]
+id = "opd"
 
 [orchestrator.models.reference]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"

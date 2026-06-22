@@ -15,7 +15,11 @@ name = "debug-echo"
 [orchestrator]
 batch_size = 32
 group_size = 4
-advantages = ["grpo", "echo"]
+[[orchestrator.algorithms]]
+id = "grpo"
+
+[[orchestrator.algorithms]]
+id = "echo"
 
 # Builtin echo trains unsampled tool-message tokens with CE.
 

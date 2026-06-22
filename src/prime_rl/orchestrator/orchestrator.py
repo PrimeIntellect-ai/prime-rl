@@ -162,8 +162,8 @@ class Orchestrator:
         # ``verifiers.serve`` (env-server lifecycle) through our handler
         logging.getLogger("verifiers").setLevel(logging.CRITICAL + 1)
         intercept_vf_logging(logger="verifiers.serve", level="WARN")
-        advantages = sorted({ref for env in config.train.env for ref in (env.advantages or [])})
-        get_logger().info(f"Starting orchestrator (advantages: {', '.join(advantages)})")
+        algorithms = sorted({algorithm.id for env in config.train.env for algorithm in (env.algorithms or [])})
+        get_logger().info(f"Starting orchestrator (algorithms: {', '.join(algorithms)})")
 
         if config.bench:
             get_logger().warning(f"Running in benchmark mode (max_steps={config.max_steps})")
