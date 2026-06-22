@@ -42,7 +42,7 @@ def _make_rollout(
         ]
     else:
         nodes = [_assistant_node(completion_ids, completion_logprobs)]
-    rollout = Rollout[vf.Task](task=vf.Task(idx=0, instruction=""), nodes=nodes, rewards={"reward": reward})
+    rollout = Rollout[vf.Task](task=vf.Task(idx=0, prompt=""), nodes=nodes, rewards={"reward": reward})
     rollout.env_name = "test"
     rollout.group_id = uuid.uuid4()
     return rollout

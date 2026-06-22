@@ -3,7 +3,7 @@ import json
 
 import httpx
 import openai
-from verifiers.v1.clients.config import OpenAIClientConfig
+from verifiers.v1.clients.config import EvalClientConfig
 
 from prime_rl.orchestrator import utils as orchestrator_utils
 from prime_rl.transport import TrainingSample
@@ -54,7 +54,7 @@ def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
         )
 
         result = await orchestrator_utils.compute_teacher_logprobs(
-            clients=[OpenAIClientConfig(base_url="http://fake-host:8000/v1")],
+            clients=[EvalClientConfig(base_url="http://fake-host:8000/v1")],
             model_name="teacher-model",
             samples=[sample],
         )
