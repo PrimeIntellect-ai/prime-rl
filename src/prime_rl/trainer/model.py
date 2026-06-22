@@ -456,6 +456,15 @@ def get_model(
             raise ValueError(
                 "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
+        # Context parallelism patches the global flash-attention dispatch to do the
+        # Ulysses all-to-all, which is causal- and sharded-sequence-only. The vision
+        # encoder runs *before* CP sharding (full, replicated patches) with
+        # bidirectional attention, so it must not go through that path. Pin it to
+        # sdpa so it dispatches around the patched flash_attention_2 entry.
+        vision_config = getattr(model_config, "vision_config", None)
+        if config.cp > 1 and vision_config is not None:
+            vision_config._attn_implementation = "sdpa"
+            logger.info("CP enabled for VLM: pinning vision encoder attention to 'sdpa' (excluded from Ulysses CP).")
 
     # GPT-OSS only supports FlashAttention via kernels-community/vllm-flash-attn3, which requires Hopper (SM 90).
     # On other architectures (e.g. Blackwell), users must fall back to eager attention.
@@ -631,16 +640,57 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         dp_mod_ep_mesh = parallel_dims.world_mesh[tuple(dp_mod_ep_mesh_dim_names)]
 
     is_vlm_training = config.vlm is not None
+    cp_vlm = is_vlm_training and config.cp > 1
+    # Params kept out of FSDP entirely (full/replicated on every rank).
+    fsdp_ignored_params: set[nn.Parameter] = set()
+
+    def _keep_out_of_fsdp_if_frozen(module: nn.Module, name: str) -> None:
+        # Under CP, the multimodal merge (prepare_vlm_inputs_for_context_parallel)
+        # runs the vision encoder and embed_tokens *standalone, before the root FSDP
+        # forward*. FSDP2 requires the first forward of an iteration to go through the
+        # root, so a separately-sharded module called here lazy-inits as its own root
+        # and then collides with the real root forward ("FSDP state has already been
+        # lazily initialized"). Keeping such a module out of FSDP (full/replicated,
+        # materialized later by model.to_empty()) avoids that — but only safely when
+        # it is FROZEN, since ignored params get no FSDP gradient reduction. So:
+        # frozen -> ignore; trainable -> refuse (don't silently change what trains).
+        params = list(module.parameters())
+        if not params:
+            return
+        if all(not p.requires_grad for p in params):
+            fsdp_ignored_params.update(params)
+            get_logger().info(f"CP+VLM: keeping frozen {name} out of FSDP (ignored_params).")
+        else:
+            raise ValueError(
+                f"VLM context parallelism (cp={config.cp}) requires a frozen {name}: it runs in "
+                f"the pre-shard multimodal merge, before the FSDP root forward, so it cannot be "
+                f"FSDP-sharded — and an unsharded *trainable* module would silently lose its "
+                f"gradient reduction. Freeze it (e.g. train with LoRA, or set freeze_vision_encoder "
+                f"for the vision encoder), or apply the structural fix (run the pre-shard merge "
+                f"through the root forward)."
+            )
+
     if is_vlm_training:
         vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
         if vision_encoder is None:
             raise ValueError(f"VLM model {config.name} has no recognized vision encoder")
 
-        fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
-        get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
+        if cp_vlm:
+            _keep_out_of_fsdp_if_frozen(vision_encoder, "vision encoder")
+        else:
+            fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
+            get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
 
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
+
+    # embed_tokens is also invoked in the pre-shard merge (to embed text before
+    # scattering image embeds) -> same FSDP-root conflict; keep it out of FSDP when
+    # frozen, else refuse (see _keep_out_of_fsdp_if_frozen).
+    if cp_vlm:
+        embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
+        if embed_module is not None:
+            _keep_out_of_fsdp_if_frozen(embed_module, "embed_tokens")
 
     for transformer_block in transformer_layers:
         block_mlp = getattr(transformer_block, "mlp", None)
@@ -660,11 +710,14 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     if shard_norm_and_lm_head:
         # This optimization breaks weight tying
         embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
-        fully_shard(
-            embed_module,
-            mesh=hsdp_mesh,
-            **fsdp_config,
-        )
+        # Under CP+VLM the embedding is kept out of FSDP (frozen, ignored above) so
+        # the pre-shard merge can call it standalone — skip sharding it here.
+        if not cp_vlm:
+            fully_shard(
+                embed_module,
+                mesh=hsdp_mesh,
+                **fsdp_config,
+            )
         norm_module = getattr(language_model, "norm", None) or language_model.norm_f
         fully_shard(
             [model.lm_head, norm_module],
@@ -682,6 +735,10 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         mp_policy=mp_policy,
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
+        # Exclude the pre-shard-merge modules kept out of FSDP (vision encoder +
+        # frozen embeddings under CP) so the root unit doesn't re-shard them; they
+        # stay full/replicated for the standalone pre-shard merge calls.
+        ignored_params=fsdp_ignored_params or None,
     )
 
     if not parallel_dims.ep_enabled:
@@ -1129,11 +1186,12 @@ def setup_model(
 
 def forward(
     model: nn.Module,
-    input_ids: Int[Tensor, "batch seq"],
-    position_ids: Int[Tensor, "batch seq"],
+    input_ids: Int[Tensor, "batch seq"] | None,
+    position_ids: Int[Tensor, "batch seq"] | None,
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
+    inputs_embeds: Tensor | None = None,
     # Generic multimodal kwargs (e.g. {"pixel_values": ...,
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
     # for Gemma3). Passed straight through to ``model(**kwargs)`` so
@@ -1143,13 +1201,22 @@ def forward(
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     seq_lens: Int[Tensor, "segments"] | None = None,
+    seq_lens_are_global: bool = False,
 ) -> PrimeLmOutput:
+    if input_ids is None and inputs_embeds is None:
+        raise ValueError("forward requires either input_ids or inputs_embeds")
+    if inputs_embeds is not None and mm_kwargs:
+        raise ValueError("forward does not support passing both inputs_embeds and mm_kwargs")
+
     # Build kwargs for model forward
     kwargs = {
-        "input_ids": input_ids,
         "labels": labels,
         "temperature": temperature,
     }
+    if inputs_embeds is None:
+        kwargs["input_ids"] = input_ids
+    else:
+        kwargs["inputs_embeds"] = inputs_embeds
 
     if mm_kwargs:
         # Forward the per-model multimodal tensors verbatim, plus the
@@ -1167,6 +1234,10 @@ def forward(
             kwargs["seq_lens"] = seq_lens
     else:
         kwargs["position_ids"] = position_ids
+        if seq_lens is not None:
+            kwargs["seq_lens"] = seq_lens
+        if seq_lens_are_global:
+            kwargs["seq_lens_are_global"] = True
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
@@ -1178,3 +1249,38 @@ def forward(
         return cast_float_and_contiguous(out)
 
     return cast_float_and_contiguous(PrimeLmOutput(logits=out.logits))
+
+
+def prepare_vlm_inputs_for_context_parallel(
+    model: nn.Module,
+    *,
+    input_ids: Tensor,
+    position_ids: Tensor | None,
+    mm_kwargs: dict[str, Tensor],
+    mm_token_type_ids: Tensor | None,
+    seq_lens: Tensor | None,
+) -> tuple[Tensor, Tensor]:
+    for candidate in _iter_wrapped_modules(model):
+        method = getattr(candidate, "prepare_vlm_inputs_for_context_parallel", None)
+        if callable(method):
+            return method(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                mm_token_type_ids=mm_token_type_ids,
+                seq_lens=seq_lens,
+                **mm_kwargs,
+            )
+
+    raise NotImplementedError(
+        "This VLM model does not implement prepare_vlm_inputs_for_context_parallel; "
+        "context parallelism is only supported for models with an explicit pre-shard multimodal merge path."
+    )
+
+
+def _iter_wrapped_modules(model: nn.Module):
+    seen: set[int] = set()
+    current = model
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = getattr(current, "module", None)
