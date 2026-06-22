@@ -49,13 +49,17 @@ if [ -n "$PRIME_RL_REF" ]; then
         # /tmp and /app share a filesystem.
         cp -a /app/.venv "$DEST/.venv"
     fi
-    echo "[prime-rl] running uv sync --inexact --all-extras (this may take a few minutes on cold checkout)"
-    # --all-extras so env / gpt-oss / modelexpress / flash-attn extras
-    # get picked up if the override's pyproject changes them. --inexact
-    # keeps the seeded venv's pre-built wheels (flash-attn-3, mamba-ssm)
-    # in place; uv only rebuilds them if the override's lockfile pins
-    # different versions, which is rare for researcher branches.
-    ( cd "$DEST" && uv sync --inexact --no-dev --all-extras )
+    echo "[prime-rl] running uv sync --inexact (this may take a few minutes on cold checkout)"
+    # Mirror the image's extras (Dockerfile.cuda:82) — explicit instead
+    # of --all-extras so we don't pull in `disagg` / `quack` and trigger
+    # heavy source builds (deep-ep, deep-gemm, quack-kernels) at pod
+    # startup. --inexact keeps the seeded venv's pre-built wheels
+    # (flash-attn-3, mamba-ssm) in place; uv only rebuilds them if the
+    # override's lockfile pins different versions.
+    ( cd "$DEST" && uv sync --inexact --no-dev \
+        --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute \
+        --extra envs --extra gpt-oss --extra modelexpress \
+        --group mamba-ssm )
     export VIRTUAL_ENV="$DEST/.venv"
     export PATH="$DEST/.venv/bin:$PATH"
     cd "$DEST"
