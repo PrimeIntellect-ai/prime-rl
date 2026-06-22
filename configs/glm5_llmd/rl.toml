@@ -26,9 +26,9 @@ num_infer_replicas = 1
 [inference.deployment]
 type = "disaggregated"
 num_prefill_nodes = 8
-num_prefill_replicas = 2
+num_prefill_replicas = 4
 num_decode_nodes = 8
-num_decode_replicas = 2
+num_decode_replicas = 1
 # skip warmup for faster start in cost of some jit overhead early
 # ucx needs to be set else random segfaults, vllm can't autoset before importing for some reason
 prefill_env_overrides = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="skip", "UCX_RCACHE_MAX_UNRELEASED"="1024"}
