@@ -15,14 +15,20 @@ ulimit -n 32000 2>/dev/null || echo "Warning: Could not set ulimit (may need --u
 # resolves the entrypoints from the override venv.
 if [ -n "$PRIME_RL_REF" ]; then
     PRIME_RL_REPO="${PRIME_RL_REPO:-https://github.com/PrimeIntellect-ai/prime-rl.git}"
-    # Refs can contain `/` (e.g. branch names like `feat/foo`); slugify for
-    # the cache dir name. Real ref is kept verbatim for git commands.
+    # Slug + content hash for the cache dir name. Slug keeps the path
+    # human-readable; the hash prevents collisions between distinct refs
+    # that slugify to the same string (e.g. `feat/foo` vs `feat-foo`).
     REF_SLUG="${PRIME_RL_REF//\//-}"
-    DEST="/tmp/prime-rl-${REF_SLUG}"
+    REF_HASH=$(echo -n "$PRIME_RL_REF" | md5sum | cut -c1-12)
+    DEST="/tmp/prime-rl-${REF_SLUG}-${REF_HASH}"
+    # Rewrite ssh://git@github.com URLs to https so submodules listed
+    # with SSH URLs (deps/verifiers, deps/renderers, deps/research-envs)
+    # can be cloned from the pod without ssh keys.
+    git config --global url."https://github.com/".insteadOf "git@github.com:"
     if [ ! -d "$DEST/.git" ]; then
         echo "[prime-rl] cloning ${PRIME_RL_REPO} for ${PRIME_RL_REF}"
         rm -rf "$DEST"
-        git clone "$PRIME_RL_REPO" "$DEST"
+        git clone --recurse-submodules "$PRIME_RL_REPO" "$DEST"
     fi
     # Always fetch + checkout so mutable refs (branches/tags) pick up new
     # commits between pod restarts. No-op for immutable SHAs.
@@ -32,6 +38,8 @@ if [ -n "$PRIME_RL_REF" ]; then
     # Fast-forward to upstream tip when PRIME_RL_REF is a branch name.
     # Silently no-ops for SHAs/tags (no `origin/<sha>` exists).
     git -C "$DEST" reset --hard --quiet "origin/${PRIME_RL_REF}" 2>/dev/null || true
+    # Refresh submodules to whatever the parent commit pins.
+    git -C "$DEST" submodule update --init --recursive
     if [ ! -d "$DEST/.venv" ]; then
         # Seed from the baked venv so the heavy wheels (flash-attn,
         # mamba-ssm, …) don't have to be rebuilt. Hardlink-copy when /tmp
