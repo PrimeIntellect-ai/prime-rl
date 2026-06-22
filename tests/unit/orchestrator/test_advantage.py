@@ -37,13 +37,12 @@ def _make_rollout(
             token_ids=list(range(n := per_turn + (rem if i == 0 else 0))),
             mask=[True] * n,
             logprobs=[0.0] * n,
+            sampled=True,
         )
         for i in range(num_turns)
     ]
     metrics = {"rlm_total_tool_response_tokens": tool_response_len} if tool_response_len else {}
-    rollout = Rollout[vf.Task](
-        task=vf.Task(idx=0, instruction=""), nodes=nodes, rewards={"reward": reward}, metrics=metrics
-    )
+    rollout = Rollout[vf.Task](task=vf.Task(idx=0, prompt=""), nodes=nodes, rewards={"reward": reward}, metrics=metrics)
     rollout.env_name = env_name
     return rollout
 
@@ -241,7 +240,7 @@ def _train_rollouts(rewards: list[float]) -> list[Rollout]:
     gid = uuid.uuid4()
     rollouts = []
     for r in rewards:
-        rollout = Rollout[vf.Task](task=vf.Task(idx=0, instruction=""), rewards={"reward": r})
+        rollout = Rollout[vf.Task](task=vf.Task(idx=0, prompt=""), rewards={"reward": r})
         rollout.env_name = "test"
         rollout.group_id = gid
         rollouts.append(rollout)

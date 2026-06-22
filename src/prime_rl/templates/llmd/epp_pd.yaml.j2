@@ -1,0 +1,56 @@
+{# llm-d EPP config: prefill/decode disaggregation. disagg-profile-handler runs
+   the prefill profile when prefix-based-pd-decider sees >= nonCachedTokens
+   non-cached prompt tokens, else decode-only. Mirrors the upstream llm-d PD
+   guide: the prefill profile uses prefill_scorers (prefix + queue/kv) and the
+   decode profile uses scorers (prefix + active-request); prefill-filter /
+   decode-filter select endpoints by llm-d.ai/role label. Included into the
+   sbatch as a heredoc; $LLMD_DIR is the per-replica config dir, expanded at
+   launch time. #}
+apiVersion: inference.networking.x-k8s.io/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+  - name: file-disc
+    type: file-discovery
+    parameters:
+      path: $LLMD_DIR/endpoints.yaml
+      watchFile: true
+  - name: vllmhttp-parser
+    type: vllmhttp-parser
+  - name: pd-decider
+    type: prefix-based-pd-decider
+    parameters:
+      nonCachedTokens: {{ router.non_cached_tokens }}
+  - name: profile-handler
+    type: disagg-profile-handler
+    parameters:
+      deciders:
+        prefill: pd-decider
+  - type: prefill-filter
+  - type: decode-filter
+{%- for scorer in ((router.prefill_scorers.keys() | list) + (router.decode_scorers.keys() | list)) | unique %}
+  - type: {{ scorer }}
+{%- endfor %}
+  - type: max-score-picker
+schedulingProfiles:
+  - name: prefill
+    plugins:
+      - pluginRef: prefill-filter
+{%- for scorer, weight in router.prefill_scorers.items() %}
+      - pluginRef: {{ scorer }}
+        weight: {{ weight }}
+{%- endfor %}
+      - pluginRef: max-score-picker
+  - name: decode
+    plugins:
+      - pluginRef: decode-filter
+{%- for scorer, weight in router.decode_scorers.items() %}
+      - pluginRef: {{ scorer }}
+        weight: {{ weight }}
+{%- endfor %}
+      - pluginRef: max-score-picker
+requestHandler:
+  parser:
+    pluginRef: vllmhttp-parser
+dataLayer:
+  discovery:
+    pluginRef: file-disc

@@ -574,6 +574,7 @@ class Orchestrator:
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.update_dispatch_gate()
+        trim_process_memory()
 
         metrics = self.metrics.build(
             step=step,
@@ -831,6 +832,10 @@ class Orchestrator:
             if not was_set:
                 get_logger().info("Resuming dispatcher")
             gate.set()
+
+    async def on_version_pending(self, step: int) -> None:
+        """No-op: the dispatch gate is re-evaluated in ``on_new_version`` once
+        the new policy version is live."""
 
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;

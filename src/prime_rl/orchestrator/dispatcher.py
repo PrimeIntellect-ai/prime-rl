@@ -11,8 +11,9 @@
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight rollouts of the opposite kind drain
   naturally on either side of an eval boundary.
-- ``on_new_version`` (called by the watcher) bumps ``off_policy_steps`` on
-  in-flight train rollouts and drops groups past ``max_off_policy_steps``.
+- ``on_version_pending`` (called by the watcher before the engines pause for
+  the weight update) bumps ``off_policy_steps`` on in-flight train rollouts and
+  drops groups past ``max_off_policy_steps``.
   Eval rollouts are measurements for the policy version they started with,
   so they are allowed to finish even if training advances.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
@@ -114,7 +115,7 @@ class RolloutDispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules
     rollouts under shared capacity, and emits ``FinishedRollout``\\ s to
-    ``out_q``. The watcher drives ``on_new_version`` for off-policy
+    ``out_q``. The watcher drives ``on_version_pending`` for off-policy
     cancellation; the orchestrator triggers eval epochs."""
 
     def __init__(
@@ -261,11 +262,16 @@ class RolloutDispatcher:
             await safe_cancel(self.task)
             self.task = None
 
-    async def on_new_version(self, step: int) -> None:
+    async def on_version_pending(self, step: int) -> None:
         """Bump off-policy counters and drop groups past
         ``max_off_policy_steps`` (drop_group emits ``Cancelled`` markers so
         the sink still finalizes the partial group). Eval rollouts are not
-        aged because they are tied to their start-time policy version."""
+        aged because they are tied to their start-time policy version.
+
+        Runs *before* the inference engines are paused for the weight update so
+        the resulting aborts are processed while the engine is still stepping —
+        otherwise the orphaned KV transfers crash the decode engine on resume
+        (see ``WeightWatcher.apply_policy_update``)."""
         stale_groups: set[uuid.UUID] = set()
         cancelled = 0
         for meta in self.inflight.values():
@@ -284,6 +290,9 @@ class RolloutDispatcher:
                 f"Cancelled {cancelled} train rollouts past max_off_policy_steps={self.max_off_policy_steps}. "
                 "Consider increasing it to avoid this."
             )
+
+    async def on_new_version(self, step: int) -> None:
+        """No-op: the dispatcher drains in ``on_version_pending`` (pre-pause)."""
 
     async def fill_inflight(self) -> None:
         """Schedule new rollouts up to ``max_inflight``, honoring
@@ -567,7 +576,7 @@ class RolloutDispatcher:
         # markers for those too so the sink hits ``target_rollouts``
         #
         # ``last_meta`` can be ``None`` if the only inflight task for this
-        # group completed naturally between ``on_new_version``'s snapshot
+        # group completed naturally between ``on_version_pending``'s snapshot
         # and us reaching it — synthesize a stand-in from the group state
         unscheduled_cancelled = 0
         if group is not None and group.rollouts_to_schedule > 0:
