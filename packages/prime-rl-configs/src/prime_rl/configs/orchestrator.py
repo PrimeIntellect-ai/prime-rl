@@ -5,7 +5,6 @@ from typing import Annotated, Any, Literal, TypeAlias
 import verifiers.v1 as vf
 from pydantic import AliasChoices, ConfigDict, Field, SerializeAsAny, model_validator
 from renderers import AutoRendererConfig, RendererConfig
-from verifiers.v1 import AlgorithmConfig
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -141,6 +140,14 @@ class EvalSamplingConfig(BaseConfig):
                 stacklevel=2,
             )
         return data
+
+
+class AlgorithmConfig(BaseConfig):
+    """Algorithm config reference carried by prime-rl without requiring the
+    sibling verifiers algorithm extension in the slim config package."""
+
+    model_config = ConfigDict(extra="allow")
+    id: str
 
 
 class BuiltinAlgorithmConfig(AlgorithmConfig):

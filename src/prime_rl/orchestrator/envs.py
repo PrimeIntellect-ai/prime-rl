@@ -29,7 +29,7 @@ from typing import Generic, TypeVar
 import verifiers.v1 as vf
 from verifiers.v1.serve import EnvClient, ModelRuntimeConfig, TraceAdvantages, env_config_data
 
-from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
+from prime_rl.configs.orchestrator import AlgorithmConfig, EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
 
@@ -189,12 +189,13 @@ class Env:
 
     async def run_algorithms(
         self,
-        algorithms: list[vf.AlgorithmConfig],
+        algorithms: list[AlgorithmConfig],
         traces: list[Rollout],
         models: dict[str, ModelRuntimeConfig],
     ) -> list[TraceAdvantages]:
         """Run env-owned algorithms inside the env server."""
-        return await self.env_client.run_algorithms(algorithms, traces, models)
+        wire_algorithms = [vf.AlgorithmConfig.model_validate(algorithm.model_dump()) for algorithm in algorithms]
+        return await self.env_client.run_algorithms(wire_algorithms, traces, models)
 
     def shutdown(self) -> None:
         if self._env_server_process is None:
