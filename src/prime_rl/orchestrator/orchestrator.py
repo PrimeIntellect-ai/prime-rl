@@ -123,6 +123,7 @@ class Orchestrator:
     draining: bool
     last_batch_at: float | None
     consecutive_empty_batches: int
+    consecutive_errored_rollouts: int
     eval_triggered_at: dict[tuple[str, int], float]
     ckpt_manager: CheckpointManager | None
     component_tasks: list[asyncio.Task]
@@ -180,6 +181,7 @@ class Orchestrator:
         # Trigger timestamps so eval success logs can report epoch duration
         self.eval_triggered_at = {}
         self.consecutive_empty_batches = 0
+        self.consecutive_errored_rollouts = 0
         self.component_tasks = []
 
         # Optional attributes — ``setup()`` populates them when the relevant
@@ -499,6 +501,7 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 continue
 
+            self.update_consecutive_errored_rollouts(rollout)
             if isinstance(rollout, EvalRollout):
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(rollout)
@@ -512,6 +515,40 @@ class Orchestrator:
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
+
+    def update_consecutive_errored_rollouts(self, rollout: FinishedRollout) -> None:
+        """Track terminal rollout errors before sink accounting.
+
+        The dispatcher emits one terminal errored rollout only after verifiers
+        has exhausted its retry budget. Synthetic ``Cancelled`` markers from
+        off-policy cleanup are ignored.
+        """
+        limit = self.config.max_consecutive_errored_rollouts
+        if limit is None:
+            return
+
+        error = rollout.error
+        if error is None:
+            self.consecutive_errored_rollouts = 0
+            return
+
+        error_type = error.get("error", "Unknown")
+        if error_type == "Cancelled":
+            return
+
+        self.consecutive_errored_rollouts += 1
+        rollout_kind = "eval" if isinstance(rollout, EvalRollout) else "train"
+        get_logger().warning(
+            f"Terminal {rollout_kind} rollout error | env={rollout.env_name} example_id={rollout.example_id} "
+            f"error={error_type} "
+            f"(consecutive errored rollouts: {self.consecutive_errored_rollouts}/{limit})"
+        )
+        if self.consecutive_errored_rollouts >= limit:
+            raise RuntimeError(
+                f"{self.consecutive_errored_rollouts} consecutive terminal errored rollouts - "
+                "check environment failures and verifiers retry settings, or set "
+                "orchestrator.max_consecutive_errored_rollouts = None to disable this guard."
+            )
 
     async def _drain_token_export_metrics(self) -> None:
         """Token exports lag the orchestrator, so once the loop ends the trainer is

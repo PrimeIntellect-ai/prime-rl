@@ -172,6 +172,20 @@ def test_trainer_enable_token_export_cli_flag():
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
 
 
+def test_orchestrator_max_consecutive_errored_rollouts_default():
+    assert OrchestratorConfig.model_validate({}).max_consecutive_errored_rollouts == 10
+
+
+def test_orchestrator_max_consecutive_errored_rollouts_custom_value():
+    config = OrchestratorConfig.model_validate({"max_consecutive_errored_rollouts": 3})
+    assert config.max_consecutive_errored_rollouts == 3
+
+
+def test_orchestrator_max_consecutive_errored_rollouts_none_disables():
+    config = OrchestratorConfig.model_validate({"max_consecutive_errored_rollouts": None})
+    assert config.max_consecutive_errored_rollouts is None
+
+
 def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
     config = RLConfig.model_validate(
         {
