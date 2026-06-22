@@ -16,10 +16,11 @@ ulimit -n 32000 2>/dev/null || echo "Warning: Could not set ulimit (may need --u
 if [ -n "$PRIME_RL_REF" ]; then
     PRIME_RL_REPO="${PRIME_RL_REPO:-https://github.com/PrimeIntellect-ai/prime-rl.git}"
     # Slug + content hash for the cache dir name. Slug keeps the path
-    # human-readable; the hash prevents collisions between distinct refs
-    # that slugify to the same string (e.g. `feat/foo` vs `feat-foo`).
+    # human-readable; the hash (over repo + ref) prevents collisions
+    # between distinct refs that slugify the same way (e.g. `feat/foo`
+    # vs `feat-foo`) and between the same ref on different forks.
     REF_SLUG="${PRIME_RL_REF//\//-}"
-    REF_HASH=$(echo -n "$PRIME_RL_REF" | md5sum | cut -c1-12)
+    REF_HASH=$(echo -n "${PRIME_RL_REPO}|${PRIME_RL_REF}" | md5sum | cut -c1-12)
     DEST="/tmp/prime-rl-${REF_SLUG}-${REF_HASH}"
     # Rewrite ssh://git@github.com URLs to https so submodules listed
     # with SSH URLs (deps/verifiers, deps/renderers, deps/research-envs)
@@ -42,9 +43,11 @@ if [ -n "$PRIME_RL_REF" ]; then
     git -C "$DEST" submodule update --init --recursive
     if [ ! -d "$DEST/.venv" ]; then
         # Seed from the baked venv so the heavy wheels (flash-attn,
-        # mamba-ssm, …) don't have to be rebuilt. Hardlink-copy when /tmp
-        # and /app share a filesystem; full copy otherwise.
-        cp -al /app/.venv "$DEST/.venv" 2>/dev/null || cp -a /app/.venv "$DEST/.venv"
+        # mamba-ssm, …) don't have to be rebuilt. Plain `cp -a` (no
+        # hardlinks): a subsequent `uv sync` writes into this tree, and
+        # hardlinks would leak those writes back into /app/.venv when
+        # /tmp and /app share a filesystem.
+        cp -a /app/.venv "$DEST/.venv"
     fi
     echo "[prime-rl] running uv sync --inexact (this may take a few minutes on cold checkout)"
     ( cd "$DEST" && uv sync --inexact --no-dev )
