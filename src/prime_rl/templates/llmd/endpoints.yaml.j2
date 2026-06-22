@@ -1,0 +1,41 @@
+{# llm-d file-discovery endpoints: one entry per DP rank. Rendered (via include)
+   into the sbatch; the per-node address is the __LLMD_ADDR_<node>__ placeholder,
+   filled with each SLURM host's IPv4 inline in the sbatch (file-discovery rejects
+   hostnames). Node ordering matches the sbatch's host loop: prefill then decode.
+   The including sbatch sets ep_* via {% set %}. #}
+endpoints:
+{%- if ep_disaggregated %}
+{%- for node in range(ep_num_prefill) %}
+{%- for rank in range(ep_dp) %}
+  - name: prefill-{{ node }}-rank-{{ rank }}
+    address: __LLMD_ADDR_{{ node }}__
+    port: "{{ ep_prefill_port + rank }}"
+    namespace: default
+    labels:
+      llm-d.ai/pool: prime-rl
+      llm-d.ai/role: prefill
+{%- endfor %}
+{%- endfor %}
+{%- for node in range(ep_num_decode) %}
+{%- for rank in range(ep_dp) %}
+  - name: decode-{{ node }}-rank-{{ rank }}
+    address: __LLMD_ADDR_{{ ep_num_prefill + node }}__
+    port: "{{ ep_sidecar_port + rank }}"
+    namespace: default
+    labels:
+      llm-d.ai/pool: prime-rl
+      llm-d.ai/role: decode
+{%- endfor %}
+{%- endfor %}
+{%- else %}
+{%- for node in range(ep_num_nodes) %}
+{%- for rank in range(ep_dp) %}
+  - name: backend-{{ node }}-rank-{{ rank }}
+    address: __LLMD_ADDR_{{ node }}__
+    port: "{{ ep_backend_port + rank }}"
+    namespace: default
+    labels:
+      llm-d.ai/pool: prime-rl
+{%- endfor %}
+{%- endfor %}
+{%- endif %}

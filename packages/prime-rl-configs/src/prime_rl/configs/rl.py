@@ -439,6 +439,25 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_llmd_no_routed_experts(self):
+        """Reject routed-expert return with the llm-d router (breaks P/D, unverified for multi-node).
+
+        Runs after ``auto_setup_router_replay`` so it also catches the
+        ``trainer.enable_router_replay`` path, which sets the inference flag here
+        (after InferenceConfig's own validators, which therefore miss it).
+        """
+        if self.inference is not None and self.inference.enable_return_routed_experts:
+            router = getattr(self.inference.deployment, "router", None)
+            if router is not None and router.type == "llm-d":
+                raise ValueError(
+                    "The llm-d router backend does not support routed-expert return "
+                    "(inference.enable_return_routed_experts / trainer.enable_router_replay): it "
+                    "breaks P/D and is unverified for multi-node. Use router type 'vllm-router' "
+                    "for router-replay runs."
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_router_replay_without_kv_offload(self):
         if (
             self.trainer.enable_router_replay
