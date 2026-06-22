@@ -2,9 +2,9 @@
 
 The algorithm (``algo/``) consumes finalized rollouts and compiles them into
 per-token loss-component weights; the sampler owns where those rollouts come
-from. Today that is one question — which model generates them — and its
+from. Today that is one question — which source produces them — and its
 consequences (sampling logprobs, prefix-cache salting, and off-policy
-staleness are all liveness questions about the source). Future sampling
+staleness are source-specific questions). Future sampling
 strategies (replay buffers, branching) extend here, not the algorithm.
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from prime_rl.configs.algorithm import FrozenModelConfig, SamplingConfig
+from prime_rl.configs.algorithm import FrozenModelConfig, SamplingConfig, SourceKind, StaticDatasetConfig
 from prime_rl.orchestrator.algo import connect_frozen_pool
 
 if TYPE_CHECKING:
@@ -47,13 +47,19 @@ class Sampler:
             self.connected_pools.append(self.pool)
 
     @property
-    def samples_from_live_policy(self) -> bool:
-        return self.config.source == "policy"
+    def source_kind(self) -> SourceKind:
+        """Which kind of source generates this env's train rollouts."""
+        source = self.config.source
+        if source == "policy":
+            return "policy"
+        if isinstance(source, StaticDatasetConfig):
+            return "dataset"
+        return "frozen_model"
 
     def sampling_args(self, args: dict) -> dict:
         """Source-specific sampling-arg overrides. Sampling logprobs are only
         needed for importance ratios on policy-sampled tokens — frozen
         endpoints may reject the knob."""
-        if not self.samples_from_live_policy:
+        if self.source_kind != "policy":
             args.pop("logprobs", None)
         return args

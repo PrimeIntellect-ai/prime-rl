@@ -16,8 +16,8 @@
   drops groups past ``max_off_policy_steps``.
   Eval rollouts are measurements for the policy version they started with,
   so they are allowed to finish even if training advances. Train rollouts
-  sampled from a frozen model never age — their sampler doesn't change
-  with policy updates.
+  sampled from a frozen model or static dataset never age — their source
+  doesn't change with policy updates.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
   count-to-``group_size`` finalization still fires.
 """
@@ -34,7 +34,7 @@ from typing import Literal
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
 
-from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
+from prime_rl.orchestrator.envs import EvalEnvs, TrainEnv, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
@@ -174,7 +174,7 @@ class RolloutDispatcher:
         """``(pool, model_name, is_live)`` for *train* rollouts of this env —
         the env sampler's pool. (Eval always uses the policy.)"""
         sampler = self.train_envs.get(env_name).sampler
-        if sampler.samples_from_live_policy:
+        if sampler.source_kind == "policy":
             return sampler.pool, self.policy.model_name, True
         return sampler.pool, sampler.pool.model_name, False
 
@@ -281,9 +281,9 @@ class RolloutDispatcher:
         for meta in self.inflight.values():
             if meta.kind != "train":
                 continue
-            # Frozen-sourced rollouts never go stale — their sampler doesn't
-            # change with policy updates.
-            if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
+            # Non-policy sources never go stale — they don't change with
+            # policy updates.
+            if self.train_envs.get(meta.env_name).sampler.source_kind != "policy":
                 continue
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:
@@ -393,12 +393,40 @@ class RolloutDispatcher:
         )
 
     async def schedule_group_rollout(self, group_id: uuid.UUID, group: GroupState) -> bool:
-        """Dispatch one ``run_rollout`` / ``run_group`` task for this group.
+        """Dispatch rollout work for this group.
 
         Returns False only if we couldn't even schedule one rollout (no clients
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
+        env_collection = self.train_envs if group.kind == "train" else self.eval_envs
+        if env_collection is None:
+            return False
+        env = env_collection.get(group.env_name)
+
+        if group.kind == "train" and env.sampler.source_kind == "dataset":
+            return await self._schedule_static_replay_rollout(group_id, group, env)
+
+        return await self._schedule_model_sampled_rollout(group_id, group, env)
+
+    async def _schedule_static_replay_rollout(self, group_id: uuid.UUID, group: GroupState, env: TrainEnv) -> bool:
+        """Replay one train rollout locally from a static dataset row — no
+        client or permit gating beyond the inflight count."""
+        group.rollouts_to_schedule -= 1
+        await self.acquire(1)
+        task = asyncio.create_task(env.run_static_rollout(group.task_idx))
+        self.inflight[task] = InflightRollout(
+            kind=group.kind,
+            env_name=group.env_name,
+            group_id=group_id,
+            policy_version=group.policy_version_at_start,
+            rollout_count=1,
+            eval_step=group.eval_step,
+        )
+        return True
+
+    async def _schedule_model_sampled_rollout(self, group_id: uuid.UUID, group: GroupState, env) -> bool:
+        """Sample one rollout through a model-backed Verifiers env."""
         # Train rollouts use the env sampler's pool via the
         # renderer/token train client. Eval always evaluates the policy and
         # goes through the eval client (chat-completions) — the same path the
@@ -424,10 +452,6 @@ class RolloutDispatcher:
         else:
             client = group.pinned_client
 
-        env_collection = self.train_envs if group.kind == "train" else self.eval_envs
-        if env_collection is None:
-            return False
-        env = env_collection.get(group.env_name)
         # Frozen-sourced train rollouts hit a frozen pool; salting per policy
         # version would invalidate its prefix cache every weight update for
         # no reason.

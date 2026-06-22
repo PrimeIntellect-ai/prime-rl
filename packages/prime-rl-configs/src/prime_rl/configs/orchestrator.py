@@ -9,6 +9,7 @@ from renderers import AutoRendererConfig, RendererConfig
 from prime_rl.configs.algorithm import (
     AlgoConfig,
     GRPOAlgoConfig,
+    StaticDatasetConfig,
 )
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -729,6 +730,10 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.env:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
+            if env_cfg.algo is None:
+                raise RuntimeError("train env algorithm must be materialized before resolving batching")
+            if isinstance(env_cfg.algo.sampling.source, StaticDatasetConfig) and env_cfg.group_size != 1:
+                raise ValueError("dataset-sourced sft requires group_size=1 because dataset rows are fixed targets")
 
         return self
 

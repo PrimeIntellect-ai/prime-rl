@@ -24,16 +24,21 @@ import sys
 from collections.abc import Iterator, Sequence
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import verifiers.v1 as vf
 from verifiers.v1.serve import EnvClient
 
+from prime_rl.configs.algorithm import StaticDatasetConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.sampler import Sampler
+from prime_rl.orchestrator.static_sft import load_static_sft_rows, row_to_rollout
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from renderers.base import Renderer
 
 # Every wire trace validates into this type. WireTask (extra="allow") keeps the env's task
 # fields without importing the env package — the orchestrator never reads them typed (only
@@ -208,6 +213,41 @@ class TrainEnv(Env):
         self.sampler = sampler
         self.algorithm = algorithm
         self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
+        self._static_rows: list[dict] | None = None
+        self._static_renderer: Renderer | None = None
+
+    async def start(
+        self,
+        log_dir: Path,
+        log_level: str | None = None,
+        json_logging: bool = False,
+    ) -> None:
+        """A dataset-sourced env replays rows locally — no env server to spawn.
+        It builds its own renderer from the policy tokenizer (the same pattern
+        as opsd's hint renderer) to tokenize the stored messages."""
+        source = self.sampler.config.source
+        if not isinstance(source, StaticDatasetConfig):
+            await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
+            return
+        from renderers.base import create_renderer, load_tokenizer
+
+        self._static_rows = await asyncio.to_thread(load_static_sft_rows, source)
+        self._static_renderer = await asyncio.to_thread(
+            lambda: create_renderer(load_tokenizer(self.sampler.pool.model_name), self.sampler.renderer_config)
+        )
+        self.num_tasks = len(self._static_rows)
+        get_logger().info(f"Env {self.name} ready: static dataset {source.name} num_tasks={self.num_tasks}")
+
+    async def run_static_rollout(self, task_idx: int) -> Rollout:
+        """Replay one dataset row as a completed, tokenized rollout."""
+        source = self.sampler.config.source
+        assert isinstance(source, StaticDatasetConfig)
+        assert self._static_rows is not None and self._static_renderer is not None, (
+            f"Env {self.name} not started — call start() first."
+        )
+        return await asyncio.to_thread(
+            row_to_rollout, self._static_rows[task_idx], task_idx, source, self._static_renderer
+        )
 
 
 class EvalEnv(Env):
