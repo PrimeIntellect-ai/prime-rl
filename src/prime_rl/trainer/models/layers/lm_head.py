@@ -8,6 +8,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.vlm import get_final_logit_softcapping
 
 FUSED_CE_IGNORE_INDEX = -100
 
@@ -299,8 +300,8 @@ def inject_prime_lm_head(
 
     logger = get_logger()
 
-    # Check for Gemma-style softcapping - dispatch to specialized implementation
-    final_logit_softcapping = getattr(model.config, "final_logit_softcapping", None)
+    # Check for Gemma-style softcapping - dispatch to specialized implementation.
+    final_logit_softcapping = get_final_logit_softcapping(model.config)
     if final_logit_softcapping:
         if fused_cross_entropy == "quack":
             raise ValueError(

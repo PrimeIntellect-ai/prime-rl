@@ -167,6 +167,9 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     nodes_per_fsdp_group: int | None = None
     """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
+    orchestrator_on_inference: bool = False
+    """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
+
     @property
     def total_infer_nodes(self) -> int:
         return self.num_infer_nodes * self.num_infer_replicas
@@ -603,16 +606,20 @@ class RLConfig(BaseConfig):
     def auto_setup_inference_client(self):
         """Auto-configure orchestrator student client from the inference server config.
 
-        For all modes, sets dp_rank_count from inference DP size. For SFT mode,
-        also sets base_url - rl/opd rely on the ClientConfig default
-        (``["http://localhost:8000/v1"]``) which already matches the auto-launched
-        student vLLM at inference.server.port = 8000.
+        Direct single-node runs expose all local DP ranks behind one base URL,
+        so pin logical clients with ``X-data-parallel-rank``. Multi-node SLURM
+        runs expose a vllm-router URL instead; the router balances across
+        per-rank backend URLs and forwards request headers, so the orchestrator
+        must not inject a DP-rank header there.
         """
         if self.inference is None:
             return self
         client = self.orchestrator.student.client
         if "dp_rank_count" not in client.model_fields_set:
-            client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
+            if self.deployment.type == "multi_node":
+                client.dp_rank_count = 1
+            else:
+                client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
         if self.orchestrator.training_mode == "sft" and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
