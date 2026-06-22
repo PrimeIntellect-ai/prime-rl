@@ -19,7 +19,7 @@ we subclass it to add them back:
    ``SamplingParams.max_tokens`` defaults to ``16`` (a dataclass-level
    default that predates the OpenAI-compat layer). Every other vLLM
    endpoint masks this server-side via
-   ``vllm.entrypoints.utils.get_max_tokens`` (see e.g.
+   ``vllm.entrypoints.serve.utils.api_utils.get_max_tokens`` (see e.g.
    ``OpenAIServingChat`` at ``serving.py:284``); the disagg endpoint
    skips that path. Mirror it here so callers that omit ``max_tokens``
    don't silently truncate at 16. Drop once vLLM patches upstream.
@@ -47,7 +47,7 @@ from vllm.entrypoints.serve.disagg.protocol import (
     GenerateResponseChoice,
 )
 from vllm.entrypoints.serve.disagg.serving import ServingTokens
-from vllm.entrypoints.utils import get_max_tokens
+from vllm.entrypoints.serve.utils.api_utils import get_max_tokens
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
