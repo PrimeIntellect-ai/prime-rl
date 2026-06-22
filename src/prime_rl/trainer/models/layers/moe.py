@@ -445,10 +445,14 @@ class TokenChoiceTopKRouter(nn.Module):
         routed_experts: torch.Tensor,
         router_top_scores: torch.Tensor,
         router_selected_experts: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         replayed_scores = scores.gather(dim=1, index=routed_experts)
         threshold = router_top_scores.amin(dim=1, keepdim=True) * self.router_replay_score_threshold_ratio
         keep_replayed = replayed_scores >= threshold
+        # Count expert slots where the replayed (inference-selected) expert was rejected by
+        # the threshold and refilled from the trainer router's own top-k. Used for the
+        # router_replay_replace_rate metric (how often the extended replay deviates from pure replay).
+        num_replaced = (~keep_replayed).sum().to(torch.float32)
 
         selected_experts_indices = torch.where(keep_replayed, routed_experts, torch.full_like(routed_experts, -1))
         for candidate_slot in range(self.top_k):
@@ -463,11 +467,11 @@ class TokenChoiceTopKRouter(nn.Module):
             )
 
         top_scores = scores.gather(dim=1, index=selected_experts_indices)
-        return top_scores, selected_experts_indices
+        return top_scores, selected_experts_indices, num_replaced
 
     def forward(
         self, x: torch.Tensor, expert_bias: torch.Tensor | None = None, routed_experts: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs*slen, dim)``.
@@ -504,11 +508,14 @@ class TokenChoiceTopKRouter(nn.Module):
         # NOTE: The expert_bias is only used for routing. The gating value
         #       top_scores is still derived from the original scores.
 
+        # Count of replayed expert slots replaced by the trainer router's top-k (router replay
+        # plausibility filtering). Stays 0 when filtering is off or no experts are replayed.
+        replay_replaced_count = scores.new_zeros(())
         if routed_experts is not None:
             routed_experts = routed_experts.to(torch.long)
             if self.router_replay_score_threshold_ratio > 0:
                 router_top_scores, router_selected_experts = self._topk_from_scores(scores, expert_bias)
-                top_scores, selected_experts_indices = self._filter_replayed_experts(
+                top_scores, selected_experts_indices, replay_replaced_count = self._filter_replayed_experts(
                     scores,
                     routed_experts,
                     router_top_scores,
@@ -541,7 +548,7 @@ class TokenChoiceTopKRouter(nn.Module):
             max=self.num_experts,
         ).to(torch.long)
 
-        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
+        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum, replay_replaced_count
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
@@ -661,6 +668,11 @@ class MoE(nn.Module):
             persistent=False,
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
+        # Router replay accounting: replayed expert slots replaced by the trainer router's top-k
+        # (replay_replaced_sum) and total replayed slots seen (replay_slots_sum). Their ratio is the
+        # router_replay_replace_rate metric. Only accumulated when routed_experts are provided.
+        self.register_buffer("replay_replaced_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
+        self.register_buffer("replay_slots_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
@@ -780,6 +792,7 @@ class MoE(nn.Module):
             selected_experts_indices,
             num_tokens_per_expert,
             routing_confidence_sum,
+            replay_replaced_count,
         ) = self.router(x, self.expert_bias, routed_experts=routed_experts)
 
         # tokens_per_expert will be used to update the expert bias for load balancing.
@@ -790,6 +803,11 @@ class MoE(nn.Module):
         with torch.no_grad():
             self.tokens_per_expert.add_(num_tokens_per_expert)
             self.routing_confidence_sum.add_(routing_confidence_sum)
+            # Router replay replace-rate accounting. Numerator and denominator both rerun under
+            # full-block AC, so the ratio is unaffected. Only count when experts are replayed.
+            if routed_experts is not None:
+                self.replay_replaced_sum.add_(replay_replaced_count)
+                self.replay_slots_sum.add_(num_tokens_per_expert.sum().to(torch.float32))
 
         if self.ep_comm_backend == "deepep":
             routed_output = self._run_deepep_routed_experts(x, selected_experts_indices, top_scores)

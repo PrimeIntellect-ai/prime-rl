@@ -596,6 +596,8 @@ def train(config: TrainerConfig):
             step_message += f" | Max Vio {tensor_stats['max_vio/mean']:.4f}"
         if "routing_confidence/mean" in tensor_stats:
             step_message += f" | Routing Conf. {tensor_stats['routing_confidence/mean']:.4f}"
+        if "router_replay_replace_rate/mean" in tensor_stats:
+            step_message += f" | Replay Replace {tensor_stats['router_replay_replace_rate/mean']:.4f}"
         logger.success(step_message)
 
         # Log performance metrics

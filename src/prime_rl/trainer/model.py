@@ -418,6 +418,8 @@ def get_load_balance_stats(
 ) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
     per_layer_routing_confidence = []
+    per_layer_replay_replace_rate = []
+    replay_slots_total: torch.Tensor | None = None
     language_model = get_language_model(model)
     for transformer_block in language_model.layers:
         # This is necessary for models that have mixed dense layers
@@ -435,14 +437,30 @@ def get_load_balance_stats(
         routing_confidence = block_mlp.routing_confidence_sum / num_routed_tokens
         per_layer_routing_confidence.append(routing_confidence.detach())
 
+        # Fraction of replayed expert slots replaced by the trainer router's top-k (router replay
+        # plausibility filtering). 0 for the pure-replay baseline (threshold ratio 0).
+        if hasattr(block_mlp, "replay_slots_sum"):
+            replay_slots = block_mlp.replay_slots_sum
+            replace_rate = block_mlp.replay_replaced_sum / replay_slots.clamp(min=1.0)
+            per_layer_replay_replace_rate.append(replace_rate.detach())
+            replay_slots_total = replay_slots.detach() if replay_slots_total is None else replay_slots_total + replay_slots
+
         if reset_stats:
             block_mlp.tokens_per_expert.zero_()
             block_mlp.routing_confidence_sum.zero_()
+            if hasattr(block_mlp, "replay_slots_sum"):
+                block_mlp.replay_replaced_sum.zero_()
+                block_mlp.replay_slots_sum.zero_()
     if len(per_layer_max_vio) == 0:
-        return {"max_vio": None, "routing_confidence": None}
+        return {"max_vio": None, "routing_confidence": None, "router_replay_replace_rate": None}
+    # Only surface the replay metric when experts were actually replayed (router replay on).
+    router_replay_replace_rate = None
+    if per_layer_replay_replace_rate and replay_slots_total is not None and bool(replay_slots_total > 0):
+        router_replay_replace_rate = torch.stack(per_layer_replay_replace_rate)
     return {
         "max_vio": torch.stack(per_layer_max_vio),
         "routing_confidence": torch.stack(per_layer_routing_confidence),
+        "router_replay_replace_rate": router_replay_replace_rate,
     }
 
 
