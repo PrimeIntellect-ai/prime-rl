@@ -29,6 +29,7 @@ VLM_REGISTRY: dict[str, VLMModelInfo] = {
     "qwen3_5": VLMModelInfo(vision_encoder_attr="model.visual", language_model_attr="model.language_model"),
     "qwen3_5_moe": VLMModelInfo(vision_encoder_attr="model.visual", language_model_attr="model.language_model"),
     "qwen3_vl_moe": VLMModelInfo(vision_encoder_attr="model.visual", language_model_attr="model.language_model"),
+    "gemma4": VLMModelInfo(vision_encoder_attr="model.vision_tower", language_model_attr="model.language_model"),
 }
 
 # Text-only default
@@ -84,6 +85,16 @@ def get_language_model(model: nn.Module, override: str | None = None) -> nn.Modu
 def is_vlm_architecture(model_config: PretrainedConfig) -> bool:
     """Check if the model config belongs to a known VLM architecture."""
     return _get_model_info_from_config(model_config) is not None
+
+
+def get_final_logit_softcapping(model_config: PretrainedConfig) -> float | None:
+    """Read ``final_logit_softcapping`` from the text config.
+
+    For composite VLM configs (e.g. Gemma) the value lives under ``text_config``;
+    ``get_text_config()`` returns that for VLMs and the config itself for text-only
+    models, so a plain top-level ``getattr`` would miss it and silently drop softcapping.
+    """
+    return getattr(model_config.get_text_config(), "final_logit_softcapping", None)
 
 
 def get_layer_prefix(model_config: PretrainedConfig, override: str | None = None) -> str:
