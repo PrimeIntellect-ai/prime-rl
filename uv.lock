@@ -5479,6 +5479,7 @@ examples = [
     { name = "scratchpad-v1", editable = "deps/verifiers/environments/scratchpad_v1" },
     { name = "swebench-verified-v1", editable = "deps/verifiers/environments/swebench_verified_v1" },
     { name = "swelego-v1", editable = "deps/verifiers/environments/swelego_v1" },
+    { name = "tau2-bench-v1", editable = "deps/verifiers/environments/tau2_bench_v1" },
     { name = "terminal-bench-2-v1", editable = "deps/verifiers/environments/terminal_bench_2_v1" },
     { name = "wiki-search-v1", editable = "deps/verifiers/environments/wiki_search_v1" },
     { name = "wikispeedia-v1", editable = "deps/verifiers/environments/wikispeedia_v1" },
