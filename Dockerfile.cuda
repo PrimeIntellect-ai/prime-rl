@@ -97,6 +97,7 @@ RUN apt-get update && apt-get install -y \
     tmux \
     iperf \
     openssh-server \
+    git \
     git-lfs \
     gpg \
     sudo \
