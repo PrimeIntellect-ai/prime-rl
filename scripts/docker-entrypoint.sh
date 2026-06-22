@@ -49,8 +49,13 @@ if [ -n "$PRIME_RL_REF" ]; then
         # /tmp and /app share a filesystem.
         cp -a /app/.venv "$DEST/.venv"
     fi
-    echo "[prime-rl] running uv sync --inexact (this may take a few minutes on cold checkout)"
-    ( cd "$DEST" && uv sync --inexact --no-dev )
+    echo "[prime-rl] running uv sync --inexact --all-extras (this may take a few minutes on cold checkout)"
+    # --all-extras so env / gpt-oss / modelexpress / flash-attn extras
+    # get picked up if the override's pyproject changes them. --inexact
+    # keeps the seeded venv's pre-built wheels (flash-attn-3, mamba-ssm)
+    # in place; uv only rebuilds them if the override's lockfile pins
+    # different versions, which is rare for researcher branches.
+    ( cd "$DEST" && uv sync --inexact --no-dev --all-extras )
     export VIRTUAL_ENV="$DEST/.venv"
     export PATH="$DEST/.venv/bin:$PATH"
     cd "$DEST"
