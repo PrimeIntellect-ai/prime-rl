@@ -1,13 +1,13 @@
 max_steps = 10000000
-seq_len = 42000 # BUMP TO 131K IF you have 16 nodes for trainer
-output_dir = "/shared/outputs/blog" # FILL IN
+seq_len = 131072
+output_dir = "/shared/outputs/glm5-llmd" # FILL IN: point at your shared filesystem
 clean_output_dir = true
 
 [log]
 level = "debug"
 
 [wandb]
-project = "blog"
+project = "glm5-llmd"
 name = "base"
 
 [weight_broadcast]
@@ -18,7 +18,7 @@ quantize_in_weight_transfer = true
 
 [deployment]
 type = "multi_node"
-num_train_nodes = 12 # BUMP TO 16 IF 131K
+num_train_nodes = 16
 num_infer_nodes = 16
 gpus_per_node = 8
 num_infer_replicas = 1
@@ -47,8 +47,8 @@ decode_scorer_overrides = { "active-request-scorer" = 5.0, "kv-cache-utilization
 non_cached_tokens = 128 # if <128 tokens, skip prefill go to decode immediately
 
 [slurm]
-job_name = "blog"
-partition = "all" # FILL IN
+job_name = "glm5-llmd"
+partition = "all" # FILL IN: set to your cluster's partition
 
 [trainer]
 dist_timeout_seconds = 1800
@@ -59,7 +59,7 @@ name = "zai-org/GLM-5.1"
 impl = "custom"
 attn = "flash_attention_2" # ignored with GLM5
 fused_lm_head_token_chunk_size = 1024
-cp = 2 # do 4-8 if trainer 131K seq len
+cp = 4 # context parallel for the 131K seq len
 ep = 8
 optim_cpu_offload = true
 fp8 = true
@@ -73,7 +73,7 @@ freq = 1
 max_inflight_activations = 1
 
 [trainer.optim]
-type = "sign_sgd" # can do AdamW
+type = "adamw"
 lr = 1e-6
 weight_decay = 0.0
 
@@ -106,7 +106,7 @@ timeout_seconds = 21600
 summarize_at_tokens = [35000, 80000]
 poll_interval = 5
 rlm_ref = "907115a79b2a50d193863e7ea1f3550acb4386f0"
-labels = ["blog"]
+labels = ["glm5-llmd"]
 
 [orchestrator.advantage]
 type = "default"
