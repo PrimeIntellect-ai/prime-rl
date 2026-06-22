@@ -1,5 +1,9 @@
 import torch
 
+from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import (
+    GlmMoeDsaConfig,
+    indexer_types_to_topk_pattern,
+)
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import convert_tt_layer_to_vllm_kernel
 
 
@@ -66,3 +70,21 @@ def test_convert_tt_layer_to_vllm_kernel_with_fp8():
     assert out["model.layers.0.mlp.experts.w13_weight_scale_inv"].dtype == torch.float32
     assert out["model.layers.0.mlp.experts.w2_weight"].dtype == torch.float8_e4m3fn
     assert out["model.layers.0.mlp.experts.w2_weight_scale_inv"].dtype == torch.float32
+
+
+def test_indexer_types_to_topk_pattern():
+    assert indexer_types_to_topk_pattern(None) is None
+    # No "shared" entries means IndexShare is not in use (e.g. GLM-5).
+    assert indexer_types_to_topk_pattern(["full", "full", "full"]) is None
+    # GLM-5.2-style schedule: "full" -> "F", "shared" -> "S".
+    assert (
+        indexer_types_to_topk_pattern(["full", "full", "full", "shared", "shared", "shared", "full", "shared"])
+        == "FFFSSSFS"
+    )
+
+
+def test_head_dim_uses_qk_rope_head_dim():
+    # GLM-5.2 config.json sets head_dim to qk_nope_head_dim; the model must keep
+    # head_dim == qk_rope_head_dim so the rotary embedding dimension is correct.
+    cfg = GlmMoeDsaConfig(qk_rope_head_dim=64, qk_nope_head_dim=192, head_dim=192)
+    assert cfg.head_dim == cfg.qk_rope_head_dim == 64

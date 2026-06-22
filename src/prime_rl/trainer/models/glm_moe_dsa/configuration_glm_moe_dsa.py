@@ -14,6 +14,18 @@ def _index_cache_skip_topk(config, layer_idx: int) -> bool:
     return layer_idx % getattr(config, "index_topk_freq", 1) != 0
 
 
+def indexer_types_to_topk_pattern(indexer_types: list[str] | None) -> str | None:
+    """Translate a GLM-5.2 ``indexer_types`` schedule into an ``index_topk_pattern`` string.
+
+    ``"full"`` layers compute fresh DSA indices (``"F"``); ``"shared"`` layers reuse the
+    previous full layer's indices (``"S"``). Returns ``None`` when no layer shares, i.e.
+    IndexShare is not in use (e.g. GLM-5).
+    """
+    if not indexer_types or not any(t == "shared" for t in indexer_types):
+        return None
+    return "".join("S" if t == "shared" else "F" for t in indexer_types)
+
+
 class GlmMoeDsaConfig(PretrainedConfig):
     r"""
     Configuration class for the GLM-5 (GlmMoeDsa) model.
@@ -162,6 +174,7 @@ class GlmMoeDsaConfig(PretrainedConfig):
         use_index_cache=False,
         index_topk_freq=1,
         index_topk_pattern=None,
+        indexer_types=None,
         scoring_func="sigmoid",
         topk_method="noaux_tc",
         use_grouped_mm=True,
@@ -218,6 +231,7 @@ class GlmMoeDsaConfig(PretrainedConfig):
         self.use_index_cache = use_index_cache
         self.index_topk_freq = index_topk_freq
         self.index_topk_pattern = index_topk_pattern
+        self.indexer_types = indexer_types
         self.scoring_func = scoring_func
         self.topk_method = topk_method
         self.use_grouped_mm = use_grouped_mm
@@ -226,6 +240,10 @@ class GlmMoeDsaConfig(PretrainedConfig):
         if not self.use_grouped_mm:
             warnings.warn("not using grouped mm for moe is very slow, should only be used for debugging")
 
+        # head_dim is derived from qk_rope_head_dim (the RoPE slice). Some checkpoints (e.g. GLM-5.2)
+        # set head_dim=qk_nope_head_dim in config.json; drop it so PretrainedConfig.__init__ can't
+        # overwrite self.head_dim and break the rotary embedding dimension.
+        kwargs.pop("head_dim", None)
         super().__init__(
             pad_token_id=pad_token_id,
             tie_word_embeddings=tie_word_embeddings,
