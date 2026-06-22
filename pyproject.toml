@@ -117,8 +117,6 @@ envs = [
     "wordle-v1",
     "general-agent-v1",
     "swebench-verified-v1",
-    "tasksets",
-    "harnesses",
     "compact",
 ]
 disagg = [
@@ -214,8 +212,6 @@ prime-tunnel = false
 prime-evals = false
 verifiers = false
 renderers = false
-tasksets = false
-harnesses = false
 prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
@@ -226,9 +222,10 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
-# prime-rl depends on the one `verifiers` package (v0 + v1 + the legacy bridge). v0 envs
-# resolve from deps/{verifiers,research-environments}/environments; v1 tasksets (`-v1`),
-# harnesses, and the `compact` example all live under deps/verifiers/{environments,packages}.
+# prime-rl depends on the one `verifiers` package (v0 + v1 + the legacy bridge + the built-in v1
+# harnesses/tasksets, now bundled in verifiers.v1). v0 envs resolve from
+# deps/{verifiers,research-environments}/environments; v1 tasksets (`-v1`) and the `compact`
+# example live under deps/verifiers/environments.
 verifiers = { path = "deps/verifiers", editable = true }
 aime2024 = { path = "deps/research-environments/environments/aime2024", editable = true }
 aime2025 = { path = "deps/research-environments/environments/aime2025", editable = true }
@@ -238,7 +235,6 @@ color-codeword = { path = "deps/research-environments/environments/color_codewor
 deepdive = { path = "deps/research-environments/environments/deepdive", editable = true }
 general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
 gpqa = { path = "deps/research-environments/environments/gpqa", editable = true }
-harnesses = { path = "deps/verifiers/packages/harnesses", editable = true }
 hle = { path = "deps/research-environments/environments/hle", editable = true }
 ifeval = { path = "deps/research-environments/environments/ifeval", editable = true }
 livecodebench = { path = "deps/research-environments/environments/livecodebench", editable = true }
@@ -258,7 +254,6 @@ rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable =
 science-env = { path = "deps/research-environments/environments/science_env", editable = true }
 simpleqa-verified = { path = "deps/research-environments/environments/simpleqa_verified", editable = true }
 tau2-bench = { path = "deps/research-environments/environments/tau2_bench", editable = true }
-tasksets = { path = "deps/verifiers/packages/tasksets", editable = true }
 wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
 wordle = { path = "deps/verifiers/environments/wordle", editable = true }
 reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editable = true }
