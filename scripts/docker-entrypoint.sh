@@ -39,7 +39,10 @@ if [ -n "$PRIME_RL_REF" ]; then
     # Fast-forward to upstream tip when PRIME_RL_REF is a branch name.
     # Silently no-ops for SHAs/tags (no `origin/<sha>` exists).
     git -C "$DEST" reset --hard --quiet "origin/${PRIME_RL_REF}" 2>/dev/null || true
-    # Refresh submodules to whatever the parent commit pins.
+    # Refresh submodules to whatever the parent commit pins. `sync`
+    # picks up URL changes in .gitmodules between checkouts on cache
+    # hit; `update --init --recursive` applies the pinned SHAs.
+    git -C "$DEST" submodule sync --recursive
     git -C "$DEST" submodule update --init --recursive
     if [ ! -d "$DEST/.venv" ]; then
         # Seed from the baked venv so the heavy wheels (flash-attn,
