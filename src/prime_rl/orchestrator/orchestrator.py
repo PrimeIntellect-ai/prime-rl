@@ -76,7 +76,7 @@ from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
+from prime_rl.utils.pathing import get_rollout_dir, get_step_path
 from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
     clean_exit,
@@ -267,22 +267,14 @@ class Orchestrator:
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
         )
-        await self.train_envs.start(
-            log_dir=get_log_dir(config.output_dir.parent) / "envs" / "train",
-            log_level=config.log.vf_level,
-            json_logging=config.log.json_logging,
-        )
+        await self.train_envs.start()
         get_logger().success("Train environment(s) ready")
 
         if config.eval is not None:
             get_logger().info("Loading eval environment(s)")
             self.eval_envs = EvalEnvs(config.eval.env)
             get_logger().debug(f"Loaded {len(self.eval_envs)} eval environment(s) ({', '.join(self.eval_envs.names)})")
-            await self.eval_envs.start(
-                log_dir=get_log_dir(config.output_dir.parent) / "envs" / "eval",
-                log_level=config.log.vf_level,
-                json_logging=config.log.json_logging,
-            )
+            await self.eval_envs.start()
             get_logger().success("Eval environment(s) ready")
 
         if config.ckpt is not None and config.ckpt.resume_step is not None and self.ckpt_manager is not None:
@@ -863,10 +855,6 @@ class Orchestrator:
                 await self.student_inference.stop()
             if self.teacher_inference is not None:
                 await self.teacher_inference.stop()
-            if self.train_envs is not None:
-                self.train_envs.shutdown()
-            if self.eval_envs is not None:
-                self.eval_envs.shutdown()
             if self.usage_reporter is not None:
                 self.usage_reporter.close()
 

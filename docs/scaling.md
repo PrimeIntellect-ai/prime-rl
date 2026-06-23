@@ -264,8 +264,11 @@ uv run sft ... --data.type fake --data.length variable --bench   # variable-leng
 # RL trainer alone (no inference involved)
 uv run trainer @ train.toml --data.fake --bench
 
-# Inference alone — start the server normally, then bench the orchestrator
+# Inference + env server(s) alone — start them, then bench the orchestrator.
+# The standalone orchestrator attaches to env servers (it never spawns them), so
+# launch an `env-server` per env and set its `address` on the matching env in orch.toml.
 uv run inference @ infer.toml
+uv run env-server @ env.toml          # binds tcp://127.0.0.1:5000
 uv run orchestrator @ orch.toml --bench
 
 # Full RL stack (trainer with fake data, inference with real data from orchestrator)
