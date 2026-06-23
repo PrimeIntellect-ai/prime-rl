@@ -52,8 +52,11 @@ class GibberishFilter:
     def check(self, rollout: Rollout) -> FilterResult:
         global_idx = 0
         for node in rollout.nodes:
-            completion = [t for t, m in zip(node.token_ids, node.mask) if m]
-            for token_id, logprob in zip(completion, node.logprobs):
+            # token_ids / logprobs / mask are per-token aligned; check only the
+            # sampled completion tokens, pairing each with its own logprob.
+            for token_id, logprob, sampled in zip(node.token_ids, node.logprobs, node.mask):
+                if not sampled:
+                    continue
                 if token_id > self.token_id_threshold and logprob < self.logprob_threshold:
                     return FilterResult(detected=True, detection_index=global_idx)
                 global_idx += 1
@@ -81,7 +84,11 @@ class RepetitionFilter:
         consecutive = 0
         global_idx = 0
         for node in rollout.nodes:
-            for logprob in node.logprobs:
+            # Streak only over sampled completion tokens — context/prompt tokens
+            # (mask=False) are not model-generated and must not feed the loop count.
+            for logprob, sampled in zip(node.logprobs, node.mask):
+                if not sampled:
+                    continue
                 if logprob > self.logprob_threshold:
                     consecutive += 1
                 else:
