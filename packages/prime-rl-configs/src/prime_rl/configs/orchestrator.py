@@ -172,10 +172,12 @@ class EnvConfig(vf.EnvServerConfig):
     @model_validator(mode="before")
     @classmethod
     def _migrate_num_workers(cls, data):
-        """Back-compat: the removed ``num_workers`` maps onto ``pool`` — an int becomes a
-        fixed ``static`` pool, ``"auto"`` falls through to the default ``elastic`` pool. An
-        explicit ``pool`` always wins."""
-        if isinstance(data, dict) and "num_workers" in data:
+        """Back-compat for legacy env config spellings."""
+        if not isinstance(data, dict):
+            return data
+        if isinstance(data.get("timeout"), int | float):
+            data["timeout"] = {"rollout": data["timeout"]}
+        if "num_workers" in data:
             num_workers = data.pop("num_workers")
             if "pool" not in data and num_workers != "auto":
                 data["pool"] = {"type": "static", "num_workers": num_workers}
