@@ -1,3 +1,6 @@
+[submodule "verifiers"]
+	path = deps/verifiers
+	url = git@github.com:PrimeIntellect-ai/verifiers.git
 [submodule "renderers"]
 	path = deps/renderers
 	url = git@github.com:PrimeIntellect-ai/renderers.git
@@ -7,11 +10,3 @@
 [submodule "pydantic-config"]
 	path = deps/pydantic-config
 	url = https://github.com/PrimeIntellect-ai/pydantic-config
-[submodule "deps/verifiers"]
-	path = deps/verifiers
-	url = git@github.com:PrimeIntellect-ai/verifiers.git
-	branch = main
-[submodule "deps/prime"]
-	path = deps/prime
-	url = git@github.com:PrimeIntellect-ai/prime.git
-	branch = feat/nano-as-v1
