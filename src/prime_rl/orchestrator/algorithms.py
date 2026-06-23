@@ -4,18 +4,8 @@ import asyncio
 
 import verifiers.v1 as vf
 
-from prime_rl.configs.orchestrator import (
-    EchoAlgorithmConfig,
-    GRPOConfig,
-    MaxRLConfig,
-    OPDAlgorithmConfig,
-    OPSDAlgorithmConfig,
-    RLAlgorithmConfig,
-    SFTAlgorithmConfig,
-)
 
-
-class GRPO(vf.Algorithm[GRPOConfig]):
+class GRPO(vf.Algorithm[vf.AlgorithmConfig]):
     async def advantage(self, traces: list[vf.Trace]) -> list[vf.Trace]:
         rewards = [trace.reward for trace in traces]
         baseline = sum(rewards) / len(rewards) if rewards else 0.0
@@ -28,7 +18,7 @@ class GRPO(vf.Algorithm[GRPOConfig]):
         return traces
 
 
-class MaxRL(vf.Algorithm[MaxRLConfig]):
+class MaxRL(vf.Algorithm[vf.AlgorithmConfig]):
     async def advantage(self, traces: list[vf.Trace]) -> list[vf.Trace]:
         rewards = [trace.reward for trace in traces]
         mean = sum(rewards) / len(rewards) if rewards else 0.0
@@ -41,7 +31,7 @@ class MaxRL(vf.Algorithm[MaxRLConfig]):
         return traces
 
 
-class RL(vf.Algorithm[RLAlgorithmConfig]):
+class RL(vf.Algorithm[vf.AlgorithmConfig]):
     async def advantage(self, traces: list[vf.Trace]) -> list[vf.Trace]:
         for trace in traces:
             for branch in trace.branches:
@@ -51,7 +41,7 @@ class RL(vf.Algorithm[RLAlgorithmConfig]):
         return traces
 
 
-class SFT(vf.Algorithm[SFTAlgorithmConfig]):
+class SFT(vf.Algorithm[vf.AlgorithmConfig]):
     def loss(self) -> str:
         return "ce"
 
@@ -64,7 +54,7 @@ class SFT(vf.Algorithm[SFTAlgorithmConfig]):
         return traces
 
 
-class Echo(vf.Algorithm[EchoAlgorithmConfig]):
+class Echo(vf.Algorithm[vf.AlgorithmConfig]):
     def loss(self) -> str:
         return "ce"
 
@@ -84,17 +74,24 @@ class Echo(vf.Algorithm[EchoAlgorithmConfig]):
         return traces
 
 
-class OPD(vf.Algorithm[OPDAlgorithmConfig]):
-    def __init__(self, config: OPDAlgorithmConfig) -> None:
+class OPD(vf.Algorithm[vf.AlgorithmConfig]):
+    def __init__(self, config: vf.AlgorithmConfig) -> None:
         super().__init__(config)
         self.runtime: vf.ModelRuntime | None = None
 
     async def setup(self, models: dict[str, vf.ModelRuntime]) -> None:
-        runtime = models.get(self.config.model)
+        model = "reference"
+        if self.config.model_extra is not None:
+            value = self.config.model_extra.get("model")
+            if isinstance(value, str):
+                model = value
+            elif value is not None:
+                raise ValueError("opd model must be a string model key")
+        runtime = models.get(model)
         if runtime is None:
-            raise ValueError(f"opd requires models[{self.config.model!r}]")
+            raise ValueError(f"opd requires models[{model!r}]")
         if not isinstance(runtime.client, vf.TrainClient):
-            raise ValueError(f"opd requires models[{self.config.model!r}].client to be token-capable")
+            raise ValueError(f"opd requires models[{model!r}].client to be token-capable")
         self.runtime = runtime
 
     async def advantage(self, traces: list[vf.Trace]) -> list[vf.Trace]:
@@ -123,19 +120,26 @@ class OPD(vf.Algorithm[OPDAlgorithmConfig]):
         return traces
 
 
-class OPSD(vf.Algorithm[OPSDAlgorithmConfig]):
-    def __init__(self, config: OPSDAlgorithmConfig) -> None:
+class OPSD(vf.Algorithm[vf.AlgorithmConfig]):
+    def __init__(self, config: vf.AlgorithmConfig) -> None:
         super().__init__(config)
         self.runtime: vf.ModelRuntime | None = None
 
     async def setup(self, models: dict[str, vf.ModelRuntime]) -> None:
-        runtime = models.get(self.config.model)
+        model = "reference"
+        if self.config.model_extra is not None:
+            value = self.config.model_extra.get("model")
+            if isinstance(value, str):
+                model = value
+            elif value is not None:
+                raise ValueError("opsd model must be a string model key")
+        runtime = models.get(model)
         if runtime is None:
-            raise ValueError(f"opsd requires models[{self.config.model!r}]")
+            raise ValueError(f"opsd requires models[{model!r}]")
         if not isinstance(runtime.client, vf.TrainClient):
-            raise ValueError(f"opsd requires models[{self.config.model!r}].client to be token-capable")
+            raise ValueError(f"opsd requires models[{model!r}].client to be token-capable")
         if runtime.renderer is None:
-            raise ValueError(f"opsd requires models[{self.config.model!r}].renderer")
+            raise ValueError(f"opsd requires models[{model!r}].renderer")
         self.runtime = runtime
 
     async def advantage(self, traces: list[vf.Trace]) -> list[vf.Trace]:

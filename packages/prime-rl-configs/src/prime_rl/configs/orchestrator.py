@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import AliasChoices, ConfigDict, Field, SerializeAsAny, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
@@ -142,73 +142,18 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
-class AlgorithmConfig(BaseConfig):
-    """Algorithm config reference carried by prime-rl without requiring the
-    sibling verifiers algorithm extension in the slim config package."""
-
-    model_config = ConfigDict(extra="allow")
-    id: str
-
-
-class BuiltinAlgorithmConfig(AlgorithmConfig):
-    model_config = ConfigDict(extra="forbid")
-
-
-class GRPOConfig(BuiltinAlgorithmConfig):
-    id: Literal["grpo"] = "grpo"
-
-
-class MaxRLConfig(BuiltinAlgorithmConfig):
-    id: Literal["max_rl"] = "max_rl"
-
-
-class RLAlgorithmConfig(BuiltinAlgorithmConfig):
-    id: Literal["rl"] = "rl"
-
-
-class SFTAlgorithmConfig(BuiltinAlgorithmConfig):
-    id: Literal["sft"] = "sft"
-
-
-class EchoAlgorithmConfig(BuiltinAlgorithmConfig):
-    id: Literal["echo"] = "echo"
-
-
-class OPDAlgorithmConfig(BuiltinAlgorithmConfig):
-    id: Literal["opd"] = "opd"
-    model: str = "reference"
-
-
-class OPSDAlgorithmConfig(BuiltinAlgorithmConfig):
-    id: Literal["opsd"] = "opsd"
-    model: str = "reference"
-
-
-BUILTIN_ALGORITHM_CONFIGS: dict[str, type[AlgorithmConfig]] = {
-    "grpo": GRPOConfig,
-    "max_rl": MaxRLConfig,
-    "rl": RLAlgorithmConfig,
-    "sft": SFTAlgorithmConfig,
-    "echo": EchoAlgorithmConfig,
-    "opd": OPDAlgorithmConfig,
-    "opsd": OPSDAlgorithmConfig,
-}
-
-
-def resolve_algorithm_config(data: object) -> AlgorithmConfig:
-    if isinstance(data, AlgorithmConfig):
-        raw = data.model_dump()
+def resolve_algorithm_config(data: object) -> vf.AlgorithmConfig:
+    if isinstance(data, vf.AlgorithmConfig):
+        config = data
     elif isinstance(data, str):
-        raw = {"id": data}
+        config = vf.AlgorithmConfig(id=data)
     elif isinstance(data, dict):
-        raw = data
+        config = vf.AlgorithmConfig.model_validate(data)
     else:
         raise TypeError(f"Algorithm config must be a string or table, got {type(data).__name__}")
-    ident = raw.get("id")
-    if not isinstance(ident, str) or not ident:
+    if not config.id:
         raise ValueError("Algorithm config must set non-empty `id`")
-    config_type = BUILTIN_ALGORITHM_CONFIGS.get(ident, AlgorithmConfig)
-    return config_type.model_validate(raw)
+    return config
 
 
 class EnvConfig(vf.EnvServerConfig):
@@ -277,7 +222,7 @@ class TrainEnvConfig(EnvConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Rollouts generated per example. Inherits from ``orchestrator.group_size`` when unset."""
 
-    algorithms: list[SerializeAsAny[AlgorithmConfig]] | None = None
+    algorithms: list[vf.AlgorithmConfig] | None = None
     """Algorithms for this env. Builtin ids run in prime-rl; env-owned ids run inside the env server.
     Inherits from ``orchestrator.algorithms`` when unset."""
 
@@ -530,7 +475,7 @@ class OrchestratorConfig(BaseConfig):
     """Model key used for train rollouts. ``"policy"`` means ``orchestrator.model``; any other value
     must be present in ``orchestrator.models`` and token-capable."""
 
-    algorithms: list[SerializeAsAny[AlgorithmConfig]] = Field(default_factory=lambda: [GRPOConfig()])
+    algorithms: list[vf.AlgorithmConfig] = Field(default_factory=lambda: [vf.AlgorithmConfig(id="grpo")])
     """Default algorithms for train envs. Builtin ids run in prime-rl; env-owned ids run inside the env server."""
 
     models: dict[str, HostedModelConfig] = Field(default_factory=dict)

@@ -29,7 +29,7 @@ from typing import Generic, TypeVar
 import verifiers.v1 as vf
 from verifiers.v1.serve import EnvClient, ModelRuntimeConfig, TraceAdvantages, env_config_data
 
-from prime_rl.configs.orchestrator import AlgorithmConfig, EnvConfig, EvalEnvConfig, TrainEnvConfig
+from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
 
@@ -189,7 +189,7 @@ class Env:
 
     async def run_algorithms(
         self,
-        algorithms: list[AlgorithmConfig],
+        algorithms: list[vf.AlgorithmConfig],
         traces: list[Rollout],
         models: dict[str, ModelRuntimeConfig],
     ) -> list[TraceAdvantages]:
