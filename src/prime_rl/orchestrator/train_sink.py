@@ -59,6 +59,10 @@ class TrainSink:
         # earlier group is still in flight
         self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
         self.pending_batch: list[Rollout] = []
+        # Running token total of ``pending_batch`` (token-batched runs), kept in
+        # sync on append/pop so the readiness check never re-walks the uncached
+        # ``Trace.total_tokens`` graph property per arrival.
+        self.pending_tokens: int = 0
 
         # Reset by the orchestrator after each ship via ``reset_pre_filter_stats``
         self.pre_filter_seen = 0
@@ -97,8 +101,7 @@ class TrainSink:
         if self.batch_size is not None:
             return len(self.pending_batch), self.batch_size, "rollouts"
         assert self.token_batch_size is not None
-        tokens = sum(r.total_tokens for r in self.pending_batch)
-        return tokens, self.token_batch_size, "tokens"
+        return self.pending_tokens, self.token_batch_size, "tokens"
 
     def buffered_count(self) -> int:
         """Rollouts that have arrived but sit in not-yet-complete groups
@@ -127,7 +130,7 @@ class TrainSink:
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
-            else sum(r.total_tokens for r in self.pending_batch) >= (self.token_batch_size or 0)
+            else self.pending_tokens >= (self.token_batch_size or 0)
         )
         if ready:
             return self.process_batch()
@@ -209,6 +212,8 @@ class TrainSink:
             r.filter_results = {}
             r.is_filtered = False
             self.pending_batch.append(r)
+            if self.token_batch_size is not None:
+                self.pending_tokens += r.total_tokens
 
         # Per-group summary. One line per finalized group; per-filter
         # detection breakdown lives at debug level in ``apply_filters``
@@ -241,6 +246,7 @@ class TrainSink:
                     break
             cohort = self.pending_batch[:cut]
             self.pending_batch = self.pending_batch[cut:]
+            self.pending_tokens -= running
 
         if self.post_filters:
             apply_filters(self.post_filters, cohort)

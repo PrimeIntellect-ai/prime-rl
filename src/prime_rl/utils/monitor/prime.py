@@ -368,7 +368,7 @@ class PrimeMonitor(Monitor):
                     "answer": "",
                     "env_name": rollout.env_name,
                     "task": rollout.task.model_dump_json(),
-                    "info": "",
+                    "info": json.dumps(rollout.info),
                     "reward": rollout.reward,
                     "advantage": rollout.advantage,
                     "metrics": json.dumps(rollout.metrics),

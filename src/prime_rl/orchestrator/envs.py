@@ -177,7 +177,7 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return ROLLOUT_TYPE.model_validate(wire.model_dump())
+        return ROLLOUT_TYPE.model_construct(**dict(wire))
 
     async def run_group(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
@@ -190,7 +190,7 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return [ROLLOUT_TYPE.model_validate(wire.model_dump()) for wire in wires]
+        return [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in wires]
 
     def shutdown(self) -> None:
         if self._env_server_process is None:
