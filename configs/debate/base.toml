@@ -14,7 +14,9 @@ training_mode = "rl"
 target_lag = 3
 batch_size = 512
 group_size = 16
-max_inflight_rollouts = 1424
+# Coupled with inference.max_num_seqs (256): ~192/replica over 12 replicas. Raising the seq cap
+# without the permits is a no-op (1424/12≈119 already ≈ the old 128 cap).
+max_inflight_rollouts = 2300
 max_off_policy_steps = 8
 dump_trajectory = false
 dump_failed_train_rollouts = true

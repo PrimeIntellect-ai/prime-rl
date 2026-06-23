@@ -63,7 +63,9 @@ dp = 1
 [inference.vllm_extra]
 moe_backend = "triton"
 gdn_prefill_backend = "triton"
-max_num_seqs = 128
+# Raised 128->256: engine rode the 128 cap (Running p95=126), decode still climbing, KV p95 ~59%.
+# Pair with orchestrator.max_inflight_rollouts=2300 (raising one without the other buys nothing).
+max_num_seqs = 256
 max_num_batched_tokens = 131072
 performance_mode = "throughput"
 generation_config = "vllm"

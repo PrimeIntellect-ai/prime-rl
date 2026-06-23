@@ -32,7 +32,9 @@ training_mode = "rl"
 target_lag = 3
 batch_size = 512
 group_size = 16
-max_inflight_rollouts = 1424
+# Coupled with inference.max_num_seqs (256): ~192/replica over 12 replicas. Raising the seq cap
+# without the permits is a no-op (1424/12≈119 already ≈ the old 128 cap).
+max_inflight_rollouts = 2300
 max_off_policy_steps = 8
 dump_trajectory = false
 dump_failed_train_rollouts = true
@@ -127,7 +129,9 @@ dp = 1
 [inference.vllm_extra]
 moe_backend = "triton"
 gdn_prefill_backend = "triton"
-max_num_seqs = 128
+# Raised 128->256: engine rode the 128 cap (Running p95=126), decode still climbing, KV p95 ~59%.
+# Pair with orchestrator.max_inflight_rollouts=2300 (raising one without the other buys nothing).
+max_num_seqs = 256
 max_num_batched_tokens = 131072
 performance_mode = "throughput"
 generation_config = "vllm"
