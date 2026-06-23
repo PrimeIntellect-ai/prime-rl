@@ -1,9 +1,11 @@
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
-from prime_rl.trainer.batch import prepare_batch, prepare_sample
+from prime_rl.trainer.batch import pad_micro_batch, prepare_batch, prepare_sample
 from prime_rl.trainer.utils import build_bin_cost
-from prime_rl.transport.types import EncodedTensor, RoutedExperts, TrainingSample
+from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
 
 
 def _routed_experts(data, dtype=np.uint8):
@@ -34,6 +36,158 @@ def make_training_example():
         )
 
     return _make_training_example
+
+
+def make_sized_training_example(length: int, env_name: str = "test-env") -> TrainingSample:
+    assert length >= 1
+    prompt_len = length - 1
+    return TrainingSample(
+        token_ids=[1] * prompt_len + [2],
+        mask=[False] * prompt_len + [True],
+        logprobs=[0.0] * prompt_len + [-0.1],
+        temperatures=[1.0] * length,
+        advantage=1.0,
+        env_name=env_name,
+    )
+
+
+def _flatten_batches(batches_per_gpu):
+    return [batch for worker_batches in batches_per_gpu for batch in worker_batches]
+
+
+def _worker_token_sums(batches_per_gpu) -> list[int]:
+    return [sum(len(batch.input_ids) for batch in worker_batches) for worker_batches in batches_per_gpu]
+
+
+def _has_loss_tokens(batch: MicroBatch) -> bool:
+    return any(batch.loss_mask)
+
+
+def make_flops_config():
+    return SimpleNamespace(
+        hidden_size=16,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        vocab_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        head_dim=8,
+    )
+
+
+def test_randomized_packing_invariants():
+    rng = np.random.default_rng(0)
+
+    for case_idx in range(80):
+        seq_len = int(rng.choice([8, 16, 32, 64]))
+        num_train_workers = int(rng.choice([1, 2, 4, 8]))
+        num_samples = int(rng.integers(1, 65))
+        lengths = [int(x) for x in rng.integers(1, seq_len + 1, size=num_samples)]
+        examples = [make_sized_training_example(length, env_name=f"env-{case_idx}") for length in lengths]
+        bin_cost = build_bin_cost(make_flops_config() if case_idx % 2 == 0 else None)
+
+        batches_per_gpu = prepare_batch(
+            rollouts=examples,
+            seq_len=seq_len,
+            num_train_workers=num_train_workers,
+            idxs=[0] * len(examples),
+            num_loras=1,
+            bin_cost=bin_cost,
+        )
+        flat_batches = _flatten_batches(batches_per_gpu)
+        real_batches = [batch for batch in flat_batches if _has_loss_tokens(batch)]
+        dummy_batches = [batch for batch in flat_batches if not _has_loss_tokens(batch)]
+
+        assert all(len(worker_batches) == len(batches_per_gpu[0]) for worker_batches in batches_per_gpu)
+        assert sorted(length for batch in real_batches for length in batch.sequence_lengths) == sorted(lengths)
+
+        for batch in flat_batches:
+            assert len(batch.input_ids) <= seq_len
+            assert sum(batch.sequence_lengths) == len(batch.input_ids)
+            assert sum(batch.lora_num_tokens) == len(batch.input_ids)
+            assert len(batch.env_names) == len(batch.input_ids)
+
+        for batch in dummy_batches:
+            assert not any(batch.loss_mask)
+            assert not any(batch.advantages)
+
+
+def test_pad_micro_batch_preserves_explicit_sequence_lengths():
+    micro_batch = prepare_sample(make_sized_training_example(4), seq_len=16)
+
+    padded = pad_micro_batch(micro_batch, pad_to_multiple_of=6)
+
+    assert len(padded.input_ids) == 6
+    assert padded.sequence_lengths == [4, 2]
+    assert sum(padded.sequence_lengths) == len(padded.input_ids)
+    assert padded.loss_mask[-2:] == [False, False]
+
+
+def test_split_to_align_avoids_dummy_micro_batches():
+    examples = [make_sized_training_example(length) for length in [6, 6, 5, 5, 4, 4]]
+
+    batches_per_gpu = prepare_batch(
+        rollouts=examples,
+        seq_len=12,
+        num_train_workers=4,
+        idxs=[0] * len(examples),
+        num_loras=1,
+        bin_cost=build_bin_cost(None),
+    )
+
+    assert all(_has_loss_tokens(batch) for batch in _flatten_batches(batches_per_gpu))
+    assert len(_flatten_batches(batches_per_gpu)) == 4
+
+
+def test_pack_first_then_balance_distributes_micro_batches_by_tokens_without_model_config():
+    examples = [make_sized_training_example(length) for length in [100, 90, 80, 70]]
+
+    balanced = prepare_batch(
+        rollouts=examples,
+        seq_len=100,
+        num_train_workers=2,
+        idxs=[0] * len(examples),
+        num_loras=1,
+        bin_cost=build_bin_cost(None),
+    )
+
+    assert _worker_token_sums(balanced) == [170, 170]
+
+
+def test_flop_aware_balancing_pairs_long_and_short_sequence_workloads():
+    examples = [make_sized_training_example(length) for length in [32, 32, 16, 16, 16, 16]]
+    bin_cost = build_bin_cost(make_flops_config())
+
+    balanced = prepare_batch(
+        rollouts=examples,
+        seq_len=32,
+        num_train_workers=2,
+        idxs=[0] * len(examples),
+        num_loras=1,
+        bin_cost=bin_cost,
+    )
+
+    assert sorted([sorted(batch.sequence_lengths) for batch in balanced[0]]) == [[16, 16], [32]]
+    assert sorted([sorted(batch.sequence_lengths) for batch in balanced[1]]) == [[16, 16], [32]]
+    assert bin_cost([32]) > bin_cost([16, 16])
+
+
+def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
+    examples = [make_sized_training_example(length) for length in [20, 18, 9, 9, 8, 8, 8]]
+
+    batches_per_gpu = prepare_batch(
+        rollouts=examples,
+        seq_len=64,
+        num_train_workers=4,
+        idxs=[0] * len(examples),
+        num_loras=1,
+        bin_cost=build_bin_cost(make_flops_config()),
+    )
+
+    real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
+    assert len(real_batches) == 4
+    assert sorted(length for batch in real_batches for length in batch.sequence_lengths) == [8, 8, 8, 9, 9, 18, 20]
+    assert sum(len(batch.sequence_lengths) > 1 for batch in real_batches) == 3
 
 
 def test_training_sample_requires_env_name():
