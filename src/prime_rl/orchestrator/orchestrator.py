@@ -21,8 +21,6 @@ in ``setup()`` and drives them from ``main_loop()``.
 from __future__ import annotations
 
 import asyncio
-import ctypes
-import gc
 import logging
 import os
 import time
@@ -80,6 +78,7 @@ from prime_rl.orchestrator.utils import (
     save_rollouts,
     set_default_executor,
     setup_student_inference_pool,
+    trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
@@ -121,19 +120,6 @@ TARGET_LAG = 1
 # token-export steps it hadn't flushed yet, and how often to poll for them.
 TOKEN_EXPORT_DRAIN_TIMEOUT_S = 300.0
 TOKEN_EXPORT_DRAIN_POLL_S = 2.0
-
-
-def _release_unused_memory() -> None:
-    """Return freed heap pages to the OS. The orchestrator's per-step churn
-    (rollout buffers, b64-decoded routed_experts, batch dict materialization)
-    fragments glibc arenas; without this the freed pages are never reclaimed
-    mid-run and RSS ratchets to a host-OOM. Call off the event loop via
-    ``asyncio.to_thread`` — ``malloc_trim`` walks every arena and can block."""
-    gc.collect()
-    try:
-        ctypes.CDLL("libc.so.6").malloc_trim(0)
-    except (OSError, AttributeError) as e:
-        get_logger().debug(f"malloc_trim(0) unavailable: {e}")
 
 
 # Host-RAM attribution gauges, sampled on the pipeline tick. With
@@ -320,7 +306,7 @@ class Orchestrator:
         post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
 
         get_logger().info("Loading training environments")
-        self.train_envs = TrainEnvs(config.train.env)
+        self.train_envs = TrainEnvs(config.train.env, max_seq_len=config.seq_len)
         if config.training_mode == "sft":
             for env in self.train_envs:
                 env.sampling_args.pop("logprobs", None)
@@ -584,7 +570,7 @@ class Orchestrator:
                 get_logger().success("Orchestrator finished.")
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced).")
-            await asyncio.to_thread(_release_unused_memory)
+            await asyncio.to_thread(trim_process_memory)
 
     async def main_loop(self) -> None:
         """Consume ``FinishedRollout``\\ s from the dispatcher and route them
@@ -645,7 +631,7 @@ class Orchestrator:
                 # orchestrator lacked (shutdown-only trim let RSS ratchet to OOM).
                 del train_batch, eval_batch, rollout
                 if should_release_memory:
-                    await asyncio.to_thread(_release_unused_memory)
+                    await asyncio.to_thread(trim_process_memory)
 
     def check_pipeline_health(self) -> None:
         """Crash instead of stalling silently. The dispatcher and watcher run
@@ -1145,6 +1131,10 @@ class Orchestrator:
             if not was_set:
                 get_logger().info("Resuming dispatcher")
             gate.set()
+
+    async def on_version_pending(self, step: int) -> None:
+        """No-op: the dispatch gate is re-evaluated in ``on_new_version`` once
+        the new policy version is live."""
 
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;

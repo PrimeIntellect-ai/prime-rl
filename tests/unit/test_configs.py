@@ -349,6 +349,48 @@ def test_orchestrator_save_full_rollouts_cli_flag():
     assert cli(OrchestratorConfig, args=["--save-full-rollouts"]).save_full_rollouts
 
 
+def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"parallel": {"tp": 1}},
+            "deployment": {
+                "type": "single_node",
+                "gpus_per_node": 4,
+                "num_train_gpus": 2,
+                "num_infer_gpus": 2,
+            },
+        }
+    )
+
+    assert config.inference is not None
+    assert config.inference.parallel.dp == 2
+    assert config.orchestrator.student.client.dp_rank_count == 2
+
+
+def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"parallel": {"tp": 4}},
+            "deployment": {
+                "type": "multi_node",
+                "gpus_per_node": 8,
+                "num_train_nodes": 1,
+                "num_infer_nodes": 2,
+            },
+            "slurm": {},
+        }
+    )
+
+    assert config.inference is not None
+    assert config.inference.data_parallel_size_local == 2
+    assert config.inference.parallel.dp == 2
+    assert config.orchestrator.student.client.dp_rank_count == 1
+
+
 def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="orchestrator.renderer must be set when model.vlm is set"):
         OrchestratorConfig.model_validate(

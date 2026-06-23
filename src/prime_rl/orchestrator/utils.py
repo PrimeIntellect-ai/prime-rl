@@ -1,4 +1,6 @@
 import asyncio
+import ctypes
+import gc
 import logging
 import os
 import time
@@ -111,6 +113,20 @@ def set_default_executor(max_workers: int = 64) -> None:
     """Scale the default asyncio thread pool so asyncio.to_thread has enough capacity."""
     get_logger().info(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
     asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
+
+
+def trim_process_memory() -> None:
+    """Return freed heap pages to the OS on glibc systems. The orchestrator's
+    per-step churn (rollout buffers, b64-decoded routed_experts, batch dict
+    materialization) fragments glibc arenas; without this the freed pages are
+    never reclaimed mid-run and RSS ratchets to a host-OOM. From an async
+    context call via ``asyncio.to_thread`` — ``malloc_trim`` walks every arena
+    and can block the event loop."""
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception as exc:
+        get_logger().debug(f"malloc_trim(0) failed: {exc!r}")
 
 
 async def compute_teacher_logprobs(

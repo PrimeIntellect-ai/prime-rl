@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-06-07T22:40:39.39117127Z"
+exclude-newer = "2026-06-10T23:37:49.383138959Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -3918,6 +3918,7 @@ envs = [
     { name = "reverse-text", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "rlm-search", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "rlm-swe", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "rlm-uuid-ctf", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "science-env", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "simpleqa-verified", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tau2-bench", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4028,6 +4029,7 @@ requires-dist = [
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
     { name = "rlm-search", marker = "extra == 'envs'", editable = "deps/research-environments/environments/rlm_search" },
     { name = "rlm-swe", marker = "extra == 'envs'", editable = "deps/research-environments/environments/rlm_swe" },
+    { name = "rlm-uuid-ctf", marker = "extra == 'envs'", editable = "deps/research-environments/environments/rlm_uuid_ctf" },
     { name = "science-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/science_env" },
     { name = "setproctitle", specifier = ">=1.3.0" },
     { name = "simpleqa-verified", marker = "extra == 'envs'", editable = "deps/research-environments/environments/simpleqa_verified" },
@@ -4783,6 +4785,23 @@ requires-dist = [
     { name = "prime-sandboxes", specifier = ">=0.2.19" },
     { name = "swebench", specifier = "==4.1.0" },
     { name = "verifiers", extras = ["packages"], specifier = ">=0.1.15.dev17,<0.1.15.dev156" },
+]
+
+[[package]]
+name = "rlm-uuid-ctf"
+version = "0.1.1"
+source = { editable = "deps/research-environments/environments/rlm_uuid_ctf" }
+dependencies = [
+    { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "prime-sandboxes", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", extra = ["packages"], marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets", specifier = ">=4.0.0" },
+    { name = "prime-sandboxes", specifier = ">=0.2.21" },
+    { name = "verifiers", extras = ["packages"], specifier = ">=0.1.15.dev17" },
 ]
 
 [[package]]

@@ -158,7 +158,8 @@ class GlmMoeDsaAttention(nn.Module):
         )
 
         self.o_proj = nn.Linear(self.num_heads * self.v_head_dim, args.hidden_size, bias=args.attention_bias)
-        self.indexer = Indexer(args)
+        # IndexShare (GLM-5.2): layers that reuse cached indices carry no indexer weights.
+        self.indexer = Indexer(args) if not args.skip_topk else None
         self.use_index_cache = args.use_index_cache
         self.skip_topk = args.skip_topk
         self.scaling = self.qk_head_dim ** (-0.5)

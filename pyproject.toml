@@ -93,6 +93,7 @@ envs = [
     "reverse-text",
     "rlm-swe",
     "rlm-search",
+    "rlm-uuid-ctf",
     "science-env",
     "simpleqa-verified",
     "tau2-bench",
@@ -259,6 +260,7 @@ opencode-swe = { path = "deps/research-environments/environments/opencode_swe", 
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
 rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable = true }
 rlm-search = { path = "deps/research-environments/environments/rlm_search", editable = true }
+rlm-uuid-ctf = { path = "deps/research-environments/environments/rlm_uuid_ctf", editable = true }
 science-env = { path = "deps/research-environments/environments/science_env", editable = true }
 simpleqa-verified = { path = "deps/research-environments/environments/simpleqa_verified", editable = true }
 tau2-bench = { path = "deps/research-environments/environments/tau2_bench", editable = true }

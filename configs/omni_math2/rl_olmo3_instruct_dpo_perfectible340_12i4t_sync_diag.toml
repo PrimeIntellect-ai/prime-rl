@@ -91,9 +91,6 @@ timeout = 3600
 [orchestrator.advantage]
 type = "default"
 
-[orchestrator.advantage.length_penalty]
-type = "tokens"
-
 [orchestrator.renderer]
 name = "default"
 

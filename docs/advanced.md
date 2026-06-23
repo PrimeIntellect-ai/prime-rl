@@ -25,7 +25,7 @@ impl = "custom"        # or "hf" to force the HF path
 
 | Family | HF config types | EP | CP |
 |---|---|---|---|
-| GLM-5 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8` | ✅ | ✅ |
+| GLM-5 / GLM-5.2 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8`, `zai-org/GLM-5.2`, `zai-org/GLM-5.2-FP8` | ✅ | ✅ |
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
 | Qwen3 / Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
@@ -37,6 +37,8 @@ impl = "custom"        # or "hf" to force the HF path
 | GPT-OSS (HF MoE) | `openai/gpt-oss-20b`, `openai/gpt-oss-120b` | ❌ | ✅ |
 
 The custom path enables you to set EP, CP, selective activation checkpointing, FP8 training (`model.fp8 = true`, requires SM90+), and faster MoE kernels (`moe_use_grouped_mm = true`, default). Forcing `impl = "hf"` is mostly useful when debugging — it's slower and disables most MoE-specific knobs.
+
+GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
 
 ### Expert Parallelism Backends
 

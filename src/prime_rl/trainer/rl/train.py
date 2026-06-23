@@ -46,6 +46,7 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
+    build_bin_cost,
     GarbageCollection,
     MemoryProfiler,
     Tensors,
@@ -55,7 +56,6 @@ from prime_rl.trainer.utils import (
     get_ckpt_disk_metrics,
     setup_torch_distributed,
     print_benchmark,
-    get_response_lengths,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_multi_run_manager, Progress, get_multi_run_manager
@@ -252,6 +252,7 @@ def train(config: TrainerConfig):
             config.model.seq_len,
             config.model.cp,
             tokenizer,
+            build_bin_cost(model.config),
             config.rollout_transport,
             pack_samples=config.pack_samples,
         )
@@ -488,15 +489,15 @@ def train(config: TrainerConfig):
             )
 
             # Compute loss
-            response_lengths = get_response_lengths(position_ids)
+            sequence_lengths = micro_batch["sequence_lengths"]
             loss, loss_tensors = compute_loss(
-                trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
-                inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
-                teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
+                trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
+                inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
+                teacher_logprobs=teacher_logprobs.squeeze().split(sequence_lengths)
                 if teacher_logprobs is not None
                 else None,
-                advantages=advantages.squeeze().split(response_lengths),
-                loss_mask=loss_mask.squeeze().split(response_lengths),
+                advantages=advantages.squeeze().split(sequence_lengths),
+                loss_mask=loss_mask.squeeze().split(sequence_lengths),
                 loss_fns=loss_fns,
                 loss_scale=loss_scale,
                 training_mode=micro_batch["training_mode"],
@@ -533,7 +534,7 @@ def train(config: TrainerConfig):
                 micro_step,
                 micro_batch,
                 out,
-                response_lengths,
+                sequence_lengths,
                 config.loss,
             )
 

@@ -60,7 +60,8 @@ async def _run_gpu_backed_multi_agent_smoke(tmp_path: Path, *, base_url: str, ap
                 temperature=0.7,
                 max_completion_tokens=32,
             ),
-        )
+        ),
+        max_seq_len=2048,
     )
     try:
         await env.start(log_dir=tmp_path, log_level="warning")
