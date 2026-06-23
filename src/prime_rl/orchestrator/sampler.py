@@ -16,6 +16,8 @@ from prime_rl.configs.algorithm import FrozenModelConfig, SamplingConfig
 from prime_rl.orchestrator.algo import connect_frozen_pool
 
 if TYPE_CHECKING:
+    from renderers import RendererConfig
+
     from prime_rl.utils.client import InferencePool
 
 
@@ -24,19 +26,24 @@ class Sampler:
 
     ``pool`` is the pool train rollouts are generated from: the policy pool,
     swapped for a connected frozen pool in :meth:`setup` when the source is an
-    inline frozen model."""
+    inline frozen model. A frozen source *generates* rollouts, so its pool uses
+    the renderer (token-in/out) client (built from ``renderer_config``) — the
+    rollout must carry tokens for training."""
 
-    def __init__(self, config: SamplingConfig, policy_pool: InferencePool):
+    def __init__(
+        self, config: SamplingConfig, policy_pool: InferencePool, renderer_config: RendererConfig | None = None
+    ):
         assert config.source is not None, "sampling.source must be resolved by config validation"
         self.config = config
         self.pool: InferencePool = policy_pool
+        self.renderer_config = renderer_config
         self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
 
     async def setup(self) -> None:
         """Connect a client pool to a frozen sampling source and wait for
         readiness. Must run before dispatching."""
         if isinstance(self.config.source, FrozenModelConfig):
-            self.pool = await connect_frozen_pool(self.config.source)
+            self.pool = await connect_frozen_pool(self.config.source, renderer_config=self.renderer_config)
             self.connected_pools.append(self.pool)
 
     @property
