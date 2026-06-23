@@ -293,14 +293,6 @@ class TrainConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_non_empty_envs(self):
-        if not self.env:
-            raise ValueError(
-                "TrainConfig must define at least one training environment — add a [[orchestrator.train.env]] block."
-            )
-        return self
-
-    @model_validator(mode="after")
     def validate_unique_env_names(self):
         env_names = [env.resolved_name for env in self.env]
         duplicates = [n for n in env_names if env_names.count(n) > 1]
@@ -497,7 +489,7 @@ class OrchestratorConfig(BaseConfig):
     teacher: RolloutModelConfig | None = Field(None, validation_alias=AliasChoices("teacher", "teacher_model"))
     """Teacher rollout participant (model + client). Role depends on ``training_mode``: ``opd`` — teacher computes logprobs; ``sft`` — teacher generates rollouts."""
 
-    train: TrainConfig
+    train: TrainConfig = TrainConfig()
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
