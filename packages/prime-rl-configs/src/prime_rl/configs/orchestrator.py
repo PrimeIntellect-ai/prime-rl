@@ -143,12 +143,6 @@ class EvalSamplingConfig(BaseConfig):
 
 
 class EnvConfig(vf.EnvServerConfig):
-    """A v1 environment — its ``taskset`` + ``harness`` (reused from ``vf.EnvConfig``,
-    resolved to their specific config types by ``id`` via vf's shared validator) plus the
-    worker ``pool`` (from ``vf.EnvServerConfig``: ``static`` or ``elastic``, default
-    elastic) and prime-rl's orchestration knobs. Timeouts come from ``vf.TimeoutConfig``
-    (``timeout.rollout`` / ``timeout.scoring``)."""
-
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
@@ -160,12 +154,6 @@ class EnvConfig(vf.EnvServerConfig):
 
     max_retries: int = Field(3, ge=0)
     """Times the env server retries a failed rollout before returning an error."""
-
-    id: str | None = None
-    """Classic (v0) env id, loaded via verifiers ``load_environment(id, **args)`` and served
-    through the legacy bridge. Set this instead of ``taskset`` to run a legacy v0 environment."""
-    args: dict = Field(default_factory=dict)
-    """Kwargs passed to the v0 env's ``load_environment`` (only used when ``id`` is set)."""
 
     @model_validator(mode="before")
     @classmethod
