@@ -2,6 +2,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
+import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
@@ -145,9 +146,10 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
-class EnvConfig(BaseConfig):
-    id: str = "reverse-text"
-    """Registered verifiers environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation."""
+class EnvConfig(vf.EnvServerConfig):
+    """A v1 environment: vf owns the taskset, harness, timeout, token limits, and
+    worker-pool config; prime-rl adds orchestration fields and legacy-v0 bridge
+    compatibility."""
 
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
@@ -826,12 +828,6 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.env:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
-
-        # Resolve train env num_workers from max_inflight_rollouts
-        for env_cfg in self.train.env:
-            if env_cfg.num_workers == "auto":
-                assert self.max_inflight_rollouts is not None
-                env_cfg.num_workers = max(1, math.ceil(self.max_inflight_rollouts / 256))
 
         return self
 
