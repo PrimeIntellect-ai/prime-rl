@@ -280,13 +280,13 @@ class TrainEnvs(Envs[TrainEnv]):
     :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
     resolved algorithm config."""
 
-    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer):
+    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer, renderer_config=None):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
             env = TrainEnv(
                 config,
-                Sampler(config.algo.sampling, policy_pool),
+                Sampler(config.algo.sampling, policy_pool, renderer_config),
                 build_algorithm(config.algo, policy_pool, renderer),
             )
             self._envs[env.name] = env

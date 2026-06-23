@@ -8,7 +8,6 @@ from pathlib import Path
 
 import orjson
 import verifiers.v1 as vf
-from verifiers.utils.client_utils import setup_openai_client
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.utils.client import setup_inference_pool
@@ -117,10 +116,22 @@ async def compute_prefill_logprobs(
 ) -> list[float]:
     """Score ``token_ids`` under ``model_name`` via prefill; returns one
     logprob per token (0.0 for the leading token, which has no context)."""
+    import os
+
     import httpx
+    from openai import AsyncOpenAI
     from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 
-    client = setup_openai_client(client_config)
+    # Build the OpenAI client directly from the v1 ``vf.ClientConfig``
+    # (base_url / api_key_var / headers). The frozen/teacher pool yields
+    # verifiers.v1 client configs, which the v0 ``setup_openai_client`` can't
+    # consume (it expects the v0 endpoint-config shape).
+    api_key = os.environ.get(client_config.api_key_var) or "EMPTY"
+    client = AsyncOpenAI(
+        base_url=client_config.base_url,
+        api_key=api_key,
+        default_headers=client_config.headers or None,
+    )
 
     # Two escape hatches from ``AsyncOpenAI.post``:
     #   1. URL — ``/inference/v1/generate`` is mounted at server root, not

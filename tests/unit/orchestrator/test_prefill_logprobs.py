@@ -1,10 +1,9 @@
 import asyncio
 import json
+from types import SimpleNamespace
 
 import httpx
-import verifiers.v1 as vf  # noqa: F401  (locked convention: v1 namespace import)
-from verifiers.types import ClientConfig
-from verifiers.utils import client_utils
+import openai
 
 from prime_rl.orchestrator import utils as orchestrator_utils
 
@@ -42,12 +41,14 @@ def test_compute_prefill_logprobs_uses_inference_generate(monkeypatch):
                 "kv_transfer_params": None,
             }
         )
-        # setup_openai_client constructs AsyncOpenAI via the name bound inside
-        # client_utils; patch that name so the fake is handed back.
-        monkeypatch.setattr(client_utils, "AsyncOpenAI", lambda **kwargs: fake_client)
+        # compute_prefill_logprobs builds AsyncOpenAI directly from the v1
+        # ClientConfig (base_url / api_key_var / headers) via a call-time
+        # ``from openai import AsyncOpenAI``; patch that name so the fake is
+        # handed back.
+        monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kwargs: fake_client)
 
         result = await orchestrator_utils.compute_prefill_logprobs(
-            ClientConfig(api_base_url="http://fake-host:8000/v1"),
+            SimpleNamespace(base_url="http://fake-host:8000/v1", api_key_var="VLLM_API_KEY", headers={}),
             model_name="ref-model",
             token_ids=[1, 2, 3],
         )

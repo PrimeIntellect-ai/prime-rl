@@ -50,6 +50,7 @@ from prime_rl.orchestrator.types import RolloutView
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from renderers import RendererConfig
     from renderers.base import Renderer
 
     from prime_rl.orchestrator.envs import TrainEnvs
@@ -57,14 +58,27 @@ if TYPE_CHECKING:
     from prime_rl.utils.client import InferencePool
 
 
-async def connect_frozen_pool(config: FrozenModelConfig) -> InferencePool:
+async def connect_frozen_pool(
+    config: FrozenModelConfig, *, renderer_config: RendererConfig | None = None
+) -> InferencePool:
     """Connect a client pool to an inline frozen model and wait for it to be
     ready. The endpoint is externally hosted — prime-rl connects and waits,
-    never launches."""
+    never launches.
+
+    When ``renderer_config`` is set, the pool's train client is the renderer
+    (token-in/out) client — required when the frozen model *generates* rollouts
+    (sft), so the rollout carries tokens. Left as plain chat-completions
+    otherwise (opd/opsd read teacher logprobs via prefill, where the train
+    client type is moot)."""
     from prime_rl.utils.client import setup_inference_pool
 
     get_logger().info(f"Initializing frozen model pool (model={config.name}, base_url={', '.join(config.base_url)})")
-    pool = await setup_inference_pool(config, model_name=config.name)
+    if renderer_config is not None:
+        pool = await setup_inference_pool(
+            config, model_name=config.name, train_client_type="renderer", renderer_config=renderer_config
+        )
+    else:
+        pool = await setup_inference_pool(config, model_name=config.name)
     await pool.wait_for_ready(config.name)
     return pool
 
