@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, ConfigDict, Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
@@ -142,13 +142,21 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
-def resolve_algorithm_config(data: object) -> vf.AlgorithmConfig:
-    if isinstance(data, vf.AlgorithmConfig):
+class AlgorithmConfig(BaseConfig):
+    """Algorithm config reference carried by prime-rl-configs without requiring
+    the sibling verifiers algorithm extension in the slim wheel."""
+
+    model_config = ConfigDict(extra="allow")
+    id: str
+
+
+def resolve_algorithm_config(data: object) -> AlgorithmConfig:
+    if isinstance(data, AlgorithmConfig):
         config = data
     elif isinstance(data, str):
-        config = vf.AlgorithmConfig(id=data)
+        config = AlgorithmConfig(id=data)
     elif isinstance(data, dict):
-        config = vf.AlgorithmConfig.model_validate(data)
+        config = AlgorithmConfig.model_validate(data)
     else:
         raise TypeError(f"Algorithm config must be a string or table, got {type(data).__name__}")
     if not config.id:
@@ -222,7 +230,7 @@ class TrainEnvConfig(EnvConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Rollouts generated per example. Inherits from ``orchestrator.group_size`` when unset."""
 
-    algorithms: list[vf.AlgorithmConfig] | None = None
+    algorithms: list[AlgorithmConfig] | None = None
     """Algorithms for this env. Builtin ids run in prime-rl; env-owned ids run inside the env server.
     Inherits from ``orchestrator.algorithms`` when unset."""
 
@@ -475,7 +483,7 @@ class OrchestratorConfig(BaseConfig):
     """Model key used for train rollouts. ``"policy"`` means ``orchestrator.model``; any other value
     must be present in ``orchestrator.models`` and token-capable."""
 
-    algorithms: list[vf.AlgorithmConfig] = Field(default_factory=lambda: [vf.AlgorithmConfig(id="grpo")])
+    algorithms: list[AlgorithmConfig] = Field(default_factory=lambda: [AlgorithmConfig(id="grpo")])
     """Default algorithms for train envs. Builtin ids run in prime-rl; env-owned ids run inside the env server."""
 
     models: dict[str, HostedModelConfig] = Field(default_factory=dict)

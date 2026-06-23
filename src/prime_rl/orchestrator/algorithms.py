@@ -4,8 +4,10 @@ import asyncio
 
 import verifiers.v1 as vf
 
+from prime_rl.configs.orchestrator import AlgorithmConfig
 
-class GRPO(vf.Algorithm[vf.AlgorithmConfig]):
+
+class GRPO(vf.Algorithm[AlgorithmConfig]):
     async def advantage(self, traces: list[vf.Trace]) -> list[vf.Trace]:
         rewards = [trace.reward for trace in traces]
         baseline = sum(rewards) / len(rewards) if rewards else 0.0
@@ -18,7 +20,7 @@ class GRPO(vf.Algorithm[vf.AlgorithmConfig]):
         return traces
 
 
-class MaxRL(vf.Algorithm[vf.AlgorithmConfig]):
+class MaxRL(vf.Algorithm[AlgorithmConfig]):
     async def advantage(self, traces: list[vf.Trace]) -> list[vf.Trace]:
         rewards = [trace.reward for trace in traces]
         mean = sum(rewards) / len(rewards) if rewards else 0.0
@@ -31,7 +33,7 @@ class MaxRL(vf.Algorithm[vf.AlgorithmConfig]):
         return traces
 
 
-class RL(vf.Algorithm[vf.AlgorithmConfig]):
+class RL(vf.Algorithm[AlgorithmConfig]):
     async def advantage(self, traces: list[vf.Trace]) -> list[vf.Trace]:
         for trace in traces:
             for branch in trace.branches:
@@ -41,7 +43,7 @@ class RL(vf.Algorithm[vf.AlgorithmConfig]):
         return traces
 
 
-class SFT(vf.Algorithm[vf.AlgorithmConfig]):
+class SFT(vf.Algorithm[AlgorithmConfig]):
     def loss(self) -> str:
         return "ce"
 
@@ -54,7 +56,7 @@ class SFT(vf.Algorithm[vf.AlgorithmConfig]):
         return traces
 
 
-class Echo(vf.Algorithm[vf.AlgorithmConfig]):
+class Echo(vf.Algorithm[AlgorithmConfig]):
     def loss(self) -> str:
         return "ce"
 
@@ -74,8 +76,8 @@ class Echo(vf.Algorithm[vf.AlgorithmConfig]):
         return traces
 
 
-class OPD(vf.Algorithm[vf.AlgorithmConfig]):
-    def __init__(self, config: vf.AlgorithmConfig) -> None:
+class OPD(vf.Algorithm[AlgorithmConfig]):
+    def __init__(self, config: AlgorithmConfig) -> None:
         super().__init__(config)
         self.runtime: vf.ModelRuntime | None = None
 
@@ -120,8 +122,8 @@ class OPD(vf.Algorithm[vf.AlgorithmConfig]):
         return traces
 
 
-class OPSD(vf.Algorithm[vf.AlgorithmConfig]):
-    def __init__(self, config: vf.AlgorithmConfig) -> None:
+class OPSD(vf.Algorithm[AlgorithmConfig]):
+    def __init__(self, config: AlgorithmConfig) -> None:
         super().__init__(config)
         self.runtime: vf.ModelRuntime | None = None
 
