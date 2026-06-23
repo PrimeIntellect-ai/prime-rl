@@ -77,6 +77,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     advantages: list[float]
     inference_logprobs: list[float]
     position_ids: list[int]
+    sequence_lengths: list[int]
     temperatures: list[float]  # Per-token temperatures used during generation
     env_names: list[str]
     teacher_logprobs: list[float] | None = None

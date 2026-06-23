@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from prime_rl.trainer.batch import prepare_batch, prepare_sample
+from prime_rl.trainer.utils import build_bin_cost
 from prime_rl.transport.types import EncodedTensor, RoutedExperts, TrainingSample
 
 
@@ -60,6 +61,7 @@ def test_prepare_batch_balances_micro_batches_across_workers(
         num_train_workers=num_train_workers,
         idxs=[0] * rollout_count,
         num_loras=1,
+        bin_cost=build_bin_cost(None),
     )
 
     assert all(len(worker_batches) == expected_batches_per_worker for worker_batches in batches_per_gpu)
@@ -68,16 +70,18 @@ def test_prepare_batch_balances_micro_batches_across_workers(
     assert len(examples) <= len(flat_batches) < len(examples) + num_train_workers
     print(flat_batches)
 
-    # Verify real rollouts have expected non-zero advantages and loss mask
-    for batch in flat_batches[: len(examples)]:
-        print(batch)
+    # Real rollouts and dummy padding can be interleaved across workers by the
+    # FLOP-balanced partition, so classify by content rather than position.
+    real_batches = [b for b in flat_batches if any(advantage != 0.0 for advantage in b.advantages)]
+    assert len(real_batches) == len(examples)
+    for batch in real_batches:
         assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 4
         assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 2
 
-    # Verify padded batches have zero advantages and loss mask
-    for batch in flat_batches[len(examples) :]:
-        assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 0
-        assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 0
+    # Dummy padding batches have zero advantages and loss mask.
+    for batch in flat_batches:
+        if all(advantage == 0.0 for advantage in batch.advantages):
+            assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 0
 
 
 def test_prepare_batch_packs_different_temperatures(make_training_example):
@@ -91,6 +95,7 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
         num_train_workers=1,
         idxs=[0, 0],
         num_loras=1,
+        bin_cost=build_bin_cost(None),
     )
 
     flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
@@ -123,6 +128,7 @@ def test_prepare_batch_does_not_pack_mixed_training_mode(make_training_example):
         num_train_workers=1,
         idxs=[0, 0],
         num_loras=1,
+        bin_cost=build_bin_cost(None),
     )
 
     flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]

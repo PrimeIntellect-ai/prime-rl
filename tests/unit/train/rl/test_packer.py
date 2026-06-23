@@ -10,6 +10,7 @@ import prime_rl.trainer.runs as runs
 from prime_rl.configs.shared import FileSystemTransportConfig
 from prime_rl.trainer.rl.packer import MultiPacker
 from prime_rl.trainer.runs import setup_multi_run_manager
+from prime_rl.trainer.utils import build_bin_cost
 from prime_rl.trainer.world import reset_world
 from prime_rl.transport.types import TrainingSample
 
@@ -92,6 +93,7 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
         pad_to_multiple_of=1,
         tokenizer=None,
         config=FileSystemTransportConfig(),
+        bin_cost=build_bin_cost(None),
         start_step=0,
     )
 
