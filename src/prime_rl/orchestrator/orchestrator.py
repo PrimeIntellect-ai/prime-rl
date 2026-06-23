@@ -205,10 +205,6 @@ class Orchestrator:
         with open(config_dir / "orch.toml", "wb") as f:
             tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
-        # TODO(v1, experimental): temporary. v1 envs are local packages
-        # installed in this venv (no prime-env hub install); the env server imports
-        # them in its own child process.
-
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
 
