@@ -42,11 +42,14 @@ class EchoAlgorithm(GRPOAlgorithm):
         for sample, branch in zip(rollout.samples, branches, strict=True):
             weights = [0.0] * len(sample.completion_ids)
             offset = 0
+            saw_sampled_node = False
             for node in branch.nodes:
-                role = getattr(node.message, "role", None)
-                role_weight = self.role_weights.get(role, 0.0)
-                for i, sampled in enumerate(node.mask):
-                    if not sampled:
+                if node.sampled:
+                    saw_sampled_node = True
+                elif saw_sampled_node:
+                    role = getattr(node.message, "role", None)
+                    role_weight = self.role_weights.get(role, 0.0)
+                    for i in range(len(node.token_ids)):
                         weights[offset + i] = role_weight
                 offset += len(node.token_ids)
             if any(weights):

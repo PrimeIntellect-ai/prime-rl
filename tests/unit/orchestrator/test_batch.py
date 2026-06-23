@@ -9,7 +9,7 @@ from prime_rl.trainer.batch import (
     prepare_sample,
 )
 from prime_rl.trainer.utils import build_bin_cost
-from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
 
 
 def _routed_experts(data, dtype=np.uint8):
@@ -440,11 +440,13 @@ def test_prepare_sample_truncates_mm_at_image_boundary():
     pixel_values = np.array([[1.0], [1.0], [2.0], [2.0]], dtype=np.float32)  # img0=1.0, img1=2.0
     grid = np.array([[1, 2, 1], [1, 2, 1]], dtype=np.int64)
     sample = TrainingSample(
-        token_ids=[10, 11, 12, 13, 14, 15, 16],
-        mask=[False, False, False, False, False, True, True],
-        logprobs=[0.0] * 7,
-        temperatures=[1.0] * 7,
-        advantage=1.0,
+        prompt_ids=[],
+        prompt_mask=[],
+        completion_ids=[10, 11, 12, 13, 14, 15, 16],
+        completion_mask=[False, False, False, False, False, True, True],
+        completion_logprobs=[0.0] * 7,
+        completion_temperatures=[1.0] * 7,
+        advantages=[1.0] * 7,
         env_name="test-env",
         mm_token_type_ids=mm_token_type_ids,
         mm_kwargs={"pixel_values": _encoded(pixel_values), "image_grid_thw": _encoded(grid)},

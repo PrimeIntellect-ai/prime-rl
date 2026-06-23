@@ -1,9 +1,12 @@
 import copy
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+import numpy as np
+
 from prime_rl.trainer.utils import balanced_partition
-from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
     "uint8": 1,
@@ -46,6 +49,61 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts.shape[0] += padding_size
 
 
+def _num_nonzero_runs(values: Sequence[int]) -> int:
+    count = 0
+    in_run = False
+    for value in values:
+        if value:
+            if not in_run:
+                count += 1
+                in_run = True
+        else:
+            in_run = False
+    return count
+
+
+def _truncate_at_mm_boundary(mm_token_type_ids: Sequence[int], seq_len: int) -> int:
+    if seq_len <= 0 or seq_len >= len(mm_token_type_ids):
+        return seq_len
+    token_type = mm_token_type_ids[seq_len - 1]
+    if token_type == 0 or mm_token_type_ids[seq_len] != token_type:
+        return seq_len
+    while seq_len > 0 and mm_token_type_ids[seq_len - 1] == token_type:
+        seq_len -= 1
+    return seq_len
+
+
+def _slice_encoded_rows(tensor: EncodedTensor, rows: int) -> EncodedTensor:
+    row_size = math.prod(tensor.shape[1:]) * np.dtype(tensor.dtype).itemsize
+    return EncodedTensor(dtype=tensor.dtype, shape=[rows, *tensor.shape[1:]], data=tensor.data[: rows * row_size])
+
+
+def _slice_mm_kwargs(
+    mm_kwargs: dict[str, EncodedTensor] | None,
+    mm_token_type_ids: Sequence[int] | None,
+    seq_len: int,
+) -> dict[str, EncodedTensor] | None:
+    if mm_kwargs is None or mm_token_type_ids is None:
+        return mm_kwargs
+    kept_ids = mm_token_type_ids[:seq_len]
+    total_image_tokens = sum(1 for token_type in mm_token_type_ids if token_type)
+    kept_image_tokens = sum(1 for token_type in kept_ids if token_type)
+    total_images = _num_nonzero_runs(mm_token_type_ids)
+    kept_images = _num_nonzero_runs(kept_ids)
+
+    sliced: dict[str, EncodedTensor] = {}
+    for key, tensor in mm_kwargs.items():
+        if not tensor.shape:
+            sliced[key] = tensor
+        elif tensor.shape[0] == total_image_tokens:
+            sliced[key] = _slice_encoded_rows(tensor, kept_image_tokens)
+        elif tensor.shape[0] == total_images:
+            sliced[key] = _slice_encoded_rows(tensor, kept_images)
+        else:
+            sliced[key] = tensor
+    return sliced
+
+
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
@@ -74,6 +132,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     rewards = [reward] * len(input_ids)
     position_ids = list(range(len(input_ids)))
     mm_token_type_ids = training_example.mm_token_type_ids
+    mm_kwargs = training_example.mm_kwargs
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
 
@@ -90,26 +149,30 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     )
 
     if len(input_ids) > seq_len:
-        input_ids = input_ids[:seq_len]
-        loss_mask = loss_mask[:seq_len]
-        inference_logprobs = inference_logprobs[:seq_len]
-        position_ids = position_ids[:seq_len]
-        advantages = advantages[:seq_len]
-        rewards = rewards[:seq_len]
-        temperatures = temperatures[:seq_len]
+        truncation_len = (
+            _truncate_at_mm_boundary(mm_token_type_ids, seq_len) if mm_token_type_ids is not None else seq_len
+        )
+        input_ids = input_ids[:truncation_len]
+        loss_mask = loss_mask[:truncation_len]
+        inference_logprobs = inference_logprobs[:truncation_len]
+        position_ids = position_ids[:truncation_len]
+        advantages = advantages[:truncation_len]
+        rewards = rewards[:truncation_len]
+        temperatures = temperatures[:truncation_len]
         if ref_logprobs is not None:
-            ref_logprobs = ref_logprobs[:seq_len]
+            ref_logprobs = ref_logprobs[:truncation_len]
         if rl_weights is not None:
-            rl_weights = rl_weights[:seq_len]
+            rl_weights = rl_weights[:truncation_len]
         if ce_weights is not None:
-            ce_weights = ce_weights[:seq_len]
+            ce_weights = ce_weights[:truncation_len]
         if ref_kl_weights is not None:
-            ref_kl_weights = ref_kl_weights[:seq_len]
+            ref_kl_weights = ref_kl_weights[:truncation_len]
         if routed_experts is not None:
-            routed_experts = _slice_routed_experts(routed_experts, seq_len)
+            routed_experts = _slice_routed_experts(routed_experts, truncation_len)
         if mm_token_type_ids is not None:
-            mm_token_type_ids = mm_token_type_ids[:seq_len]
-        env_names = env_names[:seq_len]
+            mm_kwargs = _slice_mm_kwargs(mm_kwargs, mm_token_type_ids, truncation_len)
+            mm_token_type_ids = mm_token_type_ids[:truncation_len]
+        env_names = env_names[:truncation_len]
 
     assert (
         len(input_ids)
@@ -157,7 +220,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
-        mm_kwargs=training_example.mm_kwargs,
+        mm_kwargs=mm_kwargs,
         rl_weights=rl_weights,
         ce_weights=ce_weights,
         ref_kl_weights=ref_kl_weights,

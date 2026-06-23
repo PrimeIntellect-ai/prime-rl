@@ -18,9 +18,15 @@ project = "reverse-text-v1-debug"
 name = "debug-sft-lora"
 
 [orchestrator]
-training_mode = "sft"
 batch_size = 128
 group_size = 4
+
+[orchestrator.algo]
+type = "sft"
+
+[orchestrator.algo.teacher]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+base_url = ["http://localhost:8001/v1"]
 
 # Teacher rolls out over plain chat-completions (no tokens); the renderer backfills them.
 [orchestrator.renderer]
@@ -43,12 +49,6 @@ max_completion_tokens = 128
 [[orchestrator.eval.env]]
 taskset = { id = "reverse-text-v1" }
 harness = { id = "default", runtime = { type = "subprocess" } }
-
-[orchestrator.teacher.model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
-
-[orchestrator.teacher.client]
-base_url = ["http://localhost:8001/v1"]
 
 [trainer.optim]
 lr = 1e-4

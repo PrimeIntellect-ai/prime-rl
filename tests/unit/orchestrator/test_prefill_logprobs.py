@@ -2,7 +2,7 @@ import asyncio
 import json
 
 import httpx
-import openai
+import verifiers as vf
 
 from prime_rl.orchestrator import utils as orchestrator_utils
 
@@ -40,8 +40,7 @@ def test_compute_prefill_logprobs_uses_inference_generate(monkeypatch):
                 "kv_transfer_params": None,
             }
         )
-        # compute_teacher_logprobs constructs AsyncOpenAI directly; hand back the fake.
-        monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kwargs: fake_client)
+        monkeypatch.setattr(orchestrator_utils, "setup_openai_client", lambda config: fake_client)
 
         result = await orchestrator_utils.compute_prefill_logprobs(
             vf.ClientConfig(),

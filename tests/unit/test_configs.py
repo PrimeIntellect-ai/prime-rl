@@ -208,10 +208,10 @@ def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
 
     assert config.inference is not None
     assert config.inference.parallel.dp == 2
-    assert config.orchestrator.student.client.dp_rank_count == 2
+    assert config.orchestrator.model.client.dp_rank_count == 2
 
 
-def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
+def test_multi_node_auto_inference_client_dp_rank_count_matches_local_dp():
     config = RLConfig.model_validate(
         {
             "trainer": {},
@@ -230,7 +230,7 @@ def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
     assert config.inference is not None
     assert config.inference.data_parallel_size_local == 2
     assert config.inference.parallel.dp == 2
-    assert config.orchestrator.student.client.dp_rank_count == 1
+    assert config.orchestrator.model.client.dp_rank_count == 2
 
 
 def test_orchestrator_vlm_requires_renderer():
@@ -543,15 +543,14 @@ def test_orchestrator_explicit_renderer_skips_unmapped_check():
     assert config.renderer.name == "qwen3"
 
 
-def test_orchestrator_renderer_none_rejected():
-    """A renderer is required (training is renderer-only): the non-optional type rejects None."""
-    with pytest.raises(ValidationError, match="renderer"):
-        OrchestratorConfig.model_validate(
-            {
-                "model": {"name": "not-a-real-org/not-a-real-model"},
-                "renderer": None,
-            }
-        )
+def test_orchestrator_renderer_none_allows_text_mito():
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "renderer": None,
+        }
+    )
+    assert config.renderer is None
 
 
 def test_orchestrator_explicit_default_renderer_with_unmapped_model():

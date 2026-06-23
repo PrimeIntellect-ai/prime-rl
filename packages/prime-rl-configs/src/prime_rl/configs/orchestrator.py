@@ -768,7 +768,7 @@ class OrchestratorConfig(BaseConfig):
         ``DefaultRendererConfig.tool_parser`` is configured. Surface at
         config time so ``--dry-run`` reports the error.
         """
-        if self.renderer.name != "auto":
+        if self.renderer is None or self.renderer.name != "auto":
             return self
         from renderers.base import MODEL_RENDERER_MAP
 

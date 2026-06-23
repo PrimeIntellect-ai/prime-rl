@@ -83,6 +83,12 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
     eval_step: int | None = Field(default=None, exclude=True)
 
+    @property
+    def advantage(self) -> float | None:
+        if not self.advantages:
+            return None
+        return sum(self.advantages) / len(self.advantages)
+
     def to_dict(self) -> dict:
         out = self.model_dump(mode="json")
         out.update(
@@ -97,8 +103,8 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
         )
         if self.eval_step is not None:
             out["eval_step"] = self.eval_step
-        if self.advantages:
-            out["advantage"] = sum(self.advantages) / len(self.advantages)
+        if self.advantage is not None:
+            out["advantage"] = self.advantage
         return out
 
 

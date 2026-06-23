@@ -26,9 +26,6 @@ type = "opd"
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = ["http://localhost:8001/v1"]
 
-[orchestrator.renderer]
-name = "qwen3"
-
 # Teacher rolls out over plain chat-completions (no tokens); the renderer backfills them.
 [orchestrator.renderer]
 name = "qwen3"
