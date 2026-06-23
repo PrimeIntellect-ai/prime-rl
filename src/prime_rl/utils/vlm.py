@@ -87,6 +87,16 @@ def is_vlm_architecture(model_config: PretrainedConfig) -> bool:
     return _get_model_info_from_config(model_config) is not None
 
 
+def get_final_logit_softcapping(model_config: PretrainedConfig) -> float | None:
+    """Read ``final_logit_softcapping`` from the text config.
+
+    For composite VLM configs (e.g. Gemma) the value lives under ``text_config``;
+    ``get_text_config()`` returns that for VLMs and the config itself for text-only
+    models, so a plain top-level ``getattr`` would miss it and silently drop softcapping.
+    """
+    return getattr(model_config.get_text_config(), "final_logit_softcapping", None)
+
+
 def get_layer_prefix(model_config: PretrainedConfig, override: str | None = None) -> str:
     """Return the weight key prefix for language model layers.
 

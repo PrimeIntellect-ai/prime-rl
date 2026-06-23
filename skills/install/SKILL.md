@@ -28,10 +28,10 @@ uv sync --extra all --extra envs --extra gpt-oss --extra modelexpress --group de
 ```
 
 Do not use `uv sync --all-extras` in the full workspace. It also selects
-workspace-member extras such as `verifiers[rl]`, which intentionally conflict
-with PrimeRL's torch/vLLM runtime.
+extras such as `verifiers[rl]`, which intentionally conflict with PrimeRL's
+torch/vLLM runtime.
 
-The `envs` extra installs every env workspace listed in `[tool.uv.workspace]`. Adding a new env means adding it to `members`, the `envs` extra, and `[tool.uv.sources]`.
+The `envs` extra installs environments listed under `[project.optional-dependencies].envs`, resolved through `[tool.uv.sources]`. Adding a new env means adding its package name to `envs` and its editable source path to `[tool.uv.sources]`.
 
 When bumping a package past the workspace-wide `exclude-newer = "7 days"` window, add it (and any newly-required transitives) to `[tool.uv.exclude-newer-package]` before refreshing `uv.lock`.
 

@@ -216,7 +216,8 @@ async def _run_prime_env_server_member_generation_smoke(monkeypatch: pytest.Monk
                 temperature=0.7,
                 max_completion_tokens=64,
             ),
-        )
+        ),
+        max_seq_len=2048,
     )
     try:
         await env.start(log_dir=tmp_path, log_level="warning")

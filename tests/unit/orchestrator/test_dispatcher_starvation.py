@@ -147,7 +147,7 @@ def test_dropped_groups_emit_markers_and_are_backfilled():
         async with asyncio.timeout(10):
             while dispatcher.available_permits > 0:
                 await asyncio.sleep(0.01)
-            await dispatcher.on_new_version(1)  # every inflight group is now past max_off_policy_steps
+            await dispatcher.on_version_pending(1)  # every inflight group is now past max_off_policy_steps
 
             cancelled = 0
             survivors = 0
