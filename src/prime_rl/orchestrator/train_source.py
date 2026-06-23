@@ -1,20 +1,25 @@
 """TrainSource: weighted round-robin across train envs, infinite pull.
 
-Weights default to configured ``ratio`` (when every env sets one) or to
-per-env dataset size. ``next_example`` reshuffles on cursor exhaustion."""
+Env selection is delegated to a swappable ``EnvMixStrategy`` (default:
+weighted round-robin by configured ``ratio`` when every env sets one, else by
+per-env dataset size); example selection stays here (a reshuffling cursor per
+env). ``next_example`` reshuffles on cursor exhaustion. Returned dicts carry
+``env_name`` + ``example_id``.
+"""
 
 from __future__ import annotations
 
 import random
 
 from prime_rl.orchestrator.envs import TrainEnvs
+from prime_rl.orchestrator.sampling import WeightedRoundRobin
 
 
 class TrainSource:
-    """``next_example(available_permits)`` picks a weighted-RR env and
-    returns its next example (or ``None`` when the env's per-call permit
-    cost doesn't fit — the dispatch loop retries when permits free up).
-    Returned dicts carry ``env_name`` + ``example_id``."""
+    """``next_example(available_permits)`` picks an env via the mix strategy and
+    returns its next example (or ``None`` when the env's per-call permit cost
+    doesn't fit — the dispatch loop retries when permits free up). Returned
+    dicts carry ``env_name`` + ``example_id``."""
 
     def __init__(self, train_envs: TrainEnvs, *, seed: int | None) -> None:
         self.rng = random.Random(seed)
@@ -38,15 +43,18 @@ class TrainSource:
             self.cursors[env.name] = 0
             self.env_costs[env.name] = env.config.group_size if env.requires_group_scoring else 1
 
-        self.env_names = [e.name for e in self.envs]
+        env_names = [e.name for e in self.envs]
         configured_ratios = [e.config.ratio for e in self.envs]
         if all(r is not None for r in configured_ratios):
-            self.weights: list[float] = [float(r) for r in configured_ratios]  # type: ignore[arg-type]
+            weights: list[float] = [float(r) for r in configured_ratios]  # type: ignore[arg-type]
         else:
-            self.weights = [float(len(self.examples[name])) for name in self.env_names]
+            weights = [float(len(self.examples[name])) for name in env_names]
+        # Shares ``self.rng`` so env selection draws from the same stream as the
+        # dataset shuffles above — the example sequence matches the pre-seam path.
+        self.env_mix = WeightedRoundRobin(env_names, weights, rng=self.rng)
 
     def next_example(self, available_permits: int) -> dict | None:
-        env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
+        env_name = self.env_mix.pick()
         if self.env_costs[env_name] > available_permits:
             return None
         rows = self.examples[env_name]
