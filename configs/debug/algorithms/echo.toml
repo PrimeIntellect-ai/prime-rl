@@ -15,14 +15,13 @@ name = "debug-echo"
 [orchestrator]
 batch_size = 32
 group_size = 4
+[[orchestrator.algorithms]]
+id = "grpo"
 
-# alphabet-sort's feedback arrives as user messages, so train the user role
-# instead of echo's tool default.
-[orchestrator.algo]
-type = "echo"
+[[orchestrator.algorithms]]
+id = "echo"
 
-[orchestrator.algo.roles.user]
-alpha = 0.1
+# Builtin echo trains unsampled tool-message tokens with CE.
 
 [[orchestrator.train.env]]
 id = "alphabet-sort"

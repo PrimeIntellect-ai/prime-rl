@@ -3,13 +3,9 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, ConfigDict, Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
-from prime_rl.configs.algorithm import (
-    AlgorithmConfig,
-    GRPOAlgorithmConfig,
-)
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
@@ -146,6 +142,28 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
+class AlgorithmConfig(BaseConfig):
+    """Algorithm config reference carried by prime-rl-configs without requiring
+    the sibling verifiers algorithm extension in the slim wheel."""
+
+    model_config = ConfigDict(extra="allow")
+    id: str
+
+
+def resolve_algorithm_config(data: object) -> AlgorithmConfig:
+    if isinstance(data, AlgorithmConfig):
+        config = data
+    elif isinstance(data, str):
+        config = AlgorithmConfig(id=data)
+    elif isinstance(data, dict):
+        config = AlgorithmConfig.model_validate(data)
+    else:
+        raise TypeError(f"Algorithm config must be a string or table, got {type(data).__name__}")
+    if not config.id:
+        raise ValueError("Algorithm config must set non-empty `id`")
+    return config
+
+
 class EnvConfig(vf.EnvServerConfig):
     """A v1 environment: vf owns the taskset, harness, timeout, token limits, and
     worker-pool config; prime-rl adds orchestration fields and legacy-v0 bridge
@@ -163,12 +181,6 @@ class EnvConfig(vf.EnvServerConfig):
     max_retries: int = Field(3, ge=0)
     """Times the env server retries a failed rollout before returning an error."""
 
-    id: str | None = None
-    """Classic (v0) env id, loaded via verifiers ``load_environment(id, **args)`` and served
-    through the legacy bridge. Set this instead of ``taskset`` to run a legacy v0 environment."""
-    args: dict = Field(default_factory=dict)
-    """Kwargs passed to the v0 env's ``load_environment`` (only used when ``id`` is set)."""
-
     @model_validator(mode="before")
     @classmethod
     def _migrate_num_workers(cls, data):
@@ -182,16 +194,6 @@ class EnvConfig(vf.EnvServerConfig):
             if "pool" not in data and num_workers != "auto":
                 data["pool"] = {"type": "static", "num_workers": num_workers}
         return data
-
-    @property
-    def is_legacy(self) -> bool:
-        """A v0/legacy env (run via the bridge): an ``id`` is set and no v1 ``taskset`` is."""
-        return not self.taskset.id
-
-    @property
-    def env_id(self) -> str:
-        """The env identifier — the v1 taskset id (v1) or the legacy env id (v0)."""
-        return self.taskset.id or self.id or ""
 
     @property
     def resolved_name(self) -> str:
@@ -226,13 +228,19 @@ class TrainEnvConfig(EnvConfig):
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
-    """Rollouts generated per example for GRPO group-relative advantages.
-    Inherits from ``orchestrator.group_size`` when unset."""
+    """Rollouts generated per example. Inherits from ``orchestrator.group_size`` when unset."""
 
-    algo: AlgorithmConfig | None = None
-    """Training algorithm for this env. Inherits from the top-level
-    ``orchestrator.algo`` when unset; set ``type`` (and its params) to give
-    this env its own algorithm."""
+    algorithms: list[AlgorithmConfig] | None = None
+    """Algorithms for this env. Builtin ids run in prime-rl; env-owned ids run inside the env server.
+    Inherits from ``orchestrator.algorithms`` when unset."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_algorithm_configs(cls, data):
+        if isinstance(data, dict) and "algorithms" in data and data["algorithms"] is not None:
+            data = dict(data)
+            data["algorithms"] = [resolve_algorithm_config(item) for item in data["algorithms"]]
+        return data
 
 
 class EvalEnvConfig(EnvConfig):
@@ -379,49 +387,6 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the progress from checkpoint."""
 
 
-class TokensLengthPenaltyConfig(BaseConfig):
-    type: Literal["tokens"] = "tokens"
-
-    completion_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on model completion tokens. Finite and non-negative."""
-
-    tool_response_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on tool-response tokens (read from the rollout's ``*_total_tool_response_tokens`` harness metric; 0 if absent). Finite and non-negative."""
-
-
-class TurnsLengthPenaltyConfig(BaseConfig):
-    type: Literal["turns"] = "turns"
-
-
-LengthPenaltyConfig: TypeAlias = Annotated[
-    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
-    Field(discriminator="type"),
-]
-
-
-class DefaultAdvantageConfig(BaseConfig):
-    type: Literal["default"] = "default"
-
-    length_penalty: LengthPenaltyConfig | None = None
-    """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
-
-
-class CustomAdvantageConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Import path to the advantage function (e.g. ``my_module.my_advantage``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the advantage function."""
-
-
-AdvantageConfig: TypeAlias = Annotated[
-    DefaultAdvantageConfig | CustomAdvantageConfig,
-    Field(discriminator="type"),
-]
-
-
 # Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
 class GibberishFilterConfig(BaseConfig):
     type: Literal["gibberish"] = "gibberish"
@@ -503,20 +468,26 @@ class HostedModelConfig(ModelConfig):
     model fields plus the client of the live deployment."""
 
     client: ClientConfig = ClientConfig()
+    tokens: bool = False
+    """Whether this endpoint is token-capable: renderer rollouts, token ids, sampled logprobs, and prefill logprobs."""
 
 
 class OrchestratorConfig(BaseConfig):
-    algo: AlgorithmConfig = GRPOAlgorithmConfig()
-    """Training algorithm: sampling plus the per-token training signal (credit
-    assignment and loss routing, fused — its ``type`` names the algorithm).
-    Defaults to ``grpo``. Override per env via ``[[orchestrator.train.env]]``'s
-    ``algo``."""
-
     model: HostedModelConfig = HostedModelConfig()
     """The model being trained: its model fields plus the client of the live
     vLLM deployment (``[orchestrator.model] name = ...`` with
-    ``[orchestrator.model.client]``). Algorithm components reference it as
-    ``"policy"``."""
+    ``[orchestrator.model.client]``). Algorithms reference it as
+    ``models["policy"]``."""
+
+    actor: str = "policy"
+    """Model key used for train rollouts. ``"policy"`` means ``orchestrator.model``; any other value
+    must be present in ``orchestrator.models`` and token-capable."""
+
+    algorithms: list[AlgorithmConfig] = Field(default_factory=lambda: [AlgorithmConfig(id="grpo")])
+    """Default algorithms for train envs. Builtin ids run in prime-rl; env-owned ids run inside the env server."""
+
+    models: dict[str, HostedModelConfig] = Field(default_factory=dict)
+    """Additional model endpoints keyed by user-facing id. ``policy`` is reserved for ``orchestrator.model``."""
 
     train: TrainConfig = TrainConfig()
 
@@ -663,6 +634,8 @@ class OrchestratorConfig(BaseConfig):
     def auto_setup_session_headers(self):
         """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
         self.model.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
+        for model in self.models.values():
+            model.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
         return self
 
     @model_validator(mode="after")
@@ -685,40 +658,36 @@ class OrchestratorConfig(BaseConfig):
                 )
         return self
 
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_algorithm_configs(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "algorithms" in data and data["algorithms"] is not None:
+            data = dict(data)
+            data["algorithms"] = [resolve_algorithm_config(item) for item in data["algorithms"]]
+        return data
+
     @model_validator(mode="after")
     def inherit_env_algorithms(self):
-        """Envs without their own algorithm inherit the top-level one.
-        Declared before any validator that reads ``algo``."""
+        """Envs without explicit algorithms inherit the top-level algorithms."""
         for env_cfg in self.train.env:
-            if env_cfg.algo is None:
-                env_cfg.algo = self.algo.model_copy(deep=True)
+            if env_cfg.algorithms is None:
+                env_cfg.algorithms = [algorithm.model_copy(deep=True) for algorithm in self.algorithms]
+        return self
+
+    @model_validator(mode="after")
+    def validate_model_keys(self):
+        if "policy" in self.models:
+            raise ValueError('orchestrator.models cannot define key "policy"; use orchestrator.model')
+        if self.actor != "policy" and self.actor not in self.models:
+            raise ValueError(f'orchestrator.actor={self.actor!r} must be "policy" or a key in orchestrator.models')
+        if self.actor != "policy" and not self.models[self.actor].tokens:
+            raise ValueError(f"orchestrator.actor={self.actor!r} must reference a token-capable model (tokens=true)")
         return self
 
     @property
-    def any_policy_sourced(self) -> bool:
-        """True when at least one train env samples rollouts from the live policy."""
-        return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.env)
-
-    @model_validator(mode="after")
-    def validate_renderer_for_demo_scoring(self):
-        """``opsd`` rebuilds its demo-conditioned scoring prefix
-        client-side, which requires the policy's renderer (the canonical
-        messages → token ids path)."""
-        if self.renderer is not None:
-            return self
-        for env in self.train.env:
-            if env.algo is not None and env.algo.type == "opsd":
-                raise ValueError(
-                    f"env '{env.resolved_name}' uses opsd, which renders its demo-conditioned "
-                    "scoring prefix client-side and requires orchestrator.renderer — remove "
-                    "'renderer = \"None\"'."
-                )
-            if env.algo is not None and env.algo.type == "echo":
-                raise ValueError(
-                    f"env '{env.resolved_name}' trains env-provided tokens by message role (echo), "
-                    "which needs the renderer's per-token attribution — set orchestrator.renderer."
-                )
-        return self
+    def uses_policy_actor(self) -> bool:
+        """True when train rollouts sample from the live policy."""
+        return self.actor == "policy" and bool(self.train.env)
 
     @model_validator(mode="after")
     def validate_pool_size(self):
@@ -733,12 +702,6 @@ class OrchestratorConfig(BaseConfig):
                 f"orchestrator.pool_size={self.pool_size!r} is set but "
                 "orchestrator.renderer is None (MITO mode). Either configure a renderer "
                 "or remove pool_size."
-            )
-        if not self.any_policy_sourced:
-            raise ValueError(
-                f"orchestrator.pool_size={self.pool_size!r} is set but no train env samples "
-                "from the policy — the renderer-client sampling pool never runs (the renderer "
-                "is still used for client-side tokenization). Remove pool_size."
             )
         return self
 
@@ -852,10 +815,9 @@ class OrchestratorConfig(BaseConfig):
         """Populate extra_env_kwargs and vLLM sampling defaults from top-level fields."""
         for env in self.train.env:
             env.extra_env_kwargs.update(max_seq_len=self.seq_len)
-            # Policy-sourced rollouts hit our vLLM server; frozen-sourced
-            # rollouts may hit external OAI endpoints that reject these knobs.
-            assert env.algo is not None
-            if env.algo.sampling.source == "policy":
+            # Token-capable actor rollouts hit vLLM-compatible endpoints that return
+            # token ids/logprobs; generic endpoints may reject these knobs.
+            if self.actor == "policy" or self.models[self.actor].tokens:
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)

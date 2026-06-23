@@ -12,7 +12,7 @@ from threading import Event, Thread
 import pynvml
 import tomli_w
 
-from prime_rl.configs.algorithm import FrozenModelConfig
+from prime_rl.configs.env_server import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -226,26 +226,22 @@ def rl_local(config: RLConfig):
         else:
             logger.warning(
                 "No [inference] block configured - the policy inference server will not be started here. "
-                "Every algorithm requires a policy inference pool for evals + weight sync; "
+                "The policy inference pool is required for evals and weight sync; "
                 "make sure one is running at orchestrator.model.client.base_url "
                 f"({', '.join(config.orchestrator.model.client.base_url)}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
 
-        frozen_endpoints: list[str] = []
-        for env in config.orchestrator.train.env:
-            algo = env.algo
-            if algo is None:
-                continue
-            for ref in (algo.sampling.source, getattr(algo, "model", None)):
-                if isinstance(ref, FrozenModelConfig):
-                    frozen_endpoints.append(f"{ref.name} ({', '.join(ref.base_url)})")
-        if frozen_endpoints:
-            endpoints = ", ".join(dict.fromkeys(frozen_endpoints))
+        external_models = [
+            f"{key}={model.name} ({', '.join(model.client.base_url)})"
+            for key, model in config.orchestrator.models.items()
+        ]
+        if external_models:
+            endpoints = ", ".join(external_models)
             logger.info(
-                "Frozen model references are configured - the rl entrypoint does not start them. "
+                "Additional model endpoints are configured - the rl entrypoint does not start them. "
                 f"Make sure these endpoints are serving before the orchestrator starts: {endpoints}; "
-                "otherwise rollouts will hang."
+                "otherwise actor rollouts or algorithms that use them may fail."
             )
 
         # Start one env server per env (before the orchestrator, which attaches to

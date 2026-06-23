@@ -1,6 +1,6 @@
 # Training
 
-This page covers everything you need to launch, observe, checkpoint, and recover a `prime-rl` training run — the RL trainer (and the distillation algorithms that run through it) and the SFT trainer. For multi-node and cluster layouts, see [Scaling](scaling.md). For the loss math and algorithm knobs, see [Algorithms](algorithms.md).
+This page covers everything you need to launch, observe, checkpoint, and recover a `prime-rl` training run — the RL trainer, advantage-function training paths, and the SFT trainer. For multi-node and cluster layouts, see [Scaling](scaling.md). For the loss math and algorithm knobs, see [Algorithms](algorithms.md).
 
 > **AI agents working in this repo:** the equivalent runbooks are at [`skills/training/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/skills/training) — top-level routing in [`skills/training/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/training/SKILL.md), launch details in [`skills/training/start-run/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/training/start-run/SKILL.md), and check-in / restart procedures in [`skills/training/monitor-run/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/training/monitor-run/SKILL.md).
 
@@ -59,7 +59,8 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
-| `[orchestrator.algo]` | Training algorithm — the advantage `type` names it (`grpo` default, `max_rl`, `opd`, `opsd`, `sft`, `echo`, `reward`, `custom`). See [Algorithms](#algorithms). |
+| `orchestrator.algorithms` | Algorithms for training (`grpo` default; builtins include `max_rl`, `rl`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
+| `orchestrator.actor` | Model key used for train rollouts. Defaults to `"policy"`; set to a key in `orchestrator.models` for distillation-style rollouts. |
 | `[[orchestrator.train.env]]` | Training environments. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Environments](configuration.md#environments-orchestratortrainenv). |
 | `[[orchestrator.eval.env]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
@@ -83,27 +84,41 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 
 ### Algorithms
 
-The RL entrypoint supports several training algorithms, switched via `[orchestrator.algo]`'s `type` (see [Algorithms](algorithms.md#the-algorithm-abstraction) for the full reference, model references, and per-algorithm customization):
+The RL entrypoint trains from algorithms selected by `[[orchestrator.algorithms]]` or per env with `[[orchestrator.train.env.algorithms]]`:
 
-| `algo.type` | Frozen model (`algo.teacher`) | Use case |
-|---|---|---|
-| `grpo` (default) | None | Standard group-relative RL |
-| `max_rl` | None | [MaxRL](https://arxiv.org/abs/2602.02710): GRPO with mean-normalized advantages (maximum-likelihood RL) |
-| `opd` | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): the policy generates rollouts, the trainer minimizes per-token reverse KL to a reference model |
-| `sft` | Required, any OpenAI-compatible endpoint | Hard-distill: a frozen model generates rollouts, the policy trains on its tokens |
-| `opsd` | `"policy"` (the default, no deployment) or a vLLM endpoint serving a frozen copy | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own reference conditioned on expert demonstrations |
-| `echo` | None | GRPO plus cross-entropy on env-observation tokens |
+| Algorithm | Use case |
+|---|---|
+| `grpo` (default) | Standard group-relative RL. |
+| `max_rl` | Mean-normalized group-relative RL. |
+| `rl` | Raw trace reward as the sampled-token advantage. |
+| `opd` | Policy rollouts with reference-model logprob deltas folded into RL advantages. Requires `models["reference"]` to be token-capable. |
+| `sft` | CE weight `1.0` on sampled tokens. Pair with `actor = "<model-key>"` for distillation-style rollouts. |
+| `opsd` | Demonstration-conditioned reference scoring folded into RL advantages. |
+| `echo` | Cross-entropy on env-observation tokens. |
 
-`reward` (raw-reward credit, no baseline) and `custom` (your own advantage function) complete the set — see [Algorithms § The Algorithms](algorithms.md#the-algorithms).
+Additional model endpoints are declared under `orchestrator.models`; the trained model is `models["policy"]` and comes from `orchestrator.model`:
 
-Frozen models are declared inline on the algorithm (`[orchestrator.algo.teacher]` with `name` + `base_url`). The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `base_url` at them:
+```toml
+[[orchestrator.algorithms]]
+id = "opd"
+model = "reference"
+
+[orchestrator.models.reference]
+name = "Qwen/Qwen3-32B"
+tokens = true
+
+[orchestrator.models.reference.client]
+base_url = ["http://localhost:8001/v1"]
+```
+
+For endpoints you host yourself, start the server and point the model key at it:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \
   --model.name <frozen-model> --server.port 8001
 ```
 
-The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no orchestrator. Use the `sft` algorithm only when you want a frozen model to generate the supervision on the fly.
+The standalone `uv run sft` entrypoint is the traditional dataset-based SFT path. Use `id = "sft"` in RL only when the supervision comes from trace rollouts.
 
 ### Important Metrics
 

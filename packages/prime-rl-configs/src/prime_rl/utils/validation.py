@@ -22,10 +22,8 @@ def propagate_shared_fields(data: Any) -> Any:
         The original footgun the mutex was designed to catch — a sub-config
         value silently winning over a later CLI shared override — is still
         caught because that scenario produces *different* values.
-      - **Aliased sub-paths**: ``orchestrator.model.*`` (flat) is checked
-        against the nested ``orchestrator.model.*`` spelling and the
-        ``orchestrator.policy.*`` / ``orchestrator.student.*`` aliases, so the
-        conflict fires regardless of which spelling the user wrote.
+      - **Aliased sub-paths**: ``orchestrator.model.*`` is checked against the
+        matching orchestrator path so conflicts fire before sub-config parsing.
     """
     if not isinstance(data, dict):
         return data
@@ -68,29 +66,20 @@ def propagate_shared_fields(data: Any) -> Any:
         for target in targets:
             fill(target, value)
 
-    # [model] → trainer / orchestrator (flat spelling, re-nested by
-    # fold_policy_shortcuts) / inference.
+    # [model] → trainer / orchestrator / inference.
     propagate(
         "model.name",
         "trainer.model.name",
         "inference.model.name",
         "orchestrator.model.name",
-        aliases=(
-            "orchestrator.model.name",
-            "orchestrator.policy.model.name",
-            "orchestrator.student.model.name",
-        ),
+        aliases=("orchestrator.model.name",),
     )
     propagate(
         "model.vlm",
         "trainer.model.vlm",
         "inference.model.vlm",
         "orchestrator.model.vlm",
-        aliases=(
-            "orchestrator.model.vlm",
-            "orchestrator.policy.model.vlm",
-            "orchestrator.student.model.vlm",
-        ),
+        aliases=("orchestrator.model.vlm",),
     )
 
     # [log]

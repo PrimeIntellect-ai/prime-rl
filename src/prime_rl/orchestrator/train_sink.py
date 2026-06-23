@@ -2,9 +2,8 @@
 
 1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
    dispatcher producing more rollouts). Errored rollouts skip this.
-2. ``process_group`` — filters errored rollouts, hands survivors to the env
-   algorithm's ``finalize_group`` (advantages + per-sample wire stamping),
-   runs the pre-batch filter pass.
+2. ``process_group`` — filters errored rollouts, runs configured algorithms,
+   and runs the pre-batch filter pass.
 3. ``process_batch`` — applies post-batch filter annotations and assembles
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
@@ -17,13 +16,16 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict
 
+import verifiers.v1 as vf
+from verifiers.v1.serve import ModelRuntimeConfig
+
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.algo import finalize_group, finalize_rollout
+from prime_rl.orchestrator.algorithms import BUILTIN_ALGORITHMS
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout, TrainBatch, TrainBatchMetrics
-from prime_rl.transport import TrainingSample
+from prime_rl.transport import TrainingAdvantage, TrainingSample
 from prime_rl.utils.logger import get_logger
 
 
@@ -35,6 +37,8 @@ class TrainSink:
         config: OrchestratorConfig,
         *,
         train_envs: TrainEnvs,
+        model_runtimes: dict[str, vf.ModelRuntime],
+        model_runtime_configs: dict[str, ModelRuntimeConfig],
         mm_token_type_ids_mapping: dict[int, int] | None,
         batch_size: int | None,
         token_batch_size: int | None,
@@ -46,6 +50,8 @@ class TrainSink:
         )
         self.config = config
         self.train_envs = train_envs
+        self.model_runtimes = model_runtimes
+        self.model_runtime_configs = model_runtime_configs
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
@@ -132,7 +138,7 @@ class TrainSink:
         return None
 
     async def process_rollout(self, rollout: Rollout) -> None:
-        """Build branch samples from the rollout trace, then run rollout-local scoring."""
+        """Build branch samples from the rollout trace."""
         if rollout.has_error:
             return
         rollout.samples = trace_to_samples(
@@ -140,7 +146,6 @@ class TrainSink:
             env_name=rollout.env_name,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
         )
-        await finalize_rollout(self.train_envs.get(rollout.env_name).algorithm, rollout)
 
     async def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
@@ -170,17 +175,124 @@ class TrainSink:
             )
             return
 
-        # Advantages + per-sample wire stamping (advantage stream, loss
-        # routing) are the algorithm's job; the sink only owns the grouping
-        # mechanics.
-        await finalize_group(env.algorithm, survivors)
+        channels_by_branch: dict[tuple[str, int], dict[str, TrainingAdvantage]] = defaultdict(dict)
+        algorithm_configs = env.config.algorithms or []
+        for algorithm_config in algorithm_configs:
+            input_count = len(survivors)
+            if algorithm_config.id in BUILTIN_ALGORITHMS:
+                algorithm = BUILTIN_ALGORITHMS[algorithm_config.id](algorithm_config)
+                await algorithm.setup(self.model_runtimes)
+                loss = algorithm.loss()
+                for trace in survivors:
+                    for branch in trace.branches:
+                        branch.advantages = []
+                        branch.mask = []
+                survivors = await algorithm.advantage(survivors)
+                if len(survivors) != input_count:
+                    raise ValueError(
+                        f"algorithm {algorithm_config.id!r} returned {len(survivors)} traces for {input_count} inputs"
+                    )
+                for trace in survivors:
+                    for branch in trace.branches:
+                        if not branch.advantages and not branch.mask:
+                            continue
+                        if len(branch.advantages) != len(branch.mask):
+                            raise ValueError(
+                                f"algorithm {algorithm_config.id!r} wrote mismatched values/mask on trace {trace.id} "
+                                f"branch {branch.index}: {len(branch.advantages)} != {len(branch.mask)}"
+                            )
+                        if len(branch.advantages) != len(branch.token_ids):
+                            raise ValueError(
+                                f"algorithm {algorithm_config.id!r} wrote {len(branch.advantages)} values for trace {trace.id} "
+                                f"branch {branch.index} with {len(branch.token_ids)} tokens"
+                            )
+                        by_loss = channels_by_branch[(trace.id, branch.index)]
+                        existing = by_loss.get(loss)
+                        if existing is None:
+                            by_loss[loss] = TrainingAdvantage(
+                                loss=loss,
+                                values=[
+                                    float(value) if keep else 0.0
+                                    for value, keep in zip(branch.advantages, branch.mask, strict=True)
+                                ],
+                                mask=list(branch.mask),
+                            )
+                        else:
+                            existing.values = [
+                                old + (float(new) if keep else 0.0)
+                                for old, new, keep in zip(existing.values, branch.advantages, branch.mask, strict=True)
+                            ]
+                            existing.mask = [
+                                old_keep or new_keep
+                                for old_keep, new_keep in zip(existing.mask, branch.mask, strict=True)
+                            ]
+                continue
 
-        # The env has a single sampling temperature; fan it out across each
-        # sample's completion tokens (interleave leaves it empty).
+            env_results = await env.run_algorithms([algorithm_config], survivors, self.model_runtime_configs)
+            if len(env_results) != len(survivors):
+                raise ValueError(
+                    f"env algorithm {algorithm_config.id!r} returned {len(env_results)} traces for {len(survivors)} inputs"
+                )
+            for trace, trace_result in zip(survivors, env_results, strict=True):
+                for branch_result in trace_result.branches:
+                    branch = trace.branches[branch_result.branch_index]
+                    if len(branch_result.advantages) != len(branch_result.mask):
+                        raise ValueError(
+                            f"env algorithm {algorithm_config.id!r} wrote mismatched values/mask on trace {trace.id} "
+                            f"branch {branch_result.branch_index}: "
+                            f"{len(branch_result.advantages)} != {len(branch_result.mask)}"
+                        )
+                    if len(branch_result.advantages) != len(branch.token_ids):
+                        raise ValueError(
+                            f"env algorithm {algorithm_config.id!r} wrote {len(branch_result.advantages)} values for trace {trace.id} "
+                            f"branch {branch_result.branch_index} with {len(branch.token_ids)} tokens"
+                        )
+                    by_loss = channels_by_branch[(trace.id, branch_result.branch_index)]
+                    existing = by_loss.get(branch_result.loss)
+                    if existing is None:
+                        by_loss[branch_result.loss] = TrainingAdvantage(
+                            loss=branch_result.loss,
+                            values=[
+                                float(value) if keep else 0.0
+                                for value, keep in zip(branch_result.advantages, branch_result.mask, strict=True)
+                            ],
+                            mask=list(branch_result.mask),
+                        )
+                    else:
+                        existing.values = [
+                            old + (float(new) if keep else 0.0)
+                            for old, new, keep in zip(
+                                existing.values, branch_result.advantages, branch_result.mask, strict=True
+                            )
+                        ]
+                        existing.mask = [
+                            old_keep or new_keep
+                            for old_keep, new_keep in zip(existing.mask, branch_result.mask, strict=True)
+                        ]
+
         temperature = env.sampling_args["temperature"]
         for r in survivors:
+            r.advantages = []
+            branches = [branch for branch in r.branches if branch.token_ids and any(branch.sampled_mask)]
+            if len(branches) != len(r.samples):
+                raise ValueError(
+                    f"trace/sample branch mismatch for env {env_name}: {len(branches)} branches, {len(r.samples)} samples"
+                )
+            for branch, sample in zip(branches, r.samples, strict=True):
+                sample.advantages = list(channels_by_branch.get((r.id, branch.index), {}).values())
+                if not sample.advantages:
+                    raise ValueError(
+                        f"no advantage channel was produced for env {env_name}, trace {r.id}, branch {branch.index}"
+                    )
+                for channel in sample.advantages:
+                    if channel.loss == "rl":
+                        r.advantages.extend(
+                            value for value, keep in zip(channel.values, channel.mask, strict=True) if keep
+                        )
             for sample in r.samples:
-                sample.completion_temperatures = [temperature] * len(sample.completion_ids)
+                sample.temperatures = [temperature] * len(sample.token_ids)
+            if not r.advantages:
+                r.advantages = None
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)
@@ -249,8 +361,8 @@ class TrainSink:
             prefill = 0
             decode = 0
             for sample in r.samples:
-                sample_decode = sum(sample.completion_mask)
-                sample_prefill = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode
+                sample_decode = sum(sample.mask)
+                sample_prefill = len(sample.mask) - sample_decode
                 decode += sample_decode
                 prefill += sample_prefill
                 if not r.is_filtered:

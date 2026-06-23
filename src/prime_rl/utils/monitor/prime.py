@@ -191,7 +191,7 @@ class PrimeMonitor(Monitor):
             frontend_url = prime_config.frontend_url
 
         payload: dict[str, Any] = {
-            "base_model": run_config.student.model.name if run_config else "unknown",
+            "base_model": run_config.model.name if run_config else "unknown",
             "max_steps": (run_config.max_steps if run_config else None) or 0,
         }
         if run_config:
@@ -341,12 +341,13 @@ class PrimeMonitor(Monitor):
                 problem_id = int(task_idx) if task_idx is not None else sample_id
             except (TypeError, ValueError):
                 problem_id = sample_id
+            advantage = sum(rollout.advantages) / len(rollout.advantages) if rollout.advantages else None
 
             trajectory_data = [
                 {
                     "messages": [m.model_dump(mode="json") for m in branch.messages],
                     "reward": rollout.reward,
-                    "advantage": rollout.advantage,
+                    "advantage": advantage,
                     "num_input_tokens": branch.prompt_len,
                     "num_output_tokens": branch.completion_len,
                 }
@@ -368,7 +369,7 @@ class PrimeMonitor(Monitor):
                     "task": json.dumps(rollout.task.model_dump(mode="json")),
                     "info": "",
                     "reward": rollout.reward,
-                    "advantage": rollout.advantage,
+                    "advantage": advantage,
                     "metrics": json.dumps(rollout.metrics),
                     "timing": json.dumps(rollout.timing.model_dump(mode="json")),
                     "num_input_tokens": branches[-1].prompt_len,

@@ -25,11 +25,9 @@ class TensorMicroBatch(TypedDict):
     # Token level
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
-    advantages: Float[Tensor, "batch seq"]
+    advantages: list["TensorTrainingAdvantage"]
     rewards: Float[Tensor, "batch seq"] | None
     inference_logprobs: Float[Tensor, "batch seq"]
-    ref_logprobs: Float[Tensor, "batch seq"] | None
-    loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
     env_names: list[str]
     sequence_lengths: list[int]
@@ -49,15 +47,15 @@ class TensorMicroBatch(TypedDict):
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
-    # Per-token component weight streams. ``None`` means absent: no ce/ref_kl
-    # component, rl weight 1.0 on every loss-masked token.
-    rl_weights: Float[Tensor, "batch seq"] | None
-    ce_weights: Float[Tensor, "batch seq"] | None
-    ref_kl_weights: Float[Tensor, "batch seq"] | None
-
     # Packer-derived metadata used for run-local debug exports.
     run_id: str | None
     run_step: int | None
+
+
+class TensorTrainingAdvantage(TypedDict):
+    loss: str
+    values: Float[Tensor, "batch seq"]
+    mask: Bool[Tensor, "batch seq"]
 
 
 class FakeDataLoader:
@@ -123,21 +121,16 @@ class FakeDataLoader:
         return {
             "input_ids": input_ids.unsqueeze(0),
             "position_ids": position_ids.unsqueeze(0),
-            "advantages": advantages.unsqueeze(0),
+            "advantages": [{"loss": "rl", "values": advantages.unsqueeze(0), "mask": loss_mask.unsqueeze(0)}],
             "rewards": None,
             "inference_logprobs": inference_logprobs.unsqueeze(0),
-            "ref_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
             "env_names": ["fake"] * input_ids.shape[0],
             "sequence_lengths": sequence_lengths,
-            "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
-            "rl_weights": None,
-            "ce_weights": None,
-            "ref_kl_weights": None,
             "run_id": None,
             "run_step": None,
         }
@@ -156,21 +149,22 @@ class FakeDataLoader:
                 generator=generator,
             ),
             "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
-            "advantages": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
+            "advantages": [
+                {
+                    "loss": "rl",
+                    "values": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
+                    "mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
+                }
+            ],
             "rewards": None,
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
-            "ref_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
             "env_names": ["fake"] * self.seq_len,
             "sequence_lengths": [self.seq_len],
-            "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
-            "rl_weights": None,
-            "ce_weights": None,
-            "ref_kl_weights": None,
             "run_id": None,
             "run_step": None,
         }
@@ -252,15 +246,18 @@ class DataLoader:
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
-            advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
+            advantages=[
+                {
+                    "loss": channel.loss,
+                    "values": torch.tensor(channel.values, dtype=torch.float).unsqueeze(0),
+                    "mask": torch.tensor(channel.mask, dtype=torch.bool).unsqueeze(0),
+                }
+                for channel in micro_batch.advantages
+            ],
             rewards=torch.tensor(micro_batch.rewards, dtype=torch.float).unsqueeze(0)
             if micro_batch.rewards is not None
             else None,
             inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
-            ref_logprobs=torch.tensor(micro_batch.ref_logprobs, dtype=torch.float).unsqueeze(0)
-            if micro_batch.ref_logprobs is not None
-            else None,
-            loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
             env_names=micro_batch.env_names,
             sequence_lengths=micro_batch.sequence_lengths,
@@ -270,15 +267,6 @@ class DataLoader:
             if micro_batch.mm_token_type_ids is not None
             else None,
             routed_experts=routed_experts,
-            rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)
-            if micro_batch.rl_weights is not None
-            else None,
-            ce_weights=torch.tensor(micro_batch.ce_weights, dtype=torch.float).unsqueeze(0)
-            if micro_batch.ce_weights is not None
-            else None,
-            ref_kl_weights=torch.tensor(micro_batch.ref_kl_weights, dtype=torch.float).unsqueeze(0)
-            if micro_batch.ref_kl_weights is not None
-            else None,
             run_id=micro_batch.run_id,
             run_step=micro_batch.run_step,
         )

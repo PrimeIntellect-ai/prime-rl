@@ -17,12 +17,10 @@ name = "debug-self-distill"
 [orchestrator]
 batch_size = 32
 group_size = 1
+[[orchestrator.algorithms]]
+id = "opsd"
 
 # reverse-text's demo lives in the "answer" column.
-[orchestrator.algo]
-type = "opsd"
-model = "policy"
-demo_key = "answer"
 
 [orchestrator.renderer]
 name = "qwen3"

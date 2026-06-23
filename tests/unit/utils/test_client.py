@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
-from verifiers.v1.clients.config import EvalClientConfig
+from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter, setup_clients
@@ -67,6 +67,7 @@ def test_setup_clients_assigns_renderer_and_dp_rank_headers():
         renderer_config=renderer_settings,
     )
 
+    assert [type(client) for client in clients] == [TrainClientConfig, TrainClientConfig]
     assert [client.type for client in clients] == ["train", "train"]
     assert [client.renderer for client in clients] == [renderer_settings, renderer_settings]
     assert [client.renderer_model_name for client in clients] == [None, None]

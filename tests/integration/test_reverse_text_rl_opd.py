@@ -31,7 +31,7 @@ def _wait_for_ref_server(port: int, timeout_s: int) -> None:
         except (httpx.ConnectError, httpx.ReadTimeout):
             pass
         time.sleep(1.0)
-    raise TimeoutError(f"Teacher inference server at {url} did not become ready within {timeout_s}s")
+    raise TimeoutError(f"Reference inference server at {url} did not become ready within {timeout_s}s")
 
 
 @pytest.fixture(scope="module")

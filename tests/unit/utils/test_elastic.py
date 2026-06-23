@@ -437,11 +437,11 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
 
         assert clients == [
             TrainClientConfig(
-                type="train",
-                renderer=renderer_settings,
-                renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
-                api_key_var="PRIME_API_KEY",
                 base_url="http://10.0.0.1:8000/v1",
+                api_key_var="PRIME_API_KEY",
                 headers={},
+                renderer=renderer_settings,
+                pool_size=1,
+                renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
             )
         ]

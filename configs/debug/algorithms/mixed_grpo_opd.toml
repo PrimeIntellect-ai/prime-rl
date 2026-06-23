@@ -1,6 +1,5 @@
 # Mixed per-env algorithms in one run: a GRPO env and an OPD env, both on
-# reverse-text. Exercises heterogeneous train batches — OPD samples ship
-# ref_logprobs, GRPO samples don't, and both pack into the same micro batches.
+# reverse-text. Exercises heterogeneous loss channels in one train batch.
 # Start the frozen reference server first (on a separate GPU):
 #   CUDA_VISIBLE_DEVICES=1 uv run inference \
 #     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
@@ -22,8 +21,15 @@ name = "debug-mixed-grpo-opd"
 batch_size = 128
 group_size = 16
 
-[orchestrator.algo]
-type = "grpo"
+[[orchestrator.algorithms]]
+id = "grpo"
+
+[orchestrator.models.reference]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+tokens = true
+
+[orchestrator.models.reference.client]
+base_url = ["http://localhost:8001/v1"]
 
 [orchestrator.renderer]
 name = "qwen3"
@@ -39,12 +45,8 @@ name = "reverse-text-grpo"
 id = "reverse-text"
 name = "reverse-text-opd"
 
-[orchestrator.train.env.algo]
-type = "opd"
-
-[orchestrator.train.env.algo.teacher]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
-base_url = ["http://localhost:8001/v1"]
+[[orchestrator.train.env.algorithms]]
+id = "opd"
 
 [orchestrator.eval]
 interval = 5

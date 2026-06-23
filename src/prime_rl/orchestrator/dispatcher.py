@@ -12,11 +12,11 @@
   source's emptiness), so in-flight rollouts of the opposite kind drain
   naturally on either side of an eval boundary.
 - ``on_new_version`` (called by the watcher) bumps ``off_policy_steps`` on
-  in-flight train rollouts and drops groups past ``max_off_policy_steps``.
-  Eval rollouts are measurements for the policy version they started with,
-  so they are allowed to finish even if training advances. Train rollouts
-  sampled from a frozen model never age — their sampler doesn't change
-  with policy updates.
+  in-flight policy-actor train rollouts and drops groups past
+  ``max_off_policy_steps``. Eval rollouts are measurements for the policy
+  version they started with, so they are allowed to finish even if training
+  advances. Train rollouts sampled from a non-policy actor never age — their
+  sampler doesn't change with policy updates.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
   count-to-``group_size`` finalization still fires.
 """
@@ -127,6 +127,8 @@ class RolloutDispatcher:
         train_source: TrainSource,
         eval_source: EvalSource | None,
         policy_pool: InferencePool,
+        model_pools: dict[str, InferencePool],
+        actor: str,
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
@@ -138,6 +140,8 @@ class RolloutDispatcher:
         # Train rollouts go to the env sampler's pool; eval always
         # evaluates the policy.
         self.policy_pool = policy_pool
+        self.model_pools = model_pools
+        self.actor = actor
         self.train_source = train_source
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
@@ -169,13 +173,12 @@ class RolloutDispatcher:
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
 
-    def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
-        """``(pool, model_name, is_live)`` for *train* rollouts of this env —
-        the env sampler's pool. (Eval always uses the policy.)"""
-        sampler = self.train_envs.get(env_name).sampler
-        if sampler.samples_from_live_policy:
-            return sampler.pool, self.policy.model_name, True
-        return sampler.pool, sampler.pool.model_name, False
+    def _train_pool_for(self) -> tuple[InferencePool, str, bool]:
+        """``(pool, model_name, is_live)`` for train rollouts. Eval always uses the policy."""
+        if self.actor == "policy":
+            return self.policy_pool, self.policy.model_name, True
+        pool = self.model_pools[self.actor]
+        return pool, pool.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -266,9 +269,8 @@ class RolloutDispatcher:
         for meta in self.inflight.values():
             if meta.kind != "train":
                 continue
-            # Frozen-sourced rollouts never go stale — their sampler doesn't
-            # change with policy updates.
-            if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
+            # Non-policy actors never go stale when policy weights update.
+            if self.actor != "policy":
                 continue
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:
@@ -392,7 +394,7 @@ class RolloutDispatcher:
             pool, model_name = self.policy_pool, self.policy.model_name
             live_sourced = True
         else:
-            pool, model_name, live_sourced = self._train_pool_for(group.env_name)
+            pool, model_name, live_sourced = self._train_pool_for()
 
         # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
@@ -413,9 +415,8 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        # Frozen-sourced train rollouts hit a frozen pool; salting per policy
-        # version would invalidate its prefix cache every weight update for
-        # no reason.
+        # Non-policy actor rollouts hit a separate pool; salting per policy
+        # version would invalidate its prefix cache every weight update.
         if live_sourced:
             cache_salt = str(group.policy_version_at_start)
         else:
@@ -527,6 +528,7 @@ class RolloutDispatcher:
         rollout.group_id = meta.group_id
         rollout.policy_version = policy_version
         rollout.off_policy_steps = meta.off_policy_steps
+        rollout.actor = self.actor if meta.kind == "train" else "policy"
         if meta.kind == "eval":
             assert eval_step is not None, "eval rollout missing eval_step"
             rollout.eval_step = eval_step

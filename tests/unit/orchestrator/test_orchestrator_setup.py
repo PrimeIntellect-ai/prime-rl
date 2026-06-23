@@ -18,7 +18,6 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
             ),
             renderer=renderer_settings,
             pool_size=None,
-            any_policy_sourced=True,
         )
         renderer = object()
         inference_pool = object()
@@ -90,10 +89,9 @@ def test_setup_policy_inference_pool_defaults_to_mito():
     asyncio.run(run())
 
 
-def test_setup_policy_inference_pool_keeps_renderer_without_policy_sampling():
-    """Frozen-sourced runs (e.g. sft) keep the renderer object for client-side
-    tokenization, but the policy pool serves plain chat completions — the
-    renderer-client sampling path is never wired."""
+def test_setup_policy_inference_pool_uses_renderer_even_without_policy_actor():
+    """The policy runtime remains token-capable when a renderer is configured,
+    even if train rollouts use a different actor."""
 
     async def run() -> None:
         tokenizer = object()
@@ -105,7 +103,6 @@ def test_setup_policy_inference_pool_keeps_renderer_without_policy_sampling():
             ),
             renderer=renderer_settings,
             pool_size=None,
-            any_policy_sourced=False,
         )
         renderer = object()
         inference_pool = object()
@@ -128,8 +125,10 @@ def test_setup_policy_inference_pool_keeps_renderer_without_policy_sampling():
         setup_pool_mock.assert_awaited_once_with(
             config.model.client,
             model_name="policy-model",
-            train_client_type="openai_chat_completions",
+            train_client_type="renderer",
             eval_client_type="openai_chat_completions",
+            renderer_config=renderer_settings,
+            pool_size=None,
         )
 
     asyncio.run(run())

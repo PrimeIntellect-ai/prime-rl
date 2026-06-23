@@ -611,9 +611,8 @@ class RLConfig(BaseConfig):
     def auto_setup_inference_client(self):
         """Auto-configure the orchestrator policy client from the inference server config.
 
-        Always sets dp_rank_count from inference DP size. When no train env
-        samples from the policy (e.g. sft_distill), also sets base_url —
-        policy-sourced algorithms rely on the ClientConfig default
+        Always sets dp_rank_count from inference DP size. When the train actor
+        is not the policy, also sets base_url — policy-sourced training relies on the ClientConfig default
         (``["http://localhost:8000/v1"]``) which already matches the auto-launched
         policy vLLM at inference.server.port = 8000.
         """
@@ -622,7 +621,7 @@ class RLConfig(BaseConfig):
         client = self.orchestrator.model.client
         if "dp_rank_count" not in client.model_fields_set:
             client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
-        if not self.orchestrator.any_policy_sourced and "base_url" not in client.model_fields_set:
+        if not self.orchestrator.uses_policy_actor and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
             client.base_url = [f"http://{host}:{port}/v1"]

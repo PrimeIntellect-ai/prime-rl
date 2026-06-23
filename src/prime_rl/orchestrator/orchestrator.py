@@ -27,6 +27,8 @@ import time
 from typing import TYPE_CHECKING
 
 import tomli_w
+import verifiers.v1 as vf
+from verifiers.v1.serve import ModelRuntimeConfig
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -40,7 +42,6 @@ from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.algo import finalize_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -74,7 +75,7 @@ from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import safe_cancel
-from prime_rl.utils.client import init_nccl_broadcast
+from prime_rl.utils.client import init_nccl_broadcast, setup_clients, setup_inference_pool
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
@@ -127,6 +128,9 @@ class Orchestrator:
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
     policy_inference: InferencePool
+    model_pools: dict[str, InferencePool]
+    model_runtime_configs: dict[str, ModelRuntimeConfig]
+    model_runtimes: dict[str, vf.ModelRuntime]
     monitor: Monitor
     sender: TrainingBatchSender
     train_envs: TrainEnvs
@@ -158,8 +162,8 @@ class Orchestrator:
         # ``verifiers.serve`` (env-server lifecycle) through our handler
         logging.getLogger("verifiers").setLevel(logging.CRITICAL + 1)
         intercept_vf_logging(logger="verifiers.serve", level="WARN")
-        algorithms = sorted({env.algo.type for env in config.train.env if env.algo is not None})
-        get_logger().info(f"Starting orchestrator (algorithm: {', '.join(algorithms)})")
+        algorithms = sorted({algorithm.id for env in config.train.env for algorithm in (env.algorithms or [])})
+        get_logger().info(f"Starting orchestrator (algorithms: {', '.join(algorithms)})")
 
         if config.bench:
             get_logger().warning(f"Running in benchmark mode (max_steps={config.max_steps})")
@@ -216,9 +220,8 @@ class Orchestrator:
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
 
-        # The one model prime-rl hosts: the live policy. Frozen model
-        # references are external endpoints — each env's Algorithm builds its
-        # own pools in ``setup()`` below.
+        # The one model prime-rl trains: the live policy. Additional configured
+        # models are unprivileged endpoints that traces expose by key.
         get_logger().info(
             f"Initializing policy inference pool (base_url={', '.join(config.model.client.base_url)}, "
             f"model={config.model.name})"
@@ -255,7 +258,7 @@ class Orchestrator:
         post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
 
         get_logger().info("Loading training environments")
-        self.train_envs = TrainEnvs(config.train.env, policy_pool=self.policy_inference, renderer=self.renderer)
+        self.train_envs = TrainEnvs(config.train.env)
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
         )
@@ -289,12 +292,75 @@ class Orchestrator:
         get_logger().info("Waiting for policy inference pool to be ready")
         await self.policy_inference.wait_for_ready(config.model.name)
         get_logger().success("Policy inference pool ready")
-        # Build + ready pools for each env's frozen sampling source and the
-        # algorithm's frozen reference model
-        await asyncio.gather(
-            *(env.sampler.setup() for env in self.train_envs),
-            *(env.algorithm.setup() for env in self.train_envs),
-        )
+
+        policy_client_config = self.policy_inference.train_clients[0].model_copy(deep=True)
+        policy_renderer_pool = None
+        if isinstance(policy_client_config, vf.TrainClientConfig):
+            from renderers import create_renderer_pool
+
+            policy_renderer_pool = create_renderer_pool(
+                policy_client_config.renderer_model_name or self.policy_inference.model_name,
+                policy_client_config.renderer,
+                size=policy_client_config.pool_size,
+            )
+        self.model_pools = {}
+        self.model_runtime_configs = {
+            "policy": ModelRuntimeConfig(
+                client=policy_client_config,
+                model=self.policy_inference.model_name,
+                sampling=vf.SamplingConfig(),
+            )
+        }
+        self.model_runtimes = {
+            "policy": vf.ModelRuntime(
+                model=self.policy_inference.model_name,
+                client=vf.resolve_client(policy_client_config, renderer=policy_renderer_pool),
+                sampling=vf.SamplingConfig(),
+                renderer=policy_renderer_pool,
+            )
+        }
+        for key, model_cfg in config.models.items():
+            if model_cfg.tokens:
+                get_logger().info(
+                    f"Initializing model endpoint {key!r} (base_url={', '.join(model_cfg.client.base_url)}, "
+                    f"model={model_cfg.name})"
+                )
+                pool = await setup_inference_pool(
+                    model_cfg.client,
+                    model_name=model_cfg.name,
+                    train_client_type="renderer",
+                    eval_client_type="openai_chat_completions",
+                    renderer_config=config.renderer,
+                    pool_size=config.pool_size,
+                )
+                await pool.wait_for_ready(model_cfg.name)
+                self.model_pools[key] = pool
+                client_config = pool.train_clients[0].model_copy(deep=True)
+            else:
+                clients = setup_clients(model_cfg.client, client_type="openai_chat_completions")
+                if not clients:
+                    raise ValueError(f"orchestrator.models[{key!r}] produced no clients")
+                client_config = clients[0].model_copy(deep=True)
+            renderer_pool = None
+            if isinstance(client_config, vf.TrainClientConfig):
+                from renderers import create_renderer_pool
+
+                renderer_pool = create_renderer_pool(
+                    client_config.renderer_model_name or model_cfg.name,
+                    client_config.renderer,
+                    size=client_config.pool_size,
+                )
+            self.model_runtime_configs[key] = ModelRuntimeConfig(
+                client=client_config,
+                model=model_cfg.name,
+                sampling=vf.SamplingConfig(),
+            )
+            self.model_runtimes[key] = vf.ModelRuntime(
+                model=model_cfg.name,
+                client=vf.resolve_client(client_config, renderer=renderer_pool),
+                sampling=vf.SamplingConfig(),
+                renderer=renderer_pool,
+            )
 
         if config.wandb is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(
@@ -331,6 +397,14 @@ class Orchestrator:
             if self.lora_name is not None:
                 self.policy_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
+            self.model_runtime_configs["policy"].model = self.policy.model_name
+            runtime = self.model_runtimes["policy"]
+            self.model_runtimes["policy"] = vf.ModelRuntime(
+                model=self.policy.model_name,
+                client=runtime.client,
+                sampling=runtime.sampling,
+                renderer=runtime.renderer,
+            )
             self.policy.version = self.progress.step
         else:
             get_logger().info("Training from scratch")
@@ -355,6 +429,8 @@ class Orchestrator:
             train_source=self.train_source,
             eval_source=self.eval_source,
             policy_pool=self.policy_inference,
+            model_pools=self.model_pools,
+            actor=config.actor,
             policy=self.policy,
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
@@ -364,6 +440,8 @@ class Orchestrator:
         self.train_sink = TrainSink(
             config,
             train_envs=self.train_envs,
+            model_runtimes=self.model_runtimes,
+            model_runtime_configs=self.model_runtime_configs,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
@@ -569,11 +647,7 @@ class Orchestrator:
             save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
 
-        # Per-env reference scoring runs at the batch boundary; envs without a
-        # reference are a no-op, so this is unconditional.
-        t = time.perf_counter()
-        await finalize_batch(self.train_envs, batch.rollouts)
-        scoring_time = time.perf_counter() - t
+        scoring_time = 0.0
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.update_dispatch_gate()
@@ -836,6 +910,14 @@ class Orchestrator:
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""
+        self.model_runtime_configs["policy"].model = self.policy.model_name
+        runtime = self.model_runtimes["policy"]
+        self.model_runtimes["policy"] = vf.ModelRuntime(
+            model=self.policy.model_name,
+            client=runtime.client,
+            sampling=runtime.sampling,
+            renderer=runtime.renderer,
+        )
         self.update_dispatch_gate()
 
     async def stop(self) -> None:
@@ -862,10 +944,11 @@ class Orchestrator:
                 await self.inference_metrics.stop()
             if getattr(self, "policy_inference", None) is not None:
                 await self.policy_inference.stop()
+            for pool in getattr(self, "model_pools", {}).values():
+                await pool.stop()
+            for runtime in getattr(self, "model_runtimes", {}).values():
+                await runtime.client.close()
             if self.train_envs is not None:
-                for env in self.train_envs:
-                    for pool in (*env.sampler.connected_pools, *env.algorithm.connected_pools):
-                        await pool.stop()
                 self.train_envs.shutdown()
             if self.eval_envs is not None:
                 self.eval_envs.shutdown()
