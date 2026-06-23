@@ -10,8 +10,5 @@ class EnvServerConfig(BaseConfig):
 
     log: LogConfig = LogConfig()
 
-    env_install_prerelease: bool = False
-    """Allow pre-release versions when installing environments. Passes ``--prerelease`` to ``prime env install``."""
-
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — logs and any generated artifacts are written as subdirectories."""

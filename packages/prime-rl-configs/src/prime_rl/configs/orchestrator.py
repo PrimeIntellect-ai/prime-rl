@@ -591,9 +591,6 @@ class OrchestratorConfig(BaseConfig):
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
-    env_install_prerelease: bool = False
-    """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
-
     experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
 
     @model_validator(mode="before")
