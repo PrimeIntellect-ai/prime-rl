@@ -194,11 +194,6 @@ class RLConfig(BaseConfig):
     clean_output_dir: bool = False
     """Delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming."""
 
-    env_server_base_port: int = 5000
-    """Base TCP port for launcher-spawned env servers; the i-th launcher-managed env
-    (train then eval) binds ``127.0.0.1:base_port + i``. Envs that set their own
-    ``address`` are skipped. Pick a range clear of the inference/weight-broadcast ports."""
-
     ### Shared configurations
 
     log: SharedLogConfig = SharedLogConfig()
