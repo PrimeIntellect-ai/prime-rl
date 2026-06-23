@@ -2,11 +2,11 @@ import asyncio
 import json
 
 import httpx
-import openai
-from verifiers.v1.clients.config import EvalClientConfig
+import verifiers.v1 as vf  # noqa: F401  (locked convention: v1 namespace import)
+from verifiers.types import ClientConfig
+from verifiers.utils import client_utils
 
 from prime_rl.orchestrator import utils as orchestrator_utils
-from prime_rl.transport import TrainingSample
 
 
 class _FakeOpenAIClient:
@@ -31,7 +31,7 @@ class _FakeOpenAIClient:
         )
 
 
-def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
+def test_compute_prefill_logprobs_uses_inference_generate(monkeypatch):
     async def _run():
         fake_client = _FakeOpenAIClient(
             {
@@ -42,30 +42,23 @@ def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
                 "kv_transfer_params": None,
             }
         )
-        # compute_teacher_logprobs constructs AsyncOpenAI directly; hand back the fake.
-        monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kwargs: fake_client)
+        # setup_openai_client constructs AsyncOpenAI via the name bound inside
+        # client_utils; patch that name so the fake is handed back.
+        monkeypatch.setattr(client_utils, "AsyncOpenAI", lambda **kwargs: fake_client)
 
-        sample = TrainingSample(
+        result = await orchestrator_utils.compute_prefill_logprobs(
+            ClientConfig(api_base_url="http://fake-host:8000/v1"),
+            model_name="ref-model",
             token_ids=[1, 2, 3],
-            mask=[False, True, True],
-            logprobs=[0.0, -0.1, -0.2],
-            temperatures=[1.0, 1.0, 1.0],
-            env_name="test-env",
         )
 
-        result = await orchestrator_utils.compute_teacher_logprobs(
-            clients=[EvalClientConfig(base_url="http://fake-host:8000/v1")],
-            model_name="teacher-model",
-            samples=[sample],
-        )
-
-        assert result == [[0.0, -0.7, -0.3]]
+        assert result == [0.0, -0.7, -0.3]
         assert fake_client.calls == [
             {
                 "url": "http://fake-host:8000/inference/v1/generate",
                 "cast_to": httpx.Response,
                 "body": {
-                    "model": "teacher-model",
+                    "model": "ref-model",
                     "token_ids": [1, 2, 3],
                     "sampling_params": {
                         "max_tokens": 1,

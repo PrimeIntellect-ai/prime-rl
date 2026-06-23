@@ -1,9 +1,9 @@
-# Start the teacher inference server first (on a separate GPU):
+# Start the frozen reference server first (on a separate GPU):
 #   CUDA_VISIBLE_DEVICES=1 uv run inference \
 #     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
 #     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
 # Then:
-#   uv run rl @ configs/debug/training_modes/sft_lora.toml
+#   uv run rl @ configs/debug/algorithms/sft_distill_lora.toml
 
 max_steps = 20
 seq_len = 2048
@@ -12,17 +12,27 @@ seq_len = 2048
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [wandb]
-project = "reverse-text-debug"
+project = "algorithms-debug"
 name = "debug-sft-lora"
 
 [orchestrator]
-training_mode = "sft"
 batch_size = 128
 group_size = 4
 
-# Teacher rolls out over plain chat-completions (no tokens); the renderer backfills them.
+[orchestrator.algo]
+type = "sft"
+
+[orchestrator.algo.teacher]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+base_url = ["http://localhost:8001/v1"]
+
+# The student's renderer tokenizes the teacher's messages into the student's
+# token space (backfill). Use `default` (wraps the student tokenizer's
+# apply_chat_template) so the CE target is faithful to the student's actual
+# chat template. The stock `qwen3` renderer injects an empty `<think></think>`
+# block this model's custom template never emits, corrupting the target.
 [orchestrator.renderer]
-name = "qwen3"
+name = "default"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128
@@ -39,12 +49,6 @@ max_completion_tokens = 128
 
 [[orchestrator.eval.env]]
 id = "reverse-text"
-
-[orchestrator.teacher.model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
-
-[orchestrator.teacher.client]
-base_url = ["http://localhost:8001/v1"]
 
 [trainer.optim]
 lr = 1e-4
