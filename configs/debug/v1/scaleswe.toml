@@ -1,6 +1,8 @@
-# v1 RL run: Qwen3.6-35B-A3B (MoE) on the v1 `scaleswe-v1` SWE taskset, rlm harness on a modal
-# runtime. Each scaleswe row ships its own Docker image (NEEDS_CONTAINER) which the Environment
-# injects into the modal sandbox; the agent edits the repo + runs tests there (no MCP toolset).
+# v1 RL run: Qwen3.6-35B-A3B (MoE) on the v1 `scaleswe-v1` SWE taskset, rlm harness on a prime
+# sandbox runtime. Each scaleswe row ships its own Docker image (NEEDS_CONTAINER) which the
+# Environment injects into the prime sandbox; the agent edits the repo + runs tests there (no MCP
+# toolset). Router replay is enabled: trainer.enable_router_replay replays the routed-expert
+# decisions returned by inference (enable_return_routed_experts).
 #
 # Built from configs/debug/v1/r2e_gym.toml (the v1 SWE structure) + the MoE parallelism from
 # configs/general_agent/rl_qwen3_30b_a3b.toml. The deployment/parallelism is a starting point off
@@ -10,7 +12,7 @@ max_steps = 400
 seq_len = 65536
 
 [slurm]
-job_name = "scaleswe-qwen36-35b-a3b"
+job_name = "scaleswe-qwen36-35b-a3b-rlm"
 project_dir = "."
 partition = "all"
 # Clean up this run's orphaned prime sandboxes before launch (label == SLURM job name).
@@ -23,7 +25,7 @@ num_infer_nodes = 2
 
 [wandb]
 project = "scaleswe-debug"
-name = "qwen36-35b-a3b"
+name = "qwen36-35b-a3b-rlm"
 
 [weight_broadcast]
 type = "nccl"
@@ -43,6 +45,9 @@ name = "Qwen/Qwen3.6-35B-A3B"
 # multi-node startup (step-0 swebench eval + slow first SWE batch) was tripping the
 # 600s _ALLGATHER_BASE watchdog → SIGABRT trainer crash.
 dist_timeout_seconds = 3600
+# Replay the routed-expert decisions returned by inference (enable_return_routed_experts)
+# so the trainer's MoE routing matches the rollout's — cuts trainer/inference mismatch on A3B.
+enable_router_replay = true
 
 [trainer.model]
 cp = 2
@@ -74,13 +79,13 @@ temperature = 1.0
 
 [[orchestrator.train.env]]
 name = "scaleswe"
-# v1 scaleswe SWE taskset; mini-swe-agent in a prime sandbox using the row's injected Docker image.
+# v1 scaleswe SWE taskset; rlm harness in a prime sandbox using the row's injected Docker image.
 taskset = { id = "scaleswe-v1" }
-harness = { id = "mini-swe-agent", runtime = { type = "prime", labels = ["scaleswe-qwen36-35b-a3b"] } }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["scaleswe-qwen36-35b-a3b-rlm"] } }
 
 [orchestrator.prime_monitor]
 
-# --- Eval: SWE-Bench Verified (first 100 tasks) every 20 steps, mini-swe-agent on prime ---
+# --- Eval: SWE-Bench Verified (first 100 tasks) every 20 steps, rlm harness on prime ---
 
 [orchestrator.eval]
 interval = 20
@@ -88,7 +93,7 @@ interval = 20
 [[orchestrator.eval.env]]
 name = "swebench-verified"
 taskset = { id = "swebench-verified-v1", use_prime_registry = true }
-harness = { id = "mini-swe-agent", runtime = { type = "prime", labels = ["scaleswe-qwen36-35b-a3b"] } }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["scaleswe-qwen36-35b-a3b-rlm"] } }
 num_examples = 100
 group_size = 1
 timeout = { rollout = 3600 }
@@ -98,6 +103,9 @@ timeout = { rollout = 3600 }
 [inference]
 gpu_memory_utilization = 0.85
 enable_prefix_caching = true
+# Return per-token routed-expert decisions to the trainer for router replay
+# (pairs with trainer.enable_router_replay).
+enable_return_routed_experts = true
 
 [inference.model]
 max_model_len = 65536
