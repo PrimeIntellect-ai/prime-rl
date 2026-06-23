@@ -32,9 +32,9 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     ``token_ids``."""
 
     token_ids: list[int]
-    mask: list[bool]  # per-token: True = model-sampled (trainable), False = context/scaffold
-    logprobs: list[float]  # per-token sampling logprobs (0.0 on non-sampled tokens)
-    temperatures: list[float]  # per-token temperature used during generation
+    mask: list[bool]
+    logprobs: list[float]
+    temperatures: list[float]
     env_name: str
     teacher_logprobs: list[float] | None = None
     advantage: float | None = None

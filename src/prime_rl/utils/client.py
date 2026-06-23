@@ -194,9 +194,6 @@ def setup_clients(
     config_cls = TrainClientConfig if is_renderer else EvalClientConfig
     renderer_extra: dict = {}
     if is_renderer:
-        # Pass the shared renderers.RendererConfig straight through (v1's
-        # TrainClientConfig.renderer is the same type; pydantic round-trips it
-        # over the wire). prime-rl and v1 share one renderer config.
         renderer_extra = {
             "renderer": renderer_config,
             "pool_size": pool_size or 1,

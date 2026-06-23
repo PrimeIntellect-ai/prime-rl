@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import io
 import json
@@ -279,7 +281,7 @@ class PrimeMonitor(Monitor):
             },
         )
 
-    def log_samples(self, rollouts: list["Rollout"], step: int) -> None:
+    def log_samples(self, rollouts: list[Rollout], step: int) -> None:
         """Logs rollouts to Prime Intellect API using presigned URLs for direct R2 upload."""
         if not self.is_master:
             return
@@ -322,7 +324,7 @@ class PrimeMonitor(Monitor):
             f"Initiated samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
-    def _rollouts_to_parquet_bytes(self, rollouts: list["Rollout"], step: int) -> bytes | None:
+    def _rollouts_to_parquet_bytes(self, rollouts: list[Rollout], step: int) -> bytes | None:
         """Convert rollouts to Parquet bytes for upload. One row per rollout, built from the
         message graph: the conversation is the unit (no prompt/completion split — meaningless in
         a multi-turn branch), so `completion` carries the main (last) branch's full message list
@@ -365,12 +367,12 @@ class PrimeMonitor(Monitor):
                     "trajectory": json.dumps(trajectory_data),
                     "answer": "",
                     "env_name": rollout.env_name,
-                    "task": json.dumps(rollout.task.model_dump(mode="json")),
+                    "task": rollout.task.model_dump_json(),
                     "info": "",
                     "reward": rollout.reward,
                     "advantage": rollout.advantage,
                     "metrics": json.dumps(rollout.metrics),
-                    "timing": json.dumps(rollout.timing.model_dump(mode="json")),
+                    "timing": rollout.timing.model_dump_json(),
                     "num_input_tokens": branches[-1].prompt_len,
                     "num_output_tokens": branches[-1].completion_len,
                     "created_at": now,
@@ -485,7 +487,7 @@ class PrimeMonitor(Monitor):
                 await asyncio.sleep(delay)
         return False
 
-    def log_eval_samples(self, rollouts: list["Rollout"], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list[Rollout], env_name: str, step: int) -> None:
         pass
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:

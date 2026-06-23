@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import sys
@@ -161,7 +163,7 @@ class WandbMonitor(Monitor):
             return
         wandb.log({**metrics, "step": step})
 
-    def log_samples(self, rollouts: list["Rollout"], step: int) -> None:
+    def log_samples(self, rollouts: list[Rollout], step: int) -> None:
         """Logs rollouts to W&B table."""
         if not self.is_master:
             return
@@ -213,7 +215,7 @@ class WandbMonitor(Monitor):
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
 
-    def log_eval_samples(self, rollouts: list["Rollout"], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list[Rollout], env_name: str, step: int) -> None:
         """Logs eval rollouts to a separate W&B table."""
         if not self.is_master:
             return

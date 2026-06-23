@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import random
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
@@ -40,11 +42,11 @@ class Monitor(ABC):
         pass
 
     @abstractmethod
-    def log_samples(self, rollouts: list["Rollout"], step: int) -> None:
+    def log_samples(self, rollouts: list[Rollout], step: int) -> None:
         pass
 
     @abstractmethod
-    def log_eval_samples(self, rollouts: list["Rollout"], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list[Rollout], env_name: str, step: int) -> None:
         pass
 
     @abstractmethod
@@ -73,10 +75,10 @@ class NoOpMonitor(Monitor):
         else:
             self.history = [metrics]
 
-    def log_samples(self, rollouts: list["Rollout"], step: int) -> None:
+    def log_samples(self, rollouts: list[Rollout], step: int) -> None:
         pass
 
-    def log_eval_samples(self, rollouts: list["Rollout"], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list[Rollout], env_name: str, step: int) -> None:
         pass
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:

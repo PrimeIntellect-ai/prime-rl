@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 from collections import deque
 from time import perf_counter
@@ -55,7 +57,7 @@ class EventLoopLagStats(BaseModel):
     n: int = 0
 
     @classmethod
-    def from_monitor(cls, monitor: EventLoopLagMonitor) -> "EventLoopLagStats":
+    def from_monitor(cls, monitor: EventLoopLagMonitor) -> EventLoopLagStats:
         n = len(monitor.lags)
         if n == 0:
             return cls(n=0)
