@@ -161,16 +161,21 @@ class MultiPacker(BasePacker):
     def _validate_sample(self, sample: TrainingSample) -> tuple[bool, str | None]:
         """Validate a sample to ensure it won't crash the trainer."""
         sample_length = len(sample.token_ids)
-        for name, arr in (
-            ("mask", sample.mask),
-            ("logprobs", sample.logprobs),
-            ("temperatures", sample.temperatures),
-        ):
-            if len(arr) != sample_length:
-                return (
-                    False,
-                    f"Run wrote a sample with {name} length != token_ids length ({len(arr)} != {sample_length})",
-                )
+        if len(sample.mask) != sample_length:
+            return (
+                False,
+                f"Run wrote a sample with mask length != token ids length ({len(sample.mask)} != {sample_length})",
+            )
+        if len(sample.logprobs) != sample_length:
+            return (
+                False,
+                f"Run wrote a sample with logprobs length != token ids length ({len(sample.logprobs)} != {sample_length})",
+            )
+        if len(sample.temperatures) != sample_length:
+            return (
+                False,
+                f"Run wrote a sample with temperatures length != token ids length ({len(sample.temperatures)} != {sample_length})",
+            )
         if sample_length == 0:
             return False, "Run wrote a sample with no tokens"
         if sample_length > self.seq_len:
@@ -178,11 +183,23 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with length {sample_length} which exceeds max sequence length {self.seq_len}",
             )
-        if sample.teacher_logprobs is not None and len(sample.teacher_logprobs) != sample_length:
-            return (
-                False,
-                f"Run wrote a sample with teacher logprobs length != sample length ({len(sample.teacher_logprobs)} != {sample_length})",
-            )
+        if not sample.advantages:
+            return False, "Run wrote a sample with no advantage channels"
+        seen_losses: set[str] = set()
+        for channel in sample.advantages:
+            if channel.loss in seen_losses:
+                return False, f"Run wrote duplicate advantage channel {channel.loss!r}"
+            seen_losses.add(channel.loss)
+            if len(channel.values) != sample_length:
+                return (
+                    False,
+                    f"Run wrote advantage channel {channel.loss!r} with values length != token ids length ({len(channel.values)} != {sample_length})",
+                )
+            if len(channel.mask) != sample_length:
+                return (
+                    False,
+                    f"Run wrote advantage channel {channel.loss!r} with mask length != token ids length ({len(channel.mask)} != {sample_length})",
+                )
         return True, None
 
     def _get_batch(self) -> None:
@@ -257,7 +274,7 @@ class MultiPacker(BasePacker):
                     break
                 tokens_collected += len(sample.token_ids)
                 if tokens_collected > token_budget:
-                    if tokens_collected == (len(sample.token_ids)):
+                    if tokens_collected == len(sample.token_ids):
                         tokens_collected -= len(sample.token_ids)
                         # This means we have a sample that has more tokens than max seqlen
                         self.buffers[run_idx].popleft()

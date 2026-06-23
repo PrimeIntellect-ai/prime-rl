@@ -9,7 +9,6 @@ project = "reverse-text-debug"
 name = "debug-rl"
 
 [orchestrator]
-training_mode = "rl"
 batch_size = 128
 group_size = 16
 

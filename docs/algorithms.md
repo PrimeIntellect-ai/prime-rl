@@ -8,9 +8,9 @@ This page covers the math and the configurable algorithmic components: how off-p
 - [Loss](#loss)
   - [Default Loss](#default-loss)
   - [Custom Loss](#custom-loss)
-- [Advantage](#advantage)
-  - [Default Advantage](#default-advantage)
-  - [Custom Advantage](#custom-advantage)
+- [Algorithms](#algorithms)
+  - [Built-Ins](#built-ins)
+  - [Environment-Owned Algorithms](#environment-owned-algorithms)
 - [Filters](#filters)
 - [Difficulty Pools](#difficulty-pools)
 - [Online Difficulty Filtering](#online-difficulty-filtering)
@@ -69,13 +69,12 @@ The knobs (under `[trainer.loss]` with `type = "default"`):
 | `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 for pure distillation (no RL signal). |
 | `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
 
-The trainer dispatches automatically based on the batch's training mode (set by the orchestrator via `orchestrator.training_mode`):
+The orchestrator writes per-token advantage channels. Each channel names the loss it feeds:
 
-- `rl` mode → DPPO + KL with the advantage signal.
-- `opd` mode → KL distillation against the teacher's per-token logprobs. The teacher must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
-- `sft` mode → standard token-level NLL on teacher-generated rollouts.
+- `rl` → DPPO + KL with the channel's advantage values.
+- `ce` → token-level NLL, using the channel values as per-token weights.
 
-Set `[trainer.loss] type = "default"` and configure via the knobs above. SFT and OPD modes ignore the policy-gradient–specific fields.
+Select built-in or environment-owned algorithms with `[[orchestrator.algorithms]]` or per-env `[[orchestrator.train.env.algorithms]]`. The default is `id = "grpo"`.
 
 ### Custom Loss
 
@@ -116,7 +115,6 @@ The dataclasses:
 class LossInputs:
     trainer_logprobs: Float[Tensor, "seq"]      # current policy
     inference_logprobs: Float[Tensor, "seq"]    # rollout-time policy
-    teacher_logprobs: Float[Tensor, "seq"] | None  # only set in OPD mode
     advantages: Float[Tensor, "seq"]
     loss_mask: Bool[Tensor, "seq"]
 
@@ -128,69 +126,90 @@ class LossOutputs:
 
 Anything you put in `metrics` is averaged across sequences and logged with the other trainer metrics.
 
-## Advantage
+## Algorithms
 
-### Default Advantage
+Algorithms run after scoring and before filtering. Each algorithm receives a group of `vf.Trace` objects and writes `branch.advantages` plus `branch.mask` in place for each trace branch it wants to train. `branch.advantages` and `branch.mask` must both align to `branch.token_ids`.
 
-The default advantage is per-group reward minus per-group baseline (DR-GRPO without std normalization). For each prompt's group of `group_size` rollouts, every token in rollout $i$ receives advantage $s_i - \bar{s}$ where $\bar{s}$ is the group mean.
+The trainer currently has two built-in loss channels:
 
-This is intentionally simple — it does the right thing for most envs. Switch to a [custom advantage](#custom-advantage) when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …).
+- `rl` applies the configured RL stability loss (`[trainer.loss]`) using the algorithm's values as advantages.
+- `ce` applies weighted token-level NLL using the algorithm's values as weights.
 
-A **length penalty** can be layered on top of the default advantage to discourage rambling. Configured under `[orchestrator.advantage.length_penalty]`, it subtracts a `coef * pass_rate * (completion tokens / orchestrator.seq_len)` term from every reward before the baseline subtraction, where `pass_rate` is the problem's mean reward across the group. The pass-rate factor means problems the model already solves reliably get the strongest push toward concise outputs, while rarely-solved problems are barely penalized (a never-solved group, mean reward 0, gets none). Set `gate_by_correctness = true` to apply the penalty only to correct rollouts (`reward == 1`), leaving incorrect ones untouched:
-
-```toml
-[orchestrator.advantage.length_penalty]
-coef = 0.25                 # effective penalty is coef * pass_rate * (completion_tokens / seq_len)
-gate_by_correctness = false # when true, only penalize rollouts with reward == 1
-```
-
-By default the baseline is the plain group mean reward. Set `length_weighted_baseline = true` to instead use the token-length-weighted mean — `sum(len_i * reward_i) / sum(len_i)` — which centers advantages by per-token expected reward when rollouts vary a lot in length:
+Configure defaults at the orchestrator level:
 
 ```toml
-[orchestrator.advantage]
-length_weighted_baseline = true
+[[orchestrator.algorithms]]
+id = "grpo"
 ```
 
+Or override per environment:
 
-### Custom Advantage
+```toml
+[[orchestrator.train.env]]
+id = "math-env"
 
-Advantages are computed **per group**. You write a function that takes one group of rollouts and returns one advantage scalar per rollout. The orchestrator handles groups of varying size automatically — partial-group training kicks in when some rollouts in a group errored.
+[[orchestrator.train.env.algorithms]]
+id = "rl"
+```
+
+### Built-Ins
+
+| Algorithm | Loss | Signal |
+|---|---|---|
+| `grpo` | `rl` | Reward minus the group's mean reward, assigned to sampled tokens. |
+| `max_rl` | `rl` | Reward minus group mean, divided by group mean when positive. |
+| `rl` | `rl` | Raw scalar reward, assigned to sampled tokens. |
+| `sft` | `ce` | Weight `1.0` on sampled tokens. |
+| `echo` | `ce` | Weight `0.1` on tool-output context tokens. |
+| `opd` | `rl` | Reference logprob minus actor logprob, assigned to sampled tokens. |
+| `opsd` | `rl` | Reference-conditioned demonstration logprob minus actor logprob, assigned to sampled tokens. |
+
+`opd` and `opsd` need a token-capable model endpoint. The endpoint is just a named model under `[orchestrator.models]`; `reference` is a common key, not a special role:
+
+```toml
+[[orchestrator.algorithms]]
+id = "opd"
+model = "reference"
+
+[orchestrator.models.reference]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+tokens = true
+
+[orchestrator.models.reference.client]
+base_url = ["http://localhost:8001/v1"]
+```
+
+### Environment-Owned Algorithms
+
+If an algorithm id is not one of the prime-rl built-ins, prime-rl sends the traces and configured model runtimes to the env server. The env package owns loading the algorithm and its dependencies, so the orchestrator process does not need to import env-specific algorithm modules.
+
+An environment-owned algorithm uses the verifiers interface:
 
 ```python
-# my_module.py
-import statistics
-from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs
+# my_env/algorithms/normalized_reward.py
+import verifiers.v1 as vf
 
-def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> AdvantageOutputs:
-    rewards = [r["reward"] for r in inputs.rollouts]
-    mean = statistics.fmean(rewards)
-    std = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
-    return AdvantageOutputs(advantages=[(r - mean) / (std + eps) for r in rewards])
+
+class NormalizedReward(vf.Algorithm[vf.AlgorithmConfig]):
+    async def advantage(self, traces: list[vf.Trace]) -> list[vf.Trace]:
+        rewards = [trace.reward for trace in traces]
+        mean = sum(rewards) / len(rewards)
+        variance = sum((reward - mean) ** 2 for reward in rewards) / len(rewards)
+        scale = variance**0.5 or 1.0
+        for trace, reward in zip(traces, rewards, strict=True):
+            value = (reward - mean) / scale
+            for branch in trace.branches:
+                branch.mask = [sampled and not trace.has_error for sampled in branch.sampled_mask]
+                branch.advantages = [value if keep else 0.0 for keep in branch.mask]
+        return traces
+
+
+__all__ = ["NormalizedReward"]
 ```
 
 ```toml
-[orchestrator.advantage]
-type = "custom"
-import_path = "my_module.normalized_advantage"
-kwargs = { eps = 1e-8 }
-```
-
-`AdvantageInputs.rollouts` is a list of `verifiers.RolloutOutput`, so you have access to the full rollout (turns, tool calls, custom metadata) — not just the reward. Use this for anything reward-shaping-like that needs trajectory context.
-
-### Per-Env Advantage
-
-`advantage` can be set per training environment. Each env inherits the top-level `[orchestrator.advantage]` when it doesn't set its own, so mixed-env runs can give each env its own advantage computation:
-
-```toml
-[orchestrator.advantage]
-type = "default"  # the default every env inherits unless it overrides
-
-[[orchestrator.train.env]]
-id = "math-env"   # inherits the default above
-
-[[orchestrator.train.env]]
-id = "agent-env"
-advantage = { type = "custom", import_path = "my_module.normalized_advantage" }
+[[orchestrator.train.env.algorithms]]
+id = "my_env.algorithms.normalized_reward"
 ```
 
 ## Filters
@@ -257,7 +276,7 @@ ODF is orthogonal to the [pools](#difficulty-pools): ODF reacts to the *current*
 
 ## Multi-Turn Trajectories
 
-Multi-turn rollouts (tool use, browser environments, long conversations) used to be stitched into a single fake "single-turn" sample, which silently corrupted the importance ratio when chat templates didn't roundtrip. Since [`verifiers` v0.1.8](https://github.com/PrimeIntellect-ai/verifiers/releases/tag/v0.1.8), `prime-rl` records each LLM request/response as an independent **trajectory step** and merges them at training time using best-effort interleaving — with [renderers](#renderers) as the mechanism that keeps the merge safe by construction.
+Multi-turn rollouts (tool use, browser environments, long conversations) are recorded as trace branches with token attribution for each LLM turn. `prime-rl` converts those branches into training samples with best-effort interleaving, using [renderers](#renderers) to preserve exact token identity across turns.
 
 ### Extension Property
 

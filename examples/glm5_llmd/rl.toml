@@ -108,9 +108,6 @@ poll_interval = 5
 rlm_ref = "907115a79b2a50d193863e7ea1f3550acb4386f0"
 labels = ["glm5-llmd"]
 
-[orchestrator.advantage]
-type = "default"
-
 [inference]
 enable_expert_parallel = true
 # <0.80 because glm5 layers are too large for 0.85

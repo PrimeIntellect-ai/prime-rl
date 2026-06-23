@@ -67,24 +67,50 @@ class GroupState:
 
 
 class Rollout(vf.Trace[TaskT], Generic[TaskT]):
-    """A completed rollout: the env's typed ``vf.Trace`` *is* the rollout — prime-rl's
-    orchestration metadata lives on it directly (set by the dispatcher once the rollout
-    returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
-    fields are ``exclude=True``, so dumping a Rollout yields a plain trace — the on-disk
-    ``results.jsonl`` is unchanged."""
+    """A completed rollout. The env's typed ``vf.Trace`` is the rollout; prime-rl
+    scheduling and training metadata is attached as excluded pydantic fields."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)  # ``samples`` holds msgspec structs
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     kind: RolloutKind = Field(default="train", exclude=True)
     env_name: str = Field(default="", exclude=True)
     group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
+    actor: str = Field(default="policy", exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
-    advantage: float | None = Field(default=None, exclude=True)
+    advantages: list[float] | None = Field(default=None, exclude=True)
     is_filtered: bool = Field(default=False, exclude=True)
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
     eval_step: int | None = Field(default=None, exclude=True)
+
+    @property
+    def advantage(self) -> float | None:
+        if not self.advantages:
+            return None
+        return sum(self.advantages) / len(self.advantages)
+
+    def to_dict(self) -> dict:
+        out = self.model_dump(
+            mode="json",
+            exclude={"nodes": {"__all__": {"multi_modal_data", "routed_experts"}}},
+        )
+        out.update(
+            {
+                "kind": self.kind,
+                "env_name": self.env_name,
+                "group_id": str(self.group_id),
+                "policy_version": self.policy_version,
+                "off_policy_steps": self.off_policy_steps,
+                "actor": self.actor,
+                "filters": dict(self.filter_results),
+            }
+        )
+        if self.eval_step is not None:
+            out["eval_step"] = self.eval_step
+        if self.advantage is not None:
+            out["advantage"] = self.advantage
+        return out
 
 
 @dataclass

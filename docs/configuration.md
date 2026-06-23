@@ -54,7 +54,7 @@ CLI flags mirror the TOML tree using dots:
 
 > Field names are snake_case in TOML (`max_model_len`) and kebab-case on the CLI (`--max-model-len`).
 
-> Renamed fields keep their old name as a validation alias — e.g. `rollouts_per_example` is still accepted in TOML and CLI after being renamed to `group_size`. Mixing the two names across sources is safe.
+> Some fields have validation aliases for common config spellings — e.g. `rollouts_per_example` is accepted as an alias for `group_size`. Mixing aliases and canonical names across sources is safe.
 
 ## Inspecting and Validating
 
@@ -130,7 +130,7 @@ On the CLI: `--inference.model.max-model-len None`.
 
 ### Discriminated Unions
 
-Loss, advantage, optimizer, scheduler, weight broadcast transport, and several others are discriminated unions. Set the `type` field to pick a variant:
+Loss, optimizer, scheduler, weight broadcast transport, and several others are discriminated unions. Set the `type` field to pick a variant:
 
 ```toml
 [trainer.optim]

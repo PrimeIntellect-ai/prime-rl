@@ -1,5 +1,5 @@
 # Alphabet sort RL with elastic inference pool (no inference process started by rl).
-# Start the inference server manually first, then run: uv run rl @ examples/alphabet_sort/rl_elastic.toml
+# Start the inference server manually first, then run: uv run rl @ configs/elastic/rl.toml
 # The orchestrator discovers servers via DNS (hostname) and only uses ready ones.
 # Omitting [inference] means inference = None, so the rl entrypoint will not start an inference process.
 
@@ -35,7 +35,7 @@ group_size = 8
 [orchestrator.train.sampling]
 max_completion_tokens = 768
 
-[orchestrator.client.elastic]
+[orchestrator.model.client.elastic]
 hostname = "localhost"
 port = 8000
 sync_interval = 5.0

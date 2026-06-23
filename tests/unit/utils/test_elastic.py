@@ -433,14 +433,13 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
         pool.update_model_name("r8-smoke")
         clients = pool.train_clients
 
-        # `renderer_model_name` stays pinned to the original base model even after the
-        # served model name flips to the LoRA adapter (`r8-smoke`).
         assert clients == [
             TrainClientConfig(
-                renderer=renderer_settings,
-                renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
-                api_key_var="PRIME_API_KEY",
                 base_url="http://10.0.0.1:8000/v1",
+                api_key_var="PRIME_API_KEY",
                 headers={},
+                renderer=renderer_settings,
+                pool_size=1,
+                renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
             )
         ]

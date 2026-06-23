@@ -1,5 +1,5 @@
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
 
 import torch
 from beartype import beartype as typechecker
@@ -12,11 +12,15 @@ from prime_rl.utils.utils import import_object
 
 @dataclass
 class LossInputs:
-    """Inputs for computing loss on a single sample."""
+    """Inputs for computing loss on a single sample.
+
+    ``loss_mask`` selects the tokens that belong to this loss channel.
+    ``advantages`` is the channel's per-token value stream; for CE it is the
+    per-token weight.
+    """
 
     trainer_logprobs: Float[Tensor, " seq"]
     inference_logprobs: Float[Tensor, " seq"]
-    teacher_logprobs: Float[Tensor, " seq"] | None
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
 
@@ -29,13 +33,13 @@ class LossOutputs:
     metrics: dict[str, Tensor]
 
 
-LossFn = Callable[..., LossOutputs]
+LossFn = Callable[[LossInputs], LossOutputs]
 """Type for a per-sample loss function.
 
-Expected signature:
-    def my_loss(inputs: LossInputs, **kwargs) -> LossOutputs:
+    Expected signature:
+        def my_loss(inputs: LossInputs) -> LossOutputs:
         ...
-"""
+    """
 
 
 @jaxtyped(typechecker=typechecker)
@@ -150,7 +154,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     advantages = loss_config.adv_tau * advantages
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
+    per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
+    loss = per_token_loss.sum()
 
     metrics = {
         "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
@@ -166,6 +171,9 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
 
 
 def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
+    """IPO loss type: a symmetric trust region (mask tokens whose probability
+    moved more than ``ipo_threshold`` in absolute terms), policy gradient via
+    the importance ratio, and a squared-log-ratio KL regularizer."""
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
     advantages = inputs.advantages
@@ -183,7 +191,8 @@ def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
     advantages = loss_config.adv_tau * advantages
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
+    per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
+    loss = per_token_loss.sum()
 
     metrics = {
         "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
@@ -194,86 +203,27 @@ def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
-    """
-    On-policy distillation loss: the default DPPO+KL math with the tau knobs
-    hardcoded to drop the reward signal and use the teacher KL as the
-    per-token policy-gradient signal.
-    """
+def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
+    """Cross-entropy loss type: masked negative log-likelihood (SFT / ECHO
+    observation prediction)."""
     trainer_logprobs = inputs.trainer_logprobs
-    inference_logprobs = inputs.inference_logprobs
-    teacher_logprobs = inputs.teacher_logprobs
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
-    if teacher_logprobs is None:
-        raise ValueError("opd_loss_fn requires teacher_logprobs - configure a teacher for opd mode.")
-
-    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-        trainer_logprobs, inference_logprobs
-    )
-
-    probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
-    dppo_invalid_mask_high = probs_diff > 0.2
-    dppo_invalid_mask_low = probs_diff < -0.2
-    positive_advantages = advantages > 0
-    negative_advantages = advantages < 0
-    dppo_invalid_mask = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
-
-    is_masked = dppo_invalid_mask
-    is_masked_high = positive_advantages & dppo_invalid_mask_high
-    is_masked_low = negative_advantages & dppo_invalid_mask_low
-    drop_mask = loss_mask & is_masked
-    keep_mask = loss_mask & ~is_masked
-
-    teacher_kl = teacher_logprobs - trainer_logprobs
-    advantages = 0.0 * advantages + 1.0 * teacher_kl.detach()
-
-    pg_loss = keep_mask * advantages * importance_ratio
-    kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + 1e-3 * kl_loss).sum()
-
-    metrics = {
-        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),
-        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
-        "is_masked": _safe_mean(is_masked, loss_mask),
-        "is_masked_low": _safe_mean(is_masked_low, loss_mask),
-        "is_masked_high": _safe_mean(is_masked_high, loss_mask),
-        "masked_advantage_positive": _safe_mean(positive_advantages, drop_mask),
-        "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
-        "teacher_kl": _safe_mean(teacher_kl, loss_mask),
-    }
-
-    return LossOutputs(loss=loss, metrics=metrics)
-
-
-def sft_loss_fn(inputs: LossInputs) -> LossOutputs:
-    """SFT-style masked negative log-likelihood over trainable tokens."""
-    trainer_logprobs = inputs.trainer_logprobs
-    loss_mask = inputs.loss_mask
-
-    loss = -(trainer_logprobs[loss_mask]).sum()
+    nll = -trainer_logprobs
+    loss = (nll * advantages)[loss_mask].sum()
     metrics = {
         "nll": _safe_mean(-trainer_logprobs, loss_mask),
+        "ce_weight": _safe_mean(advantages, loss_mask),
     }
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
-    """Build the per-training-mode loss fn dispatch table.
-
-    Always returns all three modes - the trainer is mode-agnostic and routes
-    per batch from ``TrainingSample.training_mode``:
-
-    - ``"sft"`` → ``sft_loss_fn`` (masked NLL on teacher tokens)
-    - ``"opd"`` → ``opd_loss_fn`` (teacher KL as gradient signal, hardcoded
-      DPPO + KL knobs)
-    - ``"rl"``  → ``default_loss_fn(loss_config)`` for ``DefaultLossConfig``,
-      ``ipo_loss_fn(loss_config)`` for ``IPOLossConfig``, or the imported
-      function for ``CustomLossConfig``.
-
-    ``trainer.loss`` only affects the rl path - opd and sft are independent.
-    """
+def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
+    """Build the loss fn for the rl component from ``trainer.loss``:
+    ``default_loss_fn`` (``DefaultLossConfig``), ``ipo_loss_fn``
+    (``IPOLossConfig``), or the imported function (``CustomLossConfig``).
+    The ce loss is fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
         custom_fn = import_object(loss_config.import_path)
         kwargs = loss_config.kwargs
@@ -289,80 +239,80 @@ def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return default_loss_fn(inputs, loss_config)
 
-    return {"sft": sft_loss_fn, "opd": opd_loss_fn, "rl": rl_fn}
+    return rl_fn
+
+
+@dataclass
+class LossChannel:
+    loss: str
+    advantages: list[Float[Tensor, " seq_i"]]
+    mask: list[Bool[Tensor, " seq_i"]]
 
 
 def compute_loss(
     trainer_logprobs: list[Float[Tensor, " seq_i"]],
     inference_logprobs: list[Float[Tensor, " seq_i"]],
-    teacher_logprobs: list[Float[Tensor, " seq_i"]] | None,
-    advantages: list[Float[Tensor, " seq_i"]],
-    loss_mask: list[Bool[Tensor, " seq_i"]],
+    channels: list[LossChannel],
     loss_fns: dict[str, LossFn],
-    loss_scale: int,
-    training_mode: str = "rl",
-) -> tuple[Float[Tensor, ""], dict[str, Any]]:
+    loss_scales: dict[str, int],
+) -> tuple[Float[Tensor, ""], dict[str, Tensor]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
-    Loss dispatch is batch-driven: ``training_mode`` selects the loss fn from
-    ``loss_fns`` (built by ``setup_loss_fns``). sft → sft_loss_fn, opd →
-    opd_loss_fn, rl → the configured default/custom loss.
-
-    Args:
-        trainer_logprobs: Log probabilities for each sequence
-        inference_logprobs: Reference log probabilities for each sequence
-        teacher_logprobs: Teacher log probabilities for each sequence, or None
-        advantages: Advantages for each sequence
-        loss_mask: Loss mask for each sequence
-        loss_fns: Per-mode loss fn dispatch table from setup_loss_fns()
-        loss_scale: Scale factor to normalize the loss
-        training_mode: Selects which loss fn to apply
-
-    Returns:
-        Tuple of (scaled_loss, aggregated_metrics)
+    Each channel names a loss function and carries its own per-token values and
+    mask. Channels are normalized by their own global token counts.
     """
-    try:
-        effective_loss_fn = loss_fns[training_mode]
-    except KeyError:
-        raise ValueError(
-            f"No loss fn available for training_mode={training_mode!r} "
-            f"(available: {sorted(loss_fns)}). Check trainer.loss.type."
-        )
-
-    total_loss = 0.0
     all_metrics: dict[str, list[Tensor]] = {}
 
-    if teacher_logprobs is None:
-        teacher_logprobs = [None] * len(trainer_logprobs)
-
-    for t_logp, i_logp, teach_logp, adv, mask in zip(
-        trainer_logprobs,
-        inference_logprobs,
-        teacher_logprobs,
-        advantages,
-        loss_mask,
-    ):
-        inputs = LossInputs(
-            trainer_logprobs=t_logp,
-            inference_logprobs=i_logp,
-            teacher_logprobs=teach_logp,
-            advantages=adv,
-            loss_mask=mask,
-        )
-
-        result = effective_loss_fn(inputs)
-
-        total_loss = total_loss + result.loss
-
+    def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
+        result = loss_fn(inputs)
         for k, v in result.metrics.items():
-            if k not in all_metrics:
-                all_metrics[k] = []
-            all_metrics[k].append(v)
+            all_metrics.setdefault(k, []).append(v)
+        return result.loss
 
-    scaled_loss = total_loss / loss_scale
+    # Graph anchor: a micro batch whose components are all empty (e.g. a fully
+    # truncated distillation sample, whose stamped streams survive as all-zero
+    # prefixes) must still return a backward-able loss so every rank runs
+    # backward and FSDP collectives stay in sync.
+    scaled_loss = trainer_logprobs[0].sum() * 0.0
+    loss_totals: dict[str, Tensor] = {}
+    n = len(trainer_logprobs)
+    for channel in channels:
+        if channel.loss not in loss_fns:
+            raise ValueError(f"Unknown loss channel {channel.loss!r}; configured losses are {sorted(loss_fns)}")
+        if len(channel.advantages) != n or len(channel.mask) != n:
+            raise ValueError(
+                f"Loss channel {channel.loss!r} has {len(channel.advantages)} value splits and "
+                f"{len(channel.mask)} mask splits for {n} packed sequences"
+            )
+        loss_fn = loss_fns[channel.loss]
+        total = loss_totals.get(channel.loss)
+        if total is None:
+            total = scaled_loss
+        for t_logp, i_logp, adv, mask in zip(
+            trainer_logprobs,
+            inference_logprobs,
+            channel.advantages,
+            channel.mask,
+            strict=True,
+        ):
+            if not bool(mask.any()):
+                continue
+            total = total + run_loss_fn(
+                loss_fn,
+                LossInputs(
+                    trainer_logprobs=t_logp,
+                    inference_logprobs=i_logp,
+                    advantages=adv,
+                    loss_mask=mask,
+                ),
+            )
+        loss_totals[channel.loss] = total
 
-    aggregated: dict[str, Any] = {}
+    for loss_name, total in loss_totals.items():
+        scaled_loss = scaled_loss + total / max(loss_scales.get(loss_name, 1), 1)
+
+    aggregated: dict[str, Tensor] = {}
     for k, v in all_metrics.items():
         if v[0].dim() == 0:
             aggregated[k] = torch.stack(v)

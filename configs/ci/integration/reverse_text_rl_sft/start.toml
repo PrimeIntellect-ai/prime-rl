@@ -1,6 +1,6 @@
-# Smoke test for the RL-entrypoint SFT (on-policy hard distillation) training
-# mode. The student inference deployment is launched by the rl entrypoint on
-# GPU 0; the teacher inference server is started externally by the test
+# Smoke test for the RL-entrypoint SFT (on-policy hard distillation) algorithm.
+# The policy inference deployment is launched by the rl entrypoint on GPU 0;
+# the reference inference server is started externally by the test
 # fixture (see tests/integration/test_reverse_text_rl_sft.py) on the same GPU.
 # Trainer takes GPU 1. Training config mirrors `reverse_text/start.toml`.
 
@@ -15,11 +15,13 @@ project = "reverse-text-ci"
 name = "ci-rl-sft"
 
 [orchestrator]
-training_mode = "sft"
+actor = "reference"
 batch_size = 128
 group_size = 16
 
-# Teacher rolls out over plain chat-completions (no tokens); the renderer backfills them.
+[[orchestrator.algorithms]]
+id = "sft"
+
 [orchestrator.renderer]
 name = "qwen3"
 
@@ -39,10 +41,11 @@ max_completion_tokens = 128
 [[orchestrator.eval.env]]
 id = "reverse-text"
 
-[orchestrator.teacher.model]
+[orchestrator.models.reference]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+tokens = true
 
-[orchestrator.teacher.client]
+[orchestrator.models.reference.client]
 base_url = ["http://localhost:8001/v1"]
 
 [trainer.optim]

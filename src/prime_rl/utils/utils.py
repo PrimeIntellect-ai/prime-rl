@@ -254,6 +254,7 @@ def get_env_ids_to_install(env_configs: list[EnvConfig] | list[EvalEnvConfig]) -
     """Get the list of environment IDs to install."""
     env_ids_to_install = set()
     for env_config in env_configs:
-        if "/" in env_config.id:
-            env_ids_to_install.add(env_config.id)
+        env_id = env_config.env_id
+        if env_id and "/" in env_id:
+            env_ids_to_install.add(env_id)
     return env_ids_to_install

@@ -167,16 +167,16 @@ def rl_local(config: RLConfig):
     }
 
     # Validate client port matches inference server port
-    if config.inference is not None and not config.orchestrator.student.client.is_elastic:
+    if config.inference is not None and not config.orchestrator.model.client.is_elastic:
         from urllib.parse import urlparse
 
-        base_url = config.orchestrator.student.client.base_url[0]
+        base_url = config.orchestrator.model.client.base_url[0]
         parsed = urlparse(base_url)
         client_port = parsed.port
         expected_port = config.inference.server.port
         if client_port != expected_port:
             raise ValueError(
-                f"orchestrator.student.client.base_url port ({client_port}) does not match "
+                f"orchestrator.model.client.base_url port ({client_port}) does not match "
                 f"inference.server.port ({expected_port}). "
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
@@ -230,19 +230,23 @@ def rl_local(config: RLConfig):
             monitor_threads.append(monitor_thread)
         else:
             logger.warning(
-                "No [inference] block configured - the student inference server will not be started here. "
-                "All training modes (rl/opd/sft) require a student inference pool for evals + weight sync; "
-                "make sure one is running at orchestrator.student.client.base_url "
-                f"({', '.join(config.orchestrator.student.client.base_url)}), otherwise the orchestrator "
+                "No [inference] block configured - the policy inference server will not be started here. "
+                "The policy inference pool is required for evals and weight sync; "
+                "make sure one is running at orchestrator.model.client.base_url "
+                f"({', '.join(config.orchestrator.model.client.base_url)}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
 
-        if config.orchestrator.teacher:
+        external_models = [
+            f"{key}={model.name} ({', '.join(model.client.base_url)})"
+            for key, model in config.orchestrator.models.items()
+        ]
+        if external_models:
+            endpoints = ", ".join(external_models)
             logger.info(
-                "orchestrator.teacher is configured - the rl entrypoint does not start teacher inference "
-                "servers. Make sure your teacher endpoint at "
-                f"{', '.join(config.orchestrator.teacher.client.base_url)} is running before the "
-                "orchestrator starts, otherwise rollouts will hang."
+                "Additional model endpoints are configured - the rl entrypoint does not start them. "
+                f"Make sure these endpoints are serving before the orchestrator starts: {endpoints}; "
+                "otherwise actor rollouts or algorithms that use them may fail."
             )
 
         # Start one env server per env (before the orchestrator, which attaches to

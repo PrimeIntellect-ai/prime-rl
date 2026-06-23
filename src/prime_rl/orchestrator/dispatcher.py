@@ -12,10 +12,11 @@
   source's emptiness), so in-flight rollouts of the opposite kind drain
   naturally on either side of an eval boundary.
 - ``on_version_pending`` (called by the watcher before the engines pause for
-  the weight update) bumps ``off_policy_steps`` on in-flight train rollouts and
-  drops groups past ``max_off_policy_steps``.
-  Eval rollouts are measurements for the policy version they started with,
-  so they are allowed to finish even if training advances.
+  the weight update) bumps ``off_policy_steps`` on in-flight policy-actor train
+  rollouts and drops groups past ``max_off_policy_steps``. Eval rollouts are
+  measurements for the policy version they started with, so they are allowed to
+  finish even if training advances. Train rollouts sampled from a non-policy
+  actor never age — their sampler doesn't change with policy updates.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
   count-to-``group_size`` finalization still fires.
 """
@@ -125,26 +126,24 @@ class RolloutDispatcher:
         eval_envs: EvalEnvs | None,
         train_source: TrainSource,
         eval_source: EvalSource | None,
-        inference: InferencePool,
-        eval_inference: InferencePool,
+        policy_pool: InferencePool,
+        model_pools: dict[str, InferencePool],
+        actor: str,
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
-        training_mode: Literal["rl", "opd", "sft"],
-        use_cache_salt: bool = True,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
         self.eval_envs = eval_envs
-        # Train rollouts go to ``inference`` (the teacher in SFT mode);
-        # eval always evaluates the student, so it uses ``eval_inference``.
-        self.inference = inference
-        self.eval_inference = eval_inference
+        # Train rollouts go to the env sampler's pool; eval always
+        # evaluates the policy.
+        self.policy_pool = policy_pool
+        self.model_pools = model_pools
+        self.actor = actor
         self.train_source = train_source
         self.eval_source = eval_source
-        self.training_mode = training_mode
-        self.use_cache_salt = use_cache_salt
         self.max_off_policy_steps = max_off_policy_steps
 
         self.max_inflight = max_inflight_rollouts
@@ -174,14 +173,12 @@ class RolloutDispatcher:
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
 
-    @property
-    def train_model_name(self) -> str:
-        """Model name for *train* rollouts. In SFT mode train data comes from
-        the teacher pool, so use its model name; otherwise the live student
-        policy. (Eval always uses ``policy.model_name`` — the student.)"""
-        if self.training_mode == "sft":
-            return self.inference.model_name
-        return self.policy.model_name
+    def _train_pool_for(self) -> tuple[InferencePool, str, bool]:
+        """``(pool, model_name, is_live)`` for train rollouts. Eval always uses the policy."""
+        if self.actor == "policy":
+            return self.policy_pool, self.policy.model_name, True
+        pool = self.model_pools[self.actor]
+        return pool, pool.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -276,6 +273,9 @@ class RolloutDispatcher:
         cancelled = 0
         for meta in self.inflight.values():
             if meta.kind != "train":
+                continue
+            # Non-policy actors never go stale when policy weights update.
+            if self.actor != "policy":
                 continue
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:
@@ -394,14 +394,15 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the rollout pool (teacher in SFT) via the
-        # renderer/token train client. Eval always evaluates the student and
+        # Train rollouts use the env sampler's pool via the
+        # renderer/token train client. Eval always evaluates the policy and
         # goes through the eval client (chat-completions) — the same path the
         # legacy orchestrator used, so eval scores stay comparable.
         if group.kind == "eval":
-            pool, model_name = self.eval_inference, self.policy.model_name
+            pool, model_name = self.policy_pool, self.policy.model_name
+            live_sourced = True
         else:
-            pool, model_name = self.inference, self.train_model_name
+            pool, model_name, live_sourced = self._train_pool_for()
 
         # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
@@ -422,7 +423,9 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        if group.kind == "eval" or self.use_cache_salt:
+        # Non-policy actor rollouts hit a separate pool; salting per policy
+        # version would invalidate its prefix cache every weight update.
+        if live_sourced:
             cache_salt = str(group.policy_version_at_start)
         else:
             cache_salt = None
@@ -533,6 +536,7 @@ class RolloutDispatcher:
         rollout.group_id = meta.group_id
         rollout.policy_version = policy_version
         rollout.off_policy_steps = meta.off_policy_steps
+        rollout.actor = self.actor if meta.kind == "train" else "policy"
         if meta.kind == "eval":
             assert eval_step is not None, "eval rollout missing eval_step"
             rollout.eval_step = eval_step

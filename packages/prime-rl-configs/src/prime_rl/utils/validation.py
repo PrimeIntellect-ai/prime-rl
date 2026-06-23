@@ -22,9 +22,8 @@ def propagate_shared_fields(data: Any) -> Any:
         The original footgun the mutex was designed to catch — a sub-config
         value silently winning over a later CLI shared override — is still
         caught because that scenario produces *different* values.
-      - **Aliased sub-paths**: ``orchestrator.model.*`` is checked against its
-        ``orchestrator.student.model.*`` alias (and vice versa), so the
-        conflict fires regardless of which spelling the user wrote.
+      - **Aliased sub-paths**: retained for fields that still have accepted
+        aliases so conflicts fire before sub-config parsing.
     """
     if not isinstance(data, dict):
         return data
@@ -67,20 +66,18 @@ def propagate_shared_fields(data: Any) -> Any:
         for target in targets:
             fill(target, value)
 
-    # [model] → trainer / orchestrator (student, via AliasChoices) / inference.
+    # [model] → trainer / orchestrator / inference.
     propagate(
         "model.name",
         "trainer.model.name",
         "inference.model.name",
         "orchestrator.model.name",
-        aliases=("orchestrator.student.model.name",),
     )
     propagate(
         "model.vlm",
         "trainer.model.vlm",
         "inference.model.vlm",
         "orchestrator.model.vlm",
-        aliases=("orchestrator.student.model.vlm",),
     )
 
     # [log]
@@ -224,18 +221,18 @@ def validate_shared_model_name(
 ) -> None:
     # Orchestrator must match inference (it queries the inference server)
     if inference is not None:
-        if inference.model.name != orchestrator.student.model.name:
+        if inference.model.name != orchestrator.model.name:
             raise ValueError(
-                f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.student.model.name}) are not the same. "
+                f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. "
                 "The orchestrator queries the inference server and must use the same model name."
             )
         return
 
     if trainer.model.name.startswith("Jackmin108/"):  # The TT MoE models will have a different name on the orchestrator
         return
-    if trainer.model.name != orchestrator.student.model.name:
+    if trainer.model.name != orchestrator.model.name:
         raise ValueError(
-            f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.student.model.name}) are not the same. Please specify the same model name for both."
+            f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. Please specify the same model name for both."
         )
 
 

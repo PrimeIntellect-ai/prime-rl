@@ -2,17 +2,14 @@ import asyncio
 import ctypes
 import gc
 import logging
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from itertools import cycle
 from pathlib import Path
 
 import orjson
-import verifiers.v1 as vf
+from verifiers.utils.save_utils import make_serializable
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.transport import TrainingSample
 from prime_rl.utils.client import setup_inference_pool
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
 from prime_rl.utils.utils import (
@@ -22,39 +19,55 @@ from prime_rl.utils.utils import (
 )
 
 
-async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer):
-    """Build the student renderer and inference pool, returning ``(renderer, inference_pool)``.
+async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
+    """Build the live policy inference pool + matching renderer. Returns
+    ``(renderer | None, inference_pool)``; ``renderer`` is ``None`` only when
+    the run opts out (``config.renderer is None``, MITO).
 
-    Training is renderer-only: RL/OPD roll out through the env server's renderer client
-    (token-in/out), and SFT — which rolls out against a chat-completions teacher that returns
-    no tokens — re-renders the conversation with this renderer to backfill them. The renderer
-    is built here from the (always-set) ``config.renderer`` and also supplies the multimodal
-    token-type-id map. The eval client is plain chat-completions (eval traces aren't trained)."""
+    The renderer object and the renderer *client* are decoupled: the object
+    is the canonical messages → token ids path and exists whenever configured;
+    the renderer-client path makes the policy token-capable for both rollouts
+    and algorithms. Eval still uses chat-completions."""
     from renderers.base import create_renderer
 
-    client_config = config.student.client
-    model_name = config.student.model.name
-    renderer = create_renderer(tokenizer, config.renderer)
-    get_logger().info("Using renderer rollout client")
+    client_config = config.model.client
+    model_name = config.model.name
+
+    renderer = None
+    if config.renderer is not None:
+        renderer = create_renderer(tokenizer, config.renderer)
+        get_logger().info(f"Initialized {type(renderer).__name__} for {model_name}")
+
+    if renderer is not None:
+        inference_pool = await setup_inference_pool(
+            client_config,
+            model_name=model_name,
+            train_client_type="renderer",
+            eval_client_type="openai_chat_completions",
+            renderer_config=config.renderer,
+            pool_size=config.pool_size,
+        )
+        get_logger().info("Using direct renderer rollout client")
+        return renderer, inference_pool
+
+    get_logger().info("Using MITO (openai_chat_completions) for rollouts")
     inference_pool = await setup_inference_pool(
         client_config,
         model_name=model_name,
-        train_client_type="renderer",
+        train_client_type="openai_chat_completions",
         eval_client_type="openai_chat_completions",
-        renderer_config=config.renderer,
-        pool_size=config.pool_size,
     )
     return renderer, inference_pool
 
 
 def save_rollouts(rollouts: list[dict], path: Path, exclude_keys: set[str] | None = None) -> None:
-    """Save rollouts (Trace dicts, already JSON-serializable) to a JSONL file."""
+    """Save rollouts to a JSONL file using verifiers serialization."""
     path.parent.mkdir(parents=True, exist_ok=True)
     opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
     with open(path, "wb") as f:
         for rollout in rollouts:
             row = {k: v for k, v in rollout.items() if k not in exclude_keys} if exclude_keys else rollout
-            f.write(orjson.dumps(row, default=str, option=opts))
+            f.write(orjson.dumps(row, default=make_serializable, option=opts))
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
@@ -67,10 +80,7 @@ def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix
 
 
 def setup_env_server_logging(log_level: str, json_logging: bool = False) -> None:
-    """Configure logging for an env-server process: prime-rl's logger + routing v1's stdlib
-    logs through it. Passed to verifiers' ``serve_env`` so it runs in the broker and in every
-    spawned worker — fresh ``spawn`` processes that otherwise have no handlers and would drop
-    their per-rollout logs."""
+    """Configure prime-rl logging inside env-server broker and worker processes."""
     setup_logger(log_level, json_logging=json_logging)
     intercept_vf_logging(logger="verifiers.v1", level=log_level)
 
@@ -88,67 +98,6 @@ def trim_process_memory() -> None:
         ctypes.CDLL("libc.so.6").malloc_trim(0)
     except Exception as exc:
         get_logger().debug(f"malloc_trim(0) failed: {exc!r}")
-
-
-async def compute_teacher_logprobs(
-    clients: list[vf.ClientConfig],
-    model_name: str,
-    samples: list[TrainingSample],
-) -> list[list[float]]:
-    """Compute teacher model logprobs for a batch of training samples via prefill."""
-    import httpx
-    from openai import AsyncOpenAI
-    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
-
-    async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
-        client = AsyncOpenAI(
-            base_url=client_config.base_url,
-            api_key=os.environ.get(client_config.api_key_var, "EMPTY"),
-            default_headers=client_config.headers or None,
-        )
-
-        # Two escape hatches from ``AsyncOpenAI.post``:
-        #   1. URL — ``/inference/v1/generate`` is mounted at server root, not
-        #      under ``/v1``. Pass an absolute URL so the SDK's
-        #      ``_prepare_url`` skips the base-url merge (it short-circuits
-        #      when the path passes ``httpx.URL.is_relative_url`` as False).
-        #   2. Parse — vLLM's ``GenerateResponse`` is a plain
-        #      ``pydantic.BaseModel`` and the SDK's parse layer rejects any
-        #      ``cast_to`` that doesn't subclass ``openai.BaseModel``. Use
-        #      ``cast_to=httpx.Response`` so the SDK still builds the request
-        #      (preserving ``auth_headers``, retries, timeouts, idempotency
-        #      keys) and just hands us the raw response to validate ourselves.
-        base = str(client.base_url).rstrip("/").removesuffix("/v1")
-        http_response = await client.post(
-            f"{base}/inference/v1/generate",
-            cast_to=httpx.Response,
-            body={
-                "model": model_name,
-                "token_ids": list(sample.token_ids),
-                "sampling_params": {
-                    "max_tokens": 1,
-                    "temperature": 1.0,
-                    "top_p": 1.0,
-                    "prompt_logprobs": 1,
-                },
-            },
-        )
-        response = GenerateResponse.model_validate_json(http_response.content)
-        # ``prompt_logprobs[i]`` is a ``{token_id: Logprob}`` dict for tokens
-        # the engine could score, or ``None`` for the leading token which has
-        # no preceding context. Flatten to ``list[float]`` with 0.0 in the
-        # unscored slot.
-        flat: list[float] = []
-        for entry in response.prompt_logprobs or []:
-            if not entry:
-                flat.append(0.0)
-                continue
-            first = next(iter(entry.values()))
-            lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
-            flat.append(float(lp) if lp is not None else 0.0)
-        return flat
-
-    return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 
 
 def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:

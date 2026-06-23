@@ -12,6 +12,7 @@ from prime_rl.orchestrator.filters import (
     setup_filters,
 )
 from prime_rl.orchestrator.types import Rollout
+from prime_rl.transport import TrainingSample
 
 
 def _assistant_node(token_ids: list[int], logprobs: list[float]) -> vf.MessageNode:
@@ -45,6 +46,17 @@ def _make_rollout(
     rollout = Rollout[vf.Task](task=vf.Task(idx=0, prompt=""), nodes=nodes, rewards={"reward": reward})
     rollout.env_name = "test"
     rollout.group_id = uuid.uuid4()
+    rollout.samples = [
+        TrainingSample(
+            token_ids=completion_ids,
+            mask=[True] * len(completion_ids),
+            logprobs=completion_logprobs,
+            temperatures=[1.0] * len(completion_ids),
+            env_name="test",
+            advantages=[],
+            reward=reward,
+        )
+    ]
     return rollout
 
 

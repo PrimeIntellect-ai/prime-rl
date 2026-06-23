@@ -510,7 +510,7 @@ class TrainerConfig(BaseConfig):
     data: DataLoaderConfig = DataLoaderConfig()
 
     loss: LossConfig = DefaultLossConfig()
-    """Loss config for rl-mode batches. opd and sft batches dispatch to their own loss fns unconditionally and do not read this."""
+    """Loss config for the rl loss channel (see ``setup_rl_loss_fn``). The ce channel is fixed and does not read this."""
 
     optim: OptimizerConfig = AdamWConfig()
 

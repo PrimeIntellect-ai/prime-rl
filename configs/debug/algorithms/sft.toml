@@ -1,9 +1,9 @@
-# Start the teacher inference server first (on a separate GPU):
+# Start the reference inference server first (on a separate GPU):
 #   CUDA_VISIBLE_DEVICES=1 uv run inference \
 #     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
 #     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
 # Then:
-#   uv run rl @ configs/debug/training_modes/opd_lora.toml
+#   uv run rl @ configs/debug/algorithms/sft.toml
 
 max_steps = 20
 seq_len = 2048
@@ -13,12 +13,15 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [wandb]
 project = "reverse-text-debug"
-name = "debug-opd-lora"
+name = "debug-sft"
 
 [orchestrator]
-training_mode = "opd"
+actor = "reference"
 batch_size = 128
-group_size = 16
+group_size = 4
+
+[[orchestrator.algorithms]]
+id = "sft"
 
 [orchestrator.renderer]
 name = "qwen3"
@@ -39,20 +42,15 @@ max_completion_tokens = 128
 [[orchestrator.eval.env]]
 id = "reverse-text"
 
-[orchestrator.teacher.model]
+[orchestrator.models.reference]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+tokens = true
 
-[orchestrator.teacher.client]
+[orchestrator.models.reference.client]
 base_url = ["http://localhost:8001/v1"]
 
 [trainer.optim]
-lr = 1e-4
-
-[trainer.model.lora]
-rank = 8
-
-[trainer.ckpt.weights]
-save_adapter_separately = true
+lr = 3e-6
 
 [ckpt]
 

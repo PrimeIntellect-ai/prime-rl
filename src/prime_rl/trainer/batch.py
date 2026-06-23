@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from prime_rl.trainer.utils import balanced_partition
-from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingAdvantage, TrainingSample
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
     "uint8": 1,
@@ -41,6 +41,22 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     row_size = _routed_experts_row_size(routed_experts)
     routed_experts.data += b"\0" * (padding_size * row_size)
     routed_experts.shape[0] += padding_size
+
+
+def _copy_advantage(channel: TrainingAdvantage) -> TrainingAdvantage:
+    return TrainingAdvantage(
+        loss=channel.loss,
+        values=list(channel.values),
+        mask=list(channel.mask),
+    )
+
+
+def _slice_advantage(channel: TrainingAdvantage, seq_len: int) -> TrainingAdvantage:
+    return TrainingAdvantage(
+        loss=channel.loss,
+        values=channel.values[:seq_len],
+        mask=channel.mask[:seq_len],
+    )
 
 
 def _slice_encoded(tensor: EncodedTensor, n_rows: int) -> EncodedTensor:
@@ -100,10 +116,10 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     Prepare a problem for sequence packing training.
     Tokenize and prepare tensors.
     """
-    input_ids = training_example.token_ids
-    loss_mask = training_example.mask
-    inference_logprobs = training_example.logprobs
-    advantages = [training_example.advantage] * len(input_ids)
+    input_ids = list(training_example.token_ids)
+    loss_mask = list(training_example.mask)
+    inference_logprobs = list(training_example.logprobs)
+    advantages = [_copy_advantage(channel) for channel in training_example.advantages]
     reward = training_example.reward if training_example.reward is not None else float("nan")
     rewards = [reward] * len(input_ids)
     position_ids = list(range(len(input_ids)))
@@ -112,50 +128,41 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
 
-    # Per-token sampling temperatures (context tokens are masked out, so theirs are don't-care).
-    temperatures = training_example.temperatures
-
-    # Teacher logprobs already cover the full sequence (prompt + completion),
-    # computed via prefill in the orchestrator when a teacher model is configured
-    teacher_logprobs = training_example.teacher_logprobs
+    temperatures = list(training_example.temperatures)
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )
 
     if len(input_ids) > seq_len:
-        # Multimodal: never split an image's placeholder block — cut to a whole-image boundary
-        # and slice mm_kwargs to match, so image-token count == image-embedding count.
-        cut = seq_len
+        truncation_len = seq_len
         if mm_token_type_ids is not None and mm_kwargs is not None:
-            cut, mm_kwargs = _truncate_mm(mm_token_type_ids, mm_kwargs, seq_len)
-        input_ids = input_ids[:cut]
-        loss_mask = loss_mask[:cut]
-        inference_logprobs = inference_logprobs[:cut]
-        position_ids = position_ids[:cut]
-        advantages = advantages[:cut]
-        rewards = rewards[:cut]
-        temperatures = temperatures[:cut]
-        if teacher_logprobs is not None:
-            teacher_logprobs = teacher_logprobs[:cut]
+            truncation_len, mm_kwargs = _truncate_mm(mm_token_type_ids, mm_kwargs, seq_len)
+        input_ids = input_ids[:truncation_len]
+        loss_mask = loss_mask[:truncation_len]
+        inference_logprobs = inference_logprobs[:truncation_len]
+        position_ids = position_ids[:truncation_len]
+        advantages = [_slice_advantage(channel, truncation_len) for channel in advantages]
+        rewards = rewards[:truncation_len]
+        temperatures = temperatures[:truncation_len]
         if routed_experts is not None:
-            routed_experts = _slice_routed_experts(routed_experts, cut)
+            routed_experts = _slice_routed_experts(routed_experts, truncation_len)
         if mm_token_type_ids is not None:
-            mm_token_type_ids = mm_token_type_ids[:cut]
-        env_names = env_names[:cut]
+            mm_token_type_ids = mm_token_type_ids[:truncation_len]
+        env_names = env_names[:truncation_len]
 
     assert (
         len(input_ids)
-        == len(advantages)
         == len(loss_mask)
         == len(position_ids)
         == len(inference_logprobs)
         == len(rewards)
         == len(temperatures)
     ), (
-        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, rewards: {len(rewards)}, temperatures: {len(temperatures)}"
+        f"input_ids: {len(input_ids)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, rewards: {len(rewards)}, temperatures: {len(temperatures)}"
     )
-    if teacher_logprobs is not None:
-        assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
+    for channel in advantages:
+        assert len(channel.values) == len(input_ids), f"{channel.loss}.values: {len(channel.values)}"
+        assert len(channel.mask) == len(input_ids), f"{channel.loss}.mask: {len(channel.mask)}"
 
     if routed_experts is not None:
         assert routed_experts.shape[0] == len(input_ids), (
@@ -172,18 +179,15 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     return MicroBatch(
         input_ids=input_ids,
         advantages=advantages,
-        loss_mask=loss_mask,
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
         sequence_lengths=[len(input_ids)],
-        teacher_logprobs=teacher_logprobs,
         temperatures=temperatures,
         rewards=rewards,
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=mm_kwargs,
-        training_mode=training_example.training_mode,
     )
 
 
@@ -206,12 +210,13 @@ class _MicroBatchBin:
         return self.samples[0][1]
 
     def can_add(self, sample: MicroBatch, max_seq_len: int) -> bool:
+        # Loss routing is carried as per-token channels, so samples with
+        # different losses pack together freely.
         first_sample = self.first_sample
         return (
             not _is_multimodal_sample(first_sample)
             and not _is_multimodal_sample(sample)
             and self.length + len(sample.input_ids) <= max_seq_len
-            and first_sample.training_mode == sample.training_mode
             and (first_sample.routed_experts is None) == (sample.routed_experts is None)
         )
 
@@ -244,37 +249,42 @@ class _MicroBatchBin:
 
 def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     has_rewards = any(sample.rewards is not None for _, sample in bin_content.samples)
-    has_teacher_logprobs = any(sample.teacher_logprobs is not None for _, sample in bin_content.samples)
     has_mm_token_type_ids = any(sample.mm_token_type_ids is not None for _, sample in bin_content.samples)
+    loss_names = sorted({channel.loss for _, sample in bin_content.samples for channel in sample.advantages})
 
     input_ids: list[int] = []
-    loss_mask: list[bool] = []
-    advantages: list[float] = []
     inference_logprobs: list[float] = []
     position_ids: list[int] = []
     temperatures: list[float] = []
     env_names: list[str] = []
     rewards: list[float] | None = [] if has_rewards else None
-    teacher_logprobs: list[float] | None = [] if has_teacher_logprobs else None
     mm_token_type_ids: list[int] | None = [] if has_mm_token_type_ids else None
+    advantages_by_loss = {loss: TrainingAdvantage(loss=loss, values=[], mask=[]) for loss in loss_names}
     routed_experts: RoutedExperts | None = None
     lora_num_tokens = [0] * num_loras
 
     for lora_idx, sample in bin_content.samples:
         sample_len = len(sample.input_ids)
         input_ids.extend(sample.input_ids)
-        loss_mask.extend(sample.loss_mask)
-        advantages.extend(sample.advantages)
         inference_logprobs.extend(sample.inference_logprobs)
         position_ids.extend(sample.position_ids)
         temperatures.extend(sample.temperatures)
         env_names.extend(sample.env_names)
         if rewards is not None:
             rewards.extend(sample.rewards if sample.rewards is not None else [float("nan")] * sample_len)
-        if teacher_logprobs is not None:
-            teacher_logprobs.extend(
-                sample.teacher_logprobs if sample.teacher_logprobs is not None else [0.0] * sample_len
-            )
+        sample_advantages: dict[str, TrainingAdvantage] = {}
+        for channel in sample.advantages:
+            if channel.loss in sample_advantages:
+                raise ValueError(f"sample carries duplicate loss channel {channel.loss!r}")
+            sample_advantages[channel.loss] = channel
+        for loss, packed_channel in advantages_by_loss.items():
+            sample_channel = sample_advantages.get(loss)
+            if sample_channel is None:
+                packed_channel.values.extend([0.0] * sample_len)
+                packed_channel.mask.extend([False] * sample_len)
+            else:
+                packed_channel.values.extend(sample_channel.values)
+                packed_channel.mask.extend(sample_channel.mask)
         if mm_token_type_ids is not None:
             mm_token_type_ids.extend(
                 sample.mm_token_type_ids if sample.mm_token_type_ids is not None else [0] * sample_len
@@ -295,12 +305,10 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
 
     return MicroBatch(
         input_ids=input_ids,
-        advantages=advantages,
-        loss_mask=loss_mask,
+        advantages=list(advantages_by_loss.values()),
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
         sequence_lengths=sequence_lengths,
-        teacher_logprobs=teacher_logprobs,
         temperatures=temperatures,
         rewards=rewards,
         lora_num_tokens=lora_num_tokens,
@@ -308,7 +316,6 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=first_sample.mm_kwargs if _is_multimodal_sample(first_sample) else None,
-        training_mode=first_sample.training_mode,
     )
 
 
@@ -406,17 +413,15 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         return micro_batch
 
     micro_batch.input_ids.extend([1] * padding_size)
-    micro_batch.advantages.extend([0.0] * padding_size)
+    for channel in micro_batch.advantages:
+        channel.values.extend([0.0] * padding_size)
+        channel.mask.extend([False] * padding_size)
     if micro_batch.rewards is not None:
         micro_batch.rewards.extend([float("nan")] * padding_size)
-    micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
     micro_batch.sequence_lengths.append(padding_size)
     micro_batch.inference_logprobs.extend([0.0] * padding_size)
-    # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)
     micro_batch.temperatures.extend([1.0] * padding_size)
-    if micro_batch.teacher_logprobs is not None:
-        micro_batch.teacher_logprobs.extend([0.0] * padding_size)
     if micro_batch.lora_num_tokens is not None:
         micro_batch.lora_num_tokens[-1] += (
             padding_size  # We send padding to the last lora so that tokens have ascending lora idx
@@ -430,11 +435,44 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     return micro_batch
 
 
+def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
+    """Every per-token array must stay position-aligned with ``input_ids``
+    through packing and padding — a field extended without backfill would
+    corrupt training silently."""
+    num_tokens = len(micro_batch.input_ids)
+    per_token_fields = (
+        "inference_logprobs",
+        "position_ids",
+        "temperatures",
+        "env_names",
+        "rewards",
+        "mm_token_type_ids",
+    )
+    for name in per_token_fields:
+        values = getattr(micro_batch, name)
+        assert values is None or len(values) == num_tokens, (
+            f"{name} misaligned after packing: {len(values)} != {num_tokens} tokens"
+        )
+    assert sum(micro_batch.sequence_lengths) == num_tokens, (
+        f"sequence_lengths sum {sum(micro_batch.sequence_lengths)} != {num_tokens} tokens"
+    )
+    for channel in micro_batch.advantages:
+        assert len(channel.values) == num_tokens, (
+            f"{channel.loss}.values misaligned after packing: {len(channel.values)} != {num_tokens} tokens"
+        )
+        assert len(channel.mask) == num_tokens, (
+            f"{channel.loss}.mask misaligned after packing: {len(channel.mask)} != {num_tokens} tokens"
+        )
+    if micro_batch.routed_experts is not None:
+        assert micro_batch.routed_experts.shape[0] == num_tokens, (
+            f"routed_experts misaligned after packing: {micro_batch.routed_experts.shape[0]} != {num_tokens} tokens"
+        )
+
+
 def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     """Create a zero-loss dummy batch from an existing batch, preserving its modality."""
     dummy = copy.deepcopy(source)
-    dummy.advantages = [0.0] * len(dummy.input_ids)
-    dummy.loss_mask = [False] * len(dummy.input_ids)
+    dummy.advantages = []
     return dummy
 
 
@@ -469,6 +507,8 @@ def prepare_batch(
 
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras, num_train_workers, bin_cost)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
+    for micro_batch in micro_batches:
+        _assert_token_arrays_aligned(micro_batch)
 
     # Separate by modality so each step index has uniform modality across all ranks
     mm_batches = [b for b in micro_batches if _is_multimodal_sample(b)]

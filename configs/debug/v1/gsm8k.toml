@@ -15,7 +15,6 @@ name = "gsm8k-v1"
 name = "Qwen/Qwen3-0.6B"
 
 [orchestrator]
-training_mode = "rl"
 batch_size = 512
 group_size = 16
 

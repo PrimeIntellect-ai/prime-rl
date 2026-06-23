@@ -70,7 +70,6 @@ class TokenExporter:
                         "export_sequence_idx": self._sequences_by_file.get(file_key, 0),
                         "run_id": run_id,
                         "env_name": _first_non_empty(columns["env_names"][start:end]),
-                        "training_mode": str(micro_batch["training_mode"]),
                         **_slice_columns(columns, start, end),
                     },
                     run_id,
@@ -146,12 +145,15 @@ def _export_columns(
     seq_len = len(token_ids)
     trainer_logprobs = model_output["logprobs"]
     export_tensors = _compute_export_tensors(micro_batch, trainer_logprobs, loss_config)
+    loss_mask = _training_mask(micro_batch["advantages"], seq_len, trainer_logprobs.device)
+    rl_channel = _loss_channel(micro_batch["advantages"], "rl")
 
     return {
         "token_ids": token_ids,
         "position_ids": _tensor_to_ints(micro_batch["position_ids"]),
-        "loss_mask": _tensor_to_bools(micro_batch["loss_mask"]),
-        "advantages": _tensor_to_floats(micro_batch["advantages"]),
+        "loss_mask": _tensor_to_bools(loss_mask),
+        "advantages": _optional_tensor_to_floats(rl_channel["values"] if rl_channel is not None else None, seq_len),
+        "losses": _loss_records(micro_batch["advantages"], seq_len),
         "rewards": _optional_tensor_to_floats(micro_batch.get("rewards"), seq_len),
         "inference_logprobs": _tensor_to_floats(micro_batch["inference_logprobs"]),
         "trainer_logprobs": _tensor_to_floats(trainer_logprobs),
@@ -179,12 +181,15 @@ def _compute_export_tensors(
         "is_masked_high": None,
         "is_masked_low": None,
     }
-    if micro_batch["training_mode"] == "sft":
+    rl_channel = _loss_channel(micro_batch["advantages"], "rl")
+    if rl_channel is None:
+        return fields
+    loss_mask = rl_channel["mask"].to(trainer_logprobs.device)
+    if not bool(loss_mask.any()):
         return fields
 
     inference_logprobs = micro_batch["inference_logprobs"].to(trainer_logprobs.device)
-    loss_mask = micro_batch["loss_mask"].to(trainer_logprobs.device)
-    advantages = micro_batch["advantages"].to(trainer_logprobs.device)
+    advantages = rl_channel["values"].to(trainer_logprobs.device)
     with torch.no_grad():
         log_ratio, ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(trainer_logprobs, inference_logprobs)
         prob_delta = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
@@ -202,6 +207,36 @@ def _compute_export_tensors(
             fields["is_masked_high"] = loss_mask & positive_advantages & invalid_high
             fields["is_masked_low"] = loss_mask & negative_advantages & invalid_low
     return fields
+
+
+def _loss_channel(channels: Sequence[Mapping[str, Any]], loss: str) -> Mapping[str, Any] | None:
+    for channel in channels:
+        if channel["loss"] == loss:
+            return channel
+    return None
+
+
+def _training_mask(channels: Sequence[Mapping[str, Any]], seq_len: int, device: torch.device) -> Tensor:
+    mask = torch.zeros((1, seq_len), dtype=torch.bool, device=device)
+    for channel in channels:
+        mask = mask | channel["mask"].to(device)
+    return mask
+
+
+def _loss_records(
+    channels: Sequence[Mapping[str, Any]], seq_len: int
+) -> list[dict[str, dict[str, float | bool | None]]]:
+    records: list[dict[str, dict[str, float | bool | None]]] = [{} for _ in range(seq_len)]
+    for channel in channels:
+        values = _tensor_to_floats(channel["values"])
+        mask = _tensor_to_bools(channel["mask"])
+        if len(values) != seq_len or len(mask) != seq_len:
+            raise ValueError(
+                f"loss channel {channel['loss']!r} has values/mask lengths {len(values)}/{len(mask)}, expected {seq_len}"
+            )
+        for i, (value, keep) in enumerate(zip(values, mask, strict=True)):
+            records[i][str(channel["loss"])] = {"advantage": value, "mask": keep}
+    return records
 
 
 def _tensor_to_ints(tensor: Tensor) -> list[int]:

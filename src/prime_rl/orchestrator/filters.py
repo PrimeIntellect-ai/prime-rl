@@ -51,9 +51,15 @@ class GibberishFilter:
 
     def check(self, rollout: Rollout) -> FilterResult:
         global_idx = 0
-        for node in rollout.nodes:
-            completion = [t for t, m in zip(node.token_ids, node.mask) if m]
-            for token_id, logprob in zip(completion, node.logprobs):
+        for sample in rollout.samples:
+            for token_id, logprob, sampled in zip(
+                sample.token_ids,
+                sample.logprobs,
+                sample.mask,
+                strict=True,
+            ):
+                if not sampled:
+                    continue
                 if token_id > self.token_id_threshold and logprob < self.logprob_threshold:
                     return FilterResult(detected=True, detection_index=global_idx)
                 global_idx += 1
@@ -80,8 +86,10 @@ class RepetitionFilter:
     def check(self, rollout: Rollout) -> FilterResult:
         consecutive = 0
         global_idx = 0
-        for node in rollout.nodes:
-            for logprob in node.logprobs:
+        for sample in rollout.samples:
+            for logprob, sampled in zip(sample.logprobs, sample.mask, strict=True):
+                if not sampled:
+                    continue
                 if logprob > self.logprob_threshold:
                     consecutive += 1
                 else:
@@ -94,14 +102,14 @@ class RepetitionFilter:
 
 @dataclass
 class ZeroAdvantageFilter:
-    """Flags rollouts whose computed advantage is zero (e.g. all rollouts in a
-    GRPO group earned the same reward, so the centered advantage collapses)."""
+    """Flags rollouts whose advantage stream is all zero (e.g. all rollouts in
+    a GRPO group earned the same reward, so the centered advantage collapses)."""
 
     name: str
     enforce: bool = True
 
     def check(self, rollout: Rollout) -> FilterResult:
-        if rollout.advantage is not None and rollout.advantage == 0.0:
+        if rollout.advantages is not None and all(a == 0.0 for a in rollout.advantages):
             return FilterResult(detected=True)
         return FilterResult(detected=False)
 
@@ -143,7 +151,7 @@ def setup_filters(configs: list[FilterConfig], vocab_size: int, *, kind: str) ->
 
 
 def apply_filters(filters: list[RolloutFilter], rollouts: list[Rollout]) -> None:
-    """Flag ``Rollout``\\ s in place with per-filter detection + drop decision.
+    """Flag rollouts in place with per-filter detection + drop decision.
 
     Each rollout's ``filter_results`` dict records per-filter detection bools;
     ``is_filtered`` is True iff an enforcing filter detected it. First matching

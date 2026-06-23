@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import pyarrow.parquet as pq
 import verifiers.v1 as vf
+from verifiers.v1.graph import MessageNode
 
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.monitor.prime import PrimeMonitor
@@ -16,33 +17,28 @@ def _new_monitor() -> PrimeMonitor:
 
 
 def _build_rollout(*, example_id: int, reward: float, task: str) -> Rollout:
-    """Build a v1 ``Rollout`` (message-graph trace). The user node carries the prompt and the
-    assistant node the completion; ``_rollouts_to_parquet_bytes`` reads the conversation off the
-    branches (its ``completion`` column is the last branch's messages, ``trajectory`` is one
-    message list per branch)."""
-    nodes = [
-        vf.MessageNode(
-            message=vf.UserMessage(content=f"prompt-{example_id}"),
-            token_ids=[1, 2, 3],
-            mask=[False, False, False],
-            logprobs=[0.0, 0.0, 0.0],
-        ),
-        vf.MessageNode(
-            message=vf.AssistantMessage(content=f"completion-{example_id}"),
-            token_ids=[4, 5],
-            mask=[True, True],
-            logprobs=[-0.1, -0.2],
-            sampled=True,
-        ),
-    ]
-    rollout = Rollout[vf.Task](
+    return Rollout(
         task=vf.Task(idx=example_id, prompt=f"prompt-{example_id}"),
-        nodes=nodes,
-        rewards={"reward": reward},
+        env_name=task,
+        rewards={"score": reward},
+        metrics={"accuracy": reward},
+        advantages=[reward / 2],
+        nodes=[
+            MessageNode(
+                message=vf.UserMessage(content=f"prompt-{example_id}"),
+                token_ids=[1, 2, 3],
+                mask=[False, False, False],
+            ),
+            MessageNode(
+                parent=0,
+                message=vf.AssistantMessage(content=f"completion-{example_id}"),
+                sampled=True,
+                token_ids=[4, 5],
+                mask=[True, True],
+                logprobs=[-0.1, -0.2],
+            ),
+        ],
     )
-    rollout.env_name = task
-    rollout.advantage = reward / 2
-    return rollout
 
 
 def test_rollouts_to_parquet_bytes_preserves_all_rollouts_and_ids():
@@ -67,22 +63,22 @@ def test_rollouts_to_parquet_bytes_preserves_all_rollouts_and_ids():
     assert [row["sample_id"] for row in rows] == [0, 1]
     assert all(row["run_id"] == "run-123" for row in rows)
     assert all(row["step"] == 7 for row in rows)
-    # `completion` is the last branch's messages; the prompt user message lives in `trajectory`.
-    assert json.loads(rows[1]["completion"])[0]["content"] == "completion-202"
-    trajectory = json.loads(rows[0]["trajectory"])
-    assert trajectory[0]["messages"][0]["content"] == "prompt-101"
+    first_messages = json.loads(rows[0]["completion"])
+    second_messages = json.loads(rows[1]["completion"])
+    assert rows[0]["prompt"] == ""
+    assert first_messages[0]["content"] == "prompt-101"
+    assert second_messages[1]["content"] == "completion-202"
 
 
 def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     monitor = _new_monitor()
     monitor.run_id = "run-456"
 
-    rollout_with_branches = _build_rollout(example_id=1, reward=1.0, task="task-a")
-    rollout_without_branches = Rollout[vf.Task](task=vf.Task(idx=2, prompt="missing-trajectory"))
-    assert rollout_without_branches.branches == []
-
     parquet_bytes = monitor._rollouts_to_parquet_bytes(
-        [rollout_with_branches, rollout_without_branches],
+        [
+            _build_rollout(example_id=1, reward=1.0, task="task-a"),
+            Rollout(task=vf.Task(idx=2, prompt="missing-trajectory")),
+        ],
         step=3,
     )
 

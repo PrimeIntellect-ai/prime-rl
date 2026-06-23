@@ -14,7 +14,6 @@ name = "v1"
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [orchestrator]
-training_mode = "rl"
 batch_size = 128
 group_size = 16
 

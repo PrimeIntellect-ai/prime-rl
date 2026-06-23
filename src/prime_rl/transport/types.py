@@ -1,8 +1,4 @@
-from typing import Literal
-
 import msgspec
-
-TrainingMode = Literal["rl", "opd", "sft"]
 
 
 # Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
@@ -23,21 +19,21 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
 
 
 # Orchestrator -> Packer
-class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    """A single training example — one branch of a rollout as a flat token sequence.
+class TrainingAdvantage(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    loss: str
+    values: list[float]
+    mask: list[bool]
 
-    There is no prompt/completion split: an agentic, multi-turn branch interleaves context and
-    model-sampled spans, so ``mask`` marks which tokens are trainable (model-sampled) and
-    ``logprobs`` / ``temperatures`` are aligned per token. All four arrays share the length of
-    ``token_ids``."""
+
+class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    """A single training example — one trace branch as a flat token sequence."""
 
     token_ids: list[int]
     mask: list[bool]
     logprobs: list[float]
     temperatures: list[float]
     env_name: str
-    teacher_logprobs: list[float] | None = None
-    advantage: float | None = None
+    advantages: list[TrainingAdvantage]
     reward: float | None = None
 
     # Generic multimodal kwargs: flat dict keyed by the kwarg names the
@@ -55,10 +51,6 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 
-    # Loss dispatch is batch-driven: rl/opd use default_loss_fn (with mode-specific
-    # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
-    training_mode: TrainingMode = "rl"
-
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
@@ -73,14 +65,14 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A micro batch of data for training."""
 
     input_ids: list[int]
-    loss_mask: list[bool]
-    advantages: list[float]
+    advantages: list[TrainingAdvantage]
     inference_logprobs: list[float]
     position_ids: list[int]
-    sequence_lengths: list[int]
     temperatures: list[float]  # Per-token temperatures used during generation
     env_names: list[str]
-    teacher_logprobs: list[float] | None = None
+    # Per-sample token counts within the packed batch (one entry per packed
+    # sample); the loss splits the packed sequence back into samples by these.
+    sequence_lengths: list[int]
     lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None
 
@@ -89,9 +81,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 
-    # Loss dispatch is batch-driven (rl/opd → default loss with mode-specific taus,
-    # sft → sft loss). All samples packed into a micro batch share the same mode.
-    training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
 
     # Packer-derived metadata used for run-local token exports.
