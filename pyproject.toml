@@ -224,6 +224,8 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 # deps/{verifiers,research-environments}/environments; v1 tasksets (`-v1`) and the `compact`
 # example live under deps/verifiers/environments.
 verifiers = { path = "deps/verifiers", editable = true }
+renderers = { path = "deps/renderers", editable = true }
+prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
 aime2024 = { path = "deps/research-environments/environments/aime2024", editable = true }
 aime2025 = { path = "deps/research-environments/environments/aime2025", editable = true }
 alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
@@ -273,8 +275,6 @@ wikispeedia-v1 = { path = "deps/verifiers/environments/wikispeedia_v1", editable
 wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
 general-agent-v1 = { path = "deps/verifiers/environments/general_agent_v1", editable = true }
 swebench-verified-v1 = { path = "deps/verifiers/environments/swebench_verified_v1", editable = true }
-renderers = { path = "deps/renderers", editable = true }
-prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
