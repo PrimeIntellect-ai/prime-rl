@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 import torch
-from jaxtyping import Float
-from torch import Tensor
 
 if TYPE_CHECKING:
     import verifiers.v1 as vf
@@ -15,11 +13,8 @@ if TYPE_CHECKING:
 from prime_rl.configs.orchestrator import (
     AdvantageConfig,
     CustomAdvantageConfig,
-    LengthPenaltyConfig,
-    TokensLengthPenaltyConfig,
-    TurnsLengthPenaltyConfig,
+    LinearLengthPenaltyConfig,
 )
-from prime_rl.orchestrator.utils import get_tool_response_len
 from prime_rl.utils.utils import import_object
 
 
@@ -51,68 +46,36 @@ entry per rollout. `assign_advantages` calls it on one already-grouped cohort.
 
 def default_advantage_fn(
     inputs: AdvantageInputs,
-    length_penalty: LengthPenaltyConfig | None = None,
+    length_penalty: LinearLengthPenaltyConfig | None = None,
+    max_seq_len: int | None = None,
+    length_weighted_baseline: bool = False,
 ) -> AdvantageOutputs:
     """Default GRPO advantage for a single group: reward minus per-group baseline.
 
-    `length_penalty` enables correctness-gated efficiency shaping over a per-rollout
-    cost: tokens (weighted completion + tool-response) or trajectory turn count.
+    ``length_penalty`` subtracts ``coef * pass_rate * (completion tokens / max_seq_len)``
+    from each reward (``pass_rate`` = group mean reward), optionally gated to correct
+    (``reward == 1``) rollouts. ``length_weighted_baseline`` uses the token-length-weighted
+    mean reward as the baseline instead of the plain mean.
     """
     rewards = torch.tensor([r.reward for r in inputs.rollouts], dtype=torch.float32)
+    lengths = torch.tensor([r.completion_len for r in inputs.rollouts], dtype=rewards.dtype)
 
-    if isinstance(length_penalty, TokensLengthPenaltyConfig):
-        w_c = length_penalty.completion_weight
-        w_t = length_penalty.tool_response_weight
-        costs = torch.tensor(
-            [w_c * r.completion_len + w_t * get_tool_response_len(r) for r in inputs.rollouts],
-            dtype=rewards.dtype,
-        )
-        return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
-    if isinstance(length_penalty, TurnsLengthPenaltyConfig):
-        costs = torch.tensor([r.num_turns for r in inputs.rollouts], dtype=rewards.dtype)
-        return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
+    if length_penalty is not None:
+        if max_seq_len is None:
+            raise ValueError("max_seq_len is required when length_penalty is enabled")
+        penalty = length_penalty.coef * rewards.mean() * (lengths / max_seq_len)
+        if length_penalty.gate_by_correctness:
+            penalty = penalty * rewards
+        rewards = rewards - penalty
 
-    return AdvantageOutputs(advantages=(rewards - rewards.mean()).tolist())
-
-
-def _efficiency_shaping(
-    rewards: Float[Tensor, "group_size"],
-    costs: Float[Tensor, "group_size"],
-) -> Float[Tensor, "group_size"]:
-    """Correctness-gated efficiency shaping with bounded advantages.
-
-    Shapes rewards with a bounded efficiency bonus before standard GRPO subtraction,
-    preserving zero-mean advantages within the group. `costs` is a per-rollout cost
-    (e.g., completion length in tokens or number of turns).
-
-    Correct rollouts get reward amplified by up to 2x based on relative efficiency.
-    Incorrect rollouts are untouched. Lower-cost correct rollouts get higher advantage.
-    """
-    max_reward = rewards.max()
-    correct_mask = rewards >= max_reward
-    num_correct = correct_mask.sum()
-
-    # No shaping when max reward is 0 — no correct rollouts to differentiate
-    if max_reward <= 0:
-        return rewards - rewards.mean()
-
-    # Mean cost of correct rollouts
-    mean_correct_cost = (costs * correct_mask).sum() / num_correct.clamp(min=1)
-
-    # Bounded efficiency bonus: [0, 1], positive for below-average cost, zero for above.
-    # When mean_correct_cost is 0 (e.g. tool-only shaping with no harness metric, or
-    # all-zero turn counts), no rollouts can be differentiated — fall back to no bonus.
-    if mean_correct_cost <= 0:
-        return rewards - rewards.mean()
-
-    bonus = (1 - costs / mean_correct_cost).clamp(0, 1)
-
-    # Shape rewards: correct rollouts amplified by up to 2x, incorrect untouched
-    shaped_rewards = rewards * (1 + bonus * correct_mask)
-    return shaped_rewards - shaped_rewards.mean()
+    if length_weighted_baseline:
+        baseline = (lengths * rewards).sum() / lengths.sum()
+    else:
+        baseline = rewards.mean()
+    return AdvantageOutputs(advantages=(rewards - baseline).tolist())
 
 
-def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
+def setup_advantage_fn(config: AdvantageConfig, max_seq_len: int | None = None) -> AdvantageFn:
     """Setup advantage function from config."""
     if isinstance(config, CustomAdvantageConfig):
         custom_fn = import_object(config.import_path)
@@ -124,7 +87,12 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
         return advantage_fn
 
     def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
-        return default_advantage_fn(inputs, length_penalty=config.length_penalty)
+        return default_advantage_fn(
+            inputs,
+            length_penalty=config.length_penalty,
+            max_seq_len=max_seq_len,
+            length_weighted_baseline=config.length_weighted_baseline,
+        )
 
     return advantage_fn
 
@@ -136,8 +104,7 @@ def assign_advantages(
     """Compute and assign advantages for one finished group of rollouts
     (``TrainSink.process_group`` hands in a single group's surviving rollouts).
     ``advantage_fn=None`` is the trivial case (advantage = reward); a custom
-    ``advantage_fn`` receives the ``vf.Trace``\\ s via
-    ``AdvantageInputs.rollouts``.
+    ``advantage_fn`` receives the ``vf.Trace``\\ s via ``AdvantageInputs.rollouts``.
     """
     if advantage_fn is None:
         for rollout in rollouts:

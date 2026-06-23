@@ -46,16 +46,6 @@ async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer)
     return renderer, inference_pool
 
 
-def get_tool_response_len(output: vf.Trace) -> int:
-    """Total tool-response tokens consumed across the whole rollout, read from a
-    harness-emitted metric (e.g. RLM's `rlm_total_tool_response_tokens`, deduped
-    across turns/branches/sub-RLMs). Returns 0 when no such metric is present."""
-    for key, value in output.metrics.items():
-        if key.endswith("total_tool_response_tokens") and isinstance(value, (int, float)):
-            return int(value)
-    return 0
-
-
 def save_rollouts(rollouts: list[dict], path: Path, exclude_keys: set[str] | None = None) -> None:
     """Save rollouts (Trace dicts, already JSON-serializable) to a JSONL file."""
     path.parent.mkdir(parents=True, exist_ok=True)
