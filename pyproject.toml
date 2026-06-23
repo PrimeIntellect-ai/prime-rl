@@ -34,6 +34,8 @@ dependencies = [
     "uvloop>=0.21.0",
     "torchtitan",
     "verifiers>=0.1.15.dev357",
+    "harnesses",
+    "tasksets",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
