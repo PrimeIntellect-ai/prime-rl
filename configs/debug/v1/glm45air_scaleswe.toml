@@ -1,4 +1,4 @@
-# v1 RL ablation: GLM-4.5-Air (100B MoE) on the v1 `scaleswe-v1` SWE taskset, rlm harness on a
+# v1 RL ablation: GLM-4.5-Air (100B MoE) on the v1 `scaleswe-v1` SWE taskset, bash harness on a
 # prime sandbox runtime; eval on SWE-Bench Verified. Router replay is enabled
 # (trainer.enable_router_replay replays the routed-expert decisions returned by inference via
 # enable_return_routed_experts) — GLM-4.5-Air is a glm4_moe model, which supports routed_experts.
@@ -81,11 +81,11 @@ preserve_all_thinking = true
 [[orchestrator.train.env]]
 name = "scaleswe"
 taskset = { id = "scaleswe-v1" }
-harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-swe"] } }
+harness = { id = "bash", runtime = { type = "prime", labels = ["glm45air-swe"] } }
 
 [orchestrator.prime_monitor]
 
-# --- Eval: SWE-Bench Verified every 20 steps, rlm harness on prime ---
+# --- Eval: SWE-Bench Verified every 20 steps, bash harness on prime ---
 
 [orchestrator.eval]
 interval = 20
@@ -93,7 +93,7 @@ interval = 20
 [[orchestrator.eval.env]]
 name = "swebench-verified"
 taskset = { id = "swebench-verified-v1", use_prime_registry = true }
-harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-swe"] } }
+harness = { id = "bash", runtime = { type = "prime", labels = ["glm45air-swe"] } }
 timeout = { rollout = 3600 }
 
 # --- Inference ---
