@@ -36,7 +36,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | `uv run sft` | Supervised fine-tuning on a HF dataset. | Launches torchrun internally; never call torchrun directly. |
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run trainer` | Standalone trainer process group. | Use only when launching the trainer separately from the orchestrator (e.g. multi-node RL without the `rl` wrapper). |
-| `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched trainer, inference, and `env-server`(s). The orchestrator only *attaches* to env servers (it never spawns them), so set `address` on each env — the `rl` wrapper launches the servers and assigns addresses for you. |
+| `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched trainer + inference. |
 
 ## RL Trainer
 
