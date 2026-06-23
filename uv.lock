@@ -1237,13 +1237,11 @@ dependencies = [
 
 [[package]]
 name = "flash-linear-attention"
-version = "0.5.1"
-source = { git = "https://github.com/fla-org/flash-linear-attention#e8e791f314a2210e94dde06214ac8f1f0b35e7e3" }
+version = "0.5.2"
+source = { git = "https://github.com/fla-org/flash-linear-attention#bd67d11782696e4ff54ee6cb411483621ed3d93d" }
 dependencies = [
     { name = "einops", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "torch", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "transformers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "triton", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
 [[package]]
