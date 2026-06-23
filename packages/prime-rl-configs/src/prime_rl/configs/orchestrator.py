@@ -6,6 +6,10 @@ import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
+from prime_rl.configs.algorithm import (
+    AlgorithmConfig,
+    GRPOAlgorithmConfig,
+)
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
@@ -205,40 +209,6 @@ class EnvConfig(vf.EnvServerConfig):
         return self
 
 
-class LinearLengthPenaltyConfig(BaseConfig):
-    coef: float = Field(0.25, ge=0, allow_inf_nan=False)
-    """Scale on the linear length penalty. Each reward is reduced by ``coef * pass_rate * (model completion tokens / orchestrator.seq_len)`` — where ``pass_rate`` is the group's mean reward — before the GRPO baseline subtraction. Finite and non-negative."""
-
-    gate_by_correctness: bool = False
-    """When True, scale each rollout's penalty by its reward (``penalty * reward``), so correct rollouts (``reward == 1``) are penalized and incorrect ones (``reward == 0``) are not. When False, every rollout is penalized equally."""
-
-
-class DefaultAdvantageConfig(BaseConfig):
-    type: Literal["default"] = "default"
-
-    length_penalty: LinearLengthPenaltyConfig | None = None
-    """Length penalty applied during advantage computation. Subtracts a ``coef * pass_rate * (completion tokens / orchestrator.seq_len)`` term from each reward (``pass_rate`` = group mean reward) before the baseline subtraction, so solved-often problems get the strongest concision pressure and never-solved groups get none. None disables the penalty."""
-
-    length_weighted_baseline: bool = False
-    """When True, the GRPO baseline is the token-length-weighted mean reward (``sum(len_i * reward_i) / sum(len_i)``) instead of the plain group mean, centering advantages by per-token expected reward."""
-
-
-class CustomAdvantageConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Import path to the advantage function (e.g. ``my_module.my_advantage``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the advantage function."""
-
-
-AdvantageConfig: TypeAlias = Annotated[
-    DefaultAdvantageConfig | CustomAdvantageConfig,
-    Field(discriminator="type"),
-]
-
-
 class TrainEnvConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
@@ -247,10 +217,10 @@ class TrainEnvConfig(EnvConfig):
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
 
-    advantage: AdvantageConfig | None = None
-    """Advantage strategy for this env's GRPO groups. Inherits from the top-level
-    ``orchestrator.advantage`` when unset; set a different ``default``/``custom``
-    config to give this env its own advantage computation."""
+    algo: AlgorithmConfig | None = None
+    """Training algorithm for this env. Inherits from the top-level
+    ``orchestrator.algo`` when unset; set ``type`` (and its params) to give
+    this env its own algorithm."""
 
 
 class EvalEnvConfig(EnvConfig):
@@ -473,21 +443,25 @@ class OrchestratorExperimentalConfig(BaseConfig):
     pass
 
 
-class RolloutModelConfig(BaseConfig):
-    model: ModelConfig = ModelConfig()
+class HostedModelConfig(ModelConfig):
+    """A served model reachable through an OpenAI-compatible endpoint: the
+    model fields plus the client of the live deployment."""
 
     client: ClientConfig = ClientConfig()
 
 
 class OrchestratorConfig(BaseConfig):
-    training_mode: Literal["rl", "opd", "sft"] = "rl"
-    """Training mode. ``rl``: student generates rollouts, no teacher. ``opd``: student generates rollouts, teacher computes logprobs (teacher_tau > 0). ``sft``: teacher generates rollouts, student inference pool used for evals and weight sync."""
+    algo: AlgorithmConfig = GRPOAlgorithmConfig()
+    """Training algorithm: sampling plus the per-token training signal (credit
+    assignment and loss routing, fused — its ``type`` names the algorithm).
+    Defaults to ``grpo``. Override per env via ``[[orchestrator.train.env]]``'s
+    ``algo``."""
 
-    student: RolloutModelConfig = Field(RolloutModelConfig(), validation_alias=AliasChoices("student", "model"))
-    """Student rollout participant (model + client) — the model being trained."""
-
-    teacher: RolloutModelConfig | None = Field(None, validation_alias=AliasChoices("teacher", "teacher_model"))
-    """Teacher rollout participant (model + client). Role depends on ``training_mode``: ``opd`` — teacher computes logprobs; ``sft`` — teacher generates rollouts."""
+    model: HostedModelConfig = HostedModelConfig()
+    """The model being trained: its model fields plus the client of the live
+    vLLM deployment (``[orchestrator.model] name = ...`` with
+    ``[orchestrator.model.client]``). Algorithm components reference it as
+    ``"policy"``."""
 
     train: TrainConfig = TrainConfig()
 
@@ -509,8 +483,6 @@ class OrchestratorConfig(BaseConfig):
 
     eval: EvalConfig | None = None
     """Evaluation configuration."""
-
-    advantage: AdvantageConfig | None = DefaultAdvantageConfig()
 
     pre_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(enforce=False),
@@ -540,7 +512,7 @@ class OrchestratorConfig(BaseConfig):
     """Collect inference-server metrics (requires wandb)."""
 
     inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
-    """Role for each student admin client when collecting P/D inference metrics."""
+    """Role for each policy admin client when collecting P/D inference metrics."""
 
     ckpt: CheckpointConfig | None = None
     """Checkpoint configuration."""
@@ -595,67 +567,6 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def fold_student_shortcuts(cls, data: Any) -> Any:
-        """Accept top-level ``[orchestrator.model]`` / ``[orchestrator.client]``
-        as shorthand for the student sub-config. Useful for ergonomic rl configs
-        where ``[orchestrator.student.*]`` is overkill, and required for
-        pre-refactor configs that used the flat layout to keep parsing:
-
-        - [orchestrator.client.*]     -> [orchestrator.student.client.*]
-        - [orchestrator.model.<k>]    -> [orchestrator.student.model.<k>]
-          (where <k> is any ModelConfig field)
-
-        Teacher must always be configured under [orchestrator.teacher.*]
-        (no equivalent shortcut), because rl mode forbids a teacher and we
-        don't want the same shortcut to silently route to two different roles.
-        """
-        if not isinstance(data, dict):
-            return data
-
-        def deep_merge(dst: dict, src: dict) -> None:
-            """In-place recursive merge of ``src`` into ``dst``. ``src`` wins at the leaf."""
-            for k, v in src.items():
-                if isinstance(v, dict) and isinstance(dst.get(k), dict):
-                    deep_merge(dst[k], v)
-                else:
-                    dst[k] = v
-
-        # 1. Re-nest top-level [orchestrator.client] under student.client.
-        legacy_client = data.pop("client", None)
-        if isinstance(legacy_client, dict):
-            student = data.setdefault("student", {})
-            if isinstance(student, dict):
-                deep_merge(student.setdefault("client", {}), legacy_client)
-            else:
-                # Mismatched types - put it back and let pydantic surface the error.
-                data["client"] = legacy_client
-
-        # 2. Consolidate the legacy `model` alias into `student` so the
-        # flat-layout fix-up below sees a single target. Deep-merge with the
-        # legacy keys winning so a CLI `--model.<k>` overrides TOML `student.model.<k>`.
-        legacy_model = data.pop("model", None)
-        if legacy_model is not None:
-            existing = data.get("student")
-            if existing is None:
-                data["student"] = legacy_model
-            elif isinstance(existing, dict) and isinstance(legacy_model, dict):
-                deep_merge(existing, legacy_model)
-            else:
-                # Mismatched types - put it back and let pydantic surface the error.
-                data["model"] = legacy_model
-
-        # 3. Re-nest flat ModelConfig keys under student.model.
-        model_only_keys = set(ModelConfig.model_fields)
-        student = data.get("student")
-        if isinstance(student, dict):
-            flat = {k: student.pop(k) for k in list(student) if k in model_only_keys}
-            if flat:
-                student.setdefault("model", {}).update(flat)
-
-        return data
-
-    @model_validator(mode="before")
-    @classmethod
     def _env_to_train(cls, data: Any) -> Any:
         """Allow [[env]] and [sampling] as shorthand for [train] with [[train.env]] and [train.sampling]."""
         if not isinstance(data, dict):
@@ -684,15 +595,15 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:
-            self.tokenizer.name = self.student.model.name
+            self.tokenizer.name = self.model.name
         if self.tokenizer.trust_remote_code is None:
-            self.tokenizer.trust_remote_code = self.student.model.trust_remote_code
+            self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self
 
     @model_validator(mode="after")
     def auto_setup_session_headers(self):
         """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
-        self.student.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
+        self.model.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
         return self
 
     @model_validator(mode="after")
@@ -716,13 +627,33 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_training_mode(self):
-        """Enforce training mode invariants that involve only orchestrator fields."""
-        has_teacher = self.teacher is not None
-        if self.training_mode == "rl" and has_teacher:
-            raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
-        if self.training_mode in ("opd", "sft") and not has_teacher:
-            raise ValueError(f"orchestrator.teacher must be configured when training_mode = '{self.training_mode}'.")
+    def inherit_env_algorithms(self):
+        """Envs without their own algorithm inherit the top-level one.
+        Declared before any validator that reads ``algo``."""
+        for env_cfg in self.train.env:
+            if env_cfg.algo is None:
+                env_cfg.algo = self.algo.model_copy(deep=True)
+        return self
+
+    @property
+    def any_policy_sourced(self) -> bool:
+        """True when at least one train env samples rollouts from the live policy."""
+        return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.env)
+
+    @model_validator(mode="after")
+    def validate_pool_size(self):
+        """``pool_size`` sizes the renderer-client pool for policy-sourced
+        sampling. Reject it when that path never runs — no train env samples
+        from the policy — so callers don't silently pass it and wonder why
+        it's ignored."""
+        if self.pool_size is None:
+            return self
+        if not self.any_policy_sourced:
+            raise ValueError(
+                f"orchestrator.pool_size={self.pool_size!r} is set but no train env samples "
+                "from the policy — the renderer-client sampling pool never runs (the renderer "
+                "is still used for client-side tokenization). Remove pool_size."
+            )
         return self
 
     @model_validator(mode="after")
@@ -742,7 +673,7 @@ class OrchestratorConfig(BaseConfig):
             return self
         from renderers.base import MODEL_RENDERER_MAP
 
-        model_id = self.tokenizer.name or self.student.model.name
+        model_id = self.tokenizer.name or self.model.name
         if model_id in MODEL_RENDERER_MAP:
             return self
         raise ValueError(
@@ -799,11 +730,6 @@ class OrchestratorConfig(BaseConfig):
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
 
-        # Propagate the top-level ``advantage`` into each train env that didn't set its own.
-        for env_cfg in self.train.env:
-            if "advantage" not in env_cfg.model_fields_set:
-                env_cfg.advantage = self.advantage
-
         return self
 
     @model_validator(mode="after")
@@ -822,13 +748,15 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_config(self):
-        """Set vLLM sampling defaults on each train env from top-level fields."""
-        if self.training_mode == "sft":
-            return self
+        """Set vLLM sampling defaults + legacy env kwargs on each train env from top-level fields."""
         for env in self.train.env:
-            env.sampling.extra_body.setdefault("top_k", -1)
-            env.sampling.extra_body.setdefault("min_p", 0.0)
-            env.sampling.extra_body.setdefault("return_token_ids", True)
+            # Policy-sourced rollouts hit our vLLM server; frozen-sourced
+            # rollouts may hit external OAI endpoints that reject these knobs.
+            assert env.algo is not None
+            if env.algo.sampling.source == "policy":
+                env.sampling.extra_body.setdefault("top_k", -1)
+                env.sampling.extra_body.setdefault("min_p", 0.0)
+                env.sampling.extra_body.setdefault("return_token_ids", True)
             if env.is_legacy:
                 # v0 env: cap per-turn response tokens to the training budget (the legacy
                 # bridge applies extra_env_kwargs via env.set_kwargs).

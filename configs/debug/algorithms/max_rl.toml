@@ -5,13 +5,15 @@ seq_len = 2048
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [wandb]
-project = "reverse-text-debug"
-name = "debug-rl"
+project = "algorithms-debug"
+name = "debug-max-rl"
 
 [orchestrator]
-training_mode = "rl"
 batch_size = 128
 group_size = 16
+
+[orchestrator.algo]
+type = "max_rl"
 
 [orchestrator.renderer]
 name = "qwen3"

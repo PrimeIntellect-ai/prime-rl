@@ -13,6 +13,11 @@ ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
     "int32": 4,
 }
 
+# Backfill value per component weight stream when a packed sample doesn't
+# carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
+# means no component (weight 0.0).
+STREAM_FILL = {"rl_weights": 1.0, "ce_weights": 0.0, "ref_kl_weights": 0.0}
+
 
 def _copy_routed_experts(routed_experts: RoutedExperts) -> RoutedExperts:
     return RoutedExperts(
@@ -103,7 +108,22 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     input_ids = training_example.token_ids
     loss_mask = training_example.mask
     inference_logprobs = training_example.logprobs
-    advantages = [training_example.advantage] * len(input_ids)
+    if training_example.advantages is not None:
+        advantages = list(training_example.advantages)
+    else:
+        rl_w = training_example.rl_weights
+        has_rl_members = any(loss_mask) if rl_w is None else any(m and w != 0 for m, w in zip(loss_mask, rl_w))
+        if has_rl_members:
+            raise ValueError(
+                f"sample from env '{training_example.env_name}' has rl member tokens but no advantages — "
+                "the producer must stamp the advantage stream (the orchestrator broadcasts the rollout scalar)"
+            )
+        advantages = [0.0] * len(input_ids)
+    # Component weight streams: keep absent streams None (rl weight 1.0 on the
+    # loss mask, no ce/ref_kl component) so the packed batch stays as small as before.
+    rl_weights = list(training_example.rl_weights) if training_example.rl_weights is not None else None
+    ce_weights = list(training_example.ce_weights) if training_example.ce_weights is not None else None
+    ref_kl_weights = list(training_example.ref_kl_weights) if training_example.ref_kl_weights is not None else None
     reward = training_example.reward if training_example.reward is not None else float("nan")
     rewards = [reward] * len(input_ids)
     position_ids = list(range(len(input_ids)))
@@ -115,9 +135,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # Per-token sampling temperatures (context tokens are masked out, so theirs are don't-care).
     temperatures = training_example.temperatures
 
-    # Teacher logprobs already cover the full sequence (prompt + completion),
-    # computed via prefill in the orchestrator when a teacher model is configured
-    teacher_logprobs = training_example.teacher_logprobs
+    # Ref logprobs already cover the full sequence (prompt + completion),
+    # computed via prefill in the orchestrator when the algorithm scores against a reference
+    ref_logprobs = training_example.ref_logprobs
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )
@@ -135,8 +155,14 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         advantages = advantages[:cut]
         rewards = rewards[:cut]
         temperatures = temperatures[:cut]
-        if teacher_logprobs is not None:
-            teacher_logprobs = teacher_logprobs[:cut]
+        if ref_logprobs is not None:
+            ref_logprobs = ref_logprobs[:cut]
+        if rl_weights is not None:
+            rl_weights = rl_weights[:cut]
+        if ce_weights is not None:
+            ce_weights = ce_weights[:cut]
+        if ref_kl_weights is not None:
+            ref_kl_weights = ref_kl_weights[:cut]
         if routed_experts is not None:
             routed_experts = _slice_routed_experts(routed_experts, cut)
         if mm_token_type_ids is not None:
@@ -154,8 +180,15 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     ), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, rewards: {len(rewards)}, temperatures: {len(temperatures)}"
     )
-    if teacher_logprobs is not None:
-        assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
+    if ref_logprobs is not None:
+        assert len(ref_logprobs) == len(input_ids), f"ref_logprobs: {len(ref_logprobs)}"
+    for stream_name, stream in (
+        ("rl_weights", rl_weights),
+        ("ce_weights", ce_weights),
+        ("ref_kl_weights", ref_kl_weights),
+    ):
+        if stream is not None:
+            assert len(stream) == len(input_ids), f"{stream_name}: {len(stream)}"
 
     if routed_experts is not None:
         assert routed_experts.shape[0] == len(input_ids), (
@@ -176,14 +209,16 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
         sequence_lengths=[len(input_ids)],
-        teacher_logprobs=teacher_logprobs,
+        ref_logprobs=ref_logprobs,
         temperatures=temperatures,
         rewards=rewards,
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=mm_kwargs,
-        training_mode=training_example.training_mode,
+        rl_weights=rl_weights,
+        ce_weights=ce_weights,
+        ref_kl_weights=ref_kl_weights,
     )
 
 
@@ -206,12 +241,14 @@ class _MicroBatchBin:
         return self.samples[0][1]
 
     def can_add(self, sample: MicroBatch, max_seq_len: int) -> bool:
+        # Loss routing is per token (component weight streams), so samples of
+        # different loss types pack together freely — only modality, length and
+        # routed-experts presence constrain packing.
         first_sample = self.first_sample
         return (
             not _is_multimodal_sample(first_sample)
             and not _is_multimodal_sample(sample)
             and self.length + len(sample.input_ids) <= max_seq_len
-            and first_sample.training_mode == sample.training_mode
             and (first_sample.routed_experts is None) == (sample.routed_experts is None)
         )
 
@@ -244,8 +281,11 @@ class _MicroBatchBin:
 
 def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     has_rewards = any(sample.rewards is not None for _, sample in bin_content.samples)
-    has_teacher_logprobs = any(sample.teacher_logprobs is not None for _, sample in bin_content.samples)
+    has_ref_logprobs = any(sample.ref_logprobs is not None for _, sample in bin_content.samples)
     has_mm_token_type_ids = any(sample.mm_token_type_ids is not None for _, sample in bin_content.samples)
+    # A weight stream materializes as soon as one packed sample carries it; the
+    # samples that lack it get the stream's identity fill (STREAM_FILL).
+    has_stream = {name: any(getattr(s, name) is not None for _, s in bin_content.samples) for name in STREAM_FILL}
 
     input_ids: list[int] = []
     loss_mask: list[bool] = []
@@ -255,8 +295,9 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     temperatures: list[float] = []
     env_names: list[str] = []
     rewards: list[float] | None = [] if has_rewards else None
-    teacher_logprobs: list[float] | None = [] if has_teacher_logprobs else None
+    ref_logprobs: list[float] | None = [] if has_ref_logprobs else None
     mm_token_type_ids: list[int] | None = [] if has_mm_token_type_ids else None
+    streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
     routed_experts: RoutedExperts | None = None
     lora_num_tokens = [0] * num_loras
 
@@ -271,10 +312,13 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         env_names.extend(sample.env_names)
         if rewards is not None:
             rewards.extend(sample.rewards if sample.rewards is not None else [float("nan")] * sample_len)
-        if teacher_logprobs is not None:
-            teacher_logprobs.extend(
-                sample.teacher_logprobs if sample.teacher_logprobs is not None else [0.0] * sample_len
-            )
+        if ref_logprobs is not None:
+            ref_logprobs.extend(sample.ref_logprobs if sample.ref_logprobs is not None else [0.0] * sample_len)
+        for name, fill in STREAM_FILL.items():
+            stream = streams[name]
+            if stream is not None:
+                sample_stream = getattr(sample, name)
+                stream.extend(sample_stream if sample_stream is not None else [fill] * sample_len)
         if mm_token_type_ids is not None:
             mm_token_type_ids.extend(
                 sample.mm_token_type_ids if sample.mm_token_type_ids is not None else [0] * sample_len
@@ -300,7 +344,7 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
         sequence_lengths=sequence_lengths,
-        teacher_logprobs=teacher_logprobs,
+        ref_logprobs=ref_logprobs,
         temperatures=temperatures,
         rewards=rewards,
         lora_num_tokens=lora_num_tokens,
@@ -308,7 +352,9 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=first_sample.mm_kwargs if _is_multimodal_sample(first_sample) else None,
-        training_mode=first_sample.training_mode,
+        rl_weights=streams["rl_weights"],
+        ce_weights=streams["ce_weights"],
+        ref_kl_weights=streams["ref_kl_weights"],
     )
 
 
@@ -415,8 +461,15 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.inference_logprobs.extend([0.0] * padding_size)
     # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)
     micro_batch.temperatures.extend([1.0] * padding_size)
-    if micro_batch.teacher_logprobs is not None:
-        micro_batch.teacher_logprobs.extend([0.0] * padding_size)
+    if micro_batch.ref_logprobs is not None:
+        micro_batch.ref_logprobs.extend([0.0] * padding_size)
+    # Padding is loss-masked, so no component trains it; fill every stream
+    # with 0.0 (not the pack-boundary defaults) so a padded pure-ce batch
+    # still reads as rl-empty in token export, which keys off nonzero weights.
+    for stream_name in STREAM_FILL:
+        stream = getattr(micro_batch, stream_name)
+        if stream is not None:
+            stream.extend([0.0] * padding_size)
     if micro_batch.lora_num_tokens is not None:
         micro_batch.lora_num_tokens[-1] += (
             padding_size  # We send padding to the last lora so that tokens have ascending lora idx
@@ -430,11 +483,49 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     return micro_batch
 
 
+def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
+    """Every per-token array must stay position-aligned with ``input_ids``
+    through packing and padding — a field extended without backfill would
+    corrupt training silently."""
+    num_tokens = len(micro_batch.input_ids)
+    per_token_fields = (
+        "loss_mask",
+        "advantages",
+        "inference_logprobs",
+        "position_ids",
+        "temperatures",
+        "env_names",
+        "ref_logprobs",
+        "rl_weights",
+        "ce_weights",
+        "ref_kl_weights",
+        "rewards",
+        "mm_token_type_ids",
+    )
+    for name in per_token_fields:
+        values = getattr(micro_batch, name)
+        assert values is None or len(values) == num_tokens, (
+            f"{name} misaligned after packing: {len(values)} != {num_tokens} tokens"
+        )
+    assert sum(micro_batch.sequence_lengths) == num_tokens, (
+        f"sequence_lengths sum {sum(micro_batch.sequence_lengths)} != {num_tokens} tokens"
+    )
+    if micro_batch.routed_experts is not None:
+        assert micro_batch.routed_experts.shape[0] == num_tokens, (
+            f"routed_experts misaligned after packing: {micro_batch.routed_experts.shape[0]} != {num_tokens} tokens"
+        )
+
+
 def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     """Create a zero-loss dummy batch from an existing batch, preserving its modality."""
     dummy = copy.deepcopy(source)
     dummy.advantages = [0.0] * len(dummy.input_ids)
     dummy.loss_mask = [False] * len(dummy.input_ids)
+    # ce/ref_kl membership is weight != 0 (independent of loss_mask), so the
+    # streams must go too or the dummy would still train those tokens.
+    dummy.rl_weights = None
+    dummy.ce_weights = None
+    dummy.ref_kl_weights = None
     return dummy
 
 
@@ -469,6 +560,8 @@ def prepare_batch(
 
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras, num_train_workers, bin_cost)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
+    for micro_batch in micro_batches:
+        _assert_token_arrays_aligned(micro_batch)
 
     # Separate by modality so each step index has uniform modality across all ranks
     mm_batches = [b for b in micro_batches if _is_multimodal_sample(b)]

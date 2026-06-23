@@ -70,7 +70,6 @@ class TokenExporter:
                         "export_sequence_idx": self._sequences_by_file.get(file_key, 0),
                         "run_id": run_id,
                         "env_name": _first_non_empty(columns["env_names"][start:end]),
-                        "training_mode": str(micro_batch["training_mode"]),
                         **_slice_columns(columns, start, end),
                     },
                     run_id,
@@ -163,6 +162,11 @@ def _export_columns(
         "is_masked": _optional_tensor_to_bools(export_tensors["is_masked"], seq_len),
         "is_masked_high": _optional_tensor_to_bools(export_tensors["is_masked_high"], seq_len),
         "is_masked_low": _optional_tensor_to_bools(export_tensors["is_masked_low"], seq_len),
+        # Component weight streams; ``None`` columns mean the defaults (rl 1.0
+        # on the loss mask, no ce/ref_kl component).
+        "rl_weights": _optional_tensor_to_floats(micro_batch.get("rl_weights"), seq_len),
+        "ce_weights": _optional_tensor_to_floats(micro_batch.get("ce_weights"), seq_len),
+        "ref_kl_weights": _optional_tensor_to_floats(micro_batch.get("ref_kl_weights"), seq_len),
         "env_names": list(micro_batch["env_names"]),
     }
 
@@ -179,7 +183,14 @@ def _compute_export_tensors(
         "is_masked_high": None,
         "is_masked_low": None,
     }
-    if micro_batch["training_mode"] == "sft":
+    # Ratio-based fields are meaningless when no token has sampling logprobs
+    # (e.g. pure CE batches distilling frozen-model tokens): no rl member
+    # (stream present but all-zero) and no ref_kl member.
+    rl_weights = micro_batch.get("rl_weights")
+    ref_kl_weights = micro_batch.get("ref_kl_weights")
+    no_rl = rl_weights is not None and not bool((rl_weights != 0).any())
+    no_ref_kl = ref_kl_weights is None or not bool((ref_kl_weights != 0).any())
+    if no_rl and no_ref_kl:
         return fields
 
     inference_logprobs = micro_batch["inference_logprobs"].to(trainer_logprobs.device)

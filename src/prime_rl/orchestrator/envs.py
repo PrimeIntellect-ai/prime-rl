@@ -30,7 +30,8 @@ import verifiers.v1 as vf
 from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
-from prime_rl.orchestrator.advantage import AdvantageFn, setup_advantage_fn
+from prime_rl.orchestrator.algo import Algorithm, build_algorithm
+from prime_rl.orchestrator.sampler import Sampler
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
 
@@ -202,13 +203,11 @@ class Env:
 class TrainEnv(Env):
     config: TrainEnvConfig
 
-    def __init__(self, config: TrainEnvConfig, max_seq_len: int):
+    def __init__(self, config: TrainEnvConfig, sampler: Sampler, algorithm: Algorithm):
         super().__init__(config)
-        self.sampling_args = config.sampling.to_sampling_args()
-        # Built once — custom advantage funcs do an ``import_object`` we don't want to pay per group.
-        self.advantage_fn: AdvantageFn | None = (
-            setup_advantage_fn(config.advantage, max_seq_len=max_seq_len) if config.advantage is not None else None
-        )
+        self.sampler = sampler
+        self.algorithm = algorithm
+        self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
 
 
 class EvalEnv(Env):
@@ -277,12 +276,19 @@ class Envs(Generic[EnvT]):
 
 
 class TrainEnvs(Envs[TrainEnv]):
-    """Collection of training environments."""
+    """Collection of training environments, each paired with its rollout
+    :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
+    resolved algorithm config."""
 
-    def __init__(self, configs: Sequence[TrainEnvConfig], max_seq_len: int):
+    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
-            env = TrainEnv(config, max_seq_len=max_seq_len)
+            assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
+            env = TrainEnv(
+                config,
+                Sampler(config.algo.sampling, policy_pool),
+                build_algorithm(config.algo, policy_pool, renderer),
+            )
             self._envs[env.name] = env
 
 

@@ -26,6 +26,17 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
 
 
+def _scalar_advantage(rollout: "Rollout") -> float | None:
+    """Scalar view of the per-token advantage stream for monitoring: the mean
+    over assigned (non-zero) positions — exact for the uniform GRPO case, 0.0
+    for a zero-advantage group, None when no credit was assigned."""
+    advantages = rollout.advantages
+    if not advantages:
+        return None
+    nonzero = [a for a in advantages if a != 0.0]
+    return sum(nonzero) / len(nonzero) if nonzero else 0.0
+
+
 _SAMPLE_SCHEMA = pa.schema(
     [
         ("run_id", pa.string()),
@@ -193,7 +204,7 @@ class PrimeMonitor(Monitor):
             frontend_url = prime_config.frontend_url
 
         payload: dict[str, Any] = {
-            "base_model": run_config.student.model.name if run_config else "unknown",
+            "base_model": run_config.model.name if run_config else "unknown",
             "max_steps": (run_config.max_steps if run_config else None) or 0,
         }
         if run_config:
@@ -348,7 +359,7 @@ class PrimeMonitor(Monitor):
                 {
                     "messages": [m.model_dump(mode="json") for m in branch.messages],
                     "reward": rollout.reward,
-                    "advantage": rollout.advantage,
+                    "advantage": _scalar_advantage(rollout),
                     "num_input_tokens": branch.prompt_len,
                     "num_output_tokens": branch.completion_len,
                 }
@@ -370,7 +381,7 @@ class PrimeMonitor(Monitor):
                     "task": rollout.task.model_dump_json(),
                     "info": json.dumps(rollout.info),
                     "reward": rollout.reward,
-                    "advantage": rollout.advantage,
+                    "advantage": _scalar_advantage(rollout),
                     "metrics": json.dumps(rollout.metrics),
                     "timing": rollout.timing.model_dump_json(),
                     "num_input_tokens": branches[-1].prompt_len,

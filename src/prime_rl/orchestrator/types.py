@@ -81,10 +81,66 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
-    advantage: float | None = Field(default=None, exclude=True)
+    # Per-token rl advantage stream, full-length-N (= len(token_ids)) per
+    # sample, concatenated across the rollout's samples in order; 0.0 on
+    # non-trainable positions. None = no credit assigned (advantage-based
+    # filters skip it; the wire ships no advantage stream).
+    advantages: list[float] | None = Field(default=None, exclude=True)
     is_filtered: bool = Field(default=False, exclude=True)
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
     eval_step: int | None = Field(default=None, exclude=True)
+
+
+@dataclass(frozen=True)
+class RolloutView:
+    """A finalized rollout as a writable handle — the single currency the
+    scoring hooks operate on. Exposes the env's typed trace (``raw`` → the
+    ``Rollout``/``vf.Trace``), the samples the renderer built, and the
+    rollout's reward; credit is written through :meth:`assign_advantages`,
+    which spreads over the samples' trainable (mask-True) tokens. Deliberately
+    does *not* expose pipeline-internal lifecycle fields (``is_filtered``,
+    ``filter_results``, ``group_id``) or not-yet-assigned credit
+    (``advantages``) — a hook can only touch what is valid at its stage."""
+
+    _rollout: Rollout
+
+    @property
+    def raw(self) -> Rollout:
+        """The underlying typed rollout (a ``vf.Trace``). Custom advantage fns
+        reach trace attributes through here (``view.raw.reward``,
+        ``view.raw.nodes``, ``view.raw.completion_len``)."""
+        return self._rollout
+
+    @property
+    def samples(self) -> list[TrainingSample]:
+        return self._rollout.samples
+
+    @property
+    def reward(self) -> float:
+        return self._rollout.reward
+
+    @property
+    def env_name(self) -> str:
+        return self._rollout.env_name
+
+    def assign_advantages(self, values: float | list[float]) -> None:
+        """Write the rl advantage stream: a scalar broadcast over the
+        rollout's trainable (mask-True) tokens (0.0 elsewhere), or a per-token
+        list already aligned full-length to the samples' concatenated
+        ``token_ids``. A rollout never assigned ships no advantage stream."""
+        samples = self._rollout.samples
+        total = sum(len(sample.token_ids) for sample in samples)
+        if isinstance(values, (int, float)):
+            self._rollout.advantages = [
+                float(values) if trainable else 0.0 for sample in samples for trainable in sample.mask
+            ]
+            return
+        if len(values) != total:
+            raise ValueError(
+                f"per-token advantages must align with the rollout's tokens: "
+                f"got {len(values)}, expected {total} (env '{self._rollout.env_name}')."
+            )
+        self._rollout.advantages = [float(v) for v in values]
 
 
 @dataclass
