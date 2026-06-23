@@ -73,6 +73,7 @@ class MetricsBuilder:
         )
         metrics_df = pd.DataFrame([(r.raw.get("metrics") or {}) for r in rollouts])
         filter_df = pd.DataFrame([r.filter_results for r in rollouts])
+        length_penalty_df = pd.DataFrame([(r.raw.get("length_penalty") or {}) for r in rollouts])
         timing_df = self.timing_df(rollouts)
 
         # Each group's full-solve threshold is its own env's group_size (envs
@@ -157,6 +158,37 @@ class MetricsBuilder:
             to_log["solve_none/all"] = solve_none
             to_log["solve_all/all"] = solve_all
             to_log["effective_batch_size/all"] = effective_batch_size
+
+        if not length_penalty_df.empty and "penalty" in length_penalty_df.columns:
+            penalty = pd.to_numeric(length_penalty_df["penalty"], errors="coerce")
+            annotated = penalty.notna()
+            if annotated.any():
+                aux = pd.to_numeric(length_penalty_df["aux"], errors="coerce")
+                eligible = (
+                    length_penalty_df.get(
+                        "eligible",
+                        pd.Series(False, index=length_penalty_df.index),
+                    )
+                    .fillna(False)
+                    .astype(bool)
+                )
+                sign_flipped = (
+                    length_penalty_df.get(
+                        "sign_flipped",
+                        pd.Series(False, index=length_penalty_df.index),
+                    )
+                    .fillna(False)
+                    .astype(bool)
+                )
+                eligible_annotated = annotated & eligible
+                to_log["length_penalty/eligible_share"] = eligible[annotated].mean()
+                to_log["length_penalty/eligible_truncated_rate"] = (
+                    results_df.loc[eligible_annotated, "is_truncated"].mean() if eligible_annotated.any() else 0.0
+                )
+                to_log["length_penalty/penalty_mean"] = penalty[annotated].mean()
+                to_log["length_penalty/penalty_max"] = penalty[annotated].max()
+                to_log["length_penalty/aux_abs_max"] = aux[annotated].abs().max()
+                to_log["length_penalty/sign_flip_rate"] = sign_flipped[annotated].mean()
 
         # Per-env metrics
         per_env_columns = [

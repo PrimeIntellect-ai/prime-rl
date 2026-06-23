@@ -20,8 +20,12 @@ from typing import cast
 
 import verifiers as vf
 
-from prime_rl.configs.orchestrator import OrchestratorConfig, RAEAdvantageConfig
-from prime_rl.orchestrator.advantage import assign_advantages
+from prime_rl.configs.orchestrator import LinearLengthPenaltyConfig, OrchestratorConfig, RAEAdvantageConfig
+from prime_rl.orchestrator.advantage import (
+    assign_advantages,
+    centered_linear_length_penalty,
+    length_penalty_annotations,
+)
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.multi_agent_advantage import (
@@ -313,6 +317,9 @@ class TrainSink:
         # tokenizer/renderer read-only, so members can overlap. ``out`` keeps
         # the deterministic episode x member order regardless.
         await asyncio.gather(*(self.process_rollout(member) for member in out))
+        advantage_config = self.train_envs.get(episodes[0].env_name).config.advantage
+        if isinstance(advantage_config, RAEAdvantageConfig) and advantage_config.length_penalty is not None:
+            self._apply_rae_length_penalty(out, advantage_config.length_penalty, max_seq_len=self.config.seq_len)
         return out
 
     def _is_multi_agent_episode_rollout(self, rollout: TrainRollout) -> bool:
@@ -349,6 +356,52 @@ class TrainSink:
             "final_input_tokens": float(prefill),
             "final_output_tokens": float(decode),
         }
+
+    @staticmethod
+    def _apply_rae_length_penalty(
+        rollouts: list[TrainRollout],
+        length_penalty: LinearLengthPenaltyConfig,
+        *,
+        max_seq_len: int,
+    ) -> None:
+        if not rollouts:
+            return
+
+        base_advantages: list[float] = []
+        for rollout in rollouts:
+            if rollout.advantage is None:
+                raise ValueError("RAE length penalty requires advantages to be set first")
+            base_advantages.append(float(rollout.advantage))
+
+        outcomes = [1 if rollout.reward > 0.0 else -1 if rollout.reward < 0.0 else 0 for rollout in rollouts]
+        frontier = max(outcomes)
+        weights = [1.0 if frontier >= 0 and outcome == frontier else 0.0 for outcome in outcomes]
+        scale = sum(weights) / len(weights) if frontier >= 0 else 0.0
+        lengths = [TrainSink._rollout_decode_tokens(rollout) for rollout in rollouts]
+        result = centered_linear_length_penalty(
+            lengths=lengths,
+            max_seq_len=max_seq_len,
+            coef=length_penalty.coef,
+            scale=scale,
+            weights=weights,
+            truncated=[rollout.is_truncated for rollout in rollouts],
+        )
+        adjusted_advantages = [advantage + aux for advantage, aux in zip(base_advantages, result.aux)]
+        annotations = length_penalty_annotations(
+            result=result,
+            base_advantages=base_advantages,
+            adjusted_advantages=adjusted_advantages,
+        )
+        for rollout, advantage, annotation in zip(rollouts, adjusted_advantages, annotations):
+            rollout.advantage = advantage
+            rollout.raw["length_penalty"] = annotation
+
+    @staticmethod
+    def _rollout_decode_tokens(rollout: TrainRollout) -> float:
+        usage = rollout.raw.get("token_usage") or {}
+        if "final_output_tokens" in usage:
+            return float(usage["final_output_tokens"])
+        return float(sum(sum(sample.completion_mask) for sample in rollout.samples))
 
     def process_batch(self) -> TrainBatch:
         """Pop a cohort off ``pending_batch`` (by rollout count when

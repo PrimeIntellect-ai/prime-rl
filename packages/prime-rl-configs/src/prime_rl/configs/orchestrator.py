@@ -248,11 +248,23 @@ class RAEAdvantageConfig(BaseConfig):
 
     type: Literal["rae"] = "rae"
 
+    length_penalty: LinearLengthPenaltyConfig | None = None
+    """Length penalty applied after RAE outcome advantages are computed. RAE uses the same TOML path as default GRPO, but supplies an estimator-native frontier gate: winners when any member wins, tied members when nobody wins, and no pressure for all-loss trainable groups. ``gate_by_correctness`` is single-agent-only."""
+
     n_eff: float = Field(6.0, ge=0.0)
     """Staleness-priced pseudo-count for the historical prior — does sample-size and drift-discount duty simultaneously; do not tune upward without revisiting that. ``0`` reduces to pure RLOO."""
 
     beta: float = Field(0.9, gt=0.0, lt=1.0)
     """Explicit group-level baseline memory, applied once per group-close fold — deliberately NOT the per-sample momentum of a sequential EMA."""
+
+    @model_validator(mode="after")
+    def validate_length_penalty(self):
+        if self.length_penalty is not None and self.length_penalty.gate_by_correctness:
+            raise ValueError(
+                "rae length_penalty is already frontier-gated; remove gate_by_correctness "
+                "(that field is only used by advantage.type='default')."
+            )
+        return self
 
 
 AdvantageConfig: TypeAlias = Annotated[

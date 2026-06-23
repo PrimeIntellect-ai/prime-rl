@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from prime_rl.configs.orchestrator import LinearLengthPenaltyConfig
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.metrics import MetricsBuilder
 from prime_rl.orchestrator.train_sink import TrainSink
@@ -284,6 +285,35 @@ def test_metrics_builder_emits_member_metrics_and_omits_solve_rates_for_ma_rows(
     assert to_log["bridge/miss_count"] == 1
 
 
+def test_metrics_builder_emits_generic_length_penalty_metrics():
+    shortened = _full_rollout(env_name="math", reward=1.0, advantage=0.2)
+    boosted = _full_rollout(env_name="math", reward=0.0, advantage=0.1)
+    shortened.raw["is_truncated"] = True
+    shortened.raw["length_penalty"] = {
+        "eligible": True,
+        "penalty": 0.2,
+        "aux": -0.1,
+        "cost": 1.0,
+        "sign_flipped": True,
+    }
+    boosted.raw["length_penalty"] = {
+        "eligible": False,
+        "penalty": 0.0,
+        "aux": 0.1,
+        "cost": 0.1,
+        "sign_flipped": False,
+    }
+
+    to_log = _build(_metrics_builder({"math": 2}), [shortened, boosted])
+
+    assert to_log["length_penalty/eligible_share"] == 0.5
+    assert to_log["length_penalty/eligible_truncated_rate"] == 1.0
+    assert to_log["length_penalty/penalty_mean"] == pytest.approx(0.1)
+    assert to_log["length_penalty/penalty_max"] == pytest.approx(0.2)
+    assert to_log["length_penalty/aux_abs_max"] == pytest.approx(0.1)
+    assert to_log["length_penalty/sign_flip_rate"] == 0.5
+
+
 def test_metrics_builder_solve_rates_ignore_member_rows_in_mixed_batches():
     episode_id = uuid.uuid4()
     ma_group = uuid.uuid4()
@@ -337,6 +367,45 @@ def test_member_truncation_derives_from_member_trajectory_not_episode():
     assert clean_member["is_truncated"] is False
     # Episode-level fields still inherit
     assert clean_member["stop_condition"] == "prompt_too_long"
+
+
+def test_apply_rae_length_penalty_frontier_gates_and_centers():
+    short_winner = _rollout(samples=[_sample(prompt_len=1, completion_mask=[True] * 10)], reward=1.0, advantage=0.5)
+    truncated_winner = _rollout(
+        samples=[_sample(prompt_len=1, completion_mask=[True] * 30)],
+        reward=1.0,
+        advantage=0.5,
+    )
+    loss = _rollout(samples=[_sample(prompt_len=1, completion_mask=[True] * 5)], reward=-1.0, advantage=-0.5)
+    truncated_winner.raw["is_truncated"] = True
+
+    TrainSink._apply_rae_length_penalty(
+        [short_winner, truncated_winner, loss],
+        LinearLengthPenaltyConfig(coef=1.0),
+        max_seq_len=100,
+    )
+
+    assert short_winner.advantage == pytest.approx(0.6777778, abs=1e-6)
+    assert truncated_winner.advantage == pytest.approx(0.0777778, abs=1e-6)
+    assert loss.advantage == pytest.approx(-0.2555556, abs=1e-6)
+    assert short_winner.raw["length_penalty"]["eligible"] is True
+    assert truncated_winner.raw["length_penalty"]["penalty"] == pytest.approx(2 / 3, abs=1e-6)
+    assert loss.raw["length_penalty"]["eligible"] is False
+    assert loss.raw["length_penalty"]["aux"] == pytest.approx(11 / 45, abs=1e-6)
+
+
+def test_apply_rae_length_penalty_all_loss_group_is_noop():
+    rows = [
+        _rollout(samples=[_sample(prompt_len=1, completion_mask=[True] * 10)], reward=-1.0, advantage=-0.3),
+        _rollout(samples=[_sample(prompt_len=1, completion_mask=[True] * 90)], reward=-1.0, advantage=-0.4),
+    ]
+    rows[1].raw["is_truncated"] = True
+
+    TrainSink._apply_rae_length_penalty(rows, LinearLengthPenaltyConfig(coef=10.0), max_seq_len=100)
+
+    assert [row.advantage for row in rows] == [-0.3, -0.4]
+    assert [row.raw["length_penalty"]["eligible"] for row in rows] == [False, False]
+    assert [row.raw["length_penalty"]["penalty"] for row in rows] == [0.0, 0.0]
 
 
 def test_eval_sink_forwards_numeric_rollout_metric_means():

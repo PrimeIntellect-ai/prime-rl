@@ -7,11 +7,13 @@ from prime_rl.configs.orchestrator import (
     DefaultAdvantageConfig,
     LinearLengthPenaltyConfig,
     OrchestratorConfig,
+    RAEAdvantageConfig,
 )
 from prime_rl.orchestrator.advantage import (
     AdvantageInputs,
     AdvantageOutputs,
     assign_advantages,
+    centered_linear_length_penalty,
     default_advantage_fn,
     maxrl_advantage_fn,
     reward_advantage_fn,
@@ -88,6 +90,21 @@ def test_linear_length_penalty_scales_by_pass_rate():
     assert sum(result.advantages) == pytest.approx(0.0, abs=1e-6)
     assert result.advantages[0] > result.advantages[1]
     assert result.advantages[2] > result.advantages[3]
+
+
+def test_centered_linear_length_penalty_caps_truncated_rows():
+    result = centered_linear_length_penalty(
+        lengths=[10, 50],
+        max_seq_len=100,
+        coef=2.0,
+        scale=0.5,
+        weights=[1.0, 1.0],
+        truncated=[False, True],
+    )
+
+    assert result.penalties == pytest.approx([0.1, 1.0], abs=1e-6)
+    assert result.aux == pytest.approx([0.45, -0.45], abs=1e-6)
+    assert result.costs == pytest.approx([0.1, 1.0], abs=1e-6)
 
 
 def test_linear_length_penalty_zero_pass_rate_disables_penalty():
@@ -171,6 +188,23 @@ def test_per_env_linear_advantage_uses_runtime_schema():
     assert result.advantages == pytest.approx([0.1, -0.1], abs=1e-6)
 
 
+def test_rae_advantage_uses_same_length_penalty_schema():
+    config = OrchestratorConfig(
+        seq_len=100,
+        advantage={"type": "rae", "length_penalty": {"coef": 1.0}},
+    )
+
+    advantage = config.train.env[0].advantage
+    assert isinstance(advantage, RAEAdvantageConfig)
+    assert isinstance(advantage.length_penalty, LinearLengthPenaltyConfig)
+    assert advantage.length_penalty.coef == 1.0
+
+
+def test_rae_length_penalty_rejects_single_agent_correctness_gate():
+    with pytest.raises(ValueError, match="frontier-gated"):
+        RAEAdvantageConfig(length_penalty={"gate_by_correctness": True})
+
+
 def test_per_env_custom_advantage_uses_runtime_schema():
     config = OrchestratorConfig(
         train={
@@ -231,6 +265,32 @@ def test_assign_advantages_writes_field():
     assign_advantages(rollouts, fn)
     advs = [r.advantage for r in rollouts]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_assign_advantages_writes_length_penalty_annotations():
+    rollouts = _train_rollouts([1.0, 1.0])
+    rollouts[0].raw["trajectory"] = [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]
+    rollouts[1].raw["trajectory"] = [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(30))}}]
+    fn = setup_advantage_fn(DefaultAdvantageConfig(length_penalty=LinearLengthPenaltyConfig(coef=1.0)), max_seq_len=100)
+
+    assign_advantages(rollouts, fn)
+
+    assert rollouts[0].advantage == pytest.approx(0.1, abs=1e-6)
+    assert rollouts[1].advantage == pytest.approx(-0.1, abs=1e-6)
+    assert rollouts[0].raw["length_penalty"] == {
+        "eligible": True,
+        "penalty": pytest.approx(0.1, abs=1e-6),
+        "aux": pytest.approx(0.1, abs=1e-6),
+        "cost": pytest.approx(0.1, abs=1e-6),
+        "sign_flipped": False,
+    }
+    assert rollouts[1].raw["length_penalty"] == {
+        "eligible": True,
+        "penalty": pytest.approx(0.3, abs=1e-6),
+        "aux": pytest.approx(-0.1, abs=1e-6),
+        "cost": pytest.approx(0.3, abs=1e-6),
+        "sign_flipped": False,
+    }
 
 
 def test_assign_advantages_without_fn_is_reward():
