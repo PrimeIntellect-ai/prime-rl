@@ -1,20 +1,23 @@
 import asyncio
-import uuid
 from unittest.mock import MagicMock
 
 import pydantic
 import pytest
-import verifiers as vf
+import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
-from prime_rl.orchestrator.trajectories import interleave_rollout
-from prime_rl.orchestrator.types import RolloutView, TrainRollout
+from prime_rl.orchestrator.trajectories import trace_to_samples
+from prime_rl.orchestrator.types import Rollout, RolloutView
 from prime_rl.transport.types import TrainingSample
 
 FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
 
 _ALGO = pydantic.TypeAdapter(AlgorithmConfig)
+
+
+def _task(idx: int = 0) -> vf.Task:
+    return vf.Task(idx=idx, prompt="")
 
 
 def _build(**kwargs) -> AlgorithmConfig:
@@ -170,18 +173,12 @@ def test_stamp_loss_routing_merges_action_weights_into_ce_stream():
 def _make_rollout(
     samples: list[TrainingSample],
     advantages: list[float] | None = None,
-    raw: vf.RolloutOutput | None = None,
-) -> TrainRollout:
-    return TrainRollout(
-        raw=raw if raw is not None else {},
-        env_name="test-env",
-        example_id=0,
-        group_id=uuid.uuid4(),
-        policy_version=0,
-        off_policy_steps=0,
-        samples=samples,
-        advantages=advantages,
-    )
+) -> Rollout:
+    rollout = Rollout[vf.Task](task=_task(), rewards={"reward": 1.0})
+    rollout.env_name = "test-env"
+    rollout.samples = samples
+    rollout.advantages = advantages
+    return rollout
 
 
 def test_stamp_advantages_pads_prompt():
@@ -211,118 +208,68 @@ def test_stamp_advantages_rejects_misaligned():
         stamp_advantages(rollout)
 
 
-def _echo_algorithm(roles: dict | None = None, filter_fn=None) -> EchoAlgorithm:
+def _echo_algorithm(roles: dict | None = None) -> EchoAlgorithm:
     kwargs: dict = {"type": "echo"}
     if roles is not None:
         kwargs["roles"] = roles
-    algo = EchoAlgorithm(_build(**kwargs), MagicMock(), MagicMock())
-    algo.filter_fn = filter_fn
-    return algo
+    return EchoAlgorithm(_build(**kwargs), MagicMock(), MagicMock())
 
 
-def _two_step_rollout(attribution: dict | None = None) -> vf.RolloutOutput:
-    def step(prompt_ids, completion_ids, logprobs, prompt_attribution=None):
-        tokens = vf.TrajectoryStepTokens(
-            prompt_ids=prompt_ids,
-            prompt_mask=[0] * len(prompt_ids),
-            completion_ids=completion_ids,
-            completion_mask=[1] * len(completion_ids),
-            completion_logprobs=logprobs,
-            overlong_prompt=False,
-            is_truncated=False,
-        )
-        if prompt_attribution is not None:
-            tokens["prompt_attribution"] = prompt_attribution
-        return vf.TrajectoryStep(
-            prompt=[{"role": "user", "content": "U"}],
-            completion=[{"role": "assistant", "content": "A"}],
-            response=MagicMock(),
-            tokens=tokens,
-            reward=None,
-            advantage=None,
-            is_truncated=False,
-            trajectory_id="1",
-            extras={},
-        )
-
-    # Renderer rollouts carry attribution on every step; the first step's
-    # prompt never lands as observation tokens, so a minimal one suffices.
-    first_attribution = {"message_indices": [0, 0], "message_roles": ["user"]} if attribution is not None else None
-    return vf.RolloutOutput(
-        example_id=0,
-        reward=1.0,
-        trajectory=[
-            step([1, 2], [3, 4], [-0.1, -0.2], prompt_attribution=first_attribution),
-            # Extension: prompt re-includes [1,2,3,4]; tokens [5,6] are the
-            # env's observation; [7,8] the next action.
-            step([1, 2, 3, 4, 5, 6], [7, 8], [-0.3, -0.4], prompt_attribution=attribution),
-        ],
-        error=None,
+def _node(
+    *,
+    parent: int | None,
+    message: vf.Message,
+    token_ids: list[int],
+    sampled: bool = False,
+) -> vf.MessageNode:
+    return vf.MessageNode(
+        parent=parent,
+        message=message,
+        sampled=sampled,
+        token_ids=token_ids,
+        mask=[sampled] * len(token_ids),
+        logprobs=[-0.1] * len(token_ids) if sampled else [],
     )
 
 
-def _echo_rollout(output: vf.RolloutOutput) -> TrainRollout:
-    samples = interleave_rollout(output, env_name="test-env")
-    assert samples is not None
-    return _make_rollout(samples, raw=output)
+def _echo_rollout(observation: vf.Message | None = None) -> Rollout:
+    nodes = [
+        _node(parent=None, message=vf.UserMessage(content="U"), token_ids=[1, 2]),
+        _node(parent=0, message=vf.AssistantMessage(content="A"), token_ids=[3, 4], sampled=True),
+    ]
+    if observation is not None:
+        nodes.append(_node(parent=1, message=observation, token_ids=[5, 6]))
+        nodes.append(_node(parent=2, message=vf.AssistantMessage(content="B"), token_ids=[7, 8], sampled=True))
+    rollout = Rollout[vf.Task](task=_task(), nodes=nodes, rewards={"reward": 1.0})
+    rollout.env_name = "test-env"
+    rollout.samples = trace_to_samples(rollout, env_name="test-env")
+    return rollout
 
 
 def test_echo_weights_observations_by_role():
-    # Span tokens [5,6] (positions 4,5) belong to a tool message; is_content
-    # excludes the wrap token, so only the body token gets the tool weight.
-    attribution = {
-        "message_indices": [0, 0, 1, 1, 2, 2],
-        "message_roles": ["user", "assistant", "tool"],
-        "is_content": [True, True, True, True, False, True],
-    }
-    rollout = _echo_rollout(_two_step_rollout(attribution))
-    algo = _echo_algorithm()  # the default table: tool bodies at 0.1
+    rollout = _echo_rollout(vf.ToolMessage(tool_call_id="call", content="tool output"))
+    algo = _echo_algorithm()
     asyncio.run(algo.score_rollout(RolloutView(rollout)))
     sample = rollout.samples[0]
-    assert sample.completion_ids == [3, 4, 5, 6, 7, 8]
-    # [3,4] step-1 action, [5,6] observation, [7,8] step-2 action
-    assert sample.ce_weights == [0.0, 0.0] + [0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
-    assert sample.completion_mask == [True, True, False, False, True, True]
+    assert sample.completion_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert sample.ce_weights == [0.0, 0.0, 0.0, 0.0, 0.1, 0.1, 0.0, 0.0]
+    assert sample.completion_mask == [False, False, True, True, False, False, True, True]
 
-    # Without is_content, whole messages count; each role carries its own weight.
-    attribution = {"message_indices": [0, 0, 1, 1, 2, 3], "message_roles": ["user", "assistant", "tool", "user"]}
-    rollout = _echo_rollout(_two_step_rollout(attribution))
-    algo = _echo_algorithm(roles={"tool": {"alpha": 0.1}, "user": {"alpha": 0.05}})
+    rollout = _echo_rollout(vf.UserMessage(content="follow-up"))
+    algo = _echo_algorithm(roles={"user": {"alpha": 0.05}})
     asyncio.run(algo.score_rollout(RolloutView(rollout)))
-    assert rollout.samples[0].ce_weights == [0.0, 0.0] + [0.0, 0.0, 0.1, 0.05, 0.0, 0.0]
-
-    # MITO rollouts carry no attribution: loud error, not a silent no-op.
-    with pytest.raises(ValueError, match="attribution"):
-        asyncio.run(_echo_algorithm().score_rollout(RolloutView(_echo_rollout(_two_step_rollout()))))
+    assert rollout.samples[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.05, 0.05, 0.0, 0.0]
 
 
-def test_echo_filter_narrows_selection():
-    attribution = {"message_indices": [0, 0, 1, 1, 2, 2], "message_roles": ["user", "assistant", "tool"]}
-
-    def keep_last_only(output):
-        # One keep-mask per step over prompt+completion; drops span position 4.
-        return [[True] * 4, [True, True, True, True, False, True, True, True]]
-
-    rollout = _echo_rollout(_two_step_rollout(attribution))
-    algo = _echo_algorithm(filter_fn=keep_last_only)
-    asyncio.run(algo.score_rollout(RolloutView(rollout)))
-    assert rollout.samples[0].ce_weights == [0.0, 0.0] + [0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
-
-    # Shape violations fail loudly: wrong step count, wrong per-step length.
-    rollout = _echo_rollout(_two_step_rollout(attribution))
-    with pytest.raises(ValueError, match="per trajectory step"):
-        asyncio.run(_echo_algorithm(filter_fn=lambda output: [[True] * 4]).score_rollout(RolloutView(rollout)))
-    with pytest.raises(ValueError, match="prompt\\+completion"):
-        asyncio.run(
-            _echo_algorithm(filter_fn=lambda output: [[True] * 4, [True] * 6]).score_rollout(RolloutView(rollout))
-        )
+def test_echo_rejects_v0_filter_shape():
+    config = _build(type="echo", filter={"import_path": "package.module.filter_fn"})
+    with pytest.raises(ValueError, match="filters use the old trajectory-step mask shape"):
+        EchoAlgorithm(config, MagicMock(), MagicMock())
 
 
-def test_interleave_records_obs_spans():
-    samples = interleave_rollout(_two_step_rollout(), env_name="test-env")
-    assert samples is not None
-    # The step-2 prompt extension [5,6] lands at completion positions 2-3,
-    # sourced from step 1's prompt at offset 4, length 2.
-    assert samples[0].obs_spans == [[2, 1, 4, 2]]
-    # Provenance only — no algorithm wrote a ce stream.
+def test_trace_to_samples_preserves_branch_sampled_mask():
+    rollout = _echo_rollout(vf.ToolMessage(tool_call_id="call", content="tool output"))
+    samples = rollout.samples
+    assert samples[0].completion_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert samples[0].completion_mask == [False, False, True, True, False, False, True, True]
     assert samples[0].ce_weights is None

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field, fields
-from typing import Literal, Protocol
+from dataclasses import dataclass, field
+from typing import Generic, Literal, Protocol
 
-import verifiers as vf
+import verifiers.v1 as vf
+from pydantic import ConfigDict, Field
+from verifiers.v1.task import TaskT
 
 from prime_rl.transport import TrainingSample
 
@@ -55,7 +57,7 @@ class GroupState:
 
     kind: RolloutKind
     env_name: str
-    example: dict
+    task_idx: int
     rollouts_to_schedule: int
     target_rollouts: int
     emitted: int = 0
@@ -64,67 +66,45 @@ class GroupState:
     policy_version_at_start: int = 0
 
 
-@dataclass
-class FinishedRollout:
-    """A completed rollout the sink receives. ``raw`` is the env's untouched
-    ``vf.RolloutOutput``; prime-rl metadata lives on typed fields. Train vs
-    eval is discriminated via ``isinstance``. ``rollout_id`` is the only
-    safe key for tracing one rollout — ``(env_name, example_id)`` collides
-    on re-sampling and ``group_id`` covers a whole group."""
+class Rollout(vf.Trace[TaskT], Generic[TaskT]):
+    """A completed rollout. The env's typed ``vf.Trace`` is the rollout; prime-rl
+    scheduling and training metadata is attached as excluded pydantic fields."""
 
-    raw: vf.RolloutOutput
-    env_name: str
-    example_id: int | str
-    group_id: uuid.UUID
-    policy_version: int
-    off_policy_steps: int
-    rollout_id: uuid.UUID = field(default_factory=uuid.uuid4)
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    @property
-    def error(self) -> dict | None:
-        return self.raw.get("error")
+    kind: RolloutKind = Field(default="train", exclude=True)
+    env_name: str = Field(default="", exclude=True)
+    group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
+    policy_version: int = Field(default=0, exclude=True)
+    off_policy_steps: int = Field(default=0, exclude=True)
+    samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
+    advantages: list[float] | None = Field(default=None, exclude=True)
+    is_filtered: bool = Field(default=False, exclude=True)
+    filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
+    eval_step: int | None = Field(default=None, exclude=True)
 
     @property
-    def reward(self) -> float:
-        return float(self.raw.get("reward", 0.0))
+    def advantage(self) -> float | None:
+        if not self.advantages:
+            return None
+        return sum(self.advantages) / len(self.advantages)
 
-    @property
-    def is_truncated(self) -> bool:
-        return bool(self.raw.get("is_truncated", False))
-
-    def to_dict(self) -> vf.RolloutOutput:
-        """``raw`` + metadata merged for I/O (``save_rollouts``,
-        ``monitor.log_samples``). Shallow copy; never mutates ``self.raw``."""
-        out: vf.RolloutOutput = dict(self.raw)  # type: ignore[assignment]
-        for f in fields(self):
-            # advantages is per-token bulk data like samples — skip it
-            if f.name in ("raw", "samples", "advantages"):
-                continue
-            val = getattr(self, f.name)
-            if f.name == "filter_results":
-                out["filters"] = dict(val)
-                continue
-            out[f.name] = str(val) if isinstance(val, uuid.UUID) else val
-        return out
-
-
-@dataclass
-class TrainRollout(FinishedRollout):
-    samples: list[TrainingSample] = field(default_factory=list)
-    # Per-token advantages from the advantage strategy, aligned to the
-    # samples' completion tokens (concatenated in step order). None = no
-    # credit assigned (advantage-based filters skip it; the wire ships no
-    # advantage stream).
-    advantages: list[float] | None = None
-    is_filtered: bool = False
-    filter_results: dict[str, bool] = field(default_factory=dict)
-
-    def to_dict(self) -> vf.RolloutOutput:
-        out = super().to_dict()
-        # ``advantages`` is skipped as bulk; dumps keep a scalar view (exact
-        # for uniform streams, the mean otherwise).
-        if self.advantages:
-            out["advantage"] = sum(self.advantages) / len(self.advantages)
+    def to_dict(self) -> dict:
+        out = self.model_dump(mode="json")
+        out.update(
+            {
+                "kind": self.kind,
+                "env_name": self.env_name,
+                "group_id": str(self.group_id),
+                "policy_version": self.policy_version,
+                "off_policy_steps": self.off_policy_steps,
+                "filters": dict(self.filter_results),
+            }
+        )
+        if self.eval_step is not None:
+            out["eval_step"] = self.eval_step
+        if self.advantage is not None:
+            out["advantage"] = self.advantage
         return out
 
 
@@ -140,11 +120,11 @@ class RolloutView:
     credit (``advantages``) — a hook can only touch what is valid at its
     stage."""
 
-    _rollout: TrainRollout
+    _rollout: Rollout
 
     @property
-    def raw(self) -> vf.RolloutOutput:
-        return self._rollout.raw
+    def trace(self) -> Rollout:
+        return self._rollout
 
     @property
     def samples(self) -> list[TrainingSample]:
@@ -160,7 +140,19 @@ class RolloutView:
 
     @property
     def example_id(self) -> int | str:
-        return self._rollout.example_id
+        return self._rollout.task.idx
+
+    @property
+    def completion_len(self) -> int:
+        return self._rollout.completion_len
+
+    @property
+    def tool_response_len(self) -> int:
+        return sum(len(node.token_ids) for node in self._rollout.nodes if getattr(node.message, "role", None) == "tool")
+
+    @property
+    def num_turns(self) -> int:
+        return self._rollout.num_turns
 
     def assign_advantages(self, values: float | list[float]) -> None:
         """Write the rl advantage stream: a scalar broadcast over the
@@ -178,11 +170,6 @@ class RolloutView:
                 f"got {len(values)}, expected {total} (env '{self._rollout.env_name}')."
             )
         self._rollout.advantages = [float(v) for v in values]
-
-
-@dataclass
-class EvalRollout(FinishedRollout):
-    eval_step: int = 0
 
 
 @dataclass
@@ -207,7 +194,7 @@ class TrainBatch:
     """``samples`` is the trainer-bound payload (post-filter survivors);
     ``rollouts`` is the full cohort kept for orchestrator-side I/O."""
 
-    rollouts: list[TrainRollout]
+    rollouts: list[Rollout]
     samples: list[TrainingSample]
     metrics: TrainBatchMetrics
 
@@ -262,7 +249,7 @@ class EvalBatch:
 
     env_name: str
     step: int
-    rollouts: list[EvalRollout]
+    rollouts: list[Rollout]
     metrics: EvalBatchMetrics
 
 

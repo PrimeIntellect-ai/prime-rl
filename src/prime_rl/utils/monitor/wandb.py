@@ -3,19 +3,37 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import verifiers as vf
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
 from wandb.errors import CommError
 from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
 
 from prime_rl.configs.shared import WandbConfig, WandbWithExtrasConfig
-from prime_rl.utils.chat_template import deserialize_tool_calls
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import Rollout
+
+
+def _loggable_task(task) -> str:
+    """A Table-safe JSON string of the task for sample logging. Image content parts are elided to
+    a short placeholder — their base64 data bloats the table and breaks wandb Table's nested-type
+    inference on the variable-length content list (a plain dict would otherwise crash on it)."""
+
+    def elide(obj):
+        if isinstance(obj, dict):
+            if obj.get("type") == "image_url":
+                return {"type": "image_url", "image_url": "<image>"}
+            return {k: elide(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [elide(v) for v in obj]
+        return obj
+
+    return json.dumps(elide(task.model_dump(mode="json")))
 
 
 class WandbMonitor(Monitor):
@@ -113,13 +131,13 @@ class WandbMonitor(Monitor):
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
-                self.samples_cols = ["step", "env_name", "task", "example_id", "messages", "input_ids", "reward"]
+                self.samples_cols = ["step", "env_name", "task", "task_idx", "messages", "input_ids", "reward"]
                 self.samples_table = wandb.Table(
                     columns=self.samples_cols,
                     log_mode="INCREMENTAL",
                 )
                 self.tokenizer = tokenizer
-                self.eval_samples_cols = ["step", "env", "task", "example_id", "completion", "reward"]
+                self.eval_samples_cols = ["step", "env", "task", "task_idx", "completion", "reward"]
                 self.eval_samples_table = wandb.Table(
                     columns=self.eval_samples_cols,
                     log_mode="INCREMENTAL",
@@ -143,7 +161,7 @@ class WandbMonitor(Monitor):
             return
         wandb.log({**metrics, "step": step})
 
-    def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
+    def log_samples(self, rollouts: list["Rollout"], step: int) -> None:
         """Logs rollouts to W&B table."""
         if not self.is_master:
             return
@@ -172,32 +190,30 @@ class WandbMonitor(Monitor):
         start_time = time.perf_counter()
 
         for rollout in rollouts:
-            trajectory = rollout["trajectory"]
-            if not trajectory:
-                continue
-            last_step = trajectory[-1]
-            tokens = last_step["tokens"]
-            full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
-            messages_text = self.tokenizer.decode(full_ids)
-            sample = {
-                "step": step,
-                "env_name": rollout.get("env_name"),
-                "task": rollout.get("task"),
-                "example_id": rollout["example_id"],
-                "messages": messages_text,
-                "input_ids": str(full_ids),
-                "reward": rollout["reward"],
-            }
-            assert list(sample.keys()) == self.samples_cols, (
-                "Order of columns in the table must be the same as order of the keys here"
-            )
-            self.samples_table.add_data(*sample.values())
+            trace = rollout
+            for branch in trace.branches:
+                token_ids = branch.token_ids
+                if not token_ids:
+                    continue
+                sample = {
+                    "step": step,
+                    "env_name": rollout.env_name,
+                    "task": _loggable_task(trace.task),
+                    "task_idx": trace.task.idx,
+                    "messages": self.tokenizer.decode(token_ids),
+                    "input_ids": str(token_ids),
+                    "reward": trace.reward,
+                }
+                assert list(sample.keys()) == self.samples_cols, (
+                    "Order of columns in the table must be the same as order of the keys here"
+                )
+                self.samples_table.add_data(*sample.values())
 
         wandb.log({"samples": self.samples_table, "step": step})
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
 
-    def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list["Rollout"], env_name: str, step: int) -> None:
         """Logs eval rollouts to a separate W&B table."""
         if not self.is_master:
             return
@@ -210,23 +226,22 @@ class WandbMonitor(Monitor):
             return
 
         for rollout in rollouts:
-            completion = rollout.get("completion")
-            if not completion:
-                continue
-            if isinstance(completion, list):
-                try:
-                    completion = self.tokenizer.apply_chat_template(deserialize_tool_calls(completion), tokenize=False)
-                except Exception:
-                    completion = str(completion)
-            sample = {
-                "step": step,
-                "env": env_name,
-                "task": rollout.get("task"),
-                "example_id": rollout["example_id"],
-                "completion": completion,
-                "reward": rollout["reward"],
-            }
-            self.eval_samples_table.add_data(*sample.values())
+            trace = rollout
+            for branch in trace.branches:
+                # Eval runs the openai client (no token ids), so show the assistant message
+                # content rather than decoded tokens.
+                completion = "".join(m.content or "" for m in branch.messages if m.role == "assistant")
+                if not completion:
+                    continue
+                sample = {
+                    "step": step,
+                    "env": env_name,
+                    "task": _loggable_task(trace.task),
+                    "task_idx": trace.task.idx,
+                    "completion": completion,
+                    "reward": trace.reward,
+                }
+                self.eval_samples_table.add_data(*sample.values())
 
         wandb.log({"eval/samples": self.eval_samples_table, "step": step})
 

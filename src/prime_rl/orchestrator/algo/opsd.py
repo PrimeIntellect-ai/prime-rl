@@ -42,23 +42,29 @@ class OPSDAlgorithm(Algorithm):
         self.teacher_pool = await self.connect(self.teacher)
 
     def _ref_prefix_ids(self, rollout: RolloutView) -> list[int]:
-        trajectory = rollout.raw.get("trajectory") or []
-        if len(trajectory) != 1:
+        branches = rollout.trace.branches
+        if len(branches) != 1:
             raise ValueError(
-                f"opsd supports single-step trajectories only; "
-                f"env '{rollout.env_name}' produced {len(trajectory)} steps."
+                f"opsd supports single-branch traces only; env '{rollout.env_name}' produced {len(branches)} branches."
             )
-        info = rollout.raw.get("info") or {}
-        demonstration = info.get(self.demo_key) if isinstance(info, dict) else None
-        if demonstration is None:
-            demonstration = rollout.raw.get(self.demo_key)
+        branch = branches[0]
+        sampled_nodes = [idx for idx, node in enumerate(branch.nodes) if any(node.mask)]
+        if len(sampled_nodes) != 1:
+            raise ValueError(
+                f"opsd supports one sampled model turn; env '{rollout.env_name}' produced {len(sampled_nodes)}."
+            )
+
+        demonstration = rollout.trace.info.get(self.demo_key)
+        if demonstration is None and hasattr(rollout.trace.task, self.demo_key):
+            demonstration = getattr(rollout.trace.task, self.demo_key)
         if demonstration is None:
             raise ValueError(
                 f"opsd requires '{self.demo_key}' in the example's info dict or as a "
                 f"top-level rollout field (env '{rollout.env_name}', example {rollout.example_id})."
             )
 
-        messages = [dict(m) for m in trajectory[0]["prompt"]]
+        sampled_idx = sampled_nodes[0]
+        messages = [node.message.model_dump(mode="json") for node in branch.nodes[:sampled_idx]]
         user_indices = [i for i, m in enumerate(messages) if m.get("role") == "user"]
         if not user_indices:
             raise ValueError(f"opsd found no user message to condition (env '{rollout.env_name}').")
@@ -83,11 +89,22 @@ class OPSDAlgorithm(Algorithm):
             prefix_ids = self._ref_prefix_ids(rollout)
             assert len(rollout.samples) == 1  # single-step trajectory → one sample
             sample = rollout.samples[0]
+            sampled_token_ids = [
+                token_id
+                for token_id, sampled in zip(sample.completion_ids, sample.completion_mask, strict=True)
+                if sampled
+            ]
             async with semaphore:
-                full_logprobs = await compute_prefill_logprobs(
-                    client, pool.model_name, prefix_ids + list(sample.completion_ids)
-                )
-            completion_logprobs = full_logprobs[-len(sample.completion_ids) :]
-            sample.ref_logprobs = [0.0] * len(sample.prompt_ids) + completion_logprobs
+                full_logprobs = await compute_prefill_logprobs(client, pool.model_name, prefix_ids + sampled_token_ids)
+            completion_logprobs = full_logprobs[-len(sampled_token_ids) :]
+            ref_logprobs: list[float] = []
+            offset = 0
+            for sampled in sample.completion_mask:
+                if sampled:
+                    ref_logprobs.append(completion_logprobs[offset])
+                    offset += 1
+                else:
+                    ref_logprobs.append(0.0)
+            sample.ref_logprobs = ref_logprobs
 
         await asyncio.gather(*[score_one(client, rollout) for client, rollout in zip(cycle(pool.train_clients), batch)])

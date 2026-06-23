@@ -40,7 +40,7 @@ def test_compute_prefill_logprobs_uses_inference_generate(monkeypatch):
                 "kv_transfer_params": None,
             }
         )
-        monkeypatch.setattr(orchestrator_utils, "setup_openai_client", lambda _: fake_client)
+        monkeypatch.setattr(orchestrator_utils, "setup_openai_client", lambda config: fake_client)
 
         result = await orchestrator_utils.compute_prefill_logprobs(
             vf.ClientConfig(),

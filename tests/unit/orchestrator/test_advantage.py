@@ -1,7 +1,7 @@
 import math
-import uuid
 
 import pytest
+import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import (
     CustomAlgorithmConfig,
@@ -14,65 +14,86 @@ from prime_rl.orchestrator.algo.advantage import (
     default_advantage_fn,
     max_rl_advantage_fn,
 )
-from prime_rl.orchestrator.types import RolloutView, TrainRollout
+from prime_rl.orchestrator.types import Rollout, RolloutView
 from prime_rl.transport.types import TrainingSample
+
+
+def _task(idx: int = 0) -> vf.Task:
+    return vf.Task(idx=idx, prompt="")
 
 
 def _make_rollout(
     reward: float,
     completion_len: int = 0,
+    tool_response_len: int = 0,
     num_turns: int = 1,
     env_name: str = "test",
     example_id: int = 0,
-) -> dict:
-    """Create a minimal rollout dict for advantage testing.
+) -> Rollout:
+    """Create a minimal trace rollout for advantage testing.
 
-    `completion_len` tokens are split across `num_turns` trajectory steps —
-    they feed the length penalty's cost computation (read from `raw`), not the
-    sample's advantage length.
+    `completion_len` tokens are split across sampled assistant nodes. Tool
+    response tokens are non-sampled tool nodes, matching the trace-level cost
+    read by `RolloutView`.
     """
     per_turn, rem = divmod(completion_len, max(num_turns, 1))
-    trajectory = [
-        {"tokens": {"prompt_ids": [0], "completion_ids": list(range(per_turn + (rem if i == 0 else 0)))}}
-        for i in range(num_turns)
-    ]
-    return {
-        "reward": reward,
-        "trajectory": trajectory,
-        "env_name": env_name,
-        "example_id": example_id,
-    }
-
-
-def _train_rollout(raw: dict, completion_ids: tuple[int, ...] = (2,)) -> TrainRollout:
-    """One ``TrainRollout`` carrying a single training sample with the given
-    completion tokens (default length 1, so a group-norm scalar is its
-    rollout's whole advantage)."""
-    return TrainRollout(
-        raw=raw,
-        env_name="test",
-        example_id=0,
-        group_id=uuid.uuid4(),
-        policy_version=0,
-        off_policy_steps=0,
-        samples=[
-            TrainingSample(
-                prompt_ids=[1],
-                prompt_mask=[False],
-                completion_ids=list(completion_ids),
-                completion_mask=[True] * len(completion_ids),
-                completion_logprobs=[-0.1] * len(completion_ids),
-                completion_temperatures=[],
-                env_name="test",
+    nodes: list[vf.MessageNode] = []
+    parent: int | None = None
+    next_token = 0
+    for i in range(num_turns):
+        n = per_turn + (rem if i == 0 else 0)
+        nodes.append(
+            vf.MessageNode(
+                parent=parent,
+                message=vf.AssistantMessage(content="x"),
+                sampled=True,
+                token_ids=list(range(next_token, next_token + n)),
+                mask=[True] * n,
+                logprobs=[0.0] * n,
             )
-        ],
-    )
+        )
+        parent = len(nodes) - 1
+        next_token += n
+    if tool_response_len:
+        nodes.append(
+            vf.MessageNode(
+                parent=parent,
+                message=vf.ToolMessage(tool_call_id="call", content="tool"),
+                token_ids=list(range(next_token, next_token + tool_response_len)),
+                mask=[False] * tool_response_len,
+                logprobs=[],
+            )
+        )
+    rollout = Rollout[vf.Task](task=_task(example_id), nodes=nodes, rewards={"reward": reward})
+    rollout.env_name = env_name
+    return rollout
 
 
-def _views(raw_rollouts: list[dict]) -> list[RolloutView]:
+def _train_rollout(reward: float = 0.0, completion_ids: tuple[int, ...] = (2,)) -> Rollout:
+    """One rollout carrying a single training sample with the given completion
+    tokens. The trace itself can be empty; this helper exercises the transport
+    stream written through `RolloutView.assign_advantages`.
+    """
+    rollout = Rollout[vf.Task](task=_task(), rewards={"reward": reward})
+    rollout.env_name = "test"
+    rollout.samples = [
+        TrainingSample(
+            prompt_ids=[1],
+            prompt_mask=[False],
+            completion_ids=list(completion_ids),
+            completion_mask=[True] * len(completion_ids),
+            completion_logprobs=[-0.1] * len(completion_ids),
+            completion_temperatures=[],
+            env_name="test",
+        )
+    ]
+    return rollout
+
+
+def _views(rollouts: list[Rollout]) -> list[RolloutView]:
     """Wrap raw rollout dicts into ``RolloutView``\\ s over single-token
     samples — the advantage fns see exactly what ``score_group`` sees."""
-    return [RolloutView(_train_rollout(raw)) for raw in raw_rollouts]
+    return [RolloutView(rollout) for rollout in rollouts]
 
 
 def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[RolloutView]:
@@ -81,7 +102,7 @@ def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[Rollou
     for i, reward in enumerate(rewards):
         cl = int(completion_lengths[i]) if completion_lengths is not None else 0
         nt = int(num_turns[i]) if num_turns is not None else 1
-        raw_rollouts.append(_make_rollout(float(reward), cl, nt))
+        raw_rollouts.append(_make_rollout(float(reward), completion_len=cl, num_turns=nt))
     return _views(raw_rollouts)
 
 
@@ -211,21 +232,9 @@ def test_efficiency_amplification_bounded():
 def test_efficiency_tokens_with_tool_response_weight():
     """`tool_response_weight` shifts shaping onto tool-response tokens read from rollout metrics."""
     rollouts = [
-        {
-            "reward": 1.0,
-            "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}],
-            "metrics": {"rlm_total_tool_response_tokens": 200},
-        },
-        {
-            "reward": 1.0,
-            "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}],
-            "metrics": {"rlm_total_tool_response_tokens": 0},
-        },
-        {
-            "reward": 1.0,
-            "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}],
-            "metrics": {"rlm_total_tool_response_tokens": 100},
-        },
+        _make_rollout(1.0, completion_len=10, tool_response_len=200),
+        _make_rollout(1.0, completion_len=10, tool_response_len=0),
+        _make_rollout(1.0, completion_len=10, tool_response_len=100),
     ]
     group = _views(rollouts)
 
@@ -244,12 +253,10 @@ def test_efficiency_tokens_with_tool_response_weight():
 
 def test_efficiency_fractional_weight_with_int_rewards():
     """Fractional weights must not truncate when rollout rewards are emitted as ints."""
-    rollouts_int = [
-        {"reward": 1, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(7))}}]},
-        {"reward": 1, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(11))}}]},
-        {"reward": 0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(13))}}]},
-    ]
-    rollouts_float = [{**r, "reward": float(r["reward"])} for r in rollouts_int]
+    lens = [7, 11, 13]
+    int_rewards = [1, 1, 0]
+    rollouts_int = [_make_rollout(r, completion_len=n) for r, n in zip(int_rewards, lens)]
+    rollouts_float = [_make_rollout(float(r), completion_len=n) for r, n in zip(int_rewards, lens)]
 
     fractional = TokensLengthPenaltyConfig(completion_weight=0.3, tool_response_weight=0.0)
     int_result = default_advantage_fn(_views(rollouts_int), length_penalty=fractional)
@@ -261,9 +268,9 @@ def test_efficiency_zero_costs_falls_back_to_plain_grpo():
     """When all effective costs are zero, shaping is a no-op (no NaNs from div-by-zero)."""
     # tool-only weights but no harness metric → all costs == 0
     rollouts = [
-        {"reward": 1.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
-        {"reward": 1.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
-        {"reward": 0.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
+        _make_rollout(1.0, completion_len=10),
+        _make_rollout(1.0, completion_len=10),
+        _make_rollout(0.0, completion_len=10),
     ]
     group = _views(rollouts)
     result = default_advantage_fn(group, length_penalty=_TOKENS_TOOL_ONLY)
@@ -299,19 +306,19 @@ def test_efficiency_turns_penalty():
 
 def test_rollout_view_assign_advantages_broadcasts_scalar():
     """A scalar broadcasts uniformly over the rollout's completion tokens."""
-    rollout = _train_rollout({"reward": 0.0, "trajectory": []}, completion_ids=(2, 3))
+    rollout = _train_rollout(completion_ids=(2, 3))
     RolloutView(rollout).assign_advantages(0.7)
     assert rollout.advantages == [0.7, 0.7]
 
 
 def test_rollout_view_assign_advantages_rejects_misaligned():
-    rollout = _train_rollout({"reward": 0.0, "trajectory": []}, completion_ids=(2, 3))
+    rollout = _train_rollout(completion_ids=(2, 3))
     with pytest.raises(ValueError, match="align"):
         RolloutView(rollout).assign_advantages([0.5])
 
 
 def test_apply_advantage_fn_broadcasts_group_norm():
-    rollouts = [_train_rollout({"reward": r, "trajectory": []}, completion_ids=(2, 3)) for r in (1.0, 0.5, 0.8)]
+    rollouts = [_train_rollout(reward=r, completion_ids=(2, 3)) for r in (1.0, 0.5, 0.8)]
     apply_advantage_fn([RolloutView(r) for r in rollouts], default_advantage_fn)
     streams = [r.advantages for r in rollouts]
     # group credit broadcasts uniformly over each rollout's completion tokens
@@ -321,7 +328,7 @@ def test_apply_advantage_fn_broadcasts_group_norm():
 
 def test_apply_advantage_fn_singleton_group_is_zero():
     """A group of size 1 has reward == mean, so its advantage is 0."""
-    rollouts = [_train_rollout({"reward": 0.7, "trajectory": []}, completion_ids=(2, 3))]
+    rollouts = [_train_rollout(reward=0.7, completion_ids=(2, 3))]
     apply_advantage_fn([RolloutView(r) for r in rollouts], default_advantage_fn)
     assert rollouts[0].advantages == pytest.approx([0.0, 0.0], abs=1e-6)
 

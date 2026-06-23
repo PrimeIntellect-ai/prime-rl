@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-import verifiers as vf
+from verifiers.v1.clients.config import TrainClientConfig
 
 from prime_rl.utils.elastic import (
     AdapterState,
@@ -436,19 +436,12 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
         clients = pool.train_clients
 
         assert clients == [
-            vf.ClientConfig(
-                client_idx=0,
-                client_type="renderer",
-                renderer_config=renderer_settings,
+            TrainClientConfig(
+                type="train",
+                renderer=renderer_settings,
                 renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
                 api_key_var="PRIME_API_KEY",
-                api_base_url="http://10.0.0.1:8000/v1",
-                timeout=1200,
-                connect_timeout=30.0,
-                max_connections=8192,
-                max_keepalive_connections=8192,
-                max_retries=10,
-                extra_headers={},
-                extra_headers_from_state={},
+                base_url="http://10.0.0.1:8000/v1",
+                headers={},
             )
         ]
