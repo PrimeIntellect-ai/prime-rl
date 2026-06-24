@@ -72,7 +72,7 @@ class OffloadActivations(saved_tensors_hooks):
 
         # managing cpu memory
         self.use_pin_memory: bool = use_pin_memory
-        self.virtual_memory_safe_pct = 60  # we should not exceed this percentage of memory
+        self.virtual_memory_safe_pct = 90  # we should not exceed this percentage of memory
         # comp stream
         if torch.accelerator.is_available():
             self.s0 = torch.accelerator.current_stream()
