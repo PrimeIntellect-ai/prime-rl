@@ -33,13 +33,16 @@ dependencies = [
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
     "torchtitan",
-    "verifiers",
+    "verifiers>=0.1.15.dev357",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
     "flash-linear-attention",
     "nvidia-ml-py>=12.575.51",
     "pybase64>=1.4.2",
+    "orjson>=3.10",
+    "pandas>=2.0",
+    "msgspec>=0.18",
 ]
 
 [project.scripts]
@@ -94,6 +97,24 @@ envs = [
     "tau2-bench",
     "wiki-search",
     "wordle",
+    "reverse-text-v1",
+    "gsm8k-v1",
+    "math-env-v1",
+    "aime24-v1",
+    "alphabet-sort-v1",
+    "scaleswe-v1",
+    "color-codeword-v1",
+    "r2e-gym-v1",
+    "terminal-bench-2-v1",
+    "code-golf-v1",
+    "deepwiki-v1",
+    "glossary-v1",
+    "swelego-v1",
+    "wiki-search-v1",
+    "wikispeedia-v1",
+    "wordle-v1",
+    "general-agent-v1",
+    "swebench-verified-v1",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -153,7 +174,7 @@ override-dependencies = [
     "transformers==5.6.2",
     "torch>=2.9.0",
     "openenv-core",
-    "verifiers[packages]>=0.1.15.dev150",
+    "verifiers>=0.1.15.dev357",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
@@ -188,8 +209,6 @@ prime-tunnel = false
 prime-evals = false
 verifiers = false
 renderers = false
-tasksets = false
-harnesses = false
 prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
@@ -200,6 +219,10 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
+# prime-rl depends on the one `verifiers` package (v0 + v1 + the legacy bridge + the built-in v1
+# harnesses/tasksets, now bundled in verifiers.v1). v0 envs resolve from
+# deps/{verifiers,research-environments}/environments; v1 tasksets (`-v1`) and the `compact`
+# example live under deps/verifiers/environments.
 verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
@@ -211,7 +234,6 @@ color-codeword = { path = "deps/research-environments/environments/color_codewor
 deepdive = { path = "deps/research-environments/environments/deepdive", editable = true }
 general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
 gpqa = { path = "deps/research-environments/environments/gpqa", editable = true }
-harnesses = { path = "deps/verifiers/packages/harnesses", editable = true }
 hle = { path = "deps/research-environments/environments/hle", editable = true }
 ifeval = { path = "deps/research-environments/environments/ifeval", editable = true }
 livecodebench = { path = "deps/research-environments/environments/livecodebench", editable = true }
@@ -233,9 +255,26 @@ rlm-uuid-ctf = { path = "deps/research-environments/environments/rlm_uuid_ctf", 
 science-env = { path = "deps/research-environments/environments/science_env", editable = true }
 simpleqa-verified = { path = "deps/research-environments/environments/simpleqa_verified", editable = true }
 tau2-bench = { path = "deps/research-environments/environments/tau2_bench", editable = true }
-tasksets = { path = "deps/verifiers/packages/tasksets", editable = true }
 wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
 wordle = { path = "deps/verifiers/environments/wordle", editable = true }
+reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editable = true }
+gsm8k-v1 = { path = "deps/verifiers/environments/gsm8k_v1", editable = true }
+math-env-v1 = { path = "deps/verifiers/environments/math_env_v1", editable = true }
+aime24-v1 = { path = "deps/verifiers/environments/aime24_v1", editable = true }
+alphabet-sort-v1 = { path = "deps/verifiers/environments/alphabet_sort_v1", editable = true }
+scaleswe-v1 = { path = "deps/verifiers/environments/scaleswe_v1", editable = true }
+color-codeword-v1 = { path = "deps/verifiers/environments/color_codeword_v1", editable = true }
+r2e-gym-v1 = { path = "deps/verifiers/environments/r2e_gym_v1", editable = true }
+terminal-bench-2-v1 = { path = "deps/verifiers/environments/terminal_bench_2_v1", editable = true }
+code-golf-v1 = { path = "deps/verifiers/environments/code_golf_v1", editable = true }
+deepwiki-v1 = { path = "deps/verifiers/environments/deepwiki_v1", editable = true }
+glossary-v1 = { path = "deps/verifiers/environments/glossary_v1", editable = true }
+swelego-v1 = { path = "deps/verifiers/environments/swelego_v1", editable = true }
+wiki-search-v1 = { path = "deps/verifiers/environments/wiki_search_v1", editable = true }
+wikispeedia-v1 = { path = "deps/verifiers/environments/wikispeedia_v1", editable = true }
+wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
+general-agent-v1 = { path = "deps/verifiers/environments/general_agent_v1", editable = true }
+swebench-verified-v1 = { path = "deps/verifiers/environments/swebench_verified_v1", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }

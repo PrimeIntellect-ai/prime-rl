@@ -6,7 +6,7 @@
 - Emit-everything invariant: every dispatched rollout eventually reaches
   ``out_q`` exactly once as a ``TrainRollout`` / ``EvalRollout``. Failures
   (env error, empty trajectory, task exception, off-policy cancel) carry
-  ``raw["error"]`` set; sinks decide drop / partial-train policy.
+  ``trace.error`` set; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight rollouts of the opposite kind drain
@@ -29,20 +29,18 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Literal
 
-import verifiers as vf
+import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
-    EvalRollout,
-    FinishedRollout,
     GroupState,
     InflightRollout,
     Policy,
+    Rollout,
     RolloutKind,
-    TrainRollout,
 )
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool, client_identity
@@ -159,7 +157,7 @@ class RolloutDispatcher:
         self.groups: dict[uuid.UUID, GroupState] = {}
 
         # Bounded so the dispatcher backpressures on a slow sink
-        self.out_q: asyncio.Queue[FinishedRollout] = asyncio.Queue(maxsize=max(8, self.max_inflight))
+        self.out_q: asyncio.Queue[Rollout] = asyncio.Queue(maxsize=max(8, self.max_inflight))
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -382,7 +380,7 @@ class RolloutDispatcher:
         return GroupState(
             kind=kind,
             env_name=env_name,
-            example=example,
+            task_idx=example["task_idx"],
             rollouts_to_schedule=group_size,
             target_rollouts=group_size,
             eval_step=eval_step,
@@ -436,7 +434,7 @@ class RolloutDispatcher:
             task: asyncio.Task = asyncio.create_task(
                 env.run_group(
                     client=client,
-                    example=group.example,
+                    task_idx=group.task_idx,
                     model_name=model_name,
                     group_size=permits,
                     cache_salt=cache_salt,
@@ -449,7 +447,7 @@ class RolloutDispatcher:
             task = asyncio.create_task(
                 env.run_rollout(
                     client=client,
-                    example=group.example,
+                    task_idx=group.task_idx,
                     model_name=model_name,
                     cache_salt=cache_salt,
                 )
@@ -493,90 +491,52 @@ class RolloutDispatcher:
         is_synth_exception = False
         try:
             result = task.result()
-            rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
+            rollouts: list[Rollout] = result if isinstance(result, list) else [result]
         except asyncio.CancelledError:
             return
         except Exception as exc:
             get_logger().warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
-            rollouts = [
-                self.error_rollout_output(error_type=type(exc).__name__, error_repr=repr(exc))
-                for _ in range(meta.rollout_count)
-            ]
+            task_idx = group.task_idx if group is not None else -1
+            rollouts = [Rollout(task=vf.Task(idx=task_idx, prompt=None)) for _ in range(meta.rollout_count)]
+            for r in rollouts:
+                r.capture_error(exc)
             is_synth_exception = True
 
         for r in rollouts:
-            if r.get("error") is None and len(r.get("trajectory") or []) == 0:
+            if not r.has_error and r.num_turns == 0:
                 # Empty trajectory: promote to an explicit error so the sink
                 # treats it like any other failure
-                r["error"] = {
-                    "error": "EmptyTrajectory",
-                    "error_chain_repr": "Rollout returned with no trajectory steps",
-                    "error_chain_str": "",
-                }
+                r.errors.append(vf.Error(type="EmptyTrajectory", message="Rollout returned with no trajectory steps"))
                 get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
-            if r.get("error") is not None:
-                err_type = r["error"].get("error", "Unknown")
+            if r.has_error:
                 self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
                 if not is_synth_exception:
                     get_logger().warning(
-                        f"Rollout failed in group {meta.group_id} ({meta.env_name}) — "
-                        f"{r['error'].get('error_chain_repr', err_type)}"
+                        f"Rollout failed in group {meta.group_id} ({meta.env_name}) — {r.error.type}: {r.error.message}"
                     )
             await self.emit_rollout(meta, group, r)
 
-    async def emit_rollout(self, meta: InflightRollout, group: GroupState | None, raw: vf.RolloutOutput) -> None:
-        """Build a ``TrainRollout`` / ``EvalRollout`` and put it on ``out_q``.
+    async def emit_rollout(self, meta: InflightRollout, group: GroupState | None, rollout: Rollout) -> None:
+        """Stamp prime-rl metadata onto the completed rollout and put it on ``out_q``.
         Pops the group from ``self.groups`` once every member has been emitted."""
         eval_step = meta.eval_step
         policy_version = meta.policy_version
-        example_id = raw.get("example_id")
         if group is not None:
             eval_step = group.eval_step
             policy_version = group.policy_version_at_start
-            example_id = group.example["example_id"]
             group.emitted += 1
             if group.emitted >= group.target_rollouts:
                 self.groups.pop(meta.group_id, None)
 
-        common = dict(
-            raw=raw,
-            env_name=meta.env_name,
-            example_id=example_id if example_id is not None else -1,
-            group_id=meta.group_id,
-            policy_version=policy_version,
-            off_policy_steps=meta.off_policy_steps,
-        )
-        rollout: FinishedRollout
-        if meta.kind == "train":
-            rollout = TrainRollout(**common)
-        else:
+        rollout.kind = meta.kind
+        rollout.env_name = meta.env_name
+        rollout.group_id = meta.group_id
+        rollout.policy_version = policy_version
+        rollout.off_policy_steps = meta.off_policy_steps
+        if meta.kind == "eval":
             assert eval_step is not None, "eval rollout missing eval_step"
-            rollout = EvalRollout(**common, eval_step=eval_step)
+            rollout.eval_step = eval_step
         await self.out_q.put(rollout)
-
-    @staticmethod
-    def error_rollout_output(*, error_type: str, error_repr: str) -> vf.RolloutOutput:
-        """Minimal ``vf.RolloutOutput`` for rollouts that never produced
-        real output (task exception, off-policy cancel)."""
-        out: vf.RolloutOutput = vf.RolloutOutput()
-        out["error"] = {
-            "error": error_type,
-            "error_chain_repr": error_repr,
-            "error_chain_str": error_repr,
-        }
-        out["trajectory"] = []
-        out["completion"] = None
-        out["reward"] = 0.0
-        out["is_truncated"] = False
-        out["metrics"] = {}
-        out["stop_condition"] = None
-        out["token_usage"] = {
-            "input_tokens": 0.0,
-            "output_tokens": 0.0,
-            "final_input_tokens": 0.0,
-            "final_output_tokens": 0.0,
-        }
-        return out
 
     async def drop_group(self, group_id: uuid.UUID) -> int:
         """Cancel remaining in-flight tasks for this group and emit a
@@ -584,6 +544,7 @@ class RolloutDispatcher:
         (both in-flight and not-yet-scheduled). Returns the count for
         off-policy metrics."""
         group = self.groups.pop(group_id, None)
+        task_idx = group.task_idx if group is not None else -1
 
         # Sync claim phase: pop matching tasks from ``self.inflight`` and
         # release their permits in one non-yielding sweep. After this loop
@@ -603,8 +564,12 @@ class RolloutDispatcher:
         last_meta: InflightRollout | None = claimed[-1][1] if claimed else None
         for _, meta in claimed:
             for _ in range(meta.rollout_count):
-                raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
-                await self.emit_rollout(meta, group, raw)
+                trace = Rollout(
+                    task=vf.Task(idx=task_idx, prompt=None),
+                    errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
+                    stop_condition="error",
+                )
+                await self.emit_rollout(meta, group, trace)
 
         # For non-group-scoring envs, the group may have rollouts that
         # were never dispatched (``rollouts_to_schedule > 0``). Emit
@@ -625,8 +590,12 @@ class RolloutDispatcher:
             )
             unscheduled_cancelled = group.rollouts_to_schedule
             for _ in range(unscheduled_cancelled):
-                raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
-                await self.emit_rollout(fallback_meta, group, raw)
+                trace = Rollout(
+                    task=vf.Task(idx=task_idx, prompt=None),
+                    errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
+                    stop_condition="error",
+                )
+                await self.emit_rollout(fallback_meta, group, trace)
 
         cancelled = inflight_cancelled + unscheduled_cancelled
         if cancelled > 0:

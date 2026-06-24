@@ -21,7 +21,6 @@ in ``setup()`` and drives them from ``main_loop()``.
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 from typing import TYPE_CHECKING
@@ -36,8 +35,6 @@ if TYPE_CHECKING:
     from prime_rl.transport.base import TrainingBatchSender
     from prime_rl.utils.client import InferencePool
     from prime_rl.utils.monitor.base import Monitor
-from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
-
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
@@ -57,12 +54,10 @@ from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     EvalBatch,
-    EvalRollout,
-    FinishedRollout,
     Policy,
     Progress,
+    Rollout,
     TrainBatch,
-    TrainRollout,
 )
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
@@ -76,7 +71,7 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
-from prime_rl.utils.async_utils import safe_cancel
+from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
@@ -85,8 +80,6 @@ from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
 from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
     clean_exit,
-    get_env_ids_to_install,
-    install_env,
     resolve_latest_ckpt_step,
 )
 
@@ -108,10 +101,12 @@ MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
 
-# After max_steps, how long to wait for the trainer to finalize the trailing
-# token-export steps it hadn't flushed yet, and how often to poll for them.
-TOKEN_EXPORT_DRAIN_TIMEOUT_S = 300.0
-TOKEN_EXPORT_DRAIN_POLL_S = 2.0
+# Drop the per-node training tensors when dumping a Trace to disk (rollout jsonl / wandb
+# tables): the multimodal `mm_kwargs` carrier and the router-replay `routed_experts` array are
+# training inputs, not part of the rollout record, and would bloat every line. They also can't
+# round-trip the json dump — their `__nd__` carriers hold raw bytes. `__all__` applies the
+# exclude to every node in the list.
+ROLLOUT_DUMP_EXCLUDE = {"nodes": {"__all__": {"multi_modal_data", "routed_experts"}}}
 
 
 class Orchestrator:
@@ -158,10 +153,9 @@ class Orchestrator:
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
         setup_logger(config.log.level, json_logging=config.log.json_logging)
-        # Silence in-process ``verifiers.*`` library noise but keep
-        # ``verifiers.serve`` (env-server lifecycle) through our handler
-        logging.getLogger("verifiers").setLevel(logging.CRITICAL + 1)
-        intercept_vf_logging(logger="verifiers.serve", level="WARN")
+        # Route the in-process v1 library logging through our handler. The
+        # env server runs in a child process, so its logging is separate.
+        intercept_vf_logging(logger="verifiers.v1", level="WARN")
         get_logger().info(f"Starting orchestrator ({config.training_mode})")
 
         if config.bench:
@@ -211,12 +205,6 @@ class Orchestrator:
         with open(config_dir / "orch.toml", "wb") as f:
             tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
-        env_ids_to_install = set(get_env_ids_to_install(config.train.env))
-        if config.eval is not None:
-            env_ids_to_install.update(get_env_ids_to_install(config.eval.env))
-        for env_id in env_ids_to_install:
-            install_env(env_id, prerelease=config.env_install_prerelease)
-
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
 
@@ -242,7 +230,11 @@ class Orchestrator:
             self.teacher_inference = await setup_inference_pool(
                 config.teacher.client,
                 model_name=config.teacher.model.name,
-                train_client_type="openai_chat_completions",
+                # SFT rolls the teacher out through the renderer client (token-in/out) so its
+                # rollouts carry tokens directly — training is renderer-only. (OPD reads teacher
+                # logprobs via prefill, so its pool client type is moot.)
+                train_client_type="renderer",
+                renderer_config=config.renderer,
             )
 
         get_logger().info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -387,11 +379,10 @@ class Orchestrator:
             training_mode=config.training_mode,
             use_cache_salt=use_cache_salt,
         )
-        self.metrics = MetricsBuilder(config, start_step=self.progress.step)
+        self.metrics = MetricsBuilder(config)
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
-            renderer=self.renderer,
             train_envs=self.train_envs,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,
@@ -465,7 +456,6 @@ class Orchestrator:
         clean_exit = False
         try:
             await self.main_loop()
-            await self._drain_token_export_metrics()
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
@@ -495,52 +485,22 @@ class Orchestrator:
                 break
 
             try:
-                rollout: FinishedRollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                rollout: Rollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
 
-            if isinstance(rollout, EvalRollout):
+            if rollout.kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(rollout)
                 if eval_batch is not None:
                     await self.finalize_eval_batch(eval_batch)
                 continue
 
-            assert isinstance(rollout, TrainRollout)
             train_batch = await self.train_sink.add(rollout)
             # In drain mode any late-arriving train batch is dropped — we
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
-
-    async def _drain_token_export_metrics(self) -> None:
-        """Token exports lag the orchestrator, so once the loop ends the trainer is
-        still finalizing the last shipped steps and ``build`` no longer runs to pick
-        them up. Poll for the remaining stable steps up to ``max_steps - 1`` and log
-        each under its own ``trainer/step`` (a local W&B step axis, so the final
-        checkpoint's ``progress.step`` is untouched)."""
-        if self.config.max_steps is None:
-            return
-        if not (self.config.output_dir / "token_exports").exists():
-            return  # token export not enabled for this run — don't block shutdown
-        target = self.config.max_steps - 1
-        if self.metrics.last_token_export_step_logged >= target:
-            return  # build() already kept up — nothing trailing to flush
-        wandb_step = self.progress.step
-        deadline = time.perf_counter() + TOKEN_EXPORT_DRAIN_TIMEOUT_S
-        while time.perf_counter() < deadline:
-            token_export = self.metrics.next_token_export_metrics()
-            if not token_export:
-                await asyncio.sleep(TOKEN_EXPORT_DRAIN_POLL_S)
-                continue
-            self.monitor.log(token_export, step=wandb_step)
-            wandb_step += 1
-            if self.metrics.last_token_export_step_logged >= target:
-                return
-        get_logger().warning(
-            f"Token-export drain timed out before step {target} "
-            f"(last logged {self.metrics.last_token_export_step_logged})"
-        )
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
@@ -588,13 +548,11 @@ class Orchestrator:
                 f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
-        # Materialize at the I/O boundary so prime-rl metadata travels with
-        # the raw vf payload on disk + in wandb sample tables
-        rollout_dicts = [r.to_dict() for r in batch.rollouts]
+        # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables); drop the
+        # per-node multimodal tensors — they're for training, not the rollout record, and bloat it.
+        rollout_dicts = [r.model_dump(mode="json", exclude=ROLLOUT_DUMP_EXCLUDE) for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
-        await asyncio.to_thread(
-            save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
-        )
+        await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
 
         teacher_logprobs_time = 0.0  # opd only
         if config.training_mode == "opd" and self.teacher_inference is not None:
@@ -626,7 +584,7 @@ class Orchestrator:
             pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
         )
         self.monitor.log(metrics, step=step)
-        self.monitor.log_samples(rollout_dicts, step=step)
+        self.monitor.log_samples(batch.rollouts, step=step)
         self.monitor.log_distributions(
             distributions={
                 "rewards": [r.reward for r in batch.rollouts],
@@ -648,10 +606,7 @@ class Orchestrator:
 
         num_rollouts = len(batch.rollouts)
         num_unique_examples = len({r.group_id for r in batch.rollouts})
-        num_tokens = sum(
-            r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
-            for r in batch.rollouts
-        )
+        num_tokens = sum(r.total_tokens for r in batch.rollouts)
         self.progress.total_tokens += num_tokens
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples
@@ -661,6 +616,7 @@ class Orchestrator:
         self.train_sink.reset_pre_filter_stats()
         self.progress.step += 1
         self.maybe_trigger_eval(self.progress.step)
+        trim_process_memory()
 
     def maybe_trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything
@@ -758,13 +714,14 @@ class Orchestrator:
         trainable_rate = (n_trainable / n_survivors) if n_survivors else 0.0
         reward_mean = sum(r.reward for r in batch.rollouts) / max(n_survivors, 1)
         max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
-        turns_mean = sum(len(r.raw.get("trajectory") or []) for r in batch.rollouts) / max(n_survivors, 1)
+        turns_mean = sum(r.num_turns for r in batch.rollouts) / max(n_survivors, 1)
+        branches_mean = sum(r.num_branches for r in batch.rollouts) / max(n_survivors, 1)
         truncation_rate = sum(1 for r in batch.rollouts if r.is_truncated) / max(n_survivors, 1)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
             f"Trainable {n_trainable}/{n_survivors} ({trainable_rate:.1%}) | "
-            f"Turns {turns_mean:.1f} | Max Off-Policy {max_off_policy} | "
+            f"Turns {turns_mean:.1f} | Branches {branches_mean:.1f} | Max Off-Policy {max_off_policy} | "
             f"Error {error_rate:.1%} | Truncation {truncation_rate:.1%}"
         )
         if len(self.train_envs) <= 1:
@@ -782,15 +739,12 @@ class Orchestrator:
             env_error_rate = (n_env_errors / n_env_arrivals) if n_env_arrivals else 0.0
             env_reward = (sum(r.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
             env_max_off_policy = max((r.off_policy_steps for r in env_rollouts), default=0)
-            env_turns = (
-                sum(len(r.raw.get("trajectory") or []) for r in env_rollouts) / len(env_rollouts)
-                if env_rollouts
-                else 0.0
-            )
+            env_turns = sum(r.num_turns for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
+            env_branches = sum(r.num_branches for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
             env_truncation = sum(1 for r in env_rollouts if r.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "
-                f"Turns {env_turns:.1f} | Max Off-Policy {env_max_off_policy} | "
+                f"Turns {env_turns:.1f} | Branches {env_branches:.1f} | Max Off-Policy {env_max_off_policy} | "
                 f"Error {env_error_rate:.1%} | Truncation {env_truncation:.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
@@ -802,15 +756,14 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
             return
 
-        rollout_dicts = [r.to_dict() for r in batch.rollouts]
+        rollout_dicts = [r.model_dump(mode="json", exclude=ROLLOUT_DUMP_EXCLUDE) for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
         await asyncio.to_thread(
             save_rollouts,
             rollout_dicts,
             step_path / f"eval_rollouts_{batch.env_name}.jsonl",
-            exclude_keys={"trajectory"},
         )
-        self.monitor.log_eval_samples(rollout_dicts, env_name=batch.env_name, step=batch.step)
+        self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
         policy_versions = {r.policy_version for r in batch.rollouts}
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:
@@ -825,11 +778,12 @@ class Orchestrator:
         error_rate = ((batch.metrics.n_cancelled + batch.metrics.n_errored) / n_total) if n_total else 0.0
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
+        branches_mean = sum(r.num_branches for r in batch.rollouts) / len(batch.rollouts)
 
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {batch.metrics.reward_mean:.4f} | "
-            f"Turns {batch.metrics.num_turns_mean:.1f} | "
+            f"Turns {batch.metrics.num_turns_mean:.1f} | Branches {branches_mean:.1f} | "
             f"Error {error_rate:.1%} | Truncation {batch.metrics.truncation_rate:.1%}"
         )
 

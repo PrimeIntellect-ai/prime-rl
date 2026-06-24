@@ -4,17 +4,17 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 import torch
-import verifiers as vf
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainRollout
+    import verifiers.v1 as vf
+
+    from prime_rl.orchestrator.types import Rollout
 
 from prime_rl.configs.orchestrator import (
     AdvantageConfig,
     CustomAdvantageConfig,
     LinearLengthPenaltyConfig,
 )
-from prime_rl.orchestrator.utils import get_model_completion_len
 from prime_rl.utils.utils import import_object
 
 
@@ -22,7 +22,7 @@ from prime_rl.utils.utils import import_object
 class AdvantageInputs:
     """Inputs for advantage computation of a single group (one example × N rollouts)."""
 
-    rollouts: list[vf.RolloutOutput]
+    rollouts: list[vf.Trace]
 
 
 @dataclass
@@ -57,8 +57,8 @@ def default_advantage_fn(
     (``reward == 1``) rollouts. ``length_weighted_baseline`` uses the token-length-weighted
     mean reward as the baseline instead of the plain mean.
     """
-    rewards = torch.tensor([r["reward"] for r in inputs.rollouts], dtype=torch.float32)
-    lengths = torch.tensor([get_model_completion_len(r) for r in inputs.rollouts], dtype=rewards.dtype)
+    rewards = torch.tensor([r.reward for r in inputs.rollouts], dtype=torch.float32)
+    lengths = torch.tensor([r.completion_len for r in inputs.rollouts], dtype=rewards.dtype)
 
     if length_penalty is not None:
         if max_seq_len is None:
@@ -98,19 +98,18 @@ def setup_advantage_fn(config: AdvantageConfig, max_seq_len: int | None = None) 
 
 
 def assign_advantages(
-    rollouts: list["TrainRollout"],  # noqa: F821 (forward ref)
+    rollouts: list[Rollout],
     advantage_fn: AdvantageFn | None,
 ) -> None:
     """Compute and assign advantages for one finished group of rollouts
     (``TrainSink.process_group`` hands in a single group's surviving rollouts).
     ``advantage_fn=None`` is the trivial case (advantage = reward); a custom
-    ``advantage_fn`` receives the raw ``vf.RolloutOutput``\\ s via
-    ``AdvantageInputs.rollouts``.
+    ``advantage_fn`` receives the ``vf.Trace``\\ s via ``AdvantageInputs.rollouts``.
     """
     if advantage_fn is None:
         for rollout in rollouts:
             rollout.advantage = rollout.reward
         return
-    result = advantage_fn(AdvantageInputs(rollouts=[r.raw for r in rollouts]))
+    result = advantage_fn(AdvantageInputs(rollouts=[r for r in rollouts]))
     for rollout, advantage in zip(rollouts, result.advantages):
         rollout.advantage = advantage

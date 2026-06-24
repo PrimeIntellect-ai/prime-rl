@@ -1,0 +1,42 @@
+# v1 port of examples/alphabet_sort/rl.toml — identical except the env block, which loads
+# the v1 `alphabet-sort-v1` taskset (multi-turn via a colocated vf.User) instead of the v0
+# `primeintellect/alphabet-sort` env. Harness runs on the subprocess runtime.
+
+max_steps = 200
+seq_len = 2048
+
+[ckpt] # Checkpoint at the end of training
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "alphabet-sort"
+name = "alphabet-sort"
+
+[trainer.model]
+impl = "auto"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
+
+[trainer.optim]
+lr = 1e-5
+
+[orchestrator]
+batch_size = 512
+group_size = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 768
+
+[[orchestrator.train.env]]
+name = "alphabet-sort"
+taskset = { id = "alphabet-sort-v1", min_turns = 3, max_turns = 5, power_per_turn = false }
+harness = { id = "default", runtime = { type = "subprocess" } }
+
+[inference] # Default inference config

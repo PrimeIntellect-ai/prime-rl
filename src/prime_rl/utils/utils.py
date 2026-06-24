@@ -2,7 +2,6 @@ import asyncio
 import functools
 import importlib
 import os
-import subprocess
 import sys
 from collections import defaultdict
 from contextlib import contextmanager
@@ -13,7 +12,6 @@ import torch
 import torch.distributed as dist
 import wandb
 
-from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig
 from prime_rl.utils.logger import get_logger
 
 # TODO: Change all imports to use utils.pathing
@@ -229,31 +227,3 @@ def default_dtype(dtype):
         yield
     finally:
         torch.set_default_dtype(prev)
-
-
-def install_env(env_id: str, prerelease: bool = False) -> None:
-    """Install an environment in subprocess."""
-    logger = get_logger()
-    logger.info(f"Installing environment {env_id}")
-    install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
-    if prerelease:
-        install_cmd.insert(-1, "--prerelease")
-    result = subprocess.run(install_cmd, capture_output=True, text=True)
-    for line in result.stdout.splitlines():
-        if line.strip():
-            logger.info(line)
-    for line in result.stderr.splitlines():
-        if line.strip():
-            logger.warning(line)
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to install environment {env_id} (exit code {result.returncode})")
-    logger.info(f"Successfully installed environment {env_id}")
-
-
-def get_env_ids_to_install(env_configs: list[EnvConfig] | list[EvalEnvConfig]) -> set[str]:
-    """Get the list of environment IDs to install."""
-    env_ids_to_install = set()
-    for env_config in env_configs:
-        if "/" in env_config.id:
-            env_ids_to_install.add(env_config.id)
-    return env_ids_to_install

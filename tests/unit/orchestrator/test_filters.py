@@ -1,6 +1,8 @@
 import math
 import uuid
 
+import verifiers.v1 as vf
+
 from prime_rl.configs.orchestrator import GibberishFilterConfig, RepetitionFilterConfig
 from prime_rl.orchestrator.filters import (
     GibberishFilter,
@@ -9,7 +11,18 @@ from prime_rl.orchestrator.filters import (
     setup_filter,
     setup_filters,
 )
-from prime_rl.orchestrator.types import TrainRollout
+from prime_rl.orchestrator.types import Rollout
+
+
+def _assistant_node(token_ids: list[int], logprobs: list[float]) -> vf.MessageNode:
+    """An assistant node whose tokens are all model-sampled (the filters read each node's
+    masked-True tokens + logprobs)."""
+    return vf.MessageNode(
+        message=vf.AssistantMessage(content="x"),
+        token_ids=token_ids,
+        mask=[True] * len(token_ids),
+        logprobs=logprobs,
+    )
 
 
 def _make_rollout(
@@ -18,52 +31,21 @@ def _make_rollout(
     *,
     reward: float = 1.0,
     multi_step: bool = False,
-) -> TrainRollout:
-    """Build a ``TrainRollout`` with a minimal ``vf.RolloutOutput``-shaped
-    raw payload — enough for the filters to inspect ``trajectory`` /
-    ``stop_condition`` / etc."""
+) -> Rollout:
+    """Build a ``Rollout`` (a message-graph trace) carrying the completion tokens — enough for
+    the filters to inspect each node's sampled tokens / logprobs."""
     if multi_step:
         mid = len(completion_ids) // 2
-        trajectory = [
-            {
-                "tokens": {
-                    "completion_ids": completion_ids[:mid],
-                    "completion_logprobs": completion_logprobs[:mid],
-                    "completion_mask": [1] * mid,
-                }
-            },
-            {
-                "tokens": {
-                    "completion_ids": completion_ids[mid:],
-                    "completion_logprobs": completion_logprobs[mid:],
-                    "completion_mask": [1] * (len(completion_ids) - mid),
-                }
-            },
+        nodes = [
+            _assistant_node(completion_ids[:mid], completion_logprobs[:mid]),
+            _assistant_node(completion_ids[mid:], completion_logprobs[mid:]),
         ]
     else:
-        trajectory = [
-            {
-                "tokens": {
-                    "completion_ids": completion_ids,
-                    "completion_logprobs": completion_logprobs,
-                    "completion_mask": [1] * len(completion_ids),
-                }
-            }
-        ]
-    raw = {
-        "trajectory": trajectory,
-        "reward": reward,
-        "stop_condition": None,
-        "metrics": {},
-    }
-    return TrainRollout(
-        raw=raw,
-        env_name="test",
-        example_id=0,
-        group_id=uuid.uuid4(),
-        policy_version=0,
-        off_policy_steps=0,
-    )
+        nodes = [_assistant_node(completion_ids, completion_logprobs)]
+    rollout = Rollout[vf.Task](task=vf.Task(idx=0, prompt=""), nodes=nodes, rewards={"reward": reward})
+    rollout.env_name = "test"
+    rollout.group_id = uuid.uuid4()
+    return rollout
 
 
 def _make_gibberish_filter(vocab_size=128_000, token_id_threshold=100_000, logprob_offset=2.0, enforce=False):
@@ -248,9 +230,9 @@ def test_apply_filters_enforced_flags_rollout():
     apply_filters([gibberish_filter], [rollout])
 
     assert rollout.reward == 1.0
-    assert rollout.raw["trajectory"][0]["tokens"]["completion_ids"] == [120_000]
-    assert rollout.raw["trajectory"][0]["tokens"]["completion_mask"] == [1]
-    assert rollout.raw["stop_condition"] is None
+    assert rollout.nodes[0].token_ids == [120_000]
+    assert rollout.nodes[0].mask == [True]
+    assert rollout.stop_condition is None
     assert rollout.filter_results == {"gibberish": True}
     assert rollout.is_filtered is True
 
@@ -267,9 +249,9 @@ def test_apply_filters_preserves_clean_rollouts():
     apply_filters([gibberish_filter], [rollout])
 
     assert rollout.reward == 1.0
-    assert rollout.raw["trajectory"][0]["tokens"]["completion_ids"] == [50, 60, 70]
-    assert all(m == 1 for m in rollout.raw["trajectory"][0]["tokens"]["completion_mask"])
-    assert rollout.raw["stop_condition"] is None
+    assert rollout.nodes[0].token_ids == [50, 60, 70]
+    assert all(rollout.nodes[0].mask)
+    assert rollout.stop_condition is None
     assert rollout.filter_results == {"gibberish": False}
     assert rollout.is_filtered is False
 
@@ -286,7 +268,7 @@ def test_apply_filters_first_filter_wins():
 
     apply_filters([gibberish_filter, repetition_filter], [rollout])
 
-    assert rollout.raw["stop_condition"] is None
+    assert rollout.stop_condition is None
     assert rollout.filter_results == {"gibberish": True, "repetition": False}
     assert rollout.is_filtered is True
 
@@ -329,13 +311,13 @@ def test_apply_filters_enforced_preserves_rollout_tokens():
 
     apply_filters([gibberish_filter], [rollout])
 
-    assert rollout.raw["trajectory"][0]["tokens"]["completion_ids"] == [10, 120_000, 30]
-    assert rollout.raw["trajectory"][0]["tokens"]["completion_logprobs"] == [
+    assert rollout.nodes[0].token_ids == [10, 120_000, 30]
+    assert rollout.nodes[0].logprobs == [
         -1.0,
         gibberish_filter.logprob_threshold - 1.0,
         -0.5,
     ]
-    assert rollout.raw["trajectory"][0]["tokens"]["completion_mask"] == [1, 1, 1]
+    assert rollout.nodes[0].mask == [True, True, True]
     assert rollout.is_filtered is True
 
 
@@ -347,11 +329,11 @@ def test_apply_filters_preserves_existing_stop_condition():
         completion_logprobs=[gibberish_filter.logprob_threshold - 1.0],
         reward=1.0,
     )
-    rollout.raw["stop_condition"] = "generation_truncated"
+    rollout.stop_condition = "generation_truncated"
 
     apply_filters([gibberish_filter], [rollout])
 
-    assert rollout.raw["stop_condition"] == "generation_truncated"
+    assert rollout.stop_condition == "generation_truncated"
     assert rollout.is_filtered is True
 
 
@@ -370,8 +352,8 @@ def test_apply_filters_monitor_only_tracks_detection():
     apply_filters([gibberish_filter], [rollout])
 
     assert rollout.reward == 1.0
-    assert all(m == 1 for m in rollout.raw["trajectory"][0]["tokens"]["completion_mask"])
-    assert rollout.raw["stop_condition"] is None
+    assert all(rollout.nodes[0].mask)
+    assert rollout.stop_condition is None
     assert rollout.filter_results == {"gibberish": True}
     assert rollout.is_filtered is False
 

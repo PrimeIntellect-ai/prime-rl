@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-import verifiers as vf
+import verifiers.v1 as vf
 from httpx import AsyncClient
 from renderers import RendererConfig
 
@@ -191,8 +191,6 @@ class ElasticInferencePool:
 
             self._eval_index = 0
             url_config = ClientConfig(
-                timeout=self.client_config.timeout,
-                connect_timeout=self.client_config.connect_timeout,
                 base_url=urls,
                 api_key_var=self.client_config.api_key_var,
                 headers=self.client_config.headers,
@@ -251,7 +249,6 @@ class ElasticInferencePool:
     async def _create_admin_client(self, ip: str) -> AsyncClient:
         url = self._build_url(ip)
         config = ClientConfig(
-            timeout=self.client_config.timeout,
             base_url=[f"{url}/v1"],
             api_key_var=self.client_config.api_key_var,
             headers=self.client_config.headers,
