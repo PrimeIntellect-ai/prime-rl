@@ -16,12 +16,7 @@ from transformers.utils.generic import maybe_autocast
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
-from prime_rl.trainer.models.laguna.converting_laguna import (
-    convert_hf_layer_to_prime,
-    convert_hf_to_prime,
-    convert_prime_layer_to_hf,
-    convert_prime_to_hf,
-)
+from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention, SDPAAttention
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
@@ -305,25 +300,8 @@ class LagunaPreTrainedModel(PreTrainedModelPrimeRL):
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return any("mlp.experts.w1" in name for name in state_dict)
 
-    @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        convert_prime_to_hf(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        convert_hf_to_prime(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        convert_prime_layer_to_hf(state_dict, layer_idx)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        convert_hf_layer_to_prime(state_dict, layer_idx)
-        return state_dict
+    def conversion_chain(self):
+        return conversion_chain(self.config)
 
 
 class LagunaModel(LagunaPreTrainedModel):

@@ -69,22 +69,16 @@ def test_qwen3_5_moe_roundtrip():
     """Verify HF → PrimeRL → HF weight conversion is lossless at the state_dict level."""
     hf_model, prime_model = get_model_pairs()
 
-    # Get original HF state_dict and the PrimeRL-converted version
     original_hf_sd = hf_model.state_dict()
     prime_sd = prime_model.state_dict()
 
-    # Convert PrimeRL → per-expert HF format
-    converted_hf_sd = PrimeRLQwen3_5MoeForCausalLM.convert_to_hf(dict(prime_sd))
+    # PrimeRL → per-expert HF format (plays the chain backward).
+    converted_hf_sd = prime_model.convert_to_hf(dict(prime_sd))
 
-    # Also convert original HF (fused) to per-expert format for comparison
+    # Original HF (fused) → PrimeRL → per-expert HF, for a like-for-like comparison.
+    orig_prime_sd = prime_model.convert_to_prime(dict(original_hf_sd))
+    orig_roundtripped = prime_model.convert_to_hf(dict(orig_prime_sd))
 
-    # First convert original HF → PrimeRL, then back to per-expert HF
-    orig_prime_sd = dict(original_hf_sd)
-    PrimeRLQwen3_5MoeForCausalLM.convert_to_prime(orig_prime_sd)
-    orig_roundtripped = dict(orig_prime_sd)
-    PrimeRLQwen3_5MoeForCausalLM.convert_to_hf(orig_roundtripped)
-
-    # All non-expert keys should match exactly, expert keys should match after roundtrip
     for key in orig_roundtripped:
         assert key in converted_hf_sd, f"Missing key: {key}"
         assert torch.equal(orig_roundtripped[key], converted_hf_sd[key]), f"Mismatch at {key}"

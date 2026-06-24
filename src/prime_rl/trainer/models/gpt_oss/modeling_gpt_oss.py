@@ -26,8 +26,7 @@ from transformers.utils import TransformersKwargs, auto_docstring, can_return_tu
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
-    convert_to_hf,
-    convert_to_prime,
+    conversion_chain,
     is_hf_state_dict,
     is_prime_state_dict,
 )
@@ -192,13 +191,8 @@ class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return is_prime_state_dict(state_dict)
 
-    @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        return convert_to_hf(state_dict)
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        return convert_to_prime(state_dict)
+    def conversion_chain(self):
+        return conversion_chain(self.config)
 
 
 @auto_docstring

@@ -51,57 +51,41 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         raise NotImplementedError(f"is_prime_state_dict is not implemented for {cls.__name__}")
 
-    @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        """
-        Convert state dict from PrimeRL training format to HuggingFace format in-place.
+    def conversion_chain(self) -> "list":
+        """Declarative HF<->prime conversion as a list of
+        :class:`~prime_rl.trainer.models.conversion_ops.ConvOp`.
 
-        This is used when saving checkpoints or broadcasting weights to inference engines
-        that expect HuggingFace-compatible format.
+        Each model defines this in its ``converting_<model>.py`` and the model
+        class returns it here (using ``self.config``). The ``convert_*`` methods
+        below play it forward (HF -> prime) or backward (prime -> HF); since
+        every op is present-guarded, the same chain works on a full state dict,
+        a single layer's keys, or a local shard. Models whose HF and prime
+        layouts coincide return an empty chain."""
+        raise NotImplementedError(f"conversion_chain is not implemented for {self.__class__.__name__}")
 
-        Args:
-            state_dict: The state dict to convert (modified in-place).
-        """
-        raise NotImplementedError(f"convert_to_hf is not implemented for {cls.__name__}")
+    def convert_to_hf(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Convert a state dict from PrimeRL training format to HuggingFace
+        format in-place (saving checkpoints, broadcasting to inference)."""
+        from prime_rl.trainer.models.conversion_ops import apply_tt_to_hf
 
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        """
-        Convert state dict from HuggingFace format to PrimeRL training format in-place.
+        return apply_tt_to_hf(state_dict, self.conversion_chain())
 
-        This is used when loading pretrained HuggingFace models for training with
-        PrimeRL-specific optimizations.
+    def convert_to_prime(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Convert a state dict from HuggingFace format to PrimeRL training
+        format in-place (loading pretrained HF models)."""
+        from prime_rl.trainer.models.conversion_ops import apply_hf_to_tt
 
-        Args:
-            state_dict: The state dict to convert (modified in-place).
-        """
-        raise NotImplementedError(f"convert_to_prime is not implemented for {cls.__name__}")
+        return apply_hf_to_tt(state_dict, self.conversion_chain())
 
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """
-        Convert a single layer's state dict from PrimeRL format to HuggingFace format in-place.
+    def convert_layer_to_hf(self, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        """Per-layer PrimeRL -> HuggingFace (NCCL broadcast). Present-guarded
+        ops make playing the full chain over a single layer's keys equivalent
+        to converting just that layer."""
+        return self.convert_to_hf(state_dict)
 
-        This is used for layer-by-layer conversion during NCCL broadcast to reduce memory usage.
-
-        Args:
-            state_dict: The state dict containing the layer to convert (modified in-place).
-            layer_idx: The index of the layer to convert.
-        """
-        raise NotImplementedError(f"convert_layer_to_hf is not implemented for {cls.__name__}")
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """
-        Convert a single layer's state dict from HuggingFace format to PrimeRL format in-place.
-
-        This is used for layer-by-layer conversion during loading.
-
-        Args:
-            state_dict: The state dict containing the layer to convert (modified in-place).
-            layer_idx: The index of the layer to convert.
-        """
-        raise NotImplementedError(f"convert_layer_to_prime is not implemented for {cls.__name__}")
+    def convert_layer_to_prime(self, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        """Per-layer HuggingFace -> PrimeRL (see :meth:`convert_layer_to_hf`)."""
+        return self.convert_to_prime(state_dict)
 
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:

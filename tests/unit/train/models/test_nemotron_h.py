@@ -63,7 +63,7 @@ def get_model_pairs():
     with torch.no_grad():
         state_dict = hf_model.state_dict()
         prime_state_keys = prime_model.state_dict().keys()
-        NemotronHForCausalLM.convert_to_prime(state_dict)
+        prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
 
     inject_prime_lm_head(prime_model, chunk_size=None)
@@ -122,10 +122,9 @@ def test_nemotron_h_reverse():
     inject_prime_lm_head(prime_model, chunk_size=None)
 
     with torch.no_grad():
-        sd = prime_model.state_dict()
-        NemotronHForCausalLM.convert_to_hf(sd)
-        # convert_to_hf produces checkpoint format with "backbone." prefix;
-        # the HF model uses "model." prefix for its state dict
+        # PrimeRL -> HF (plays the chain backward); convert_to_hf emits the "backbone."
+        # checkpoint prefix, while the HF model's state dict uses "model.".
+        sd = prime_model.convert_to_hf(dict(prime_model.state_dict()))
         keys_to_rename = [k for k in sd if k.startswith("backbone.")]
         for key in keys_to_rename:
             sd["model." + key[len("backbone.") :]] = sd.pop(key)
@@ -202,10 +201,9 @@ def test_nemotron_h_weight_conversion_roundtrip():
     model = NemotronHForCausalLM(prime_config).to("cuda")
     original_sd = {k: v.clone() for k, v in model.state_dict().items()}
 
-    sd = model.state_dict()
-    NemotronHForCausalLM.convert_to_hf(sd)
+    sd = model.convert_to_hf(dict(model.state_dict()))
     assert NemotronHForCausalLM.is_hf_state_dict(sd)
-    NemotronHForCausalLM.convert_to_prime(sd)
+    sd = model.convert_to_prime(sd)
     assert NemotronHForCausalLM.is_prime_state_dict(sd)
 
     for key in original_sd:
