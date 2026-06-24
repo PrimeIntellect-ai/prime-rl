@@ -5,7 +5,8 @@ name = "PrimeIntellect/GLM-0.5B"
 moe_use_grouped_mm = false
 impl = "custom"
 attn = "sdpa"
-compile = "None"
+
+[model.compile]
 
 [data]
 type = "fake"

@@ -282,7 +282,7 @@ def _get_num_experts(config: ModelConfig) -> int | None:
     return None
 
 
-def resolve_ep(config: ModelConfig) -> None:
+def resolve_auto_ep(config: ModelConfig) -> None:
     """Resolve ``auto_ep=True`` in-place to a concrete integer for ``config.ep``.
 
     Picks the largest EP degree up to 8 that satisfies all constraints:
@@ -293,6 +293,12 @@ def resolve_ep(config: ModelConfig) -> None:
     For non-MoE models, resolves to 1 (no-op).
     """
     if not config.auto_ep:
+        return
+
+    # EP requires the custom implementation; skip auto-resolution for HF impl
+    if config.impl not in ("custom", "auto"):
+        config.ep = 1
+        get_logger().info(f"EP auto: impl='{config.impl}' does not support EP, resolving ep=1")
         return
 
     world_size = dist.get_world_size()
@@ -318,6 +324,13 @@ def resolve_ep(config: ModelConfig) -> None:
         f"EP auto: num_experts={num_experts}, world_size={world_size}, "
         f"dp_replicate={dp_replicate}, cp={cp} -> resolved ep={best_ep}"
     )
+
+    if config.ep_comm_backend != "torch" and config.ep <= 1:
+        raise ValueError(
+            f"model.ep_comm_backend='{config.ep_comm_backend}' requires ep > 1, "
+            f"but auto-resolved ep=1 (num_experts={num_experts}, world_size={world_size}). "
+            "Set ep explicitly or use ep_comm_backend='torch'."
+        )
 
 
 def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> ParallelDims:

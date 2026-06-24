@@ -43,7 +43,7 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     get_load_balance_stats,
 )
-from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
+from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_auto_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     build_bin_cost,
@@ -122,7 +122,7 @@ def train(config: TrainerConfig):
     )
 
     # Resolve auto_ep to a concrete integer before creating parallel dims
-    resolve_ep(config.model)
+    resolve_auto_ep(config.model)
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
