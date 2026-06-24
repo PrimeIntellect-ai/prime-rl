@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from itertools import cycle
 from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import AlgorithmConfig, OPDAlgorithmConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.utils.client import PrefillClient
+from prime_rl.utils.client import StaticInferencePool
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -35,17 +34,13 @@ class OPDAlgorithm(Algorithm):
         assert isinstance(config, OPDAlgorithmConfig)
         self.max_concurrent = config.max_concurrent
         self.teacher = config.model
-        self.teacher_pool: InferencePool | None = None  # connected in setup()
-        self._prefill: list[PrefillClient] = []  # one per teacher endpoint; built in setup()
+        self.teacher_pool: StaticInferencePool | None = None  # static teacher endpoint, connected in setup()
 
     async def setup(self) -> None:
-        self.teacher_pool = await self.connect(self.teacher)
-        # The teacher pool is static, so resolve one prefill client per endpoint
-        # once and reuse across batches; torn down in aclose() after training.
-        self._prefill = [PrefillClient(c) for c in self.teacher_pool.train_clients]
-
-    async def aclose(self) -> None:
-        await asyncio.gather(*(client.close() for client in self._prefill))
+        pool = await self.connect(self.teacher)
+        if not isinstance(pool, StaticInferencePool):
+            raise TypeError("opd teacher must be a static endpoint — prefill scoring needs fixed endpoints")
+        self.teacher_pool = pool
 
     async def score_batch(self, batch: list[RolloutView]) -> None:
         pool = self.teacher_pool
@@ -53,8 +48,8 @@ class OPDAlgorithm(Algorithm):
         semaphore = asyncio.Semaphore(self.max_concurrent)
         samples = [sample for view in batch for sample in view.samples]
 
-        async def score_sample(client: PrefillClient, sample: TrainingSample) -> None:
+        async def score_sample(sample: TrainingSample) -> None:
             async with semaphore:
-                sample.ref_logprobs = await client.score(pool.model_name, list(sample.token_ids))
+                sample.ref_logprobs = await pool.score(list(sample.token_ids))
 
-        await asyncio.gather(*[score_sample(client, sample) for client, sample in zip(cycle(self._prefill), samples)])
+        await asyncio.gather(*(score_sample(sample) for sample in samples))

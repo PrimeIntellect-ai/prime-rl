@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from itertools import cycle
 from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import AlgorithmConfig, OPSDAlgorithmConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.utils.client import PrefillClient
+from prime_rl.utils.client import StaticInferencePool
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -36,17 +35,13 @@ class OPSDAlgorithm(Algorithm):
         self.template = config.template
         self.max_concurrent = config.max_concurrent
         self.teacher = config.model
-        self.teacher_pool: InferencePool | None = None  # connected in setup()
-        self._prefill: list[PrefillClient] = []  # one per teacher endpoint; built in setup()
+        self.teacher_pool: StaticInferencePool | None = None  # static teacher endpoint, connected in setup()
 
     async def setup(self) -> None:
-        self.teacher_pool = await self.connect(self.teacher)
-        # The teacher pool is static, so resolve one prefill client per endpoint
-        # once and reuse across batches; torn down in aclose() after training.
-        self._prefill = [PrefillClient(c) for c in self.teacher_pool.train_clients]
-
-    async def aclose(self) -> None:
-        await asyncio.gather(*(client.close() for client in self._prefill))
+        pool = await self.connect(self.teacher)
+        if not isinstance(pool, StaticInferencePool):
+            raise TypeError("opsd teacher must be a static endpoint — prefill scoring needs fixed endpoints")
+        self.teacher_pool = pool
 
     def _ref_prefix_ids(self, rollout: RolloutView) -> list[int]:
         trace = rollout.raw
@@ -88,13 +83,13 @@ class OPSDAlgorithm(Algorithm):
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
 
-        async def score_one(client: PrefillClient, rollout: RolloutView) -> None:
+        async def score_one(rollout: RolloutView) -> None:
             prefix_ids = self._ref_prefix_ids(rollout)
             assert len(rollout.samples) == 1  # single-step trajectory → one sample
             sample = rollout.samples[0]
             completion_ids = [t for t, trains in zip(sample.token_ids, sample.mask) if trains]
             async with semaphore:
-                full_logprobs = await client.score(pool.model_name, prefix_ids + completion_ids)
+                full_logprobs = await pool.score(prefix_ids + completion_ids)
             completion_logprobs = full_logprobs[-len(completion_ids) :]
             # Scatter the demo-conditioned completion logprobs back onto the
             # sample's trainable positions; full-length-N, 0.0 elsewhere.
@@ -106,4 +101,4 @@ class OPSDAlgorithm(Algorithm):
                     li += 1
             sample.ref_logprobs = ref_logprobs
 
-        await asyncio.gather(*[score_one(client, rollout) for client, rollout in zip(cycle(self._prefill), batch)])
+        await asyncio.gather(*(score_one(rollout) for rollout in batch))

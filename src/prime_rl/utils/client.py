@@ -10,7 +10,7 @@ from typing import Protocol, runtime_checkable
 import httpx
 import verifiers.v1 as vf
 from httpx import AsyncClient
-from openai import NotFoundError
+from openai import AsyncOpenAI, NotFoundError
 from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig, resolve_client
@@ -107,6 +107,8 @@ class StaticInferencePool:
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
+        self._score_clients: list = []  # one resolved client per endpoint, built lazily on first score()
+        self._score_idx = 0
         self.model_name = model_name
 
     @property
@@ -144,8 +146,19 @@ class StaticInferencePool:
     def get_metrics(self) -> dict[str, float]:
         return {}
 
+    async def score(self, token_ids: list[int]) -> list[float]:
+        """Prefill-score ``token_ids`` under this pool's model — one logprob per
+        token (0.0 for the leading token, which has no preceding context). The
+        endpoints are fixed (static pool), so one client per endpoint is resolved
+        once, round-robined across calls, and closed in :meth:`stop`."""
+        if not self._score_clients:
+            self._score_clients = [resolve_client(c) for c in self._train_clients]
+        client = self._score_clients[self._score_idx % len(self._score_clients)]
+        self._score_idx += 1
+        return await prefill_logprobs(client.openai, self.model_name, token_ids)
+
     async def stop(self) -> None:
-        pass
+        await asyncio.gather(*(client.close() for client in self._score_clients))
 
 
 async def setup_inference_pool(
@@ -530,51 +543,37 @@ async def init_nccl_broadcast(
     )
 
 
-class PrefillClient:
-    """Prefill-score ``token_ids`` under a model via the inference server's
-    ``/inference/v1/generate`` + ``prompt_logprobs`` (the prime-rl server-side
-    extension in ``inference/vllm/serving_tokens.py``). Wraps a resolved
-    verifiers ``TrainClient`` purely for its ``AsyncOpenAI`` — and its
-    ``PRIME_API_KEY`` → prime-config api-key resolution; the renderer is never
-    built (it's lazy and these tokens are already rendered: OPD/OPSD supply
-    them). One per teacher endpoint, reused across a batch's samples."""
+async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:
+    """Prefill-score ``token_ids`` under ``model`` via ``/inference/v1/generate``
+    + ``prompt_logprobs`` (the prime-rl server-side extension in
+    ``inference/vllm/serving_tokens.py``). Returns one logprob per token (0.0 for
+    the leading token, which has no preceding context)."""
+    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 
-    def __init__(self, config: vf.ClientConfig):
-        self._client = resolve_client(config)
-
-    async def score(self, model: str, token_ids: list[int]) -> list[float]:
-        """Returns one logprob per token (0.0 for the leading token, which has
-        no preceding context)."""
-        from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
-
-        # `/inference/v1/generate` is mounted at server root, not under `/v1`:
-        # pass an absolute URL so the SDK skips the base-url merge. vLLM's
-        # `GenerateResponse` isn't an `openai.BaseModel`, so the SDK parse layer
-        # rejects it as `cast_to`; `cast_to=httpx.Response` lets the SDK still
-        # build the request (auth, retries, timeouts) and hand back the raw
-        # response for us to validate.
-        base = str(self._client.openai.base_url).rstrip("/").removesuffix("/v1")
-        http_response = await self._client.openai.post(
-            f"{base}/inference/v1/generate",
-            cast_to=httpx.Response,
-            body={
-                "model": model,
-                "token_ids": token_ids,
-                "sampling_params": {"max_tokens": 1, "temperature": 1.0, "top_p": 1.0, "prompt_logprobs": 1},
-            },
-        )
-        response = GenerateResponse.model_validate_json(http_response.content)
-        # `prompt_logprobs[i]` is a `{token_id: Logprob}` dict, or `None` for the
-        # leading token (no preceding context). Flatten to `list[float]`.
-        flat: list[float] = []
-        for entry in response.prompt_logprobs or []:
-            if not entry:
-                flat.append(0.0)
-                continue
-            first = next(iter(entry.values()))
-            lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
-            flat.append(float(lp) if lp is not None else 0.0)
-        return flat
-
-    async def close(self) -> None:
-        await self._client.close()
+    # `/inference/v1/generate` is mounted at server root, not under `/v1`: pass an
+    # absolute URL so the SDK skips the base-url merge. vLLM's `GenerateResponse`
+    # isn't an `openai.BaseModel`, so the SDK parse layer rejects it as `cast_to`;
+    # `cast_to=httpx.Response` lets the SDK still build the request (auth, retries,
+    # timeouts) and hand back the raw response for us to validate.
+    base = str(openai.base_url).rstrip("/").removesuffix("/v1")
+    http_response = await openai.post(
+        f"{base}/inference/v1/generate",
+        cast_to=httpx.Response,
+        body={
+            "model": model,
+            "token_ids": token_ids,
+            "sampling_params": {"max_tokens": 1, "temperature": 1.0, "top_p": 1.0, "prompt_logprobs": 1},
+        },
+    )
+    response = GenerateResponse.model_validate_json(http_response.content)
+    # `prompt_logprobs[i]` is a `{token_id: Logprob}` dict, or `None` for the
+    # leading token (no preceding context). Flatten to `list[float]`.
+    flat: list[float] = []
+    for entry in response.prompt_logprobs or []:
+        if not entry:
+            flat.append(0.0)
+            continue
+        first = next(iter(entry.values()))
+        lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
+        flat.append(float(lp) if lp is not None else 0.0)
+    return flat

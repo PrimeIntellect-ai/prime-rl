@@ -827,7 +827,6 @@ class Orchestrator:
                 for env in self.train_envs:
                     for pool in (*env.sampler.connected_pools, *env.algorithm.connected_pools):
                         await pool.stop()
-                    await env.algorithm.aclose()
                 self.train_envs.shutdown()
             if self.eval_envs is not None:
                 self.eval_envs.shutdown()

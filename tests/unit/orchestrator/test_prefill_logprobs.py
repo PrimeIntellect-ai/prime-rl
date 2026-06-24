@@ -1,11 +1,9 @@
 import asyncio
 import json
-from types import SimpleNamespace
 
 import httpx
 
-from prime_rl.utils import client as prime_client
-from prime_rl.utils.client import PrefillClient
+from prime_rl.utils.client import prefill_logprobs
 
 
 class _FakeOpenAIClient:
@@ -15,7 +13,7 @@ class _FakeOpenAIClient:
     ``AsyncAPIClient._process_response``."""
 
     def __init__(self, payload: dict):
-        # Match what AsyncOpenAI exposes — score() reads ``str(openai.base_url)``.
+        # Match what AsyncOpenAI exposes — prefill_logprobs reads ``str(openai.base_url)``.
         self.base_url = "http://fake-host:8000/v1"
         self._payload = payload
         self.calls: list[dict] = []
@@ -30,7 +28,7 @@ class _FakeOpenAIClient:
         )
 
 
-def test_prefill_client_scores_via_inference_generate(monkeypatch):
+def test_prefill_logprobs_uses_inference_generate():
     async def _run():
         fake_openai = _FakeOpenAIClient(
             {
@@ -41,15 +39,7 @@ def test_prefill_client_scores_via_inference_generate(monkeypatch):
                 "kv_transfer_params": None,
             }
         )
-        # PrefillClient gets its AsyncOpenAI (+ api-key resolution) from verifiers'
-        # ``resolve_client``; patch that so score() POSTs through the fake.
-        fake_resolved = SimpleNamespace(openai=fake_openai)
-        monkeypatch.setattr(prime_client, "resolve_client", lambda config: fake_resolved)
-
-        client = PrefillClient(
-            SimpleNamespace(base_url="http://fake-host:8000/v1", api_key_var="VLLM_API_KEY", headers={})
-        )
-        result = await client.score("ref-model", [1, 2, 3])
+        result = await prefill_logprobs(fake_openai, "ref-model", [1, 2, 3])
 
         assert result == [0.0, -0.7, -0.3]
         assert fake_openai.calls == [
