@@ -246,13 +246,14 @@ def _echo_algorithm(roles: dict | None = None, filter_fn=None) -> EchoAlgorithm:
     return algo
 
 
-def _node(message, *, parent, sampled, token_ids, logprobs=None) -> MessageNode:
+def _node(message, *, parent, sampled, token_ids, logprobs=None, is_content=None) -> MessageNode:
     return MessageNode(
         parent=parent,
         message=message,
         sampled=sampled,
         token_ids=token_ids,
         mask=[sampled] * len(token_ids),
+        is_content=is_content if is_content is not None else [],
         logprobs=logprobs if logprobs is not None else ([0.0] * len(token_ids) if sampled else []),
     )
 
@@ -300,6 +301,30 @@ def test_echo_weights_observations_by_role():
     algo = _echo_algorithm()  # tool only
     asyncio.run(algo.score_rollout(RolloutView(rollout)))
     assert rollout.samples[0].ce_weights is None
+
+
+def test_echo_weights_only_content_tokens_when_is_content_present():
+    # The observation node [5,6] carries per-token is_content: the first token is
+    # template scaffold (False), the second is message body (True). Only the body
+    # token gets the role weight — the scaffold is excluded (content granularity).
+    nodes = [
+        _node(UserMessage(content="U"), parent=None, sampled=False, token_ids=[1, 2]),
+        _node(AssistantMessage(content="A"), parent=0, sampled=True, token_ids=[3, 4], logprobs=[-0.1, -0.2]),
+        _node(
+            ToolMessage(tool_call_id="t", content="T"),
+            parent=1,
+            sampled=False,
+            token_ids=[5, 6],
+            is_content=[False, True],
+        ),
+        _node(AssistantMessage(content="A2"), parent=2, sampled=True, token_ids=[7, 8], logprobs=[-0.3, -0.4]),
+    ]
+    rollout = Rollout(task=vf.Task(idx=0, prompt=None), nodes=nodes, rewards={"r": 1.0}, env_name="test-env")
+    rollout.samples = trace_to_samples(rollout, env_name="test-env")
+    algo = _echo_algorithm()  # tool bodies at 0.1
+    asyncio.run(algo.score_rollout(RolloutView(rollout)))
+    # Only position 5 (the body token) is weighted; the scaffold token at position 4 is not.
+    assert rollout.samples[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
 
 
 def test_echo_filter_narrows_selection():

@@ -51,9 +51,12 @@ class EchoAlgorithm(GRPOAlgorithm):
         is the only component that trains them; samples where nothing is
         selected ship no ce stream.
 
-        (v1 granularity note: ``MessageNode`` carries no per-token ``is_content``
-        flag, so the whole non-sampled node span — template scaffold included —
-        is weighted, slightly coarser than the renderer-attribution path.)"""
+        Content granularity: when a node carries the renderer's per-token
+        ``is_content`` (``MessageNode.is_content``, parallel to ``token_ids``),
+        only the message-body tokens are weighted — the chat-template scaffold
+        (role tags, separators, tool-response wraps) is excluded. Nodes without
+        attribution (the default renderer, or relay turns with no token ids)
+        fall back to weighting the whole non-sampled span."""
         trace = rollout.raw
         trainable_branches = [branch for branch in trace.branches if any(branch.sampled_mask)]
         filter_masks = self._filter_masks(trace, trainable_branches) if self.filter_fn is not None else None
@@ -67,7 +70,12 @@ class EchoAlgorithm(GRPOAlgorithm):
                 if seen_response and not node.sampled and role in self.role_weights:
                     weight = self.role_weights[role]
                     keep_mask = filter_masks[sample_idx] if filter_masks is not None else None
+                    # Per-token content granularity when the renderer attributed it; otherwise
+                    # the whole node span (is_content empty -> fall back to current behavior).
+                    has_content = len(node.is_content) == span
                     for i in range(offset, offset + span):
+                        if has_content and not node.is_content[i - offset]:
+                            continue
                         if keep_mask is None or keep_mask[i]:
                             weights[i] = weight
                 if node.sampled:
