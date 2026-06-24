@@ -1,8 +1,5 @@
 # Run on 8xH200
-# Similar to configs/acereason_math/stage1.toml, but
-# - 300 instead of 500 steps
-# - No checkpointing
-# - No evals
+# Nightly acereason-math run: 300 steps, no checkpointing, no evals
 max_steps = 300
 seq_len = 8192
 
