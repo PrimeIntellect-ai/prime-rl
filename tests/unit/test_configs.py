@@ -172,6 +172,11 @@ def test_trainer_enable_token_export_cli_flag():
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
 
 
+def test_trainer_missing_mm_image_policy_cli_override():
+    assert cli(TrainerConfig, args=[]).missing_mm_image_policy == "placeholder_zero_loss"
+    assert cli(TrainerConfig, args=["--missing-mm-image-policy", "error"]).missing_mm_image_policy == "error"
+
+
 def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
     config = RLConfig.model_validate(
         {

@@ -227,11 +227,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            # .contiguous(): the per-layer slice is a strided view of [tokens, layers, topk]
-            # (dim-1 stride = layers*topk); torch.compile's MoE kernel asserts a contiguous input.
-            routed_experts_layer = (
-                routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
-            )
+            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
+from prime_rl.multimodal.adapters.base import ForwardPolicy
 from prime_rl.trainer.model import forward
 
 
@@ -34,11 +35,11 @@ def test_forward_passes_renderer_mm_token_type_ids_through():
         input_ids,
         position_ids,
         mm_kwargs={"pixel_values": pixel_values, "image_grid_thw": image_grid_thw},
+        mm_forward_policy=ForwardPolicy(pass_position_ids_with_mm=False),
         mm_token_type_ids=mm_token_type_ids,
     )
 
     assert model.kwargs is not None
-    # MRoPE families (image_grid_thw present) get position_ids stripped.
     assert "position_ids" not in model.kwargs
     torch.testing.assert_close(model.kwargs["pixel_values"], pixel_values)
     torch.testing.assert_close(model.kwargs["image_grid_thw"], image_grid_thw)
@@ -58,6 +59,7 @@ def test_forward_omits_mm_token_type_ids_when_renderer_does_not_supply():
         input_ids,
         position_ids,
         mm_kwargs={"pixel_values": torch.ones(2, 3), "image_grid_thw": torch.tensor([[1, 1, 2]])},
+        mm_forward_policy=ForwardPolicy(pass_position_ids_with_mm=False),
     )
 
     assert model.kwargs is not None
@@ -66,8 +68,7 @@ def test_forward_omits_mm_token_type_ids_when_renderer_does_not_supply():
 
 
 def test_forward_keeps_position_ids_for_non_mrope_vlm():
-    """Non-MRoPE VLM families (no ``image_grid_thw``) keep the trainer's
-    pre-computed ``position_ids``."""
+    """Families whose adapter asks for position_ids keep the trainer's values."""
     model = _CaptureModel(SimpleNamespace(model_type="gemma3"))
     input_ids = torch.tensor([[1, 10, 10, 2]])
     position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
@@ -77,7 +78,27 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
         input_ids,
         position_ids,
         mm_kwargs={"pixel_values": torch.ones(2, 3)},
+        mm_forward_policy=ForwardPolicy(pass_position_ids_with_mm=True),
     )
 
     assert model.kwargs is not None
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
+
+
+def test_forward_policy_can_require_mm_token_type_ids():
+    model = _CaptureModel(SimpleNamespace(model_type="qwen3_vl"))
+    input_ids = torch.tensor([[1, 10, 10, 2]])
+    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
+
+    try:
+        forward(
+            model,
+            input_ids,
+            position_ids,
+            mm_kwargs={"pixel_values": torch.ones(2, 3)},
+            mm_forward_policy=ForwardPolicy(requires_mm_token_type_ids=True),
+        )
+    except ValueError as exc:
+        assert "mm_token_type_ids" in str(exc)
+    else:
+        raise AssertionError("forward should require mm_token_type_ids when policy says so")

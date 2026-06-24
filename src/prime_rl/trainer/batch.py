@@ -2,10 +2,8 @@ import copy
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-import numpy as np
-
 from prime_rl.trainer.utils import balanced_partition
-from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
     "uint8": 1,
@@ -43,58 +41,6 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts.shape[0] += padding_size
 
 
-def _slice_encoded(tensor: EncodedTensor, n_rows: int) -> EncodedTensor:
-    """First `n_rows` rows of a dim-0-stacked encoded tensor (e.g. pixel_values, image_grid_thw)."""
-    row = int(np.prod(tensor.shape[1:])) if len(tensor.shape) > 1 else 1
-    itemsize = np.dtype(tensor.dtype).itemsize
-    return EncodedTensor(
-        dtype=tensor.dtype,
-        shape=[n_rows, *tensor.shape[1:]],
-        data=tensor.data[: n_rows * row * itemsize],
-    )
-
-
-def _truncate_mm(
-    mm_token_type_ids: list[int], mm_kwargs: dict[str, EncodedTensor], seq_len: int
-) -> tuple[int, dict[str, EncodedTensor] | None]:
-    """Truncating a sample must not split an image's placeholder block, else the surviving image
-    token count no longer matches the image embeddings in `mm_kwargs`. Returns the cut point
-    (<= seq_len, never inside an image block) and `mm_kwargs` sliced to the images whose
-    placeholders fully survive (None if no image survives)."""
-    grid = np.frombuffer(bytearray(mm_kwargs["image_grid_thw"].data), dtype=mm_kwargs["image_grid_thw"].dtype).reshape(
-        mm_kwargs["image_grid_thw"].shape
-    )
-    patches_per_image = [int(g.prod()) for g in grid]
-    total_patches = mm_kwargs["pixel_values"].shape[0]
-    total_tokens = sum(1 for t in mm_token_type_ids if t)
-    ppt = total_patches // total_tokens if total_tokens else 1  # patches per token (merge^2)
-    tokens_per_image = [p // ppt for p in patches_per_image]
-
-    surviving = sum(1 for t in mm_token_type_ids[:seq_len] if t)
-    kept = acc = 0
-    for n in tokens_per_image:
-        if acc + n > surviving:
-            break
-        acc += n
-        kept += 1
-    if acc == surviving:
-        cut = seq_len  # surviving image tokens are exactly `kept` whole images
-    else:
-        # `surviving` lands inside image `kept`; cut to its first placeholder, dropping it.
-        seen, cut = 0, seq_len
-        for i, t in enumerate(mm_token_type_ids):
-            if t:
-                seen += 1
-                if seen == acc + 1:
-                    cut = i
-                    break
-    if not kept:
-        return cut, None
-    kept_patches = sum(patches_per_image[:kept])
-    sliced = {k: _slice_encoded(v, kept if k == "image_grid_thw" else kept_patches) for k, v in mm_kwargs.items()}
-    return cut, sliced
-
-
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
@@ -108,7 +54,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     rewards = [reward] * len(input_ids)
     position_ids = list(range(len(input_ids)))
     mm_token_type_ids = training_example.mm_token_type_ids
-    mm_kwargs = training_example.mm_kwargs
+    if training_example.mm_kwargs is not None:
+        raise ValueError("Processed multimodal mm_kwargs are unsupported in v1; use raw mm_refs")
+    mm_refs = copy.deepcopy(training_example.mm_refs)
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
 
@@ -123,11 +71,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     )
 
     if len(input_ids) > seq_len:
-        # Multimodal: never split an image's placeholder block — cut to a whole-image boundary
-        # and slice mm_kwargs to match, so image-token count == image-embedding count.
+        if mm_refs is not None:
+            raise ValueError(
+                "Multimodal samples cannot be truncated after raw image offload. "
+                f"Got {len(input_ids)} tokens with seq_len={seq_len}."
+            )
         cut = seq_len
-        if mm_token_type_ids is not None and mm_kwargs is not None:
-            cut, mm_kwargs = _truncate_mm(mm_token_type_ids, mm_kwargs, seq_len)
         input_ids = input_ids[:cut]
         loss_mask = loss_mask[:cut]
         inference_logprobs = inference_logprobs[:cut]
@@ -182,14 +131,14 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
-        mm_kwargs=mm_kwargs,
+        mm_refs=mm_refs,
         training_mode=training_example.training_mode,
     )
 
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
     """Check if a sample contains multimodal data (images)."""
-    return sample.mm_kwargs is not None
+    return sample.mm_refs is not None or sample.mm_kwargs is not None
 
 
 @dataclass
@@ -307,7 +256,7 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
-        mm_kwargs=first_sample.mm_kwargs if _is_multimodal_sample(first_sample) else None,
+        mm_refs=first_sample.mm_refs if _is_multimodal_sample(first_sample) else None,
         training_mode=first_sample.training_mode,
     )
 
@@ -341,7 +290,7 @@ def packed_samples_into_micro_bs(
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
-    NOTE: Multimodal samples (with mm_kwargs) are NOT packed together as they have variable-sized
+    NOTE: Multimodal samples are NOT packed together as they have variable-sized
     vision data that doesn't pack well. Each multimodal sample becomes its own micro batch.
     """
     # Sort by (lora_idx, -length) for packing efficiency

@@ -76,19 +76,19 @@ class _FakeOpenAI:
         return httpx.Response(200, content=json.dumps(payload).encode())
 
 
-def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm():
+def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm(tmp_path, monkeypatch):
     """Walk a Qwen3-VL multimodal turn through the renderer client and
     verify the resulting ``/inference/v1/generate`` body has a valid
     ``features`` payload that:
 
     1. parses through vLLM's ``GenerateRequest`` pydantic model,
-    2. decodes back to ``MultiModalKwargsItem`` instances carrying
-       ``pixel_values`` + ``image_grid_thw`` of the right shapes,
+    2. carries a raw image ref instead of processed image tensors,
     3. has placeholder ranges that exactly cover the ``<|image_pad|>``
        runs in the prompt token sequence.
     """
     from PIL import Image
     from renderers.base import load_tokenizer
+    from renderers.mm_store import IMAGE_REF_PREFIX, split_raw_mm_ref
     from renderers.qwen3_vl import Qwen3VLRenderer
     from transformers import AutoProcessor
     from verifiers.clients.renderer_client import RendererClient
@@ -96,7 +96,6 @@ def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm()
         ClientConfig,
         UserMessage,
     )
-    from vllm.entrypoints.serve.disagg.mm_serde import decode_mm_kwargs_item
     from vllm.entrypoints.serve.disagg.protocol import GenerateRequest
 
     # ── Build a real Qwen3VLRenderer with a real processor. ─────────────
@@ -116,15 +115,19 @@ def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm()
     rc.logger = MagicMock()
 
     # ── Build a verifiers-shaped user message with an image. ────────────
-    img = Image.new("RGB", (224, 224), color=(64, 128, 255))
+    run_dir = tmp_path / "run_e2e"
+    image_dir = run_dir / "assets" / "images"
+    image_dir.mkdir(parents=True)
+    image_path = image_dir / "sample.png"
+    Image.new("RGB", (224, 224), color=(64, 128, 255)).save(image_path)
+    monkeypatch.setenv("PRIME_RL_RUN_DIR", str(run_dir))
+
     # The renderer accepts the OpenAI ``image_url`` content-part shape —
     # the same shape verifiers' UserMessage carries through.
     user = UserMessage(
         content=[
             {"type": "text", "text": "What's in this picture?"},
-            # Embed the PIL image directly. The verifiers→renderer message
-            # converter forwards content unchanged for our purposes.
-            {"type": "image", "image": img},
+            {"type": "image_url", "image_url": {"url": image_path.as_uri()}},
         ]
     )
 
@@ -169,19 +172,20 @@ def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm()
         f"placeholder span ({ph.offset}, {ph.length}) does not cover image_pad tokens; slice={pad_slice[:8]}..."
     )
 
-    # ── kwargs_data decodes to MultiModalKwargsItem with the right keys. ─
+    # ── kwargs_data carries a raw image ref for vLLM to materialize. ─────
     assert gen_req.features.kwargs_data is not None
-    encoded_items = gen_req.features.kwargs_data["image"]
-    assert len(encoded_items) == 1
-    item = decode_mm_kwargs_item(encoded_items[0])
-    assert set(item.keys()) == {"pixel_values", "image_grid_thw"}
-
-    # The image_grid_thw must match what the HF processor would have
-    # produced for the same PIL image — strongest signal that the engine
-    # sees the same image features the trainer will.
-    direct_proc_out = processor.image_processor(images=[img], return_tensors="pt")
-    expected_grid = direct_proc_out["image_grid_thw"][0].tolist()
-    assert item["image_grid_thw"].data.tolist() == expected_grid
+    ref_items = gen_req.features.kwargs_data["image"]
+    assert len(ref_items) == 1
+    ref_item = ref_items[0]
+    assert isinstance(ref_item, str)
+    assert ref_item.startswith(f"{IMAGE_REF_PREFIX}:")
+    ref = split_raw_mm_ref(ref_item)
+    assert ref.run_id == "e2e"
+    assert ref.modality == "image"
+    assert ref.raw_image_id == image_path.name
+    assert ref.mm_hash == gen_req.features.mm_hashes["image"][0]
+    persisted = response["multi_modal_data"].mm_items["image"][0]
+    assert ref.payload["image_grid_thw"] == persisted["payload"]["image_grid_thw"]
 
     # ── Response parsed through renderer's parse_response. ──────────────
     assert response["completion_ids"] == [50, 60, 151645]
