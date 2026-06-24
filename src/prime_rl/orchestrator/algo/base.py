@@ -148,6 +148,11 @@ class Algorithm:
         self.connected_pools.append(pool)
         return pool
 
+    async def aclose(self) -> None:
+        """Tear down per-algorithm resources opened in :meth:`setup` beyond
+        ``connected_pools`` (which the host stops) — e.g. teacher prefill
+        clients. The base has nothing to close."""
+
     async def score_rollout(self, rollout: RolloutView) -> None:
         """Arrival phase, one rollout, before its group is complete: write
         rollout-local credit (``rollout.assign_advantages``) or observation ce

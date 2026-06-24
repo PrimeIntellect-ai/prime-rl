@@ -37,9 +37,16 @@ class OPSDAlgorithm(Algorithm):
         self.max_concurrent = config.max_concurrent
         self.teacher = config.model
         self.teacher_pool: InferencePool | None = None  # connected in setup()
+        self._prefill: list[PrefillClient] = []  # one per teacher endpoint; built in setup()
 
     async def setup(self) -> None:
         self.teacher_pool = await self.connect(self.teacher)
+        # The teacher pool is static, so resolve one prefill client per endpoint
+        # once and reuse across batches; torn down in aclose() after training.
+        self._prefill = [PrefillClient(c) for c in self.teacher_pool.train_clients]
+
+    async def aclose(self) -> None:
+        await asyncio.gather(*(client.close() for client in self._prefill))
 
     def _ref_prefix_ids(self, rollout: RolloutView) -> list[int]:
         trace = rollout.raw
@@ -80,7 +87,6 @@ class OPSDAlgorithm(Algorithm):
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
-        clients = [PrefillClient(c) for c in pool.train_clients]
 
         async def score_one(client: PrefillClient, rollout: RolloutView) -> None:
             prefix_ids = self._ref_prefix_ids(rollout)
@@ -100,7 +106,4 @@ class OPSDAlgorithm(Algorithm):
                     li += 1
             sample.ref_logprobs = ref_logprobs
 
-        try:
-            await asyncio.gather(*[score_one(client, rollout) for client, rollout in zip(cycle(clients), batch)])
-        finally:
-            await asyncio.gather(*(client.close() for client in clients))
+        await asyncio.gather(*[score_one(client, rollout) for client, rollout in zip(cycle(self._prefill), batch)])

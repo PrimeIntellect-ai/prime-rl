@@ -36,22 +36,25 @@ class OPDAlgorithm(Algorithm):
         self.max_concurrent = config.max_concurrent
         self.teacher = config.model
         self.teacher_pool: InferencePool | None = None  # connected in setup()
+        self._prefill: list[PrefillClient] = []  # one per teacher endpoint; built in setup()
 
     async def setup(self) -> None:
         self.teacher_pool = await self.connect(self.teacher)
+        # The teacher pool is static, so resolve one prefill client per endpoint
+        # once and reuse across batches; torn down in aclose() after training.
+        self._prefill = [PrefillClient(c) for c in self.teacher_pool.train_clients]
+
+    async def aclose(self) -> None:
+        await asyncio.gather(*(client.close() for client in self._prefill))
 
     async def score_batch(self, batch: list[RolloutView]) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
         samples = [sample for view in batch for sample in view.samples]
-        clients = [PrefillClient(c) for c in pool.train_clients]
 
         async def score_sample(client: PrefillClient, sample: TrainingSample) -> None:
             async with semaphore:
                 sample.ref_logprobs = await client.score(pool.model_name, list(sample.token_ids))
 
-        try:
-            await asyncio.gather(*[score_sample(client, sample) for client, sample in zip(cycle(clients), samples)])
-        finally:
-            await asyncio.gather(*(client.close() for client in clients))
+        await asyncio.gather(*[score_sample(client, sample) for client, sample in zip(cycle(self._prefill), samples)])
