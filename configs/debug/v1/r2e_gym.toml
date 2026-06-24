@@ -1,3 +1,7 @@
+# v1 port of configs/rlm_swe/qwen35_4b.toml — identical except the env blocks, which load
+# the v1 `r2e-gym-v1` taskset through the rlm harness on the prime runtime instead of the
+# v0 `rlm_swe` composable env. Same model / trainer / inference / orchestrator knobs.
+
 output_dir = "/beegfs/mika/rlm-swe-qwen35-4b"
 max_steps = 400
 seq_len = 65536
@@ -58,26 +62,11 @@ enable_thinking = true
 temperature = 1.0
 
 [[orchestrator.train.env]]
-id = "rlm_swe"
 name = "rlm-swe-r2e"
-
-[orchestrator.train.env.args]
-labels = ["rlm-swe-qwen35-4b"]
+taskset = { id = "r2e-gym-v1" }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["rlm-swe-qwen35-4b"] } }
 
 [orchestrator.prime_monitor]
-
-[orchestrator.eval]
-interval = 20
-
-[[orchestrator.eval.env]]
-id = "rlm_swe"
-name = "rlm-swe-swebench-verified-quick"
-timeout = { rollout = 3600 }
-
-[orchestrator.eval.env.args]
-task_type = "swebench"
-dataset_name = "PrimeIntellect/SWE-Bench-Verified-Quick"
-labels = ["rlm-swe-qwen35-4b"]
 
 # --- Inference ---
 

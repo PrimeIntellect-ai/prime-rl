@@ -1,0 +1,42 @@
+# GSM8K (v1) — the v1 port of configs/gsm8k/rl.toml. Trains Qwen3-0.6B on GSM8K through the
+# v1 env server: the orchestrator spawns a v1 EnvServer for the gsm8k-v1 taskset and trains on
+# the returned Traces. Runs on 2 GPUs (1 inference, 1 training):
+#   uv run inference --model.name PrimeIntellect/Qwen3-0.6B   # Inference pane (GPU 0)
+#   uv run rl @ configs/debug/v1/gsm8k.toml --ckpt            # Trainer pane (GPU 1)
+
+max_steps = 100
+seq_len = 2048
+
+[wandb]
+project = "gsm8k-debug"
+name = "gsm8k-v1"
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[orchestrator]
+training_mode = "rl"
+batch_size = 512
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.train.env]]
+taskset = { id = "gsm8k-v1", split = "train" }
+harness = { id = "default", runtime = { type = "subprocess" } }
+
+[orchestrator.eval]
+interval = 20
+num_examples = 256
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.eval.env]]
+taskset = { id = "gsm8k-v1", split = "test" }
+harness = { id = "default", runtime = { type = "subprocess" } }
+
+[trainer] # Default trainer config
+
+[inference] # Default inference config

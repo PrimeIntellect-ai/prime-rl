@@ -1,6 +1,5 @@
-import uuid
-
 import pytest
+import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import (
     CustomAdvantageConfig,
@@ -16,17 +15,22 @@ from prime_rl.orchestrator.advantage import (
     setup_advantage_fn,
 )
 from prime_rl.orchestrator.envs import Env, TrainEnv
-from prime_rl.orchestrator.types import TrainRollout
+from prime_rl.orchestrator.types import Rollout
 
 
-def _make_rollout(reward: float, completion_len: int = 0) -> dict:
-    """Minimal single-turn rollout dict with ``completion_len`` completion tokens."""
-    return {
-        "reward": reward,
-        "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(completion_len))}}],
-        "env_name": "test",
-        "example_id": 0,
-    }
+def _make_rollout(reward: float, completion_len: int = 0, env_name: str = "test") -> Rollout:
+    """Build a ``Rollout`` (message-graph trace): ``reward`` via the reward dict and
+    ``completion_len`` model-sampled completion tokens (a single assistant node)."""
+    node = vf.MessageNode(
+        message=vf.AssistantMessage(content="x"),
+        token_ids=list(range(completion_len)),
+        mask=[True] * completion_len,
+        logprobs=[0.0] * completion_len,
+        sampled=True,
+    )
+    rollout = Rollout[vf.Task](task=vf.Task(idx=0, prompt=""), nodes=[node], rewards={"reward": reward})
+    rollout.env_name = env_name
+    return rollout
 
 
 def _make_group(rewards, completion_lengths=None) -> AdvantageInputs:
@@ -36,6 +40,11 @@ def _make_group(rewards, completion_lengths=None) -> AdvantageInputs:
         cl = int(completion_lengths[i]) if completion_lengths is not None else 0
         rollouts.append(_make_rollout(float(reward), cl))
     return AdvantageInputs(rollouts=rollouts)
+
+
+def _train_rollouts(rewards: list[float]) -> list[Rollout]:
+    """One group's worth of Rollouts for ``assign_advantages`` (operates on a single group)."""
+    return [Rollout[vf.Task](task=vf.Task(idx=0, prompt=""), rewards={"reward": r}) for r in rewards]
 
 
 def test_default_advantage_fn_simple_mean():
@@ -105,14 +114,18 @@ def test_train_env_threads_max_seq_len_into_advantage_fn(monkeypatch):
 
     def fake_env_init(self, config):
         self.config = config
-        self._env = None
-        self._env_client = None
-        self._env_server_process = None
 
     monkeypatch.setattr(Env, "__init__", fake_env_init)
     config = OrchestratorConfig(
         seq_len=100,
-        advantage={"type": "default", "length_penalty": {"coef": 1.0}},
+        train={
+            "env": [
+                {
+                    "taskset": {"id": "reverse-text-v1"},
+                    "advantage": {"type": "default", "length_penalty": {"coef": 1.0}},
+                }
+            ]
+        },
     )
 
     env = TrainEnv(config.train.env[0], max_seq_len=config.seq_len)
@@ -128,12 +141,10 @@ def test_per_env_linear_advantage_uses_runtime_schema():
         train={
             "env": [
                 {
-                    "advantage": {
-                        "type": "default",
-                        "length_penalty": {"coef": 1.0},
-                    },
+                    "taskset": {"id": "reverse-text-v1"},
+                    "advantage": {"type": "default", "length_penalty": {"coef": 1.0}},
                 }
-            ],
+            ]
         },
     )
 
@@ -152,6 +163,7 @@ def test_per_env_custom_advantage_uses_runtime_schema():
         train={
             "env": [
                 {
+                    "taskset": {"id": "reverse-text-v1"},
                     "advantage": {
                         "type": "custom",
                         "import_path": "tests.unit.orchestrator.test_advantage._dummy_custom_advantage",
@@ -181,24 +193,6 @@ def test_length_weighted_baseline():
     assert result.advantages == pytest.approx([r - baseline for r in rewards], abs=1e-6)
     # Token-weighted mean of advantages is zero
     assert sum(length * adv for length, adv in zip((10, 30, 60), result.advantages)) == pytest.approx(0.0, abs=1e-5)
-
-
-def _train_rollouts(rewards: list[float]) -> list[TrainRollout]:
-    """Wrap a list of rewards into ``TrainRollout``\\ s sharing a single
-    ``group_id`` — ``assign_advantages`` works on one group at a time
-    (the sink groups by ``group_id`` upstream)."""
-    gid = uuid.uuid4()
-    return [
-        TrainRollout(
-            raw={"reward": r, "trajectory": []},
-            env_name="test",
-            example_id=0,
-            group_id=gid,
-            policy_version=0,
-            off_policy_steps=0,
-        )
-        for r in rewards
-    ]
 
 
 def test_assign_advantages_writes_field():
@@ -240,4 +234,4 @@ def test_setup_advantage_fn_with_custom_config():
 
 def _dummy_custom_advantage(inputs: AdvantageInputs, scale: float = 1.0) -> AdvantageOutputs:
     """A simple custom advantage for testing."""
-    return AdvantageOutputs(advantages=[r["reward"] * scale for r in inputs.rollouts])
+    return AdvantageOutputs(advantages=[r.reward * scale for r in inputs.rollouts])
