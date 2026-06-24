@@ -121,7 +121,7 @@ def train(config: TrainerConfig):
         config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank), config.model.lora
     )
 
-    # Resolve ep="auto" to a concrete integer before creating parallel dims
+    # Resolve auto_ep to a concrete integer before creating parallel dims
     resolve_ep(config.model)
 
     # Initialize parallel dimensions

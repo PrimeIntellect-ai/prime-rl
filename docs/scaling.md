@@ -92,13 +92,13 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 
 EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP communication volume per layer and improving the training throughput. EP is only available with the custom model implementation (`model.impl = "custom"` or `"auto"` for supported families).
 
-`ep` defaults to `"auto"`, which resolves at startup to the largest valid EP degree up to 8. It loads the model config to read `num_experts`, then picks the biggest divisor of `num_experts` that also divides the FSDP island size (`world_size // dp_replicate`), is a multiple of `cp`, and is <= 8. For non-MoE models, `"auto"` resolves to 1 (no-op). Set `ep` to an explicit integer to override:
+`auto_ep` defaults to `true`, which resolves at startup to the largest valid EP degree up to 8. It loads the model config to read `num_experts`, then picks the biggest divisor of `num_experts` that also divides the FSDP island size (`world_size // dp_replicate`), is a multiple of `cp`, and is <= 8. For non-MoE models, resolves to 1 (no-op). Set `auto_ep = false` and `ep` to an explicit integer to override:
 
 ```toml
 [trainer.model]
 impl = "custom"
+auto_ep = false            # disable auto-resolution
 ep = 8                     # explicit EP degree; must divide num_experts
-# ep = "auto"              # default; auto-resolves up to 8
 ep_comm_backend = "torch"  # or "deepep"
 ```
 
@@ -160,11 +160,12 @@ Drop the chunk size further when peak memory is still tight (e.g. with very long
 
 ## Memory-Tight Recipe
 
-The kitchen-sink config for fitting large MoE on limited GPUs at acceptable throughput. AC, AC offloading, compile, fused LM head chunking, and optimizer offload are now on by default — only EP and CP need to be set explicitly:
+The kitchen-sink config for fitting large MoE on limited GPUs at acceptable throughput. AC, AC offloading, compile, fused LM head chunking, optimizer offload, and EP auto-resolution are on by default — only CP needs to be set explicitly (and EP overridden if auto-resolution is not desired):
 
 ```toml
 [trainer.model]
 impl = "custom"
+auto_ep = false
 ep = 8
 cp = 2
 
