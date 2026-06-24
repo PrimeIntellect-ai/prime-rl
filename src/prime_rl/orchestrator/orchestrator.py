@@ -67,9 +67,10 @@ from prime_rl.orchestrator.utils import (
     save_rollouts,
     set_default_executor,
     setup_student_inference_pool,
+    setup_weight_watcher,
     trim_process_memory,
 )
-from prime_rl.orchestrator.watcher import DebugWeightWatcher, WeightWatcher
+from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
@@ -110,20 +111,6 @@ TARGET_LAG = 1
 ROLLOUT_DUMP_EXCLUDE = {"nodes": {"__all__": {"multi_modal_data", "routed_experts"}}}
 
 
-class DebugTokenizer:
-    """Tiny tokenizer stub for pre-tokenized orchestrator debug rollouts."""
-
-    vocab_size = 200_000
-    eos_token_id = 0
-    pad_token_id = 0
-
-    def decode(self, token_ids, *args, **kwargs) -> str:
-        return " ".join(str(t) for t in token_ids)
-
-    def batch_decode(self, sequences, *args, **kwargs) -> list[str]:
-        return [self.decode(seq, *args, **kwargs) for seq in sequences]
-
-
 class Orchestrator:
     # Set in ``__init__``
     config: OrchestratorConfig
@@ -146,7 +133,7 @@ class Orchestrator:
     train_source: TrainSource
     train_sink: TrainSink
     dispatcher: RolloutDispatcher
-    watcher: WeightWatcher | DebugWeightWatcher
+    watcher: WeightWatcher
     metrics: MetricsBuilder
     lag_monitor: EventLoopLagMonitor
     periodic_logger: PeriodicLogger
@@ -220,14 +207,8 @@ class Orchestrator:
         with open(config_dir / "orch.toml", "wb") as f:
             tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
-        if config.debug.no_inference:
-            get_logger().warning(
-                "Using debug tokenizer stub for no-inference mode; token ids decode as space-separated integers"
-            )
-            self.tokenizer = DebugTokenizer()  # type: ignore[assignment]
-        else:
-            get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
-            self.tokenizer = setup_tokenizer(config.tokenizer)
+        get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
+        self.tokenizer = setup_tokenizer(config.tokenizer)
 
         # Student inference pool
         get_logger().info(
@@ -331,10 +312,6 @@ class Orchestrator:
             )
             await self.inference_metrics.start()
 
-        if config.debug.no_trainer:
-            get_logger().warning("Skipping weight broadcast setup for orchestrator debug no-trainer mode")
-        else:
-            get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if not config.debug.no_trainer and config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
                 self.student_inference.admin_clients,
@@ -415,17 +392,14 @@ class Orchestrator:
             post_filters=post_filters,
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
-        if config.debug.no_trainer:
-            self.watcher = DebugWeightWatcher(policy=self.policy, observers=[self.dispatcher, self])
-        else:
-            self.watcher = WeightWatcher(
-                config,
-                policy=self.policy,
-                inference=self.student_inference,
-                observers=[self.dispatcher, self],
-                lora_name=self.lora_name,
-                ckpt_step=self.progress.step,
-            )
+        self.watcher = setup_weight_watcher(
+            config=config,
+            policy=self.policy,
+            inference=self.student_inference,
+            observers=[self.dispatcher, self],
+            lora_name=self.lora_name,
+            ckpt_step=self.progress.step,
+        )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
         self.lag_monitor = EventLoopLagMonitor()
@@ -595,10 +569,7 @@ class Orchestrator:
             teacher_logprobs_time = time.perf_counter() - t
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
-        if config.debug.no_trainer:
-            await self.watcher.apply_policy_update(step + 1)
-        else:
-            self.update_dispatch_gate()
+        await self.update_dispatch_gate(step + 1)
         trim_process_memory()
         if config.debug.enabled:
             log_process_memory(f"after_step step={step}")
@@ -841,11 +812,17 @@ class Orchestrator:
         await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
         return time.perf_counter() - t
 
-    def update_dispatch_gate(self) -> None:
+    async def update_dispatch_gate(self, next_step: int | None = None) -> None:
         """Pause/resume the dispatcher based on how far the orchestrator's
         next batch would run ahead of ``policy.version``. Called from two
         sites: after shipping a batch (step advances) and from
-        ``on_new_version`` (policy advances)."""
+        ``on_new_version`` (policy advances).
+
+        In debug no-trainer mode, advances the policy version locally via
+        the watcher before evaluating the gate, so the orchestrator still
+        simulates weight updates and off-policy cancellation."""
+        if self.config.debug.no_trainer and next_step is not None:
+            await self.watcher.apply_policy_update(next_step)
         lead = (self.progress.step + 1) - self.policy.version
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
@@ -867,7 +844,7 @@ class Orchestrator:
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""
-        self.update_dispatch_gate()
+        await self.update_dispatch_gate()
 
     async def stop(self) -> None:
         """Bounded best-effort teardown of all components. Has a global

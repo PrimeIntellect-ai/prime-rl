@@ -12,8 +12,10 @@ import orjson
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.types import Policy, VersionObserver
+from prime_rl.orchestrator.watcher import DebugWeightWatcher, WeightWatcher
 from prime_rl.transport import TrainingSample
-from prime_rl.utils.client import NoOpInferencePool, setup_inference_pool
+from prime_rl.utils.client import InferencePool, NoOpInferencePool, setup_inference_pool
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
 from prime_rl.utils.utils import (
     get_broadcast_dir,
@@ -49,6 +51,30 @@ async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer)
         pool_size=config.pool_size,
     )
     return renderer, inference_pool
+
+
+def setup_weight_watcher(
+    *,
+    config: OrchestratorConfig,
+    policy: Policy,
+    inference: InferencePool,
+    observers: list[VersionObserver],
+    lora_name: str | None,
+    ckpt_step: int = 0,
+) -> WeightWatcher | DebugWeightWatcher:
+    """Construct the weight watcher, using the debug variant when ``no_trainer`` is set."""
+    if config.debug.no_trainer:
+        get_logger().warning("Skipping weight broadcast setup for orchestrator debug no-trainer mode")
+        return DebugWeightWatcher(policy=policy, observers=observers)
+    get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
+    return WeightWatcher(
+        config,
+        policy=policy,
+        inference=inference,
+        observers=observers,
+        lora_name=lora_name,
+        ckpt_step=ckpt_step,
+    )
 
 
 def save_rollouts(rollouts: list[dict], path: Path, exclude_keys: set[str] | None = None) -> None:
