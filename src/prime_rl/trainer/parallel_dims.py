@@ -274,9 +274,7 @@ def _get_num_experts(config: ModelConfig) -> int | None:
     """Return the number of routed experts from the model config, or None for non-MoE models."""
     from transformers import AutoConfig
 
-    model_config = AutoConfig.from_pretrained(
-        config.name, trust_remote_code=config.trust_remote_code
-    )
+    model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     if hasattr(model_config, "num_experts"):
         return model_config.num_experts
     if hasattr(model_config, "n_routed_experts"):
@@ -311,11 +309,7 @@ def resolve_ep(config: ModelConfig) -> None:
 
     best_ep = 1
     for candidate in range(min(num_experts, 8), 0, -1):
-        if (
-            num_experts % candidate == 0
-            and fsdp_island_size % candidate == 0
-            and candidate % cp == 0
-        ):
+        if num_experts % candidate == 0 and fsdp_island_size % candidate == 0 and candidate % cp == 0:
             best_ep = candidate
             break
 
