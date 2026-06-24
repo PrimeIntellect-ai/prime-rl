@@ -2827,7 +2827,7 @@ wheels = [
 [[package]]
 name = "no-inference-env"
 version = "0.1.0"
-source = { editable = "environments/no_inference_env" }
+source = { editable = "tests/debug_envs/no_inference_env" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3821,7 +3821,7 @@ requires-dist = [
     { name = "msgspec", specifier = ">=0.18" },
     { name = "nixl", marker = "extra == 'disagg'" },
     { name = "nixl-cu12", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" },
-    { name = "no-inference-env", marker = "extra == 'envs'", editable = "environments/no_inference_env" },
+    { name = "no-inference-env", marker = "extra == 'envs'", editable = "tests/debug_envs/no_inference_env" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "nvidia-ml-py", specifier = ">=12.575.51" },
     { name = "openai", specifier = ">=1.106.1" },
