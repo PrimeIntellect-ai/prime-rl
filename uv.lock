@@ -98,7 +98,7 @@ requires-dist = [
 [[package]]
 name = "aime24-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/environments/aime24_v1" }
+source = { editable = "deps/research-environments/environments/aime24_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -107,7 +107,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers" },
+    { name = "verifiers", specifier = ">=0.1.15.dev381" },
 ]
 
 [[package]]
@@ -1364,7 +1364,7 @@ provides-extras = ["dev", "test"]
 [[package]]
 name = "general-agent-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/environments/general_agent_v1" }
+source = { editable = "deps/research-environments/environments/general_agent_v1" }
 dependencies = [
     { name = "filelock", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1375,7 +1375,7 @@ dependencies = [
 requires-dist = [
     { name = "filelock" },
     { name = "pydantic" },
-    { name = "verifiers" },
+    { name = "verifiers", specifier = ">=0.1.15.dev381" },
 ]
 
 [[package]]
@@ -2335,13 +2335,17 @@ requires-dist = [
 [[package]]
 name = "math-env-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/environments/math_env_v1" }
+source = { editable = "deps/research-environments/environments/math_env_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "datasets" }]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers", specifier = ">=0.1.15.dev381" },
+]
 
 [[package]]
 name = "math-python"
@@ -3752,7 +3756,7 @@ mamba-ssm = [
 requires-dist = [
     { name = "aime2024", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime2024" },
     { name = "aime2025", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime2025" },
-    { name = "aime24-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/aime24_v1" },
+    { name = "aime24-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime24_v1" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "alphabet-sort", marker = "extra == 'envs'", editable = "deps/verifiers/environments/alphabet_sort" },
     { name = "alphabet-sort-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/alphabet_sort_v1" },
@@ -3772,7 +3776,7 @@ requires-dist = [
     { name = "flash-attn-4", marker = "extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151" },
     { name = "flash-linear-attention", git = "https://github.com/fla-org/flash-linear-attention" },
     { name = "general-agent", marker = "extra == 'envs'", editable = "deps/research-environments/environments/general_agent" },
-    { name = "general-agent-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/general_agent_v1" },
+    { name = "general-agent-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/general_agent_v1" },
     { name = "glossary-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/glossary_v1" },
     { name = "gpqa", marker = "extra == 'envs'", editable = "deps/research-environments/environments/gpqa" },
     { name = "gsm8k-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/gsm8k_v1" },
@@ -3785,7 +3789,7 @@ requires-dist = [
     { name = "logic-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/logic_env" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "math-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math_env" },
-    { name = "math-env-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/math_env_v1" },
+    { name = "math-env-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math_env_v1" },
     { name = "math-python", marker = "extra == 'envs'", editable = "deps/verifiers/environments/math_python" },
     { name = "math500", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math500" },
     { name = "mini-swe-agent-plus", marker = "extra == 'envs'", editable = "deps/research-environments/environments/mini_swe_agent_plus" },
@@ -3818,7 +3822,7 @@ requires-dist = [
     { name = "pybase64", specifier = ">=1.4.2" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.4.1" },
-    { name = "r2e-gym-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/r2e_gym_v1" },
+    { name = "r2e-gym-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/r2e_gym_v1" },
     { name = "renderers", editable = "deps/renderers" },
     { name = "reverse-text", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text" },
     { name = "reverse-text-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text_v1" },
@@ -3832,7 +3836,7 @@ requires-dist = [
     { name = "setproctitle", specifier = ">=1.3.0" },
     { name = "simpleqa-verified", marker = "extra == 'envs'", editable = "deps/research-environments/environments/simpleqa_verified" },
     { name = "swebench-verified-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/swebench_verified_v1" },
-    { name = "swelego-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/swelego_v1" },
+    { name = "swelego-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/swelego_v1" },
     { name = "tau2-bench", marker = "extra == 'envs'", editable = "deps/research-environments/environments/tau2_bench" },
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "terminal-bench-2-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/terminal_bench_2_v1" },
@@ -3852,7 +3856,7 @@ requires-dist = [
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wiki-search", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wiki_search" },
     { name = "wiki-search-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wiki_search_v1" },
-    { name = "wikispeedia-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wikispeedia_v1" },
+    { name = "wikispeedia-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/wikispeedia_v1" },
     { name = "wordle", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wordle" },
     { name = "wordle-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wordle_v1" },
 ]
@@ -4384,13 +4388,17 @@ wheels = [
 [[package]]
 name = "r2e-gym-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/environments/r2e_gym_v1" }
+source = { editable = "deps/research-environments/environments/r2e_gym_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "datasets" }]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers", specifier = ">=0.1.15.dev381" },
+]
 
 [[package]]
 name = "redis"
@@ -4666,10 +4674,14 @@ version = "0.1.0"
 source = { editable = "deps/research-environments/environments/scaleswe_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "datasets" }]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers", specifier = ">=0.1.15.dev381" },
+]
 
 [[package]]
 name = "science-env"
@@ -4934,18 +4946,22 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev381" }]
 
 [[package]]
 name = "swelego-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/environments/swelego_v1" }
+source = { editable = "deps/research-environments/environments/swelego_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "datasets" }]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers", specifier = ">=0.1.15.dev381" },
+]
 
 [[package]]
 name = "sympy"
@@ -5075,7 +5091,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev381" }]
 
 [[package]]
 name = "textarena"
@@ -5681,23 +5697,16 @@ dev = [
     { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
 ]
 examples = [
-    { name = "aime24-v1", editable = "deps/verifiers/environments/aime24_v1" },
     { name = "alphabet-sort-v1", editable = "deps/verifiers/environments/alphabet_sort_v1" },
     { name = "code-golf-v1", editable = "deps/verifiers/environments/code_golf_v1" },
     { name = "color-codeword-v1", editable = "deps/verifiers/environments/color_codeword_v1" },
     { name = "compact", editable = "deps/verifiers/environments/compact" },
     { name = "deepwiki-v1", editable = "deps/verifiers/environments/deepwiki_v1" },
-    { name = "general-agent-v1", editable = "deps/verifiers/environments/general_agent_v1" },
     { name = "glossary-v1", editable = "deps/verifiers/environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "deps/verifiers/environments/gsm8k_v1" },
-    { name = "math-env-v1", editable = "deps/verifiers/environments/math_env_v1" },
-    { name = "r2e-gym-v1", editable = "deps/verifiers/environments/r2e_gym_v1" },
     { name = "reverse-text-v1", editable = "deps/verifiers/environments/reverse_text_v1" },
     { name = "scratchpad-v1", editable = "deps/verifiers/environments/scratchpad_v1" },
-    { name = "swelego-v1", editable = "deps/verifiers/environments/swelego_v1" },
-    { name = "tau2-bench-v1", editable = "deps/verifiers/environments/tau2_bench_v1" },
     { name = "wiki-search-v1", editable = "deps/verifiers/environments/wiki_search_v1" },
-    { name = "wikispeedia-v1", editable = "deps/verifiers/environments/wikispeedia_v1" },
     { name = "wordle-v1", editable = "deps/verifiers/environments/wordle_v1" },
 ]
 
@@ -6257,13 +6266,13 @@ requires-dist = [
 [[package]]
 name = "wikispeedia-v1"
 version = "0.1.0"
-source = { editable = "deps/verifiers/environments/wikispeedia_v1" }
+source = { editable = "deps/research-environments/environments/wikispeedia_v1" }
 dependencies = [
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev381" }]
 
 [[package]]
 name = "wordle"

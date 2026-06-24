@@ -259,21 +259,21 @@ wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = tru
 wordle = { path = "deps/verifiers/environments/wordle", editable = true }
 reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editable = true }
 gsm8k-v1 = { path = "deps/verifiers/environments/gsm8k_v1", editable = true }
-math-env-v1 = { path = "deps/verifiers/environments/math_env_v1", editable = true }
-aime24-v1 = { path = "deps/verifiers/environments/aime24_v1", editable = true }
+math-env-v1 = { path = "deps/research-environments/environments/math_env_v1", editable = true }
+aime24-v1 = { path = "deps/research-environments/environments/aime24_v1", editable = true }
 alphabet-sort-v1 = { path = "deps/verifiers/environments/alphabet_sort_v1", editable = true }
 scaleswe-v1 = { path = "deps/research-environments/environments/scaleswe_v1", editable = true }
 color-codeword-v1 = { path = "deps/verifiers/environments/color_codeword_v1", editable = true }
-r2e-gym-v1 = { path = "deps/verifiers/environments/r2e_gym_v1", editable = true }
+r2e-gym-v1 = { path = "deps/research-environments/environments/r2e_gym_v1", editable = true }
 terminal-bench-2-v1 = { path = "deps/research-environments/environments/terminal_bench_2_v1", editable = true }
 code-golf-v1 = { path = "deps/verifiers/environments/code_golf_v1", editable = true }
 deepwiki-v1 = { path = "deps/verifiers/environments/deepwiki_v1", editable = true }
 glossary-v1 = { path = "deps/verifiers/environments/glossary_v1", editable = true }
-swelego-v1 = { path = "deps/verifiers/environments/swelego_v1", editable = true }
+swelego-v1 = { path = "deps/research-environments/environments/swelego_v1", editable = true }
 wiki-search-v1 = { path = "deps/verifiers/environments/wiki_search_v1", editable = true }
-wikispeedia-v1 = { path = "deps/verifiers/environments/wikispeedia_v1", editable = true }
+wikispeedia-v1 = { path = "deps/research-environments/environments/wikispeedia_v1", editable = true }
 wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
-general-agent-v1 = { path = "deps/verifiers/environments/general_agent_v1", editable = true }
+general-agent-v1 = { path = "deps/research-environments/environments/general_agent_v1", editable = true }
 swebench-verified-v1 = { path = "deps/research-environments/environments/swebench_verified_v1", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
