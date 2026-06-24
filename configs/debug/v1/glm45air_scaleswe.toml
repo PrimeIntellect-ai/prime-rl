@@ -74,6 +74,7 @@ type = "muon"
 batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
+max_inflight_rollouts = 384
 
 [orchestrator.renderer]
 name = "glm-4.5"
@@ -103,6 +104,7 @@ timeout = { rollout = 3600 }
 gpu_memory_utilization = 0.85
 enable_prefix_caching = true
 enable_return_routed_experts = true
+vllm_extra = { quantization = "fp8" }
 
 [inference.model]
 max_model_len = 65536
