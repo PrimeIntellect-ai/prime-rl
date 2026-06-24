@@ -13,7 +13,7 @@ from httpx import AsyncClient
 from openai import AsyncOpenAI, NotFoundError
 from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
-from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig, resolve_client
+from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
@@ -77,9 +77,46 @@ class InferencePool(Protocol):
         """Get pool metrics."""
         ...
 
+    async def score(self, token_ids: list[int]) -> list[float]:
+        """Prefill-score ``token_ids`` under the pool's model — one logprob per token."""
+        ...
+
     async def stop(self) -> None:
         """Stop the inference pool."""
         ...
+
+
+class PrefillScorer:
+    """Prefill-scores token ids against a pool's *current* endpoints. Resolves one
+    client per endpoint, cached by endpoint identity — so it fills once for a
+    static pool and tolerates churn for an elastic one (a departed endpoint is
+    simply never selected again; its client is closed at stop). Round-robins over
+    the live endpoints."""
+
+    def __init__(self) -> None:
+        self._clients: dict = {}  # client_identity -> AsyncOpenAI, one per endpoint
+        self._rr = 0
+
+    async def score(self, configs: list[vf.ClientConfig], model: str, token_ids: list[int]) -> list[float]:
+        if not configs:
+            raise RuntimeError("no inference endpoints available to prefill-score")
+        cfg = configs[self._rr % len(configs)]
+        self._rr += 1
+        key = client_identity(cfg)
+        openai = self._clients.get(key)
+        if openai is None:
+            # Build the OpenAI client straight from the config fields — works for any
+            # ClientConfig type; resolve_client would hand back an EvalClient (no `.openai`)
+            # for these chat-completions teacher configs.
+            openai = self._clients[key] = AsyncOpenAI(
+                base_url=cfg.base_url,
+                api_key=os.environ.get(cfg.api_key_var) or "EMPTY",
+                default_headers=cfg.headers or None,
+            )
+        return await prefill_logprobs(openai, model, token_ids)
+
+    async def aclose(self) -> None:
+        await asyncio.gather(*(c.close() for c in self._clients.values()))
 
 
 class StaticInferencePool:
@@ -107,8 +144,7 @@ class StaticInferencePool:
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
-        self._score_clients: list = []  # one resolved client per endpoint, built lazily on first score()
-        self._score_idx = 0
+        self._scorer = PrefillScorer()
         self.model_name = model_name
 
     @property
@@ -147,18 +183,12 @@ class StaticInferencePool:
         return {}
 
     async def score(self, token_ids: list[int]) -> list[float]:
-        """Prefill-score ``token_ids`` under this pool's model — one logprob per
-        token (0.0 for the leading token, which has no preceding context). The
-        endpoints are fixed (static pool), so one client per endpoint is resolved
-        once, round-robined across calls, and closed in :meth:`stop`."""
-        if not self._score_clients:
-            self._score_clients = [resolve_client(c) for c in self._train_clients]
-        client = self._score_clients[self._score_idx % len(self._score_clients)]
-        self._score_idx += 1
-        return await prefill_logprobs(client.openai, self.model_name, token_ids)
+        """Prefill-score ``token_ids`` under this pool's model (one logprob per
+        token, 0.0 for the leading token). Delegates to the shared scorer."""
+        return await self._scorer.score(self.train_clients, self.model_name, token_ids)
 
     async def stop(self) -> None:
-        await asyncio.gather(*(client.close() for client in self._score_clients))
+        await self._scorer.aclose()
 
 
 async def setup_inference_pool(

@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import AlgorithmConfig, OPSDAlgorithmConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.utils.client import StaticInferencePool
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -35,13 +34,10 @@ class OPSDAlgorithm(Algorithm):
         self.template = config.template
         self.max_concurrent = config.max_concurrent
         self.teacher = config.model
-        self.teacher_pool: StaticInferencePool | None = None  # static teacher endpoint, connected in setup()
+        self.teacher_pool: InferencePool | None = None  # the policy pool, reused as-is; connected in setup()
 
     async def setup(self) -> None:
-        pool = await self.connect(self.teacher)
-        if not isinstance(pool, StaticInferencePool):
-            raise TypeError("opsd teacher must be a static endpoint — prefill scoring needs fixed endpoints")
-        self.teacher_pool = pool
+        self.teacher_pool = await self.connect(self.teacher)
 
     def _ref_prefix_ids(self, rollout: RolloutView) -> list[int]:
         trace = rollout.raw
