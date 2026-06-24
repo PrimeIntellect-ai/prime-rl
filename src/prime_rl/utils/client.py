@@ -13,7 +13,7 @@ from httpx import AsyncClient
 from openai import NotFoundError
 from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
-from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig
+from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig, resolve_client
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
@@ -528,3 +528,53 @@ async def init_nccl_broadcast(
             for client_num, admin_client in enumerate(admin_clients)
         ]
     )
+
+
+class PrefillClient:
+    """Prefill-score ``token_ids`` under a model via the inference server's
+    ``/inference/v1/generate`` + ``prompt_logprobs`` (the prime-rl server-side
+    extension in ``inference/vllm/serving_tokens.py``). Wraps a resolved
+    verifiers ``TrainClient`` purely for its ``AsyncOpenAI`` — and its
+    ``PRIME_API_KEY`` → prime-config api-key resolution; the renderer is never
+    built (it's lazy and these tokens are already rendered: OPD/OPSD supply
+    them). One per teacher endpoint, reused across a batch's samples."""
+
+    def __init__(self, config: vf.ClientConfig):
+        self._client = resolve_client(config)
+
+    async def score(self, model: str, token_ids: list[int]) -> list[float]:
+        """Returns one logprob per token (0.0 for the leading token, which has
+        no preceding context)."""
+        from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
+
+        # `/inference/v1/generate` is mounted at server root, not under `/v1`:
+        # pass an absolute URL so the SDK skips the base-url merge. vLLM's
+        # `GenerateResponse` isn't an `openai.BaseModel`, so the SDK parse layer
+        # rejects it as `cast_to`; `cast_to=httpx.Response` lets the SDK still
+        # build the request (auth, retries, timeouts) and hand back the raw
+        # response for us to validate.
+        base = str(self._client.openai.base_url).rstrip("/").removesuffix("/v1")
+        http_response = await self._client.openai.post(
+            f"{base}/inference/v1/generate",
+            cast_to=httpx.Response,
+            body={
+                "model": model,
+                "token_ids": token_ids,
+                "sampling_params": {"max_tokens": 1, "temperature": 1.0, "top_p": 1.0, "prompt_logprobs": 1},
+            },
+        )
+        response = GenerateResponse.model_validate_json(http_response.content)
+        # `prompt_logprobs[i]` is a `{token_id: Logprob}` dict, or `None` for the
+        # leading token (no preceding context). Flatten to `list[float]`.
+        flat: list[float] = []
+        for entry in response.prompt_logprobs or []:
+            if not entry:
+                flat.append(0.0)
+                continue
+            first = next(iter(entry.values()))
+            lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
+            flat.append(float(lp) if lp is not None else 0.0)
+        return flat
+
+    async def close(self) -> None:
+        await self._client.close()

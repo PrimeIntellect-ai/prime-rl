@@ -3,9 +3,9 @@ import json
 from types import SimpleNamespace
 
 import httpx
-import openai
 
-from prime_rl.orchestrator import utils as orchestrator_utils
+from prime_rl.utils import client as prime_client
+from prime_rl.utils.client import PrefillClient
 
 
 class _FakeOpenAIClient:
@@ -15,7 +15,7 @@ class _FakeOpenAIClient:
     ``AsyncAPIClient._process_response``."""
 
     def __init__(self, payload: dict):
-        # Match what AsyncOpenAI exposes — utils.py reads ``str(client.base_url)``.
+        # Match what AsyncOpenAI exposes — score() reads ``str(openai.base_url)``.
         self.base_url = "http://fake-host:8000/v1"
         self._payload = payload
         self.calls: list[dict] = []
@@ -30,9 +30,9 @@ class _FakeOpenAIClient:
         )
 
 
-def test_compute_prefill_logprobs_uses_inference_generate(monkeypatch):
+def test_prefill_client_scores_via_inference_generate(monkeypatch):
     async def _run():
-        fake_client = _FakeOpenAIClient(
+        fake_openai = _FakeOpenAIClient(
             {
                 "request_id": "gen-test",
                 "choices": [],
@@ -41,20 +41,18 @@ def test_compute_prefill_logprobs_uses_inference_generate(monkeypatch):
                 "kv_transfer_params": None,
             }
         )
-        # compute_prefill_logprobs builds AsyncOpenAI directly from the v1
-        # ClientConfig (base_url / api_key_var / headers) via a call-time
-        # ``from openai import AsyncOpenAI``; patch that name so the fake is
-        # handed back.
-        monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kwargs: fake_client)
+        # PrefillClient gets its AsyncOpenAI (+ api-key resolution) from verifiers'
+        # ``resolve_client``; patch that so score() POSTs through the fake.
+        fake_resolved = SimpleNamespace(openai=fake_openai)
+        monkeypatch.setattr(prime_client, "resolve_client", lambda config: fake_resolved)
 
-        result = await orchestrator_utils.compute_prefill_logprobs(
-            SimpleNamespace(base_url="http://fake-host:8000/v1", api_key_var="VLLM_API_KEY", headers={}),
-            model_name="ref-model",
-            token_ids=[1, 2, 3],
+        client = PrefillClient(
+            SimpleNamespace(base_url="http://fake-host:8000/v1", api_key_var="VLLM_API_KEY", headers={})
         )
+        result = await client.score("ref-model", [1, 2, 3])
 
         assert result == [0.0, -0.7, -0.3]
-        assert fake_client.calls == [
+        assert fake_openai.calls == [
             {
                 "url": "http://fake-host:8000/inference/v1/generate",
                 "cast_to": httpx.Response,

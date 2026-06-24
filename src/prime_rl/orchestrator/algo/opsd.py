@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import AlgorithmConfig, OPSDAlgorithmConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.utils import compute_prefill_logprobs
+from prime_rl.utils.client import PrefillClient
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -80,14 +80,15 @@ class OPSDAlgorithm(Algorithm):
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
+        clients = [PrefillClient(c) for c in pool.train_clients]
 
-        async def score_one(client, rollout: RolloutView) -> None:
+        async def score_one(client: PrefillClient, rollout: RolloutView) -> None:
             prefix_ids = self._ref_prefix_ids(rollout)
             assert len(rollout.samples) == 1  # single-step trajectory → one sample
             sample = rollout.samples[0]
             completion_ids = [t for t, trains in zip(sample.token_ids, sample.mask) if trains]
             async with semaphore:
-                full_logprobs = await compute_prefill_logprobs(client, pool.model_name, prefix_ids + completion_ids)
+                full_logprobs = await client.score(pool.model_name, prefix_ids + completion_ids)
             completion_logprobs = full_logprobs[-len(completion_ids) :]
             # Scatter the demo-conditioned completion logprobs back onto the
             # sample's trainable positions; full-length-N, 0.0 elsewhere.
@@ -99,4 +100,7 @@ class OPSDAlgorithm(Algorithm):
                     li += 1
             sample.ref_logprobs = ref_logprobs
 
-        await asyncio.gather(*[score_one(client, rollout) for client, rollout in zip(cycle(pool.train_clients), batch)])
+        try:
+            await asyncio.gather(*[score_one(client, rollout) for client, rollout in zip(cycle(clients), batch)])
+        finally:
+            await asyncio.gather(*(client.close() for client in clients))

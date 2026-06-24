@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import AlgorithmConfig, OPDAlgorithmConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.utils import compute_prefill_logprobs
+from prime_rl.utils.client import PrefillClient
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -45,11 +45,13 @@ class OPDAlgorithm(Algorithm):
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
         samples = [sample for view in batch for sample in view.samples]
+        clients = [PrefillClient(c) for c in pool.train_clients]
 
-        async def score_sample(client, sample: TrainingSample) -> None:
+        async def score_sample(client: PrefillClient, sample: TrainingSample) -> None:
             async with semaphore:
-                sample.ref_logprobs = await compute_prefill_logprobs(client, pool.model_name, list(sample.token_ids))
+                sample.ref_logprobs = await client.score(pool.model_name, list(sample.token_ids))
 
-        await asyncio.gather(
-            *[score_sample(client, sample) for client, sample in zip(cycle(pool.train_clients), samples)]
-        )
+        try:
+            await asyncio.gather(*[score_sample(client, sample) for client, sample in zip(cycle(clients), samples)])
+        finally:
+            await asyncio.gather(*(client.close() for client in clients))
