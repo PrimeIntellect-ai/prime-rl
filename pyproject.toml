@@ -66,8 +66,6 @@ flash-attn-cute = [
     "flash-attn-4",
 ]
 envs = [
-    "aime2024",
-    "aime2025",
     "alphabet-sort",
     "code-env",
     "color-codeword",
@@ -101,6 +99,8 @@ envs = [
     "gsm8k-v1",
     "math-env-v1",
     "aime24-v1",
+    "aime25-v1",
+    "aime26-v1",
     "alphabet-sort-v1",
     "scaleswe-v1",
     "color-codeword-v1",
@@ -115,6 +115,7 @@ envs = [
     "wordle-v1",
     "general-agent-v1",
     "swebench-verified-v1",
+    "tau2-bench-v1",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -226,8 +227,6 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
-aime2024 = { path = "deps/research-environments/environments/aime2024", editable = true }
-aime2025 = { path = "deps/research-environments/environments/aime2025", editable = true }
 alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
 code-env = { path = "deps/research-environments/environments/code_env", editable = true }
 color-codeword = { path = "deps/research-environments/environments/color_codeword", editable = true }
@@ -261,6 +260,8 @@ reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editab
 gsm8k-v1 = { path = "deps/verifiers/environments/gsm8k_v1", editable = true }
 math-env-v1 = { path = "deps/research-environments/environments/math_env_v1", editable = true }
 aime24-v1 = { path = "deps/research-environments/environments/aime24_v1", editable = true }
+aime25-v1 = { path = "deps/research-environments/environments/aime25_v1", editable = true }
+aime26-v1 = { path = "deps/research-environments/environments/aime26_v1", editable = true }
 alphabet-sort-v1 = { path = "deps/verifiers/environments/alphabet_sort_v1", editable = true }
 scaleswe-v1 = { path = "deps/research-environments/environments/scaleswe_v1", editable = true }
 color-codeword-v1 = { path = "deps/verifiers/environments/color_codeword_v1", editable = true }
@@ -275,6 +276,7 @@ wikispeedia-v1 = { path = "deps/research-environments/environments/wikispeedia_v
 wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
 general-agent-v1 = { path = "deps/research-environments/environments/general_agent_v1", editable = true }
 swebench-verified-v1 = { path = "deps/research-environments/environments/swebench_verified_v1", editable = true }
+tau2-bench-v1 = { path = "deps/research-environments/environments/tau2_bench_v1", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }

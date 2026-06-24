@@ -66,39 +66,39 @@ wheels = [
 ]
 
 [[package]]
-name = "aime2024"
-version = "0.2.0"
-source = { editable = "deps/research-environments/environments/aime2024" }
-dependencies = [
-    { name = "math-verify", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "verifiers", specifier = ">=0.1.15.dev152" },
-]
-
-[[package]]
-name = "aime2025"
-version = "0.2.0"
-source = { editable = "deps/research-environments/environments/aime2025" }
-dependencies = [
-    { name = "math-verify", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "verifiers", specifier = ">=0.1.15.dev152" },
-]
-
-[[package]]
 name = "aime24-v1"
 version = "0.1.0"
 source = { editable = "deps/research-environments/environments/aime24_v1" }
+dependencies = [
+    { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers", specifier = ">=0.1.15.dev381" },
+]
+
+[[package]]
+name = "aime25-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/aime25_v1" }
+dependencies = [
+    { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers", specifier = ">=0.1.15.dev381" },
+]
+
+[[package]]
+name = "aime26-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/aime26_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3670,9 +3670,9 @@ disagg = [
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 envs = [
-    { name = "aime2024", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "aime2025", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "aime24-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "aime25-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "aime26-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "alphabet-sort", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "alphabet-sort-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "code-env", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3713,6 +3713,7 @@ envs = [
     { name = "swebench-verified-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "swelego-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tau2-bench", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "tau2-bench-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "terminal-bench-2-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "wiki-search", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "wiki-search-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3754,9 +3755,9 @@ mamba-ssm = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aime2024", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime2024" },
-    { name = "aime2025", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime2025" },
     { name = "aime24-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime24_v1" },
+    { name = "aime25-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime25_v1" },
+    { name = "aime26-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime26_v1" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "alphabet-sort", marker = "extra == 'envs'", editable = "deps/verifiers/environments/alphabet_sort" },
     { name = "alphabet-sort-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/alphabet_sort_v1" },
@@ -3838,6 +3839,7 @@ requires-dist = [
     { name = "swebench-verified-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/swebench_verified_v1" },
     { name = "swelego-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/swelego_v1" },
     { name = "tau2-bench", marker = "extra == 'envs'", editable = "deps/research-environments/environments/tau2_bench" },
+    { name = "tau2-bench-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/tau2_bench_v1" },
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "terminal-bench-2-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/terminal_bench_2_v1" },
     { name = "tilelang", specifier = ">=0.1.8" },
@@ -5042,6 +5044,22 @@ dependencies = [
 requires-dist = [
     { name = "tau2", git = "https://github.com/sierra-research/tau2-bench.git?rev=337326e" },
     { name = "verifiers", specifier = ">=0.1.15.dev17" },
+]
+
+[[package]]
+name = "tau2-bench-v1"
+version = "0.2.0"
+source = { editable = "deps/research-environments/environments/tau2_bench_v1" }
+dependencies = [
+    { name = "tau2", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
+    { name = "tau2", git = "https://github.com/sierra-research/tau2-bench.git?rev=337326e" },
+    { name = "verifiers", specifier = ">=0.1.15.dev381" },
 ]
 
 [[package]]
