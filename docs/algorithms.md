@@ -136,11 +136,24 @@ The default advantage is per-group reward minus per-group baseline (DR-GRPO with
 
 This is intentionally simple — it does the right thing for most envs. Switch to a [custom advantage](#custom-advantage) when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …).
 
-A **length penalty** can be layered on top of the default advantage to discourage rambling. Configured under `[orchestrator.advantage.length_penalty]`, it subtracts a `coef * pass_rate * (completion tokens / orchestrator.seq_len)` term from every reward before the baseline subtraction, where `pass_rate` is the problem's mean reward across the group. The pass-rate factor means problems the model already solves reliably get the strongest push toward concise outputs, while rarely-solved problems are barely penalized (a never-solved group, mean reward 0, gets none). Set `gate_by_correctness = true` to apply the penalty only to correct rollouts (`reward == 1`), leaving incorrect ones untouched:
+A **length penalty** can be layered on top of the default advantage to discourage rambling. Configured under `[orchestrator.advantage.length_penalty]`, it subtracts a `pass_rate`-scaled penalty from every reward before the baseline subtraction, where `pass_rate` is the problem's mean reward across the group. The pass-rate factor means problems the model already solves reliably get the strongest push toward efficiency, while rarely-solved problems are barely penalized (a never-solved group, mean reward 0, gets none). The penalty is the sum of up to three independent linear terms (each disabled by setting its coefficient to 0):
+
+$$
+\text{penalty}_i = \text{pass\_rate}\cdot\left(\text{coef}\cdot\frac{\text{completion}_i}{\text{seq\_len}} + \text{context\_coef}\cdot\frac{\text{total}_i-\text{completion}_i}{\text{seq\_len}} + \text{turns\_coef}\cdot\frac{\text{turns}_i}{\text{max\_turns}}\right)
+$$
+
+- `coef` — **completion tokens**: the model-sampled (assistant) tokens, divided by `orchestrator.seq_len`.
+- `context_coef` — **non-completion tokens**: everything the model conditioned on but did not generate (`total_tokens - completion_len` — system/user prompts, tool responses), divided by `orchestrator.seq_len`. Useful for pressuring tool-heavy agents to pull in less context.
+- `turns_coef` — **model turns**: the number of sampled turns, divided by `max_turns`. `max_turns` is required whenever `turns_coef > 0` (config validation rejects `turns_coef > 0` with no `max_turns`).
+
+Set `gate_by_correctness = true` to apply the whole penalty only to correct rollouts (`reward == 1`), leaving incorrect ones untouched:
 
 ```toml
 [orchestrator.advantage.length_penalty]
-coef = 0.25                 # effective penalty is coef * pass_rate * (completion_tokens / seq_len)
+coef = 0.25                 # completion-token term: coef * pass_rate * (completion_tokens / seq_len)
+context_coef = 0.0          # non-completion-token term: context_coef * pass_rate * ((total - completion) / seq_len)
+turns_coef = 0.0            # turns term: turns_coef * pass_rate * (num_turns / max_turns)
+# max_turns = 16            # turns denominator; required when turns_coef > 0
 gate_by_correctness = false # when true, only penalize rollouts with reward == 1
 ```
 

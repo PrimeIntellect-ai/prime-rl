@@ -52,24 +52,32 @@ def default_advantage_fn(
 ) -> AdvantageOutputs:
     """Default GRPO advantage for a single group: reward minus per-group baseline.
 
-    ``length_penalty`` subtracts ``coef * pass_rate * (completion tokens / max_seq_len)``
-    from each reward (``pass_rate`` = group mean reward), optionally gated to correct
-    (``reward == 1``) rollouts. ``length_weighted_baseline`` uses the token-length-weighted
-    mean reward as the baseline instead of the plain mean.
+    ``length_penalty`` subtracts a ``pass_rate``-scaled penalty from each reward before the
+    baseline: ``coef`` × completion tokens plus ``context_coef`` × non-completion tokens (over
+    ``max_seq_len``) plus ``turns_coef`` × turns (over ``length_penalty.max_turns``), optionally
+    gated to correct (``reward == 1``) rollouts. ``length_weighted_baseline`` uses the
+    token-length-weighted mean reward as the baseline instead of the plain mean.
     """
     rewards = torch.tensor([r.reward for r in inputs.rollouts], dtype=torch.float32)
-    lengths = torch.tensor([r.completion_len for r in inputs.rollouts], dtype=rewards.dtype)
+    completion = torch.tensor([r.completion_len for r in inputs.rollouts], dtype=rewards.dtype)
 
     if length_penalty is not None:
         if max_seq_len is None:
             raise ValueError("max_seq_len is required when length_penalty is enabled")
-        penalty = length_penalty.coef * rewards.mean() * (lengths / max_seq_len)
+        total = torch.tensor([r.total_tokens for r in inputs.rollouts], dtype=rewards.dtype)
+        penalty_frac = (
+            length_penalty.coef * completion + length_penalty.context_coef * (total - completion)
+        ) / max_seq_len
+        if length_penalty.turns_coef:
+            turns = torch.tensor([r.num_turns for r in inputs.rollouts], dtype=rewards.dtype)
+            penalty_frac = penalty_frac + length_penalty.turns_coef * (turns / length_penalty.max_turns)
+        penalty = rewards.mean() * penalty_frac
         if length_penalty.gate_by_correctness:
             penalty = penalty * rewards
         rewards = rewards - penalty
 
     if length_weighted_baseline:
-        baseline = (lengths * rewards).sum() / lengths.sum()
+        baseline = (completion * rewards).sum() / completion.sum()
     else:
         baseline = rewards.mean()
     return AdvantageOutputs(advantages=(rewards - baseline).tolist())
