@@ -410,6 +410,18 @@ class RolloutDispatcher:
         if example is None:
             return None
 
+        # Group-stable, turn-stable inference routing key. The renderer/chat
+        # client maps it to the X-Session-ID header (see EnvConfig
+        # ``auto_setup_session_headers``); the consistent-hash router then sends
+        # every sibling completion of this group — and every turn within a
+        # trajectory — to the same engine, so the shared prompt prefix is
+        # prefilled once. ``group_id`` is a fresh UUID per group, so re-draws of
+        # the same example in later steps still spread across the pool. Copy the
+        # example before stamping so the per-group key never leaks back into the
+        # source's reusable dataset rows.
+        example = dict(example)
+        example["routing_key"] = f"{example['example_id']}:{group_id}"
+
         env_name = example["env_name"]
         group_size = envs.get(env_name).config.group_size
         eval_step: int | None = example.get("eval_step") if kind == "eval" else None

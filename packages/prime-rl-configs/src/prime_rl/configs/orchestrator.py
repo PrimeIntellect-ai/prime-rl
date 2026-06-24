@@ -861,8 +861,16 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_session_headers(self):
-        """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
-        self.student.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
+        """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router.
+
+        Route by the dispatcher's group-stable ``routing_key`` (``example_id:group_id``), not
+        ``trajectory_id``: a group's sibling completions share one prompt prefix but each get a
+        distinct ``trajectory_id``, so hashing on it scatters them across engines and re-prefills
+        the prefix N times. ``routing_key`` is identical across a group's siblings and stable across
+        a trajectory's turns, so consistent-hash routing keeps the whole group on one engine (prefix
+        prefilled once) while distinct groups still spread across the pool. The dispatcher stamps it
+        onto the rollout example, where it survives into ``state['input']``."""
+        self.student.client.extra_headers_from_state.setdefault("X-Session-ID", "input.routing_key")
         return self
 
     @model_validator(mode="after")
