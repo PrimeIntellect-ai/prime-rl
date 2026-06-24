@@ -1,0 +1,34 @@
+# Prime-RL smoke test: Dynamo as inference backend (short -- 5 steps)
+# Model: PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT
+# GPU layout: GPU 0 = Dynamo, GPU 1 = trainer
+#
+# Usage: uv run orchestrator @ tools/dynamo/configs/smoke_rl.toml --output-dir /tmp/.../run_default
+
+max_steps = 5
+seq_len = 512
+batch_size = 16
+rollouts_per_example = 4
+# Disable TITO: Dynamo injects token_ids via nvext (DYN_ENABLE_RL=true) rather than
+# the TITO /v1/chat/completions/tokens path. Keep false for all Dynamo deployments.
+use_token_client = false
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+offline = true
+
+[sampling]
+max_tokens = 64
+
+[[env]]
+id = "reverse-text"
+
+[client]
+# Point at Dynamo instead of prime-rl's own vLLM
+base_url = ["http://localhost:8000/v1"]
+# Admin endpoints (/v1/rl/load_lora_adapter, /v1/rl/health, etc.) are served
+# natively by the Dynamo Rust frontend when DYN_ENABLE_RL=true
+admin_base_url = ["http://localhost:8000/v1/rl"]
+# Dynamo may serve model under a different name -- skip the /v1/models check
+skip_model_check = true
