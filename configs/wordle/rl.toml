@@ -1,0 +1,41 @@
+# Wordle (classic v0 TextArena env) on 2 GPUs (1 trainer + 1 inference), run via the
+# legacy bridge. The Wordle-SFT model plays a full ~6-turn game per rollout; the bridge
+# serves each multi-turn rollout to the orchestrator as a vf.Trace.
+
+max_steps = 200
+seq_len = 8192
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[wandb]
+project = "wordle"
+name = "wordle"
+
+[ckpt] # Checkpoint at the end of training
+
+[model]
+name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
+
+[orchestrator]
+batch_size = 128
+group_size = 8
+
+[[orchestrator.train.env]]
+id = "primeintellect/wordle"
+name = "wordle"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 1024
+
+[trainer] # Default trainer config
+
+[inference] # single inference GPU (no data parallelism)
+
+# Qwen3 finetune with the standard PI template patch (byte-identical to
+# PrimeIntellect/Qwen3-0.6B base); always re-emits prior <think> blocks.
+# Match that with the qwen3 renderer's preserve_all_thinking.
+[orchestrator.renderer]
+name = "qwen3"
+preserve_all_thinking = true

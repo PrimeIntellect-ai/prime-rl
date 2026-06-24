@@ -439,6 +439,25 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_llmd_no_routed_experts(self):
+        """Reject routed-expert return with the llm-d router (breaks P/D, unverified for multi-node).
+
+        Runs after ``auto_setup_router_replay`` so it also catches the
+        ``trainer.enable_router_replay`` path, which sets the inference flag here
+        (after InferenceConfig's own validators, which therefore miss it).
+        """
+        if self.inference is not None and self.inference.enable_return_routed_experts:
+            router = getattr(self.inference.deployment, "router", None)
+            if router is not None and router.type == "llm-d":
+                raise ValueError(
+                    "The llm-d router backend does not support routed-expert return "
+                    "(inference.enable_return_routed_experts / trainer.enable_router_replay): it "
+                    "breaks P/D and is unverified for multi-node. Use router type 'vllm-router' "
+                    "for router-replay runs."
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_router_replay_without_kv_offload(self):
         if (
             self.trainer.enable_router_replay
@@ -606,16 +625,20 @@ class RLConfig(BaseConfig):
     def auto_setup_inference_client(self):
         """Auto-configure orchestrator student client from the inference server config.
 
-        For all modes, sets dp_rank_count from inference DP size. For SFT mode,
-        also sets base_url - rl/opd rely on the ClientConfig default
-        (``["http://localhost:8000/v1"]``) which already matches the auto-launched
-        student vLLM at inference.server.port = 8000.
+        Direct single-node runs expose all local DP ranks behind one base URL,
+        so pin logical clients with ``X-data-parallel-rank``. Multi-node SLURM
+        runs expose a vllm-router URL instead; the router balances across
+        per-rank backend URLs and forwards request headers, so the orchestrator
+        must not inject a DP-rank header there.
         """
         if self.inference is None:
             return self
         client = self.orchestrator.student.client
         if "dp_rank_count" not in client.model_fields_set:
-            client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
+            if self.deployment.type == "multi_node":
+                client.dp_rank_count = 1
+            else:
+                client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
         if self.orchestrator.training_mode == "sft" and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port

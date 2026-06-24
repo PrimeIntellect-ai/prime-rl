@@ -1,0 +1,34 @@
+{# llm-d EPP config: single-pool (non-P/D) routing with approximate prefix-cache
+   scoring. The vllmhttp parser embeds the OpenAI parser and also handles
+   /inference/v1/generate (token_ids), so MITO + TITO both get prefix-cache
+   scoring. Included into the sbatch as a heredoc; $LLMD_DIR is the per-replica
+   config dir, expanded at launch time. #}
+apiVersion: inference.networking.x-k8s.io/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+  - name: file-disc
+    type: file-discovery
+    parameters:
+      path: $LLMD_DIR/endpoints.yaml
+      watchFile: true
+  - name: vllmhttp-parser
+    type: vllmhttp-parser
+{%- for scorer in router.scorers %}
+  - type: {{ scorer }}
+{%- endfor %}
+  - type: max-score-picker
+  - type: single-profile-handler
+schedulingProfiles:
+  - name: default
+    plugins:
+{%- for scorer, weight in router.scorers.items() %}
+      - pluginRef: {{ scorer }}
+        weight: {{ weight }}
+{%- endfor %}
+      - pluginRef: max-score-picker
+requestHandler:
+  parser:
+    pluginRef: vllmhttp-parser
+dataLayer:
+  discovery:
+    pluginRef: file-disc

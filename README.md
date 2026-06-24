@@ -38,6 +38,7 @@ PRIME-RL is a framework for large-scale reinforcement learning. It is designed t
 5. Multi-node deployment with Slurm and Kubernetes support.
 6. Multimodal support for VLMs such as Qwen3-VL.
 7. Hackable, modular, and extensible by design.
+8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](examples/glm5_llmd/README.md).
 
 
 ## Models support
@@ -221,6 +222,7 @@ These guides are designed to be run from a Slurm cluster but can also be adapted
 3. [**Intellect-3.1**](examples/Intellect-3.1/README.md): Reproduce our `INTELLECT-3.1` training run.
 4. [**MiniMax-M2.5 SWE**](examples/minimax_m2.5_swe/README.md): Train `MiniMax-M2.5` on agentic SWE tasks.
 5. [**High-throughput GLM-5**](examples/glm5_pd_disag/README.md): Train `GLM-5` with PD disaggregation and FP8 inference on SWE.
+6. [**High-throughput GLM-5 (llm-d)**](examples/glm5_llmd/README.md): One-line SLURM deployment for `GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload — the faster way to run `GLM-5`.
 
 ## Docs
 

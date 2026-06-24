@@ -81,7 +81,7 @@ tmux send-keys -t "$SESSION_NAME:Logs.1" \
   "tail -F ${LOG_DIR}/orchestrator.log 2>/dev/null" C-m
 
 tmux send-keys -t "$SESSION_NAME:Logs.2" \
-  "tail -F ${LOG_DIR}/envs/*/*/*.log 2>/dev/null" C-m
+  "tail -F ${LOG_DIR}/envs/*/*.log 2>/dev/null" C-m
 
 tmux send-keys -t "$SESSION_NAME:Logs.3" \
   "tail -F ${LOG_DIR}/inference.log 2>/dev/null" C-m
@@ -95,8 +95,8 @@ tmux send-keys -t "$SESSION_NAME:Claude" \
   All ranks:      ${LOG_DIR}/trainer/torchrun/*/*/*/*.log
   Orchestrator:   ${LOG_DIR}/orchestrator.log
   Inference:      ${LOG_DIR}/inference.log
-  Envs:           ${LOG_DIR}/envs/*/*/*.log
-  Train envs:     ${LOG_DIR}/envs/train/*/*.log
+  Envs:           ${LOG_DIR}/envs/*/*.log
+  Train envs:     ${LOG_DIR}/envs/train/*.log
 You are running inside tmux session \"${SESSION_NAME}\". The Launcher window (window 0) is where the user runs launch commands. You can read its contents with: tmux capture-pane -t ${SESSION_NAME}:Launcher -p
 Help the user monitor and debug this run.'" C-m
 

@@ -136,10 +136,20 @@ The default advantage is per-group reward minus per-group baseline (DR-GRPO with
 
 This is intentionally simple — it does the right thing for most envs. Switch to a [custom advantage](#custom-advantage) when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …).
 
-Two built-in **length penalties** can be layered on top of any advantage to discourage rambling:
+A **length penalty** can be layered on top of the default advantage to discourage rambling. Configured under `[orchestrator.advantage.length_penalty]`, it subtracts a `coef * pass_rate * (completion tokens / orchestrator.seq_len)` term from every reward before the baseline subtraction, where `pass_rate` is the problem's mean reward across the group. The pass-rate factor means problems the model already solves reliably get the strongest push toward concise outputs, while rarely-solved problems are barely penalized (a never-solved group, mean reward 0, gets none). Set `gate_by_correctness = true` to apply the penalty only to correct rollouts (`reward == 1`), leaving incorrect ones untouched:
 
-- `[orchestrator.length_penalty] type = "tokens"` — penalizes long completions in tokens, with configurable target and slope.
-- `[orchestrator.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
+```toml
+[orchestrator.advantage.length_penalty]
+coef = 0.25                 # effective penalty is coef * pass_rate * (completion_tokens / seq_len)
+gate_by_correctness = false # when true, only penalize rollouts with reward == 1
+```
+
+By default the baseline is the plain group mean reward. Set `length_weighted_baseline = true` to instead use the token-length-weighted mean — `sum(len_i * reward_i) / sum(len_i)` — which centers advantages by per-token expected reward when rollouts vary a lot in length:
+
+```toml
+[orchestrator.advantage]
+length_weighted_baseline = true
+```
 
 
 ### Custom Advantage

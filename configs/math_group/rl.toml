@@ -27,8 +27,8 @@ ratio = 0.5
 interval = 50
 
 [[orchestrator.eval.env]]
-id = "aime2024"
 name = "aime2024"
+taskset = { id = "aime24-v1" }
 num_examples = 30
 group_size = 4
 
