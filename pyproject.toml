@@ -233,7 +233,7 @@ alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable =
 code-env = { path = "deps/research-environments/environments/code_env", editable = true }
 color-codeword = { path = "deps/research-environments/environments/color_codeword", editable = true }
 deepdive = { path = "deps/research-environments/environments/deepdive", editable = true }
-no-inference-env = { path = "tests/debug_envs/no_inference_env", editable = true }
+no-inference-env = { path = "environments/no_inference_env", editable = true }
 general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
 gpqa = { path = "deps/research-environments/environments/gpqa", editable = true }
 hle = { path = "deps/research-environments/environments/hle", editable = true }

@@ -61,7 +61,7 @@ def setup_weight_watcher(
     observers: list[VersionObserver],
     lora_name: str | None,
     ckpt_step: int = 0,
-) -> WeightWatcher | DebugWeightWatcher:
+) -> WeightWatcher:
     """Construct the weight watcher, using the debug variant when ``no_trainer`` is set."""
     if config.debug.no_trainer:
         get_logger().warning("Skipping weight broadcast setup for orchestrator debug no-trainer mode")

@@ -142,13 +142,25 @@ class WeightWatcher:
         }
 
 
-class DebugWeightWatcher:
-    """Local policy-version driver for orchestrator debug runs without a trainer."""
+class DebugWeightWatcher(WeightWatcher):
+    """Local policy-version driver for orchestrator debug runs without a trainer.
+
+    Subclasses ``WeightWatcher`` so the orchestrator has a single watcher type,
+    but overrides ``__init__``, ``start``, and ``apply_policy_update`` to skip
+    all real weight-broadcast I/O — just bumps ``policy.version`` locally and
+    notifies observers."""
 
     def __init__(self, *, policy: Policy, observers: list[VersionObserver]) -> None:
+        # Don't call super().__init__ — the real watcher needs config, inference, etc.
+        self.config = None  # type: ignore[assignment]
         self.policy = policy
+        self.inference = None  # type: ignore[assignment]
         self.observers = observers
+        self.lora_name = None
         self.ckpt_step = policy.version
+        self.poll_interval = 0.0
+        self.last_update_weights_time: float = 0.0
+        self.last_wait_for_ckpt_time: float = 0.0
         self.update_count: int = 0
         self.task: asyncio.Task | None = None
         self.update_lock = asyncio.Lock()
@@ -161,25 +173,20 @@ class DebugWeightWatcher:
         except asyncio.CancelledError:
             return
 
-    async def stop(self) -> None:
-        self.stopped.set()
-        if self.task is not None:
-            await safe_cancel(self.task)
-            self.task = None
-
     async def apply_policy_update(self, next_step: int) -> None:
         async with self.update_lock:
             if next_step <= self.ckpt_step:
                 return
+            # Notify observers that a version is pending — triggers off-policy
+            # cancellation in the dispatcher, same as the real watcher.
+            for observer in self.observers:
+                try:
+                    await observer.on_version_pending(next_step)
+                except Exception as exc:
+                    get_logger().warning(
+                        f"Observer {type(observer).__name__}.on_version_pending({next_step}) raised: {exc!r}"
+                    )
             self.ckpt_step = next_step
             self.policy.version = next_step
             self.update_count += 1
             await notify_observers(self.observers, next_step)
-
-    def gauges(self) -> dict[str, float]:
-        return {
-            "watcher/policy_version": float(self.policy.version),
-            "watcher/update_count": float(self.update_count),
-            "watcher/last_update_weights_time": 0.0,
-            "watcher/last_wait_for_ckpt_time": 0.0,
-        }
