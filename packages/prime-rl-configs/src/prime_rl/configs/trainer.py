@@ -122,19 +122,19 @@ class ModelConfig(BaseModelConfig):
     attn: AttnImplementation = "flash_attention_2"
     """Attention implementation. With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
 
-    compile: CompileConfig | None = None
+    compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""
 
-    ac: ActivationCheckpointConfig | None = None
+    ac: ActivationCheckpointConfig | None = ActivationCheckpointConfig()
     """Activation checkpointing configuration. If None, activation checkpointing is disabled."""
 
-    ac_offloading: ActivationOffloadingConfig | None = None
+    ac_offloading: ActivationOffloadingConfig | None = ActivationOffloadingConfig()
     """Activation offloading configuration. If None, activation offloading is disabled."""
 
     fsdp_cpu_offload: bool = False
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
-    optim_cpu_offload: bool = False
+    optim_cpu_offload: bool = True
     """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
 
     reshard_after_forward: bool = True
@@ -188,8 +188,8 @@ class ModelConfig(BaseModelConfig):
     debug: DebugModelConfig = DebugModelConfig()
     """Debugging knobs for the model and distributed training."""
 
-    fused_lm_head_token_chunk_size: int | Literal["auto", "disabled"] = "disabled"
-    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``auto`` auto-enables (RL training picks 8192); ``disabled`` uses the vanilla LM head. Integer values aren't supported for SFT training."""
+    fused_lm_head_token_chunk_size: int | Literal["auto", "disabled"] = 1024
+    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``auto`` auto-enables (RL training picks 8192); ``disabled`` uses the vanilla LM head. SFT training silently disables this (not supported yet)."""
 
     @model_validator(mode="before")
     @classmethod
