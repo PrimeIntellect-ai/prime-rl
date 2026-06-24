@@ -17,6 +17,7 @@ from prime_rl.trainer.models.gpt_oss import GptOssConfig, GptOssForCausalLM
 from prime_rl.trainer.models.laguna import LagunaConfig, LagunaForCausalLM
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, cast_float_and_contiguous
 from prime_rl.trainer.models.llama import LlamaForCausalLM
+from prime_rl.trainer.models.mimo_v2 import MiMoV2Config, MiMoV2ForCausalLM
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config, MiniMaxM2ForCausalLM
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
@@ -28,6 +29,7 @@ AutoConfig.register("afmoe", AfmoeConfig, exist_ok=True)
 AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)
 AutoConfig.register("glm_moe_dsa", GlmMoeDsaConfig, exist_ok=True)
 AutoConfig.register("laguna", LagunaConfig, exist_ok=True)
+AutoConfig.register("mimo_v2", MiMoV2Config, exist_ok=True)
 AutoConfig.register("minimax_m2", MiniMaxM2Config, exist_ok=True)
 AutoConfig.register("nemotron_h", NemotronHConfig, exist_ok=True)
 AutoConfig.register("qwen3_moe", Qwen3MoeConfig, exist_ok=True)
@@ -41,6 +43,7 @@ _CUSTOM_CAUSAL_LM_MAPPING.register(AfmoeConfig, AfmoeForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(Glm4MoeConfig, Glm4MoeForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(GlmMoeDsaConfig, GlmMoeDsaForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(LagunaConfig, LagunaForCausalLM, exist_ok=True)
+_CUSTOM_CAUSAL_LM_MAPPING.register(MiMoV2Config, MiMoV2ForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(MiniMaxM2Config, MiniMaxM2ForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(NemotronHConfig, NemotronHForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3MoeConfig, Qwen3MoeForCausalLM, exist_ok=True)

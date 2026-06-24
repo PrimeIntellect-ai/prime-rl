@@ -2,6 +2,20 @@ import torch
 from torch import Tensor
 
 
+def dequantize_fp8_blockwise(
+    weight: Tensor, scale_inv: Tensor, block_size: int = 128, dtype: torch.dtype = torch.bfloat16
+) -> Tensor:
+    """Dequantize a 2D FP8 e4m3 tensor with per-block scales (DeepSeek `weight_scale_inv` convention)."""
+    if weight.ndim != 2:
+        raise ValueError(f"FP8 dequantization expects a 2D tensor, got shape={tuple(weight.shape)}")
+
+    rows, cols = weight.shape
+    expanded = (
+        scale_inv.float().repeat_interleave(block_size, dim=0)[:rows].repeat_interleave(block_size, dim=1)[:, :cols]
+    )
+    return (weight.float() * expanded).to(dtype)
+
+
 def quantize_to_fp8_blockwise(weight: Tensor, block_size: int = 128) -> tuple[Tensor, Tensor]:
     """Quantize a 2D tensor to FP8 e4m3 with per-block scales."""
     if weight.ndim != 2:
