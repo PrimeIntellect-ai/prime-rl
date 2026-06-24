@@ -207,8 +207,12 @@ class Orchestrator:
         with open(config_dir / "orch.toml", "wb") as f:
             tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
-        get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
-        self.tokenizer = setup_tokenizer(config.tokenizer)
+        if config.debug.no_inference:
+            get_logger().warning("Skipping tokenizer for no-inference debug mode")
+            self.tokenizer = None  # type: ignore[assignment]
+        else:
+            get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
+            self.tokenizer = setup_tokenizer(config.tokenizer)
 
         # Student inference pool
         get_logger().info(
@@ -258,8 +262,12 @@ class Orchestrator:
             self.usage_reporter = UsageReporter()
 
         # Filters apply to train rollouts only
-        pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="pre-batch")
-        post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
+        if self.tokenizer is not None:
+            pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="pre-batch")
+            post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
+        else:
+            pre_filters = []
+            post_filters = []
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(config.train.env, max_seq_len=config.seq_len)
