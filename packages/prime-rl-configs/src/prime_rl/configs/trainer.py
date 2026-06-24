@@ -143,8 +143,8 @@ class ModelConfig(BaseModelConfig):
     dp_replicate: int = 1
     """Data parallel dim where model weights are replicated."""
 
-    ep: int = 1
-    """Expert parallelism degree for MoE layers. 1 disables EP."""
+    ep: int | Literal["auto"] = "auto"
+    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves to the largest valid EP degree up to 8 at startup: it loads the model config to read ``num_experts``, then picks the biggest divisor of ``num_experts`` that also divides the FSDP island size (``world_size // dp_replicate``), is a multiple of ``cp``, and is <= 8. For non-MoE models ``auto`` resolves to 1 (no-op)."""
 
     ep_comm_backend: EPCommBackend = "torch"
     """Communication backend for expert parallelism. ``torch`` uses TorchTitan all-to-all collectives; ``deepep`` uses DeepEP custom kernels."""
@@ -258,7 +258,7 @@ class ModelConfig(BaseModelConfig):
         if self.ep_comm_backend == "torch":
             return self
 
-        if self.ep <= 1:
+        if isinstance(self.ep, int) and self.ep <= 1:
             raise ValueError(f"model.ep_comm_backend='{self.ep_comm_backend}' requires model.ep > 1.")
 
         return self
@@ -666,7 +666,7 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def ep_only_with_custom_impl(self):
-        if self.model.ep > 1 and self.model.impl not in ("custom", "auto"):
+        if self.model.ep != 1 and self.model.ep != "auto" and self.model.impl not in ("custom", "auto"):
             raise ValueError("EP is only supported with the custom implementation or auto mode")
 
         return self

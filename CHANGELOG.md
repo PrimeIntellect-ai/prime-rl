@@ -2,6 +2,7 @@
 
 Documenting **breaking** configuration changes — renamed, removed, or moved fields that require users to update existing configs.
 
+- **`model.ep` defaults to `"auto"`**: Expert parallelism degree now defaults to `"auto"`, which resolves at trainer startup to the largest valid EP degree up to 8. It loads the model config to read `num_experts`, then picks the biggest divisor of `num_experts` that also divides the FSDP island size (`world_size // dp_replicate`), is a multiple of `cp`, and is <= 8. For non-MoE models, `"auto"` resolves to 1 (no-op). Set `ep` to an explicit integer to override. The field type changed from `int` to `int | Literal["auto"]`.
 - **verifiers v1 training integration** (collection of removals/renames). The orchestrator now trains against a v1 env server returning `vf.Trace` rollouts, renderer-only, with a unified token schema.
   - **`[[orchestrator.train.env]]` is now a v1 `vf.EnvServerConfig`**: a v1 env is `taskset = { id = "<id>" }` + `harness = { id = "default", runtime = { type = "subprocess" } }`. A bare `id = "<id>"` (optionally with `args`) runs the v0 env through the verifiers legacy bridge — old flat `id`/`args`-only configs keep working as legacy envs; v1 envs must use the `taskset`/`harness` shape.
   - **`orchestrator.train.env` no longer defaults to a `reverse-text` env**: the default is now empty (`[]`), so configs must declare `[[orchestrator.train.env]]` explicitly.
