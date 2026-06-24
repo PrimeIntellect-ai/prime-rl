@@ -53,7 +53,7 @@ if [ -n "$PRIME_RL_REF" ]; then
         cp -a /app/.venv "$DEST/.venv"
     fi
     echo "[prime-rl] running uv sync --inexact (this may take a few minutes on cold checkout)"
-    # Mirror the image's extras (Dockerfile.cuda:82) — explicit instead
+    # Mirror the image's uv sync extras — explicit instead
     # of --all-extras so we don't pull in `disagg` / `quack` and trigger
     # heavy source builds (deep-ep, deep-gemm, quack-kernels) at pod
     # startup. --inexact keeps the seeded venv's pre-built wheels
