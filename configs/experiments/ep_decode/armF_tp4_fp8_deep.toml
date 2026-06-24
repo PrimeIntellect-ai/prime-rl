@@ -1,0 +1,15 @@
+# Arm F-deep — TP4 + fp8 KV at a RAISED cap (max_num_seqs=512) to test if a cap bump reclaims 8k.
+output_dir = "outputs/isambard/ep_decode/armF_tp4_fp8_deep"
+[parallel]
+tp = 4
+dp = 1
+[vllm_extra]
+moe_backend = "triton"
+gdn_prefill_backend = "triton"
+max_num_seqs = 512
+max_num_batched_tokens = 131072
+performance_mode = "throughput"
+generation_config = "vllm"
+stream_interval = 10
+enable_chunked_prefill = true
+kv_cache_dtype = "fp8"

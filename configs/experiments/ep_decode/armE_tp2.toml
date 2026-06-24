@@ -1,0 +1,7 @@
+# Arm E — TP2, EP OFF (tp=2, dp=2, bf16 KV). Isolates TP-group-size (subtract from C).
+output_dir = "outputs/isambard/ep_decode/armE_tp2"
+data_parallel_size_local = 2
+
+[parallel]
+tp = 2
+dp = 2

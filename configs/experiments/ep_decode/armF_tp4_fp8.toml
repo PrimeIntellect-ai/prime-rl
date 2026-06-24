@@ -1,0 +1,18 @@
+# Arm F — TP4 + fp8 KV (tp=4, dp=1). Isolates fp8-KV-DRAM effect (subtract from D).
+# Re-declares the full [vllm_extra] so kv_cache_dtype composes correctly under merge-or-replace.
+output_dir = "outputs/isambard/ep_decode/armF_tp4_fp8"
+
+[parallel]
+tp = 4
+dp = 1
+
+[vllm_extra]
+moe_backend = "triton"
+gdn_prefill_backend = "triton"
+max_num_seqs = 256
+max_num_batched_tokens = 131072
+performance_mode = "throughput"
+generation_config = "vllm"
+stream_interval = 10
+enable_chunked_prefill = true
+kv_cache_dtype = "fp8"

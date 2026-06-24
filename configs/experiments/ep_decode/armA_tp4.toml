@@ -1,0 +1,6 @@
+# Arm A — TP4 reference (tp=4, dp=1, EP off, bf16 KV). The baseline.
+output_dir = "outputs/isambard/ep_decode/armA_tp4"
+
+[parallel]
+tp = 4
+dp = 1

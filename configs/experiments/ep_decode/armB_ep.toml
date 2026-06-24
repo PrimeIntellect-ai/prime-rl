@@ -1,0 +1,9 @@
+# Arm B — pure-EP (tp=1, dp=4, EP on, bf16 KV). Max comm reclaim; KV-starved (iso-batch only @8k).
+output_dir = "outputs/isambard/ep_decode/armB_ep"
+enable_expert_parallel = true
+all2all_backend = "allgather_reducescatter"
+data_parallel_size_local = 4
+
+[parallel]
+tp = 1
+dp = 4

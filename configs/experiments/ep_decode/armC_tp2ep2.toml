@@ -1,0 +1,9 @@
+# Arm C — TP2+EP2 (tp=2, dp=2, EP on, bf16 KV). Comm+KV cross-check (confounds comm w/ TP-group).
+output_dir = "outputs/isambard/ep_decode/armC_tp2ep2"
+enable_expert_parallel = true
+all2all_backend = "allgather_reducescatter"
+data_parallel_size_local = 2
+
+[parallel]
+tp = 2
+dp = 2

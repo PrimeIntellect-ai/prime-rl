@@ -1,0 +1,21 @@
+# Arm D — EP + fp8 KV (tp=1, dp=4, EP on, fp8 KV). PRIMARY comm-attribution arm (KV-relieved).
+# Re-declares the full [vllm_extra] so kv_cache_dtype composes correctly under merge-or-replace.
+output_dir = "outputs/isambard/ep_decode/armD_ep_fp8"
+enable_expert_parallel = true
+all2all_backend = "allgather_reducescatter"
+data_parallel_size_local = 4
+
+[parallel]
+tp = 1
+dp = 4
+
+[vllm_extra]
+moe_backend = "triton"
+gdn_prefill_backend = "triton"
+max_num_seqs = 256
+max_num_batched_tokens = 131072
+performance_mode = "throughput"
+generation_config = "vllm"
+stream_interval = 10
+enable_chunked_prefill = true
+kv_cache_dtype = "fp8"

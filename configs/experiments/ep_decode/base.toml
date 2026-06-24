@@ -1,0 +1,33 @@
+# EP-vs-TP4 decode bench — SHARED held-identical block.
+# Prereg: research/precommitments/ep_decode_2node_2026-06-24.md
+# Compose: uv run inference @ configs/experiments/ep_decode/base.toml @ <arm>.toml [--dry-run]
+# Standalone inference (no [slurm] block) -> inference_local -> server(config).
+seed = 0
+enable_lora = true
+max_loras = 1
+max_lora_rank = 64
+max_cpu_loras = 4
+enable_return_routed_experts = true
+enable_prefix_caching = false
+gpu_memory_utilization = 0.92
+
+[model]
+name = "Qwen/Qwen3.5-35B-A3B"
+max_model_len = 32768
+
+[log]
+level = "info"
+
+[deployment]
+type = "single_node"
+gpus_per_node = 4
+
+[vllm_extra]
+moe_backend = "triton"
+gdn_prefill_backend = "triton"
+max_num_seqs = 256
+max_num_batched_tokens = 131072
+performance_mode = "throughput"
+generation_config = "vllm"
+stream_interval = 10
+enable_chunked_prefill = true
