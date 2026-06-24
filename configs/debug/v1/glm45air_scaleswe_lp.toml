@@ -35,6 +35,7 @@ name = "glm45air-scaleswe-lp"
 
 [weight_broadcast]
 type = "nccl"
+timeout = 3600
 
 [ckpt]
 interval = 50
