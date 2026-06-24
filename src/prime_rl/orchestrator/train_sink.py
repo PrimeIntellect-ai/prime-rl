@@ -34,7 +34,6 @@ class TrainSink:
         self,
         config: OrchestratorConfig,
         *,
-        tokenizer,
         train_envs: TrainEnvs,
         mm_token_type_ids_mapping: dict[int, int] | None,
         batch_size: int | None,
@@ -46,7 +45,6 @@ class TrainSink:
             "Exactly one of batch_size / token_batch_size must be set"
         )
         self.config = config
-        self.tokenizer = tokenizer
         self.train_envs = train_envs
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size

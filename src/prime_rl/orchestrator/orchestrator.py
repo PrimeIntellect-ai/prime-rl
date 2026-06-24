@@ -29,7 +29,6 @@ import tomli_w
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
-    from transformers.tokenization_utils import PreTrainedTokenizer
 
     from prime_rl.orchestrator.ckpt import CheckpointManager
     from prime_rl.transport.base import TrainingBatchSender
@@ -71,7 +70,6 @@ from prime_rl.orchestrator.utils import (
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
-from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
@@ -125,7 +123,6 @@ class Orchestrator:
     component_tasks: list[asyncio.Task]
 
     # Always set by ``setup()``
-    tokenizer: PreTrainedTokenizer
     student_inference: InferencePool
     monitor: Monitor
     sender: TrainingBatchSender
@@ -207,21 +204,12 @@ class Orchestrator:
         with open(config_dir / "orch.toml", "wb") as f:
             tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
-        if config.debug.no_inference:
-            get_logger().warning("Skipping tokenizer for no-inference debug mode")
-            self.tokenizer = None  # type: ignore[assignment]
-        else:
-            get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
-            self.tokenizer = setup_tokenizer(config.tokenizer)
-
-        # Student inference pool
+        # Student inference pool (loads tokenizer internally for the renderer)
         get_logger().info(
             f"Initializing student inference pool (base_url={', '.join(config.student.client.base_url)}, "
             f"model={config.student.model.name})"
         )
-        self.renderer, self.student_inference = await setup_student_inference_pool(
-            config=config, tokenizer=self.tokenizer
-        )
+        self.renderer, self.student_inference = await setup_student_inference_pool(config=config)
         self.mm_token_type_ids_mapping = (
             getattr(self.renderer, "mm_token_type_id_map", None) if self.renderer is not None else None
         )
@@ -248,7 +236,7 @@ class Orchestrator:
             wandb_config=config.wandb,
             prime_config=config.prime_monitor,
             output_dir=config.output_dir,
-            tokenizer=self.tokenizer,
+            tokenizer=None,
             run_config=config,
             keep_full_history=config.bench,
         )
@@ -262,9 +250,13 @@ class Orchestrator:
             self.usage_reporter = UsageReporter()
 
         # Filters apply to train rollouts only
-        if self.tokenizer is not None:
-            pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="pre-batch")
-            post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
+        if self.renderer is not None:
+            from transformers import AutoConfig
+
+            model_name = config.tokenizer.name or config.student.model.name
+            vocab_size = AutoConfig.from_pretrained(model_name, trust_remote_code=config.tokenizer.trust_remote_code or False).vocab_size
+            pre_filters = setup_filters(config.pre_batch_filters, vocab_size=vocab_size, kind="pre-batch")
+            post_filters = setup_filters(config.post_batch_filters, vocab_size=vocab_size, kind="post-batch")
         else:
             pre_filters = []
             post_filters = []
@@ -391,7 +383,6 @@ class Orchestrator:
         self.metrics = MetricsBuilder(config)
         self.train_sink = TrainSink(
             config,
-            tokenizer=self.tokenizer,
             train_envs=self.train_envs,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,

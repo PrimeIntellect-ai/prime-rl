@@ -24,18 +24,24 @@ from prime_rl.utils.utils import (
 )
 
 
-async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer):
+async def setup_student_inference_pool(*, config: OrchestratorConfig) -> tuple:
     """Build the student renderer and inference pool, returning ``(renderer, inference_pool)``.
 
-    Training is renderer-only: RL/OPD roll out through the env server's renderer client
-    (token-in/out), and SFT — which rolls out against a chat-completions teacher that returns
-    no tokens — re-renders the conversation with this renderer to backfill them. The renderer
-    is built here from the (always-set) ``config.renderer`` and also supplies the multimodal
-    token-type-id map. The eval client is plain chat-completions (eval traces aren't trained)."""
+    The tokenizer is loaded here (only when a renderer is needed) so the orchestrator
+    itself never depends on it. Training is renderer-only: RL/OPD roll out through
+    the env server's renderer client (token-in/out), and SFT — which rolls out
+    against a chat-completions teacher that returns no tokens — re-renders the
+    conversation with this renderer to backfill them. The renderer is built here
+    from the (always-set) ``config.renderer`` and also supplies the multimodal
+    token-type-id map. The eval client is plain chat-completions (eval traces
+    aren't trained)."""
     if config.debug.no_inference:
         model_name = config.student.model.name
         get_logger().warning(f"Using no-op student inference pool for orchestrator debug mode ({model_name=})")
         return None, NoOpInferencePool(model_name=model_name)
+    from prime_rl.trainer.model import setup_tokenizer
+
+    tokenizer = setup_tokenizer(config.tokenizer)
     from renderers.base import create_renderer
 
     client_config = config.student.client
