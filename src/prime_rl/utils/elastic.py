@@ -499,10 +499,3 @@ class ElasticInferencePool:
         if lora_name is None:
             raise ValueError("Elastic inference pool requires LoRA training (lora_name must be set)")
         await self.sync_weights(weight_dir, lora_name, step)
-
-    def get_metrics(self) -> dict[str, float]:
-        return {
-            "elastic/num_servers": self.num_servers,
-            "elastic/num_ready_servers": self.num_ready_servers,
-            "elastic/desired_step": self._desired.step,
-        }
