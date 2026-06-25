@@ -379,7 +379,6 @@ class RolloutDispatcher:
         return GroupState(
             kind=kind,
             env_name=env_name,
-            # task_idx is unknown until a rollout returns — the server hands out the task on pull.
             rollouts_to_schedule=group_size,
             target_rollouts=group_size,
             eval_step=eval_step,
