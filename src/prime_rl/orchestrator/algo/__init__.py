@@ -19,7 +19,7 @@ turns the signal half into runtime objects (the sampling half is the env's
   custom-function interface). Advantages are per-token everywhere they are
   stored or shipped — there is no scalar advantage in the pipeline. A
   function takes ``Rollout`` objects and returns one value per rollout: a
-  scalar that the view *broadcasts* over the rollout's completion tokens
+  scalar that is *broadcast* over the rollout's completion tokens
   (uniform credit, the common case), or an explicit per-token list.
 - ``routing`` — wire-field stamping: per-token component weight streams
   (rl / ce / ref_kl) and the per-token advantage stream.

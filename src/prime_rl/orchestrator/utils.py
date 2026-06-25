@@ -93,12 +93,6 @@ def trim_process_memory() -> None:
         get_logger().debug(f"malloc_trim(0) failed: {exc!r}")
 
 
-def get_model_completion_len(trace: vf.Trace) -> int:
-    """All model-generated (completion) tokens across the rollout — excludes
-    env-injected tokens between turns."""
-    return trace.completion_len
-
-
 def get_tool_response_len(trace: vf.Trace) -> int:
     """Total tool-response tokens consumed across the whole rollout, read from a
     harness-emitted metric (e.g. RLM's `rlm_total_tool_response_tokens`, deduped

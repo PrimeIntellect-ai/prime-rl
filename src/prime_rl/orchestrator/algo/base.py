@@ -3,8 +3,8 @@
 Each named class in this package *is* one training algorithm, one module per
 algorithm: it owns the algorithm's three scoring hooks directly —
 ``score_rollout`` (per arrival), ``score_group`` (per group), ``score_batch``
-(per batch) — and declares what it needs (``action_loss_type``, a
-``model_role`` like "teacher"). Reading a module top to bottom reads the
+(per batch) — and declares which loss component its action tokens feed
+(``action_loss_type``). Reading a module top to bottom reads the
 algorithm; writing your own is subclassing :class:`Algorithm` and overriding
 the hooks its signal needs. Shared math (group normalization, prefill
 alignment) lives as plain functions in ``advantage.py``; duplication of
@@ -26,8 +26,8 @@ awaits:
 
 How rollouts are *produced* is not the algorithm's concern: that is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`, and sample construction
-(interleaving, with observation-token provenance recorded as ``obs_spans``)
-is pure pipeline.
+(interleaving, with observation-token provenance via structural node
+attribution) is pure pipeline.
 
 The pipeline (dispatcher, train sink, orchestrator) calls the module-level
 phase functions (:func:`finalize_rollout`, :func:`finalize_group`,
@@ -93,8 +93,7 @@ class Algorithm:
     and never calls anything else. The surface is:
 
     - declarations — which loss component the action tokens feed
-      (``action_loss_type``) and what the algorithm calls its reference
-      model, if it has one (``model_role``, e.g. "teacher");
+      (``action_loss_type``);
     - lifecycle — :meth:`setup` connects client pools to the frozen models
       the algorithm declares, resolving each reference via :meth:`connect`;
     - the three scoring hooks, each ``async`` and given the :class:`Rollout`
@@ -111,7 +110,7 @@ class Algorithm:
         ``advantages=None``, so advantage-based filters skip them.
       - :meth:`score_batch` — the batch's survivors, *after* filtering:
         query the algorithm's reference pool (e.g. ``self.teacher_pool``) and
-        attach per-token results, or modulate advantages. Default: nothing.
+        attach per-token results (e.g. teacher logprobs). Default: nothing.
 
     ``score_batch`` is the home for reference I/O: it runs after filtering, so
     only survivors cost reference compute. I/O in ``score_rollout`` /
@@ -124,7 +123,6 @@ class Algorithm:
     canonical messages → token ids path; ``None`` under MITO)."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
-    model_role: ClassVar[str | None] = None
 
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
         self.config = config
@@ -159,8 +157,8 @@ class Algorithm:
 
     async def score_batch(self, batch: list[Rollout]) -> None:
         """Ship phase, survivors only, after filtering, async: query the
-        algorithm's reference models and attach per-token results, or modulate
-        advantages."""
+        algorithm's reference models and attach per-token results (e.g. teacher
+        logprobs)."""
 
 
 async def finalize_rollout(algorithm: Algorithm, rollout: Rollout) -> None:
@@ -178,7 +176,6 @@ async def finalize_group(algorithm: Algorithm, rollouts: list[Rollout]) -> None:
         stamp_advantages(rollout)
         for sample in rollout.samples:
             sample.reward = rollout.reward
-            sample.env_name = rollout.env_name
             stamp_loss_routing(sample, algorithm.action_loss_type)
 
 
