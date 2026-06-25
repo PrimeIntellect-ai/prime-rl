@@ -33,7 +33,6 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     temperatures: list[float]
     env_name: str
     ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl component)
-    reward: float | None = None
 
     # Generic multimodal kwargs: flat dict keyed by the kwarg names the
     # model's forward expects (e.g. {"pixel_values": ..., "image_grid_thw":
@@ -105,7 +104,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     rl_weights: list[float] | None = None
     ce_weights: list[float] | None = None
     ref_kl_weights: list[float] | None = None
-    rewards: list[float] | None = None
 
     # Packer-derived metadata used for run-local token exports.
     run_id: str | None = None

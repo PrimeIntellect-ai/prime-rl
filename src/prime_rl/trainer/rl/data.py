@@ -26,7 +26,6 @@ class TensorMicroBatch(TypedDict):
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
     advantages: Float[Tensor, "batch seq"]
-    rewards: Float[Tensor, "batch seq"] | None
     inference_logprobs: Float[Tensor, "batch seq"]
     ref_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
@@ -124,7 +123,6 @@ class FakeDataLoader:
             "input_ids": input_ids.unsqueeze(0),
             "position_ids": position_ids.unsqueeze(0),
             "advantages": advantages.unsqueeze(0),
-            "rewards": None,
             "inference_logprobs": inference_logprobs.unsqueeze(0),
             "ref_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
@@ -157,7 +155,6 @@ class FakeDataLoader:
             ),
             "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
             "advantages": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
-            "rewards": None,
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "ref_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
@@ -253,9 +250,6 @@ class DataLoader:
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
             advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
-            rewards=torch.tensor(micro_batch.rewards, dtype=torch.float).unsqueeze(0)
-            if micro_batch.rewards is not None
-            else None,
             inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
             ref_logprobs=torch.tensor(micro_batch.ref_logprobs, dtype=torch.float).unsqueeze(0)
             if micro_batch.ref_logprobs is not None

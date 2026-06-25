@@ -151,7 +151,6 @@ def _export_columns(
         "position_ids": _tensor_to_ints(micro_batch["position_ids"]),
         "loss_mask": _tensor_to_bools(micro_batch["loss_mask"]),
         "advantages": _tensor_to_floats(micro_batch["advantages"]),
-        "rewards": _optional_tensor_to_floats(micro_batch.get("rewards"), seq_len),
         "inference_logprobs": _tensor_to_floats(micro_batch["inference_logprobs"]),
         "trainer_logprobs": _tensor_to_floats(trainer_logprobs),
         "entropy": _tensor_to_floats(model_output["entropy"]),

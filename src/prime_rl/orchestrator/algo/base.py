@@ -175,7 +175,6 @@ async def finalize_group(algorithm: Algorithm, rollouts: list[Rollout]) -> None:
     for rollout in rollouts:
         stamp_advantages(rollout)
         for sample in rollout.samples:
-            sample.reward = rollout.reward
             stamp_loss_routing(sample, algorithm.action_loss_type)
 
 

@@ -124,8 +124,6 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     rl_weights = list(training_example.rl_weights) if training_example.rl_weights is not None else None
     ce_weights = list(training_example.ce_weights) if training_example.ce_weights is not None else None
     ref_kl_weights = list(training_example.ref_kl_weights) if training_example.ref_kl_weights is not None else None
-    reward = training_example.reward if training_example.reward is not None else float("nan")
-    rewards = [reward] * len(input_ids)
     position_ids = list(range(len(input_ids)))
     mm_token_type_ids = training_example.mm_token_type_ids
     mm_kwargs = training_example.mm_kwargs
@@ -153,7 +151,6 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         inference_logprobs = inference_logprobs[:cut]
         position_ids = position_ids[:cut]
         advantages = advantages[:cut]
-        rewards = rewards[:cut]
         temperatures = temperatures[:cut]
         if ref_logprobs is not None:
             ref_logprobs = ref_logprobs[:cut]
@@ -175,10 +172,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         == len(loss_mask)
         == len(position_ids)
         == len(inference_logprobs)
-        == len(rewards)
         == len(temperatures)
     ), (
-        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, rewards: {len(rewards)}, temperatures: {len(temperatures)}"
+        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, temperatures: {len(temperatures)}"
     )
     if ref_logprobs is not None:
         assert len(ref_logprobs) == len(input_ids), f"ref_logprobs: {len(ref_logprobs)}"
@@ -211,7 +207,6 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         sequence_lengths=[len(input_ids)],
         ref_logprobs=ref_logprobs,
         temperatures=temperatures,
-        rewards=rewards,
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
@@ -280,7 +275,6 @@ class _MicroBatchBin:
 
 
 def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
-    has_rewards = any(sample.rewards is not None for _, sample in bin_content.samples)
     has_ref_logprobs = any(sample.ref_logprobs is not None for _, sample in bin_content.samples)
     has_mm_token_type_ids = any(sample.mm_token_type_ids is not None for _, sample in bin_content.samples)
     # A weight stream materializes as soon as one packed sample carries it; the
@@ -294,7 +288,6 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     position_ids: list[int] = []
     temperatures: list[float] = []
     env_names: list[str] = []
-    rewards: list[float] | None = [] if has_rewards else None
     ref_logprobs: list[float] | None = [] if has_ref_logprobs else None
     mm_token_type_ids: list[int] | None = [] if has_mm_token_type_ids else None
     streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
@@ -310,8 +303,6 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         position_ids.extend(sample.position_ids)
         temperatures.extend(sample.temperatures)
         env_names.extend(sample.env_names)
-        if rewards is not None:
-            rewards.extend(sample.rewards if sample.rewards is not None else [float("nan")] * sample_len)
         if ref_logprobs is not None:
             ref_logprobs.extend(sample.ref_logprobs if sample.ref_logprobs is not None else [0.0] * sample_len)
         for name, fill in STREAM_FILL.items():
@@ -346,7 +337,6 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         sequence_lengths=sequence_lengths,
         ref_logprobs=ref_logprobs,
         temperatures=temperatures,
-        rewards=rewards,
         lora_num_tokens=lora_num_tokens,
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
@@ -453,8 +443,6 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
 
     micro_batch.input_ids.extend([1] * padding_size)
     micro_batch.advantages.extend([0.0] * padding_size)
-    if micro_batch.rewards is not None:
-        micro_batch.rewards.extend([float("nan")] * padding_size)
     micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
     micro_batch.sequence_lengths.append(padding_size)
@@ -499,7 +487,6 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         "rl_weights",
         "ce_weights",
         "ref_kl_weights",
-        "rewards",
         "mm_token_type_ids",
     )
     for name in per_token_fields:
