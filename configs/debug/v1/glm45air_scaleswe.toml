@@ -10,7 +10,7 @@
 # configs/debug/v1/scaleswe.toml + GLM-4.5-Air model settings from the int5 opencode configs.
 
 max_steps = 400
-seq_len = 65536
+seq_len = 131072
 
 [slurm]
 job_name = "glm45air-swe"
@@ -112,7 +112,7 @@ type = "native"
 num_bytes = 128_000_000_000 # 128GB CPU tier per inference engine
 
 [inference.model]
-max_model_len = 65536
+max_model_len = 131072
 
 [inference.parallel]
 tp = 8
