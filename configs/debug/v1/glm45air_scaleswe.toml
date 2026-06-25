@@ -104,7 +104,6 @@ timeout = { rollout = 3600 }
 [inference]
 gpu_memory_utilization = 0.85
 enable_prefix_caching = true
-vllm_extra = { quantization = "fp8" }
 
 [inference.kv_cache_offload]
 type = "native"
