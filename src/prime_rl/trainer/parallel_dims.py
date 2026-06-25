@@ -282,8 +282,8 @@ def _get_num_experts(config: ModelConfig) -> int | None:
     return None
 
 
-def resolve_auto_ep(config: ModelConfig) -> None:
-    """Resolve ``auto_ep=True`` in-place to a concrete integer for ``config.ep``.
+def resolve_ep(config: ModelConfig) -> None:
+    """Resolve ``ep="auto"`` in-place to a concrete integer.
 
     Picks the largest EP degree up to 8 that satisfies all constraints:
     - divides ``num_experts`` (torchtitan shards experts on dim 0)
@@ -292,7 +292,7 @@ def resolve_auto_ep(config: ModelConfig) -> None:
 
     For non-MoE models, resolves to 1 (no-op).
     """
-    if not config.auto_ep:
+    if config.ep != "auto":
         return
 
     # EP requires the custom implementation; skip auto-resolution for HF impl
@@ -334,6 +334,11 @@ def resolve_auto_ep(config: ModelConfig) -> None:
 
 
 def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> ParallelDims:
+    assert isinstance(config.ep, int), (
+        f"config.ep must be resolved to an int before get_parallel_dims; got {config.ep!r}. "
+        "Call resolve_ep(config) first."
+    )
+
     # Initialize parallel dimensions
     parallel_dims = ParallelDims(
         dp_replicate=config.dp_replicate,
