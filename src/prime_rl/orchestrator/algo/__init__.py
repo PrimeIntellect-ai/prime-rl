@@ -6,7 +6,7 @@ turns the signal half into runtime objects (the sampling half is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`):
 
 - one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``opd``,
-  ``opsd``, ``sft``, ``reward``, ``custom``) — each named class owns its
+  ``opsd``, ``sft``, ``custom``) — each named class owns its
   scoring hooks (``score_rollout`` / ``score_group`` / ``score_batch``) and
   declares what it needs (loss component, a "teacher", ...). One instance per
   env, built by :func:`build_algorithm`. Custom credit assignment plugs in
@@ -48,7 +48,6 @@ from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.opd import OPDAlgorithm
 from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
-from prime_rl.orchestrator.algo.reward import RewardAlgorithm
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
 from prime_rl.orchestrator.types import Rollout
@@ -68,7 +67,6 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "opd": OPDAlgorithm,
     "opsd": OPSDAlgorithm,
     "sft": SFTDistillAlgorithm,
-    "reward": RewardAlgorithm,
     "custom": CustomAlgorithm,
 }
 
@@ -90,7 +88,6 @@ __all__ = [
     "MaxRLAlgorithm",
     "OPDAlgorithm",
     "OPSDAlgorithm",
-    "RewardAlgorithm",
     "Rollout",
     "SFTDistillAlgorithm",
     "apply_advantage_fn",

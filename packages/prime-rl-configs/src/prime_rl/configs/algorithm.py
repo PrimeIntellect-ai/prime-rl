@@ -2,7 +2,7 @@
 
 An algorithm is a named, self-contained config — a discriminated union keyed
 on ``type`` (``grpo``, ``max_rl``, ``opd``, ``opsd``, ``sft``, ``echo``,
-``reward``, ``custom``). The bundle *is* the algorithm: each variant carries
+``custom``). The bundle *is* the algorithm: each variant carries
 its sampling component and its credit-assignment / loss-routing parameters,
 and its class defaults are the vetted setting — ``type = "opd"`` with a
 teacher IS on-policy distillation; any key you set is visibly your own
@@ -177,7 +177,7 @@ class BaseAlgorithmConfig(BaseConfig):
     """Reference-model shorthand: an inline frozen hosted model (``name`` +
     ``base_url``). Folds into the slot the algorithm declares for it —
     ``model`` for the distillation algorithms (opd/opsd), ``sampling.source``
-    for sft. ``grpo`` / ``max_rl`` / ``reward`` / ``custom`` take no teacher.
+    for sft. ``grpo`` / ``max_rl`` / ``custom`` take no teacher.
     Write-only input sugar — folded by validation and excluded from dumps so
     resolved configs round-trip."""
 
@@ -207,7 +207,7 @@ class BaseAlgorithmConfig(BaseConfig):
         if not matched:
             raise ValueError(
                 f"algorithm '{self.type}': 'teacher' is set but the algorithm references no model — "
-                "grpo / max_rl / reward / custom take no teacher. Remove it, or use a distillation type."
+                "grpo / max_rl / custom take no teacher. Remove it, or use a distillation type."
             )
         return self
 
@@ -282,14 +282,6 @@ class MaxRLAlgorithmConfig(BaseAlgorithmConfig):
     likelihood (∞). Designed for non-negative (canonically binary) rewards;
     a group with mean reward 0 carries zero advantages everywhere (the
     zero-advantage filter drops it, matching the paper's K=0 convention)."""
-
-    action_loss_type: ClassVar[ActionLossType] = "rl"
-
-
-class RewardAlgorithmConfig(BaseAlgorithmConfig):
-    type: Literal["reward"] = "reward"
-    """Scalar advantage = raw reward, no group baseline. Consumed by the
-    ``rl`` loss component."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
@@ -387,7 +379,6 @@ AlgorithmConfig: TypeAlias = Annotated[
     GRPOAlgorithmConfig
     | EchoAlgorithmConfig
     | MaxRLAlgorithmConfig
-    | RewardAlgorithmConfig
     | OPDAlgorithmConfig
     | OPSDAlgorithmConfig
     | SFTAlgorithmConfig
@@ -404,5 +395,5 @@ its class defaults are the vetted setting.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy by default.
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs ``teacher``.
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
-- ``reward`` / ``custom`` — raw-reward and user-supplied advantage functions.
+- ``custom`` — user-supplied advantage function.
 """

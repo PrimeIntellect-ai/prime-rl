@@ -71,7 +71,6 @@ type = "grpo"  # the default
 | `sft` | *(the teacher)* | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs a `teacher` (folds into `sampling.source`). |
 | `opsd` | policy | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. Defaults to the live policy (the paper's setting, no extra deployment); set an inline `model` to score under a frozen copy instead. |
 | `echo` | policy | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-provided tokens already present in the rollout, selected by message role (needs the renderer's role attribution). Defaults to tool-response bodies at `alpha = 0.1` (ECHO's λ); set `roles` to train other roles, each at its own weight. |
-| `reward` | policy | `rl` on actions | REINFORCE-style: advantage = raw reward, no group baseline. |
 | `custom` | policy | `rl` on actions | Your own advantage function (`import_path`), per-token advantages per rollout — see [Custom Advantage](#custom-advantage). |
 
 ### Customizing Components
@@ -141,12 +140,11 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 | `opd` | `OPDAlgorithm` | `score_batch`: own-context prefill under the teacher |
 | `opsd` | `OPSDAlgorithm` | `score_batch`: demo-conditioned prefill under the teacher |
 | `sft` | `SFTDistillAlgorithm` | `score_group`: group-norm credit (feeds filters) |
-| `reward` | `RewardAlgorithm` | `score_rollout`: raw reward |
 | `custom` | `CustomAlgorithm` | `score_group`: your function |
 
 Each class owns its hooks outright — reading one top to bottom reads the algorithm, and everything on the class is an override point. The three hooks are one scope-and-timing ladder — each wider scope is unlocked by a later barrier, so the two axes coincide. Each is handed the `Rollout` directly — the env's typed trace (`reward`, `nodes`, `num_turns`, ...) with `samples` attached, plus `assign_advantages` to write credit:
 
-- `score_rollout(rollout)` — one rollout, **on arrival** (as it's tokenized, before its group is complete): rollout-local credit (`rollout.assign_advantages(...)`, scalar broadcast or per-token) or observation ce weights. No siblings. `reward` writes its raw reward here; `echo` weights observation tokens here, identifying env-provided observation nodes by their non-sampled status and source step role attribution, applying the optional user filter, and writing the `ce_weights` stream.
+- `score_rollout(rollout)` — one rollout, **on arrival** (as it's tokenized, before its group is complete): rollout-local credit (`rollout.assign_advantages(...)`, scalar broadcast or per-token) or observation ce weights. No siblings. `echo` weights observation tokens here, identifying env-provided observation nodes by their non-sampled status and source step role attribution, applying the optional user filter, and writing the `ce_weights` stream.
 - `score_group(group)` — the cohort, **before filtering** (filters read the streams), synchronous: group-relative credit (GRPO/MaxRL baselines). `group` is a list of `Rollout`.
 - `async score_batch(batch)` — the batch's survivors, **after filtering** (dropped rollouts never cost reference compute), async: the only stage with model access — query the algorithm's reference pool (e.g. `self.teacher_pool`, connected in its `setup()` override via `self.connect(...)` — the live policy pool when the reference is `"policy"`, a freshly connected client pool when frozen) and attach per-token results (e.g. teacher logprobs).
 
@@ -177,7 +175,7 @@ $$
 \mathcal{L} = \frac{\sum \mathcal{L}_{rl}}{N_{rl}} + \frac{\sum \mathcal{L}_{ce}}{N_{ce}} + \frac{\sum \mathcal{L}_{ref\_kl}}{N_{ref\_kl}}
 $$
 
-- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the group-relative advantage strategies (`grpo`, `max_rl`, `reward`, `custom`, and `echo`'s action tokens).
+- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the group-relative advantage strategies (`grpo`, `max_rl`, `custom`, and `echo`'s action tokens).
 - `ce` — masked NLL. Used for frozen-model tokens (`sft`) and env-observation tokens (`echo`).
 - `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `opsd`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
@@ -280,7 +278,6 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 | `grpo` | `rl` | Group-norm: reward minus per-group baseline, optional length penalty. |
 | `max_rl` | `rl` | Mean-normalized group credit (maximum-likelihood RL). |
 | `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-provided tokens selected by message role (each role's `alpha` is its ECHO λ), optionally narrowed by a user filter. |
-| `reward` | `rl` | Advantage = raw reward, no baseline. |
 | `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream; `group_size` only fans out sampling. |
 | `opsd` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream. |
 | `sft` | `ce` | Cross-entropy on the sampled tokens. Assigns no advantage — trains on every sampled token. |
