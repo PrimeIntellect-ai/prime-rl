@@ -348,9 +348,8 @@ class RolloutDispatcher:
         for gid, group in list(self.groups.items()):
             if group.kind != kind or group.rollouts_to_schedule <= 0:
                 continue
-            env = envs.get(group.env_name)
-            cost = group.rollouts_to_schedule if env.requires_group_scoring else 1
-            if cost <= self.available_permits:
+            # A group is one indivisible `run_group` pull, so it needs all its permits at once.
+            if group.rollouts_to_schedule <= self.available_permits:
                 return await self.schedule_group_rollout(gid, group)
 
         fresh = self.next_fresh_group(kind, envs)
@@ -380,7 +379,7 @@ class RolloutDispatcher:
         return GroupState(
             kind=kind,
             env_name=env_name,
-            task_idx=example["task_idx"],
+            # task_idx is unknown until a rollout returns — the server hands out the task on pull.
             rollouts_to_schedule=group_size,
             target_rollouts=group_size,
             eval_step=eval_step,
@@ -427,31 +426,21 @@ class RolloutDispatcher:
         else:
             cache_salt = None
 
-        if env.requires_group_scoring:
-            permits = group.rollouts_to_schedule
-            group.rollouts_to_schedule = 0
-            await self.acquire(permits)
-            task: asyncio.Task = asyncio.create_task(
-                env.run_group(
-                    client=client,
-                    task_idx=group.task_idx,
-                    model_name=model_name,
-                    group_size=permits,
-                    cache_salt=cache_salt,
-                )
+        # Every group is one indivisible `run_group` pull: the server hands out one task and runs
+        # `group_size` rollouts of it (a scored group when the taskset scores groups, else
+        # independent rollouts of the one task). The orchestrator never addresses the task — the
+        # served task's idx rides back on each returned Trace.
+        permits = group.rollouts_to_schedule
+        group.rollouts_to_schedule = 0
+        await self.acquire(permits)
+        task: asyncio.Task = asyncio.create_task(
+            env.run_group(
+                client=client,
+                model_name=model_name,
+                group_size=permits,
+                cache_salt=cache_salt,
             )
-        else:
-            permits = 1
-            group.rollouts_to_schedule -= 1
-            await self.acquire(permits)
-            task = asyncio.create_task(
-                env.run_rollout(
-                    client=client,
-                    task_idx=group.task_idx,
-                    model_name=model_name,
-                    cache_salt=cache_salt,
-                )
-            )
+        )
 
         self.inflight[task] = InflightRollout(
             kind=group.kind,

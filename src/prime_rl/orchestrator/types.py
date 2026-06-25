@@ -57,9 +57,12 @@ class GroupState:
 
     kind: RolloutKind
     env_name: str
-    task_idx: int
-    rollouts_to_schedule: int
-    target_rollouts: int
+    task_idx: int = -1
+    """The served task's idx, known only once a rollout returns (the orchestrator pulls, it
+    doesn't address tasks). Stays -1 for a group that errors before any rollout returns — used
+    only to label error markers; successful rollouts carry the real idx on their own Trace."""
+    rollouts_to_schedule: int = 0
+    target_rollouts: int = 0
     emitted: int = 0
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None

@@ -75,7 +75,8 @@ class EvalSource:
             return None
         head = self.queue[0]
         env = self.eval_envs.get(head["env_name"])
-        cost = env.config.group_size if env.requires_group_scoring else 1
+        # A group is one indivisible `run_group(group_size)` pull, so it costs `group_size` permits.
+        cost = env.config.group_size
         if cost > available_permits:
             return None
         return self.queue.popleft()

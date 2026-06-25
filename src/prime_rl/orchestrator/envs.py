@@ -84,7 +84,8 @@ class Env:
         self.sampling_args: dict = {}
         self.num_tasks: int | None = None
         """Task count reported by the server, or ``None`` when the taskset is unbounded
-        (an unbounded generator ``load_tasks``) — then the caller drives ``task_idx``."""
+        (an unbounded generator ``load_tasks``). The orchestrator pulls tasks (it never
+        addresses one); this only bounds how many groups an eval pulls."""
         self.requires_group_scoring: bool = False
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
@@ -135,6 +136,7 @@ class Env:
                 env_id=self.config.env_id,
                 env_args=self.config.args,
                 extra_env_kwargs=self.config.extra_env_kwargs,
+                shuffle=self.config.shuffle,
             )
             if self.config.is_legacy
             else dict(legacy=False, config=self.config)
@@ -170,24 +172,13 @@ class Env:
             sampling["extra_body"] = {**sampling.get("extra_body", {}), "cache_salt": cache_salt}
         return vf.SamplingConfig(**sampling)
 
-    async def run_rollout(
-        self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
-    ) -> Rollout:
-        """Run a single rollout for ``task_idx``; return a typed Trace."""
-        wire = await self.env_client.run_rollout(
-            task_idx=task_idx,
-            client=client,
-            model=model_name,
-            sampling=self._sampling(cache_salt),
-        )
-        return ROLLOUT_TYPE.model_construct(**dict(wire))
-
     async def run_group(
-        self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
+        self, client: vf.ClientConfig, model_name: str, group_size: int, cache_salt: str | None
     ) -> list[Rollout]:
-        """Run a group of rollouts for ``task_idx`` (group-scoring envs); return typed Traces."""
+        """Pull the next task and run ``group_size`` rollouts of it; return typed Traces. The
+        server hands out the task (the orchestrator never addresses one); the served task is
+        identified by each Trace's ``task.idx``. A single rollout is just ``group_size=1``."""
         wires = await self.env_client.run_group(
-            task_idx=task_idx,
             n=group_size,
             client=client,
             model=model_name,
@@ -231,7 +222,9 @@ class EvalEnv(Env):
             n = self.config.num_examples
         else:
             n = self.num_tasks if self.config.num_examples < 0 else min(self.config.num_examples, self.num_tasks)
-        self.examples = [{"task_idx": i} for i in range(n)]
+        # The orchestrator pulls tasks (the server hands out the next one), so an example is just
+        # a slot to fill — `n` of them. The served task is identified by the returned Trace's idx.
+        self.examples = [{} for _ in range(n)]
 
 
 EnvT = TypeVar("EnvT", bound=Env)
