@@ -51,10 +51,11 @@ class GibberishFilter:
 
     def check(self, rollout: Rollout) -> FilterResult:
         global_idx = 0
-        for node in rollout.nodes:
-            # token_ids / logprobs / mask are per-token aligned; check only the
-            # sampled completion tokens, pairing each with its own logprob.
-            for token_id, logprob, sampled in zip(node.token_ids, node.logprobs, node.mask):
+        for branch in rollout.branches:
+            # branch.{token_ids,logprobs,sampled_mask} are flat and mutually aligned; the raw
+            # node arrays are not (node.logprobs covers only the sampled suffix, not the
+            # generation-prompt scaffold that token_ids/mask also span).
+            for token_id, logprob, sampled in zip(branch.token_ids, branch.logprobs, branch.sampled_mask):
                 if not sampled:
                     continue
                 if token_id > self.token_id_threshold and logprob < self.logprob_threshold:
@@ -81,12 +82,13 @@ class RepetitionFilter:
     enforce: bool = False
 
     def check(self, rollout: Rollout) -> FilterResult:
-        consecutive = 0
         global_idx = 0
-        for node in rollout.nodes:
-            # Streak only over sampled completion tokens — context/prompt tokens
-            # (mask=False) are not model-generated and must not feed the loop count.
-            for logprob, sampled in zip(node.logprobs, node.mask):
+        for branch in rollout.branches:
+            # Aligned branch streams (see GibberishFilter), and reset the streak per branch:
+            # flat rollout.nodes interleaves distinct root->leaf paths (compaction/subagents),
+            # so a per-node walk would run a streak across a branch boundary.
+            consecutive = 0
+            for logprob, sampled in zip(branch.logprobs, branch.sampled_mask):
                 if not sampled:
                     continue
                 if logprob > self.logprob_threshold:
