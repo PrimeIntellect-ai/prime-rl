@@ -86,10 +86,11 @@ harness = { id = "bash_edit", runtime = { type = "prime", labels = ["glm45air-sw
 
 [orchestrator.prime_monitor]
 
-# --- Eval: SWE-Bench Verified every 20 steps, bash_edit harness on prime ---
+# --- Eval: SWE-Bench Verified at step 0 + every 20 steps, bash_edit harness on prime ---
 
 [orchestrator.eval]
 interval = 20
+skip_first_step = false
 
 [[orchestrator.eval.env]]
 name = "swebench-verified"
