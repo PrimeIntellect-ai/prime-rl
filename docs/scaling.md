@@ -273,3 +273,44 @@ uv run rl @ rl.toml --bench
 ```
 
 Persist results with `--bench.output-json`. Use this to compare parallelism configs before committing a multi-day run.
+
+### Inference backend A/B
+
+Use `benchmarks/scripts/inference_backend_benchmark.py` to compare OpenAI-compatible inference backends with the same RL-style request stream. This is useful when comparing the default vLLM server, a router deployment, or an experimental Dynamo deployment before wiring it into a full training run.
+
+The benchmark sends session-sticky chat completion requests with `X-Session-ID`, measures streaming time-to-first-token, end-to-end latency, output throughput, and error rate, then snapshots `/metrics` before and after each backend to capture vLLM counters such as prefix-cache hits and token deltas.
+
+```bash
+uv run python benchmarks/scripts/inference_backend_benchmark.py \
+  --backend vllm=http://localhost:8000/v1 \
+  --backend dynamo=http://localhost:9000/v1 \
+  --model Qwen/Qwen3-4B-Instruct-2507 \
+  --requests 256 \
+  --warmup-requests 32 \
+  --concurrency 32 \
+  --sessions 32 \
+  --prompt-words 1024 \
+  --max-tokens 128 \
+  --min-request-throughput-ratio 1.05 \
+  --max-latency-p95-ratio 1.10 \
+  --max-error-rate 0.01 \
+  --output-json outputs/backend_ab.json \
+  --output-markdown outputs/backend_ab.md
+```
+
+Use the first backend as the baseline. Warmup requests run before the metrics snapshot and are not included in the measured samples. The generated Markdown report shows relative request throughput, output throughput, p95/p99 latency, TTFT, and prefix-cache changes against that baseline. The JSON file keeps per-request samples for deeper latency and failure analysis.
+
+The optional regression gates make the command fail when a candidate backend misses the required throughput, latency, or error-rate thresholds. This lets backend experiments publish a benchmark artifact and a pass/fail signal before moving the backend into a full RL job.
+
+For backend acceptance runs, use the included scenario suite:
+
+```bash
+uv run python benchmarks/scripts/inference_backend_benchmark.py \
+  --backend vllm=http://localhost:8000/v1 \
+  --backend dynamo=http://localhost:9000/v1 \
+  --scenario-json benchmarks/configs/inference_backend_suite.json \
+  --output-json outputs/backend_suite.json \
+  --output-markdown outputs/backend_suite.md
+```
+
+The suite covers short-rollout latency, long-context prefill, high-concurrency decode, and session-cache reuse. Each scenario can set its own request shape and regression gate, while the final Markdown report keeps all scenarios in one artifact.
