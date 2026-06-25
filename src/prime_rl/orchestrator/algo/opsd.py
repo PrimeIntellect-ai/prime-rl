@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from renderers.base import Renderer
 
     from prime_rl.orchestrator.types import Rollout
+    from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
 
 
@@ -17,18 +18,21 @@ class OPSDAlgorithm(Algorithm):
     """On-policy self-distillation (SDFT). The teacher defaults to the policy
     itself, conditioned on an expert demonstration — no extra deployment.
 
-    The scoring prefix is rebuilt from the rollout's first-turn prompt
-    messages with the demonstration woven into the last user message; the
-    returned completion logprobs are aligned back onto the sample (the
-    sample's prompt positions are 0.0 and stay outside the loss mask). No
-    scalar advantage is assigned."""
+    Each sample is prefill-scored under the teacher with the demonstration
+    prepended as a leading system message: the teacher reads
+    ``hint_block + sample.token_ids`` and the demo-conditioned logprobs over the
+    sample's tokens become ``ref_logprobs`` (the trainer's ref_kl target). The
+    sample is scored verbatim — no re-rendering — so the join lands on the
+    message-closing special token (BPE-clean) and it's robust to tools /
+    multimodal prompts and any number of turns. No scalar advantage is
+    assigned."""
 
     action_loss_type = "ref_kl"
 
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
         assert isinstance(config, OPSDAlgorithmConfig)
-        assert renderer is not None, "opsd requires the renderer (validated at config time)"
+        assert renderer is not None, "opsd requires the renderer"
         self.demo_key = config.demo_key
         self.template = config.template
         self.max_concurrent = config.max_concurrent
@@ -38,12 +42,7 @@ class OPSDAlgorithm(Algorithm):
     async def setup(self) -> None:
         self.teacher_pool = await self.connect(self.teacher)
 
-    def _ref_prefix_ids(self, rollout: Rollout) -> list[int]:
-        if rollout.num_turns != 1:
-            raise ValueError(
-                f"opsd supports single-step trajectories only; "
-                f"env '{rollout.env_name}' produced {rollout.num_turns} model turn(s)."
-            )
+    def _demonstration(self, rollout: Rollout) -> str:
         demonstration = rollout.info.get(self.demo_key)
         if demonstration is None:
             demonstration = getattr(rollout.task, self.demo_key, None)
@@ -52,47 +51,25 @@ class OPSDAlgorithm(Algorithm):
                 f"opsd requires '{self.demo_key}' in the trace info dict or on the task "
                 f"(env '{rollout.env_name}', task {rollout.task.idx})."
             )
-
-        # The scoring prompt is the branch's leading non-sampled (input)
-        # messages — the context the model conditioned on before responding.
-        branch = next(b for b in rollout.branches if any(b.sampled_mask))
-        messages = [node.message.model_dump(exclude_none=True) for node in branch.nodes if not node.sampled]
-        user_indices = [i for i, m in enumerate(messages) if m.get("role") == "user"]
-        if not user_indices:
-            raise ValueError(f"opsd found no user message to condition (env '{rollout.env_name}').")
-        last_user = messages[user_indices[-1]]
-        question = last_user.get("content")
-        if not isinstance(question, str):
-            raise ValueError("opsd supports text-only prompts (user content must be a string).")
-        last_user["content"] = self.template.format(question=question, demonstration=demonstration)
-
-        # Render through the policy's renderer — the same messages → token ids
-        # path the policy's own prompts take, so the scoring prefix matches
-        # the prompt distribution the teacher conditions on.
-        assert self.renderer is not None
-        return self.renderer.render_ids(messages, add_generation_prompt=True)
+        return demonstration
 
     async def score_batch(self, batch: list[Rollout]) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
+        assert self.renderer is not None
         semaphore = asyncio.Semaphore(self.max_concurrent)
 
-        async def score_one(rollout: Rollout) -> None:
-            prefix_ids = self._ref_prefix_ids(rollout)
-            assert len(rollout.samples) == 1  # single-step trajectory → one sample
-            sample = rollout.samples[0]
-            completion_ids = [t for t, trains in zip(sample.token_ids, sample.mask) if trains]
+        async def score_sample(sample: TrainingSample, hint_block: list[int]) -> None:
             async with semaphore:
-                full_logprobs = await pool.score(prefix_ids + completion_ids)
-            completion_logprobs = full_logprobs[len(prefix_ids) :]
-            # Scatter the demo-conditioned completion logprobs back onto the
-            # sample's trainable positions; full-length-N, 0.0 elsewhere.
-            ref_logprobs = [0.0] * len(sample.token_ids)
-            li = 0
-            for i, trains in enumerate(sample.mask):
-                if trains:
-                    ref_logprobs[i] = completion_logprobs[li]
-                    li += 1
-            sample.ref_logprobs = ref_logprobs
+                full_logprobs = await pool.score(hint_block + list(sample.token_ids))
+            # Drop the hint's own logprobs; the tail aligns full-length to
+            # sample.token_ids (demo-conditioned, the trainer's ref_kl target).
+            sample.ref_logprobs = full_logprobs[len(hint_block) :]
 
-        await asyncio.gather(*(score_one(rollout) for rollout in batch))
+        tasks = []
+        for rollout in batch:
+            hint = self.template.format(demonstration=self._demonstration(rollout))
+            hint_block = self.renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)
+            for sample in rollout.samples:
+                tasks.append(score_sample(sample, hint_block))
+        await asyncio.gather(*tasks)

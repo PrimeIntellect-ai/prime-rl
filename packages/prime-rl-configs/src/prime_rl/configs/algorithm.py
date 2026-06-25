@@ -318,12 +318,12 @@ class OPSDAlgorithmConfig(BaseAlgorithmConfig):
     type: Literal["opsd"] = "opsd"
     """On-policy self-distillation (SDFT, https://arxiv.org/abs/2601.19897):
     the per-token signal is the reverse KL to a reference model conditioned on
-    an expert demonstration. The scoring prefix is rebuilt from the rollout's
-    first-turn messages with the demonstration woven into the user message via
-    ``template``; completion logprobs are aligned back onto the sample.
-    Requires single-step trajectories. No scalar advantage is assigned —
-    rollouts keep ``advantages=None`` (advantage-based filters never fire) and
-    samples ship no advantage stream."""
+    an expert demonstration. The teacher scores each sample with the
+    demonstration prepended as a leading system message — the sample is scored
+    verbatim (no re-rendering), so it's robust to tool/multimodal prompts and
+    works for any number of turns. No scalar advantage is assigned — rollouts
+    keep ``advantages=None`` (advantage-based filters never fire) and samples
+    ship no advantage stream."""
 
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
     model_role: ClassVar[str] = "teacher"
@@ -338,14 +338,10 @@ class OPSDAlgorithmConfig(BaseAlgorithmConfig):
     """Key holding the expert demonstration text — looked up in the example's
     ``info`` dict first, then as a top-level rollout field (e.g. ``answer``)."""
 
-    template: str = (
-        "{question}\n\n"
-        "Here is an example of an expert response:\n"
-        "<demonstration>\n{demonstration}\n</demonstration>\n\n"
-        "Answer with a response of your own."
-    )
-    """Template for the demo-conditioned user message. Receives ``{question}``
-    (the original user message text) and ``{demonstration}``."""
+    template: str = "Here is an example of an expert response:\n<demonstration>\n{demonstration}\n</demonstration>"
+    """Content of the leading system message carrying the demonstration.
+    Receives ``{demonstration}``; the original question stays in the (verbatim)
+    user turn, so it isn't templated here."""
 
     max_concurrent: int = Field(32, ge=1)
     """Maximum concurrent prefill requests per batch."""
