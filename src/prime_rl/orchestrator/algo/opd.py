@@ -10,7 +10,7 @@ from prime_rl.utils.client import StaticInferencePool
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.orchestrator.types import RolloutView
+    from prime_rl.orchestrator.types import Rollout
     from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
 
@@ -42,11 +42,11 @@ class OPDAlgorithm(Algorithm):
             raise TypeError("opd teacher must be a static endpoint — prefill scoring needs fixed endpoints")
         self.teacher_pool = pool
 
-    async def score_batch(self, batch: list[RolloutView]) -> None:
+    async def score_batch(self, batch: list[Rollout]) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
-        samples = [sample for view in batch for sample in view.samples]
+        samples = [sample for rollout in batch for sample in rollout.samples]
 
         async def score_sample(sample: TrainingSample) -> None:
             async with semaphore:

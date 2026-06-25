@@ -15,7 +15,7 @@ from prime_rl.orchestrator.algo.advantage import (
     max_rl_advantage_fn,
 )
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout, RolloutView
+from prime_rl.orchestrator.types import Rollout
 
 # Token-cost penalty over completion tokens only (the harness tool-response
 # metric is absent on these rollouts, so the tool weight contributes nothing).
@@ -120,20 +120,15 @@ def _make_rollout(
     return _build_rollout(reward, sampled_lengths=sampled_lengths, env_name=env_name, metrics=metrics)
 
 
-def _views(rollouts: list[Rollout]) -> list[RolloutView]:
-    """Wrap rollouts into ``RolloutView``\\ s — the advantage fns see exactly what
-    ``score_group`` sees."""
-    return [RolloutView(r) for r in rollouts]
-
-
-def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[RolloutView]:
-    """Build one group of ``RolloutView``\\ s from 1D arrays of rewards/lengths/turns."""
+def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[Rollout]:
+    """Build one group of ``Rollout``\\ s from 1D arrays of rewards/lengths/turns —
+    the advantage fns see exactly what ``score_group`` sees."""
     rollouts = []
     for i, reward in enumerate(rewards):
         cl = int(completion_lengths[i]) if completion_lengths is not None else 1
         nt = int(num_turns[i]) if num_turns is not None else 1
         rollouts.append(_make_rollout(float(reward), cl, nt))
-    return _views(rollouts)
+    return rollouts
 
 
 def test_default_advantage_fn_simple_mean():
@@ -260,7 +255,7 @@ def test_efficiency_tokens_with_tool_response_weight():
         _build_rollout(1.0, sampled_lengths=[10], metrics={"rlm_total_tool_response_tokens": 0}),
         _build_rollout(1.0, sampled_lengths=[10], metrics={"rlm_total_tool_response_tokens": 100}),
     ]
-    group = _views(rollouts)
+    group = rollouts
 
     # completion tokens identical (10 each) → completion-only shaping is a no-op
     result_completion_only = default_advantage_fn(group, length_penalty=_TOKENS_COMPLETION)
@@ -283,8 +278,8 @@ def test_efficiency_fractional_weight_with_int_rewards():
     rollouts_float = [_build_rollout(float(r), sampled_lengths=[length]) for r, length in zip(rewards_int, lengths)]
 
     fractional = TokensLengthPenaltyConfig(completion_weight=0.3, tool_response_weight=0.0)
-    int_result = default_advantage_fn(_views(rollouts_int), length_penalty=fractional)
-    float_result = default_advantage_fn(_views(rollouts_float), length_penalty=fractional)
+    int_result = default_advantage_fn(rollouts_int, length_penalty=fractional)
+    float_result = default_advantage_fn(rollouts_float, length_penalty=fractional)
     assert int_result == pytest.approx(float_result, abs=1e-6)
 
 
@@ -323,32 +318,32 @@ def test_efficiency_turns_penalty():
     assert result == pytest.approx([0.625, 0.125, -0.875, 0.125], abs=1e-6)
 
 
-def test_rollout_view_assign_advantages_broadcasts_scalar():
+def test_assign_advantages_broadcasts_scalar():
     """A scalar broadcasts uniformly over the rollout's trainable (mask-True) tokens."""
     rollout = _build_rollout(0.0, sampled_lengths=[2])
     # one user prompt token (masked) + 2 sampled tokens (trainable)
-    RolloutView(rollout).assign_advantages(0.7)
+    rollout.assign_advantages(0.7)
     assert rollout.advantages == [0.0, 0.7, 0.7]
 
 
-def test_rollout_view_assign_advantages_zeros_non_trainable():
+def test_assign_advantages_zeros_non_trainable():
     """Non-trainable (mask=False) positions stay 0.0 under scalar broadcast."""
     # prompt(1, masked) + sampled(1) + obs(1, masked): mask is [F, T, F]
     rollout = _build_rollout(0.0, sampled_lengths=[1], obs_lengths=[1])
-    RolloutView(rollout).assign_advantages(0.7)
+    rollout.assign_advantages(0.7)
     assert rollout.advantages == [0.0, 0.7, 0.0]
 
 
-def test_rollout_view_assign_advantages_rejects_misaligned():
+def test_assign_advantages_rejects_misaligned():
     rollout = _build_rollout(0.0, sampled_lengths=[2])
     # full length is 3 (prompt + 2 sampled); a 1-element list must be rejected
     with pytest.raises(ValueError, match="align"):
-        RolloutView(rollout).assign_advantages([0.5])
+        rollout.assign_advantages([0.5])
 
 
 def test_apply_advantage_fn_broadcasts_group_norm():
     rollouts = [_build_rollout(r, sampled_lengths=[2]) for r in (1.0, 0.5, 0.8)]
-    apply_advantage_fn([RolloutView(r) for r in rollouts], default_advantage_fn)
+    apply_advantage_fn(rollouts, default_advantage_fn)
     # each rollout: [prompt(masked) -> 0.0, sampled, sampled] all sharing the group scalar
     streams = [r.advantages for r in rollouts]
     for s in streams:
@@ -361,7 +356,7 @@ def test_apply_advantage_fn_broadcasts_group_norm():
 def test_apply_advantage_fn_singleton_group_is_zero():
     """A group of size 1 has reward == mean, so its advantage is 0."""
     rollout = _build_rollout(0.7, sampled_lengths=[2])
-    apply_advantage_fn([RolloutView(rollout)], default_advantage_fn)
+    apply_advantage_fn([rollout], default_advantage_fn)
     assert rollout.advantages == pytest.approx([0.0, 0.0, 0.0], abs=1e-6)
 
 
@@ -378,6 +373,6 @@ def test_custom_advantage_algorithm():
     assert result == pytest.approx([2.0, 1.0, 1.6], abs=1e-6)
 
 
-def _dummy_custom_advantage(group: list[RolloutView], scale: float = 1.0) -> list[float]:
+def _dummy_custom_advantage(group: list[Rollout], scale: float = 1.0) -> list[float]:
     """A simple custom advantage for testing — one scalar per rollout."""
-    return [view.reward * scale for view in group]
+    return [rollout.reward * scale for rollout in group]

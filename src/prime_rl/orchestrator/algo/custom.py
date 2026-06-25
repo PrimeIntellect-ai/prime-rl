@@ -10,13 +10,13 @@ from prime_rl.utils.utils import import_object
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.orchestrator.types import RolloutView
+    from prime_rl.orchestrator.types import Rollout
     from prime_rl.utils.client import InferencePool
 
 
 class CustomAlgorithm(Algorithm):
     """User-supplied advantage function — the ``score_group`` hook body without
-    the class: receives the group's ``RolloutView``\\ s, returns one value per
+    the class: receives the group's ``Rollout``\\ s, returns one value per
     rollout (a scalar broadcast over its completion tokens, or a per-token
     list)."""
 
@@ -26,10 +26,10 @@ class CustomAlgorithm(Algorithm):
         custom_fn = import_object(config.import_path)
         kwargs = config.kwargs
 
-        def advantage_fn(group: list[RolloutView]) -> list[float | list[float]]:
+        def advantage_fn(group: list[Rollout]) -> list[float | list[float]]:
             return custom_fn(group, **kwargs)
 
         self.advantage_fn = advantage_fn
 
-    async def score_group(self, group: list[RolloutView]) -> None:
+    async def score_group(self, group: list[Rollout]) -> None:
         apply_advantage_fn(group, self.advantage_fn)

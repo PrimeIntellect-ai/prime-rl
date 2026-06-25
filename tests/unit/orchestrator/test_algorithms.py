@@ -10,7 +10,7 @@ from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout, RolloutView
+from prime_rl.orchestrator.types import Rollout
 from prime_rl.transport.types import TrainingSample
 
 FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
@@ -217,14 +217,14 @@ def test_stamp_advantages_rejects_misaligned():
 
 def test_assign_advantages_scalar_broadcasts_over_mask():
     rollout = _make_rollout([_make_sample()])
-    RolloutView(rollout).assign_advantages(1.0)
+    rollout.assign_advantages(1.0)
     assert rollout.advantages == [0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
 
 
 def test_assign_advantages_list_rejects_misaligned():
     rollout = _make_rollout([_make_sample()])
     with pytest.raises(ValueError, match="align"):
-        RolloutView(rollout).assign_advantages([0.5])
+        rollout.assign_advantages([0.5])
 
 
 # --------------------------------------------------------------------------
@@ -283,7 +283,7 @@ def test_echo_weights_observations_by_role():
     # weighted; the initial prompt [1,2] precedes it and is excluded.
     rollout = _two_turn_rollout()
     algo = _echo_algorithm()  # the default table: tool bodies at 0.1
-    asyncio.run(algo.score_rollout(RolloutView(rollout)))
+    asyncio.run(algo.score_rollout(rollout))
     sample = rollout.samples[0]
     assert sample.token_ids == [1, 2, 3, 4, 5, 6, 7, 8]
     assert sample.mask == [False, False, True, True, False, False, True, True]
@@ -293,13 +293,13 @@ def test_echo_weights_observations_by_role():
     # A user-feedback observation under a role table that weights users.
     rollout = _two_turn_rollout(observation_role="user")
     algo = _echo_algorithm(roles={"tool": {"alpha": 0.1}, "user": {"alpha": 0.05}})
-    asyncio.run(algo.score_rollout(RolloutView(rollout)))
+    asyncio.run(algo.score_rollout(rollout))
     assert rollout.samples[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.05, 0.05, 0.0, 0.0]
 
     # A role not in the table leaves the observation unweighted: no ce stream.
     rollout = _two_turn_rollout(observation_role="user")
     algo = _echo_algorithm()  # tool only
-    asyncio.run(algo.score_rollout(RolloutView(rollout)))
+    asyncio.run(algo.score_rollout(rollout))
     assert rollout.samples[0].ce_weights is None
 
 
@@ -322,7 +322,7 @@ def test_echo_weights_only_content_tokens_when_is_content_present():
     rollout = Rollout(task=vf.Task(idx=0, prompt=None), nodes=nodes, rewards={"r": 1.0}, env_name="test-env")
     rollout.samples = trace_to_samples(rollout, env_name="test-env")
     algo = _echo_algorithm()  # tool bodies at 0.1
-    asyncio.run(algo.score_rollout(RolloutView(rollout)))
+    asyncio.run(algo.score_rollout(rollout))
     # Only position 5 (the body token) is weighted; the scaffold token at position 4 is not.
     assert rollout.samples[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
 
@@ -336,13 +336,13 @@ def test_echo_filter_narrows_selection():
 
     rollout = _two_turn_rollout()
     algo = _echo_algorithm(filter_fn=keep_drop_one)
-    asyncio.run(algo.score_rollout(RolloutView(rollout)))
+    asyncio.run(algo.score_rollout(rollout))
     assert rollout.samples[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
 
     # Shape violations fail loudly: wrong branch count, wrong per-branch length.
     rollout = _two_turn_rollout()
     with pytest.raises(ValueError, match="per trainable branch"):
-        asyncio.run(_echo_algorithm(filter_fn=lambda trace: []).score_rollout(RolloutView(rollout)))
+        asyncio.run(_echo_algorithm(filter_fn=lambda trace: []).score_rollout(rollout))
     rollout = _two_turn_rollout()
     with pytest.raises(ValueError, match="span the branch's tokens"):
-        asyncio.run(_echo_algorithm(filter_fn=lambda trace: [[True] * 6]).score_rollout(RolloutView(rollout)))
+        asyncio.run(_echo_algorithm(filter_fn=lambda trace: [[True] * 6]).score_rollout(rollout))

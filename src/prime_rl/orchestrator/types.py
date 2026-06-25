@@ -71,7 +71,12 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     orchestration metadata lives on it directly (set by the dispatcher once the rollout
     returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
     fields are ``exclude=True``, so dumping a Rollout yields a plain trace — the on-disk
-    ``results.jsonl`` is unchanged."""
+    ``results.jsonl`` is unchanged.
+
+    It is also the single currency the scoring hooks receive: a hook reads the trace
+    directly (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``) and writes
+    credit through :meth:`assign_advantages` (scalar broadcast or per-token), which
+    spreads over the samples' trainable (mask-True) tokens."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)  # ``samples`` holds msgspec structs
 
@@ -90,57 +95,23 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
     eval_step: int | None = Field(default=None, exclude=True)
 
-
-@dataclass(frozen=True)
-class RolloutView:
-    """A finalized rollout as a writable handle — the single currency the
-    scoring hooks operate on. Exposes the env's typed trace (``raw`` → the
-    ``Rollout``/``vf.Trace``), the samples the renderer built, and the
-    rollout's reward; credit is written through :meth:`assign_advantages`,
-    which spreads over the samples' trainable (mask-True) tokens. Deliberately
-    does *not* expose pipeline-internal lifecycle fields (``is_filtered``,
-    ``filter_results``, ``group_id``) or not-yet-assigned credit
-    (``advantages``) — a hook can only touch what is valid at its stage."""
-
-    _rollout: Rollout
-
-    @property
-    def raw(self) -> Rollout:
-        """The underlying typed rollout (a ``vf.Trace``). Custom advantage fns
-        reach trace attributes through here (``view.raw.reward``,
-        ``view.raw.nodes``, ``view.raw.completion_len``)."""
-        return self._rollout
-
-    @property
-    def samples(self) -> list[TrainingSample]:
-        return self._rollout.samples
-
-    @property
-    def reward(self) -> float:
-        return self._rollout.reward
-
-    @property
-    def env_name(self) -> str:
-        return self._rollout.env_name
-
     def assign_advantages(self, values: float | list[float]) -> None:
         """Write the rl advantage stream: a scalar broadcast over the
         rollout's trainable (mask-True) tokens (0.0 elsewhere), or a per-token
         list already aligned full-length to the samples' concatenated
         ``token_ids``. A rollout never assigned ships no advantage stream."""
-        samples = self._rollout.samples
-        total = sum(len(sample.token_ids) for sample in samples)
+        total = sum(len(sample.token_ids) for sample in self.samples)
         if isinstance(values, (int, float)):
-            self._rollout.advantages = [
-                float(values) if trainable else 0.0 for sample in samples for trainable in sample.mask
+            self.advantages = [
+                float(values) if trainable else 0.0 for sample in self.samples for trainable in sample.mask
             ]
             return
         if len(values) != total:
             raise ValueError(
                 f"per-token advantages must align with the rollout's tokens: "
-                f"got {len(values)}, expected {total} (env '{self._rollout.env_name}')."
+                f"got {len(values)}, expected {total} (env '{self.env_name}')."
             )
-        self._rollout.advantages = [float(v) for v in values]
+        self.advantages = [float(v) for v in values]
 
 
 @dataclass

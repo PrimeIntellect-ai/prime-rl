@@ -46,7 +46,6 @@ from typing import TYPE_CHECKING, ClassVar
 
 from prime_rl.configs.algorithm import ActionLossType, AlgorithmConfig, FrozenModelConfig, ModelReference
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
-from prime_rl.orchestrator.types import RolloutView
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -98,8 +97,9 @@ class Algorithm:
       model, if it has one (``model_role``, e.g. "teacher");
     - lifecycle — :meth:`setup` connects client pools to the frozen models
       the algorithm declares, resolving each reference via :meth:`connect`;
-    - the three scoring hooks, each ``async`` and given a :class:`RolloutView`
-      (a writable handle exposing only what is valid at its stage). They are
+    - the three scoring hooks, each ``async`` and given the :class:`Rollout`
+      directly — read the trace, write credit via
+      :meth:`Rollout.assign_advantages`. They are
       async so any stage may do I/O — e.g. a process-reward model at arrival,
       or a judge at group time whose signal a pre-batch filter then reads; a
       hook that only does advantage math simply never awaits.
@@ -148,16 +148,16 @@ class Algorithm:
         self.connected_pools.append(pool)
         return pool
 
-    async def score_rollout(self, rollout: RolloutView) -> None:
+    async def score_rollout(self, rollout: Rollout) -> None:
         """Arrival phase, one rollout, before its group is complete: write
         rollout-local credit (``rollout.assign_advantages``) or observation ce
         weights (echo). No siblings, no group stats."""
 
-    async def score_group(self, group: list[RolloutView]) -> None:
+    async def score_group(self, group: list[Rollout]) -> None:
         """Group phase, the finalized cohort, before filtering: write
         group-relative credit."""
 
-    async def score_batch(self, batch: list[RolloutView]) -> None:
+    async def score_batch(self, batch: list[Rollout]) -> None:
         """Ship phase, survivors only, after filtering, async: query the
         algorithm's reference models and attach per-token results, or modulate
         advantages."""
@@ -166,14 +166,14 @@ class Algorithm:
 async def finalize_rollout(algorithm: Algorithm, rollout: Rollout) -> None:
     """Arrival phase: rollout-local scoring as each rollout is tokenized."""
     if rollout.samples:
-        await algorithm.score_rollout(RolloutView(rollout))
+        await algorithm.score_rollout(rollout)
 
 
 async def finalize_group(algorithm: Algorithm, rollouts: list[Rollout]) -> None:
     """Group phase: group-relative scoring, then stamp each sample's wire
     fields (the advantage stream + loss routing). After this the records are
     frozen — groups die at stamping."""
-    await algorithm.score_group([RolloutView(rollout) for rollout in rollouts])
+    await algorithm.score_group(rollouts)
     for rollout in rollouts:
         stamp_advantages(rollout)
         for sample in rollout.samples:
@@ -191,8 +191,5 @@ async def finalize_batch(train_envs: TrainEnvs, rollouts: list[Rollout]) -> None
         if not rollout.is_filtered:
             by_env[rollout.env_name].append(rollout)
     await asyncio.gather(
-        *(
-            train_envs.get(env_name).algorithm.score_batch([RolloutView(r) for r in env_rollouts])
-            for env_name, env_rollouts in by_env.items()
-        )
+        *(train_envs.get(env_name).algorithm.score_batch(env_rollouts) for env_name, env_rollouts in by_env.items())
     )

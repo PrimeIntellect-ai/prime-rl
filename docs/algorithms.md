@@ -144,10 +144,10 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 | `reward` | `RewardAlgorithm` | `score_rollout`: raw reward |
 | `custom` | `CustomAlgorithm` | `score_group`: your function |
 
-Each class owns its hooks outright — reading one top to bottom reads the algorithm, and everything on the class is an override point. The three hooks are one scope-and-timing ladder — each wider scope is unlocked by a later barrier, so the two axes coincide. Each is handed a `RolloutView` (a writable handle exposing only what is valid at its stage: `raw`, `samples`, `reward`, and `assign_advantages` — never not-yet-assigned credit or pipeline-internal lifecycle fields):
+Each class owns its hooks outright — reading one top to bottom reads the algorithm, and everything on the class is an override point. The three hooks are one scope-and-timing ladder — each wider scope is unlocked by a later barrier, so the two axes coincide. Each is handed the `Rollout` directly — the env's typed trace (`reward`, `nodes`, `num_turns`, ...) with `samples` attached, plus `assign_advantages` to write credit:
 
 - `score_rollout(rollout)` — one rollout, **on arrival** (as it's tokenized, before its group is complete): rollout-local credit (`rollout.assign_advantages(...)`, scalar broadcast or per-token) or observation ce weights. No siblings. `reward` writes its raw reward here; `echo` weights observation tokens here, reading interleaving's `obs_spans` provenance (which maps merged completion positions back to trajectory-step coordinates), looking up each source step's role attribution, applying the optional user filter, and writing the `ce_weights` stream.
-- `score_group(group)` — the cohort, **before filtering** (filters read the streams), synchronous: group-relative credit (GRPO/MaxRL baselines). `group` is a list of `RolloutView`.
+- `score_group(group)` — the cohort, **before filtering** (filters read the streams), synchronous: group-relative credit (GRPO/MaxRL baselines). `group` is a list of `Rollout`.
 - `async score_batch(batch)` — the batch's survivors, **after filtering** (dropped rollouts never cost reference compute), async: the only stage with model access — query the algorithm's reference pool (e.g. `self.teacher_pool`, connected in its `setup()` override via `self.connect(...)` — the live policy pool when the reference is `"policy"`, a freshly connected client pool when frozen) and attach per-token results, or modulate advantages.
 
 The pipeline drives the hooks through three module-level phase functions it never looks inside: `finalize_rollout(algorithm, rollout)` per arrival, `finalize_group(algorithm, rollouts)` per group (scoring + wire stamping; after this the records are frozen — groups die at stamping), and `finalize_batch(train_envs, rollouts)` per batch. Sample construction (interleaving) is pure pipeline — it records the `obs_spans` provenance for any algorithm that trains on env-provided tokens.
@@ -305,7 +305,7 @@ type = "tokens"
 
 ### Custom Advantage
 
-Advantages are computed **per group**. You write a function that takes one group's `RolloutView`s — the same handles the `score_group` hook sees — and returns one value per rollout: a scalar (broadcast over that rollout's completion tokens) or a per-token list aligned to them (for multi-turn envs the merged completion, including interleaved observation tokens). There is no scalar advantage stored anywhere in the pipeline — the scalar is just a convenience the view broadcasts at write time. The orchestrator handles groups of varying size automatically — partial-group training kicks in when some rollouts in a group errored.
+Advantages are computed **per group**. You write a function that takes one group's `Rollout`s — the same objects the `score_group` hook sees — and returns one value per rollout: a scalar (broadcast over that rollout's completion tokens) or a per-token list aligned to them (for multi-turn envs the merged completion, including interleaved observation tokens). There is no scalar advantage stored anywhere in the pipeline — the scalar is just a convenience `assign_advantages` broadcasts at write time. The orchestrator handles groups of varying size automatically — partial-group training kicks in when some rollouts in a group errored.
 
 ```python
 # my_module.py
@@ -325,7 +325,7 @@ import_path = "my_module.normalized_advantage"
 kwargs = { eps = 1e-8 }
 ```
 
-Each `RolloutView` exposes `raw` (the env's untouched `verifiers.RolloutOutput`: turns, tool calls, custom metadata), `samples` (the merged token sequences), and `reward` — so you have the full interleaved rollout, not just the reward. Use this for anything reward-shaping-like that needs trajectory context.
+Each `Rollout` is the env's typed `verifiers.Trace` (turns, tool calls, custom metadata in `info`) with `samples` (the merged token sequences) attached — so you have the full interleaved rollout, not just the reward. Use this for anything reward-shaping-like that needs trajectory context.
 
 Genuinely per-token credit (process rewards, step-level credit assignment) returns shaped lists instead of scalars:
 

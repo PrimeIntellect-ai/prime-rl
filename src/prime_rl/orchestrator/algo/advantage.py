@@ -7,7 +7,7 @@ from jaxtyping import Float
 from torch import Tensor
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import RolloutView
+    from prime_rl.orchestrator.types import Rollout
 
 from prime_rl.configs.algorithm import (
     LengthPenaltyConfig,
@@ -20,19 +20,19 @@ AdvantageFn = Callable[..., list[float | list[float]]]
 """Type for an advantage function.
 
 Expected signature:
-    def my_advantage(group: list[RolloutView], **kwargs) -> list[float | list[float]]:
+    def my_advantage(group: list[Rollout], **kwargs) -> list[float | list[float]]:
         ...
 
-The function receives one finalized group — the same ``RolloutView``\\ s the
-``score_group`` hook sees (``raw`` in step coordinates, ``samples`` in merged
+The function receives one finalized group — the same ``Rollout``\\ s the
+``score_group`` hook sees (the trace in step coordinates, ``samples`` in merged
 token coordinates) — and returns one value per rollout: a scalar (broadcast
 over the rollout's completion tokens) or a per-token list aligned to them.
-`apply_advantage_fn` writes each through ``RolloutView.assign_advantages``.
+`apply_advantage_fn` writes each through ``Rollout.assign_advantages``.
 """
 
 
 def default_advantage_fn(
-    group: list["RolloutView"],
+    group: list["Rollout"],
     length_penalty: LengthPenaltyConfig | None = None,
 ) -> list[float]:
     """Default GRPO advantage for a single group: reward minus per-group baseline.
@@ -46,18 +46,18 @@ def default_advantage_fn(
         w_c = length_penalty.completion_weight
         w_t = length_penalty.tool_response_weight
         costs = torch.tensor(
-            [w_c * get_model_completion_len(v.raw) + w_t * get_tool_response_len(v.raw) for v in group],
+            [w_c * get_model_completion_len(v) + w_t * get_tool_response_len(v) for v in group],
             dtype=rewards.dtype,
         )
         return _efficiency_shaping(rewards, costs).tolist()
     if isinstance(length_penalty, TurnsLengthPenaltyConfig):
-        costs = torch.tensor([v.raw.num_turns for v in group], dtype=rewards.dtype)
+        costs = torch.tensor([v.num_turns for v in group], dtype=rewards.dtype)
         return _efficiency_shaping(rewards, costs).tolist()
 
     return (rewards - rewards.mean()).tolist()
 
 
-def max_rl_advantage_fn(group: list["RolloutView"]) -> list[float]:
+def max_rl_advantage_fn(group: list["Rollout"]) -> list[float]:
     """MaxRL advantage for a single group (arXiv:2602.02710): reward minus the
     per-group mean, divided by that mean — equivalent to averaging score
     functions over successful rollouts only, which makes the policy gradient
@@ -110,16 +110,16 @@ def _efficiency_shaping(
     return shaped_rewards - shaped_rewards.mean()
 
 
-def apply_advantage_fn(group: list["RolloutView"], advantage_fn: AdvantageFn) -> None:
+def apply_advantage_fn(group: list["Rollout"], advantage_fn: AdvantageFn) -> None:
     """Run an advantage function over one finished group and write each
-    rollout's result through :meth:`RolloutView.assign_advantages` (scalar
+    rollout's result through :meth:`Rollout.assign_advantages` (scalar
     broadcast or per-token list). The group-relative algorithms' ``score_group``
     hook delegates here."""
-    for view, advs in zip(group, advantage_fn(group), strict=True):
-        view.assign_advantages(advs)
+    for rollout, advs in zip(group, advantage_fn(group), strict=True):
+        rollout.assign_advantages(advs)
 
 
-def assign_group_norm(group: list["RolloutView"], length_penalty: LengthPenaltyConfig | None) -> None:
+def assign_group_norm(group: list["Rollout"], length_penalty: LengthPenaltyConfig | None) -> None:
     """Group-norm credit (the GRPO default), optionally length-shaped — shared
     by the algorithms whose ``score_group`` is plain group normalization."""
     apply_advantage_fn(group, lambda g: default_advantage_fn(g, length_penalty=length_penalty))

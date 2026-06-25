@@ -18,7 +18,7 @@ turns the signal half into runtime objects (the sampling half is the env's
 - ``advantage`` — pure advantage math (default group-norm + the
   custom-function interface). Advantages are per-token everywhere they are
   stored or shipped — there is no scalar advantage in the pipeline. A
-  function takes ``RolloutView`` objects and returns one value per rollout: a
+  function takes ``Rollout`` objects and returns one value per rollout: a
   scalar that the view *broadcasts* over the rollout's completion tokens
   (uniform credit, the common case), or an explicit per-token list.
 - ``routing`` — wire-field stamping: per-token component weight streams
@@ -51,7 +51,7 @@ from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.reward import RewardAlgorithm
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
-from prime_rl.orchestrator.types import RolloutView
+from prime_rl.orchestrator.types import Rollout
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -91,7 +91,7 @@ __all__ = [
     "OPDAlgorithm",
     "OPSDAlgorithm",
     "RewardAlgorithm",
-    "RolloutView",
+    "Rollout",
     "SFTDistillAlgorithm",
     "apply_advantage_fn",
     "build_algorithm",

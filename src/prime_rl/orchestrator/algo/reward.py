@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from prime_rl.orchestrator.algo.base import Algorithm
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import RolloutView
+    from prime_rl.orchestrator.types import Rollout
 
 
 class RewardAlgorithm(Algorithm):
@@ -13,5 +13,5 @@ class RewardAlgorithm(Algorithm):
     rollout-local — no siblings needed — so it scores on arrival; action
     tokens feed the ``rl`` loss."""
 
-    async def score_rollout(self, rollout: RolloutView) -> None:
+    async def score_rollout(self, rollout: Rollout) -> None:
         rollout.assign_advantages(rollout.reward)

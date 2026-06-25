@@ -9,7 +9,7 @@ from prime_rl.orchestrator.algo.base import Algorithm
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.orchestrator.types import RolloutView
+    from prime_rl.orchestrator.types import Rollout
     from prime_rl.utils.client import InferencePool
 
 
@@ -39,8 +39,8 @@ class OPSDAlgorithm(Algorithm):
     async def setup(self) -> None:
         self.teacher_pool = await self.connect(self.teacher)
 
-    def _ref_prefix_ids(self, rollout: RolloutView) -> list[int]:
-        trace = rollout.raw
+    def _ref_prefix_ids(self, rollout: Rollout) -> list[int]:
+        trace = rollout
         if trace.num_turns != 1:
             raise ValueError(
                 f"opsd supports single-step trajectories only; "
@@ -74,12 +74,12 @@ class OPSDAlgorithm(Algorithm):
         assert self.renderer is not None
         return self.renderer.render_ids(messages, add_generation_prompt=True)
 
-    async def score_batch(self, batch: list[RolloutView]) -> None:
+    async def score_batch(self, batch: list[Rollout]) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         semaphore = asyncio.Semaphore(self.max_concurrent)
 
-        async def score_one(rollout: RolloutView) -> None:
+        async def score_one(rollout: Rollout) -> None:
             prefix_ids = self._ref_prefix_ids(rollout)
             assert len(rollout.samples) == 1  # single-step trajectory → one sample
             sample = rollout.samples[0]

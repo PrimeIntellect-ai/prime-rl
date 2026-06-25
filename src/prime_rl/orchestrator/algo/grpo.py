@@ -9,7 +9,7 @@ from prime_rl.orchestrator.algo.base import Algorithm
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.orchestrator.types import RolloutView
+    from prime_rl.orchestrator.types import Rollout
     from prime_rl.utils.client import InferencePool
 
 
@@ -23,5 +23,5 @@ class GRPOAlgorithm(Algorithm):
         assert isinstance(config, GRPOAlgorithmConfig)
         self.length_penalty = config.length_penalty
 
-    async def score_group(self, group: list[RolloutView]) -> None:
+    async def score_group(self, group: list[Rollout]) -> None:
         assign_group_norm(group, self.length_penalty)
