@@ -57,9 +57,8 @@ class EchoAlgorithm(GRPOAlgorithm):
         (role tags, separators, tool-response wraps) is excluded. Nodes without
         attribution (the default renderer, or relay turns with no token ids)
         fall back to weighting the whole non-sampled span."""
-        trace = rollout
-        trainable_branches = [branch for branch in trace.branches if any(branch.sampled_mask)]
-        filter_masks = self._filter_masks(trace, trainable_branches) if self.filter_fn is not None else None
+        trainable_branches = [branch for branch in rollout.branches if any(branch.sampled_mask)]
+        filter_masks = self._filter_masks(rollout, trainable_branches) if self.filter_fn is not None else None
         for sample_idx, (sample, branch) in enumerate(zip(rollout.samples, trainable_branches)):
             weights = [0.0] * len(sample.token_ids)
             offset = 0

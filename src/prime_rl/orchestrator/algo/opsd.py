@@ -39,24 +39,23 @@ class OPSDAlgorithm(Algorithm):
         self.teacher_pool = await self.connect(self.teacher)
 
     def _ref_prefix_ids(self, rollout: Rollout) -> list[int]:
-        trace = rollout
-        if trace.num_turns != 1:
+        if rollout.num_turns != 1:
             raise ValueError(
                 f"opsd supports single-step trajectories only; "
-                f"env '{rollout.env_name}' produced {trace.num_turns} model turn(s)."
+                f"env '{rollout.env_name}' produced {rollout.num_turns} model turn(s)."
             )
-        demonstration = trace.info.get(self.demo_key)
+        demonstration = rollout.info.get(self.demo_key)
         if demonstration is None:
-            demonstration = getattr(trace.task, self.demo_key, None)
+            demonstration = getattr(rollout.task, self.demo_key, None)
         if demonstration is None:
             raise ValueError(
                 f"opsd requires '{self.demo_key}' in the trace info dict or on the task "
-                f"(env '{rollout.env_name}', task {trace.task.idx})."
+                f"(env '{rollout.env_name}', task {rollout.task.idx})."
             )
 
         # The scoring prompt is the branch's leading non-sampled (input)
         # messages — the context the model conditioned on before responding.
-        branch = trace.branches[0]
+        branch = next(b for b in rollout.branches if any(b.sampled_mask))
         messages = [node.message.model_dump(exclude_none=True) for node in branch.nodes if not node.sampled]
         user_indices = [i for i, m in enumerate(messages) if m.get("role") == "user"]
         if not user_indices:
@@ -85,7 +84,7 @@ class OPSDAlgorithm(Algorithm):
             completion_ids = [t for t, trains in zip(sample.token_ids, sample.mask) if trains]
             async with semaphore:
                 full_logprobs = await pool.score(prefix_ids + completion_ids)
-            completion_logprobs = full_logprobs[-len(completion_ids) :]
+            completion_logprobs = full_logprobs[len(prefix_ids) :]
             # Scatter the demo-conditioned completion logprobs back onto the
             # sample's trainable positions; full-length-N, 0.0 elsewhere.
             ref_logprobs = [0.0] * len(sample.token_ids)

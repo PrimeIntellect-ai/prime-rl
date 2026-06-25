@@ -89,7 +89,7 @@ alpha = 0.25
 [orchestrator.algo.roles.user]
 alpha = 0.05
 
-# or a custom advantage strategy:
+# or a custom algorithm:
 # [orchestrator.algo]
 # type = "custom"
 # import_path = "my_module.normalized_advantage"
@@ -105,8 +105,8 @@ kwargs = { patterns = ["WARNING"] }
 
 ```python
 # my_module.py — sees the raw rollout (message text, sampling logprobs);
-# returns one keep-mask per trajectory step, spanning that step's
-# prompt_ids + completion_ids. False = never echo-trained.
+# returns one keep-mask per trainable branch, spanning that branch's
+# token_ids. False = never echo-trained.
 def drop_warnings(rollout, *, patterns: list[str]) -> list[list[bool]]: ...
 ```
 
@@ -175,7 +175,7 @@ $$
 \mathcal{L} = \frac{\sum \mathcal{L}_{rl}}{N_{rl}} + \frac{\sum \mathcal{L}_{ce}}{N_{ce}} + \frac{\sum \mathcal{L}_{ref\_kl}}{N_{ref\_kl}}
 $$
 
-- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the group-relative advantage strategies (`grpo`, `max_rl`, `custom`, and `echo`'s action tokens).
+- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the group-relative algorithms (`grpo`, `max_rl`, `custom`, and `echo`'s action tokens).
 - `ce` — masked NLL. Used for frozen-model tokens (`sft`) and env-observation tokens (`echo`).
 - `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `opsd`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
@@ -289,7 +289,7 @@ The default advantage is per-group reward minus per-group baseline (DR-GRPO with
 
 This is intentionally simple — it does the right thing for most envs. Switch to a [custom advantage](#custom-advantage) when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …).
 
-Two built-in **length penalties** (`length_penalty` on the `grpo`-family strategies) can be layered on top to discourage rambling: `tokens` penalizes long completions by weighted token cost, `turns` penalizes long multi-turn rollouts by turn count.
+Two built-in **length penalties** (`length_penalty` on the `grpo`-family algorithms) can be layered on top to discourage rambling: `tokens` penalizes long completions by weighted token cost, `turns` penalizes long multi-turn rollouts by turn count.
 
 ```toml
 [orchestrator.algo]

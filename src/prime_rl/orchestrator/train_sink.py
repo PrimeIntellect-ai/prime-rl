@@ -185,8 +185,8 @@ class TrainSink:
             return
 
         # Advantages + per-sample wire stamping (advantage stream, loss
-        # routing, reward, env_name) are the algorithm's job (finalize_group);
-        # the sink only owns the grouping mechanics.
+        # routing) are the algorithm's job (finalize_group); the sink only
+        # owns the grouping mechanics.
         await finalize_group(env.algorithm, survivors)
 
         # The env has a single sampling temperature; fan it out per token
@@ -254,7 +254,7 @@ class TrainSink:
             apply_filters(self.post_filters, cohort)
 
         # Samples are pre-built by ``process_rollout``; ``process_group``
-        # already set advantages/reward on each sample
+        # already stamped the advantage stream and loss routing on each sample
         samples: list[TrainingSample] = []
         prefill_lens: list[int] = []
         decode_lens: list[int] = []

@@ -225,7 +225,7 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     loss_mask = inputs.loss_mask
 
     if ref_logprobs is None:
-        raise ValueError("ref_kl loss type requires ref_logprobs — use an 'opd' or 'opsd' advantage strategy.")
+        raise ValueError("ref_kl loss type requires ref_logprobs — use the 'opd' or 'opsd' algorithm.")
 
     log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs

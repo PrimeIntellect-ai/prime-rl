@@ -138,8 +138,8 @@ class EchoFilterConfig(BaseConfig):
 
     The callable is imported at startup and invoked once per rollout as
     ``filter_fn(rollout, **kwargs) -> list[list[bool]]`` — one keep-mask per
-    trajectory step, each spanning that step's ``prompt_ids`` +
-    ``completion_ids``. Tokens with ``False`` never receive echo weight; the
+    trainable branch, each spanning that branch's ``token_ids``. Tokens with
+    ``False`` never receive echo weight; the
     filter can only narrow the role selection, not widen it. The raw rollout
     exposes message text and sampling logprobs, so content filters (e.g.
     dropping tool-output warnings) and sampling-probability filters need no
@@ -204,6 +204,12 @@ class BaseAlgorithmConfig(BaseConfig):
                 matched = True
             elif self.sampling.source == self.teacher:
                 matched = True
+            else:
+                raise ValueError(
+                    f"algorithm '{self.type}': 'teacher' wants to source rollouts from a frozen model, "
+                    f"but sampling.source is pinned to '{self.sampling.source}'. Drop the explicit "
+                    "sampling.source, or remove 'teacher'."
+                )
         if not matched:
             raise ValueError(
                 f"algorithm '{self.type}': 'teacher' is set but the algorithm references no model — "
@@ -258,10 +264,10 @@ class EchoAlgorithmConfig(GRPOAlgorithmConfig):
     type: Literal["echo"] = "echo"  # type: ignore[assignment]
     """ECHO: group-relative advantage on action tokens (GRPO), plus weighted
     CE on env-provided tokens of later turns (tool output, user feedback),
-    selected by message role via the renderer's per-token attribution
-    (requires ``orchestrator.renderer``; MITO rollouts carry no attribution).
-    Selected tokens feed the ``ce`` loss component at their role's ``alpha``
-    and stay outside the rl mask and its denominator."""
+    selected by message role via the renderer's per-token ``is_content``
+    attribution (renderers that don't attribute content fall back to weighting
+    the whole non-sampled span). Selected tokens feed the ``ce`` loss component
+    at their role's ``alpha`` and stay outside the rl mask and its denominator."""
 
     roles: EchoRolesConfig = EchoRolesConfig(tool=EchoRoleConfig())
     """The role table. The default — tool-response bodies at ``alpha = 0.1``
@@ -292,9 +298,8 @@ class OPDAlgorithmConfig(BaseAlgorithmConfig):
     a reference model, evaluated in the trainer from reference prefill
     logprobs scored over each sample's own context (``ref_logprobs`` on the
     wire, ``ref_kl`` loss component). No scalar advantage is assigned —
-    rollouts keep ``advantage=None`` (advantage-based filters never fire) and
-    samples ship a neutral 0.0; rewards still flow to metrics. ``group_size``
-    only fans out sampling."""
+    rollouts keep ``advantages=None`` (advantage-based filters never fire) and
+    samples ship no advantage stream. ``group_size`` only fans out sampling."""
 
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
     model_role: ClassVar[str] = "teacher"
@@ -317,8 +322,8 @@ class OPSDAlgorithmConfig(BaseAlgorithmConfig):
     first-turn messages with the demonstration woven into the user message via
     ``template``; completion logprobs are aligned back onto the sample.
     Requires single-step trajectories. No scalar advantage is assigned —
-    rollouts keep ``advantage=None`` (advantage-based filters never fire) and
-    samples ship a neutral 0.0."""
+    rollouts keep ``advantages=None`` (advantage-based filters never fire) and
+    samples ship no advantage stream."""
 
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
     model_role: ClassVar[str] = "teacher"
@@ -363,8 +368,9 @@ class SFTAlgorithmConfig(BaseAlgorithmConfig):
 class CustomAlgorithmConfig(BaseAlgorithmConfig):
     type: Literal["custom"] = "custom"
     """Custom advantage function, consumed by the ``rl`` loss component. Returns
-    one scalar per rollout, optionally with per-token advantages aligned to
-    each rollout's completion tokens."""
+    one scalar per rollout (broadcast over its completion tokens), or a
+    full-length-N per-token list aligned to the rollout's concatenated sample
+    token_ids (0.0 on non-trainable positions)."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 

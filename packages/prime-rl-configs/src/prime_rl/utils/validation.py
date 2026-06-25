@@ -22,10 +22,6 @@ def propagate_shared_fields(data: Any) -> Any:
         The original footgun the mutex was designed to catch — a sub-config
         value silently winning over a later CLI shared override — is still
         caught because that scenario produces *different* values.
-      - **Aliased sub-paths**: ``orchestrator.model.*`` (flat) is checked
-        against the nested ``orchestrator.model.*`` spelling and the
-        ``orchestrator.policy.*`` / ``orchestrator.student.*`` aliases, so the
-        conflict fires regardless of which spelling the user wrote.
     """
     if not isinstance(data, dict):
         return data
@@ -52,45 +48,34 @@ def propagate_shared_fields(data: Any) -> Any:
 
     conflicts: list[tuple[str, str]] = []
 
-    def propagate(shared_path: str, *targets: str, aliases: tuple[str, ...] = ()) -> None:
-        """Verbatim shared → targets. Records *disagreeing* overlap (incl. alias
-        spellings) into ``conflicts`` and fills each target if the shared value
-        is set. Matching values are silently accepted so the materialized
-        config round-trips through re-load.
+    def propagate(shared_path: str, *targets: str) -> None:
+        """Verbatim shared → targets. Records *disagreeing* overlap into
+        ``conflicts`` and fills each target if the shared value is set. Matching
+        values are silently accepted so the materialized config round-trips
+        through re-load.
         """
         value = get(shared_path)
         if value is None:
             return
-        for sub in (*targets, *aliases):
-            sub_value = get(sub)
+        for target in targets:
+            sub_value = get(target)
             if sub_value is not None and sub_value != value:
-                conflicts.append((shared_path, sub))
+                conflicts.append((shared_path, target))
         for target in targets:
             fill(target, value)
 
-    # [model] → trainer / orchestrator (flat spelling, re-nested by
-    # fold_policy_shortcuts) / inference.
+    # [model] → trainer / orchestrator / inference.
     propagate(
         "model.name",
         "trainer.model.name",
         "inference.model.name",
         "orchestrator.model.name",
-        aliases=(
-            "orchestrator.model.name",
-            "orchestrator.policy.model.name",
-            "orchestrator.student.model.name",
-        ),
     )
     propagate(
         "model.vlm",
         "trainer.model.vlm",
         "inference.model.vlm",
         "orchestrator.model.vlm",
-        aliases=(
-            "orchestrator.model.vlm",
-            "orchestrator.policy.model.vlm",
-            "orchestrator.student.model.vlm",
-        ),
     )
 
     # [log]

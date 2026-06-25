@@ -26,17 +26,6 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
 
 
-def _scalar_advantage(rollout: "Rollout") -> float | None:
-    """Scalar view of the per-token advantage stream for monitoring: the mean
-    over assigned (non-zero) positions — exact for the uniform GRPO case, 0.0
-    for a zero-advantage group, None when no credit was assigned."""
-    advantages = rollout.advantages
-    if not advantages:
-        return None
-    nonzero = [a for a in advantages if a != 0.0]
-    return sum(nonzero) / len(nonzero) if nonzero else 0.0
-
-
 _SAMPLE_SCHEMA = pa.schema(
     [
         ("run_id", pa.string()),
@@ -359,7 +348,7 @@ class PrimeMonitor(Monitor):
                 {
                     "messages": [m.model_dump(mode="json") for m in branch.messages],
                     "reward": rollout.reward,
-                    "advantage": _scalar_advantage(rollout),
+                    "advantage": rollout.scalar_advantage(),
                     "num_input_tokens": branch.prompt_len,
                     "num_output_tokens": branch.completion_len,
                 }
@@ -381,7 +370,7 @@ class PrimeMonitor(Monitor):
                     "task": rollout.task.model_dump_json(),
                     "info": json.dumps(rollout.info),
                     "reward": rollout.reward,
-                    "advantage": _scalar_advantage(rollout),
+                    "advantage": rollout.scalar_advantage(),
                     "metrics": json.dumps(rollout.metrics),
                     "timing": rollout.timing.model_dump_json(),
                     "num_input_tokens": branches[-1].prompt_len,

@@ -547,8 +547,6 @@ def prepare_batch(
 
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras, num_train_workers, bin_cost)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
-    for micro_batch in micro_batches:
-        _assert_token_arrays_aligned(micro_batch)
 
     # Separate by modality so each step index has uniform modality across all ranks
     mm_batches = [b for b in micro_batches if _is_multimodal_sample(b)]
@@ -557,6 +555,10 @@ def prepare_batch(
     # Pad each group independently so its count is divisible by num_train_workers
     mm_batches = _pad_group_for_distribution(mm_batches, num_train_workers)
     text_batches = _pad_group_for_distribution(text_batches, num_train_workers)
+
+    # Alignment check after distribution padding so the dummy batches are covered too
+    for micro_batch in (*mm_batches, *text_batches):
+        _assert_token_arrays_aligned(micro_batch)
 
     batches_per_gpu: list[list[MicroBatch]] = [[] for _ in range(num_train_workers)]
     for group in (mm_batches, text_batches):

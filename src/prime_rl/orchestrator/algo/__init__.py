@@ -20,7 +20,8 @@ turns the signal half into runtime objects (the sampling half is the env's
   stored or shipped — there is no scalar advantage in the pipeline. A
   function takes ``Rollout`` objects and returns one value per rollout: a
   scalar that is *broadcast* over the rollout's completion tokens
-  (uniform credit, the common case), or an explicit per-token list.
+  (uniform credit, the common case), or an explicit full-length-N per-token
+  list aligned to the concatenated sample token_ids (0.0 off-mask).
 - ``routing`` — wire-field stamping: per-token component weight streams
   (rl / ce / ref_kl) and the per-token advantage stream.
 """

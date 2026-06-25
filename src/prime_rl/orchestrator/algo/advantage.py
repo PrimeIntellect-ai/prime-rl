@@ -26,7 +26,8 @@ Expected signature:
 The function receives one finalized group — the same ``Rollout``\\ s the
 ``score_group`` hook sees (the trace in step coordinates, ``samples`` in merged
 token coordinates) — and returns one value per rollout: a scalar (broadcast
-over the rollout's completion tokens) or a per-token list aligned to them.
+over the rollout's completion tokens) or a full-length-N per-token list aligned
+to the concatenated sample ``token_ids`` (0.0 on non-trainable positions).
 `apply_advantage_fn` writes each through ``Rollout.assign_advantages``.
 """
 

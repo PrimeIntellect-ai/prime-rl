@@ -3,7 +3,7 @@
 The training loss is a sum of three components — ``rl`` (importance-weighted
 PG + KL), ``ce`` (masked NLL), and ``ref_kl`` (reverse KL to a reference model
 as the PG signal) — each normalized by its own global token count in the
-trainer. The advantage strategy decides which component the action tokens feed
+trainer. The algorithm decides which component the action tokens feed
 and the per-token advantages the rl component consumes; these helpers write
 the component weight streams and the advantage stream onto the
 ``TrainingSample`` wire fields at group finalization.

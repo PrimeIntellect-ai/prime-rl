@@ -113,6 +113,15 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
             )
         self.advantages = [float(v) for v in values]
 
+    def scalar_advantage(self) -> float | None:
+        """Scalar view of the per-token advantage stream for monitoring: the
+        mean over assigned (non-zero) positions — exact for the uniform GRPO
+        case, 0.0 for a zero-advantage group, None when no credit was assigned."""
+        if not self.advantages:
+            return None
+        nonzero = [a for a in self.advantages if a != 0.0]
+        return sum(nonzero) / len(nonzero) if nonzero else 0.0
+
 
 @dataclass
 class TrainBatchMetrics:

@@ -352,12 +352,11 @@ def train(config: TrainerConfig):
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
         # Normalize each loss component by its own global (dp_cp) token count, so every rank
-        # divides by the same denominator and the components don't dilute each other — a token
-        # only enters the denominator of the components it belongs to. With a per-rank
-        # denominator, ranks with fewer loss tokens implicitly upweight their per-token gradient
-        # contribution after FSDP averaging. FSDP's per-rank divide is undone after the
-        # microbatch loop via fsdp_gradient_divide_factor. One batched collective keeps every
-        # rank issuing the same op regardless of which components its samples carry.
+        # divides by the same denominator. With a per-rank denominator, ranks with fewer loss
+        # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
+        # FSDP's per-rank divide is undone after the microbatch loop via
+        # fsdp_gradient_divide_factor. One batched collective keeps every rank issuing the same
+        # op regardless of which components its samples carry.
         local_rl_scale = 0
         local_ce_scale = 0
         local_ref_kl_scale = 0
