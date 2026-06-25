@@ -3,7 +3,7 @@
 Each ``Env`` owns a v1 ``EnvServer`` (spawned as a child process, or an
 external one given by ``config.address``) and an ``EnvClient`` to drive it. The
 orchestrator never *runs* an environment: it asks the server for ``info``
-(``num_tasks`` — ``None`` when the taskset is served lazily — + whether group scoring is
+(``num_tasks`` — ``None`` when the taskset is unbounded — + whether group scoring is
 needed), then runs rollouts purely by **task index**. The server returns a ``Trace`` (a plain ``model_dump`` — derived values are
 properties, not serialized) which we validate into a ``Trace[WireTask]`` — a real ``vf.Trace``
 (never a loose dict) whose task keeps the env's
@@ -83,8 +83,8 @@ class Env:
         self.config = config
         self.sampling_args: dict = {}
         self.num_tasks: int | None = None
-        """Task count reported by the server, or ``None`` when the taskset is served lazily
-        (a generator ``load_tasks``, possibly unbounded) — then the caller drives ``task_idx``."""
+        """Task count reported by the server, or ``None`` when the taskset is unbounded
+        (an unbounded generator ``load_tasks``) — then the caller drives ``task_idx``."""
         self.requires_group_scoring: bool = False
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
@@ -114,7 +114,7 @@ class Env:
         self.num_tasks = info.num_tasks
         self.requires_group_scoring = info.requires_group_scoring
         get_logger().info(
-            f"Env {self.name} ready: num_tasks={self.num_tasks if self.num_tasks is not None else 'lazy'} "
+            f"Env {self.name} ready: num_tasks={self.num_tasks if self.num_tasks is not None else 'unbounded'} "
             f"group_scoring={self.requires_group_scoring}"
         )
 
@@ -225,11 +225,9 @@ class EvalEnv(Env):
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
         if self.num_tasks is None:
-            # Lazily-served taskset: no count to enumerate, so eval must be explicitly bounded.
+            # Unbounded taskset: no count to enumerate, so eval must be explicitly bounded.
             if self.config.num_examples < 0:
-                raise ValueError(
-                    f"Env {self.name} is served lazily (no task count); set num_examples to bound the eval"
-                )
+                raise ValueError(f"Env {self.name} is unbounded (no task count); set num_examples to bound the eval")
             n = self.config.num_examples
         else:
             n = self.num_tasks if self.config.num_examples < 0 else min(self.config.num_examples, self.num_tasks)
