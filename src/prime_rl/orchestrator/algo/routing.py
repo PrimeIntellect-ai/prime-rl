@@ -33,7 +33,6 @@ def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType)
     component an algorithm weights them into is the only one that trains
     them.
     """
-    sample.obs_spans = None  # orchestrator-internal provenance, never ships
     if action_loss_type == "rl":
         return
 

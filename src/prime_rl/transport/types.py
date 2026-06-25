@@ -69,15 +69,6 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: list[float] | None = None
 
-    # Orchestrator-internal, cleared before transport: interleaving's
-    # provenance record for env-provided observation tokens — one
-    # ``[completion_start, step_idx, step_prompt_start, length]`` entry per
-    # span that landed as a later-turn prompt extension, mapping sample
-    # positions back to trajectory-step coordinates. Algorithms that train
-    # on observations (echo) consume it at group time and write the
-    # ``ce_weights`` stream directly.
-    obs_spans: list[list[int]] | None = None
-
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""

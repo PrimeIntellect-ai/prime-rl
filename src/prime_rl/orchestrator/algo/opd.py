@@ -27,7 +27,6 @@ class OPDAlgorithm(Algorithm):
     only fans out sampling."""
 
     action_loss_type = "ref_kl"
-    model_role = "teacher"
 
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
