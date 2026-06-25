@@ -172,13 +172,32 @@ class Env:
             sampling["extra_body"] = {**sampling.get("extra_body", {}), "cache_salt": cache_salt}
         return vf.SamplingConfig(**sampling)
 
+    async def sample(self) -> vf.WireTask:
+        """Pull the next task (server-owned cursor + shuffle/epoch). Echoed back to
+        ``run_rollout`` so a non-group env's ``group_size`` rollouts share one task while
+        concurrency is still bounded per rollout."""
+        return await self.env_client.sample()
+
+    async def run_rollout(
+        self, client: vf.ClientConfig, task: vf.WireTask, model_name: str, cache_salt: str | None
+    ) -> Rollout:
+        """Run one rollout of ``task`` (from ``sample()``); return a typed Trace. One permit,
+        freed when this rollout returns — so a slow rollout never holds a whole group's permits."""
+        wire = await self.env_client.run_rollout(
+            task=task,
+            client=client,
+            model=model_name,
+            sampling=self._sampling(cache_salt),
+        )
+        return ROLLOUT_TYPE.model_construct(**dict(wire))
+
     async def run_group(
-        self, client: vf.ClientConfig, model_name: str, group_size: int, cache_salt: str | None
+        self, client: vf.ClientConfig, task: vf.WireTask, model_name: str, group_size: int, cache_salt: str | None
     ) -> list[Rollout]:
-        """Pull the next task and run ``group_size`` rollouts of it; return typed Traces. The
-        server hands out the task (the orchestrator never addresses one); the served task is
-        identified by each Trace's ``task.idx``. A single rollout is just ``group_size=1``."""
+        """Run ``group_size`` rollouts of ``task`` (from ``sample()``), scored together — for
+        group-scored envs (``@group_reward``), which must run + score the group in one place."""
         wires = await self.env_client.run_group(
+            task=task,
             n=group_size,
             client=client,
             model=model_name,

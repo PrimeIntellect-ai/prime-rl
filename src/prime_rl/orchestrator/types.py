@@ -57,10 +57,13 @@ class GroupState:
 
     kind: RolloutKind
     env_name: str
+    task: vf.WireTask | None = None
+    """The group's task, pulled once via `sample()` for a non-group env so its `group_size`
+    rollouts (each a separate `run_rollout(task)`) share one task. None for a group-scored env
+    (its `run_group` pulls the task server-side) and until the first `sample()`."""
     task_idx: int = -1
-    """The served task's idx, known only once a rollout returns (the orchestrator pulls, it
-    doesn't address tasks). Stays -1 for a group that errors before any rollout returns — used
-    only to label error markers; successful rollouts carry the real idx on their own Trace."""
+    """The served task's idx, for logging + error markers. Set from `task.idx` after `sample()`
+    (non-group), else from a returned Trace; -1 until known."""
     rollouts_to_schedule: int = 0
     target_rollouts: int = 0
     emitted: int = 0
