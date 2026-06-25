@@ -131,10 +131,7 @@ class EvalSink:
 
         if valid:
             rewards = [r.reward for r in valid]
-            # completion_len is token-id-derived, so it's 0 on the token-less eval relay
-            # (openai_chat_completions); fall back to provider-reported usage per branch,
-            # as verifiers' own eval dashboard does.
-            lens = [sum(b.completion_len or b.num_completion_tokens for b in r.branches) for r in valid]
+            lens = [sum(b.output_len for b in r.branches) for r in valid]
             metrics.group_size = self.group_size_for(env_name)
             metrics.reward_mean = float(sum(rewards) / len(rewards))
             metrics.completion_len_mean = float(sum(lens) / len(lens))
