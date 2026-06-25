@@ -1,9 +1,8 @@
 """TrainSource: weighted round-robin across train envs, infinite pull.
 
-Weights default to configured ``ratio`` (when every env sets one) or to
-per-env dataset size. A finite env reshuffles its index range on cursor
-exhaustion; an unbounded one (the server reports no ``num_tasks``) streams a
-monotonically increasing ``task_idx`` instead."""
+Weights are each env's ``ratio`` (default 1.0 → equal parts). A finite env reshuffles its
+index range on cursor exhaustion; an unbounded one (the server reports no ``num_tasks``)
+streams a monotonically increasing ``task_idx`` instead."""
 
 from __future__ import annotations
 
@@ -44,17 +43,9 @@ class TrainSource:
             self.env_costs[env.name] = env.config.group_size if env.requires_group_scoring else 1
 
         self.env_names = [e.name for e in self.envs]
-        configured_ratios = [e.config.ratio for e in self.envs]
-        if all(r is not None for r in configured_ratios):
-            self.weights: list[float] = [float(r) for r in configured_ratios]  # type: ignore[arg-type]
-        elif all(self.bounded[name] for name in self.env_names):
-            self.weights = [float(len(self.examples[name])) for name in self.env_names]
-        else:
-            unbounded = [n for n in self.env_names if not self.bounded[n]]
-            raise ValueError(
-                f"unbounded train env(s) {unbounded} have no dataset size to weight by; "
-                "set an explicit `ratio` on every train env"
-            )
+        # Each env's `ratio` is its relative weight (default 1.0 → equal parts); normalized to
+        # probabilities by `random.choices`. No dataset-size weighting (an unbounded env has none).
+        self.weights: list[float] = [float(e.config.ratio) for e in self.envs]
 
     def next_example(self, available_permits: int) -> dict | None:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
