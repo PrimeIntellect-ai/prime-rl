@@ -73,10 +73,6 @@ class InferencePool(Protocol):
         """Update weights on all inference servers."""
         ...
 
-    def get_metrics(self) -> dict[str, float]:
-        """Get pool metrics."""
-        ...
-
     async def stop(self) -> None:
         """Stop the inference pool."""
         ...
@@ -140,9 +136,6 @@ class StaticInferencePool:
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
-
-    def get_metrics(self) -> dict[str, float]:
-        return {}
 
     async def stop(self) -> None:
         pass
