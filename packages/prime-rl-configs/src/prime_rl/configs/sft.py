@@ -32,7 +32,7 @@ class BaseDataConfig(BaseConfig):
     seq_len: int = Field(256, ge=1)
     """Sequence length."""
 
-    pack_function: Literal["cat", "stack"] = "stack"
+    pack_function: Literal["cat", "stack"] = "cat"
     """Sample packing strategy. ``cat`` concatenates; ``stack`` requires ``seq_len`` divisible by 256."""
 
     micro_batch_size: int = Field(1, ge=1)

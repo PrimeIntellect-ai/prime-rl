@@ -179,13 +179,20 @@ def _append_sample_to_pack(pack: dict[str, Any], sample: dict[str, Any]) -> None
             pack["mm_token_type_ids"].extend([0] * sample_len)
         return
 
+    sample_mm_type_ids = sample.get("mm_token_type_ids")
+    if sample_mm_type_ids is not None and len(sample_mm_type_ids) != sample_len:
+        raise ValueError("mm_token_type_ids length must match input_ids length")
+    if pack["mm_kwargs"] is not None and (pack["mm_token_type_ids"] is None) != (sample_mm_type_ids is None):
+        raise ValueError("Cannot pack multimodal samples with mixed mm_token_type_ids")
+
     if pack["mm_kwargs"] is None:
         pack["mm_kwargs"] = {key: value for key, value in sample_mm_kwargs.items()}
     else:
+        if pack["mm_kwargs"].keys() != sample_mm_kwargs.keys():
+            raise ValueError("Cannot pack multimodal samples with different mm_kwargs keys")
         for key, value in sample_mm_kwargs.items():
             pack["mm_kwargs"][key] = torch.cat([pack["mm_kwargs"][key], value], dim=0)
 
-    sample_mm_type_ids = sample.get("mm_token_type_ids")
     if pack["mm_token_type_ids"] is None and sample_mm_type_ids is not None:
         pack["mm_token_type_ids"] = [0] * existing_len
     if pack["mm_token_type_ids"] is not None:
@@ -484,9 +491,8 @@ class SFTDataset(StatefulIterableDataset):
 class CatDataset(StatefulIterableDataset):
     """A dataset that concatenates samples into a single sequence with a fixed length.
 
-    Text-only samples pack with text-only samples. Multimodal samples pack with
-    multimodal samples by concatenating their image kwargs along the leading
-    item dimension. Text-only and multimodal samples never share a pack.
+    Text-only and multimodal samples share the same pack representation. When a
+    pack includes ``mm_token_type_ids``, text-only spans are represented by zeros.
     """
 
     def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
@@ -502,24 +508,22 @@ class CatDataset(StatefulIterableDataset):
 
     def __iter__(self):
         packed_samples = _new_pack()
-        seq_len, has_mm = 0, None
+        seq_len = 0
         for sample in self.dataset:
             sample_len = len(sample["input_ids"])
-            sample_has_mm = sample.get("mm_kwargs") is not None
             would_overflow = seq_len + sample_len > self.seq_len
-            if seq_len > 0 and (sample_has_mm != has_mm or (would_overflow and (has_mm or sample_has_mm))):
+            if seq_len > 0 and would_overflow:
                 yield self._finalize_pack(packed_samples, self.seq_len)
                 packed_samples = _new_pack()
-                seq_len, has_mm = 0, None
+                seq_len = 0
 
             _append_sample_to_pack(packed_samples, sample)
             seq_len += sample_len
-            has_mm = sample_has_mm
 
             if seq_len >= self.seq_len:
                 yield self._finalize_pack(packed_samples, self.seq_len)
                 packed_samples = _new_pack()
-                seq_len, has_mm = 0, None
+                seq_len = 0
 
         if seq_len > 0:
             yield self._finalize_pack(packed_samples, self.seq_len)

@@ -400,31 +400,33 @@ def test_cat_dataset_packs_multimodal_samples():
     assert packed["mm_kwargs"]["image_grid_thw"].tolist() == [[1, 1, 2], [1, 1, 3]]
 
 
-def test_cat_dataset_does_not_mix_text_and_multimodal_samples():
+def test_cat_dataset_packs_text_and_multimodal_samples_together():
     dataset = CatDataset(
         [
+            _sft_sample([1]),
             _sft_sample(
-                [1, 2],
+                [2, 3],
                 mm_kwargs={
                     "pixel_values": torch.ones(2, 3),
                     "image_grid_thw": torch.tensor([[1, 1, 2]]),
                 },
                 mm_token_type_ids=[0, 1],
             ),
-            _sft_sample([3, 4]),
+            _sft_sample([4]),
+            _sft_sample([5, 6]),
         ],
-        seq_len=8,
+        seq_len=5,
     )
 
     dataiter = iter(dataset)
     packed = next(dataiter)
     text_pack = next(dataiter)
 
-    assert packed["input_ids"] == [1, 2]
-    assert packed["seq_lens"] == [2]
+    assert packed["input_ids"] == [1, 2, 3, 4]
+    assert packed["seq_lens"] == [1, 2, 1]
     assert packed["mm_kwargs"] is not None
-    assert packed["mm_token_type_ids"] == [0, 1]
-    assert text_pack["input_ids"] == [3, 4]
+    assert packed["mm_token_type_ids"] == [0, 0, 1, 0]
+    assert text_pack["input_ids"] == [5, 6]
     assert text_pack["seq_lens"] == [2]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
