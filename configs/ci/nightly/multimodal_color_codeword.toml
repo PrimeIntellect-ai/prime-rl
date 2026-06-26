@@ -21,8 +21,9 @@ group_size = 16
 max_completion_tokens = 64
 
 [[orchestrator.train.env]]
-id = "color-codeword"
-args = { images_per_turn = 1, max_turns = 3, num_examples = 1000, seed = 42 }
+name = "color-codeword"
+taskset = { id = "color-codeword-v1", images_per_turn = 1, num_examples = 1000 }
+harness = { id = "default", runtime = { type = "subprocess" } }
 
 [trainer]
 

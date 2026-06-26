@@ -92,17 +92,11 @@ def render_messages(
     tools: list[dict[str, Any]] | None = None,
     chat_template_kwargs: dict[str, Any] | None = None,
     add_generation_prompt: bool = False,
-    processor=None,
 ) -> list[int]:
     kwargs = dict(chat_template_kwargs or {})
     kwargs["add_generation_prompt"] = add_generation_prompt
     if tools is not None:
         kwargs["tools"] = tools
-    if processor is not None:
-        kwargs["tokenize"] = True
-        kwargs["return_dict"] = True
-        result = processor.apply_chat_template(messages, **kwargs)
-        return list(result["input_ids"][0])
     kwargs["return_dict"] = False
     return list(tokenizer.apply_chat_template(messages, **kwargs))
 
@@ -115,7 +109,6 @@ def build_incremental_token_mask(
     tools: list[dict[str, Any]] | None = None,
     chat_template_kwargs: dict[str, Any] | None = None,
     collapse_consecutive_tool_messages: bool = False,
-    processor=None,
 ) -> tuple[list[int], list[bool]]:
     token_mask: list[bool] = []
     prev_ids: list[int] = []
@@ -133,7 +126,6 @@ def build_incremental_token_mask(
             tools=tools,
             chat_template_kwargs=chat_template_kwargs,
             add_generation_prompt=should_add_generation_prompt(messages, idx),
-            processor=processor,
         )
 
         if prev_ids != cur_ids[:prev_len]:

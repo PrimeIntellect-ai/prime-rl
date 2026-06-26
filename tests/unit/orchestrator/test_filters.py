@@ -25,6 +25,21 @@ def _assistant_node(token_ids: list[int], logprobs: list[float]) -> vf.MessageNo
     )
 
 
+def _scaffold_assistant_node(
+    completion_ids: list[int], completion_logprobs: list[float], *, scaffold: int = 2
+) -> vf.MessageNode:
+    """A realistic v1 assistant node: a leading generation-prompt scaffold (mask=False, not
+    model-sampled) then the sampled completion. ``logprobs`` cover only the completion suffix
+    (vLLM returns logprobs for generated tokens only) — the exact layout where per-node
+    ``zip(token_ids, logprobs, mask)`` mispairs and the branch streams normalize."""
+    return vf.MessageNode(
+        message=vf.AssistantMessage(content="x"),
+        token_ids=[1] * scaffold + completion_ids,
+        mask=[False] * scaffold + [True] * len(completion_ids),
+        logprobs=completion_logprobs,
+    )
+
+
 def _make_rollout(
     completion_ids: list[int],
     completion_logprobs: list[float],
@@ -74,7 +89,6 @@ def test_gibberish_detects_rare_low_prob_token():
         )
     )
     assert result.detected is True
-    assert result.detection_index == 1
 
 
 def test_gibberish_ignores_normal_tokens():
@@ -87,7 +101,6 @@ def test_gibberish_ignores_normal_tokens():
         )
     )
     assert result.detected is False
-    assert result.detection_index is None
 
 
 def test_gibberish_ignores_high_prob_rare_token():
@@ -113,7 +126,23 @@ def test_gibberish_works_across_trajectory_steps():
         )
     )
     assert result.detected is True
-    assert result.detection_index == 2
+
+
+def test_gibberish_aligns_logprobs_under_generation_prompt_scaffold():
+    """Regression: the assistant node carries a generation-prompt scaffold (mask=False) and
+    suffix-only logprobs, and the gibberish token is the LAST completion token. The old
+    per-node ``zip(token_ids, logprobs, mask)`` truncated at len(logprobs) and never examined
+    it; reading the aligned branch streams detects it."""
+    gibberish_filter = _make_gibberish_filter()
+
+    rollout = Rollout[vf.Task](
+        task=vf.Task(idx=0, prompt=""),
+        nodes=[_scaffold_assistant_node([50, 80, 120_000], [-1.0, -0.5, gibberish_filter.logprob_threshold - 1.0])],
+        rewards={"reward": 1.0},
+    )
+
+    result = gibberish_filter.check(rollout)
+    assert result.detected is True
 
 
 # --- RepetitionFilter tests ---
@@ -129,7 +158,6 @@ def test_repetition_triggers_after_window():
         )
     )
     assert result.detected is True
-    assert result.detection_index == 4
 
 
 def test_repetition_no_trigger_below_window():
