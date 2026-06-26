@@ -36,6 +36,7 @@ class TensorMicroBatch(TypedDict):
 
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
+    seq_lens: Int[Tensor, "segments"] | None
 
     # MoE router replay
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
@@ -130,6 +131,7 @@ class FakeDataLoader:
             "sequence_lengths": sequence_lengths,
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
+            "seq_lens": None,
             "routed_experts": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
@@ -161,6 +163,7 @@ class FakeDataLoader:
             "sequence_lengths": [self.seq_len],
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
+            "seq_lens": None,
             "routed_experts": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
@@ -183,6 +186,7 @@ class DataLoader:
         tokenizer: PreTrainedTokenizer,
         bin_cost: Callable[[Sequence[int]], int],
         config: TransportConfig,
+        pack_multimodal: bool = False,
     ):
         self.world = get_world()
 
@@ -195,6 +199,7 @@ class DataLoader:
                 pad_to_multiple_of=pad_to_multiple_of,
                 bin_cost=bin_cost,
                 start_step=start_step,
+                pack_multimodal=pack_multimodal,
             )
 
         non_dp_world_size = self.world.world_size // dp_world_size
@@ -259,6 +264,7 @@ class DataLoader:
             env_names=micro_batch.env_names,
             sequence_lengths=micro_batch.sequence_lengths,
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
+            seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long) if micro_batch.seq_lens is not None else None,
             mm_kwargs=mm_kwargs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
             if micro_batch.mm_token_type_ids is not None

@@ -56,7 +56,11 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 from prime_rl.utils.utils import format_time
-from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
+from prime_rl.utils.vlm import (
+    get_language_model,
+    get_vision_encoder,
+    is_vlm_architecture,
+)
 
 
 def pre_download_model(model_name: str) -> None:
@@ -1179,6 +1183,7 @@ def forward(
     # not a renderer/processor output.
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
+    seq_lens: Int[Tensor, "segments"] | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
     kwargs = {
@@ -1194,12 +1199,13 @@ def forward(
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        # ``position_ids`` for MRoPE families: Qwen3-VL's HF forward
-        # recomputes 3D positions from ``image_grid_thw`` and breaks if
-        # given the trainer's pre-computed 1D ``position_ids``. Detect
-        # via the mm_kwargs shape so we don't enumerate model_types.
+        # Qwen-style MRoPE models compute 3D multimodal positions from
+        # ``image_grid_thw`` internally; trainer 2D positions are only valid for
+        # non-MRoPE multimodal models.
         if "image_grid_thw" not in mm_kwargs:
             kwargs["position_ids"] = position_ids
+        elif seq_lens is not None:
+            kwargs["seq_lens"] = seq_lens
     else:
         kwargs["position_ids"] = position_ids
 

@@ -23,6 +23,9 @@ class VLMModelInfo:
     language_model_attr: str
 
 
+PACKED_MM_ATTN_IMPLS = ("flash_attention_2", "flash_attention_3", "fa4")
+
+
 # Central registry: model_type -> architecture info.
 VLM_REGISTRY: dict[str, VLMModelInfo] = {
     "qwen3_vl": VLMModelInfo(vision_encoder_attr="model.visual", language_model_attr="model.language_model"),
@@ -97,6 +100,38 @@ def get_final_logit_softcapping(model_config: PretrainedConfig) -> float | None:
     return getattr(model_config.get_text_config(), "final_logit_softcapping", None)
 
 
+def supports_packed_multimodal_training(model: nn.Module) -> bool:
+    """Return whether the model advertises safe packed multimodal training."""
+    for candidate in _iter_wrapped_modules(model):
+        supported = getattr(candidate, "supports_packed_multimodal_training", None)
+        if supported is not None:
+            return bool(supported)
+
+    return False
+
+
+def get_packed_mm_disabled_reasons(
+    model: nn.Module,
+    *,
+    enabled: bool,
+    attn_impl: str,
+    cp_enabled: bool,
+    cp_size: int | None = None,
+) -> list[str]:
+    """Return reasons multimodal packing should be disabled for this runtime."""
+    reasons = []
+    if not enabled:
+        reasons.append("trainer.pack_multimodal=false")
+    if not supports_packed_multimodal_training(model):
+        reasons.append("model_support=false")
+    if attn_impl not in PACKED_MM_ATTN_IMPLS:
+        reasons.append(f"attn={attn_impl}")
+    if cp_enabled:
+        cp_label = cp_size if cp_size is not None else "enabled"
+        reasons.append(f"cp={cp_label}")
+    return reasons
+
+
 def get_layer_prefix(model_config: PretrainedConfig, override: str | None = None) -> str:
     """Return the weight key prefix for language model layers.
 
@@ -133,3 +168,13 @@ def _resolve_attr(obj, dotted_path: str):
         if obj is None:
             return None
     return obj
+
+
+def _iter_wrapped_modules(model: nn.Module):
+    """Yield a module and common wrapper inners without depending on wrapper types."""
+    seen: set[int] = set()
+    current = model
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = getattr(current, "module", None)

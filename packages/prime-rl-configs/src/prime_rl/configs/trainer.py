@@ -568,6 +568,9 @@ class TrainerConfig(BaseConfig):
     enable_token_export: bool = False
     """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
 
+    pack_multimodal: bool = True
+    """Pack multimodal samples together when the active model path supports packed multimodal position boundaries. Default-on, but the trainer gates it off for unsupported VLM/HF MRoPE paths, non-varlen attention, or context parallelism."""
+
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
         if self.model.ep_comm_backend == "deepep" and self.optim.max_norm is not None:

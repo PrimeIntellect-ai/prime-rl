@@ -26,6 +26,7 @@ from prime_rl.utils.cp import (
     shard_for_cp,
 )
 from prime_rl.utils.logger import format_time, setup_logger
+from prime_rl.utils.vlm import get_packed_mm_disabled_reasons, supports_packed_multimodal_training
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
@@ -149,6 +150,19 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
+    mm_pack_reasons = get_packed_mm_disabled_reasons(
+        model,
+        enabled=config.pack_multimodal,
+        attn_impl=config.model.attn,
+        cp_enabled=parallel_dims.cp_enabled,
+        cp_size=config.model.cp,
+    )
+    pack_multimodal = not mm_pack_reasons
+    if pack_multimodal:
+        logger.info("Multimodal packing enabled")
+    elif config.model.vlm is not None or supports_packed_multimodal_training(model):
+        logger.info(f"Multimodal packing disabled ({', '.join(mm_pack_reasons)})")
+
     # Set up the loss function
     logger.info(f"Setting up loss function ({config.loss})")
     loss_fns = setup_loss_fns(config.loss)
@@ -239,6 +253,7 @@ def train(config: TrainerConfig):
             tokenizer,
             build_bin_cost(model.config),
             config.rollout_transport,
+            pack_multimodal=pack_multimodal,
         )
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
@@ -401,6 +416,7 @@ def train(config: TrainerConfig):
                 if micro_batch.get("mm_token_type_ids") is not None
                 else None
             )
+            seq_lens = micro_batch["seq_lens"].to("cuda") if micro_batch.get("seq_lens") is not None else None
 
             labels = shift_tensor_left(input_ids)
 
@@ -446,6 +462,7 @@ def train(config: TrainerConfig):
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
+                    seq_lens=seq_lens,
                     routed_experts=routed_experts,
                 )
 

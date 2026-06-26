@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Generator
 
+import numpy as np
 import pytest
 import tomli_w
 import torch
@@ -12,7 +13,7 @@ from prime_rl.trainer.rl.packer import MultiPacker
 from prime_rl.trainer.runs import setup_multi_run_manager
 from prime_rl.trainer.utils import build_bin_cost
 from prime_rl.trainer.world import reset_world
-from prime_rl.transport.types import TrainingSample
+from prime_rl.transport.types import EncodedTensor, TrainingSample
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -49,6 +50,68 @@ def make_training_sample() -> TrainingSample:
         temperatures=[1.0, 1.0],
         env_name="test-env",
     )
+
+
+def _encoded_tensor(data, dtype) -> EncodedTensor:
+    arr = np.asarray(data, dtype=dtype)
+    return EncodedTensor(dtype=str(arr.dtype), shape=list(arr.shape), data=arr.tobytes())
+
+
+def _decode_encoded_tensor(encoded: EncodedTensor):
+    return np.frombuffer(encoded.data, dtype=np.dtype(encoded.dtype)).reshape(encoded.shape).tolist()
+
+
+def _mm_sample(value: float, env_name: str = "test-env") -> TrainingSample:
+    return TrainingSample(
+        token_ids=[1, 250, 2],
+        mask=[False, True, True],
+        logprobs=[0.0, -0.1, -0.2],
+        temperatures=[1.0, 1.0, 1.0],
+        env_name=env_name,
+        advantage=1.0,
+        mm_token_type_ids=[0, 1, 0],
+        mm_kwargs={
+            "pixel_values": _encoded_tensor([[value, value + 1]], np.float32),
+            "image_grid_thw": _encoded_tensor([[1, 2, 2]], np.int64),
+        },
+    )
+
+
+def _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size, seq_len, pack_multimodal: bool = False):
+    """Set up a MultiPacker over two discovered runs; capture sent grids."""
+    reset_world()
+    runs._MULTI_RUN_MANAGER = None
+    manager = setup_multi_run_manager(output_dir=tmp_path, max_runs=2, device=torch.device("cpu"))
+    create_run_with_config(tmp_path, "run_a")
+    create_run_with_config(tmp_path, "run_b")
+    manager.discover_runs()
+
+    sent: list = []
+
+    class DummyReceiver:
+        def receive(self):
+            return []
+
+        def reset_run(self, idx):
+            pass
+
+    class DummySender:
+        def send(self, micro_batch_grid):
+            sent.append(micro_batch_grid)
+
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_training_batch_receiver", lambda _c: DummyReceiver())
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_micro_batch_sender", lambda *a, **k: DummySender())
+    packer = MultiPacker(
+        dp_world_size=dp_world_size,
+        seq_len=seq_len,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        config=FileSystemTransportConfig(),
+        bin_cost=build_bin_cost(None),
+        start_step=0,
+        pack_multimodal=pack_multimodal,
+    )
+    return manager, packer, sent
 
 
 def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,3 +176,82 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     micro_batch = sender.sent[0][0][0]
     assert micro_batch.run_id == "run_test123"
     assert micro_batch.run_step == 0
+
+
+def test_multipacker_pack_preserves_mm_kwargs_modality_and_run_tagging(tmp_path, monkeypatch):
+    """MultiPacker keeps multimodal and text microbatches aligned across ranks."""
+    from prime_rl.trainer.batch import _is_multimodal_sample
+
+    manager, packer, sent = _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size=2, seq_len=3)
+    a, b = manager.id_2_idx["run_a"], manager.id_2_idx["run_b"]
+    for idx, value in ((a, 1.0), (b, 10.0)):
+        packer.buffers[idx].append((_mm_sample(value), 0))
+        packer.buffers[idx].append((make_training_sample(), 0))
+
+    packer.pack()
+    assert sent, "pack() sent nothing"
+    grid = sent[-1]
+    assert len(grid) == 2
+
+    for step_mbs in zip(*grid):
+        assert len({_is_multimodal_sample(mb) for mb in step_mbs}) == 1
+
+    mm_mbs = [mb for rank in grid for mb in rank if _is_multimodal_sample(mb)]
+    assert mm_mbs, "no MM microbatches produced"
+    real_run_idxs = set()
+    for mb in mm_mbs:
+        assert mb.mm_kwargs is not None
+        if any(mb.loss_mask):
+            tagged = [i for i, n in enumerate(mb.lora_num_tokens) if n > 0]
+            assert len(tagged) == 1 and mb.lora_num_tokens[tagged[0]] == len(mb.input_ids)
+            real_run_idxs.add(tagged[0])
+    assert real_run_idxs == {a, b}, f"both runs' MM should be tagged; got {real_run_idxs}"
+
+
+def test_multipacker_pack_mm_padding_is_zero_loss(tmp_path, monkeypatch):
+    """A lone MM sample forces a dummy MM microbatch for rank padding; it must be zero-loss."""
+    from prime_rl.trainer.batch import _is_multimodal_sample
+
+    manager, packer, sent = _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size=2, seq_len=3)
+    a, b = manager.id_2_idx["run_a"], manager.id_2_idx["run_b"]
+    packer.buffers[a].append((_mm_sample(1.0), 0))
+    packer.buffers[b].append((make_training_sample(), 0))
+
+    packer.pack()
+    assert sent
+    grid = sent[-1]
+    mm_mbs = [mb for rank in grid for mb in rank if _is_multimodal_sample(mb)]
+    dummies = [mb for mb in mm_mbs if not any(mb.loss_mask)]
+    assert dummies, "expected a zero-loss dummy MM padding microbatch"
+    for dummy in dummies:
+        assert all(advantage == 0.0 for advantage in dummy.advantages)
+
+
+def test_multipacker_pack_packs_mm_kwargs_within_each_run_when_enabled(tmp_path, monkeypatch):
+    """Compatible eager multimodal samples pack within a run but never across runs."""
+    from prime_rl.trainer.batch import _is_multimodal_sample
+
+    manager, packer, sent = _packer_with_two_runs(
+        tmp_path, monkeypatch, dp_world_size=2, seq_len=6, pack_multimodal=True
+    )
+    a, b = manager.id_2_idx["run_a"], manager.id_2_idx["run_b"]
+    for idx, base in ((a, 1.0), (b, 10.0)):
+        packer.buffers[idx].append((_mm_sample(base), 0))
+        packer.buffers[idx].append((_mm_sample(base + 2), 0))
+
+    packer.pack()
+    assert sent
+    grid = sent[-1]
+    real_mm_mbs = [mb for rank in grid for mb in rank if _is_multimodal_sample(mb) and any(mb.loss_mask)]
+
+    assert len(real_mm_mbs) == 2
+    for mb in real_mm_mbs:
+        assert len(mb.input_ids) == 6
+        assert mb.position_ids == [0, 1, 2, 0, 1, 2]
+        assert mb.seq_lens == [3, 3]
+        assert mb.mm_kwargs is not None
+        assert mb.mm_kwargs["pixel_values"].shape == [2, 2]
+        assert mb.mm_kwargs["image_grid_thw"].shape == [2, 3]
+        assert len(_decode_encoded_tensor(mb.mm_kwargs["pixel_values"])) == 2
+        tagged = [i for i, n in enumerate(mb.lora_num_tokens) if n > 0]
+        assert len(tagged) == 1
