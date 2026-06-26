@@ -18,6 +18,9 @@ class DisabledTokenExporter:
     def export(self, *args: Any, **kwargs: Any) -> None:
         return
 
+    def mark_stable(self, ready_run_ids: set[str] | None = None) -> None:
+        return
+
     def close(self) -> None:
         return
 
@@ -30,10 +33,10 @@ class TokenExporter:
     ) -> None:
         self.rank = rank
         self.output_dir = output_dir / "token_exports"
-        self._file: Any | None = None
         self._closed = False
-        self._current_step: int | None = None
-        self._sequences_this_step = 0
+        self._initialized_files: set[tuple[str | None, int, int]] = set()
+        self._sequences_by_file: dict[tuple[str | None, int, int], int] = {}
+        self._pending_stable_dirs: dict[str | None, set[Path]] = {}
         atexit.register(self.close)
 
     def export(
@@ -42,17 +45,17 @@ class TokenExporter:
         micro_step: int,
         micro_batch: Mapping[str, Any],
         model_output: Mapping[str, Tensor],
-        response_lengths: list[int],
+        sequence_lengths: list[int],
         loss_config: Any,
     ) -> None:
-        if self._current_step != step:
-            self._start_step(step)
-
         columns = _export_columns(micro_batch, model_output, loss_config)
         _check_lengths(columns)
+        run_id = micro_batch.get("run_id")
+        export_step = micro_batch.get("run_step") if micro_batch.get("run_step") is not None else step
+        file_key = (run_id, export_step, self.rank)
 
         start = 0
-        for micro_sequence_idx, length in enumerate(response_lengths):
+        for micro_sequence_idx, length in enumerate(sequence_lengths):
             raw_end = start + length
             end = _trim_padding(columns, start, raw_end)
             if end > start and any(columns["loss_mask"][start:end]):
@@ -60,54 +63,73 @@ class TokenExporter:
                     {
                         "schema_version": SCHEMA_VERSION,
                         "step": step,
+                        "export_step": export_step,
                         "rank": self.rank,
                         "micro_step": micro_step,
                         "micro_sequence_idx": micro_sequence_idx,
-                        "export_sequence_idx": self._sequences_this_step,
+                        "export_sequence_idx": self._sequences_by_file.get(file_key, 0),
+                        "run_id": run_id,
                         "env_name": _first_non_empty(columns["env_names"][start:end]),
                         "training_mode": str(micro_batch["training_mode"]),
                         **_slice_columns(columns, start, end),
-                    }
+                    },
+                    run_id,
+                    export_step,
                 )
-                self._sequences_this_step += 1
+                self._sequences_by_file[file_key] = self._sequences_by_file.get(file_key, 0) + 1
             start = raw_end
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        if self._file is not None:
-            self._file.close()
-            self._file = None
 
-    def _start_step(self, step: int) -> None:
+    def mark_stable(self, ready_run_ids: set[str] | None = None) -> None:
+        # A single run step's sequences can span multiple trainer steps (the packer
+        # splits a run step across packs when it exceeds the token budget). Only
+        # finalize a run's export dir once that run step is fully consumed — the same
+        # `ready_to_update` signal that gates its optimizer step. ``run_id is None``
+        # is single-run export, where a step never spans trainer steps, so mark it now.
+        # The caller barriers first so a STABLE only lands after every rank flushed.
+        ready_run_ids = ready_run_ids or set()
+        for run_id in [rid for rid in self._pending_stable_dirs if rid is None or rid in ready_run_ids]:
+            for stable_dir in self._pending_stable_dirs.pop(run_id):
+                (stable_dir / "STABLE").touch()
+
+    def _export_dir(self, export_step: int, run_id: str | None) -> Path:
+        if run_id is not None:
+            return self.output_dir.parent / run_id / "token_exports" / f"step_{export_step}"
+        return self.output_dir / f"step_{export_step}"
+
+    def _export_file(self, export_step: int, run_id: str | None) -> Path:
         if self._closed:
             raise RuntimeError(f"Token exporter is closed for {self.output_dir}")
-        if self._file is not None:
-            self._file.close()
-        self._current_step = step
-        self._sequences_this_step = 0
-        step_dir = self.output_dir / f"step_{step}"
+
+        step_dir = self._export_dir(export_step, run_id)
         try:
             step_dir.mkdir(parents=True, exist_ok=True)
         except FileExistsError:
             if not step_dir.is_dir():
                 raise
-        self._file = (step_dir / f"rank_{self.rank}.jsonl").open("w", encoding="utf-8")
+        return step_dir / f"rank_{self.rank}.jsonl"
 
-    def _write(self, record: dict[str, Any]) -> None:
+    def _write(self, record: dict[str, Any], run_id: str | None, export_step: int) -> None:
         if self._closed:
             raise RuntimeError(f"Token exporter is closed for {self.output_dir}")
-        if self._file is None:
-            raise RuntimeError("Token exporter has no active step file")
-        self._file.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
+
+        file_key = (run_id, export_step, self.rank)
+        mode = "a" if file_key in self._initialized_files else "w"
+        export_file = self._export_file(export_step, run_id)
+        with export_file.open(mode, encoding="utf-8") as file:
+            file.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
+        self._initialized_files.add(file_key)
+        self._pending_stable_dirs.setdefault(run_id, set()).add(export_file.parent)
 
 
 def setup_token_exporter(
     config: TrainerConfig, parallel_dims: Any, world: Any, logger: Any
 ) -> TokenExporter | DisabledTokenExporter:
-    token_export_config = config.experimental.token_export
-    if token_export_config is None:
+    if not config.enable_token_export:
         return DisabledTokenExporter()
     if parallel_dims.cp_enabled and parallel_dims.world_mesh["cp"].get_local_rank() != 0:
         return DisabledTokenExporter()

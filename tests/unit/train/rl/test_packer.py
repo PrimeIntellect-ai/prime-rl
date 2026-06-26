@@ -10,6 +10,7 @@ import prime_rl.trainer.runs as runs
 from prime_rl.configs.shared import FileSystemTransportConfig
 from prime_rl.trainer.rl.packer import MultiPacker
 from prime_rl.trainer.runs import setup_multi_run_manager
+from prime_rl.trainer.utils import build_bin_cost
 from prime_rl.trainer.world import reset_world
 from prime_rl.transport.types import TrainingSample
 
@@ -32,8 +33,8 @@ def create_run_with_config(output_dir: Path, run_name: str) -> Path:
         "group_size": 1,
         "env": [{"id": "test-env"}],
         "sampling": {"temperature": 1.0},
-        # test-model isn't in MODEL_RENDERER_MAP; bypass the renderer-resolution validator.
-        "renderer": "None",
+        # test-model isn't in MODEL_RENDERER_MAP; use the explicit default renderer.
+        "renderer": {"name": "default"},
     }
     with open(control_dir / "orch.toml", "wb") as f:
         tomli_w.dump(config, f)
@@ -42,12 +43,10 @@ def create_run_with_config(output_dir: Path, run_name: str) -> Path:
 
 def make_training_sample() -> TrainingSample:
     return TrainingSample(
-        prompt_ids=[1],
-        prompt_mask=[False],
-        completion_ids=[2],
-        completion_mask=[True],
-        completion_logprobs=[-0.1],
-        completion_temperatures=[1.0],
+        token_ids=[1, 2],
+        mask=[False, True],
+        logprobs=[0.0, -0.1],
+        temperatures=[1.0, 1.0],
         env_name="test-env",
     )
 
@@ -94,6 +93,7 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
         pad_to_multiple_of=1,
         tokenizer=None,
         config=FileSystemTransportConfig(),
+        bin_cost=build_bin_cost(None),
         start_step=0,
     )
 
@@ -110,3 +110,6 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     sender = sender_holder["sender"]
     assert len(sender.sent) == 1
     assert len(sender.sent[0][0]) == 1
+    micro_batch = sender.sent[0][0][0]
+    assert micro_batch.run_id == "run_test123"
+    assert micro_batch.run_step == 0

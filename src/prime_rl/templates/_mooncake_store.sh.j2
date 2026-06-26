@@ -1,0 +1,42 @@
+{#- Mooncake distributed store (shared pool across inference nodes) for KV cache offload.
+    One master + HTTP metadata server runs on the head inference node (first in the SLURM
+    nodelist); every inference node runs a client that contributes its DRAM/SSD segment to
+    that single pool, so any node can reuse prefixes cached by any other. Included by the
+    SLURM templates inside the per-node `bash -c` body, so NO single quotes / apostrophes.
+    Requires shell vars: LOCAL_IP, INFER_NODE_RANK, OUTPUT_DIR (and SLURM env).
+    Requires jinja vars: kv_offload_cpu_bytes, kv_offload_disk_path, kv_offload_device_name.
+    Exports PYTHONHASHSEED + MOONCAKE_CONFIG_PATH for the vLLM process. (VLLM_RPC_BASE_PATH,
+    used by the mooncake-store lookup ipc socket, is set per-rank in _launch_rank.sh.j2.) -#}
+    # ---- Mooncake distributed store (shared pool across inference nodes) ----
+    MC_DIR="$OUTPUT_DIR/mooncake/node_${INFER_NODE_RANK}"
+    mkdir -p "$MC_DIR"
+    export PYTHONHASHSEED=0
+    export MOONCAKE_CONFIG_PATH="$MC_DIR/config.json"
+    # The head inference node (first in the nodelist) hosts the one master + metadata server.
+    MC_HEAD=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -1)
+    MC_MASTER="$MC_HEAD:50051"
+    MC_METADATA="http://$MC_HEAD:8080/metadata"
+{%- if kv_offload_disk_path %}
+    mkdir -p "{{ kv_offload_disk_path }}"
+    export MOONCAKE_OFFLOAD_FSDIR="{{ kv_offload_disk_path }}"
+    export MOONCAKE_OFFLOAD_FILE_STORAGE_PATH="{{ kv_offload_disk_path }}"
+    export MOONCAKE_OFFLOAD_ENABLE_EVICTION=true
+{%- endif %}
+    if [ "$SLURMD_NODENAME" = "$MC_HEAD" ]; then
+{%- if kv_offload_disk_path %}
+        mooncake_master -rpc_port=50051 -enable_http_metadata_server -http_metadata_server_host=0.0.0.0 -http_metadata_server_port=8080 -default_kv_lease_ttl=3600000 -enable_offload=true -root_fs_dir={{ kv_offload_disk_path }} > "$MC_DIR/master.log" 2>&1 &
+{%- else %}
+        # default_kv_lease_ttl raised from 5s: KV blocks were expiring before the decode side
+        # reused them ("invalid KV blocks ... may have expired"), the real non-NIC config issue.
+        mooncake_master -rpc_port=50051 -enable_http_metadata_server -http_metadata_server_host=0.0.0.0 -http_metadata_server_port=8080 -default_kv_lease_ttl=3600000 > "$MC_DIR/master.log" 2>&1 &
+{%- endif %}
+    fi
+    # Every node waits for the shared master + metadata, then contributes its segment.
+    for _ in $(seq 1 120); do timeout 1 bash -c "echo > /dev/tcp/$MC_HEAD/50051" 2>/dev/null && break; sleep 1; done
+    for _ in $(seq 1 120); do timeout 1 bash -c "echo > /dev/tcp/$MC_HEAD/8080" 2>/dev/null && break; sleep 1; done
+    mooncake_client -host=$LOCAL_IP -port=50052 -master_server_address=$MC_MASTER -metadata_server=$MC_METADATA -protocol=rdma -global_segment_size={{ kv_offload_cpu_bytes }}{% if kv_offload_device_name %} -device_names={{ kv_offload_device_name }}{% endif %}{% if kv_offload_disk_path %} -enable_offload=true{% endif %} > "$MC_DIR/client.log" 2>&1 &
+    for _ in $(seq 1 60); do timeout 1 bash -c "echo > /dev/tcp/$LOCAL_IP/50052" 2>/dev/null && break; sleep 1; done
+    cat > "$MOONCAKE_CONFIG_PATH" <<MOONCAKE_JSON
+{"mode":"standalone-store","global_segment_size":0,"local_buffer_size":4294967296,"protocol":"rdma","device_name":"{{ kv_offload_device_name }}","master_server_address":"$MC_MASTER","metadata_server":"$MC_METADATA","enable_offload":{% if kv_offload_disk_path %}true{% else %}false{% endif %}}
+MOONCAKE_JSON
+    echo "[mooncake] node ${INFER_NODE_RANK} ($SLURMD_NODENAME) joined shared pool: master=$MC_MASTER segment=$LOCAL_IP:50052"

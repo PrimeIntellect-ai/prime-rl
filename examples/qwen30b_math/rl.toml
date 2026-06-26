@@ -58,10 +58,5 @@ interval = 25
 [[orchestrator.eval.env]]
 id = "aime2025"
 
-[orchestrator.buffer]
-easy_threshold = 1.0
-hard_threshold = 0.0
-seed = 42
-
 [inference.parallel]
 tp = 8

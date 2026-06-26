@@ -1,5 +1,4 @@
 import torch
-from vllm.triton_utils import tl, triton
 
 from prime_rl.inference.vllm.padded_input_scrub import monkey_patch_vllm_padded_input_scrub
 
@@ -15,13 +14,90 @@ def transformers_v5_compat():
     if not hasattr(Qwen3VLMoeTextConfig, "tie_word_embeddings"):
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
-    _patch_qwen35_lora()
     _patch_lora_key_prefix()
-    monkey_patch_deep_gemm_silu_mul_quant_int64()
-    monkey_patch_dp_engine_core_pause_resume_deadlock()
-    monkey_patch_vllm_layerwise_reload_alias_buffers()
+    _patch_qwen35_moe_lora_format()
+    monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
+    monkey_patch_kv_xfer_finished_tolerate_freed()
+
+
+def monkey_patch_kv_xfer_finished_tolerate_freed():
+    """Tolerate KV-transfer finish notifications for already-freed requests.
+
+    In disaggregated P/D (NIXL, optionally + a KV store connector) a request can
+    be finished — most often ``FINISHED_ABORTED`` from an off-policy cancel, a
+    client disconnect, or a request timeout — while it still has in-flight KV
+    transfers. When such a request's ``finished_recving`` and ``finished_sending``
+    both land in the same ``Scheduler.update_from_output`` step, the stock
+    ``_update_from_kv_xfer_finished`` frees it in the recving branch
+    (``_free_blocks`` -> ``del self.requests[req_id]``) and then the sending
+    branch hits ``assert req_id in self.requests`` and kills the EngineCore. On a
+    DP deployment that one death cascades to every rank via the gloo finish-state
+    all-reduce, taking down the whole inference pool.
+
+    The trigger is the abort itself, not weight-update pause/resume: it reproduces
+    during normal stepping whenever an aborted request's recv and send complete in
+    the same step (observed with zero off-policy cancellations, driven only by
+    incidental client-side aborts). Skip already-freed request ids instead of
+    asserting — their blocks are freed either way, so dropping the stale
+    notification is safe.
+
+    Upstream issue: https://github.com/vllm-project/vllm/issues/46240
+    """
+    from vllm.logger import init_logger
+    from vllm.v1.core.sched.scheduler import Scheduler
+    from vllm.v1.request import RequestStatus
+
+    logger = init_logger("vllm.v1.core.sched.scheduler")
+
+    if getattr(Scheduler._update_from_kv_xfer_finished, "_prime_rl_tolerates_freed", False):
+        return
+
+    def _update_from_kv_xfer_finished(self, kv_connector_output):
+        if self.connector is not None:
+            self.connector.update_connector_output(kv_connector_output)
+
+        for req_id in kv_connector_output.finished_recving or ():
+            logger.debug("Finished recving KV transfer for request %s", req_id)
+            # Stale notification for a request freed earlier this step (e.g. an
+            # aborted request whose send completion freed it). Nothing to do.
+            if req_id not in self.requests:
+                continue
+            req = self.requests[req_id]
+            if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
+                self.finished_recving_kv_req_ids.add(req_id)
+            else:
+                assert RequestStatus.is_finished(req.status)
+                self._free_blocks(self.requests[req_id])
+        for req_id in kv_connector_output.finished_sending or ():
+            logger.debug("Finished sending KV transfer for request %s", req_id)
+            # See above: the recving branch may have already freed an aborted
+            # request whose send also completed this step.
+            if req_id not in self.requests:
+                continue
+            self._free_blocks(self.requests[req_id])
+
+    _update_from_kv_xfer_finished._prime_rl_tolerates_freed = True
+    Scheduler._update_from_kv_xfer_finished = _update_from_kv_xfer_finished
+    logger.warning("Patched Scheduler._update_from_kv_xfer_finished to tolerate freed (aborted) KV-transfer reqs.")
+
+
+def monkey_patch_nano_v3_reasoning_parser():
+    from vllm.reasoning.abs_reasoning_parsers import ReasoningParserManager
+    from vllm.reasoning.deepseek_r1_reasoning_parser import DeepSeekR1ReasoningParser
+
+    class NanoV3ReasoningParser(DeepSeekR1ReasoningParser):
+        def extract_reasoning(self, model_output, request):
+            reasoning_content, final_content = super().extract_reasoning(model_output, request)
+            chat_template_kwargs = getattr(request, "chat_template_kwargs", None)
+
+            if chat_template_kwargs and chat_template_kwargs.get("enable_thinking") is False and final_content is None:
+                reasoning_content, final_content = final_content, reasoning_content
+
+            return reasoning_content, final_content
+
+    ReasoningParserManager.register_module("nano_v3", module=NanoV3ReasoningParser)
 
 
 def monkey_patch_return_routed_experts_with_nixl_connector():
@@ -68,231 +144,65 @@ def monkey_patch_return_routed_experts_with_nixl_connector():
     logger.warning("Enabled vLLM routed-experts capture with NIXL connector patch.")
 
 
-def monkey_patch_vllm_layerwise_reload_alias_buffers():
-    # vLLM's layerwise reload materializes each buffer as an independent tensor
-    # and then copies it back into the original kernel storage. When a buffer
-    # aliases a parameter (e.g. NemotronH Mamba's mixer.conv_weights, a view of
-    # mixer.conv1d.weight), the buffer copy stamps garbage into the parameter's
-    # storage *after* the parameter has been correctly reloaded. Skip the copy
-    # for any buffer that shares storage with a parameter; _place_kernel_tensors
-    # re-registers the original view, which trivially reflects the parameter.
-    # Remove this patch once https://github.com/vllm-project/vllm/pull/42481 is
-    # included in the vLLM release we pin/use.
+def monkey_patch_strip_routed_experts_from_chat():
+    """Drop routed_experts from chat-completions responses.
+
+    routed_experts are only consumed via the serialized ``/generate``
+    (serving_tokens) path used for router-replay training, which encodes them as a
+    ``{data, shape, start}`` object the PD router can merge. The stock
+    chat-completions path instead encodes them as a base64 ``np.save`` *string*,
+    which the PD router rejects ("prefill routed_experts must be an object with
+    base64 data and shape") and fails every eval rollout (evals go through chat
+    completions). ``enable_return_routed_experts`` is a server-wide model-config
+    flag with no per-request toggle, so strip the field on the chat path here.
+    """
+    from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
     from vllm.logger import init_logger
-    from vllm.model_executor.model_loader.reload import layerwise as reload_layerwise
 
     logger = init_logger(__name__)
 
-    def _copy_and_restore_kernel_tensors(layer: torch.nn.Module, info: reload_layerwise.LayerReloadingInfo):
-        assert info.kernel_tensors is not None
-        parameters, buffers = info.kernel_tensors
-        param_storage_ptrs = {p.untyped_storage().data_ptr() for p in layer.parameters(recurse=True)}
-        for name, param in parameters.items():
-            param.data.copy_(getattr(layer, name))
-        for name, buffer in buffers.items():
-            if buffer.untyped_storage().data_ptr() in param_storage_ptrs:
-                continue
-            buffer.data.copy_(getattr(layer, name))
-
-        reload_layerwise._place_kernel_tensors(layer, info)
-
-    reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
-    logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
-
-
-@triton.jit
-def _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel(
-    y_ptr,
-    y_q_ptr,
-    y_s_ptr,
-    M: tl.int64,
-    N: tl.int64,
-    y_s_col_stride: tl.int64,
-    eps,
-    clamp_limit,
-    fp8_min: tl.constexpr,
-    fp8_max: tl.constexpr,
-    use_ue8m0: tl.constexpr,
-    HAS_CLAMP: tl.constexpr,
-    GROUP_SIZE: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-):
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
-    N_2 = N // 2
-
-    m_offset = (pid_m * BLOCK_M).to(tl.int64)
-    n_offset = (pid_n * BLOCK_N).to(tl.int64)
-    if m_offset >= M:
+    if getattr(OpenAIServingChat.chat_completion_full_generator, "_prime_rl_strips_routed_experts", False):
         return
 
-    offs_n = tl.arange(0, BLOCK_N).to(tl.int64)
-    offs_m = tl.arange(0, BLOCK_M).to(tl.int64)
+    _original = OpenAIServingChat.chat_completion_full_generator
 
-    base_y_ptr = y_ptr + m_offset * N + n_offset
-    act_in_ptrs = base_y_ptr + offs_m[:, None] * N + offs_n[None, :]
+    async def _strip(result_generator):
+        async for res in result_generator:
+            for output in res.outputs:
+                output.routed_experts = None
+            yield res
 
-    act_in = tl.load(act_in_ptrs)
-    mul_in = tl.load(act_in_ptrs + N_2)
+    async def _patched(self, request, result_generator, *args, **kwargs):
+        return await _original(self, request, _strip(result_generator), *args, **kwargs)
 
-    if HAS_CLAMP:
-        act_in = tl.minimum(act_in.to(tl.float32), clamp_limit).to(y_ptr.dtype.element_ty)
-        mul_in = tl.clamp(mul_in.to(tl.float32), -clamp_limit, clamp_limit).to(y_ptr.dtype.element_ty)
-    act_in = act_in.to(tl.float32)
-    one_f32 = tl.cast(1, tl.float32)
-    silu_out = (act_in / (one_f32 + tl.exp(-act_in))).to(y_ptr.dtype.element_ty)
-    y = (silu_out * mul_in).to(tl.float32)
-
-    absmax = tl.maximum(tl.max(tl.abs(y), axis=1), eps)
-    scale_raw = absmax * (1.0 / fp8_max)
-    y_s = tl.math.exp2(tl.ceil(tl.log2(scale_raw))) if use_ue8m0 else scale_raw
-    y_s = tl.reshape(y_s, (BLOCK_M, 1))
-    y_q = tl.clamp(y / y_s, fp8_min, fp8_max).to(y_q_ptr.dtype.element_ty)
-
-    base_y_q_ptr = y_q_ptr + m_offset * N_2 + n_offset
-    y_q_ptrs = base_y_q_ptr + offs_m[:, None] * N_2 + offs_n[None, :]
-    tl.store(y_q_ptrs, y_q)
-
-    group_id = n_offset // GROUP_SIZE
-    base_y_s_ptr = y_s_ptr + group_id * y_s_col_stride + m_offset
-    y_s_ptrs = base_y_s_ptr + offs_m
-    y_s = tl.reshape(y_s, (BLOCK_M,))
-    tl.store(y_s_ptrs, y_s)
-
-
-def _silu_mul_per_token_group_quant_fp8_colmajor_int64(
-    input: torch.Tensor,
-    output: torch.Tensor | None = None,
-    use_ue8m0: bool | None = None,
-    eps: float = 1e-10,
-    clamp_limit: float | None = None,
-):
-    from vllm.platforms import current_platform
-    from vllm.utils.deep_gemm import is_deep_gemm_e8m0_used
-
-    group_size = 128
-    assert input.ndim == 2
-    if output is not None:
-        assert output.ndim == 2
-    assert input.size(0) % group_size == 0
-    assert input.size(1) % (group_size * 2) == 0
-
-    if use_ue8m0 is None:
-        use_ue8m0 = is_deep_gemm_e8m0_used()
-
-    M, N = input.size()
-    N_2 = N // 2
-
-    fp8_dtype = current_platform.fp8_dtype()
-    if output is None:
-        output = torch.empty((M, N_2), dtype=fp8_dtype, device=input.device)
-
-    output_scales = torch.empty(((N_2 // group_size), M), dtype=torch.float32, device=input.device).transpose(0, 1)
-
-    block_m = 8
-    block_n = group_size
-    assert M % block_m == 0
-    assert N_2 % block_n == 0
-
-    finfo = torch.finfo(fp8_dtype)
-    fp8_min = -224.0 if current_platform.is_fp8_fnuz() else finfo.min
-    fp8_max = 224.0 if current_platform.is_fp8_fnuz() else finfo.max
-
-    has_clamp = clamp_limit is not None
-    grid = (M // block_m, N_2 // block_n)
-    _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel[grid](
-        input,
-        output,
-        output_scales,
-        M,
-        N,
-        output_scales.stride(-1),
-        eps,
-        clamp_limit if has_clamp else 0.0,
-        fp8_min,
-        fp8_max,
-        use_ue8m0,
-        has_clamp,
-        group_size,
-        block_m,
-        block_n,
+    _patched._prime_rl_strips_routed_experts = True
+    OpenAIServingChat.chat_completion_full_generator = _patched
+    logger.info(
+        "Stripped routed_experts from chat-completions responses (PD router merges only the /generate object form)."
     )
 
-    return output, output_scales
 
+def _patch_qwen35_moe_lora_format():
+    """Force Qwen3.5-MoE onto vLLM's 2D per-expert LoRA format.
 
-def monkey_patch_deep_gemm_silu_mul_quant_int64():
-    import sys
+    vLLM 0.23.0 defaults ``Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = True``,
+    which makes the LoRA loader expect 3D stacked-expert adapters
+    (``base_layer.lora_{A,B}.weight`` / ``lora_{A,B}.weight``, experts folded into the
+    rank dim; see ``_stack_moe_lora_weights``). Our trainer instead emits the 2D
+    per-expert layout (``{expert_id}.gate_proj.lora_A.weight`` ...) from
+    ``MultiLoRAGroupedExperts.state_dict_for_adapter`` -- vLLM only consults that layout
+    when ``is_3d_moe_weight`` is False (or ``enable_mixed_moe_lora_format=True``).
+    Without this override the adapters fail to load with key/shape mismatches.
 
-    from vllm.logger import init_logger
-    from vllm.model_executor.layers.quantization.utils import fp8_utils
-
-    logger = init_logger(__name__)
-
-    fp8_utils.silu_mul_per_token_group_quant_fp8_colmajor = _silu_mul_per_token_group_quant_fp8_colmajor_int64
-
-    deep_gemm_moe_module = sys.modules.get("vllm.model_executor.layers.fused_moe.experts.deep_gemm_moe")
-    if deep_gemm_moe_module is not None:
-        deep_gemm_moe_module.silu_mul_per_token_group_quant_fp8_colmajor = (
-            _silu_mul_per_token_group_quant_fp8_colmajor_int64
-        )
-
-    logger.warning("Enabled int64-addressing Triton patch for vLLM DeepGEMM SiLU/mul FP8 quant.")
-
-
-def _patch_qwen35_lora():
-    """Fix Qwen3.5 LoRA: align packed_modules_mapping with output_sizes.
-
-    Qwen3.5's GDN layers use create_qkvz_proj with 4 output_sizes (q, k, v, z)
-    but packed_modules_mapping only lists 2 entries, causing an IndexError
-    during LoRA initialization.
-
-    Also generalizes MergedColumnParallelLinearWithLoRA.can_replace_layer
-    to accept any number of packed modules (not just 2), and generalizes
-    MergedColumnParallelLinearWithShardedLoRA.slice_lora_a to handle N
-    subloras instead of the hardcoded 2 (needed for fully_sharded_loras=True).
-
-    Upstream: https://github.com/vllm-project/vllm/issues/36372
+    The rest of the old Qwen3.5 LoRA shim (the in_proj_qkvz packed-mapping fix and the
+    N-slice ``can_replace_layer`` / ``slice_lora_a`` generalizations for vllm#36372) is
+    handled natively by 0.23.0 and was dropped. Remove this too once we either adopt the
+    3D stacked save format (like gpt-oss) or start the engine with
+    ``enable_mixed_moe_lora_format=True``.
     """
-    from vllm.lora.layers.column_parallel_linear import (
-        MergedColumnParallelLinearWithLoRA,
-        MergedColumnParallelLinearWithShardedLoRA,
-    )
-    from vllm.model_executor.models.qwen3_5 import (
-        Qwen3_5ForCausalLMBase,
-        Qwen3_5ForConditionalGeneration,
-        Qwen3_5MoeForConditionalGeneration,
-    )
-
-    qkvz_fix = ["in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z"]
-
-    Qwen3_5ForCausalLMBase.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
-    Qwen3_5ForConditionalGeneration.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
+    from vllm.model_executor.models.qwen3_5 import Qwen3_5MoeForConditionalGeneration
 
     Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = False
-
-    from vllm.lora.layers.utils import _not_fully_sharded_can_replace
-
-    @classmethod
-    @_not_fully_sharded_can_replace
-    def can_replace_layer(cls, source_layer, lora_config, packed_modules_list, model_config=None):
-        from vllm.model_executor.layers.linear import MergedColumnParallelLinear
-
-        return type(source_layer) is MergedColumnParallelLinear and len(packed_modules_list) == len(
-            source_layer.output_sizes
-        )
-
-    MergedColumnParallelLinearWithLoRA.can_replace_layer = can_replace_layer
-
-    def slice_lora_a(self, lora_a):
-        output_shard_size = self.lora_a_stacked[0].shape[2]
-        output_start_idx = self.tp_rank * output_shard_size
-        return [
-            a[output_start_idx : output_start_idx + output_shard_size, :] if a is not None else None for a in lora_a
-        ]
-
-    MergedColumnParallelLinearWithShardedLoRA.slice_lora_a = slice_lora_a
 
 
 def _patch_lora_key_prefix():
@@ -697,9 +607,10 @@ def monkey_patch_minimax_m2_for_lora():
         still runs for all wrapped layers when any adapter is active — and it
         asserts inputs are float16/bfloat16. Qwen3 MoE doesn't have this
         problem because its gate uses the model dtype.
-        Fix: recreate the gate in model dtype and remove the float32 cast.
-        FusedMoE already has router_logits_dtype=float32, so routing precision
-        is preserved inside the expert dispatch.
+        Fix: rebuild the gate as GateLinear with a bf16 weight (out_dtype=float32
+        keeps fp32 router logits). vLLM 0.23.0's own forward already drops the
+        float32 input cast. FusedMoE also has router_logits_dtype=float32, so
+        routing precision is preserved inside the expert dispatch.
 
     Problem 2 — Adapter key naming mismatch:
         PrimeRL saves adapter keys using its internal naming convention
@@ -721,13 +632,17 @@ def monkey_patch_minimax_m2_for_lora():
 
     def _patched_init(self, config, quant_config=None, prefix=""):
         _original_init(self, config, quant_config, prefix)
-        from vllm.model_executor.layers.linear import ReplicatedLinear
+        from vllm.model_executor.layers.fused_moe.router.gate_linear import GateLinear
 
-        self.gate = ReplicatedLinear(
+        # vLLM 0.23.0 builds the gate as GateLinear with a float32 weight; rebuild it
+        # with a bf16 weight (model dtype) so the LoRA Triton kernel's float16/bfloat16
+        # assertion passes, keeping out_dtype=float32 so router logits stay fp32 (the
+        # GateLinear bf16xbf16->fp32 path).
+        self.gate = GateLinear(
             config.hidden_size,
             config.num_local_experts,
             bias=False,
-            quant_config=None,
+            out_dtype=torch.float32,
             prefix=f"{prefix}.gate",
         )
 
@@ -780,87 +695,6 @@ def monkey_patch_harmony_stop_token_propagation():
         return params
 
     ChatCompletionRequest.to_sampling_params = _patched_to_sampling_params
-
-
-def monkey_patch_dp_engine_core_pause_resume_deadlock():
-    """Fix DP pause/resume deadlocks around weight updates.
-
-    Bug 1 (job 3756): while paused, START_DP_WAVE can wake idle ranks into the
-    DP loop. Those ranks then run dummy batches and hit DP collectives while
-    other ranks are still in NCCL weight transfer.
-
-    Bug 2 (jobs 3769/3771): resume ties the DP running state to local
-    unfinished requests, but the DP wave state is global. Ranks with no local
-    work still need to re-enter the loop so they can participate in the same
-    DP collectives as ranks that are resuming remote-KV or decode work.
-
-    Fix:
-    - ignore START_DP_WAVE wakeups while paused
-    - on resume, wake every DP rank and force an immediate global unfinished
-      sync instead of waiting for the normal 32-step cadence
-
-    This also bypasses vLLM's two-phase DP pause implementation
-    (https://github.com/vllm-project/vllm/pull/39366), which makes resume
-    reject states that our weight-update flow can validly hit.
-    """
-    from vllm.config import ParallelConfig
-    from vllm.v1.core.sched.interface import PauseState
-    from vllm.v1.engine import EngineCoreOutputs, EngineCoreRequestType
-    from vllm.v1.engine.core import DPEngineCoreProc, EngineCore, EngineCoreProc
-    from vllm.v1.request import Request
-
-    _base_add_request = EngineCore.add_request
-    _base_handle_client_request = EngineCoreProc._handle_client_request
-    _base_pause_complete = EngineCoreProc._pause_complete
-    _base_resume_scheduler = EngineCoreProc.resume_scheduler
-
-    def _patched_add_request(self, request: Request, request_wave: int = 0):
-        _base_add_request(self, request, request_wave)
-        if self.has_coordinator and request_wave != self.current_wave:
-            if request_wave > self.current_wave:
-                self.current_wave = request_wave
-            elif not self.engines_running and self.scheduler.pause_state == PauseState.UNPAUSED:
-                self.engines_running = True
-                self.output_queue.put_nowait((-1, EngineCoreOutputs(start_wave=self.current_wave)))
-
-    def _patched_handle_client_request(self, request_type, request):
-        if request_type == EngineCoreRequestType.START_DP_WAVE:
-            new_wave, exclude_eng_index = request
-            if exclude_eng_index != self.engine_index and new_wave >= self.current_wave:
-                self.current_wave = new_wave
-                if not self.engines_running and self.scheduler.pause_state == PauseState.UNPAUSED:
-                    self.engines_running = True
-        else:
-            _base_handle_client_request(self, request_type, request)
-
-    def _patched_pause_complete(self) -> bool:
-        self.pending_pause = False
-        self.ignore_start_dp_wave = False
-        return _base_pause_complete(self)
-
-    def _patched_resume_scheduler(self):
-        was_paused = self.scheduler.pause_state != PauseState.UNPAUSED
-        self.pending_pause = False
-        self.ignore_start_dp_wave = False
-        _base_resume_scheduler(self)
-        if was_paused:
-            self.engines_running = True
-            self._force_dp_running_state_sync = True
-
-    def _patched_has_global_unfinished_reqs(self, local_unfinished: bool) -> bool:
-        self.step_counter += 1
-        if getattr(self, "_force_dp_running_state_sync", False):
-            self._force_dp_running_state_sync = False
-            return ParallelConfig.has_unfinished_dp(self.dp_group, local_unfinished)
-        if self.step_counter % 32 != 0:
-            return True
-        return ParallelConfig.has_unfinished_dp(self.dp_group, local_unfinished)
-
-    DPEngineCoreProc.add_request = _patched_add_request
-    DPEngineCoreProc._handle_client_request = _patched_handle_client_request
-    DPEngineCoreProc._pause_complete = _patched_pause_complete
-    DPEngineCoreProc.resume_scheduler = _patched_resume_scheduler
-    DPEngineCoreProc._has_global_unfinished_reqs = _patched_has_global_unfinished_reqs
 
 
 def monkey_patch_no_moe_lora():
@@ -951,3 +785,36 @@ def monkey_patch_fp32_lm_head():
     LogitsProcessor.__init__ = _patched_init
     LogitsProcessor._get_logits = _patched_get_logits
     logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")
+
+
+def monkey_patch_dp_coordinator_startup_timeout():
+    """Raise the DP coordinator startup timeout from vLLM's hard-coded 30s.
+
+    The coordinator child process is spawned on the DP-rank-0 API server while
+    every engine-core rank on the node is importing and loading weights, so its
+    own spawn-time re-import can take well over 30s under that CPU/IO
+    contention (seen on multi-node disaggregated GLM-5.1 launches). Configurable
+    via PRIME_DP_COORDINATOR_STARTUP_TIMEOUT (seconds, default 300).
+    """
+    import multiprocessing.connection
+    import os
+
+    from vllm.v1.engine.coordinator import DPCoordinator
+
+    timeout = float(os.environ.get("PRIME_DP_COORDINATOR_STARTUP_TIMEOUT", "300"))
+
+    def _patched_wait_for_zmq_addrs(self, zmq_addr_pipe):
+        try:
+            ready = multiprocessing.connection.wait([zmq_addr_pipe, self.proc.sentinel], timeout=timeout)
+            if not ready:
+                raise RuntimeError(
+                    f"DP Coordinator process failed to report ZMQ addresses within {timeout}s during startup."
+                )
+            try:
+                return zmq_addr_pipe.recv()
+            except EOFError:
+                raise RuntimeError("DP Coordinator process failed during startup.") from None
+        finally:
+            zmq_addr_pipe.close()
+
+    DPCoordinator._wait_for_zmq_addrs = _patched_wait_for_zmq_addrs

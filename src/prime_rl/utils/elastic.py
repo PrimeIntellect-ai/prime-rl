@@ -11,17 +11,18 @@ from __future__ import annotations
 import asyncio
 import socket
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import httpx
-import verifiers as vf
+import verifiers.v1 as vf
 from httpx import AsyncClient
 from renderers import RendererConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import load_lora_adapter, setup_admin_clients, setup_clients
+from prime_rl.utils.client import ClientIdentity, client_identity, load_lora_adapter, setup_admin_clients, setup_clients
 from prime_rl.utils.logger import get_logger
 
 # --- Shared discovery functions ---
@@ -190,8 +191,6 @@ class ElasticInferencePool:
 
             self._eval_index = 0
             url_config = ClientConfig(
-                timeout=self.client_config.timeout,
-                connect_timeout=self.client_config.connect_timeout,
                 base_url=urls,
                 api_key_var=self.client_config.api_key_var,
                 headers=self.client_config.headers,
@@ -230,6 +229,11 @@ class ElasticInferencePool:
         self._eval_index += 1
         return client
 
+    async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
+        while not self.train_clients:
+            await asyncio.sleep(self.sync_interval)
+        return min(self.train_clients, key=lambda c: load[client_identity(c)])
+
     @property
     def admin_clients(self) -> list[AsyncClient]:
         return list(self._admin_clients.values())
@@ -245,7 +249,6 @@ class ElasticInferencePool:
     async def _create_admin_client(self, ip: str) -> AsyncClient:
         url = self._build_url(ip)
         config = ClientConfig(
-            timeout=self.client_config.timeout,
             base_url=[f"{url}/v1"],
             api_key_var=self.client_config.api_key_var,
             headers=self.client_config.headers,
@@ -496,10 +499,3 @@ class ElasticInferencePool:
         if lora_name is None:
             raise ValueError("Elastic inference pool requires LoRA training (lora_name must be set)")
         await self.sync_weights(weight_dir, lora_name, step)
-
-    def get_metrics(self) -> dict[str, float]:
-        return {
-            "elastic/num_servers": self.num_servers,
-            "elastic/num_ready_servers": self.num_ready_servers,
-            "elastic/desired_step": self._desired.step,
-        }

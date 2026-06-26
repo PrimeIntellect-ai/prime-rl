@@ -38,8 +38,8 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("PrimeIntellect/INTELLECT-3-FP8", "qwen3_coder", "deepseek_r1"),
     ("PrimeIntellect/INTELLECT-3.1", "qwen3_coder", "deepseek_r1"),
     # NemotronH
-    ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "qwen3_coder", None),
-    ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "qwen3_coder", None),
+    ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "qwen3_coder", "nemotron_v3"),
+    ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "qwen3_coder", "nano_v3"),
     # StepFun
     ("stepfun-ai/Step-3.5-Flash", "step3p5", "step3p5"),
     # Qwen3 dense

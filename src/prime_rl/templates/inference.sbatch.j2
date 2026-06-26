@@ -28,7 +28,7 @@ set -e
 # Configs
 export NUM_NODES={{ num_nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
-{% if disaggregated -%}
+{% if is_disaggregated -%}
 export NUM_PREFILL_NODES={{ num_prefill_nodes }}
 export NUM_DECODE_NODES={{ num_decode_nodes }}
 export NUM_PREFILL_REPLICAS={{ num_prefill_replicas }}
@@ -38,11 +38,15 @@ export NODES_PER_PREFILL_REPLICA=$((NUM_PREFILL_NODES / NUM_PREFILL_REPLICAS))
 export NODES_PER_DECODE_REPLICA=$((NUM_DECODE_NODES / NUM_DECODE_REPLICAS))
 export PREFILL_PORT={{ prefill_port }}
 export DECODE_PORT={{ decode_port }}
-export ROUTER_PORT={{ router_port }}
+export ROUTER_PORT={{ router.port }}
 export RPC_PORT={{ data_parallel_rpc_port }}
+{%- if router.type == "llm-d" %}
+export DECODE_SIDECAR_PORT={{ router.decode_sidecar_port }}
+{%- endif %}
 {%- elif num_nodes > 1 %}
-export ROUTER_PORT={{ router_port }}
+export ROUTER_PORT={{ router.port }}
 export BACKEND_PORT={{ backend_port }}
+export RPC_PORT={{ data_parallel_rpc_port }}
 {%- endif %}
 
 # Paths
@@ -50,6 +54,7 @@ export PROJECT_DIR={{ project_dir }}
 export CONFIG_PATH={{ config_path }}
 export OUTPUT_DIR={{ output_dir }}
 mkdir -p $OUTPUT_DIR/logs/inference
+rm -f $OUTPUT_DIR/logs/inference/*.log
 ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 
 # General
@@ -68,7 +73,7 @@ uv sync --all-extras
 # Print inference URLs
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
-{% if disaggregated -%}
+{% if is_disaggregated -%}
 # Build per-replica router URLs
 INFER_URLS=""
 ALL_ROUTER_ARGS=""
@@ -78,26 +83,32 @@ for ((r=0; r<NUM_NODES/NODES_PER_REPLICA; r++)); do
     INFER_URLS="${INFER_URLS:+$INFER_URLS,}http://${router_host}:${ROUTER_PORT}/v1"
 
     REPLICA_ROUTER_ARGS=""
+    # External-LB: one --prefill/--decode endpoint per DP rank (PORT + k) on each node.
     for ((p=0; p<NUM_PREFILL_NODES; p++)); do
-        node_idx=$((replica_base + p))
-        host="${HOSTNAMES[$node_idx]}"
-        REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --prefill http://${host}:${PREFILL_PORT}"
+        host="${HOSTNAMES[$((replica_base + p))]}"
+        for ((k=0; k<{{ dp_per_node }}; k++)); do
+            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --prefill http://${host}:$((PREFILL_PORT + k))"
+        done
     done
     for ((d=0; d<NUM_DECODE_NODES; d++)); do
-        node_idx=$((replica_base + NUM_PREFILL_NODES + d))
-        host="${HOSTNAMES[$node_idx]}"
-        REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --decode http://${host}:${DECODE_PORT}"
+        host="${HOSTNAMES[$((replica_base + NUM_PREFILL_NODES + d))]}"
+        for ((k=0; k<{{ dp_per_node }}; k++)); do
+            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --decode http://${host}:$((DECODE_PORT + k))"
+        done
     done
     ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS|}$REPLICA_ROUTER_ARGS"
 done
 export INFER_URLS
 export ALL_ROUTER_ARGS
 {%- elif num_nodes > 1 %}
-# Single router on node 0, all nodes as backends
+# External LB: one router on node 0; one endpoint per DP rank (BACKEND_PORT + dp_local) on every node.
 INFER_URLS="http://${HOSTNAMES[0]}:${ROUTER_PORT}/v1"
+DP_PER_NODE={{ dp_per_node }}
 ROUTER_ARGS=""
 for host in ${HOSTNAMES[@]}; do
-    ROUTER_ARGS="$ROUTER_ARGS http://${host}:${BACKEND_PORT}"
+    for ((d=0; d<DP_PER_NODE; d++)); do
+        ROUTER_ARGS="$ROUTER_ARGS http://${host}:$((BACKEND_PORT + d))"
+    done
 done
 export INFER_URLS
 export ROUTER_ARGS
@@ -124,15 +135,23 @@ srun bash -s <<'CLEANUP_SH'
     pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null
     pkill -9 -f "[t]orchrun" 2>/dev/null
     pkill -9 -f "[v]llm-router" 2>/dev/null
+    # llm-d router procs (EPP + Envoy + decode pd-sidecar) left over from a prior run.
+    pkill -9 -f "[e]pp.*pool-name" 2>/dev/null
+    pkill -9 -f "[e]nvoy.*envoy.yaml" 2>/dev/null
+    pkill -9 -f "[p]d-sidecar" 2>/dev/null
     pkill -9 -f "[v]llm" 2>/dev/null
     pkill -9 -f "[p]rime_rl" 2>/dev/null
     # Also match prctl-set process names (kernel comm) like "vllm::router"
     # which pkill -f does not see because -f only matches the cmdline.
     pkill -9 "vllm" 2>/dev/null
     pkill -9 "vllm::.*" 2>/dev/null
+    # Mooncake store (master + client) left over from a prior offload run. -x matches
+    # the exact process name, so it never hits the worktree path (e.g. mooncake-baby).
+    pkill -9 -x mooncake_master 2>/dev/null
+    pkill -9 -x mooncake_client 2>/dev/null
     sleep 2
     rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
-    procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::" | grep -v grep | wc -l)
+    procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::|mooncake_|[e]pp |envoy|pd-sidecar" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
     echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
 CLEANUP_SH
@@ -158,11 +177,16 @@ srun --kill-on-bad-exit=1 bash -c '
     INFER_NODE_RANK=$SLURM_PROCID
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
+{% include '_launch_rank.sh.j2' %}
+{% include '_launch_router.sh.j2' %}
 {%- if kv_offload %}
     ulimit -l unlimited
 {%- endif %}
+{%- if kv_offload_mooncake %}
+{% include "_mooncake_store.sh.j2" %}
+{%- endif %}
 
-{% if disaggregated -%}
+{% if is_disaggregated -%}
     # NVSHMEM libs for DeepEP — ensure the rpath target exists on all nodes
     if [ ! -d /tmp/deepep_build/nvshmem/lib ] && [ -d "$OUTPUT_DIR/nvshmem/lib" ]; then
         mkdir -p /tmp/deepep_build/nvshmem
@@ -178,28 +202,40 @@ srun --kill-on-bad-exit=1 bash -c '
     export VLLM_MOE_USE_DEEP_GEMM=1
 {%- endif %}
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
-    export GLOO_SOCKET_IFNAME=bond0
+    # Bind gloo to the interface that owns LOCAL_IP (the rendezvous IP) — NIC
+    # names vary across clusters (bond0, eth0, ...). If the lookup fails, leave
+    # GLOO_SOCKET_IFNAME unset so gloo falls back to its own detection.
+    GLOO_IFNAME=$(ip -o -4 addr show to "$LOCAL_IP" 2>/dev/null | awk "{print \$2; exit}")
+    if [ -n "$GLOO_IFNAME" ]; then export GLOO_SOCKET_IFNAME=$GLOO_IFNAME; fi
     export VLLM_ENGINE_READY_TIMEOUT_S=4200
     export UCX_TLS=all
-    export UCX_NET_DEVICES=all
+    # Enumerate RDMA NICs for UCX/NIXL from sysfs (ibv_devices is not on the job
+    # PATH). Prefer InfiniBand ports and fall back to RoCE: "all" would also pick
+    # up non-functional devices (e.g. an Ethernet bond UCX cannot open), which
+    # fails NIXL backend creation. Hosts without RDMA devices keep "all" (TCP).
+    rdma_ports() {
+        for port in /sys/class/infiniband/*/ports/*; do
+            [ "$(cat "$port/link_layer" 2>/dev/null)" = "$1" ] || continue
+            grep -q ACTIVE "$port/state" 2>/dev/null || continue
+            dev=${port%/ports/*}
+            echo "$(basename "$dev"):$(basename "$port")"
+        done | paste -sd,
+    }
+    UCX_NET_DEVICES=$(rdma_ports InfiniBand)
+    [ -n "$UCX_NET_DEVICES" ] || UCX_NET_DEVICES=$(rdma_ports Ethernet)
+    export UCX_NET_DEVICES=${UCX_NET_DEVICES:-all}
     export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
 
     export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
-{%- if kv_offload %}
-    PREFILL_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
-{%- else %}
-    PREFILL_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
-{%- endif %}
-
-{%- if kv_offload %}
-    DECODE_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
-{%- else %}
-    DECODE_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
-{%- endif %}
+    # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
+    # InferenceConfig.to_vllm() from the per-node config, so it is no longer assembled here.
 
     DECODE_COMPILE_CFG='"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"'
+
+    DP_PER_NODE={{ dp_per_node }}
+    TP=$((GPUS_PER_NODE / DP_PER_NODE))
 
     # Determine outer replica (P/D pair) and role
     REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_REPLICA))
@@ -211,21 +247,14 @@ srun --kill-on-bad-exit=1 bash -c '
         ROLE="prefill"
         SUB_REPLICA=$((RANK_IN_REPLICA / NODES_PER_PREFILL_REPLICA))
         ROLE_RANK=$((RANK_IN_REPLICA % NODES_PER_PREFILL_REPLICA))
-        EP=$((NODES_PER_PREFILL_REPLICA * GPUS_PER_NODE))
+        DP=$((NODES_PER_PREFILL_REPLICA * DP_PER_NODE))
         PORT=$PREFILL_PORT
-        START_RANK=$((ROLE_RANK * GPUS_PER_NODE))
         HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + SUB_REPLICA * NODES_PER_PREFILL_REPLICA))]}"
 
 {% for key, value in prefill_env_overrides.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
-        ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\""
-
-        if [ "$ROLE_RANK" -eq 0 ]; then
-            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $PREFILL_KV_CFG, $ROLE_EXTRA}"
-        else
-            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $PREFILL_KV_CFG, $ROLE_EXTRA}"
-        fi
+        ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
     else
         # ── Decode node ──
         export UCX_NET_DEVICES=mlx5_0:1
@@ -233,80 +262,83 @@ srun --kill-on-bad-exit=1 bash -c '
         RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
         SUB_REPLICA=$((RANK_IN_DECODE / NODES_PER_DECODE_REPLICA))
         ROLE_RANK=$((RANK_IN_DECODE % NODES_PER_DECODE_REPLICA))
-        EP=$((NODES_PER_DECODE_REPLICA * GPUS_PER_NODE))
+        DP=$((NODES_PER_DECODE_REPLICA * DP_PER_NODE))
         PORT=$DECODE_PORT
-        START_RANK=$((ROLE_RANK * GPUS_PER_NODE))
         HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + NUM_PREFILL_NODES + SUB_REPLICA * NODES_PER_DECODE_REPLICA))]}"
 
 {% for key, value in decode_env_overrides.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
-        ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG"
-
-        if [ "$ROLE_RANK" -eq 0 ]; then
-            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $DECODE_KV_CFG, $ROLE_EXTRA}"
-        else
-            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $DECODE_KV_CFG, $ROLE_EXTRA}"
-        fi
+        ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG{{ decode_vllm_extra_json }}"
     fi
 
-    echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK EP=$EP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
+    echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
         | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
-    # Start vllm-router on the first prefill node of each replica (background)
+    # Start the router on the first prefill node of each replica (external LB across per-rank endpoints)
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-        ROUTER_LOG="$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log"
-        echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
-
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-
-        vllm-router \
-            --policy {{ router_policy }} \
-            --vllm-pd-disaggregation \
-            $REPLICA_ROUTER_ARGS \
-            --host 0.0.0.0 \
-            --port $ROUTER_PORT \
-            --intra-node-data-parallel-size {{ dp_per_node }} \
-            --worker-startup-timeout-secs 4200 \
-            --log-level debug \
-            >> $ROUTER_LOG 2>&1 &
+        launch_router pd "$REPLICA_ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log" "$REPLICA_IDX" "$REPLICA_BASE"
     fi
+{%- if router.type == "llm-d" %}
+    # pd-sidecar on each decode node: EPP routes decode -> sidecar (DECODE_SIDECAR_PORT
+    # + rank) -> vLLM decode (DECODE_PORT + rank) after orchestrating remote prefill.
+    # Every decode node fronts its own local ranks, so launch on each (not just the
+    # replica head), or decode nodes beyond the head get advertised but unserved endpoints.
+    if [ "$ROLE" = "decode" ]; then
+        SIDECAR_LOG="$OUTPUT_DIR/logs/inference/sidecar_${INFER_NODE_RANK}.log"
+        echo "Starting pd-sidecar on $LOCAL_IP:$DECODE_SIDECAR_PORT(+rank) -> vLLM $DECODE_PORT(+rank)" | tee $SIDECAR_LOG
+        export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
+        pd-sidecar \
+            --port $DECODE_SIDECAR_PORT \
+            --vllm-port $DECODE_PORT \
+            --kv-connector nixlv2 \
+            --secure-proxy=false \
+            --enable-ssrf-protection=false \
+            --inference-pool prime-rl \
+            --data-parallel-size {{ dp_per_node }} \
+            >> $SIDECAR_LOG 2>&1 &
+    fi
+{%- endif %}
 
-    uv run inference \
-        @ $CONFIG_PATH \
-        --server.host 0.0.0.0 \
-        --server.port $PORT \
-        --parallel.dp $EP \
-        --data-parallel-rpc-port $RPC_PORT \
-        --vllm-extra "$VLLM_EXTRA" \
-        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
+    # External-LB: one vLLM API server per local DP rank (PORT + k), each pinned to its TP
+    # slice of GPUs with a unique NIXL side-channel port. Each role is its own external-LB DP
+    # group rooted on the role-replica head (HEAD_HOST); the router balances across the per-rank
+    # endpoints. The kv_transfer_config is built in InferenceConfig.to_vllm() from the config.
+    if [ "$ROLE_RANK" -eq 0 ]; then DP_ADDR=$LOCAL_IP; else DP_ADDR=$HEAD_HOST; fi
+    for k in $(seq 0 $((DP_PER_NODE - 1))); do
+        GLOBAL_RANK=$((ROLE_RANK * DP_PER_NODE + k))
+        RANK_GPUS=$(seq -s, $((k * TP)) $((k * TP + TP - 1)))
+        RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
+        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
+    done
 {%- elif num_nodes > 1 %}
     echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
         | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
+    DP_PER_NODE={{ dp_per_node }}
+    TP=$((GPUS_PER_NODE / DP_PER_NODE))
+    EP={{ "1" if enable_expert_parallel else "0" }}
 
-    # Start router on node 0
+    # Start the router on node 0 (balances across per-rank endpoints — no intra-node DP header)
     if [ "$INFER_NODE_RANK" -eq 0 ]; then
-        ROUTER_LOG="$OUTPUT_DIR/logs/inference/router.log"
-        echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT" | tee $ROUTER_LOG
-
-        vllm-router \
-            --policy {{ router_policy }} \
-            --worker-urls $ROUTER_ARGS \
-            --host 0.0.0.0 \
-            --port $ROUTER_PORT \
-            --intra-node-data-parallel-size {{ dp_per_node }} \
-            --worker-startup-timeout-secs 4200 \
-            --log-level debug \
-            >> $ROUTER_LOG 2>&1 &
+        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log" 0 0 "$NUM_NODES"
     fi
 
-    uv run inference \
-        @ $CONFIG_PATH \
-        --server.host 0.0.0.0 \
-        --server.port $BACKEND_PORT \
-        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
+    # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + dp_local),
+    # each pinned to its TP slice of GPUs. Each node is an independent replica, so any MoE EP
+    # group is node-local (rendezvous on LOCAL_IP); dense models run independent engines.
+    for ((d=0; d<DP_PER_NODE; d++)); do
+        RANK_GPUS=$(seq -s, $((d * TP)) $((d * TP + TP - 1)))
+        RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
+        if [ "$EP" -eq 1 ]; then
+            RANK_EXTRA="{\"data_parallel_rank\": $d, \"data_parallel_address\": \"$LOCAL_IP\"}"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$DP_PER_NODE" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
+        else
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG"
+        fi
+    done
 {%- else %}
     echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
     # Required for graph compilation to work

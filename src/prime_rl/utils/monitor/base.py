@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import random
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import verifiers as vf
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import Rollout
 
 
 def sample_items_for_logging(items: list[Any], sample_ratio: float | None) -> list[Any]:
@@ -39,11 +42,11 @@ class Monitor(ABC):
         pass
 
     @abstractmethod
-    def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
+    def log_samples(self, rollouts: list[Rollout], step: int) -> None:
         pass
 
     @abstractmethod
-    def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list[Rollout], env_name: str, step: int) -> None:
         pass
 
     @abstractmethod
@@ -72,10 +75,10 @@ class NoOpMonitor(Monitor):
         else:
             self.history = [metrics]
 
-    def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
+    def log_samples(self, rollouts: list[Rollout], step: int) -> None:
         pass
 
-    def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list[Rollout], env_name: str, step: int) -> None:
         pass
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:

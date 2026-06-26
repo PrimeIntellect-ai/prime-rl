@@ -77,10 +77,9 @@ name = "code"
 ratio = 0.2
 args = { pool_size = 512 }
 
-[orchestrator.buffer]
-easy_threshold = 1.0
-online_difficulty_filtering = true
-seed = 42
+[[orchestrator.pre_batch_filters]]
+type = "zero_advantage"
+enforce = true
 
 [orchestrator.eval]
 interval = 25

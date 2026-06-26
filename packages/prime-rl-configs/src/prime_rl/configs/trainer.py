@@ -425,6 +425,18 @@ class DefaultLossConfig(BaseConfig):
     """Temperature for the KL term."""
 
 
+class IPOLossConfig(BaseConfig):
+    type: Literal["ipo"] = "ipo"
+    ipo_threshold: float = Field(0.1, ge=0)
+    """Upper DPPO masking threshold."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    kl_tau: float = Field(1e-3, ge=0)
+    """Temperature for the KL term."""
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -435,7 +447,7 @@ class CustomLossConfig(BaseConfig):
     """Kwargs forwarded to the loss function."""
 
 
-LossConfig: TypeAlias = Annotated[DefaultLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[DefaultLossConfig | IPOLossConfig | CustomLossConfig, Field(discriminator="type")]
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -488,15 +500,6 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
 ]
-
-
-class TokenExportConfig(BaseConfig):
-    """Configures per-token rollout exports from the RL trainer."""
-
-
-class TrainerExperimentalConfig(BaseConfig):
-    token_export: TokenExportConfig | None = None
-    """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
 
 
 class TrainerConfig(BaseConfig):
@@ -562,7 +565,8 @@ class TrainerConfig(BaseConfig):
     max_concurrent_runs: int = Field(1, ge=1)
     """Maximum number of concurrent runs to allow. If 1, only one run may run at a time."""
 
-    experimental: TrainerExperimentalConfig = TrainerExperimentalConfig()
+    enable_token_export: bool = False
+    """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):

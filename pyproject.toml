@@ -1,11 +1,12 @@
 [project]
 name = "prime-rl"
-version = "0.5.0"
+version = "0.6.0"
 description = "Async RL Training at Scale"
 readme = "README.md"
 requires-python = "~=3.12.0"
 dependencies = [
     "prime-rl-configs",
+    "prime-pydantic-config",
     "beartype>=0.21.0",
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
@@ -17,8 +18,9 @@ dependencies = [
     "torchvision",
     "torchaudio",
     "torchdata>=0.11.0",
-    "transformers",
-    "vllm>=0.21.0",
+    "transformers==5.6.2",
+    "vllm>=0.23.0",
+    "mooncake-transfer-engine>=0.3.10.post2",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
     "prime>=0.6.4",
@@ -26,17 +28,21 @@ dependencies = [
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
     "openai>=1.106.1",
+    "orjson>=3.11.0",
     "rich>=14.0.0",
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
     "torchtitan",
-    "verifiers",
+    "verifiers>=0.1.15.dev400",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
     "flash-linear-attention",
     "nvidia-ml-py>=12.575.51",
     "pybase64>=1.4.2",
+    "orjson>=3.10",
+    "pandas>=2.0",
+    "msgspec>=0.18",
 ]
 
 [project.scripts]
@@ -60,34 +66,47 @@ flash-attn-cute = [
     "flash-attn-4",
 ]
 envs = [
-    "aime2024",
-    "aime2025",
     "alphabet-sort",
-    "code-env",
-    "color-codeword",
-    "deepdive",
     "general-agent",
-    "gpqa",
-    "hle",
-    "ifeval",
-    "livecodebench",
     "logic-env",
     "math-env",
     "math-python",
-    "math500",
-    "mini-swe-agent-plus",
-    "mini-swe-agent-plus-rlm",
-    "mmlu-pro",
-    "opencode-cp",
-    "opencode-deepdive",
-    "opencode-math",
-    "opencode-science",
-    "opencode-swe",
     "reverse-text",
-    "science-env",
-    "simpleqa-verified",
-    "tau2-bench",
+    "rlm-swe",
+    "rlm-search",
+    "uuid-ctf-v1",
     "wiki-search",
+    "wordle",
+    "reverse-text-v1",
+    "gsm8k-v1",
+    "math-env-v1",
+    "aime24-v1",
+    "aime25-v1",
+    "aime26-v1",
+    "alphabet-sort-v1",
+    "scaleswe-v1",
+    "color-codeword-v1",
+    "deepdive-v1",
+    "gpqa-v1",
+    "livecodebench-v1",
+    "r2e-gym-v1",
+    "terminal-bench-2-v1",
+    "code-golf-v1",
+    "deepwiki-v1",
+    "glossary-v1",
+    "swelego-v1",
+    "wiki-search-v1",
+    "wikispeedia-v1",
+    "wordle-v1",
+    "general-agent-v1",
+    "swebench-verified-v1",
+    "tau2-bench-v1",
+    "math500-v1",
+    "mmlu-pro-v1",
+    "ifeval-v1",
+    "simpleqa-verified-v1",
+    "i3-code-v1",
+    "i3-science-v1",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -126,44 +145,12 @@ dev = [
     "ruff>=0.12.1",
 ]
 
-
-[tool.uv.workspace]
-members = [
-    "packages/prime-rl-configs",
-    "deps/pydantic-config",
-    "deps/verifiers",
-    "deps/renderers",
-    "deps/verifiers/environments/alphabet_sort",
-    "deps/verifiers/environments/math_python",
-    "deps/verifiers/environments/reverse_text",
-    "deps/verifiers/environments/wiki_search",
-    "deps/research-environments/environments/aime2024",
-    "deps/research-environments/environments/aime2025",
-    "deps/research-environments/environments/code_env",
-    "deps/research-environments/environments/color_codeword",
-    "deps/research-environments/environments/deepdive",
-    "deps/research-environments/environments/general_agent",
-    "deps/research-environments/environments/gpqa",
-    "deps/research-environments/environments/hle",
-    "deps/research-environments/environments/ifeval",
-    "deps/research-environments/environments/livecodebench",
-    "deps/research-environments/environments/logic_env",
-    "deps/research-environments/environments/math500",
-    "deps/research-environments/environments/math_env",
-    "deps/research-environments/environments/mini_swe_agent_plus",
-    "deps/research-environments/environments/mini_swe_agent_plus_rlm",
-    "deps/research-environments/environments/mmlu_pro",
-    "deps/research-environments/environments/opencode_cp",
-    "deps/research-environments/environments/opencode_deepdive",
-    "deps/research-environments/environments/opencode_math",
-    "deps/research-environments/environments/opencode_science",
-    "deps/research-environments/environments/opencode_swe",
-    "deps/research-environments/environments/science_env",
-    "deps/research-environments/environments/simpleqa_verified",
-    "deps/research-environments/environments/tau2_bench",
-]
-
 [tool.uv]
+# Enforce a uv version that supports the friendly-duration form
+# (`"7 days"`) in the static pyproject parser. Older uvs silently parse
+# the value as an RFC 3339 date, emit a TOML parse warning, and proceed
+# *without* the cooldown — bypassing this security policy.
+required-version = ">=0.11.1"
 exclude-newer = "7 days"
 preview = true
 no-build-isolation-package = ["flash-attn"]
@@ -176,9 +163,10 @@ environments = [
 override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
-    "transformers>=5.1.0.dev0",
+    "transformers==5.6.2",
     "torch>=2.9.0",
     "openenv-core",
+    "verifiers>=0.1.15.dev400",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
@@ -203,11 +191,17 @@ vllm = false
 tokenspeed-mla = false
 fastokens = false
 flash_attn_3 = false
-# PrimeIntellect-published on PyPI (trusted publisher)
+# PrimeIntellect-published packages in this project's dependency closure —
+# fast-track so first-party releases can land same-day. Only packages that
+# appear in `uv tree` need to be listed; the resolver ignores entries for
+# packages it never sees.
 prime = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
+verifiers = false
+renderers = false
+prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
 dion = false
@@ -216,49 +210,65 @@ deep-gemm = false
 nixl-cu12 = false
 
 [tool.uv.sources]
-prime-rl-configs = { workspace = true }
-verifiers = { workspace = true }
-renderers = { workspace = true }
-aime2024 = { workspace = true }
-aime2025 = { workspace = true }
-alphabet-sort = { workspace = true }
-code-env = { workspace = true }
-color-codeword = { workspace = true }
-deepdive = { workspace = true }
-general-agent = { workspace = true }
-gpqa = { workspace = true }
-hle = { workspace = true }
-ifeval = { workspace = true }
-livecodebench = { workspace = true }
-logic-env = { workspace = true }
-math-env = { workspace = true }
-math-python = { workspace = true }
-math500 = { workspace = true }
-mini-swe-agent-plus = { workspace = true }
-mini-swe-agent-plus-rlm = { workspace = true }
-mmlu-pro = { workspace = true }
-opencode-cp = { workspace = true }
-opencode-deepdive = { workspace = true }
-opencode-math = { workspace = true }
-opencode-science = { workspace = true }
-opencode-swe = { workspace = true }
-reverse-text = { workspace = true }
-science-env = { workspace = true }
-simpleqa-verified = { workspace = true }
-tau2-bench = { workspace = true }
-wiki-search = { workspace = true }
+prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
+# prime-rl depends on the one `verifiers` package (v0 + v1 + the legacy bridge + the built-in v1
+# harnesses/tasksets, now bundled in verifiers.v1). v0 envs resolve from
+# deps/{verifiers,research-environments}/environments; v1 tasksets (`-v1`) and the `compact`
+# example live under deps/{verifiers,research-environments}/environments.
+verifiers = { path = "deps/verifiers", editable = true }
+renderers = { path = "deps/renderers", editable = true }
+prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
+alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
+general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
+logic-env = { path = "deps/research-environments/environments/logic_env", editable = true }
+math-env = { path = "deps/research-environments/environments/math_env", editable = true }
+math-python = { path = "deps/verifiers/environments/math_python", editable = true }
+reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
+rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable = true }
+rlm-search = { path = "deps/research-environments/environments/rlm_search", editable = true }
+uuid-ctf-v1 = { path = "deps/research-environments/environments/uuid_ctf_v1", editable = true }
+wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
+wordle = { path = "deps/verifiers/environments/wordle", editable = true }
+reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editable = true }
+gsm8k-v1 = { path = "deps/verifiers/environments/gsm8k_v1", editable = true }
+math-env-v1 = { path = "deps/research-environments/environments/math_env_v1", editable = true }
+aime24-v1 = { path = "deps/research-environments/environments/aime24_v1", editable = true }
+aime25-v1 = { path = "deps/research-environments/environments/aime25_v1", editable = true }
+aime26-v1 = { path = "deps/research-environments/environments/aime26_v1", editable = true }
+alphabet-sort-v1 = { path = "deps/verifiers/environments/alphabet_sort_v1", editable = true }
+scaleswe-v1 = { path = "deps/research-environments/environments/scaleswe_v1", editable = true }
+color-codeword-v1 = { path = "deps/verifiers/environments/color_codeword_v1", editable = true }
+deepdive-v1 = { path = "deps/research-environments/environments/deepdive_v1", editable = true }
+gpqa-v1 = { path = "deps/research-environments/environments/gpqa_v1", editable = true }
+livecodebench-v1 = { path = "deps/research-environments/environments/livecodebench_v1", editable = true }
+r2e-gym-v1 = { path = "deps/research-environments/environments/r2e_gym_v1", editable = true }
+terminal-bench-2-v1 = { path = "deps/research-environments/environments/terminal_bench_2_v1", editable = true }
+code-golf-v1 = { path = "deps/verifiers/environments/code_golf_v1", editable = true }
+deepwiki-v1 = { path = "deps/verifiers/environments/deepwiki_v1", editable = true }
+glossary-v1 = { path = "deps/verifiers/environments/glossary_v1", editable = true }
+swelego-v1 = { path = "deps/research-environments/environments/swelego_v1", editable = true }
+wiki-search-v1 = { path = "deps/verifiers/environments/wiki_search_v1", editable = true }
+wikispeedia-v1 = { path = "deps/research-environments/environments/wikispeedia_v1", editable = true }
+wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
+general-agent-v1 = { path = "deps/research-environments/environments/general_agent_v1", editable = true }
+swebench-verified-v1 = { path = "deps/research-environments/environments/swebench_verified_v1", editable = true }
+tau2-bench-v1 = { path = "deps/research-environments/environments/tau2_bench_v1", editable = true }
+math500-v1 = { path = "deps/research-environments/environments/math500_v1", editable = true }
+mmlu-pro-v1 = { path = "deps/research-environments/environments/mmlu_pro_v1", editable = true }
+ifeval-v1 = { path = "deps/research-environments/environments/ifeval_v1", editable = true }
+simpleqa-verified-v1 = { path = "deps/research-environments/environments/simpleqa_verified_v1", editable = true }
+i3-code-v1 = { path = "deps/research-environments/environments/i3_code_v1", editable = true }
+i3-science-v1 = { path = "deps/research-environments/environments/i3_science_v1", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
-transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
-prime-pydantic-config = { workspace = true }
 vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }
 vllm = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
 deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
@@ -289,7 +299,7 @@ select = ["F", "I"]
 ignore = ["F722", "F821"] # Need to ignore for jaxtyping (https://docs.kidger.site/jaxtyping/faq/)
 
 [tool.ruff.lint.isort]
-# `prime_rl` is split across two workspace wheels (prime-rl + prime-rl-configs).
+# `prime_rl` is split across two editable wheels (prime-rl + prime-rl-configs).
 # Without this, ruff classifies prime_rl.configs.* as third-party because it
 # doesn't live under src/.
 known-first-party = ["prime_rl"]

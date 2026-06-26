@@ -25,7 +25,7 @@ impl = "custom"        # or "hf" to force the HF path
 
 | Family | HF config types | EP | CP |
 |---|---|---|---|
-| GLM-5 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8` | ✅ | ✅ |
+| GLM-5 / GLM-5.2 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8`, `zai-org/GLM-5.2`, `zai-org/GLM-5.2-FP8` | ✅ | ✅ |
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
 | Qwen3 / Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
@@ -36,18 +36,19 @@ impl = "custom"        # or "hf" to force the HF path
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
 | GPT-OSS (HF MoE) | `openai/gpt-oss-20b`, `openai/gpt-oss-120b` | ❌ | ✅ |
 
-The custom path enables EP, selective activation checkpointing, FP8 training (`model.fp8 = true`, requires SM90+), and faster MoE kernels (`moe_use_grouped_mm = true`, default). Forcing `impl = "hf"` is mostly useful when debugging — it's slower and disables most MoE-specific knobs.
+The custom path enables you to set EP, CP, selective activation checkpointing, FP8 training (`model.fp8 = true`, requires SM90+), and faster MoE kernels (`moe_use_grouped_mm = true`, default). Forcing `impl = "hf"` is mostly useful when debugging — it's slower and disables most MoE-specific knobs.
+
+GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
 
 ### Expert Parallelism Backends
 
 `model.ep_comm_backend` picks the all-to-all kernel used for EP dispatch/combine:
 
 - **`torch`** (default): TorchTitan's all-to-all collective. Works everywhere, no extra install.
-- **`deepep`**: Custom kernels from DeepEP. Faster but requires DeepEP build (`bash scripts/install_deep_gemm.sh`, `bash scripts/install_ep_kernels.sh`) and tuning of `deepep_num_sms` (default 20) and `deepep_token_chunk_size` for your hardware.
+- **`deepep`**: Utilizes DeepEP's custom all-to-all collectives. This provides better performance if EP dimension spans multiple nodes. We provide pre-built binaries for H100/H200 with cuda runtime 12.9 installed, you can install them by running `uv sync --all-extras`.
+DeepEP requires some careful tuning to achieve optimal performance, tuning parameters are `deepep_num_sms` and `deepep_token_chunk_size`.
 
-DeepEP intranode dispatch derives the RDMA channel count as `deepep_num_sms / 2`. Lower SM count leaves more for compute; higher speeds up dispatch. Useful starting points: 16–24 SMs on H100, 20–40 on B200.
-
-When you enable DeepEP, gradient clipping is auto-disabled (`optim.max_norm` set to `None`) because the kernels don't currently support it.
+With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is set to `None` automatically.)
 
 ## Multimodal Training
 
@@ -80,7 +81,7 @@ language_model_attr = "model.language_model"
 # freeze_vision_encoder = true  # default; set false to fine-tune the encoder
 ```
 
-A bad attribute path errors immediately — no silent fallbacks. The weight-broadcast key prefix is derived as `{language_model_attr}.layers.` automatically.
+The weight-broadcast key prefix is derived as `{language_model_attr}.layers.` automatically.
 
 To add a new model family permanently, append an entry to `VLM_REGISTRY` in `src/prime_rl/utils/vlm.py`.
 
@@ -116,7 +117,7 @@ LoRA pairs naturally with [multi-tenant training](#multi-tenant-training) — ea
 
 ## Multi-Tenant Training
 
-Multi-tenant training lets a single trainer + inference deployment serve many concurrent LoRA "tenants" — each a fully isolated run with its own orchestrator, LoRA adapter, optimizer, scheduler, checkpoints, and progress tracking — sharing the same backbone weights and the same vLLM server. This is the topology behind hosted training on the [Prime Intellect platform (Lab)](https://app.primeintellect.ai). The trainer-side implementation is the `MultiRunManager` singleton, enabled by setting `trainer.max_concurrent_runs > 1`. For the full API surface, see [`src/prime_rl/trainer/runs/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/src/prime_rl/trainer/runs).
+Multi-tenant training lets a single trainer + inference deployment serve many concurrent LoRA "tenants" — each a fully isolated run with its own orchestrator, LoRA adapter, optimizer, scheduler, checkpoints, and progress tracking — sharing the same backbone weights and the same vLLM server. This is the topology behind hosted training on the [Prime Intellect platform (Lab)](https://app.primeintellect.ai). The trainer-side implementation is the `MultiRunManager` singleton, enabled by setting `trainer.max_concurrent_runs > 1`. For the full API surface, see [`src/prime_rl/trainer/runs.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/src/prime_rl/trainer/runs.py).
 
 ## Disaggregated Prefill/Decode Inference
 
@@ -138,8 +139,7 @@ curl -s http://<decode_node>:8200/metrics | grep num_requests_waiting
 
 If prefill queues and decode is idle, add prefill nodes (and vice versa).
 
-**UCX 1.19 requirement.** NVSHMEM needs UCX ≥ 1.19 for multi-GPU CUDA. Most clusters ship UCX 1.17 via HPC-X, which manifests as `cuStreamCreate: invalid device context` errors during DeepEP internode dispatch. Check with `/opt/hpcx/ucx/bin/ucx_info -v` and, if needed, build from source:
-
+**UCX 1.19 requirement.** NVSHMEM needs UCX ≥ 1.19 for multi-GPU CUDA. If your cluster doesn't ship with UCX >=1.19, you can build it from source with the following command:
 ```bash
 salloc -N 1 --gres=gpu:1 bash -c 'bash scripts/install_nixl_from_source.sh'
 ```

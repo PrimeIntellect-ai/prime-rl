@@ -1,0 +1,140 @@
+max_steps = 10000000
+seq_len = 131072
+output_dir = "/shared/outputs/glm5-llmd" # FILL IN: point at your shared filesystem
+clean_output_dir = true
+
+[log]
+level = "debug"
+
+[wandb]
+project = "glm5-llmd"
+name = "base"
+
+[weight_broadcast]
+type = "nccl"
+port = 29502
+timeout = 12000
+quantize_in_weight_transfer = true
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 16
+num_infer_nodes = 16
+gpus_per_node = 8
+num_infer_replicas = 1
+
+[inference.deployment]
+type = "disaggregated"
+num_prefill_nodes = 8
+num_prefill_replicas = 4
+num_decode_nodes = 8
+num_decode_replicas = 1
+# skip warmup for faster start in cost of some jit overhead early
+# ucx needs to be set else random segfaults, vllm can't autoset before importing for some reason
+prefill_env_overrides = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="skip", "UCX_RCACHE_MAX_UNRELEASED"="1024"}
+decode_env_overrides = {"VLLM_DEEP_GEMM_WARMUP"="skip", "UCX_RCACHE_MAX_UNRELEASED"="1024"}
+
+# gives the most KV cache while keeping decent throughput, KV cache increase comes in from lower deep-ep LL static buffers
+prefill_vllm_overrides = {"enable_dbo"=true}
+decode_vllm_overrides = {"max_num_batched_tokens"=96, "max_num_seqs"=96}
+
+[inference.deployment.router]
+type = "llm-d"
+scorers = { "prefix-cache-scorer" = 3.0 } # need some prefix-cache routing, however due to shared mooncake pool do low prio
+
+prefill_scorer_overrides = { "queue-scorer" = 4.0, "active-request-scorer" = 5.0 } # prefill creates queues quite heavily, queue scorer to 4.0, active request at 5.0 is needed due to burstiness of early pipeline RL fill
+decode_scorer_overrides = { "active-request-scorer" = 5.0, "kv-cache-utilization-scorer" = 4.0, "queue-scorer" = 3.0 } # decode doesn't really create queue, it fills in KV cache fast, give 4.0
+non_cached_tokens = 128 # if <128 tokens, skip prefill go to decode immediately
+
+[slurm]
+job_name = "glm5-llmd"
+partition = "all" # FILL IN: set to your cluster's partition
+
+[trainer]
+dist_timeout_seconds = 1800
+enable_token_export = true
+
+[trainer.model]
+name = "zai-org/GLM-5.1"
+impl = "custom"
+attn = "flash_attention_2" # ignored with GLM5
+fused_lm_head_token_chunk_size = 1024
+cp = 4 # context parallel for the 131K seq len
+ep = 8
+optim_cpu_offload = true
+fp8 = true
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 256
+rollouts_per_example = 16
+max_inflight_rollouts = 2048
+max_off_policy_steps = 8 # 16/32 can be better, 8 is more CPU stable
+
+[orchestrator.model]
+name = "zai-org/GLM-5.1-FP8"
+
+[orchestrator.renderer]
+name = "glm-5.1"
+preserve_all_thinking = true
+
+[orchestrator.train.sampling]
+temperature = 1.0
+extra_body = {chat_template_kwargs = {clear_thinking = false}}
+
+
+[[orchestrator.train.env]]
+id = "rlm_swe"
+name = "r2e"
+num_workers = 16
+
+[orchestrator.train.env.args]
+max_turns = 300
+timeout_seconds = 21600
+summarize_at_tokens = [35000, 80000]
+poll_interval = 5
+rlm_ref = "907115a79b2a50d193863e7ea1f3550acb4386f0"
+labels = ["glm5-llmd"]
+
+[orchestrator.advantage]
+type = "default"
+
+[inference]
+enable_expert_parallel = true
+# <0.80 because glm5 layers are too large for 0.85
+gpu_memory_utilization = 0.75
+enable_eplb = false
+use_deep_gemm = true
+enable_fp32_lm_head = true
+
+[inference.model]
+name = "zai-org/GLM-5.1-FP8"
+max_model_len = 131072
+tool_call_parser = "glm47"
+reasoning_parser = "glm45"
+
+# Speed up GLM-5.1 weight load: EP weight filtering + safetensors prefetch.
+[inference.vllm_extra]
+enable_ep_weight_filter = true
+safetensors_load_strategy = "prefetch"
+
+# Mooncake distributed CPU KV store: 1TB/node shared pool across all inference nodes.
+[inference.kv_cache_offload]
+type = "mooncake"
+# Auto Detection is funky, do it yourself from nvidia-smi topo -m
+device_name = "mlx5_0,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_9,mlx5_10,mlx5_11"
+
+[inference.kv_cache_offload.cpu]
+num_bytes = 1_000_000_000_000 # 1TB per node - 16TB total CPU pool

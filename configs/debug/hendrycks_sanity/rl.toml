@@ -1,0 +1,42 @@
+max_steps = 3000
+seq_len = 4096
+
+[wandb]
+project = "hendrycks-math-debug"
+name = "hendrycks-math-sanity"
+
+[model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+
+[orchestrator]
+batch_size = 256
+max_inflight_rollouts = 512
+group_size = 8
+
+[[orchestrator.train.env]]
+id = "math-env"
+args = { dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
+name = "hendrycks-math"
+
+[orchestrator.eval]
+interval = 50
+
+[[orchestrator.eval.env]]
+name = "aime2024"
+taskset = { id = "aime24-v1" }
+group_size = 16
+
+[trainer.model.ac]
+
+[trainer.model.compile]
+
+[inference.model]
+max_model_len = 4096
+
+[log]
+level = "debug"
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"
+reasoning_parser = "think"

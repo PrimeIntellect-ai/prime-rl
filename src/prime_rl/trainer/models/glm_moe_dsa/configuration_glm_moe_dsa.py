@@ -11,6 +11,10 @@ def _index_cache_skip_topk(config, layer_idx: int) -> bool:
     if index_topk_pattern is not None:
         return layer_idx < len(index_topk_pattern) and index_topk_pattern[layer_idx] == "S"
 
+    indexer_types = getattr(config, "indexer_types", None)
+    if indexer_types is not None:
+        return layer_idx < len(indexer_types) and indexer_types[layer_idx] == "shared"
+
     return layer_idx % getattr(config, "index_topk_freq", 1) != 0
 
 
@@ -162,6 +166,7 @@ class GlmMoeDsaConfig(PretrainedConfig):
         use_index_cache=False,
         index_topk_freq=1,
         index_topk_pattern=None,
+        indexer_types=None,
         scoring_func="sigmoid",
         topk_method="noaux_tc",
         use_grouped_mm=True,
@@ -218,6 +223,7 @@ class GlmMoeDsaConfig(PretrainedConfig):
         self.use_index_cache = use_index_cache
         self.index_topk_freq = index_topk_freq
         self.index_topk_pattern = index_topk_pattern
+        self.indexer_types = indexer_types
         self.scoring_func = scoring_func
         self.topk_method = topk_method
         self.use_grouped_mm = use_grouped_mm
@@ -226,6 +232,10 @@ class GlmMoeDsaConfig(PretrainedConfig):
         if not self.use_grouped_mm:
             warnings.warn("not using grouped mm for moe is very slow, should only be used for debugging")
 
+        # head_dim is derived from qk_rope_head_dim (the RoPE slice). Some checkpoints (e.g. GLM-5.2)
+        # set head_dim=qk_nope_head_dim in config.json; drop it so PretrainedConfig.__init__ can't
+        # overwrite self.head_dim and break the rotary embedding dimension.
+        kwargs.pop("head_dim", None)
         super().__init__(
             pad_token_id=pad_token_id,
             tie_word_embeddings=tie_word_embeddings,

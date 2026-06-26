@@ -37,6 +37,7 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.checkpointing import (
     get_supported_targets,
     set_selective_activation_checkpointing,
@@ -79,7 +80,7 @@ def _patch_qwen3_5_moe_conversion_mapping():
     incorrectly maps qwen3_5_moe → qwen2_moe, which assumes per-expert 2D checkpoint weights,
     causing revert_weight_conversion to produce wrong shapes during weight broadcasting.
 
-    Remove once the pinned transformers commit fixes this.
+    Remove once an official Transformers release fixes this.
     """
     from transformers.conversion_mapping import (
         get_checkpoint_conversion_mapping,
@@ -99,7 +100,7 @@ def _patch_qwen3_5_text_position_ids():
     """Fix Qwen3.5 passing 3D MRoPE position_ids to decoder layers instead of 2D text_position_ids.
 
     Upstream fix: https://github.com/huggingface/transformers/pull/44399
-    Remove once the pinned transformers commit includes this fix.
+    Remove once an official Transformers release includes this fix.
     """
     import inspect
 
@@ -350,6 +351,29 @@ def freeze_moe_router(model: nn.Module) -> None:
     logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
+def freeze_sparse_indexer(model: nn.Module) -> None:
+    """Freeze DSA sparse-attention indexer parameters.
+
+    The indexer's `compute_sparse_indices` forward runs under `torch.no_grad()`, so its
+    params never receive a gradient and cannot be trained. Left with requires_grad=True
+    they stay stateless in the optimizer, which breaks strict checkpoint resume: DCP
+    materializes optimizer state for every requires_grad param at load time, but the
+    stateless params were never saved -> "Missing key in checkpoint state_dict". Freezing
+    them keeps the saved and loaded optimizer state symmetric.
+    """
+    logger = get_logger()
+    num_frozen = 0
+
+    for module in model.modules():
+        if isinstance(module, Indexer):
+            for param in module.parameters():
+                param.requires_grad = False
+                num_frozen += 1
+
+    if num_frozen > 0:
+        logger.info(f"Froze {num_frozen} sparse indexer parameters")
+
+
 def apply_force_balanced_routing(model: nn.Module) -> None:
     """Force MoE token-choice routers into round-robin assignment for fake-data smoke tests."""
     logger = get_logger()
@@ -486,6 +510,18 @@ def get_model(
         model_config.use_index_cache = True
         model_config.index_topk_freq = config.index_cache.topk_freq
         model_config.index_topk_pattern = config.index_cache.topk_pattern
+        # Explicit override supersedes the model's native IndexShare schedule.
+        model_config.indexer_types = None
+    else:
+        # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
+        # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
+        indexer_types = getattr(model_config, "indexer_types", None)
+        if indexer_types and any(t == "shared" for t in indexer_types):
+            model_config.use_index_cache = True
+            logger.info(
+                f"Auto-enabled IndexShare from indexer_types schedule "
+                f"({sum(t == 'full' for t in indexer_types)}/{len(indexer_types)} full layers)"
+            )
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
@@ -517,6 +553,15 @@ def get_model(
     # The FSDP MixedPrecisionPolicy handles compute dtype separately.
 
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
+
+    # NemotronH: transformers' Mamba2 mixer __init__ calls lazy_load_kernel("mamba-ssm" /
+    # "causal-conv1d") whenever config.use_mamba_kernels is set. That hub-kernel path is gated only
+    # by whether the `kernels` package is importable (NOT by USE_HUB_KERNELS) and resolves from the
+    # HF Hub, which hard-crashes under HF_HUB_OFFLINE=1. prime-rl swaps in its own mamba_ssm Triton
+    # SSD kernels via _patch_mamba2_use_triton_ssd, so the hub kernels are redundant; disable them
+    # to keep model init offline-safe.
+    if getattr(model_config, "model_type", "") == "nemotron_h":
+        model_config.use_mamba_kernels = False
 
     if config.debug.num_layers is not None:
         # VLM configs nest num_hidden_layers under text_config
@@ -1065,6 +1110,11 @@ def setup_model(
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
+
+    # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
+    # never trainable. Freeze it so optimizer state stays symmetric across checkpoint
+    # save/resume. No-op for models without a sparse indexer.
+    freeze_sparse_indexer(model)
 
     if config.debug.force_balanced_routing:
         apply_force_balanced_routing(model)

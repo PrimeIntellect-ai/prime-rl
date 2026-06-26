@@ -1,0 +1,34 @@
+{# Shared external-LB vLLM launch helper, included once per template and called
+   from every per-rank launch site (multi-node and disaggregated).
+   One vLLM API server per DP rank, pinned to its GPU slice. #}
+# rank_log <node_rank> <k> — DP rank 0 logs to the node-level file (node_<rank>.log,
+# the target of the top-level inference.log symlink) so it captures real server output;
+# ranks 1+ get their own node_<rank>_rank<k>.log.
+rank_log() {
+    if [ "$2" -eq 0 ]; then
+        echo "$OUTPUT_DIR/logs/inference/node_$1.log"
+    else
+        echo "$OUTPUT_DIR/logs/inference/node_$1_rank$2.log"
+    fi
+}
+
+# launch_inference_rank <port> <cuda_visible_devices> <dp> <rpc_port> <vllm_extra_json|""> <nixl_side_channel_port|""> <log_file>
+launch_inference_rank() {
+    local port="$1" gpus="$2" dp="$3" rpc="$4" extra="$5" nixl="$6" log="$7"
+    # Per-rank dir for the mooncake-store lookup ipc socket. It must be unique per process:
+    # external-LB runs one engine per process, all with data_parallel_rank_local 0, so the
+    # lookup socket name collides on bind if the dir is shared node-wide. $port is unique per
+    # rank on the node. Node-local /tmp also avoids inheriting an absent submit-node TMPDIR.
+    local rpcbase="/tmp/vllm-rpc-$USER-$SLURM_JOB_ID-$port"
+    mkdir -p "$rpcbase"
+    local -a cmd=(uv run inference @ "$CONFIG_PATH"
+        --server.host 0.0.0.0 --server.port "$port"
+        --parallel.dp "$dp" --data-parallel-size-local 1 --api-server-count 1)
+    [ -n "$rpc" ] && cmd+=(--data-parallel-rpc-port "$rpc")
+    [ -n "$extra" ] && cmd+=(--vllm-extra "$extra")
+    if [ -n "$nixl" ]; then
+        CUDA_VISIBLE_DEVICES="$gpus" VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
+    else
+        CUDA_VISIBLE_DEVICES="$gpus" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
+    fi
+}

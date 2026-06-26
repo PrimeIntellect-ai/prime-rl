@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-import verifiers as vf
+from verifiers.v1.clients.config import TrainClientConfig
 
 from prime_rl.utils.elastic import (
     AdapterState,
@@ -411,8 +411,6 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
         client_config.elastic.port = 8000
         client_config.elastic.sync_interval = 5.0
         client_config.router_url = None
-        client_config.timeout = 1200
-        client_config.connect_timeout = 30.0
         client_config.api_key_var = "PRIME_API_KEY"
         client_config.headers = {}
         client_config.headers_from_env = {}
@@ -435,20 +433,14 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
         pool.update_model_name("r8-smoke")
         clients = pool.train_clients
 
+        # `renderer_model_name` stays pinned to the original base model even after the
+        # served model name flips to the LoRA adapter (`r8-smoke`).
         assert clients == [
-            vf.ClientConfig(
-                client_idx=0,
-                client_type="renderer",
-                renderer_config=renderer_settings,
+            TrainClientConfig(
+                renderer=renderer_settings,
                 renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
                 api_key_var="PRIME_API_KEY",
-                api_base_url="http://10.0.0.1:8000/v1",
-                timeout=1200,
-                connect_timeout=30.0,
-                max_connections=8192,
-                max_keepalive_connections=8192,
-                max_retries=10,
-                extra_headers={},
-                extra_headers_from_state={},
+                base_url="http://10.0.0.1:8000/v1",
+                headers={},
             )
         ]
