@@ -4,8 +4,10 @@ import pytest
 import torch
 from datasets import Dataset, interleave_datasets
 from renderers import create_renderer
+from renderers.base import MultiModalData, PlaceholderRange, RenderedTrainingSample
 from transformers import AutoTokenizer
 
+import prime_rl.trainer.sft.data as sft_data
 from prime_rl.trainer.sft.data import CatDataset, SFTDataset
 from prime_rl.trainer.utils import print_sample
 
@@ -326,6 +328,33 @@ def test_messages_take_precedence_over_prompt_and_completion():
     )
 
     assert next(iter(messages_dataset)) == next(iter(expected_dataset))
+
+
+def test_vlm_truncation_does_not_append_trainable_eos(monkeypatch):
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+    mm = MultiModalData(
+        mm_placeholders={"image": [PlaceholderRange(offset=1, length=1)]},
+        mm_items={"image": [{"pixel_values": torch.ones(1, 1), "image_grid_thw": torch.tensor([[1, 1, 1]])}]},
+    )
+
+    def fake_build_training_sample(*args, **kwargs):
+        return RenderedTrainingSample(
+            token_ids=[10, 11, 12, tokenizer.eos_token_id],
+            loss_mask=[False, False, False, True],
+            multi_modal_data=mm,
+            mm_token_type_ids=[0, 1, 0, 0],
+        )
+
+    monkeypatch.setattr(sft_data, "build_training_sample", fake_build_training_sample)
+    dataset = SFTDataset(
+        Dataset.from_list([{"messages": [{"role": "assistant", "content": "ignored"}]}]),
+        tokenizer=tokenizer,
+        renderer=object(),
+        seq_len=3,
+        max_examples=1,
+    )
+
+    assert next(iter(dataset)) is None
 
 
 def _sft_sample(

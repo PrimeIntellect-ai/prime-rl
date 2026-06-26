@@ -374,9 +374,11 @@ class SFTDataset(StatefulIterableDataset):
         mm = sample.multi_modal_data
         mm_token_type_ids = list(sample.mm_token_type_ids) if sample.mm_token_type_ids is not None else None
 
+        was_mm_truncated = False
         if mm is not None:
             budget = self.seq_len
             if len(input_ids) > budget:
+                was_mm_truncated = True
                 cut = _find_image_safe_cut(budget, mm)
                 self.logger.debug(
                     f"Truncating example {example.get('__index', '')} from "
@@ -391,6 +393,8 @@ class SFTDataset(StatefulIterableDataset):
 
         # If EOS token is not found, manually append it (keep mm_token_type_ids aligned).
         if not self.tokenizer.eos_token_id in input_ids:
+            if was_mm_truncated:
+                return None
             self.logger.warning(
                 f"Did not find EOS token ID {self.tokenizer.eos_token_id} in input_ids. Is something wrong with the chat template? Manually appending EOS token..."
             )
@@ -942,7 +946,7 @@ def setup_dataset(
     *,
     max_epochs: int | None = None,
     raw_dataset: Dataset | None = None,
-    renderer: Renderer,
+    renderer: Renderer | None = None,
     multimodal: bool = False,
 ) -> StatefulIterableDataset:
     if config.type == "fake":
@@ -953,6 +957,8 @@ def setup_dataset(
             input_ids=config.input_ids,
         )
     elif config.type == "sft":
+        if renderer is None:
+            raise ValueError("SFT data requires a renderer.")
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config, multimodal=multimodal)
         return SFTDataset(

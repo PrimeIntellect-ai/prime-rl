@@ -29,7 +29,7 @@ class BaseDataConfig(BaseConfig):
     batch_size: int = Field(128, ge=1)
     """Global batch size."""
 
-    seq_len: int = Field(128, ge=1)
+    seq_len: int = Field(256, ge=1)
     """Sequence length."""
 
     pack_function: Literal["cat", "stack"] = "stack"
@@ -49,6 +49,12 @@ class BaseDataConfig(BaseConfig):
 
 class FakeDataConfig(BaseDataConfig):
     type: Literal["fake"] = "fake"
+
+    seq_len: int = Field(128, ge=1)
+    """Sequence length."""
+
+    pack_function: Literal["cat", "stack"] = "cat"
+    """Sample packing strategy."""
 
     length: Literal["fixed", "variable"] = "fixed"
     """Use fixed-length samples or variable-length samples."""
