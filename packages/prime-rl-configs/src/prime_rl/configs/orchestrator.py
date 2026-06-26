@@ -245,7 +245,7 @@ class TrainEnvConfig(EnvConfig):
 
     shuffle: bool = True
     """Shuffle this env's tasks (and reshuffle each epoch) on the env server. Defaults to True for
-    training — overrides the framework default of False (deterministic). No-op for an unbounded
+    training — overrides the framework default of False (deterministic). No-op for an infinite
     taskset, whose generator owns its order."""
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))

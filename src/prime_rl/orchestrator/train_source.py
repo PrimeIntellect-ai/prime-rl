@@ -24,7 +24,7 @@ class TrainSource:
             raise ValueError("TrainSource needs at least one train env")
         self.env_names = [e.name for e in self.envs]
         # Each env's `ratio` is its relative weight (default 1.0 → equal parts); `random.choices`
-        # normalizes to probabilities. No dataset-size weighting (an unbounded env has none).
+        # normalizes to probabilities. No dataset-size weighting (an infinite env has none).
         self.weights: list[float] = [float(e.config.ratio) for e in self.envs]
         # Permits to open a group: a group-scored env runs as one indivisible `run_group`
         # (group_size at once); a non-group env opens with one `run_rollout` (1) and fills the
