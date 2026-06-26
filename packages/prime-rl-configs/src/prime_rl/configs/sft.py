@@ -78,7 +78,7 @@ class SFTDataConfig(BaseDataConfig):
     """HF dataset name or path."""
 
     data_files: list[str] | None = None
-    """Optional list of local files (JSONL, JSONL.zst, …) to load via ``load_dataset(name, data_files=...)``. When set, ``name`` should be a loader id like ``"json"``. ``.zst`` files are transparently decompressed to a tempdir before loading."""
+    """Optional local dataset files passed to ``load_dataset``."""
 
     subsets: list[str] | None = None
     """Subsets to load from the HF dataset."""
@@ -179,10 +179,7 @@ class SFTConfig(BaseConfig):
     tokenizer: TokenizerConfig = TokenizerConfig()
 
     renderer: RendererConfig = AutoRendererConfig()
-    """Typed renderer config (``renderers.RendererConfig`` discriminated
-    union). SFT tokenizes samples through the ``renderers`` library (single
-    ``render()`` + ``message_indices`` mask), auto-resolving the concrete
-    renderer from the tokenizer's model name by default."""
+    """Renderer config. Defaults to auto-selecting from the tokenizer model name."""
 
     data: DataConfig = SFTDataConfig()
 
@@ -226,8 +223,8 @@ class SFTConfig(BaseConfig):
     dist_timeout_seconds: int = 600
     """Timeout in seconds for torch distributed ops."""
 
-    loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "torch"
-    """Cross-entropy loss implementation. ``liger_fused`` fuses the lm_head projection with the CE loss to avoid materializing full logits. ``quack_fused`` uses quack-kernels for chunked linear + CE with CuTe DSL CUDA kernels."""
+    loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "liger_fused"
+    """Cross-entropy loss implementation. Defaults to fused Liger loss to avoid materializing full logits."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
