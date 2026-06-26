@@ -1,11 +1,7 @@
-# Downstream image for disaggregated P/D + llm-d + mooncake on K8s.
-#
-# Layers on top of the base prime-rl image (built by pi-rft's
-# build-push-prime-rl workflow). Adds:
-#   - NIXL rebuilt from source against the baked UCX 1.19. The pip wheel
-#     ships UCX that segfaults on prefill->decode KV transfer (see PR #2883).
-#   - llm-d Go binaries (epp, envoy, pd-sidecar) into /app/third_party/llmd/bin,
-#     where the existing prime-rl templates already expect them.
+# Downstream image: layers the llm-d Go binaries (epp, envoy, pd-sidecar) on
+# top of the base prime-rl image. NIXL-from-source is baked into the base
+# image's Dockerfile.cuda directly (it needs CUDA dev tools, which only the
+# base image's builder stage has).
 #
 # Build:
 #   docker build \
@@ -19,36 +15,16 @@ FROM ${BASE_IMAGE}
 
 USER root
 
-# Build deps for NIXL (UCX itself is already installed under /opt/ucx in the base).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        autoconf \
-        automake \
-        libtool \
-        pkg-config \
-        ninja-build \
-        libnuma-dev \
-        libnl-3-dev \
-        libnl-route-3-dev \
-        libibverbs-dev \
-        librdmacm-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# install_nixl_from_source.sh expects UCX at $PROJECT_DIR/third_party/ucx. The
-# base image installs UCX under /opt/ucx; symlink so the script finds it without
-# editing.
-RUN mkdir -p /app/third_party && ln -sfn /opt/ucx /app/third_party/ucx
+# install_llmd.sh isn't shipped in the base image's runtime stage — copy it in
+# from the build context (prime-rl repo root). It vendors its own Go toolchain
+# under /app/third_party/llmd/go, so no system Go required.
+COPY scripts/install_llmd.sh /app/scripts/install_llmd.sh
 
 WORKDIR /app
 
-# Rebuild NIXL and reinstall the resulting wheel over the locked one.
-RUN bash /app/scripts/install_nixl_from_source.sh \
-    && /app/.venv/bin/pip install --reinstall --no-deps /app/deps/nixl_cu12-*.whl \
-    && rm -rf /app/nixl_workspace
-
-# llm-d Go binaries -> /app/third_party/llmd/bin (epp, envoy, pd-sidecar). The
-# install script vendors Go + builds Envoy from the official image via crane,
-# so no Docker-in-Docker is needed.
+# llm-d Go binaries -> /app/third_party/llmd/bin (epp, envoy, pd-sidecar).
+# Builds Envoy by exporting the official Envoy image's static binary via crane,
+# so no Docker-in-Docker needed.
 RUN bash /app/scripts/install_llmd.sh \
     && rm -rf /app/third_party/llmd/src /app/third_party/llmd/go /app/third_party/llmd/gotools
 
