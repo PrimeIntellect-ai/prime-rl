@@ -431,7 +431,17 @@ class RolloutDispatcher:
         # `sample()` is the only pull (server-owned cursor + shuffle/epoch); a group samples its
         # task once, so all its rollouts share one task.
         if group.task is None:
-            group.task = await env.sample()
+            try:
+                group.task = await env.sample()
+            except Exception as exc:
+                # sample() runs in the scheduling path, outside the inflight-task error handling
+                # that turns run_rollout/run_group failures into error markers — so an unguarded
+                # error here would kill the dispatch loop. Leave the group pending and retry next
+                # tick instead (a transient env-server hiccup recovers; a dead server stalls
+                # rather than crashes).
+                if group_id in self.groups:
+                    get_logger().warning(f"sample() failed for env {group.env_name!r}; retrying: {exc}")
+                return False
             if group_id not in self.groups:  # group dropped while awaiting sample()
                 return False
             group.task_idx = group.task.idx

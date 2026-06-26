@@ -75,8 +75,10 @@ class EvalSource:
             return None
         head = self.queue[0]
         env = self.eval_envs.get(head["env_name"])
-        # A group is one indivisible `run_group(group_size)` pull, so it costs `group_size` permits.
-        cost = env.config.group_size
+        # Permits to open this group: a group-scored env runs as one indivisible `run_group`
+        # (group_size at once); a non-group env opens with one `run_rollout` (1) and fills the
+        # rest per-rollout via the dispatcher's continue-group path.
+        cost = env.config.group_size if env.requires_group_scoring else 1
         if cost > available_permits:
             return None
         return self.queue.popleft()

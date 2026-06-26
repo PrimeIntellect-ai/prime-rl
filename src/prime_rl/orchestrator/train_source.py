@@ -26,8 +26,12 @@ class TrainSource:
         # Each env's `ratio` is its relative weight (default 1.0 → equal parts); `random.choices`
         # normalizes to probabilities. No dataset-size weighting (an unbounded env has none).
         self.weights: list[float] = [float(e.config.ratio) for e in self.envs]
-        # A group is one indivisible `run_group(group_size)` pull, so it costs `group_size` permits.
-        self.env_costs: dict[str, int] = {e.name: e.config.group_size for e in self.envs}
+        # Permits to open a group: a group-scored env runs as one indivisible `run_group`
+        # (group_size at once); a non-group env opens with one `run_rollout` (1) and fills the
+        # rest per-rollout via the dispatcher's continue-group path.
+        self.env_costs: dict[str, int] = {
+            e.name: (e.config.group_size if e.requires_group_scoring else 1) for e in self.envs
+        }
 
     def next_example(self, available_permits: int) -> dict | None:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
