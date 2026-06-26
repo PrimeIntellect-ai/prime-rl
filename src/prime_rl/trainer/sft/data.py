@@ -480,9 +480,9 @@ class SFTDataset(StatefulIterableDataset):
 class CatDataset(StatefulIterableDataset):
     """A dataset that concatenates samples into a single sequence with a fixed length.
 
-    Multimodal payloads are carried alongside token arrays. If any sample in a
-    pack has images, ``mm_token_type_ids`` is backfilled with zeros for text-only
-    spans and image kwargs are concatenated along their leading item dimension.
+    Text-only samples pack with text-only samples. Multimodal samples pack with
+    multimodal samples by concatenating their image kwargs along the leading
+    item dimension. Text-only and multimodal samples never share a pack.
     """
 
     def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
@@ -498,21 +498,23 @@ class CatDataset(StatefulIterableDataset):
 
     def __iter__(self):
         packed_samples = _new_pack()
-        seq_len = 0
+        seq_len, has_mm = 0, None
         for sample in self.dataset:
             sample_len = len(sample["input_ids"])
-            if seq_len > 0 and seq_len + sample_len > self.seq_len:
+            sample_has_mm = sample.get("mm_kwargs") is not None
+            if seq_len > 0 and (sample_has_mm != has_mm or seq_len + sample_len > self.seq_len):
                 yield self._finalize_pack(packed_samples, self.seq_len)
                 packed_samples = _new_pack()
-                seq_len = 0
+                seq_len, has_mm = 0, None
 
             _append_sample_to_pack(packed_samples, sample)
             seq_len += sample_len
+            has_mm = sample_has_mm
 
             if seq_len >= self.seq_len:
                 yield self._finalize_pack(packed_samples, self.seq_len)
                 packed_samples = _new_pack()
-                seq_len = 0
+                seq_len, has_mm = 0, None
 
         if seq_len > 0:
             yield self._finalize_pack(packed_samples, self.seq_len)
