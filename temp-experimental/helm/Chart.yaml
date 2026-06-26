@@ -1,0 +1,14 @@
+apiVersion: v2
+name: prime-rl-inference-llmd
+description: Experimental Helm chart for disaggregated P/D vLLM inference with mooncake KV pool + llm-d router on Kubernetes
+type: application
+version: 0.0.1
+appVersion: "main"
+keywords:
+  - inference
+  - vllm
+  - disaggregated
+  - llm-d
+  - mooncake
+sources:
+  - https://github.com/PrimeIntellect-ai/prime-rl

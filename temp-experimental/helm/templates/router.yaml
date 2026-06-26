@@ -1,0 +1,305 @@
+{{- if .Values.router.enabled }}
+{{- $prefillScorers := merge dict .Values.router.scorers .Values.router.prefillScorerOverrides -}}
+{{- $decodeScorers := merge dict .Values.router.scorers .Values.router.decodeScorerOverrides -}}
+{{- $allScorers := keys (merge dict $prefillScorers $decodeScorers) | uniq -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-router
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl-llmd.labels" . | nindent 4 }}
+data:
+  epp.yaml: |
+    apiVersion: inference.networking.x-k8s.io/v1alpha1
+    kind: EndpointPickerConfig
+    plugins:
+      - name: file-disc
+        type: file-discovery
+        parameters:
+          path: /etc/llmd/endpoints.yaml
+          watchFile: true
+      - name: vllmhttp-parser
+        type: vllmhttp-parser
+      - name: pd-decider
+        type: prefix-based-pd-decider
+        parameters:
+          nonCachedTokens: {{ .Values.router.nonCachedTokens }}
+      - name: profile-handler
+        type: disagg-profile-handler
+        parameters:
+          deciders:
+            prefill: pd-decider
+      - type: prefill-filter
+      - type: decode-filter
+      {{- range $scorer := $allScorers }}
+      - type: {{ $scorer }}
+      {{- end }}
+      - type: max-score-picker
+    schedulingProfiles:
+      - name: prefill
+        plugins:
+          - pluginRef: prefill-filter
+          {{- range $name, $weight := $prefillScorers }}
+          - pluginRef: {{ $name }}
+            weight: {{ $weight }}
+          {{- end }}
+          - pluginRef: max-score-picker
+      - name: decode
+        plugins:
+          - pluginRef: decode-filter
+          {{- range $name, $weight := $decodeScorers }}
+          - pluginRef: {{ $name }}
+            weight: {{ $weight }}
+          {{- end }}
+          - pluginRef: max-score-picker
+    requestHandler:
+      parser:
+        pluginRef: vllmhttp-parser
+    dataLayer:
+      discovery:
+        pluginRef: file-disc
+
+  envoy.yaml: |
+    admin:
+      address: { socket_address: { address: 127.0.0.1, port_value: 9901 } }
+    static_resources:
+      listeners:
+        - name: prime_rl
+          address: { socket_address: { address: 0.0.0.0, port_value: {{ .Values.router.port }} } }
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: prime_rl
+                    codec_type: AUTO
+                    stream_idle_timeout: 0s
+                    request_timeout: 0s
+                    route_config:
+                      virtual_hosts:
+                        - name: prime_rl
+                          domains: ["*"]
+                          routes:
+                            - match: { prefix: "/v1/" }
+                              route: { cluster: backend_cluster, timeout: 0s, idle_timeout: 86400s }
+                            - match: { prefix: "/inference/v1/" }
+                              route: { cluster: backend_cluster, timeout: 0s, idle_timeout: 86400s }
+                    http_filters:
+                      - name: envoy.filters.http.ext_proc
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+                          grpc_service:
+                            envoy_grpc: { cluster_name: epp_cluster }
+                            timeout: 10s
+                          processing_mode:
+                            request_header_mode: SEND
+                            response_header_mode: SEND
+                            request_body_mode: FULL_DUPLEX_STREAMED
+                            response_body_mode: FULL_DUPLEX_STREAMED
+                            request_trailer_mode: SEND
+                            response_trailer_mode: SEND
+                          message_timeout: 1000s
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                          suppress_envoy_headers: true
+      clusters:
+        - name: backend_cluster
+          type: ORIGINAL_DST
+          lb_policy: CLUSTER_PROVIDED
+          original_dst_lb_config:
+            use_http_header: true
+            http_header_name: x-gateway-destination-endpoint
+          connect_timeout: 5s
+          circuit_breakers:
+            thresholds:
+              - priority: DEFAULT
+                max_connections: 100000
+                max_pending_requests: 100000
+                max_requests: 100000
+                max_retries: 1000
+              - priority: HIGH
+                max_connections: 100000
+                max_pending_requests: 100000
+                max_requests: 100000
+                max_retries: 1000
+        - name: epp_cluster
+          type: STRICT_DNS
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          load_assignment:
+            cluster_name: epp_cluster
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address: { socket_address: { address: 127.0.0.1, port_value: 9002 } }
+          connect_timeout: 5s
+          circuit_breakers:
+            thresholds:
+              - priority: DEFAULT
+                max_connections: 100000
+                max_pending_requests: 100000
+                max_requests: 100000
+                max_retries: 1000
+              - priority: HIGH
+                max_connections: 100000
+                max_pending_requests: 100000
+                max_requests: 100000
+                max_retries: 1000
+
+  # Endpoint discovery template. The init container fills in pod IPs at startup
+  # because file-discovery rejects hostnames. Single-pod-per-role smoke topology;
+  # for the 16-node case this becomes one entry per (pod × DP-rank).
+  endpoints.template.yaml: |
+    endpoints:
+    {{- range $i := until (int .Values.prefill.replicas) }}
+      - name: prefill-{{ $i }}
+        address: __PREFILL_{{ $i }}__
+        port: "{{ $.Values.prefill.port }}"
+        namespace: default
+        labels:
+          llm-d.ai/pool: prime-rl
+          llm-d.ai/role: prefill
+    {{- end }}
+    {{- range $i := until (int .Values.decode.replicas) }}
+      - name: decode-{{ $i }}
+        address: __DECODE_{{ $i }}__
+        port: "{{ $.Values.decode.sidecarPort }}"
+        namespace: default
+        labels:
+          llm-d.ai/pool: prime-rl
+          llm-d.ai/role: decode
+    {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-router
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl-llmd.labels" . | nindent 4 }}
+    role: router
+spec:
+  type: {{ .Values.router.service.type }}
+  selector:
+    {{- include "prime-rl-llmd.selectorLabels" . | nindent 4 }}
+    role: router
+  ports:
+  - name: http
+    port: {{ .Values.router.port }}
+    targetPort: gateway
+  - name: metrics
+    port: 9090
+    targetPort: metrics
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-router
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl-llmd.labels" . | nindent 4 }}
+    role: router
+spec:
+  replicas: {{ .Values.router.replicas }}
+  selector:
+    matchLabels:
+      {{- include "prime-rl-llmd.selectorLabels" . | nindent 6 }}
+      role: router
+  template:
+    metadata:
+      labels:
+        {{- include "prime-rl-llmd.selectorLabels" . | nindent 8 }}
+        role: router
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+      # Resolve prefill/decode pod IPs and substitute into endpoints.yaml.
+      # Re-runs would need a sidecar that watches DNS; for the smoke topology
+      # a one-shot resolve at startup is fine.
+      - name: render-endpoints
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+            cp /etc/llmd-src/endpoints.template.yaml /etc/llmd-out/endpoints.yaml
+            cp /etc/llmd-src/epp.yaml              /etc/llmd-out/epp.yaml
+            cp /etc/llmd-src/envoy.yaml            /etc/llmd-out/envoy.yaml
+            resolve() {
+              for _ in $(seq 1 120); do
+                ip=$(getent hosts "$1" | awk '{print $1}' | head -1)
+                if [ -n "$ip" ]; then echo "$ip"; return 0; fi
+                sleep 1
+              done
+              echo "ERROR: could not resolve $1" >&2; exit 1
+            }
+            {{- range $i := until (int .Values.prefill.replicas) }}
+            ip=$(resolve "{{ $.Release.Name }}-prefill-{{ $i }}.{{ $.Release.Name }}-prefill.{{ $.Values.namespace }}.svc.cluster.local")
+            sed -i "s|__PREFILL_{{ $i }}__|${ip}|g" /etc/llmd-out/endpoints.yaml
+            {{- end }}
+            {{- range $i := until (int .Values.decode.replicas) }}
+            ip=$(resolve "{{ $.Release.Name }}-decode-{{ $i }}.{{ $.Release.Name }}-decode.{{ $.Values.namespace }}.svc.cluster.local")
+            sed -i "s|__DECODE_{{ $i }}__|${ip}|g" /etc/llmd-out/endpoints.yaml
+            {{- end }}
+            cat /etc/llmd-out/endpoints.yaml
+        volumeMounts:
+        - name: llmd-src
+          mountPath: /etc/llmd-src
+        - name: llmd-rendered
+          mountPath: /etc/llmd-out
+      containers:
+      - name: epp
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            exec epp \
+              --pool-name prime-rl \
+              --pool-namespace {{ .Values.namespace }} \
+              --config-file /etc/llmd/epp.yaml \
+              --grpc-port 9002 \
+              --grpc-health-port 9013 \
+              --metrics-port 9090 \
+              --secure-serving=false \
+              --metrics-endpoint-auth=false \
+              --tracing=false
+        ports:
+        - containerPort: 9002
+          name: epp-grpc
+        - containerPort: 9013
+          name: epp-health
+        - containerPort: 9090
+          name: metrics
+        volumeMounts:
+        - name: llmd-rendered
+          mountPath: /etc/llmd
+      - name: envoy
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            exec envoy -c /etc/llmd/envoy.yaml
+        ports:
+        - containerPort: {{ .Values.router.port }}
+          name: gateway
+        volumeMounts:
+        - name: llmd-rendered
+          mountPath: /etc/llmd
+      volumes:
+      - name: llmd-src
+        configMap:
+          name: {{ .Release.Name }}-router
+      - name: llmd-rendered
+        emptyDir: {}
+{{- end }}

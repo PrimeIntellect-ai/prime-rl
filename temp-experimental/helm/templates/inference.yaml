@@ -1,0 +1,407 @@
+{{/*
+Prefill + decode StatefulSets. Single-pod-per-role smoke topology:
+one GPU per pod, DP=1, no cross-node TP. For the full multi-replica /
+multi-node case (e.g. GLM-5.2 16-node), this template needs to grow:
+  - Multiple DP ranks per pod (loop over `gpusPerNode` like _launch_rank.sh.j2)
+  - data_parallel_address pointing at the per-replica head pod
+  - LeaderWorkerSet instead of StatefulSet for cross-node TP groups
+Tracked in README "What's missing".
+*/}}
+
+{{- define "prime-rl-llmd.inferenceContainerEnv" -}}
+- name: VLLM_HOST_IP
+  valueFrom:
+    fieldRef:
+      fieldPath: status.podIP
+- name: VLLM_NIXL_SIDE_CHANNEL_HOST
+  valueFrom:
+    fieldRef:
+      fieldPath: status.podIP
+- name: VLLM_NIXL_SIDE_CHANNEL_PORT
+  value: "5600"
+- name: UCX_TLS
+  value: "all"
+- name: PYTHONHASHSEED
+  value: "0"
+- name: PYTHONUNBUFFERED
+  value: "1"
+- name: PYTORCH_CUDA_ALLOC_CONF
+  value: "expandable_segments:False"
+{{- if .Values.mooncake.enabled }}
+- name: MOONCAKE_CONFIG_PATH
+  value: "/etc/mooncake/config.json"
+{{- end }}
+- name: HF_HOME
+  value: "{{ .Values.storage.mountPath }}/hf_cache"
+{{- end -}}
+
+# ---- PREFILL ----
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-prefill
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl-llmd.labels" . | nindent 4 }}
+    role: prefill
+spec:
+  clusterIP: None
+  selector:
+    {{- include "prime-rl-llmd.selectorLabels" . | nindent 4 }}
+    role: prefill
+  ports:
+  - name: api
+    port: {{ .Values.prefill.port }}
+    targetPort: api
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-prefill
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl-llmd.labels" . | nindent 4 }}
+    role: prefill
+spec:
+  serviceName: {{ .Release.Name }}-prefill
+  replicas: {{ .Values.prefill.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "prime-rl-llmd.selectorLabels" . | nindent 6 }}
+      role: prefill
+  template:
+    metadata:
+      labels:
+        {{- include "prime-rl-llmd.selectorLabels" . | nindent 8 }}
+        role: prefill
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.rdma.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      runtimeClassName: {{ .Values.runtimeClassName }}
+      containers:
+      - name: vllm
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+            ulimit -l unlimited 2>/dev/null || true
+            mkdir -p /tmp/vllm-rpc-prefill-{{ .Values.prefill.port }}
+            export VLLM_RPC_BASE_PATH=/tmp/vllm-rpc-prefill-{{ .Values.prefill.port }}
+            EXTRA='{"all2all_backend": "deepep_high_throughput", "data_parallel_address": "'"$POD_IP"'", "data_parallel_rank": 0}'
+            uv run inference @ /etc/prime-rl/inference.toml \
+              --server.host 0.0.0.0 \
+              --server.port {{ .Values.prefill.port }} \
+              --parallel.dp 1 \
+              --data-parallel-size-local 1 \
+              --api-server-count 1 \
+              --vllm-extra "$EXTRA"
+        env:
+        {{- include "prime-rl-llmd.commonEnv" . | nindent 8 }}
+        {{- include "prime-rl-llmd.inferenceContainerEnv" . | nindent 8 }}
+        - name: ROLE
+          value: "prefill"
+        {{- range $k, $v := .Values.prefill.envOverrides }}
+        - name: {{ $k }}
+          value: {{ $v | quote }}
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.prefill.port }}
+          name: api
+        - containerPort: 5600
+          name: nixl
+        resources:
+          requests:
+            {{ .Values.gpu.resourceName }}: {{ .Values.prefill.gpusPerNode }}
+            {{- with .Values.prefill.resources.requests }}
+            cpu: {{ .cpu }}
+            memory: {{ .memory }}
+            {{- end }}
+            {{- if .Values.rdma.enabled }}
+            {{ .Values.rdma.deviceName }}: {{ .Values.rdma.count }}
+            {{- end }}
+          limits:
+            {{ .Values.gpu.resourceName }}: {{ .Values.prefill.gpusPerNode }}
+            {{- if .Values.rdma.enabled }}
+            {{ .Values.rdma.deviceName }}: {{ .Values.rdma.count }}
+            {{- end }}
+        {{- if .Values.rdma.privileged }}
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["IPC_LOCK"]
+        {{- end }}
+        volumeMounts:
+        - name: shared-data
+          mountPath: {{ .Values.storage.mountPath }}
+        - name: inference-toml
+          mountPath: /etc/prime-rl
+        {{- if .Values.mooncake.enabled }}
+        - name: mooncake-config
+          mountPath: /etc/mooncake
+        {{- end }}
+        - name: dshm
+          mountPath: /dev/shm
+      {{- if .Values.mooncake.enabled }}
+      - name: mooncake-client
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        # Wait for master DNS+port, then register this pod's DRAM segment.
+        args:
+          - |
+            set -e
+            for _ in $(seq 1 120); do
+              timeout 1 bash -c "echo > /dev/tcp/{{ include "prime-rl-llmd.mooncakeMasterHost" . }}/50051" 2>/dev/null && break
+              sleep 1
+            done
+            exec mooncake_client \
+              -host=$POD_IP -port=50052 \
+              -master_server_address={{ include "prime-rl-llmd.mooncakeMasterHost" . }}:50051 \
+              -metadata_server=http://{{ include "prime-rl-llmd.mooncakeMasterHost" . }}:8080/metadata \
+              -protocol=rdma \
+              -global_segment_size={{ div .Values.mooncake.cpuBytes (add .Values.prefill.replicas .Values.decode.replicas) }} \
+              {{- if .Values.mooncake.deviceName }}
+              -device_names={{ .Values.mooncake.deviceName }}
+              {{- end }}
+        env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        {{- if .Values.rdma.enabled }}
+        resources:
+          requests:
+            {{ .Values.rdma.deviceName }}: {{ .Values.rdma.count }}
+          limits:
+            {{ .Values.rdma.deviceName }}: {{ .Values.rdma.count }}
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["IPC_LOCK"]
+        {{- end }}
+      {{- end }}
+      volumes:
+      {{- if .Values.storage.enabled }}
+      - name: shared-data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-shared
+      {{- end }}
+      - name: inference-toml
+        configMap:
+          name: {{ .Release.Name }}-inference-toml
+      {{- if .Values.mooncake.enabled }}
+      - name: mooncake-config
+        configMap:
+          name: {{ .Release.Name }}-mooncake-config
+      {{- end }}
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: {{ .Values.shmSize }}
+---
+# ---- DECODE ----
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-decode
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl-llmd.labels" . | nindent 4 }}
+    role: decode
+spec:
+  clusterIP: None
+  selector:
+    {{- include "prime-rl-llmd.selectorLabels" . | nindent 4 }}
+    role: decode
+  ports:
+  - name: api
+    port: {{ .Values.decode.port }}
+    targetPort: api
+  - name: sidecar
+    port: {{ .Values.decode.sidecarPort }}
+    targetPort: sidecar
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-decode
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl-llmd.labels" . | nindent 4 }}
+    role: decode
+spec:
+  serviceName: {{ .Release.Name }}-decode
+  replicas: {{ .Values.decode.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "prime-rl-llmd.selectorLabels" . | nindent 6 }}
+      role: decode
+  template:
+    metadata:
+      labels:
+        {{- include "prime-rl-llmd.selectorLabels" . | nindent 8 }}
+        role: decode
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.rdma.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      runtimeClassName: {{ .Values.runtimeClassName }}
+      containers:
+      - name: vllm
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+            ulimit -l unlimited 2>/dev/null || true
+            mkdir -p /tmp/vllm-rpc-decode-{{ .Values.decode.port }}
+            export VLLM_RPC_BASE_PATH=/tmp/vllm-rpc-decode-{{ .Values.decode.port }}
+            EXTRA='{"all2all_backend": "deepep_low_latency", "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"}, "data_parallel_address": "'"$POD_IP"'", "data_parallel_rank": 0}'
+            uv run inference @ /etc/prime-rl/inference.toml \
+              --server.host 0.0.0.0 \
+              --server.port {{ .Values.decode.port }} \
+              --parallel.dp 1 \
+              --data-parallel-size-local 1 \
+              --api-server-count 1 \
+              --vllm-extra "$EXTRA"
+        env:
+        {{- include "prime-rl-llmd.commonEnv" . | nindent 8 }}
+        {{- include "prime-rl-llmd.inferenceContainerEnv" . | nindent 8 }}
+        - name: ROLE
+          value: "decode"
+        # Per the SLURM template: decode pins UCX to a single NIC for stability.
+        - name: UCX_NET_DEVICES
+          value: "mlx5_0:1"
+        {{- range $k, $v := .Values.decode.envOverrides }}
+        - name: {{ $k }}
+          value: {{ $v | quote }}
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.decode.port }}
+          name: api
+        - containerPort: 5600
+          name: nixl
+        resources:
+          requests:
+            {{ .Values.gpu.resourceName }}: {{ .Values.decode.gpusPerNode }}
+            {{- with .Values.decode.resources.requests }}
+            cpu: {{ .cpu }}
+            memory: {{ .memory }}
+            {{- end }}
+            {{- if .Values.rdma.enabled }}
+            {{ .Values.rdma.deviceName }}: {{ .Values.rdma.count }}
+            {{- end }}
+          limits:
+            {{ .Values.gpu.resourceName }}: {{ .Values.decode.gpusPerNode }}
+            {{- if .Values.rdma.enabled }}
+            {{ .Values.rdma.deviceName }}: {{ .Values.rdma.count }}
+            {{- end }}
+        {{- if .Values.rdma.privileged }}
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["IPC_LOCK"]
+        {{- end }}
+        volumeMounts:
+        - name: shared-data
+          mountPath: {{ .Values.storage.mountPath }}
+        - name: inference-toml
+          mountPath: /etc/prime-rl
+        {{- if .Values.mooncake.enabled }}
+        - name: mooncake-config
+          mountPath: /etc/mooncake
+        {{- end }}
+        - name: dshm
+          mountPath: /dev/shm
+      - name: pd-sidecar
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        # pd-sidecar fronts vLLM decode: EPP -> sidecar -> vLLM decode after
+        # orchestrating remote prefill via NIXL. Per-rank ports (PORT + rank);
+        # single-rank smoke topology uses rank 0.
+        args:
+          - |
+            exec pd-sidecar \
+              --port {{ .Values.decode.sidecarPort }} \
+              --vllm-port {{ .Values.decode.port }} \
+              --kv-connector nixlv2 \
+              --secure-proxy=false \
+              --enable-ssrf-protection=false \
+              --inference-pool prime-rl \
+              --data-parallel-size 1
+        ports:
+        - containerPort: {{ .Values.decode.sidecarPort }}
+          name: sidecar
+      {{- if .Values.mooncake.enabled }}
+      - name: mooncake-client
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+            for _ in $(seq 1 120); do
+              timeout 1 bash -c "echo > /dev/tcp/{{ include "prime-rl-llmd.mooncakeMasterHost" . }}/50051" 2>/dev/null && break
+              sleep 1
+            done
+            exec mooncake_client \
+              -host=$POD_IP -port=50052 \
+              -master_server_address={{ include "prime-rl-llmd.mooncakeMasterHost" . }}:50051 \
+              -metadata_server=http://{{ include "prime-rl-llmd.mooncakeMasterHost" . }}:8080/metadata \
+              -protocol=rdma \
+              -global_segment_size={{ div .Values.mooncake.cpuBytes (add .Values.prefill.replicas .Values.decode.replicas) }} \
+              {{- if .Values.mooncake.deviceName }}
+              -device_names={{ .Values.mooncake.deviceName }}
+              {{- end }}
+        env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        {{- if .Values.rdma.enabled }}
+        resources:
+          requests:
+            {{ .Values.rdma.deviceName }}: {{ .Values.rdma.count }}
+          limits:
+            {{ .Values.rdma.deviceName }}: {{ .Values.rdma.count }}
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["IPC_LOCK"]
+        {{- end }}
+      {{- end }}
+      volumes:
+      {{- if .Values.storage.enabled }}
+      - name: shared-data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-shared
+      {{- end }}
+      - name: inference-toml
+        configMap:
+          name: {{ .Release.Name }}-inference-toml
+      {{- if .Values.mooncake.enabled }}
+      - name: mooncake-config
+        configMap:
+          name: {{ .Release.Name }}-mooncake-config
+      {{- end }}
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: {{ .Values.shmSize }}

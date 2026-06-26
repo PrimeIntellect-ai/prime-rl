@@ -1,0 +1,76 @@
+{{- if .Values.mooncake.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-mooncake
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl-llmd.labels" . | nindent 4 }}
+    role: mooncake-master
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "prime-rl-llmd.selectorLabels" . | nindent 6 }}
+      role: mooncake-master
+  template:
+    metadata:
+      labels:
+        {{- include "prime-rl-llmd.selectorLabels" . | nindent 8 }}
+        role: mooncake-master
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: mooncake-master
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        # default_kv_lease_ttl raised from 5s: KV blocks were expiring before the
+        # decode side reused them (see prime-rl _mooncake_store.sh.j2).
+        args:
+          - |
+            mooncake_master \
+              -rpc_port=50051 \
+              -enable_http_metadata_server \
+              -http_metadata_server_host=0.0.0.0 \
+              -http_metadata_server_port=8080 \
+              -default_kv_lease_ttl={{ .Values.mooncake.defaultKvLeaseTtl }}
+        ports:
+        - containerPort: 50051
+          name: rpc
+        - containerPort: 8080
+          name: metadata
+        - containerPort: 9003
+          name: metrics
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-mooncake
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl-llmd.labels" . | nindent 4 }}
+    role: mooncake-master
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "prime-rl-llmd.selectorLabels" . | nindent 4 }}
+    role: mooncake-master
+  ports:
+  - name: rpc
+    port: 50051
+    targetPort: rpc
+  - name: metadata
+    port: 8080
+    targetPort: metadata
+  - name: metrics
+    port: 9003
+    targetPort: metrics
+{{- end }}

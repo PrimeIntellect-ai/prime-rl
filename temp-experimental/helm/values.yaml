@@ -1,0 +1,118 @@
+# Defaults are sized for the *minimal smoke-test topology*: one prefill node +
+# one decode node, single DP rank, one EPP+Envoy router, one mooncake master.
+# Override with values-glm5.2-16node.yaml for the PR #2883 target.
+
+namespace: default
+
+image:
+  # Built by temp-experimental/docker/Dockerfile.llmd.
+  repository: ghcr.io/primeintellect-ai/hosted-rl/prime-rl-llmd
+  pullPolicy: IfNotPresent
+  tag: "dev-latest"
+  pullSecrets:
+    - name: ghcr-secret
+
+# Shared model cache / HF home / output dir. RWX so prefill + decode + router
+# can share weights. Disable if you mount HF_HOME from a node-local cache.
+storage:
+  enabled: true
+  storageClassName: nfs
+  size: 1Ti
+  mountPath: /data
+  accessModes:
+    - ReadWriteMany
+
+model:
+  name: "zai-org/GLM-5.2-FP8"
+  maxModelLen: 91000
+  toolCallParser: "glm47"
+  reasoningParser: "glm45"
+
+# Per-role topology. gpusPerNode is also the TP within a node; DP between nodes.
+# `replicas` is the K8s StatefulSet replica count for that role.
+prefill:
+  replicas: 1
+  gpusPerNode: 1
+  port: 8200
+  envOverrides:
+    VLLM_ENABLE_MOE_DP_CHUNK: "0"
+    VLLM_DEEP_GEMM_WARMUP: "skip"
+    UCX_RCACHE_MAX_UNRELEASED: "1024"
+  resources:
+    requests:
+      cpu: "8"
+      memory: "64Gi"
+
+decode:
+  replicas: 1
+  gpusPerNode: 1
+  port: 8300
+  sidecarPort: 8400
+  envOverrides:
+    VLLM_DEEP_GEMM_WARMUP: "skip"
+    UCX_RCACHE_MAX_UNRELEASED: "1024"
+  resources:
+    requests:
+      cpu: "8"
+      memory: "64Gi"
+
+# Common inference settings applied to both roles.
+vllm:
+  enableExpertParallel: true
+  gpuMemoryUtilization: 0.75
+  enableEplb: false
+  useDeepGemm: true
+  enableFp32LmHead: true
+  vllmExtra:
+    enable_ep_weight_filter: true
+    safetensors_load_strategy: "prefetch"
+
+# llm-d router (EPP + Envoy). One replica per "router replica" in the SLURM
+# template's sense — for the simple topology, one router fronts the whole
+# prefill/decode pool.
+router:
+  enabled: true
+  replicas: 1
+  port: 8000
+  scorers:
+    "prefix-cache-scorer": 3.0
+  prefillScorerOverrides:
+    "queue-scorer": 4.0
+    "active-request-scorer": 5.0
+  decodeScorerOverrides:
+    "active-request-scorer": 5.0
+    "kv-cache-utilization-scorer": 4.0
+    "queue-scorer": 3.0
+  nonCachedTokens: 128
+  service:
+    type: ClusterIP
+
+# Mooncake distributed KV store. One master Deployment + Service, every
+# inference pod runs a mooncake_client sidecar contributing its DRAM segment.
+mooncake:
+  enabled: true
+  cpuBytes: 1000000000000  # 1 TB pool across the fleet
+  deviceName: "mlx5_0,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_9,mlx5_10,mlx5_11"
+  defaultKvLeaseTtl: 3600000
+
+# RDMA / IB. Required for mooncake transfer + NIXL P/D KV. Without these the
+# fallback is TCP, which works for smoke tests but defeats the purpose.
+rdma:
+  enabled: false
+  deviceName: "rdma/rdma_shared_device_a"
+  count: 1
+  hostNetwork: false  # set to true if your IB plugin requires it
+  privileged: true
+
+# vLLM workers need GPUs and IPC_LOCK for pinned-memory KV registration.
+runtimeClassName: nvidia
+gpu:
+  resourceName: "nvidia.com/gpu"
+
+# Shared memory for vLLM multiprocess executor / NCCL.
+shmSize: "16Gi"
+
+secrets:
+  enabled: false
+  name: prime-rl-secrets
+  # Expected keys: hf-token, wandb-api-key

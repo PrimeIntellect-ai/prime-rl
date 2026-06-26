@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-inference-toml
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl-llmd.labels" . | nindent 4 }}
+data:
+  # Per-node inference TOML mounted at /etc/prime-rl/inference.toml. Deliberately
+  # omits [deployment] and [slurm] — K8s primitives replace them. The required
+  # use_pd_kv_transfer = true tells the per-worker InferenceConfig to emit the
+  # NIXL transfer connector (otherwise dropping [deployment] would lose P/D).
+  inference.toml: |
+    output_dir = "{{ .Values.storage.mountPath }}/outputs"
+
+    enable_expert_parallel = {{ .Values.vllm.enableExpertParallel }}
+    gpu_memory_utilization = {{ .Values.vllm.gpuMemoryUtilization }}
+    enable_eplb = {{ .Values.vllm.enableEplb }}
+    use_deep_gemm = {{ .Values.vllm.useDeepGemm }}
+    enable_fp32_lm_head = {{ .Values.vllm.enableFp32LmHead }}
+    use_pd_kv_transfer = true
+
+    [model]
+    name = "{{ .Values.model.name }}"
+    max_model_len = {{ .Values.model.maxModelLen }}
+    tool_call_parser = "{{ .Values.model.toolCallParser }}"
+    reasoning_parser = "{{ .Values.model.reasoningParser }}"
+
+    [vllm_extra]
+    {{- range $k, $v := .Values.vllm.vllmExtra }}
+    {{ $k }} = {{ $v | toJson }}
+    {{- end }}
+
+    {{- if .Values.mooncake.enabled }}
+
+    [kv_cache_offload]
+    type = "mooncake"
+    device_name = "{{ .Values.mooncake.deviceName }}"
+
+    [kv_cache_offload.cpu]
+    num_bytes = {{ printf "%d" (int64 .Values.mooncake.cpuBytes) }}
+    {{- end }}
+{{- if .Values.mooncake.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-mooncake-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl-llmd.labels" . | nindent 4 }}
+data:
+  # Read by every inference pod (vLLM connector + mooncake_client sidecar).
+  # The standalone-store mode means each pod contributes its DRAM segment to
+  # the single shared pool fronted by {{ include "prime-rl-llmd.mooncakeMasterHost" . }}.
+  config.json: |
+    {
+      "mode": "standalone-store",
+      "global_segment_size": 0,
+      "local_buffer_size": 4294967296,
+      "protocol": "rdma",
+      "device_name": "{{ .Values.mooncake.deviceName }}",
+      "master_server_address": "{{ include "prime-rl-llmd.mooncakeMasterHost" . }}:50051",
+      "metadata_server": "http://{{ include "prime-rl-llmd.mooncakeMasterHost" . }}:8080/metadata",
+      "enable_offload": false
+    }
+{{- end }}

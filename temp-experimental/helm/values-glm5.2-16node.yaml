@@ -1,0 +1,100 @@
+# Target topology from configs/glm5.2_16node_llmd/inference.toml (PR #2883):
+# 8 prefill nodes (4 P replicas of 2 nodes each) + 8 decode nodes (1 D replica of 8 nodes).
+#
+# WARNING: this file is a SKETCH. The current chart only renders single-pod-per-role
+# (1 GPU, DP=1). Honoring this file end-to-end needs the multi-node bits called out
+# in README.md "What's missing":
+#   - multi-DP per pod (per-rank vLLM API servers + sidecar ports)
+#   - cross-node TP via LWS instead of StatefulSet
+#   - data_parallel_address pointing at the replica head
+#   - per-replica EPP+Envoy (4 routers for 4 prefill replicas)
+#
+# Keep this file in sync with configs/glm5.2_16node_llmd/inference.toml as the
+# golden source of truth.
+
+image:
+  repository: ghcr.io/primeintellect-ai/hosted-rl/prime-rl-llmd
+  tag: "v0.5.x-glm5.2"
+
+model:
+  name: "zai-org/GLM-5.2-FP8"
+  maxModelLen: 91000
+  toolCallParser: "glm47"
+  reasoningParser: "glm45"
+
+vllm:
+  enableExpertParallel: true
+  gpuMemoryUtilization: 0.75
+  enableEplb: false
+  useDeepGemm: true
+  enableFp32LmHead: true
+  vllmExtra:
+    enable_ep_weight_filter: true
+    safetensors_load_strategy: "prefetch"
+
+prefill:
+  replicas: 8           # 8 prefill nodes total
+  gpusPerNode: 8        # H200 nodes
+  port: 8200
+  envOverrides:
+    VLLM_ENABLE_MOE_DP_CHUNK: "0"
+    VLLM_DEEP_GEMM_WARMUP: "skip"
+    UCX_RCACHE_MAX_UNRELEASED: "1024"
+  resources:
+    requests:
+      cpu: "32"
+      memory: "512Gi"
+
+decode:
+  replicas: 8           # 8 decode nodes total
+  gpusPerNode: 8
+  port: 8300
+  sidecarPort: 8400
+  envOverrides:
+    VLLM_DEEP_GEMM_WARMUP: "skip"
+    UCX_RCACHE_MAX_UNRELEASED: "1024"
+  resources:
+    requests:
+      cpu: "32"
+      memory: "512Gi"
+
+router:
+  enabled: true
+  replicas: 4           # one router per outer P/D replica
+  port: 8000
+  scorers:
+    "prefix-cache-scorer": 3.0
+  prefillScorerOverrides:
+    "queue-scorer": 4.0
+    "active-request-scorer": 5.0
+  decodeScorerOverrides:
+    "active-request-scorer": 5.0
+    "kv-cache-utilization-scorer": 4.0
+    "queue-scorer": 3.0
+  nonCachedTokens: 128
+
+mooncake:
+  enabled: true
+  cpuBytes: 1000000000000
+  deviceName: "mlx5_0,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_9,mlx5_10,mlx5_11"
+
+rdma:
+  enabled: true
+  deviceName: "rdma/rdma_shared_device_a"
+  count: 8
+  hostNetwork: true
+  privileged: true
+
+storage:
+  enabled: true
+  storageClassName: nfs
+  size: 5Ti
+  mountPath: /data
+  accessModes:
+    - ReadWriteMany
+
+shmSize: "64Gi"
+
+secrets:
+  enabled: true
+  name: prime-rl-secrets
