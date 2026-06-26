@@ -47,30 +47,29 @@ entry per rollout. `assign_advantages` calls it on one already-grouped cohort.
 def default_advantage_fn(
     inputs: AdvantageInputs,
     length_penalty: LinearLengthPenaltyConfig | None = None,
-    max_seq_len: int | None = None,
     length_weighted_baseline: bool = False,
 ) -> AdvantageOutputs:
     """Default GRPO advantage for a single group: reward minus per-group baseline.
 
     ``length_penalty`` subtracts a ``pass_rate``-scaled penalty from each reward before the
-    baseline: ``coef`` × completion tokens plus ``context_coef`` × non-completion tokens (over
-    ``max_seq_len``) plus ``turns_coef`` × turns (over ``length_penalty.max_turns``), optionally
-    gated to correct (``reward == 1``) rollouts. ``length_weighted_baseline`` uses the
+    baseline — ``coef`` × completion tokens and ``context_coef`` × non-completion tokens over the
+    group's longest sequence, plus ``turns_coef`` × turns over the group's most turns — so the
+    longest / most-turns rollout takes the full coefficient and shorter ones scale down.
+    Optionally gated to correct (``reward == 1``) rollouts. ``length_weighted_baseline`` uses the
     token-length-weighted mean reward as the baseline instead of the plain mean.
     """
     rewards = torch.tensor([r.reward for r in inputs.rollouts], dtype=torch.float32)
     completion = torch.tensor([r.completion_len for r in inputs.rollouts], dtype=rewards.dtype)
 
     if length_penalty is not None:
-        if max_seq_len is None:
-            raise ValueError("max_seq_len is required when length_penalty is enabled")
         total = torch.tensor([r.total_tokens for r in inputs.rollouts], dtype=rewards.dtype)
+        # Each term is normalized by the group's own max, clamped to avoid a zero denominator.
         penalty_frac = (
             length_penalty.coef * completion + length_penalty.context_coef * (total - completion)
-        ) / max_seq_len
+        ) / total.max().clamp(min=1)
         if length_penalty.turns_coef:
             turns = torch.tensor([r.num_turns for r in inputs.rollouts], dtype=rewards.dtype)
-            penalty_frac = penalty_frac + length_penalty.turns_coef * (turns / length_penalty.max_turns)
+            penalty_frac = penalty_frac + length_penalty.turns_coef * (turns / turns.max().clamp(min=1))
         penalty = rewards.mean() * penalty_frac
         if length_penalty.gate_by_correctness:
             penalty = penalty * rewards
@@ -83,7 +82,7 @@ def default_advantage_fn(
     return AdvantageOutputs(advantages=(rewards - baseline).tolist())
 
 
-def setup_advantage_fn(config: AdvantageConfig, max_seq_len: int | None = None) -> AdvantageFn:
+def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
     """Setup advantage function from config."""
     if isinstance(config, CustomAdvantageConfig):
         custom_fn = import_object(config.import_path)
@@ -98,7 +97,6 @@ def setup_advantage_fn(config: AdvantageConfig, max_seq_len: int | None = None) 
         return default_advantage_fn(
             inputs,
             length_penalty=config.length_penalty,
-            max_seq_len=max_seq_len,
             length_weighted_baseline=config.length_weighted_baseline,
         )
 

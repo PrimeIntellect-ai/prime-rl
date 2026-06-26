@@ -56,16 +56,19 @@ def test_default_advantage_fn_simple_mean():
 
 
 def test_linear_length_penalty_scales_by_pass_rate():
-    """Linear penalty subtracts coef * pass_rate * (completion tokens / max_seq_len), then mean-centers.
+    """Linear penalty subtracts coef * pass_rate * (completion tokens / group max length), then mean-centers.
 
     ``pass_rate`` is the group's mean reward, so a half-solved group scales the penalty by 0.5.
+    The denominator is the group's longest sequence, so the longest rollout takes the full coef.
     """
     rewards = [1.0, 1.0, 0.0, 0.0]
-    inputs = _make_group(rewards=rewards, completion_lengths=[10, 20, 30, 40])
-    result = default_advantage_fn(inputs, length_penalty=LinearLengthPenaltyConfig(coef=2.0), max_seq_len=100)
+    lengths = [10, 20, 30, 40]
+    inputs = _make_group(rewards=rewards, completion_lengths=lengths)
+    result = default_advantage_fn(inputs, length_penalty=LinearLengthPenaltyConfig(coef=2.0))
 
     pass_rate = sum(rewards) / len(rewards)  # 0.5
-    penalized = [r - 2.0 * pass_rate * (length / 100) for r, length in zip(rewards, (10, 20, 30, 40))]
+    denom = max(lengths)  # 40
+    penalized = [r - 2.0 * pass_rate * (length / denom) for r, length in zip(rewards, lengths)]
     mean = sum(penalized) / len(penalized)
     assert result.advantages == pytest.approx([p - mean for p in penalized], abs=1e-6)
 
@@ -78,7 +81,7 @@ def test_linear_length_penalty_scales_by_pass_rate():
 def test_linear_length_penalty_zero_pass_rate_disables_penalty():
     """A never-solved group (mean reward 0) gets no length pressure — falls back to plain GRPO."""
     inputs = _make_group(rewards=[0.0, 0.0, 0.0], completion_lengths=[10, 50, 200])
-    penalized = default_advantage_fn(inputs, length_penalty=LinearLengthPenaltyConfig(coef=5.0), max_seq_len=100)
+    penalized = default_advantage_fn(inputs, length_penalty=LinearLengthPenaltyConfig(coef=5.0))
     plain = default_advantage_fn(inputs)
     assert penalized.advantages == pytest.approx(plain.advantages, abs=1e-6)
 
@@ -86,38 +89,41 @@ def test_linear_length_penalty_zero_pass_rate_disables_penalty():
 def test_linear_length_penalty_gate_by_correctness():
     """Gating scales each rollout's penalty by its reward, so reward-0 rollouts are untouched."""
     rewards = [1.0, 1.0, 0.0, 0.0]
-    inputs = _make_group(rewards=rewards, completion_lengths=[10, 20, 30, 40])
+    lengths = [10, 20, 30, 40]
+    inputs = _make_group(rewards=rewards, completion_lengths=lengths)
     cfg = LinearLengthPenaltyConfig(coef=2.0, gate_by_correctness=True)
-    result = default_advantage_fn(inputs, length_penalty=cfg, max_seq_len=100)
+    result = default_advantage_fn(inputs, length_penalty=cfg)
 
     pass_rate = sum(rewards) / len(rewards)  # 0.5
-    penalized = [r - r * 2.0 * pass_rate * (length / 100) for r, length in zip(rewards, (10, 20, 30, 40))]
+    denom = max(lengths)  # 40
+    penalized = [r - r * 2.0 * pass_rate * (length / denom) for r, length in zip(rewards, lengths)]
     mean = sum(penalized) / len(penalized)
     assert result.advantages == pytest.approx([p - mean for p in penalized], abs=1e-6)
 
 
-def test_setup_advantage_fn_threads_max_seq_len():
-    """``setup_advantage_fn`` threads ``max_seq_len`` into the linear penalty denominator."""
+def test_setup_advantage_fn_builds_linear_penalty():
+    """``setup_advantage_fn`` builds a linear penalty normalized by the group's max length."""
     rewards = [1.0, 1.0]
-    inputs = _make_group(rewards=rewards, completion_lengths=[10, 30])
-    fn = setup_advantage_fn(DefaultAdvantageConfig(length_penalty=LinearLengthPenaltyConfig(coef=1.0)), max_seq_len=100)
+    lengths = [10, 30]
+    inputs = _make_group(rewards=rewards, completion_lengths=lengths)
+    fn = setup_advantage_fn(DefaultAdvantageConfig(length_penalty=LinearLengthPenaltyConfig(coef=1.0)))
     result = fn(inputs)
 
     pass_rate = sum(rewards) / len(rewards)  # 1.0
-    penalized = [1.0 - 1.0 * pass_rate * (length / 100) for length in (10, 30)]
+    denom = max(lengths)  # 30
+    penalized = [1.0 - 1.0 * pass_rate * (length / denom) for length in lengths]
     mean = sum(penalized) / len(penalized)
     assert result.advantages == pytest.approx([p - mean for p in penalized], abs=1e-6)
 
 
-def test_train_env_threads_max_seq_len_into_advantage_fn(monkeypatch):
-    """TrainEnv-built advantage funcs use orchestrator seq_len for length penalties."""
+def test_train_env_builds_advantage_fn(monkeypatch):
+    """TrainEnv-built advantage funcs normalize the length penalty by the group's max length."""
 
     def fake_env_init(self, config):
         self.config = config
 
     monkeypatch.setattr(Env, "__init__", fake_env_init)
     config = OrchestratorConfig(
-        seq_len=100,
         train={
             "env": [
                 {
@@ -128,16 +134,16 @@ def test_train_env_threads_max_seq_len_into_advantage_fn(monkeypatch):
         },
     )
 
-    env = TrainEnv(config.train.env[0], max_seq_len=config.seq_len)
+    env = TrainEnv(config.train.env[0])
     assert env.advantage_fn is not None
     result = env.advantage_fn(_make_group(rewards=[1.0, 1.0], completion_lengths=[10, 30]))
 
-    assert result.advantages == pytest.approx([0.1, -0.1], abs=1e-6)
+    # pass_rate 1.0, denom max(10,30)=30: penalized [1-1/3, 0] -> centered [1/3, -1/3]
+    assert result.advantages == pytest.approx([1 / 3, -1 / 3], abs=1e-6)
 
 
 def test_per_env_linear_advantage_uses_runtime_schema():
     config = OrchestratorConfig(
-        seq_len=100,
         train={
             "env": [
                 {
@@ -152,10 +158,10 @@ def test_per_env_linear_advantage_uses_runtime_schema():
     assert isinstance(advantage, DefaultAdvantageConfig)
     assert isinstance(advantage.length_penalty, LinearLengthPenaltyConfig)
 
-    fn = setup_advantage_fn(advantage, max_seq_len=config.seq_len)
+    fn = setup_advantage_fn(advantage)
     result = fn(_make_group(rewards=[1.0, 1.0], completion_lengths=[10, 30]))
 
-    assert result.advantages == pytest.approx([0.1, -0.1], abs=1e-6)
+    assert result.advantages == pytest.approx([1 / 3, -1 / 3], abs=1e-6)
 
 
 def test_per_env_custom_advantage_uses_runtime_schema():
