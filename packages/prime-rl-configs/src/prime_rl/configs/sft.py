@@ -226,9 +226,6 @@ class SFTConfig(BaseConfig):
     trace_path: Path | None = None
     """Path to write the PyTorch profiler trace to."""
 
-    profile_step_timing: bool = False
-    """Synchronize CUDA and log detailed per-step timing breakdowns. Intended for profiling; adds overhead."""
-
     dist_timeout_seconds: int = 600
     """Timeout in seconds for torch distributed ops."""
 

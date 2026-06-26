@@ -354,24 +354,6 @@ def train(config: SFTConfig):
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
         monitor.log({"val/loss": mean_loss, "step": step}, step=step)
 
-    def sync_cuda() -> None:
-        if config.profile_step_timing and torch.cuda.is_available():
-            torch.cuda.synchronize()
-
-    def get_micro_batch_shape_stats(micro_batch: dict) -> dict[str, int]:
-        input_ids = micro_batch["input_ids"]
-        seq_lens = micro_batch.get("seq_lens")
-        mm_kwargs = micro_batch.get("mm_kwargs") or {}
-        image_grid_thw = mm_kwargs.get("image_grid_thw")
-        pixel_values = mm_kwargs.get("pixel_values")
-        return {
-            "tokens": input_ids.numel(),
-            "segments": seq_lens.numel() if seq_lens is not None else input_ids.shape[0],
-            "max_segment_len": int(seq_lens.max().item()) if seq_lens is not None else input_ids.shape[-1],
-            "images": image_grid_thw.shape[0] if image_grid_thw is not None else 0,
-            "pixel_rows": pixel_values.shape[0] if pixel_values is not None else 0,
-        }
-
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
@@ -425,20 +407,10 @@ def train(config: SFTConfig):
 
         step_start_time = time.perf_counter()
         forward_backward_start_time = time.perf_counter()
-        data_time = 0.0
-        forward_time = 0.0
-        backward_time = 0.0
 
         step_loss_sum = torch.tensor(0.0, device="cuda")
         step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_loss_count = torch.tensor(0, device="cuda")
-        step_shape_stats = {
-            "tokens": 0,
-            "segments": 0,
-            "max_segment_len": 0,
-            "images": 0,
-            "pixel_rows": 0,
-        }
         is_moe_model = is_tt_moe_model(model)
         moe_stats = (
             {
@@ -449,29 +421,15 @@ def train(config: SFTConfig):
             else {}
         )
         for micro_step in range(grad_accum_steps):
-            data_start_time = time.perf_counter()
             micro_batch = next(dataiter)
-            sync_cuda()
-            data_time += time.perf_counter() - data_start_time
-            micro_shape_stats = get_micro_batch_shape_stats(micro_batch)
-            for key in ("tokens", "segments", "images", "pixel_rows"):
-                step_shape_stats[key] += micro_shape_stats[key]
-            step_shape_stats["max_segment_len"] = max(
-                step_shape_stats["max_segment_len"],
-                micro_shape_stats["max_segment_len"],
-            )
 
             if config.log.log_data:
                 print_sample(
                     micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
                 )
 
-            sync_cuda()
-            forward_start_time = time.perf_counter()
             with maybe_record_function("forward"):
                 local_loss_sum, local_token_count = compute_loss(micro_batch)
-            sync_cuda()
-            forward_time += time.perf_counter() - forward_start_time
 
             step_local_token_count += local_token_count
 
@@ -483,12 +441,8 @@ def train(config: SFTConfig):
                 step_loss_sum += local_loss_sum.detach()
                 scaled_loss = local_loss_sum / grad_accum_steps
 
-            sync_cuda()
-            backward_start_time = time.perf_counter()
             with maybe_record_function("backward"):
                 scaled_loss.backward()
-            sync_cuda()
-            backward_time += time.perf_counter() - backward_start_time
 
             if is_moe_model:
                 for name, values in get_load_balance_stats(model).items():
@@ -533,7 +487,6 @@ def train(config: SFTConfig):
             batch_loss = 0.0
         nan_loss_count = nan_loss_count.item()
 
-        optimizer_start_time = time.perf_counter()
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
@@ -551,8 +504,6 @@ def train(config: SFTConfig):
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
-        sync_cuda()
-        optimizer_time = time.perf_counter() - optimizer_start_time
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
@@ -580,11 +531,6 @@ def train(config: SFTConfig):
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
-        if config.profile_step_timing:
-            step_message += (
-                f" | Data {data_time:.2f}s | Fwd {forward_time:.2f}s | Bwd {backward_time:.2f}s | Opt {optimizer_time:.2f}s"
-                f" | Segs {step_shape_stats['segments']} | Images {step_shape_stats['images']}"
-            )
         if is_moe_model:
             for name, label in (("max_vio", "Max Vio"), ("routing_confidence", "Routing Conf.")):
                 value = moe_stats[name].item()
@@ -623,17 +569,6 @@ def train(config: SFTConfig):
             "perf/mfu": mfu,
             "step": progress.step,
         }
-        if config.profile_step_timing:
-            perf_metrics.update(
-                {
-                    "perf/actual_tokens": step_shape_stats["tokens"],
-                    "perf/trainable_tokens": global_token_count_val,
-                    "perf/segments": step_shape_stats["segments"],
-                    "perf/max_segment_len": step_shape_stats["max_segment_len"],
-                    "perf/images": step_shape_stats["images"],
-                    "perf/pixel_rows": step_shape_stats["pixel_rows"],
-                }
-            )
         monitor.log(perf_metrics, step=progress.step)
 
         # Log optimizer metrics
@@ -661,15 +596,6 @@ def train(config: SFTConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        if config.profile_step_timing:
-            time_metrics.update(
-                {
-                    "time/data": data_time,
-                    "time/forward": forward_time,
-                    "time/backward": backward_time,
-                    "time/optimizer": optimizer_time,
-                }
-            )
         monitor.log(time_metrics, step=progress.step)
 
         # Log disk metrics
