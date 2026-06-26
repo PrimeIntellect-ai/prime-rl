@@ -144,7 +144,7 @@ class ModelConfig(BaseModelConfig):
     """Data parallel dim where model weights are replicated."""
 
     ep: int | Literal["auto"] = "auto"
-    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves to the largest valid EP degree up to 8 at startup: it loads the model config to read ``num_experts``, then picks the biggest divisor of ``num_experts`` that also divides the FSDP island size (``world_size // dp_replicate``), is a multiple of ``cp``, and is <= 8. For non-MoE models ``auto`` resolves to 1 (no-op)."""
+    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves to ``min(fsdp_island_size, 8)`` for MoE models (where ``fsdp_island_size = world_size // dp_replicate``), and to 1 for non-MoE models. Set an explicit integer to override."""
 
     ep_comm_backend: EPCommBackend = "torch"
     """Communication backend for expert parallelism. ``torch`` uses TorchTitan all-to-all collectives; ``deepep`` uses DeepEP custom kernels."""

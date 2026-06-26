@@ -270,27 +270,20 @@ class ParallelDims:
         return get_logger()
 
 
-def _get_num_experts(config: ModelConfig) -> int | None:
-    """Return the number of routed experts from the model config, or None for non-MoE models."""
+def _is_moe_model(config: ModelConfig) -> bool:
+    """Return True if the model has MoE layers, by loading its HuggingFace config."""
     from transformers import AutoConfig
 
     model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
-    if hasattr(model_config, "num_experts"):
-        return model_config.num_experts
-    if hasattr(model_config, "n_routed_experts"):
-        return model_config.n_routed_experts
-    return None
+    return hasattr(model_config, "num_experts") or hasattr(model_config, "n_routed_experts")
 
 
 def resolve_ep(config: ModelConfig) -> None:
     """Resolve ``ep="auto"`` in-place to a concrete integer.
 
-    Picks the largest EP degree up to 8 that satisfies all constraints:
-    - divides ``num_experts`` (torchtitan shards experts on dim 0)
-    - divides the FSDP island size (``world_size // dp_replicate``)
-    - is a multiple of ``cp`` (EP borrows CP ranks)
-
-    For non-MoE models, resolves to 1 (no-op).
+    For MoE models, resolves to ``min(fsdp_island_size, 8)`` where
+    ``fsdp_island_size = world_size // dp_replicate``. For non-MoE
+    models, resolves to 1 (no-op).
     """
     if config.ep != "auto":
         return
@@ -302,33 +295,23 @@ def resolve_ep(config: ModelConfig) -> None:
         return
 
     world_size = dist.get_world_size()
-    num_experts = _get_num_experts(config)
 
-    if num_experts is None:
+    if not _is_moe_model(config):
         config.ep = 1
         get_logger().info("EP auto: model is not MoE, resolving ep=1")
         return
 
     dp_replicate = config.dp_replicate
-    cp = config.cp
     fsdp_island_size = world_size // dp_replicate  # pp is always 1
+    resolved_ep = min(fsdp_island_size, 8)
 
-    best_ep = 1
-    for candidate in range(min(num_experts, 8), 0, -1):
-        if num_experts % candidate == 0 and fsdp_island_size % candidate == 0 and candidate % cp == 0:
-            best_ep = candidate
-            break
-
-    config.ep = best_ep
-    get_logger().info(
-        f"EP auto: num_experts={num_experts}, world_size={world_size}, "
-        f"dp_replicate={dp_replicate}, cp={cp} -> resolved ep={best_ep}"
-    )
+    config.ep = resolved_ep
+    get_logger().info(f"EP auto: world_size={world_size}, dp_replicate={dp_replicate} -> resolved ep={resolved_ep}")
 
     if config.ep_comm_backend != "torch" and config.ep <= 1:
         raise ValueError(
             f"model.ep_comm_backend='{config.ep_comm_backend}' requires ep > 1, "
-            f"but auto-resolved ep=1 (num_experts={num_experts}, world_size={world_size}). "
+            f"but auto-resolved ep=1 (world_size={world_size}). "
             "Set ep explicitly or use ep_comm_backend='torch'."
         )
 
