@@ -84,6 +84,10 @@ COPY scripts/docker-editable-pretend-versions.sh /app/scripts/docker-editable-pr
 # /app/.git/modules to the read-only context before resolving versions.
 ARG VERIFIERS_PRETEND_VERSION
 ARG RENDERERS_PRETEND_VERSION
+# Opt-in extras for disaggregated P/D inference (deep-ep, deep-gemm, quack).
+# Default off — they're heavy source builds only the disagg-MoE path needs.
+# Enable via `--build-arg INCLUDE_DISAGG_EXTRAS=1`.
+ARG INCLUDE_DISAGG_EXTRAS=0
 RUN --mount=type=cache,target=/app/.cache/uv \
     --mount=type=bind,source=.,target=/build-context,readonly \
     if [ -d /build-context/.git/modules ]; then mkdir -p /app/.git && ln -s /build-context/.git/modules /app/.git/modules; fi \
@@ -96,7 +100,9 @@ RUN --mount=type=cache,target=/app/.cache/uv \
     && \
     sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${RENDERERS_PRETEND_VERSION}\"/" /app/deps/renderers/pyproject.toml \
     && \
-    uv sync --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra envs --extra gpt-oss --extra modelexpress --group mamba-ssm --locked --no-dev
+    EXTRA_DISAGG_FLAG=""; if [ "$INCLUDE_DISAGG_EXTRAS" = "1" ]; then EXTRA_DISAGG_FLAG="--extra disagg"; fi \
+    && \
+    uv sync --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra envs --extra gpt-oss --extra modelexpress $EXTRA_DISAGG_FLAG --group mamba-ssm --locked --no-dev
 
 # arm64: build flash-attn from source, fix namespace conflicts, apply workarounds
 ARG TARGETARCH
