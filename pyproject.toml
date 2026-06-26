@@ -33,7 +33,7 @@ dependencies = [
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
     "torchtitan",
-    "verifiers>=0.1.15.dev396",
+    "verifiers>=0.1.15.dev400",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
@@ -67,22 +67,14 @@ flash-attn-cute = [
 ]
 envs = [
     "alphabet-sort",
-    "code-env",
     "general-agent",
-    "hle",
-    "ifeval",
     "logic-env",
     "math-env",
     "math-python",
-    "math500",
-    "mmlu-pro",
     "reverse-text",
     "rlm-swe",
     "rlm-search",
     "uuid-ctf-v1",
-    "science-env",
-    "simpleqa-verified",
-    "tau2-bench",
     "wiki-search",
     "wordle",
     "reverse-text-v1",
@@ -109,6 +101,12 @@ envs = [
     "general-agent-v1",
     "swebench-verified-v1",
     "tau2-bench-v1",
+    "math500-v1",
+    "mmlu-pro-v1",
+    "ifeval-v1",
+    "simpleqa-verified-v1",
+    "i3-code-v1",
+    "i3-science-v1",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -168,7 +166,7 @@ override-dependencies = [
     "transformers==5.6.2",
     "torch>=2.9.0",
     "openenv-core",
-    "verifiers>=0.1.15.dev396",
+    "verifiers>=0.1.15.dev400",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
@@ -221,22 +219,14 @@ verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
 alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
-code-env = { path = "deps/research-environments/environments/code_env", editable = true }
 general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
-hle = { path = "deps/research-environments/environments/hle", editable = true }
-ifeval = { path = "deps/research-environments/environments/ifeval", editable = true }
 logic-env = { path = "deps/research-environments/environments/logic_env", editable = true }
 math-env = { path = "deps/research-environments/environments/math_env", editable = true }
 math-python = { path = "deps/verifiers/environments/math_python", editable = true }
-math500 = { path = "deps/research-environments/environments/math500", editable = true }
-mmlu-pro = { path = "deps/research-environments/environments/mmlu_pro", editable = true }
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
 rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable = true }
 rlm-search = { path = "deps/research-environments/environments/rlm_search", editable = true }
 uuid-ctf-v1 = { path = "deps/research-environments/environments/uuid_ctf_v1", editable = true }
-science-env = { path = "deps/research-environments/environments/science_env", editable = true }
-simpleqa-verified = { path = "deps/research-environments/environments/simpleqa_verified", editable = true }
-tau2-bench = { path = "deps/research-environments/environments/tau2_bench", editable = true }
 wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
 wordle = { path = "deps/verifiers/environments/wordle", editable = true }
 reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editable = true }
@@ -263,6 +253,12 @@ wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
 general-agent-v1 = { path = "deps/research-environments/environments/general_agent_v1", editable = true }
 swebench-verified-v1 = { path = "deps/research-environments/environments/swebench_verified_v1", editable = true }
 tau2-bench-v1 = { path = "deps/research-environments/environments/tau2_bench_v1", editable = true }
+math500-v1 = { path = "deps/research-environments/environments/math500_v1", editable = true }
+mmlu-pro-v1 = { path = "deps/research-environments/environments/mmlu_pro_v1", editable = true }
+ifeval-v1 = { path = "deps/research-environments/environments/ifeval_v1", editable = true }
+simpleqa-verified-v1 = { path = "deps/research-environments/environments/simpleqa_verified_v1", editable = true }
+i3-code-v1 = { path = "deps/research-environments/environments/i3_code_v1", editable = true }
+i3-science-v1 = { path = "deps/research-environments/environments/i3_science_v1", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
