@@ -79,20 +79,19 @@ COPY examples /app/examples
 COPY benchmarks/scripts /app/benchmarks/scripts
 
 # Opt-in extras for disaggregated P/D inference (deep-ep, deep-gemm, quack).
-# Default off — they're heavy source builds only the disagg-MoE path needs.
-# Enable via `--build-arg INCLUDE_DISAGG_EXTRAS=1`.
-ARG INCLUDE_DISAGG_EXTRAS=0
+# Heavy source builds only the disagg-MoE path needs.
+# Disable via `--build-arg INCLUDE_DISAGG_EXTRAS=0`.
+ARG INCLUDE_DISAGG_EXTRAS=1
 RUN --mount=type=cache,target=/app/.cache/uv \
     EXTRA_DISAGG_FLAG=""; if [ "$INCLUDE_DISAGG_EXTRAS" = "1" ]; then EXTRA_DISAGG_FLAG="--extra disagg"; fi \
     && \
     uv sync --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra envs --extra gpt-oss --extra modelexpress $EXTRA_DISAGG_FLAG --group mamba-ssm --locked --no-dev
 
-# Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
-# nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer
-# (#2883); rebuilding against our UCX is the documented fix. Only needed for
-# the disaggregated P/D path — default off so training-only / single-node
-# inference builds are unaffected. Enable via `--build-arg INCLUDE_NIXL_FROM_SOURCE=1`.
-ARG INCLUDE_NIXL_FROM_SOURCE=0
+# Build NIXL from source against the UCX 1.19 baked above. The PyPI nixl wheel
+# ships its own UCX which segfaults on prefill→decode KV transfer (#2883);
+# rebuilding against our UCX is the documented fix. Only needed for the
+# disaggregated P/D path. Disable via `--build-arg INCLUDE_NIXL_FROM_SOURCE=0`.
+ARG INCLUDE_NIXL_FROM_SOURCE=1
 ARG NIXL_VERSION=0.10.1
 RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
         VIRTUAL_ENV=/app/.venv uv pip install pip \
