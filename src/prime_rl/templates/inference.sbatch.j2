@@ -63,6 +63,7 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
 export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
+export FLASHINFER_WORKSPACE_BASE=/tmp/flashinfer-$(whoami)
 
 # Setup environment
 cd $PROJECT_DIR
