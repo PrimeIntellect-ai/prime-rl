@@ -938,6 +938,16 @@ class Qwen3_5MoeVLMModel(nn.Module):
     def set_input_embeddings(self, value):
         self.language_model.embed_tokens = value
 
+    def _dummy_vision_inputs(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        """Smallest valid vision input: a single merged token (grid [1, m, m])."""
+        vcfg = self.config.vision_config
+        m = vcfg.spatial_merge_size
+        num_patches = m * m
+        patch_dim = vcfg.in_channels * vcfg.temporal_patch_size * vcfg.patch_size * vcfg.patch_size
+        pixel_values = torch.zeros(num_patches, patch_dim, device=device, dtype=self.visual.dtype)
+        grid_thw = torch.tensor([[1, m, m]], dtype=torch.long, device=device)
+        return pixel_values, grid_thw
+
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -964,15 +974,23 @@ class Qwen3_5MoeVLMModel(nn.Module):
                 f"Qwen3.5 multimodal forward requires 3D MRoPE position_ids; got shape={tuple(position_ids.shape)}"
             )
 
-        if pixel_values is not None:
+        # Keep distributed collectives in the same order when a batch mixes text-only
+        # and image samples across ranks. The frozen dummy pass is discarded below.
+        has_images = pixel_values is not None
+        vision_grid_thw = image_grid_thw
+        if has_images:
             if input_ids is None:
                 raise ValueError("input_ids are required when scattering Qwen3.5 image features")
             if image_grid_thw is None:
                 raise ValueError("image_grid_thw is required when pixel_values are provided")
             pixel_values = pixel_values.type(self.visual.dtype)
-            vision_output = self.visual(pixel_values, grid_thw=image_grid_thw, return_dict=True)
-            image_embeds = vision_output.pooler_output.to(inputs_embeds.device, inputs_embeds.dtype)
+        else:
+            pixel_values, vision_grid_thw = self._dummy_vision_inputs(inputs_embeds.device)
 
+        vision_output = self.visual(pixel_values, grid_thw=vision_grid_thw, return_dict=True)
+        image_embeds = vision_output.pooler_output.to(inputs_embeds.device, inputs_embeds.dtype)
+
+        if has_images:
             image_mask = input_ids == self.config.image_token_id
             image_token_count = int(image_mask.sum().item())
             image_feature_count = int(image_embeds.shape[0])

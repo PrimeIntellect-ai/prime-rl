@@ -87,25 +87,29 @@ def build_qwen3_5_mrope_position_ids(
             if image_grids is None:
                 raise ValueError("image_grid_thw is required when mm_token_type_ids contains image tokens")
 
-            try:
-                grid_thw = next(image_grids)
-            except StopIteration as exc:
-                raise ValueError("Not enough image_grid_thw rows for image token groups") from exc
+            remaining = group_len
+            while remaining > 0:
+                try:
+                    grid_thw = next(image_grids)
+                except StopIteration as exc:
+                    raise ValueError("Not enough image_grid_thw rows for image token groups") from exc
 
-            vision_positions = get_qwen3_5_vision_position_ids(
-                start_position=current_pos,
-                grid_thw=grid_thw,
-                spatial_merge_size=spatial_merge_size,
-                device=input_ids.device,
-            )
-            if vision_positions.shape[1] != group_len:
-                raise ValueError(
-                    "Image token group length does not match image_grid_thw-derived token count: "
-                    f"group_len={group_len}, grid_thw={grid_thw.tolist()}, "
-                    f"derived={vision_positions.shape[1]}, spatial_merge_size={spatial_merge_size}"
+                vision_positions = get_qwen3_5_vision_position_ids(
+                    start_position=current_pos,
+                    grid_thw=grid_thw,
+                    spatial_merge_size=spatial_merge_size,
+                    device=input_ids.device,
                 )
-            segment_positions.append(vision_positions)
-            current_pos += max(int(grid_thw[1].item()), int(grid_thw[2].item())) // spatial_merge_size
+                image_len = vision_positions.shape[1]
+                if image_len > remaining:
+                    raise ValueError(
+                        "Image token group length does not match image_grid_thw-derived token count: "
+                        f"group_len={group_len}, grid_thw={grid_thw.tolist()}, "
+                        f"derived={image_len}, spatial_merge_size={spatial_merge_size}"
+                    )
+                segment_positions.append(vision_positions)
+                current_pos += max(int(grid_thw[1].item()), int(grid_thw[2].item())) // spatial_merge_size
+                remaining -= image_len
 
         if not segment_positions:
             raise ValueError("Cannot build MRoPE positions for an empty sequence segment")
