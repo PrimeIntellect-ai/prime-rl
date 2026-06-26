@@ -25,13 +25,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.chat_template import (
-    IncrementalTokenizationError,
-    build_incremental_token_mask,
-    deserialize_tool_calls,
-    normalize_messages,
-    strip_message_content,
-)
+from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
 
 STACKING_DATASET_BUCKET_TIMEOUT = 10
@@ -42,11 +36,7 @@ class Sample(TypedDict):
     position_ids: list[int]
     loss_mask: list[bool]
     target_ids: list[int]
-    # Optional multimodal payload. Keys are model-specific kwarg names produced
-    # by the renderer (e.g. ``pixel_values`` + ``image_grid_thw`` for Qwen-VL).
-    # Tensors are concatenated across all media items of the sample along dim 0.
     mm_kwargs: dict[str, Tensor] | None
-    # Per-token modality flag aligned with ``input_ids`` after the causal shift.
     mm_token_type_ids: list[int] | None
 
 
@@ -55,7 +45,6 @@ class Batch(TypedDict):
     position_ids: Int[Tensor, "batch seq"]
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
-    # See ``Sample`` — same payload, on CUDA. ``None`` for text-only batches.
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -178,8 +167,7 @@ def _drop_null_fields(value: Any) -> Any:
 
 def _find_image_safe_cut(budget: int, mm: MultiModalData | None) -> int:
     """Largest position ≤ ``budget`` that doesn't fall inside an image / video
-    placeholder run. Splitting a placeholder run would desync the model's
-    ``image_pad`` tokens from the corresponding ``pixel_values`` block.
+    placeholder run.
     """
     if mm is None or not mm.mm_placeholders:
         return budget
@@ -193,10 +181,6 @@ def _find_image_safe_cut(budget: int, mm: MultiModalData | None) -> int:
 
 def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     """Drop ``mm_items`` / ``mm_placeholders`` whose ranges extend past ``cut``.
-
-    Keeps every entry whose placeholder lies fully within ``[0, cut)``, preserving
-    one-to-one alignment between surviving placeholders and surviving pixel
-    buffers.
     """
     new_placeholders: dict[str, list[PlaceholderRange]] = {}
     new_items: dict[str, list[dict[str, Any]]] = {}
@@ -222,7 +206,8 @@ class SFTDataset(StatefulIterableDataset):
     def __init__(
         self,
         dataset: Dataset,
-        tokenizer: PreTrainedTokenizer | None,
+        tokenizer: PreTrainedTokenizer,
+        renderer: Renderer,
         shuffle: bool = True,
         seed: int = 0,
         seq_len: int = 128,
@@ -230,7 +215,6 @@ class SFTDataset(StatefulIterableDataset):
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
-        renderer: Renderer | None = None,
     ):
         super().__init__()
         self.logger = get_logger()
@@ -245,9 +229,6 @@ class SFTDataset(StatefulIterableDataset):
         self.max_epochs = max_epochs
         self.renderer = renderer
         self._warned_chat_template_kwargs = False
-
-        if self.tokenizer is None:
-            self.logger.warning("No tokenizer provided, will not process examples")
 
         # If specified, select a subset of the dataset
         if self.max_examples is not None:
@@ -265,10 +246,6 @@ class SFTDataset(StatefulIterableDataset):
         self.data_world_size = get_world().world_size // non_dp_size * num_workers
 
     def _process(self, example: dict) -> dict | None:
-        # Skip processing if no tokenizer was provided
-        if self.tokenizer is None:
-            return example
-
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
             # as a whole-chat training sample with an empty prompt.
@@ -286,13 +263,7 @@ class SFTDataset(StatefulIterableDataset):
 
             # Deserialize tool call arguments from message list, if present - assumes OAI format
             messages = deserialize_tool_calls(messages)
-            # Drop null-valued fields (browser-agent OAI records carry many)
-            # before rendering / stripping.
-            messages = [_drop_null_fields(m) for m in messages]
-            # Strip content from all messages so that incremental tokenization works.
-            # No-op on multimodal list content (only strips string content), so it
-            # is safe for VLM samples.
-            return strip_message_content(messages)
+            return [_drop_null_fields(m) for m in messages]
 
         messages = resolve_messages(example)
 
@@ -335,67 +306,49 @@ class SFTDataset(StatefulIterableDataset):
                 case _:
                     raise ValueError(f"Invalid message role: {message['role']}")
 
-        # Multimodal payload, populated only on the renderer path for VLMs.
-        mm: MultiModalData | None = None
-        mm_token_type_ids: list[int] | None = None
-
-        if self.renderer is not None:
-            if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
-                self.logger.warning(
-                    "Example carries chat_template_kwargs but a renderer is configured; "
-                    "renderers don't forward chat_template_kwargs (model-specific "
-                    "renderers bake their template behavior in). These kwargs will "
-                    "be ignored. Further warnings suppressed for this dataset."
-                )
-                self._warned_chat_template_kwargs = True
-
-            sample = build_training_sample(
-                self.renderer,
-                messages,
-                role_to_mask=should_mask,
-                tools=tools,
+        if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
+            self.logger.warning(
+                "Example carries chat_template_kwargs but SFT uses renderers; "
+                "renderers don't forward chat_template_kwargs (model-specific "
+                "renderers bake their template behavior in). These kwargs will "
+                "be ignored. Further warnings suppressed for this dataset."
             )
-            input_ids = list(sample.token_ids)
-            loss_mask = list(sample.loss_mask)
-            mm = sample.multi_modal_data
-            mm_token_type_ids = list(sample.mm_token_type_ids) if sample.mm_token_type_ids is not None else None
+            self._warned_chat_template_kwargs = True
 
-            # VLM samples carry per-image pixel buffers that can't be packed
-            # across samples, so we truncate to seq_len here (text-only samples
-            # are left full-length for the downstream Cat/Stack dataset). The
-            # cut is pulled back so it never splits an <|image_pad|> run, and
-            # mm_items / mm_token_type_ids are sliced in lockstep so surviving
-            # placeholders stay 1-to-1 with surviving pixel buffers. Budget is
-            # seq_len (not seq_len + 1): it leaves room for both the causal shift
-            # below and a possibly re-appended EOS, so these un-packed VLM samples
-            # stay within seq_len.
-            if mm is not None:
-                budget = self.seq_len
-                if len(input_ids) > budget:
-                    cut = _find_image_safe_cut(budget, mm)
-                    self.logger.debug(
-                        f"Truncating example {example.get('__index', '')} from "
-                        f"{len(input_ids)} → {cut} tokens (budget={budget})"
-                    )
-                    input_ids = input_ids[:cut]
-                    loss_mask = loss_mask[:cut]
-                    if mm_token_type_ids is not None:
-                        mm_token_type_ids = mm_token_type_ids[:cut]
-                    if mm.mm_items:
-                        mm = _truncate_mm_data(mm, cut)
-        else:
-            try:
-                input_ids, loss_mask = build_incremental_token_mask(
-                    self.tokenizer,
-                    messages,
-                    role_to_mask=should_mask,
-                    tools=tools,
-                    chat_template_kwargs=example.get("chat_template_kwargs", {}),
-                    collapse_consecutive_tool_messages=True,
+        sample = build_training_sample(
+            self.renderer,
+            messages,
+            role_to_mask=should_mask,
+            tools=tools,
+        )
+        input_ids = list(sample.token_ids)
+        loss_mask = list(sample.loss_mask)
+        mm = sample.multi_modal_data
+        mm_token_type_ids = list(sample.mm_token_type_ids) if sample.mm_token_type_ids is not None else None
+
+        # VLM samples carry per-image pixel buffers that can't be packed
+        # across samples, so we truncate to seq_len here (text-only samples
+        # are left full-length for the downstream Cat/Stack dataset). The
+        # cut is pulled back so it never splits an <|image_pad|> run, and
+        # mm_items / mm_token_type_ids are sliced in lockstep so surviving
+        # placeholders stay 1-to-1 with surviving pixel buffers. Budget is
+        # seq_len (not seq_len + 1): it leaves room for both the causal shift
+        # below and a possibly re-appended EOS, so these un-packed VLM samples
+        # stay within seq_len.
+        if mm is not None:
+            budget = self.seq_len
+            if len(input_ids) > budget:
+                cut = _find_image_safe_cut(budget, mm)
+                self.logger.debug(
+                    f"Truncating example {example.get('__index', '')} from "
+                    f"{len(input_ids)} → {cut} tokens (budget={budget})"
                 )
-            except IncrementalTokenizationError as e:
-                self.logger.warning(f"Skipping example {example.get('__index', '')}: {e}")
-                return None
+                input_ids = input_ids[:cut]
+                loss_mask = loss_mask[:cut]
+                if mm_token_type_ids is not None:
+                    mm_token_type_ids = mm_token_type_ids[:cut]
+                if mm.mm_items:
+                    mm = _truncate_mm_data(mm, cut)
 
         # If EOS token is not found, manually append it (keep mm_token_type_ids aligned).
         if not self.tokenizer.eos_token_id in input_ids:
@@ -931,7 +884,8 @@ def setup_dataset(
     *,
     max_epochs: int | None = None,
     raw_dataset: Dataset | None = None,
-    renderer: Renderer | None = None,
+    renderer: Renderer,
+    multimodal: bool = False,
 ) -> StatefulIterableDataset:
     if config.type == "fake":
         return FakeDataset(
@@ -942,7 +896,7 @@ def setup_dataset(
         )
     elif config.type == "sft":
         if raw_dataset is None:
-            raw_dataset = load_sft_dataset(config, multimodal=renderer is not None)
+            raw_dataset = load_sft_dataset(config, multimodal=multimodal)
         return SFTDataset(
             raw_dataset,
             tokenizer,

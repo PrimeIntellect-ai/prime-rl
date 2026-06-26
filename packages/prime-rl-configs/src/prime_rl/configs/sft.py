@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
-from renderers import RendererConfig
+from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
     HeartbeatConfig,
@@ -178,13 +178,11 @@ class SFTConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig | None = None
+    renderer: RendererConfig = AutoRendererConfig()
     """Typed renderer config (``renderers.RendererConfig`` discriminated
-    union). When set, SFT tokenizes samples through the ``renderers``
-    library (single ``render()`` + ``message_indices`` mask) instead of
-    the default ``build_incremental_token_mask`` path. Required for chat
-    templates that render position-dependently (e.g. Qwen3, Qwen3.5).
-    ``None`` (default) uses the legacy tokenization path."""
+    union). SFT tokenizes samples through the ``renderers`` library (single
+    ``render()`` + ``message_indices`` mask), auto-resolving the concrete
+    renderer from the tokenizer's model name by default."""
 
     data: DataConfig = SFTDataConfig()
 
@@ -324,9 +322,6 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_vlm_constraints(self):
-        # VLM samples carry image patches, so per-sample pixel buffers can't be
-        # packed across samples and seq dimension can't be sharded without
-        # splitting an image. Enforce both at config time.
         if self.model.vlm is None:
             return self
         if self.data.micro_batch_size != 1:
@@ -358,19 +353,6 @@ class SFTConfig(BaseConfig):
                 raise ValueError(
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
                 )
-        return self
-
-    @model_validator(mode="after")
-    def validate_vlm_requires_renderer(self):
-        # VLM SFT tokenizes images through the renderer's multimodal path
-        # (build_training_sample → RenderedTrainingSample.multi_modal_data).
-        # The tokenizer fallback only handles text, so a renderer is required.
-        if self.model.vlm is not None and self.renderer is None:
-            raise ValueError(
-                "VLM SFT requires a renderer. Set a typed `[renderer]` config "
-                '(e.g. name = "auto") so images tokenize through the renderer\'s '
-                "multimodal path; the tokenizer fallback is text-only."
-            )
         return self
 
     @model_validator(mode="after")

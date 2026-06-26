@@ -161,25 +161,22 @@ def train(config: SFTConfig):
     tokenizer = setup_tokenizer(config.tokenizer)
     processor = setup_processor(config.tokenizer)
 
-    renderer = None
-    if config.renderer is not None:
-        renderer = create_renderer(tokenizer, config.renderer)
-        if isinstance(renderer, DefaultRenderer):
-            raise ValueError(
-                f"renderer set for {config.tokenizer.name!r} resolved to DefaultRenderer. "
-                "DefaultRenderer falls back to incremental apply_chat_template and does NOT "
-                "fix position-dependent chat templates — the bug the renderer client is meant to solve. "
-                "Either use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
-                "set [renderer] name=<hand-coded renderer> explicitly, or remove the [renderer] block."
-            )
-        # Attach the multimodal processor so the renderer can render image
-        # content parts. Renderers without a processor slot ignore this.
-        if processor is not None and hasattr(renderer, "_processor"):
-            renderer._processor = processor
-        logger.info(
-            f"Initialized {type(renderer).__name__} for {config.tokenizer.name} "
-            f"(multimodal_processor={processor is not None})"
+    renderer = create_renderer(tokenizer, config.renderer)
+    if isinstance(renderer, DefaultRenderer):
+        raise ValueError(
+            f"SFT renderer for {config.tokenizer.name!r} resolved to DefaultRenderer. "
+            "SFT is renderer-only and requires a hand-coded renderer for stable "
+            "message-to-token attribution. Use a model with a hand-coded renderer "
+            "(see renderers.base.MODEL_RENDERER_MAP), or set [renderer] name=<hand-coded renderer> explicitly."
         )
+    # Attach the multimodal processor so the renderer can render image
+    # content parts. Renderers without a processor slot ignore this.
+    if processor is not None and hasattr(renderer, "_processor"):
+        renderer._processor = processor
+    logger.info(
+        f"Initialized {type(renderer).__name__} for {config.tokenizer.name} "
+        f"(multimodal_processor={processor is not None})"
+    )
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -199,14 +196,15 @@ def train(config: SFTConfig):
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer)
+    multimodal = config.model.vlm is not None
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer, multimodal=multimodal)
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
     val_raw_dataset = None
     if config.val is not None:
         logger.info(f"Loading validation dataset ({config.val.data.name})")
-        val_raw_dataset = load_sft_dataset(config.val.data, multimodal=renderer is not None)
+        val_raw_dataset = load_sft_dataset(config.val.data, multimodal=multimodal)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -334,6 +332,7 @@ def train(config: SFTConfig):
             max_epochs=1,
             raw_dataset=val_raw_dataset,
             renderer=renderer,
+            multimodal=multimodal,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 

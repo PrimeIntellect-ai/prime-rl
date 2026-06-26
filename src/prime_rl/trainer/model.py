@@ -651,9 +651,6 @@ def setup_processor(config: TokenizerConfig):
     except (ValueError, OSError, KeyError) as e:
         logger.debug(f"No AutoProcessor available for {config.name} ({type(e).__name__}); treating as text-only.")
         return None
-    # AutoProcessor returns a plain tokenizer object for text-only models. We
-    # only want the processor when it actually carries an image / video
-    # processor — gate on that.
     if not (getattr(processor, "image_processor", None) or getattr(processor, "video_processor", None)):
         logger.debug(f"AutoProcessor for {config.name} has no image/video processor; treating as text-only.")
         return None
