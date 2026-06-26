@@ -71,9 +71,7 @@ After a restart, verify all processes are back up and progress resumed before th
 ├── inference/
 │   ├── node_*.log             # per-node (multi-node only)
 │   └── router_0.log           # vllm-router per replica (multi-node only)
-└── envs/{train,eval}/{env_name}/
-    ├── env_server.log
-    └── env_worker_*.log
+└── envs/{train,eval}/{env_name}.log    # one log file per env
 ```
 
 Usually tailing `trainer.log`, `orchestrator.log`, and `inference.log` is enough. Drop into per-node or per-rank logs only when debugging. All logs are loguru with `HH:mm:ss  LEVEL  message`; levels: `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`.
@@ -82,7 +80,7 @@ Scan for problems:
 
 ```bash
 grep -E "WARNING|ERROR" {output_dir}/logs/{trainer,orchestrator,inference}.log
-grep -E "WARNING|ERROR" {output_dir}/logs/envs/train/*/env_{server,worker_*}.log
+grep -E "WARNING|ERROR" {output_dir}/logs/envs/{train,eval}/*.log
 ```
 
 ### Metrics

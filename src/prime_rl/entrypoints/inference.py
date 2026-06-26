@@ -1,6 +1,8 @@
+import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import tomli_w
 
@@ -12,6 +14,17 @@ from prime_rl.utils.process import set_proc_title
 
 INFERENCE_TOML = "inference.toml"
 INFERENCE_SBATCH = "inference.sbatch"
+
+
+def vllm_overrides_fragment(overrides: dict[str, Any]) -> str:
+    """Render per-role vLLM overrides as a JSON fragment for the ROLE_EXTRA bash string.
+
+    Returns a leading-comma fragment with quotes escaped for the double-quoted assignment
+    (e.g. `, \\"max_num_seqs\\": 256`), or an empty string when there are no overrides.
+    """
+    if not overrides:
+        return ""
+    return ", " + json.dumps(overrides)[1:-1].replace('"', '\\"')
 
 
 def write_config(config: InferenceConfig, output_dir: Path, exclude: set[str] | None = None) -> Path:
@@ -47,7 +60,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         dp_per_node=dp_per_node,
         num_nodes=getattr(config.deployment, "num_nodes", 1),
         port=config.server.port,
-        disaggregated=is_disaggregated,
+        is_disaggregated=is_disaggregated,
         kv_offload=offload is not None,
         kv_offload_mooncake=is_mooncake,
         kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if is_mooncake else 0,
@@ -65,20 +78,21 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             num_decode_replicas=config.deployment.num_decode_replicas,
             prefill_port=config.deployment.prefill_port,
             decode_port=config.deployment.decode_port,
-            router_port=config.deployment.router.port,
-            router_policy=config.deployment.router.policy,
+            router=config.deployment.router,
             data_parallel_rpc_port=config.data_parallel_rpc_port,
             use_deep_gemm=config.use_deep_gemm,
             prefill_env_overrides=config.deployment.prefill_env_overrides,
             decode_env_overrides=config.deployment.decode_env_overrides,
+            prefill_vllm_extra_json=vllm_overrides_fragment(config.deployment.prefill_vllm_overrides),
+            decode_vllm_extra_json=vllm_overrides_fragment(config.deployment.decode_vllm_overrides),
         )
     elif is_multi_node:
         template_vars.update(
-            router_port=config.deployment.router.port,
+            router=config.deployment.router,
             backend_port=config.deployment.backend_port,
-            router_policy=config.deployment.router.policy,
             data_parallel_rpc_port=config.data_parallel_rpc_port,
             enable_expert_parallel=config.enable_expert_parallel,
+            infer_nodes_per_replica=config.deployment.num_nodes,
         )
 
     script = template.render(**template_vars)

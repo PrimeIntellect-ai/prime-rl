@@ -1,9 +1,4 @@
-"""MetricsBuilder: assembles the per-step W&B dict.
-
-The only I/O / state is the trainer's token-export metrics, which lag the
-orchestrator: ``build`` folds in the oldest unlogged stable step it finds on
-disk and tracks the last step logged so it never re-logs one.
-"""
+"""MetricsBuilder: assembles the per-step W&B dict. No I/O, no side effects."""
 
 from __future__ import annotations
 
@@ -12,22 +7,18 @@ from typing import Any
 import pandas as pd
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.token_export_metrics import collect_next_token_export_metrics
-from prime_rl.orchestrator.types import Progress, TrainBatchMetrics, TrainRollout
+from prime_rl.orchestrator.types import Progress, Rollout, TrainBatchMetrics
 
 
 class MetricsBuilder:
-    def __init__(self, config: OrchestratorConfig, start_step: int = 0) -> None:
+    def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
-        # Token exports are read back one step behind the orchestrator; track the
-        # last run step whose metrics we've folded in so we never re-log a step.
-        self._last_token_export_step_logged = start_step - 1
 
     def build(
         self,
         *,
         step: int,
-        rollouts: list[TrainRollout],
+        rollouts: list[Rollout],
         metrics: TrainBatchMetrics,
         progress: Progress,
         step_time: float,
@@ -41,30 +32,25 @@ class MetricsBuilder:
         existing dashboards / alerts keep working."""
         num_rollouts = len(rollouts)
         num_unique_examples = len({r.group_id for r in rollouts})
-        num_tokens = sum(
-            r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"] for r in rollouts
-        )
+        num_tokens = sum(r.total_tokens for r in rollouts)
 
         results_df = pd.DataFrame(
             {
                 "group_id": [r.group_id for r in rollouts],
-                "example_id": [r.example_id for r in rollouts],
+                "task_idx": [r.task.idx for r in rollouts],
                 "env_name": [r.env_name for r in rollouts],
                 "reward": [r.reward for r in rollouts],
                 "is_truncated": [r.is_truncated for r in rollouts],
                 "is_filtered": [r.is_filtered for r in rollouts],
-                "stop_condition": [r.raw.get("stop_condition") for r in rollouts],
-                "seq_len": [
-                    r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
-                    for r in rollouts
-                ],
+                "stop_condition": [r.stop_condition for r in rollouts],
+                "seq_len": [r.total_tokens for r in rollouts],
                 "prefill_len": metrics.rollout_prefill_lens,
                 "decode_len": metrics.rollout_decode_lens,
                 "samples_per_rollout": metrics.samples_per_rollout,
-                "num_turns": [len(r.raw["trajectory"]) for r in rollouts],
+                "num_turns": [r.num_turns for r in rollouts],
             }
         )
-        metrics_df = pd.DataFrame([(r.raw.get("metrics") or {}) for r in rollouts])
+        metrics_df = pd.DataFrame([r.metrics for r in rollouts])
         filter_df = pd.DataFrame([r.filter_results for r in rollouts])
         timing_df = self.timing_df(rollouts)
 
@@ -188,42 +174,14 @@ class MetricsBuilder:
             for name, count in pre_filter_dropped_by_name.items():
                 to_log[f"pre_filters/all/{name}/rate"] = count / pre_filter_seen
 
-        # Fold in the trainer's token-export metrics for the oldest unlogged stable
-        # step (exports always lag the orchestrator, so this is a past step).
-        to_log.update(self.next_token_export_metrics())
-
         return to_log
 
-    @property
-    def last_token_export_step_logged(self) -> int:
-        return self._last_token_export_step_logged
-
-    def next_token_export_metrics(self) -> dict[str, float | int]:
-        """Log-ready token-export metrics for the next unlogged stable step (empty if
-        none), advancing the cursor. They arrive under trainer/, including trainer/step
-        (the run step they belong to) for plotting against a lag-corrected axis. Shared
-        by build() and the orchestrator's end-of-run drain."""
-        token_export = collect_next_token_export_metrics(
-            self.config.output_dir,
-            last_logged_step=self._last_token_export_step_logged,
-        )
-        if token_export:
-            self._last_token_export_step_logged = token_export["trainer/step"]
-        return token_export
-
     @staticmethod
-    def timing_df(rollouts: list[TrainRollout]) -> pd.DataFrame:
-        return pd.DataFrame(
-            [
-                {
-                    "total": r.raw["timing"]["total"],
-                    "setup": r.raw["timing"]["setup"]["duration"],
-                    "generation": r.raw["timing"]["generation"]["duration"],
-                    "model": r.raw["timing"]["model"]["duration"],
-                    "env": r.raw["timing"]["env"]["duration"],
-                    "scoring": r.raw["timing"]["scoring"]["duration"],
-                    "overhead": r.raw["timing"]["overhead"],
-                }
-                for r in rollouts
-            ]
-        )
+    def timing_df(rollouts: list[Rollout]) -> pd.DataFrame:
+        """Per-rollout timing from the v1 Trace (`generation`/`scoring` spans)."""
+        rows = []
+        for r in rollouts:
+            timing = r.timing
+            generation, scoring = timing.generation.duration, timing.scoring.duration
+            rows.append({"total": generation + scoring, "generation": generation, "scoring": scoring})
+        return pd.DataFrame(rows)

@@ -1,0 +1,42 @@
+# Debug RL run on the v1 env server (reverse-text starter).
+# The orchestrator spawns a v1 EnvServer per env (it never loads the env
+# itself), dispatches rollouts by task index, and trains on the returned Traces
+# (renderer-tokenized). Light settings for a quick end-to-end smoke.
+
+max_steps = 20
+seq_len = 2048
+
+[wandb]
+project = "reverse-text"
+name = "v1"
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[orchestrator]
+training_mode = "rl"
+batch_size = 128
+group_size = 16
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+taskset = { id = "reverse-text-v1" }
+# reverse-text is a pure-text single-turn env: disable the bash tool (the model answers
+# directly) and use the subprocess runtime (no docker).
+harness = { id = "default", runtime = { type = "subprocess" } }
+
+# No eval block, mirroring examples/reverse_text/rl.toml — this is a train-only
+# smoke. Add an [orchestrator.eval] block (with an interval) to exercise eval.
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
+
+[inference]
+gpu_memory_utilization = 0.5

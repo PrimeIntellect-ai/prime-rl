@@ -19,6 +19,10 @@ training_mode = "sft"
 batch_size = 128
 group_size = 16
 
+# Teacher rolls out over plain chat-completions (no tokens); the renderer backfills them.
+[orchestrator.renderer]
+name = "qwen3"
+
 [orchestrator.train.sampling]
 max_completion_tokens = 128
 

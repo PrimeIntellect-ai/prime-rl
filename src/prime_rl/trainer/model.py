@@ -510,6 +510,18 @@ def get_model(
         model_config.use_index_cache = True
         model_config.index_topk_freq = config.index_cache.topk_freq
         model_config.index_topk_pattern = config.index_cache.topk_pattern
+        # Explicit override supersedes the model's native IndexShare schedule.
+        model_config.indexer_types = None
+    else:
+        # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
+        # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
+        indexer_types = getattr(model_config, "indexer_types", None)
+        if indexer_types and any(t == "shared" for t in indexer_types):
+            model_config.use_index_cache = True
+            logger.info(
+                f"Auto-enabled IndexShare from indexer_types schedule "
+                f"({sum(t == 'full' for t in indexer_types)}/{len(indexer_types)} full layers)"
+            )
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.

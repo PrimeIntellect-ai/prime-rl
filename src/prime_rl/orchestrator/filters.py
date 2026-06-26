@@ -16,20 +16,19 @@ from prime_rl.configs.orchestrator import FilterConfig
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.orchestrator.types import Rollout
 
 
 @dataclass
 class FilterResult:
     detected: bool
-    detection_index: int | None = None
 
 
 class RolloutFilter(Protocol):
     name: str
     enforce: bool
 
-    def check(self, rollout: "TrainRollout") -> FilterResult: ...
+    def check(self, rollout: Rollout) -> FilterResult: ...
 
 
 @dataclass
@@ -49,16 +48,16 @@ class GibberishFilter:
     logprob_threshold: float
     enforce: bool = False
 
-    def check(self, rollout: "TrainRollout") -> FilterResult:
-        global_idx = 0
-        for step in rollout.raw["trajectory"]:
-            tokens = step["tokens"]
-            if tokens is None:
-                continue
-            for token_id, logprob in zip(tokens["completion_ids"], tokens["completion_logprobs"]):
+    def check(self, rollout: Rollout) -> FilterResult:
+        for branch in rollout.branches:
+            # branch.{token_ids,logprobs,sampled_mask} are flat and mutually aligned; the raw
+            # node arrays are not (node.logprobs covers only the sampled suffix, not the
+            # generation-prompt scaffold that token_ids/mask also span).
+            for token_id, logprob, sampled in zip(branch.token_ids, branch.logprobs, branch.sampled_mask):
+                if not sampled:
+                    continue
                 if token_id > self.token_id_threshold and logprob < self.logprob_threshold:
-                    return FilterResult(detected=True, detection_index=global_idx)
-                global_idx += 1
+                    return FilterResult(detected=True)
         return FilterResult(detected=False)
 
 
@@ -79,21 +78,21 @@ class RepetitionFilter:
     logprob_threshold: float
     enforce: bool = False
 
-    def check(self, rollout: "TrainRollout") -> FilterResult:
-        consecutive = 0
-        global_idx = 0
-        for step in rollout.raw["trajectory"]:
-            tokens = step["tokens"]
-            if tokens is None:
-                continue
-            for logprob in tokens["completion_logprobs"]:
+    def check(self, rollout: Rollout) -> FilterResult:
+        for branch in rollout.branches:
+            # Aligned branch streams (see GibberishFilter), and reset the streak per branch:
+            # flat rollout.nodes interleaves distinct root->leaf paths (compaction/subagents),
+            # so a per-node walk would run a streak across a branch boundary.
+            consecutive = 0
+            for logprob, sampled in zip(branch.logprobs, branch.sampled_mask):
+                if not sampled:
+                    continue
                 if logprob > self.logprob_threshold:
                     consecutive += 1
                 else:
                     consecutive = 0
                 if consecutive >= self.window:
-                    return FilterResult(detected=True, detection_index=global_idx)
-                global_idx += 1
+                    return FilterResult(detected=True)
         return FilterResult(detected=False)
 
 
@@ -105,7 +104,7 @@ class ZeroAdvantageFilter:
     name: str
     enforce: bool = True
 
-    def check(self, rollout: "TrainRollout") -> FilterResult:
+    def check(self, rollout: Rollout) -> FilterResult:
         if rollout.advantage is not None and rollout.advantage == 0.0:
             return FilterResult(detected=True)
         return FilterResult(detected=False)
@@ -147,8 +146,8 @@ def setup_filters(configs: list[FilterConfig], vocab_size: int, *, kind: str) ->
     return filters
 
 
-def apply_filters(filters: list[RolloutFilter], rollouts: list["TrainRollout"]) -> None:  # noqa: F821 (forward ref)
-    """Flag ``TrainRollout``\\ s in place with per-filter detection + drop decision.
+def apply_filters(filters: list[RolloutFilter], rollouts: list[Rollout]) -> None:
+    """Flag ``Rollout``\\ s in place with per-filter detection + drop decision.
 
     Each rollout's ``filter_results`` dict records per-filter detection bools;
     ``is_filtered`` is True iff an enforcing filter detected it. First matching

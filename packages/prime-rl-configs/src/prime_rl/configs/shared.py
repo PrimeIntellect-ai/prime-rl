@@ -83,10 +83,6 @@ class BaseModelConfig(BaseConfig):
     vlm: "VLMConfig | None" = None
     """VLM configuration. Setting this enables vision-language model support."""
 
-    @property
-    def is_vlm(self) -> bool:
-        return self.vlm is not None
-
 
 class ElasticConfig(BaseConfig):
     hostname: str
@@ -100,12 +96,6 @@ class ElasticConfig(BaseConfig):
 
 
 class ClientConfig(BaseConfig):
-    timeout: int = 1200
-    """Request timeout in seconds."""
-
-    connect_timeout: float = 30.0
-    """TCP connect timeout in seconds for inference API requests."""
-
     wait_for_ready_timeout: int = 1800
     """Seconds to wait at startup for the inference pool to become ready. Applies to both the static health check and elastic DNS-based discovery."""
 

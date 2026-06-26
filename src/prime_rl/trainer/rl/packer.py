@@ -4,6 +4,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from collections.abc import Callable, Sequence
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -32,6 +33,7 @@ class BasePacker(ABC):
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
+        bin_cost: Callable[[Sequence[int]], int],
         start_step: int = 0,
     ):
         self.logger = get_logger()
@@ -40,6 +42,7 @@ class BasePacker(ABC):
         self.seq_len = seq_len
         self.pad_to_multiple_of = pad_to_multiple_of
         self.tokenizer = tokenizer
+        self.bin_cost = bin_cost
         self.receiver = setup_training_batch_receiver(config)
         shutil.rmtree(get_rollout_dir(self.multi_run_manager.output_dir), ignore_errors=True)
         self.sender: MicroBatchSender = setup_micro_batch_sender(
@@ -84,9 +87,10 @@ class SinglePacker(BasePacker):
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
+        bin_cost: Callable[[Sequence[int]], int],
         start_step: int = 0,
     ):
-        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
+        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, bin_cost, start_step)
         assert self.multi_run_manager.max_runs == 1, "SinglePacker only supports one run"
 
     def pack(self):
@@ -110,6 +114,7 @@ class SinglePacker(BasePacker):
             num_train_workers=self.dp_world_size,
             idxs=[0] * len(batch.examples),
             num_loras=self.multi_run_manager.max_runs,
+            bin_cost=self.bin_cost,
         )
         # The receiver always stamps run_idx from used_idxs (a key of idx_2_id).
         run_id = self.multi_run_manager.idx_2_id[batch.run_idx]
@@ -129,9 +134,10 @@ class MultiPacker(BasePacker):
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
+        bin_cost: Callable[[Sequence[int]], int],
         start_step: int = 0,
     ):
-        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
+        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, bin_cost, start_step)
         # Per-run buffer: stores (TrainingSample, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
@@ -154,27 +160,17 @@ class MultiPacker(BasePacker):
 
     def _validate_sample(self, sample: TrainingSample) -> tuple[bool, str | None]:
         """Validate a sample to ensure it won't crash the trainer."""
-        sample_length = len(sample.prompt_ids) + len(sample.completion_ids)
-        if len(sample.prompt_mask) != len(sample.prompt_ids):
-            return (
-                False,
-                f"Run wrote a sample with prompt mask length != prompt ids length ({len(sample.prompt_mask)} != {len(sample.prompt_ids)})",
-            )
-        if len(sample.completion_mask) != len(sample.completion_ids):
-            return (
-                False,
-                f"Run wrote a sample with completion mask length != completion ids length ({len(sample.completion_mask)} != {len(sample.completion_ids)})",
-            )
-        if len(sample.completion_logprobs) != len(sample.completion_ids):
-            return (
-                False,
-                f"Run wrote a sample with completion logprobs length != completion ids length ({len(sample.completion_logprobs)} != {len(sample.completion_ids)})",
-            )
-        if len(sample.completion_temperatures) != len(sample.completion_ids):
-            return (
-                False,
-                f"Run wrote a sample with completion temperatures length != completion ids length ({len(sample.completion_temperatures)} != {len(sample.completion_ids)})",
-            )
+        sample_length = len(sample.token_ids)
+        for name, arr in (
+            ("mask", sample.mask),
+            ("logprobs", sample.logprobs),
+            ("temperatures", sample.temperatures),
+        ):
+            if len(arr) != sample_length:
+                return (
+                    False,
+                    f"Run wrote a sample with {name} length != token_ids length ({len(arr)} != {sample_length})",
+                )
         if sample_length == 0:
             return False, "Run wrote a sample with no tokens"
         if sample_length > self.seq_len:
@@ -222,7 +218,7 @@ class MultiPacker(BasePacker):
             for sample, step in buffer:
                 if step > current_step:
                     break
-                tokens += len(sample.prompt_ids) + len(sample.completion_ids)
+                tokens += len(sample.token_ids)
                 if threshold is not None and tokens >= threshold:
                     return tokens
         return tokens
@@ -259,10 +255,10 @@ class MultiPacker(BasePacker):
                 if step > current_step:
                     # Samples from different steps should be consumed later
                     break
-                tokens_collected += len(sample.prompt_ids) + len(sample.completion_ids)
+                tokens_collected += len(sample.token_ids)
                 if tokens_collected > token_budget:
-                    if tokens_collected == (len(sample.prompt_ids) + len(sample.completion_ids)):
-                        tokens_collected -= len(sample.prompt_ids) + len(sample.completion_ids)
+                    if tokens_collected == (len(sample.token_ids)):
+                        tokens_collected -= len(sample.token_ids)
                         # This means we have a sample that has more tokens than max seqlen
                         self.buffers[run_idx].popleft()
                         continue
@@ -316,7 +312,7 @@ class MultiPacker(BasePacker):
                 assert steps_by_run[run_idx] == step, "Micro batches for a run must come from a single run step"
             samples_by_run[run_idx].append(sample)
 
-            num_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
+            num_tokens = len(sample.token_ids)
             if run_idx in per_run_stats:
                 cur_samples, cur_tokens = per_run_stats[run_idx]
                 per_run_stats[run_idx] = (cur_samples + 1, cur_tokens + num_tokens)
@@ -337,6 +333,7 @@ class MultiPacker(BasePacker):
                 num_train_workers=self.dp_world_size,
                 idxs=[run_idx] * len(run_samples),
                 num_loras=self.multi_run_manager.max_runs,
+                bin_cost=self.bin_cost,
             )
             run_id = self.multi_run_manager.idx_2_id[run_idx]
             run_step = steps_by_run[run_idx]
@@ -356,10 +353,15 @@ def setup_packer(
     pad_to_multiple_of: int,
     tokenizer: PreTrainedTokenizer,
     transport_config: TransportConfig,
+    bin_cost: Callable[[Sequence[int]], int],
     start_step: int = 0,
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()
     if multi_run_manager.max_runs == 1:
-        return SinglePacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+        return SinglePacker(
+            dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, bin_cost, start_step
+        )
     else:
-        return MultiPacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+        return MultiPacker(
+            dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, bin_cost, start_step
+        )
