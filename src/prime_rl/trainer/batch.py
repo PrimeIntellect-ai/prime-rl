@@ -140,19 +140,6 @@ def _can_pack_mm_kwargs(dst: dict[str, EncodedTensor] | None, src: dict[str, Enc
     )
 
 
-def _mm_sidecar_kind(sample: MicroBatch) -> str | None:
-    if sample.mm_kwargs is not None:
-        return "kwargs"
-    return None
-
-
-def _single_lora_idx(sample: MicroBatch) -> int | None:
-    if sample.lora_num_tokens is None:
-        return None
-    active = [idx for idx, tokens in enumerate(sample.lora_num_tokens) if tokens > 0]
-    return active[0] if len(active) == 1 else None
-
-
 def _has_video_tokens(sample: MicroBatch) -> bool:
     return sample.mm_token_type_ids is not None and 2 in sample.mm_token_type_ids
 
@@ -248,7 +235,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         env_names=env_names,
         mm_kwargs=copy.deepcopy(mm_kwargs),
         training_mode=training_example.training_mode,
-        seq_lens=[len(input_ids)] if mm_kwargs is not None else None,
+        seq_lens=[len(input_ids)],
     )
 
 
@@ -274,6 +261,13 @@ class _MicroBatchBin:
     def first_lora_idx(self) -> int:
         return self.samples[0][0]
 
+    @property
+    def first_multimodal_sample(self) -> MicroBatch | None:
+        for _, sample in self.samples:
+            if _is_multimodal_sample(sample):
+                return sample
+        return None
+
     def can_add(self, sample: MicroBatch, max_seq_len: int, lora_idx: int, pack_multimodal: bool) -> bool:
         first_sample = self.first_sample
         if self.length + len(sample.input_ids) > max_seq_len:
@@ -285,15 +279,18 @@ class _MicroBatchBin:
 
         first_is_mm = _is_multimodal_sample(first_sample)
         sample_is_mm = _is_multimodal_sample(sample)
-        if not first_is_mm and not sample_is_mm:
+        existing_mm_sample = self.first_multimodal_sample
+        if existing_mm_sample is None and not sample_is_mm:
             return True
-        if not pack_multimodal or first_is_mm != sample_is_mm:
+        if not pack_multimodal:
             return False
         if self.first_lora_idx != lora_idx:
             return False
-        if _has_video_tokens(first_sample) or _has_video_tokens(sample):
+        if (existing_mm_sample is not None and _has_video_tokens(existing_mm_sample)) or _has_video_tokens(sample):
             return False
-        return _can_pack_mm_kwargs(first_sample.mm_kwargs, sample.mm_kwargs)
+        if existing_mm_sample is not None and sample_is_mm:
+            return _can_pack_mm_kwargs(existing_mm_sample.mm_kwargs, sample.mm_kwargs)
+        return True
 
     def add(self, lora_idx: int, sample: MicroBatch) -> None:
         self.samples.append((lora_idx, sample))
@@ -326,7 +323,6 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     has_rewards = any(sample.rewards is not None for _, sample in bin_content.samples)
     has_teacher_logprobs = any(sample.teacher_logprobs is not None for _, sample in bin_content.samples)
     has_mm_token_type_ids = any(sample.mm_token_type_ids is not None for _, sample in bin_content.samples)
-    has_mm_kwargs = any(sample.mm_kwargs is not None for _, sample in bin_content.samples)
 
     input_ids: list[int] = []
     loss_mask: list[bool] = []
@@ -339,7 +335,7 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     teacher_logprobs: list[float] | None = [] if has_teacher_logprobs else None
     mm_token_type_ids: list[int] | None = [] if has_mm_token_type_ids else None
     mm_kwargs: dict[str, EncodedTensor] | None = None
-    seq_lens: list[int] | None = [] if has_mm_kwargs else None
+    seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
     lora_num_tokens = [0] * num_loras
 
@@ -375,12 +371,12 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
                 mm_kwargs = copy.deepcopy(sample.mm_kwargs)
             else:
                 _append_mm_kwargs(mm_kwargs, sample.mm_kwargs)
-        if seq_lens is not None:
-            seq_lens.extend(sample.seq_lens if sample.seq_lens is not None else [sample_len])
+        seq_lens.extend(sample.seq_lens if sample.seq_lens is not None else [sample_len])
         lora_num_tokens[lora_idx] += sample_len
 
     sequence_lengths = [len(sample.input_ids) for _, sample in bin_content.samples]
     assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
+    assert sum(seq_lens) == len(input_ids), (seq_lens, len(input_ids))
     first_sample = bin_content.first_sample
 
     return MicroBatch(
@@ -434,8 +430,8 @@ def packed_samples_into_micro_bs(
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
     Multimodal samples are only packed when ``pack_multimodal`` is true. They
-    pack with other compatible eager ``mm_kwargs`` samples, never with text-only
-    samples. Packed multimodal batches preserve sample boundaries in ``seq_lens``.
+    can pack with text spans from the same run/LoRA and with compatible eager
+    ``mm_kwargs`` samples. Packed batches preserve sample boundaries in ``seq_lens``.
     """
     # Sort by (lora_idx, -length) for packing efficiency
     samples.sort(key=lambda x: (x[0], -len(x[1].input_ids)))
@@ -517,6 +513,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         )
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
+    if micro_batch.seq_lens is not None:
+        micro_batch.seq_lens.append(padding_size)
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
     micro_batch.env_names.extend([""] * padding_size)

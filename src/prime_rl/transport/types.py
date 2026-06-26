@@ -98,5 +98,5 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     run_id: str | None = None
     run_step: int | None = None
 
-    # Packed multimodal sample boundaries. Sum equals len(input_ids) when present.
+    # Packed sample boundaries. Sum equals len(input_ids) when present.
     seq_lens: list[int] | None = None
