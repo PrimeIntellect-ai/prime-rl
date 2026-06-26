@@ -339,6 +339,7 @@ def _sft_sample(
         "position_ids": list(range(len(input_ids))),
         "loss_mask": [True] * len(input_ids),
         "target_ids": [x + 1 for x in input_ids],
+        "seq_lens": [len(input_ids)],
         "mm_kwargs": mm_kwargs,
         "mm_token_type_ids": mm_token_type_ids,
     }
@@ -370,6 +371,7 @@ def test_cat_dataset_packs_multimodal_samples():
     packed = next(iter(dataset))
 
     assert packed["input_ids"] == [1, 2, 3, 4, 5]
+    assert packed["seq_lens"] == [2, 3]
     assert packed["mm_token_type_ids"] == [0, 1, 0, 1, 1]
     assert packed["mm_kwargs"]["pixel_values"].shape == (5, 3)
     assert packed["mm_kwargs"]["image_grid_thw"].tolist() == [[1, 1, 2], [1, 1, 3]]
@@ -394,5 +396,6 @@ def test_cat_dataset_packs_text_and_multimodal_samples():
     packed = next(iter(dataset))
 
     assert packed["input_ids"] == [1, 2, 3, 4]
+    assert packed["seq_lens"] == [2, 2]
     assert packed["mm_kwargs"] is not None
     assert packed["mm_token_type_ids"] == [0, 1, 0, 0]

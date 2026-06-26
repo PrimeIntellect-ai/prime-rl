@@ -169,8 +169,7 @@ def train(config: SFTConfig):
             "message-to-token attribution. Use a model with a hand-coded renderer "
             "(see renderers.base.MODEL_RENDERER_MAP), or set [renderer] name=<hand-coded renderer> explicitly."
         )
-    # Attach the multimodal processor so the renderer can render image
-    # content parts. Renderers without a processor slot ignore this.
+
     if processor is not None and hasattr(renderer, "_processor"):
         renderer._processor = processor
     logger.info(
@@ -264,6 +263,7 @@ def train(config: SFTConfig):
 
         mm_kwargs = micro_batch.get("mm_kwargs")
         mm_type_ids = micro_batch.get("mm_token_type_ids")
+        seq_lens = micro_batch.get("seq_lens")
 
         with maybe_activation_offloading(config.model.ac_offloading):
             if config.loss_impl in ("liger_fused", "quack_fused"):
@@ -276,10 +276,18 @@ def train(config: SFTConfig):
                     labels=masked_target_ids,
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_type_ids,
+                    seq_lens=seq_lens,
                 )
                 loss_sum = out["loss"] * token_count
             else:
-                out = forward(model, input_ids, position_ids, mm_kwargs=mm_kwargs, mm_token_type_ids=mm_type_ids)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
+                    seq_lens=seq_lens,
+                )
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)

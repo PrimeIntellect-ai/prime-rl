@@ -36,6 +36,7 @@ class Sample(TypedDict):
     position_ids: list[int]
     loss_mask: list[bool]
     target_ids: list[int]
+    seq_lens: list[int]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: list[int] | None
 
@@ -45,6 +46,7 @@ class Batch(TypedDict):
     position_ids: Int[Tensor, "batch seq"]
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
+    seq_lens: Int[Tensor, "packed"] | None
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -116,6 +118,7 @@ class FakeDataset(StatefulIterableDataset):
                 "target_ids": input_ids[1:],
                 "position_ids": position_ids,
                 "loss_mask": loss_mask,
+                "seq_lens": [seq_len],
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
             }
@@ -148,6 +151,18 @@ def _flatten_mm_items(
     return out
 
 
+def _new_pack() -> dict[str, Any]:
+    return {
+        "input_ids": [],
+        "position_ids": [],
+        "loss_mask": [],
+        "target_ids": [],
+        "seq_lens": [],
+        "mm_kwargs": None,
+        "mm_token_type_ids": None,
+    }
+
+
 def _append_sample_to_pack(pack: dict[str, Any], sample: dict[str, Any]) -> None:
     existing_len = len(pack["input_ids"])
     sample_len = len(sample["input_ids"])
@@ -156,6 +171,7 @@ def _append_sample_to_pack(pack: dict[str, Any], sample: dict[str, Any]) -> None
         value = sample[key]
         assert isinstance(value, list)
         pack[key].extend(value)
+    pack["seq_lens"].append(sample_len)
 
     sample_mm_kwargs = sample.get("mm_kwargs")
     if sample_mm_kwargs is None:
@@ -208,8 +224,7 @@ def _find_image_safe_cut(budget: int, mm: MultiModalData | None) -> int:
 
 
 def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
-    """Drop ``mm_items`` / ``mm_placeholders`` whose ranges extend past ``cut``.
-    """
+    """Drop ``mm_items`` / ``mm_placeholders`` whose ranges extend past ``cut``."""
     new_placeholders: dict[str, list[PlaceholderRange]] = {}
     new_items: dict[str, list[dict[str, Any]]] = {}
     new_hashes: dict[str, list[str]] = {}
@@ -359,15 +374,6 @@ class SFTDataset(StatefulIterableDataset):
         mm = sample.multi_modal_data
         mm_token_type_ids = list(sample.mm_token_type_ids) if sample.mm_token_type_ids is not None else None
 
-        # VLM samples carry per-image pixel buffers that can't be packed
-        # across samples, so we truncate to seq_len here (text-only samples
-        # are left full-length for the downstream Cat/Stack dataset). The
-        # cut is pulled back so it never splits an <|image_pad|> run, and
-        # mm_items / mm_token_type_ids are sliced in lockstep so surviving
-        # placeholders stay 1-to-1 with surviving pixel buffers. Budget is
-        # seq_len (not seq_len + 1): it leaves room for both the causal shift
-        # below and a possibly re-appended EOS, so these un-packed VLM samples
-        # stay within seq_len.
         if mm is not None:
             budget = self.seq_len
             if len(input_ids) > budget:
@@ -397,9 +403,6 @@ class SFTDataset(StatefulIterableDataset):
         target_ids = input_ids.copy()[1:]
         loss_mask = loss_mask[1:]
         input_ids = input_ids[:-1]
-        # mm_token_type_ids flags the modality of each *input* token, so it must
-        # mirror input_ids ([:-1]); slicing [1:] would shift every modality
-        # label one token left relative to the tokens it describes.
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:-1]
 
@@ -426,6 +429,7 @@ class SFTDataset(StatefulIterableDataset):
             "target_ids": target_ids,
             "loss_mask": loss_mask,
             "position_ids": list(range(len(input_ids))),
+            "seq_lens": [len(input_ids)],
             "mm_kwargs": mm_kwargs,
             "mm_token_type_ids": mm_token_type_ids,
         }
@@ -493,27 +497,13 @@ class CatDataset(StatefulIterableDataset):
         self.dataset.load_state_dict(state_dict["dataset"])
 
     def __iter__(self):
-        packed_samples: dict[str, Any] = {
-            "input_ids": [],
-            "position_ids": [],
-            "loss_mask": [],
-            "target_ids": [],
-            "mm_kwargs": None,
-            "mm_token_type_ids": None,
-        }
+        packed_samples = _new_pack()
         seq_len = 0
         for sample in self.dataset:
             sample_len = len(sample["input_ids"])
             if seq_len > 0 and seq_len + sample_len > self.seq_len:
                 yield self._finalize_pack(packed_samples, self.seq_len)
-                packed_samples = {
-                    "input_ids": [],
-                    "position_ids": [],
-                    "loss_mask": [],
-                    "target_ids": [],
-                    "mm_kwargs": None,
-                    "mm_token_type_ids": None,
-                }
+                packed_samples = _new_pack()
                 seq_len = 0
 
             _append_sample_to_pack(packed_samples, sample)
@@ -521,14 +511,7 @@ class CatDataset(StatefulIterableDataset):
 
             if seq_len >= self.seq_len:
                 yield self._finalize_pack(packed_samples, self.seq_len)
-                packed_samples = {
-                    "input_ids": [],
-                    "position_ids": [],
-                    "loss_mask": [],
-                    "target_ids": [],
-                    "mm_kwargs": None,
-                    "mm_token_type_ids": None,
-                }
+                packed_samples = _new_pack()
                 seq_len = 0
 
         if seq_len > 0:
@@ -538,6 +521,15 @@ class CatDataset(StatefulIterableDataset):
         result: dict[str, Any] = {
             k: packed[k][:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
         }
+        result["seq_lens"] = []
+        remaining = len(result["input_ids"])
+        for sample_len in packed["seq_lens"]:
+            if remaining <= 0:
+                break
+            kept = min(sample_len, remaining)
+            if kept > 0:
+                result["seq_lens"].append(kept)
+            remaining -= kept
         result["mm_kwargs"] = packed["mm_kwargs"]
         result["mm_token_type_ids"] = (
             packed["mm_token_type_ids"][:seq_len] if packed["mm_token_type_ids"] is not None else None
@@ -638,6 +630,7 @@ class StackDataset(StatefulIterableDataset):
                         dummy_sample = {}
                         for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
                             dummy_sample[key] = [0]
+                        dummy_sample["seq_lens"] = [1]
                         dummy_sample["mm_kwargs"] = None
                         dummy_sample["mm_token_type_ids"] = None
                         self.buckets[bucket_idx].append(dummy_sample)
@@ -660,6 +653,7 @@ class StackDataset(StatefulIterableDataset):
                 self.logger.debug(
                     f"Yield bucket {bucket_idx} because {reason} with {num_samples=}, {num_tokens=}, {num_trainable_tokens=}, {num_pad_tokens=}"
                 )
+                packed_samples["seq_lens"] = None
                 packed_samples["mm_kwargs"] = None
                 packed_samples["mm_token_type_ids"] = None
                 yield packed_samples
@@ -684,6 +678,7 @@ def stack_collate(samples: list[Sample]) -> Batch:
             "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
             "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda").unsqueeze(0),
             "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+            "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long, device="cuda"),
             "mm_kwargs": mm_kwargs,
             "mm_token_type_ids": (
                 torch.tensor(mm_type_ids, dtype=torch.long, device="cuda").unsqueeze(0)
@@ -696,6 +691,7 @@ def stack_collate(samples: list[Sample]) -> Batch:
         "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long, device="cuda"),
         "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda"),
         "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda"),
+        "seq_lens": None,
         "mm_kwargs": None,
         "mm_token_type_ids": None,
     }
@@ -713,6 +709,7 @@ def cat_collate(samples: list[Sample]) -> Batch:
             "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
             "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda").unsqueeze(0),
             "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+            "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long, device="cuda"),
             "mm_kwargs": _move_mm_kwargs_to_cuda(sample["mm_kwargs"]),
             "mm_token_type_ids": (
                 torch.tensor(mm_type_ids, dtype=torch.long, device="cuda").unsqueeze(0)
@@ -725,6 +722,9 @@ def cat_collate(samples: list[Sample]) -> Batch:
         "position_ids": torch.stack([torch.tensor(s["position_ids"]) for s in samples], dim=0).long().to("cuda"),
         "loss_mask": torch.stack([torch.tensor(s["loss_mask"]) for s in samples], dim=0).bool().to("cuda"),
         "target_ids": torch.stack([torch.tensor(s["target_ids"]) for s in samples], dim=0).long().to("cuda"),
+        "seq_lens": torch.tensor(samples[0]["seq_lens"], dtype=torch.long, device="cuda")
+        if len(samples) == 1
+        else None,
         "mm_kwargs": None,
         "mm_token_type_ids": None,
     }
@@ -858,9 +858,9 @@ def _resolve_local_data_files(data_files: list[str] | None, multimodal: bool = F
         p = Path(path)
         if p.suffix in (".zst", ".jsonl"):
             stat = p.stat()
-            digest = hashlib.sha1(
-                f"{p.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{multimodal}".encode()
-            ).hexdigest()[:12]
+            digest = hashlib.sha1(f"{p.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{multimodal}".encode()).hexdigest()[
+                :12
+            ]
             tmp = Path(tempfile.gettempdir()) / f"{p.stem}.{digest}.prime_rl_normalized.jsonl"
             if is_writer and (not tmp.exists() or tmp.stat().st_size == 0):
                 if p.suffix == ".zst":
