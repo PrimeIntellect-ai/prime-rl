@@ -98,6 +98,18 @@ RUN --mount=type=cache,target=/app/.cache/uv \
     && \
     uv sync --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra envs --extra gpt-oss --extra modelexpress --group mamba-ssm --locked --no-dev
 
+# Build NIXL from source against the UCX 1.19 baked above. The PyPI nixl wheel
+# ships its own UCX which segfaults on prefill→decode KV transfer (#2883);
+# rebuilding against our UCX is the documented fix.
+ARG NIXL_VERSION=0.10.1
+RUN git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git /tmp/nixl \
+    && cd /tmp/nixl \
+    && PKG_CONFIG_PATH=/opt/ucx/lib/pkgconfig \
+       LD_LIBRARY_PATH=/opt/ucx/lib:/opt/ucx/lib/ucx \
+       /app/.venv/bin/python -m pip wheel . --no-deps --wheel-dir=/app/deps \
+    && /app/.venv/bin/pip install --reinstall --no-deps /app/deps/nixl_cu12-*.whl \
+    && rm -rf /tmp/nixl /app/deps/nixl_cu12-*.whl
+
 # arm64: build flash-attn from source, fix namespace conflicts, apply workarounds
 ARG TARGETARCH
 COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
