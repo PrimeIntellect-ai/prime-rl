@@ -277,7 +277,6 @@ class _MicroBatchBin:
         if (first_sample.routed_experts is None) != (sample.routed_experts is None):
             return False
 
-        first_is_mm = _is_multimodal_sample(first_sample)
         sample_is_mm = _is_multimodal_sample(sample)
         existing_mm_sample = self.first_multimodal_sample
         if existing_mm_sample is None and not sample_is_mm:
