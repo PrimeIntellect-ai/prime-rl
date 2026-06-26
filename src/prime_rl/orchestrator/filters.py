@@ -22,7 +22,6 @@ if TYPE_CHECKING:
 @dataclass
 class FilterResult:
     detected: bool
-    detection_index: int | None = None
 
 
 class RolloutFilter(Protocol):
@@ -50,7 +49,6 @@ class GibberishFilter:
     enforce: bool = False
 
     def check(self, rollout: Rollout) -> FilterResult:
-        global_idx = 0
         for branch in rollout.branches:
             # branch.{token_ids,logprobs,sampled_mask} are flat and mutually aligned; the raw
             # node arrays are not (node.logprobs covers only the sampled suffix, not the
@@ -59,8 +57,7 @@ class GibberishFilter:
                 if not sampled:
                     continue
                 if token_id > self.token_id_threshold and logprob < self.logprob_threshold:
-                    return FilterResult(detected=True, detection_index=global_idx)
-                global_idx += 1
+                    return FilterResult(detected=True)
         return FilterResult(detected=False)
 
 
@@ -82,7 +79,6 @@ class RepetitionFilter:
     enforce: bool = False
 
     def check(self, rollout: Rollout) -> FilterResult:
-        global_idx = 0
         for branch in rollout.branches:
             # Aligned branch streams (see GibberishFilter), and reset the streak per branch:
             # flat rollout.nodes interleaves distinct root->leaf paths (compaction/subagents),
@@ -96,8 +92,7 @@ class RepetitionFilter:
                 else:
                     consecutive = 0
                 if consecutive >= self.window:
-                    return FilterResult(detected=True, detection_index=global_idx)
-                global_idx += 1
+                    return FilterResult(detected=True)
         return FilterResult(detected=False)
 
 

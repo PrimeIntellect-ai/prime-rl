@@ -83,10 +83,6 @@ class BaseModelConfig(BaseConfig):
     vlm: "VLMConfig | None" = None
     """VLM configuration. Setting this enables vision-language model support."""
 
-    @property
-    def is_vlm(self) -> bool:
-        return self.vlm is not None
-
 
 class ElasticConfig(BaseConfig):
     hostname: str
