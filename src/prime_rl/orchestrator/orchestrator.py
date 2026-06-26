@@ -63,9 +63,11 @@ from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
     get_weight_dir,
     intercept_vf_logging,
+    log_process_memory,
     save_rollouts,
     set_default_executor,
     setup_student_inference_pool,
+    setup_weight_watcher,
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -222,7 +224,7 @@ class Orchestrator:
         if self.mm_token_type_ids_mapping == {}:
             self.mm_token_type_ids_mapping = None
 
-        if config.teacher is not None:
+        if config.teacher is not None and not config.debug.no_inference:
             get_logger().info(
                 f"Initializing teacher inference pool (base_url={', '.join(config.teacher.client.base_url)}, "
                 f"model={config.teacher.model.name})"
@@ -310,8 +312,7 @@ class Orchestrator:
             )
             await self.inference_metrics.start()
 
-        get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        if config.weight_broadcast.type == "nccl":
+        if not config.debug.no_trainer and not config.debug.no_inference and config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
                 self.student_inference.admin_clients,
                 config.weight_broadcast.host,
@@ -391,8 +392,8 @@ class Orchestrator:
             post_filters=post_filters,
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
-        self.watcher = WeightWatcher(
-            config,
+        self.watcher = setup_weight_watcher(
+            config=config,
             policy=self.policy,
             inference=self.student_inference,
             observers=[self.dispatcher, self],
@@ -568,8 +569,10 @@ class Orchestrator:
             teacher_logprobs_time = time.perf_counter() - t
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
-        self.update_dispatch_gate()
+        await self.update_dispatch_gate(step + 1)
         trim_process_memory()
+        if config.debug.enabled:
+            log_process_memory(f"after_step step={step}")
 
         metrics = self.metrics.build(
             step=step,
@@ -809,11 +812,17 @@ class Orchestrator:
         await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
         return time.perf_counter() - t
 
-    def update_dispatch_gate(self) -> None:
+    async def update_dispatch_gate(self, next_step: int | None = None) -> None:
         """Pause/resume the dispatcher based on how far the orchestrator's
         next batch would run ahead of ``policy.version``. Called from two
         sites: after shipping a batch (step advances) and from
-        ``on_new_version`` (policy advances)."""
+        ``on_new_version`` (policy advances).
+
+        In debug no-trainer mode, advances the policy version locally via
+        the watcher before evaluating the gate, so the orchestrator still
+        simulates weight updates and off-policy cancellation."""
+        if self.config.debug.no_trainer and next_step is not None:
+            await self.watcher.apply_policy_update(next_step)
         lead = (self.progress.step + 1) - self.policy.version
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
@@ -835,7 +844,7 @@ class Orchestrator:
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""
-        self.update_dispatch_gate()
+        await self.update_dispatch_gate()
 
     async def stop(self) -> None:
         """Bounded best-effort teardown of all components. Has a global

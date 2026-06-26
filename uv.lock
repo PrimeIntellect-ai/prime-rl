@@ -2799,6 +2799,25 @@ wheels = [
 ]
 
 [[package]]
+name = "no-inference-env"
+version = "0.1.0"
+source = { editable = "tests/debug_envs/no_inference_env" }
+dependencies = [
+    { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pybase64", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", extra = ["packages"], marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "numpy" },
+    { name = "pybase64" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "nodeenv"
 version = "1.10.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3564,6 +3583,7 @@ dependencies = [
     { name = "prime", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "prime-pydantic-config", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "prime-rl-configs", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "psutil", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pyarrow", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pybase64", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pyzmq", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3630,6 +3650,7 @@ envs = [
     { name = "math-python", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "math500-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "mmlu-pro-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "no-inference-env", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "r2e-gym-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "reverse-text", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "reverse-text-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3725,6 +3746,7 @@ requires-dist = [
     { name = "msgspec", specifier = ">=0.18" },
     { name = "nixl", marker = "extra == 'disagg'" },
     { name = "nixl-cu12", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" },
+    { name = "no-inference-env", marker = "extra == 'envs'", editable = "tests/debug_envs/no_inference_env" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "nvidia-ml-py", specifier = ">=12.575.51" },
     { name = "openai", specifier = ">=1.106.1" },
@@ -3739,6 +3761,7 @@ requires-dist = [
     { name = "prime-rl", extras = ["flash-attn-cute"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
+    { name = "psutil", specifier = ">=7.2.2" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
     { name = "pyzmq", specifier = ">=27.1.0" },

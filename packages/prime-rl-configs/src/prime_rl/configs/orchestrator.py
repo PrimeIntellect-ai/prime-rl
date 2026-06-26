@@ -473,6 +473,18 @@ class OrchestratorExperimentalConfig(BaseConfig):
     pass
 
 
+class OrchestratorDebugConfig(BaseConfig):
+    no_inference: bool = False
+    """Use an in-process no-op inference pool. Rollout environments must not call the model client."""
+
+    no_trainer: bool = False
+    """Run without a trainer. Writes training batches to disk and advances policy version locally."""
+
+    @property
+    def enabled(self) -> bool:
+        return self.no_inference or self.no_trainer
+
+
 class RolloutModelConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
 
@@ -591,6 +603,7 @@ class OrchestratorConfig(BaseConfig):
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
+    debug: OrchestratorDebugConfig = OrchestratorDebugConfig()
     experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
 
     @model_validator(mode="before")
@@ -726,6 +739,38 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_pool_size(self):
+        """``pool_size`` is only meaningful when the renderer is enabled
+        (``renderer is not None``). Reject otherwise so callers don't
+        silently pass it and wonder why it's ignored."""
+        if self.debug.no_inference:
+            return self
+        if self.renderer is None and self.pool_size is not None:
+            raise ValueError(
+                f"orchestrator.pool_size={self.pool_size!r} is set but "
+                "orchestrator.renderer is None (MITO mode). Either configure a renderer "
+                "or remove pool_size."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def vlm_requires_renderer(self):
+        """VLMs (``[model.vlm]`` block set) must go through the renderer.
+
+        The renderer owns the processor per-slot, produces byte-identical
+        tokens, and ships generic ``mm_kwargs`` keyed by whatever the
+        model's forward signature expects.
+        """
+        if self.debug.no_inference:
+            return self
+        if self.student.model.vlm is not None and self.renderer is None:
+            raise ValueError(
+                "orchestrator.renderer must be set when model.vlm is set. "
+                "VLMs must go through a renderer (e.g. Qwen3VLRenderer) that owns the processor."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_renderer_auto_resolves(self):
         """Reject the silent DefaultRenderer fallback at config time.
 
@@ -738,7 +783,9 @@ class OrchestratorConfig(BaseConfig):
         ``DefaultRendererConfig.tool_parser`` is configured. Surface at
         config time so ``--dry-run`` reports the error.
         """
-        if self.renderer.name != "auto":
+        if self.renderer is None or self.renderer.name != "auto":
+            return self
+        if self.debug.no_inference:
             return self
         from renderers.base import MODEL_RENDERER_MAP
 
@@ -818,6 +865,15 @@ class OrchestratorConfig(BaseConfig):
             if self.prime_monitor:
                 self.prime_monitor.log_extras = None
 
+        return self
+
+    @model_validator(mode="after")
+    def resolve_debug(self):
+        if self.debug.no_trainer:
+            self.rollout_transport = FileSystemTransportConfig()
+        if self.debug.no_inference:
+            self.renderer = None
+            self.collect_inference_metrics = False
         return self
 
     @model_validator(mode="after")

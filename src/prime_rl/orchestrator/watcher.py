@@ -16,6 +16,14 @@ from prime_rl.utils.pathing import get_broadcast_dir, get_step_path, wait_for_pa
 from prime_rl.utils.utils import get_latest_ckpt_step
 
 
+async def notify_observers(observers: list[VersionObserver], step: int) -> None:
+    for observer in observers:
+        try:
+            await observer.on_new_version(step)
+        except Exception as exc:
+            get_logger().warning(f"Observer {type(observer).__name__}.on_new_version({step}) raised: {exc!r}")
+
+
 class WeightWatcher:
     """``await watcher.start()`` to drive the polling loop until ``stop()``."""
 
@@ -123,13 +131,7 @@ class WeightWatcher:
                 self.inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
 
-            for observer in self.observers:
-                try:
-                    await observer.on_new_version(next_step)
-                except Exception as exc:
-                    get_logger().warning(
-                        f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
-                    )
+            await notify_observers(self.observers, next_step)
 
     def gauges(self) -> dict[str, float]:
         return {
@@ -137,4 +139,59 @@ class WeightWatcher:
             "watcher/update_count": float(self.update_count),
             "watcher/last_update_weights_time": self.last_update_weights_time,
             "watcher/last_wait_for_ckpt_time": self.last_wait_for_ckpt_time,
+        }
+
+
+class DebugWeightWatcher:
+    """Local policy-version driver for orchestrator debug runs without a trainer."""
+
+    def __init__(self, *, policy: Policy, observers: list[VersionObserver]) -> None:
+        self.policy = policy
+        self.observers = observers
+        self.ckpt_step = policy.version
+        self.update_count: int = 0
+        self.task: asyncio.Task | None = None
+        self.update_lock = asyncio.Lock()
+        self.stopped = asyncio.Event()
+
+    async def start(self) -> None:
+        self.task = asyncio.current_task()
+        try:
+            await self.stopped.wait()
+        except asyncio.CancelledError:
+            return
+
+    async def stop(self) -> None:
+        self.stopped.set()
+        if self.task is not None:
+            await safe_cancel(self.task)
+            self.task = None
+
+    async def apply_policy_update(self, next_step: int) -> None:
+        async with self.update_lock:
+            if next_step <= self.ckpt_step:
+                return
+
+            # Drain off-policy rollouts before advancing the policy version,
+            # mirroring the production WeightWatcher so debug runs exercise
+            # off-policy cancellation.
+            for observer in self.observers:
+                try:
+                    await observer.on_version_pending(next_step)
+                except Exception as exc:
+                    get_logger().warning(
+                        f"Observer {type(observer).__name__}.on_version_pending({next_step}) raised: {exc!r}"
+                    )
+
+            self.ckpt_step = next_step
+            self.policy.version = next_step
+            self.update_count += 1
+            await notify_observers(self.observers, next_step)
+
+    def gauges(self) -> dict[str, float]:
+        return {
+            "watcher/policy_version": float(self.policy.version),
+            "watcher/update_count": float(self.update_count),
+            "watcher/last_update_weights_time": 0.0,
+            "watcher/last_wait_for_ckpt_time": 0.0,
         }

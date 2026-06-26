@@ -43,6 +43,7 @@ dependencies = [
     "orjson>=3.10",
     "pandas>=2.0",
     "msgspec>=0.18",
+    "psutil>=7.2.2",
 ]
 
 [project.scripts]
@@ -67,6 +68,7 @@ flash-attn-cute = [
 ]
 envs = [
     "alphabet-sort",
+    "no-inference-env",
     "general-agent",
     "logic-env",
     "math-env",
@@ -219,6 +221,7 @@ verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
 alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
+no-inference-env = { path = "tests/debug_envs/no_inference_env", editable = true }
 general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
 logic-env = { path = "deps/research-environments/environments/logic_env", editable = true }
 math-env = { path = "deps/research-environments/environments/math_env", editable = true }
