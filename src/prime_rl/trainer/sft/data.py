@@ -506,7 +506,8 @@ class CatDataset(StatefulIterableDataset):
         for sample in self.dataset:
             sample_len = len(sample["input_ids"])
             sample_has_mm = sample.get("mm_kwargs") is not None
-            if seq_len > 0 and (sample_has_mm != has_mm or seq_len + sample_len > self.seq_len):
+            would_overflow = seq_len + sample_len > self.seq_len
+            if seq_len > 0 and (sample_has_mm != has_mm or (would_overflow and (has_mm or sample_has_mm))):
                 yield self._finalize_pack(packed_samples, self.seq_len)
                 packed_samples = _new_pack()
                 seq_len, has_mm = 0, None
