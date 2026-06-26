@@ -136,7 +136,7 @@ class Env:
                 env_id=self.config.env_id,
                 env_args=self.config.args,
                 extra_env_kwargs=self.config.extra_env_kwargs,
-                shuffle=self.config.shuffle,
+                shuffle=self.config.taskset.shuffle,
             )
             if self.config.is_legacy
             else dict(legacy=False, config=self.config)

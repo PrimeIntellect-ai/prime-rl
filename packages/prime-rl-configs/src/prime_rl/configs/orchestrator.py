@@ -243,10 +243,19 @@ class TrainEnvConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
-    shuffle: bool = True
-    """Shuffle this env's tasks (and reshuffle each epoch) on the env server. Defaults to True for
-    training — overrides the framework default of False (deterministic). No-op for an infinite
-    taskset, whose generator owns its order."""
+    @model_validator(mode="before")
+    @classmethod
+    def _default_shuffle(cls, data):
+        """Training shuffles by default (reshuffled each epoch, seed offset per env-server so a pool
+        draws divergent streams). Configured via ``--<env>.taskset.shuffle`` (a ``ShuffleConfig``);
+        set it explicitly to pick a seed. Eval envs leave it unset → deterministic."""
+        if isinstance(data, dict):
+            taskset = data.get("taskset")
+            if taskset is None:
+                data["taskset"] = {"shuffle": {}}
+            elif isinstance(taskset, dict) and "shuffle" not in taskset:
+                taskset["shuffle"] = {}
+        return data
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Rollouts generated per example for GRPO group-relative advantages.
