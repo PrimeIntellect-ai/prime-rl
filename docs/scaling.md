@@ -151,7 +151,6 @@ The vanilla LM head materializes a `[batch * seq, vocab]` logits tensor on every
 ```toml
 [trainer.model]
 fused_lm_head_token_chunk_size = 1024       # default
-# fused_lm_head_token_chunk_size = "auto"   # picks 8192 for RL
 # fused_lm_head_token_chunk_size = "disabled"  # vanilla LM head
 ```
 
