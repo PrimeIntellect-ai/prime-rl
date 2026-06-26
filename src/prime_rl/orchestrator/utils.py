@@ -12,8 +12,10 @@ import orjson
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.types import Policy, VersionObserver
+from prime_rl.orchestrator.watcher import DebugWeightWatcher, WeightWatcher
 from prime_rl.transport import TrainingSample
-from prime_rl.utils.client import setup_inference_pool
+from prime_rl.utils.client import InferencePool, NoOpInferencePool, setup_inference_pool
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
 from prime_rl.utils.utils import (
     get_broadcast_dir,
@@ -30,6 +32,10 @@ async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer)
     no tokens — re-renders the conversation with this renderer to backfill them. The renderer
     is built here from the (always-set) ``config.renderer`` and also supplies the multimodal
     token-type-id map. The eval client is plain chat-completions (eval traces aren't trained)."""
+    if config.debug.no_inference:
+        model_name = config.student.model.name
+        get_logger().warning(f"Using no-op student inference pool for orchestrator debug mode ({model_name=})")
+        return None, NoOpInferencePool(model_name=model_name)
     from renderers.base import create_renderer
 
     client_config = config.student.client
@@ -45,6 +51,30 @@ async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer)
         pool_size=config.pool_size,
     )
     return renderer, inference_pool
+
+
+def setup_weight_watcher(
+    *,
+    config: OrchestratorConfig,
+    policy: Policy,
+    inference: InferencePool,
+    observers: list[VersionObserver],
+    lora_name: str | None,
+    ckpt_step: int = 0,
+) -> WeightWatcher | DebugWeightWatcher:
+    """Construct the weight watcher, using the debug variant when ``no_trainer`` is set."""
+    if config.debug.no_trainer:
+        get_logger().warning("Skipping weight broadcast setup for orchestrator debug no-trainer mode")
+        return DebugWeightWatcher(policy=policy, observers=observers)
+    get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
+    return WeightWatcher(
+        config,
+        policy=policy,
+        inference=inference,
+        observers=observers,
+        lora_name=lora_name,
+        ckpt_step=ckpt_step,
+    )
 
 
 def save_rollouts(rollouts: list[dict], path: Path, exclude_keys: set[str] | None = None) -> None:
@@ -88,6 +118,26 @@ def trim_process_memory() -> None:
         ctypes.CDLL("libc.so.6").malloc_trim(0)
     except Exception as exc:
         get_logger().debug(f"malloc_trim(0) failed: {exc!r}")
+
+
+def log_process_memory(label: str) -> None:
+    """Debug-log RSS for the orchestrator process and its child processes."""
+    import psutil
+
+    proc = psutil.Process()
+    rss = proc.memory_info().rss
+    child_rss = 0
+    for child in proc.children(recursive=True):
+        try:
+            child_rss += child.memory_info().rss
+        except psutil.Error:
+            continue
+    total = rss + child_rss
+    gib = 1024**3
+    get_logger().debug(
+        f"Memory | {label} | rss={rss / gib:.3f} GiB | child_rss={child_rss / gib:.3f} GiB | "
+        f"total_rss={total / gib:.3f} GiB"
+    )
 
 
 async def compute_teacher_logprobs(

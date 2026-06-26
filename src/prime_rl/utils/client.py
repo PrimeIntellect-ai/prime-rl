@@ -141,6 +141,59 @@ class StaticInferencePool:
         pass
 
 
+class NoOpInferencePool:
+    """InferencePool for orchestrator debug runs whose envs do not call the model."""
+
+    def __init__(self, model_name: str = "debug-noop-model"):
+        self.model_name = model_name
+        self._client = vf.ClientConfig(
+            client_idx=0,
+            client_type="openai_chat_completions",
+            api_base_url="http://debug-noop-inference/v1",
+            api_key_var="EMPTY",
+            timeout=1,
+            connect_timeout=1,
+            max_connections=1,
+            max_keepalive_connections=1,
+            max_retries=0,
+            extra_headers={},
+            extra_headers_from_state={},
+        )
+
+    @property
+    def train_clients(self) -> list[vf.ClientConfig]:
+        return [self._client]
+
+    @property
+    def admin_clients(self) -> list[AsyncClient]:
+        return []
+
+    @property
+    def eval_clients(self) -> list[vf.ClientConfig]:
+        return [self._client]
+
+    def update_model_name(self, model_name: str) -> None:
+        self.model_name = model_name
+
+    async def get_eval_client(self) -> vf.ClientConfig:
+        return self._client
+
+    async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
+        return self._client
+
+    async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
+        return None
+
+    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+        return None
+
+    def get_metrics(self) -> dict[str, float]:
+        return {}
+
+    async def stop(self) -> None:
+        return None
+
+
 async def setup_inference_pool(
     client_config: ClientConfig,
     model_name: str,
