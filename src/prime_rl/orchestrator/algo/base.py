@@ -21,8 +21,9 @@ awaits:
 - ``score_group(group)`` — the cohort, on group completion, *before* filtering
   (filters read the streams): group-relative credit (GRPO/MaxRL baselines).
 - ``score_batch(batch)`` — the batch's survivors, *after* filtering: the home
-  for reference I/O (``self.teacher_pool``), where queries are batched for
-  concurrency and — running after filtering — dropped rollouts cost nothing.
+  for I/O against another model — an inference pool the algorithm connected in
+  ``setup()`` (e.g. a teacher) — where queries are batched for concurrency and,
+  running after filtering, dropped rollouts cost nothing.
 
 How rollouts are *produced* is not the algorithm's concern: that is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`, and sample construction
@@ -109,11 +110,12 @@ class Algorithm:
         streams): group-relative credit. Default: nothing — rollouts keep
         ``advantages=None``, so advantage-based filters skip them.
       - :meth:`score_batch` — the batch's survivors, *after* filtering:
-        query the algorithm's reference pool (e.g. ``self.teacher_pool``) and
-        attach per-token results (e.g. teacher logprobs). Default: nothing.
+        query an inference pool the algorithm connected to another model in
+        :meth:`setup` (e.g. a teacher) and attach per-token results (e.g.
+        reference logprobs). Default: nothing.
 
-    ``score_batch`` is the home for reference I/O: it runs after filtering, so
-    only survivors cost reference compute. I/O in ``score_rollout`` /
+    ``score_batch`` is the home for I/O against another model: it runs after
+    filtering, so only survivors cost that compute. I/O in ``score_rollout`` /
     ``score_group`` runs *before* the pre-batch filters — do it when a filter
     must read the result, accepting that it pays compute on rollouts that may
     then be filtered out.
@@ -125,7 +127,6 @@ class Algorithm:
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
-        self.config = config
         self.policy_pool = policy_pool
         self.renderer = renderer
         self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
@@ -157,8 +158,8 @@ class Algorithm:
 
     async def score_batch(self, batch: list[Rollout]) -> None:
         """Ship phase, survivors only, after filtering, async: query the
-        algorithm's reference models and attach per-token results (e.g. teacher
-        logprobs)."""
+        inference pools the algorithm connected in :meth:`setup` and attach
+        per-token results (e.g. reference logprobs)."""
 
 
 async def finalize_rollout(algorithm: Algorithm, rollout: Rollout) -> None:

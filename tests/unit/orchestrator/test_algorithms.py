@@ -29,42 +29,38 @@ def _ref_kind(ref):
     return "frozen" if isinstance(ref, FrozenModelConfig) else ref
 
 
+# The vetted default of each algorithm: which model it samples from and which
+# loss component its action tokens feed. opd alone names a frozen ``teacher``;
+# sft samples from a frozen ``sampling.source``; the rest run on the policy.
 @pytest.mark.parametrize(
-    ("algorithm_type", "teacher", "source", "model_ref", "action_loss_type"),
+    ("algorithm_type", "build_kwargs", "source", "action_loss_type"),
     [
-        ("grpo", None, "policy", None, "rl"),
-        ("max_rl", None, "policy", None, "rl"),
-        ("opd", FROZEN, "policy", "frozen", "ref_kl"),
-        ("sft", FROZEN, "frozen", None, "ce"),
-        ("opsd", None, "policy", "policy", "ref_kl"),
-        ("echo", None, "policy", None, "rl"),
+        ("grpo", {}, "policy", "rl"),
+        ("max_rl", {}, "policy", "rl"),
+        ("opd", {"teacher": FROZEN}, "policy", "ref_kl"),
+        ("sft", {"sampling": {"source": FROZEN}}, "frozen", "ce"),
+        ("opsd", {}, "policy", "ref_kl"),
+        ("echo", {}, "policy", "rl"),
     ],
 )
-def test_type_defaults_are_the_vetted_algorithms(algorithm_type, teacher, source, model_ref, action_loss_type):
-    kwargs = {"type": algorithm_type}
-    if teacher is not None:
-        kwargs["teacher"] = teacher
-    algo = _build(**kwargs)
-    assert _ref_kind(algo.sampling.source) == source
+def test_type_defaults_are_the_vetted_algorithms(algorithm_type, build_kwargs, source, action_loss_type):
+    algo = _build(type=algorithm_type, **build_kwargs)
     assert algo.type == algorithm_type
-    assert _ref_kind(getattr(algo, "model", None)) == model_ref
+    assert _ref_kind(algo.sampling.source) == source
     assert algo.action_loss_type == action_loss_type
 
 
-def test_echo_roles_replace_the_default_table():
-    algo = _build(type="echo", roles={"user": {"alpha": 0.5}})
-    assert algo.type == "echo"
-    assert algo.roles.user.alpha == 0.5
-    # Setting any role replaces the whole table: the tool default is gone
-    assert algo.roles.tool is None
-
-
-def test_echo_defaults_to_tool_bodies():
-    algo = _build(type="echo")
-    assert algo.roles.tool.alpha == 0.1
-    assert algo.roles.system is None
-    assert algo.roles.user is None
-    assert algo.roles.assistant is None
+def test_echo_role_table():
+    # Default: tool-response bodies at alpha 0.1, every other role off.
+    default = _build(type="echo")
+    assert default.roles.tool.alpha == 0.1
+    assert default.roles.system is None
+    assert default.roles.user is None
+    assert default.roles.assistant is None
+    # Setting any role replaces the whole table — the tool default is gone.
+    replaced = _build(type="echo", roles={"user": {"alpha": 0.5}})
+    assert replaced.roles.user.alpha == 0.5
+    assert replaced.roles.tool is None
 
 
 def test_echo_roles_require_at_least_one():
@@ -72,35 +68,19 @@ def test_echo_roles_require_at_least_one():
         _build(type="echo", roles={})
 
 
-def test_opd_requires_teacher():
-    with pytest.raises(ValueError, match="needs a teacher"):
+def test_opd_teacher_must_be_a_frozen_endpoint():
+    # opd needs a teacher, and it must be frozen: a missing teacher is a
+    # structural error, and "policy" can't even be set — opd.teacher is typed
+    # FrozenModelConfig (the KL against the policy itself would be zero).
+    with pytest.raises(ValueError, match="Field required"):
         _build(type="opd")
+    with pytest.raises(ValueError, match="FrozenModelConfig"):
+        _build(type="opd", teacher="policy")
 
 
 def test_sft_requires_teacher():
     with pytest.raises(ValueError, match="needs a teacher to sample rollouts from"):
         _build(type="sft")
-
-
-def test_teacher_folds_into_model():
-    algo = _build(type="opd", teacher=FROZEN)
-    assert isinstance(algo.model, FrozenModelConfig)
-    assert algo.model.name == "org/ref-model"
-
-
-def test_teacher_without_target_errors():
-    with pytest.raises(ValueError, match="references no model"):
-        _build(type="grpo", teacher=FROZEN)
-
-
-def test_teacher_redundant_but_consistent_is_accepted():
-    algo = _build(type="opd", teacher=FROZEN, model=FROZEN)
-    assert isinstance(algo.model, FrozenModelConfig)
-
-
-def test_opd_rejects_policy():
-    with pytest.raises(ValueError, match="degenerate"):
-        _build(type="opd", model="policy")
 
 
 def test_rl_loss_type_incompatible_with_frozen_sampling():

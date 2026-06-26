@@ -6,22 +6,22 @@ turns the signal half into runtime objects (the sampling half is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`):
 
 - one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``opd``,
-  ``opsd``, ``sft``, ``custom``) — each named class owns its
-  scoring hooks (``score_rollout`` / ``score_group`` / ``score_batch``) and
-  declares what it needs (loss component, a "teacher", ...). One instance per
-  env, built by :func:`build_algorithm`. Custom credit assignment plugs in
-  through the ``custom`` algorithm type (:class:`CustomAlgorithm` imports a
-  user function by path).
+  ``opsd``, ``sft``) — each named class owns its scoring hooks
+  (``score_rollout`` / ``score_group`` / ``score_batch``) and declares what it
+  needs (loss component, a "teacher", ...). One instance per env, built by
+  :func:`build_algorithm`. A new credit-assignment scheme is a new named class:
+  subclass :class:`Algorithm`, assign advantages in the hook whose timing fits,
+  and register it below.
 - ``base`` — the :class:`Algorithm` base class and the pipeline phase
   functions (:func:`finalize_rollout` / :func:`finalize_group` /
   :func:`finalize_batch`).
-- ``advantage`` — pure advantage math (default group-norm + the
-  custom-function interface). Advantages are per-token everywhere they are
-  stored or shipped — there is no scalar advantage in the pipeline. A
-  function takes ``Rollout`` objects and returns one value per rollout: a
-  scalar that is *broadcast* over the rollout's completion tokens
-  (uniform credit, the common case), or an explicit full-length-N per-token
-  list aligned to the concatenated sample token_ids (0.0 off-mask).
+- ``advantage`` — shared advantage math (``efficiency_shaping``). Advantages
+  are per-token everywhere they are stored or shipped — there is no scalar
+  advantage in the pipeline. An algorithm assigns credit in its scoring hook
+  via ``Rollout.assign_advantages``: a scalar that is *broadcast* over the
+  rollout's completion tokens (uniform credit, the common case), or an explicit
+  full-length-N per-token list aligned to the concatenated sample token_ids
+  (0.0 off-mask).
 - ``routing`` — wire-field stamping: per-token component weight streams
   (rl / ce / ref_kl) and the per-token advantage stream.
 """
@@ -30,12 +30,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from prime_rl.orchestrator.algo.advantage import (
-    AdvantageFn,
-    apply_advantage_fn,
-    default_advantage_fn,
-    max_rl_advantage_fn,
-)
 from prime_rl.orchestrator.algo.base import (
     Algorithm,
     connect_frozen_pool,
@@ -43,7 +37,6 @@ from prime_rl.orchestrator.algo.base import (
     finalize_group,
     finalize_rollout,
 )
-from prime_rl.orchestrator.algo.custom import CustomAlgorithm
 from prime_rl.orchestrator.algo.echo import EchoAlgorithm
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
@@ -68,7 +61,6 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "opd": OPDAlgorithm,
     "opsd": OPSDAlgorithm,
     "sft": SFTDistillAlgorithm,
-    "custom": CustomAlgorithm,
 }
 
 
@@ -81,9 +73,7 @@ def build_algorithm(config: AlgorithmConfig, policy_pool: InferencePool, rendere
 
 
 __all__ = [
-    "AdvantageFn",
     "Algorithm",
-    "CustomAlgorithm",
     "EchoAlgorithm",
     "GRPOAlgorithm",
     "MaxRLAlgorithm",
@@ -91,14 +81,11 @@ __all__ = [
     "OPSDAlgorithm",
     "Rollout",
     "SFTDistillAlgorithm",
-    "apply_advantage_fn",
     "build_algorithm",
     "connect_frozen_pool",
-    "default_advantage_fn",
     "finalize_batch",
     "finalize_group",
     "finalize_rollout",
-    "max_rl_advantage_fn",
     "stamp_advantages",
     "stamp_loss_routing",
 ]

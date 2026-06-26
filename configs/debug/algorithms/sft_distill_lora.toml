@@ -22,7 +22,8 @@ group_size = 4
 [orchestrator.algo]
 type = "sft"
 
-[orchestrator.algo.teacher]
+# sft's teacher IS the model it samples from.
+[orchestrator.algo.sampling.source]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = ["http://localhost:8001/v1"]
 

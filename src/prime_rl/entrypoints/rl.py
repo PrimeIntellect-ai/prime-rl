@@ -192,9 +192,8 @@ def rl_local(config: RLConfig):
         frozen_endpoints: list[str] = []
         for env in config.orchestrator.train.env:
             algo = env.algo
-            if algo is None:
-                continue
-            for ref in (algo.sampling.source, getattr(algo, "model", None)):
+            assert algo is not None, "TrainEnvConfig.algo must be resolved before launch (inherit_env_algorithms)"
+            for ref in (algo.sampling.source, getattr(algo, "teacher", None)):
                 if isinstance(ref, FrozenModelConfig):
                     frozen_endpoints.append(f"{ref.name} ({', '.join(ref.base_url)})")
         if frozen_endpoints:

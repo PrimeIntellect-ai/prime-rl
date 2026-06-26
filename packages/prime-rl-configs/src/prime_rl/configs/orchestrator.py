@@ -44,6 +44,9 @@ class ModelConfig(BaseModelConfig):
     lora: LoRAConfig | None = None
     """Per-run LoRA configuration. If None, LoRA is disabled."""
 
+    client: ClientConfig = ClientConfig()
+    """Client of the live deployment (``[orchestrator.model.client]``)."""
+
 
 class TrainSamplingConfig(BaseConfig):
     temperature: float = Field(1.0, ge=0)
@@ -443,13 +446,6 @@ class OrchestratorExperimentalConfig(BaseConfig):
     pass
 
 
-class HostedModelConfig(ModelConfig):
-    """A served model reachable through an OpenAI-compatible endpoint: the
-    model fields plus the client of the live deployment."""
-
-    client: ClientConfig = ClientConfig()
-
-
 class OrchestratorConfig(BaseConfig):
     algo: AlgorithmConfig = GRPOAlgorithmConfig()
     """Training algorithm: sampling plus the per-token training signal (credit
@@ -457,7 +453,7 @@ class OrchestratorConfig(BaseConfig):
     Defaults to ``grpo``. Override per env via ``[[orchestrator.train.env]]``'s
     ``algo``."""
 
-    model: HostedModelConfig = HostedModelConfig()
+    model: ModelConfig = ModelConfig()
     """The model being trained: its model fields plus the client of the live
     vLLM deployment (``[orchestrator.model] name = ...`` with
     ``[orchestrator.model.client]``). Algorithm components reference it as

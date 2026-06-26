@@ -1,8 +1,8 @@
 """Algorithm abstraction: sampling and the per-token training signal.
 
 An algorithm is a named, self-contained config — a discriminated union keyed
-on ``type`` (``grpo``, ``max_rl``, ``opd``, ``opsd``, ``sft``, ``echo``,
-``custom``). The bundle *is* the algorithm: each variant carries
+on ``type`` (``grpo``, ``max_rl``, ``opd``, ``opsd``, ``sft``, ``echo``).
+The bundle *is* the algorithm: each variant carries
 its sampling component and its credit-assignment / loss-routing parameters,
 and its class defaults are the vetted setting — ``type = "opd"`` with a
 teacher IS on-policy distillation; any key you set is visibly your own
@@ -158,11 +158,13 @@ class EchoFilterConfig(BaseConfig):
 
 
 class BaseAlgorithmConfig(BaseConfig):
-    """Base for every algorithm: the shared sampling component, the ``teacher``
-    shorthand, and the reference-folding / compatibility validators. Each
-    subclass sets ``type`` (the discriminator), declares its loss routing
-    (``action_loss_type``), names its reference's role if it has one
-    (``model_role`` / ``source_role``), and adds its own parameters.
+    """Base for every algorithm: the shared sampling component and the
+    cross-cutting source/loss compatibility check. Each subclass sets ``type``
+    (the discriminator), declares its loss routing (``action_loss_type``), and
+    adds its own parameters — including any reference model it needs, named
+    where that model is actually used (opd scores against a frozen ``teacher``;
+    sft samples from its ``sampling.source``; opsd self-distills against the
+    live policy and names no model).
 
     The bundle IS the algorithm — there is no separate ``advantage``
     sub-component. ``algo.type`` names it, and the class defaults are the
@@ -173,72 +175,11 @@ class BaseAlgorithmConfig(BaseConfig):
     sampling: SamplingConfig = SamplingConfig()
     """Sampling component: which model generates train rollouts."""
 
-    teacher: ModelReference | None = Field(None, exclude=True)
-    """Reference-model shorthand: an inline frozen hosted model (``name`` +
-    ``base_url``). Folds into the slot the algorithm declares for it —
-    ``model`` for the distillation algorithms (opd/opsd), ``sampling.source``
-    for sft. ``grpo`` / ``max_rl`` / ``custom`` take no teacher.
-    Write-only input sugar — folded by validation and excluded from dumps so
-    resolved configs round-trip."""
-
     @model_validator(mode="after")
-    def fold_teacher(self):
-        """Fold the ``teacher`` shorthand into the slot the algorithm declares.
-
-        Fill-or-agree: the slot (the ``model`` field, or ``sampling.source``
-        for source-role algorithms) takes the shorthand when the user didn't
-        set it; an explicit reference already equal to it is
-        redundant-but-consistent; if no slot accepts it, that's an error."""
-        if self.teacher is None:
-            return self
-        matched = False
-        if "model" in type(self).model_fields:
-            if self.model is None or "model" not in self.model_fields_set:
-                self.model = self.teacher
-                matched = True
-            elif self.model == self.teacher:
-                matched = True
-        if getattr(self, "source_role", None) is not None:
-            if "source" not in self.sampling.model_fields_set:
-                self.sampling.source = self.teacher
-                matched = True
-            elif self.sampling.source == self.teacher:
-                matched = True
-            else:
-                raise ValueError(
-                    f"algorithm '{self.type}': 'teacher' wants to source rollouts from a frozen model, "
-                    f"but sampling.source is pinned to '{self.sampling.source}'. Drop the explicit "
-                    "sampling.source, or remove 'teacher'."
-                )
-        if not matched:
-            raise ValueError(
-                f"algorithm '{self.type}': 'teacher' is set but the algorithm references no model — "
-                "grpo / max_rl / custom take no teacher. Remove it, or use a distillation type."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_references(self):
-        source_role = getattr(self, "source_role", None)
-        if source_role is not None and self.sampling.source == "policy":
-            raise ValueError(
-                f"algorithm '{self.type}' needs a {source_role} to sample rollouts from — "
-                f"CE on the policy's own tokens is not a distillation target. Set '{source_role}' on "
-                "the algorithm (an inline hosted model: name + base_url), or sampling.source explicitly."
-            )
-        if getattr(self, "model", "<absent>") is None:
-            role = getattr(self, "model_role", "reference model")
-            raise ValueError(
-                f"algorithm '{self.type}' needs a {role} — "
-                f"set '{role}' on the algorithm (an inline hosted model: name + base_url), "
-                "or set the model directly."
-            )
-        if isinstance(self, OPDAlgorithmConfig) and self.model == "policy":
-            raise ValueError(
-                "algorithm 'opd' with model='policy' is degenerate — the reference distribution "
-                "equals the policy, so the KL signal is zero. Point at a frozen hosted model, or "
-                "use 'opsd' for demo-conditioned self-teaching."
-            )
+    def validate_sampling_source(self):
+        """The on-policy loss types (rl, ref_kl) need the live policy's own
+        sampling logprobs, so they must sample from ``"policy"``; only sft (ce)
+        may sample from a frozen model."""
         if self.action_loss_type in ("rl", "ref_kl") and self.sampling.source != "policy":
             raise ValueError(
                 f"algorithm '{self.type}' trains with the "
@@ -302,13 +243,13 @@ class OPDAlgorithmConfig(BaseAlgorithmConfig):
     samples ship no advantage stream. ``group_size`` only fans out sampling."""
 
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
-    model_role: ClassVar[str] = "teacher"
 
-    model: ModelReference | None = None
-    """The teacher — an inline frozen hosted model (``name`` + ``base_url``).
-    Required — set it here or via the ``teacher`` shorthand.
-    ``"policy"`` is rejected: scoring the policy under itself yields zero KL
-    signal (use ``opsd`` for demo-conditioned self-teaching)."""
+    teacher: FrozenModelConfig
+    """The teacher — an inline frozen hosted model (``name`` + ``base_url``)
+    whose reverse KL the policy distills toward. Required, and necessarily a
+    frozen endpoint: scoring the policy under itself yields zero KL signal, so
+    ``"policy"`` is not even representable here (use ``opsd`` for
+    demo-conditioned self-teaching)."""
 
     max_concurrent: int = Field(32, ge=1)
     """Maximum concurrent prefill requests per batch."""
@@ -317,22 +258,16 @@ class OPDAlgorithmConfig(BaseAlgorithmConfig):
 class OPSDAlgorithmConfig(BaseAlgorithmConfig):
     type: Literal["opsd"] = "opsd"
     """On-policy self-distillation (SDFT, https://arxiv.org/abs/2601.19897):
-    the per-token signal is the reverse KL to a reference model conditioned on
-    an expert demonstration. The teacher scores each sample with the
-    demonstration prepended as a leading system message — the sample is scored
-    verbatim (no re-rendering), so it's robust to tool/multimodal prompts and
-    works for any number of turns. No scalar advantage is assigned — rollouts
-    keep ``advantages=None`` (advantage-based filters never fire) and samples
-    ship no advantage stream."""
+    the per-token signal is the reverse KL against the live policy conditioned
+    on an expert demonstration. The teacher *is* the policy — self-distillation
+    names no separate model — scoring each sample with the demonstration
+    prepended as a leading system message. The sample is scored verbatim (no
+    re-rendering), so it's robust to tool/multimodal prompts and works for any
+    number of turns. No scalar advantage is assigned — rollouts keep
+    ``advantages=None`` (advantage-based filters never fire) and samples ship no
+    advantage stream."""
 
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
-    model_role: ClassVar[str] = "teacher"
-
-    model: ModelReference = "policy"
-    """The teacher. ``"policy"`` (the default) is the SDFT paper's setting —
-    the current model conditioned on the demo *is* the teacher — and needs no
-    extra deployment. Set an inline frozen hosted model to score under a
-    frozen copy instead."""
 
     demo_key: str = "demonstration"
     """Key holding the expert demonstration text — looked up in the example's
@@ -355,26 +290,19 @@ class SFTAlgorithmConfig(BaseAlgorithmConfig):
     through an unused advantage stream."""
 
     action_loss_type: ClassVar[ActionLossType] = "ce"
-    source_role: ClassVar[str] = "teacher"
-    """The sampling source is this algorithm's teacher — the frozen model
-    whose tokens the policy trains on. Required: CE on the policy's own
-    tokens is rejected at validation."""
 
-
-class CustomAlgorithmConfig(BaseAlgorithmConfig):
-    type: Literal["custom"] = "custom"
-    """Custom advantage function, consumed by the ``rl`` loss component. Returns
-    one scalar per rollout (broadcast over its completion tokens), or a
-    full-length-N per-token list aligned to the rollout's concatenated sample
-    token_ids (0.0 on non-trainable positions)."""
-
-    action_loss_type: ClassVar[ActionLossType] = "rl"
-
-    import_path: str
-    """Import path to the advantage function (e.g. ``my_module.my_advantage``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the advantage function."""
+    @model_validator(mode="after")
+    def require_frozen_source(self):
+        """sft's teacher is the model it samples from — ``sampling.source`` must
+        be a frozen hosted model, not the policy (CE on the policy's own tokens
+        is not a distillation target)."""
+        if self.sampling.source == "policy":
+            raise ValueError(
+                f"algorithm '{self.type}' needs a teacher to sample rollouts from — "
+                "CE on the policy's own tokens is not a distillation target. Set "
+                "sampling.source to an inline hosted model (name + base_url)."
+            )
+        return self
 
 
 AlgorithmConfig: TypeAlias = Annotated[
@@ -383,8 +311,7 @@ AlgorithmConfig: TypeAlias = Annotated[
     | MaxRLAlgorithmConfig
     | OPDAlgorithmConfig
     | OPSDAlgorithmConfig
-    | SFTAlgorithmConfig
-    | CustomAlgorithmConfig,
+    | SFTAlgorithmConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -394,8 +321,10 @@ its class defaults are the vetted setting.
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
-- ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy by default.
-- ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs ``teacher``.
+- ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
+- ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
-- ``custom`` — user-supplied advantage function.
+
+A new credit-assignment scheme is a new named algorithm in code (subclass
+``Algorithm``, register it), not a config that points at an import path.
 """

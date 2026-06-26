@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from prime_rl.configs.algorithm import AlgorithmConfig, OPDAlgorithmConfig
+from prime_rl.configs.algorithm import OPDAlgorithmConfig
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.utils.client import StaticInferencePool
 
@@ -28,11 +28,10 @@ class OPDAlgorithm(Algorithm):
 
     action_loss_type = "ref_kl"
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+    def __init__(self, config: OPDAlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
-        assert isinstance(config, OPDAlgorithmConfig)
         self.max_concurrent = config.max_concurrent
-        self.teacher = config.model
+        self.teacher = config.teacher
         self.teacher_pool: StaticInferencePool | None = None  # static teacher endpoint, connected in setup()
 
     async def setup(self) -> None:

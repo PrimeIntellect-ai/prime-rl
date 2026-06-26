@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from prime_rl.configs.algorithm import AlgorithmConfig, OPSDAlgorithmConfig
+from prime_rl.configs.algorithm import OPSDAlgorithmConfig
 from prime_rl.orchestrator.algo.base import Algorithm
 
 if TYPE_CHECKING:
@@ -15,10 +15,11 @@ if TYPE_CHECKING:
 
 
 class OPSDAlgorithm(Algorithm):
-    """On-policy self-distillation (SDFT). The teacher defaults to the policy
-    itself, conditioned on an expert demonstration — no extra deployment.
+    """On-policy self-distillation (SDFT). The teacher *is* the live policy,
+    conditioned on an expert demonstration — no separate model, no extra
+    deployment.
 
-    Each sample is prefill-scored under the teacher with the demonstration
+    Each sample is prefill-scored under the policy with the demonstration
     prepended as a leading system message: the teacher reads
     ``hint_block + sample.token_ids`` and the demo-conditioned logprobs over the
     sample's tokens become ``ref_logprobs`` (the trainer's ref_kl target). The
@@ -29,18 +30,13 @@ class OPSDAlgorithm(Algorithm):
 
     action_loss_type = "ref_kl"
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+    def __init__(self, config: OPSDAlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
-        assert isinstance(config, OPSDAlgorithmConfig)
         assert renderer is not None, "opsd requires the renderer"
         self.demo_key = config.demo_key
         self.template = config.template
         self.max_concurrent = config.max_concurrent
-        self.teacher = config.model
-        self.teacher_pool: InferencePool | None = None  # the policy pool, reused as-is; connected in setup()
-
-    async def setup(self) -> None:
-        self.teacher_pool = await self.connect(self.teacher)
+        self.teacher_pool = policy_pool  # self-distillation: the teacher is the live policy
 
     def _demonstration(self, rollout: Rollout) -> str:
         demonstration = rollout.info.get(self.demo_key)
@@ -55,7 +51,6 @@ class OPSDAlgorithm(Algorithm):
 
     async def score_batch(self, batch: list[Rollout]) -> None:
         pool = self.teacher_pool
-        assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
         assert self.renderer is not None
         semaphore = asyncio.Semaphore(self.max_concurrent)
 
