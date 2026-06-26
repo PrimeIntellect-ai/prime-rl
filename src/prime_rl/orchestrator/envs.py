@@ -3,8 +3,8 @@
 Each ``Env`` owns a v1 ``EnvServer`` (spawned as a child process, or an
 external one given by ``config.address``) and an ``EnvClient`` to drive it. The
 orchestrator never *runs* an environment: it asks the server for ``info``
-(``num_tasks`` + whether group scoring is needed), then runs rollouts purely by
-**task index**. The server returns a ``Trace`` (a plain ``model_dump`` — derived values are
+(``num_tasks`` — ``None`` when the taskset is infinite — + whether group scoring is
+needed), then runs rollouts purely by **task index**. The server returns a ``Trace`` (a plain ``model_dump`` — derived values are
 properties, not serialized) which we validate into a ``Trace[WireTask]`` — a real ``vf.Trace``
 (never a loose dict) whose task keeps the env's
 task-specific fields as extras (``WireTask`` allows them). The orchestrator never imports the
@@ -82,7 +82,10 @@ class Env:
     def __init__(self, config: EnvConfig):
         self.config = config
         self.sampling_args: dict = {}
-        self.num_tasks: int = 0
+        self.num_tasks: int | None = None
+        """Task count reported by the server, or ``None`` when the taskset is infinite
+        (an infinite generator ``load_tasks``). The orchestrator pulls tasks (it never
+        addresses one); this only bounds how many groups an eval pulls."""
         self.requires_group_scoring: bool = False
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
@@ -112,7 +115,8 @@ class Env:
         self.num_tasks = info.num_tasks
         self.requires_group_scoring = info.requires_group_scoring
         get_logger().info(
-            f"Env {self.name} ready: num_tasks={self.num_tasks} group_scoring={self.requires_group_scoring}"
+            f"Env {self.name} ready: num_tasks={self.num_tasks if self.num_tasks is not None else 'infinite'} "
+            f"group_scoring={self.requires_group_scoring}"
         )
 
     async def _spawn(self, log_dir: Path, log_level: str, json_logging: bool) -> str:
@@ -132,6 +136,7 @@ class Env:
                 env_id=self.config.env_id,
                 env_args=self.config.args,
                 extra_env_kwargs=self.config.extra_env_kwargs,
+                shuffle=self.config.taskset.shuffle,
             )
             if self.config.is_legacy
             else dict(legacy=False, config=self.config)
@@ -167,12 +172,19 @@ class Env:
             sampling["extra_body"] = {**sampling.get("extra_body", {}), "cache_salt": cache_salt}
         return vf.SamplingConfig(**sampling)
 
+    async def sample(self) -> vf.WireTask:
+        """Pull the next task (server-owned cursor + shuffle/epoch). Echoed back to
+        ``run_rollout`` so a non-group env's ``group_size`` rollouts share one task while
+        concurrency is still bounded per rollout."""
+        return await self.env_client.sample()
+
     async def run_rollout(
-        self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
+        self, client: vf.ClientConfig, task: vf.WireTask, model_name: str, cache_salt: str | None
     ) -> Rollout:
-        """Run a single rollout for ``task_idx``; return a typed Trace."""
+        """Run one rollout of ``task`` (from ``sample()``); return a typed Trace. One permit,
+        freed when this rollout returns — so a slow rollout never holds a whole group's permits."""
         wire = await self.env_client.run_rollout(
-            task_idx=task_idx,
+            task=task,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
@@ -180,11 +192,12 @@ class Env:
         return ROLLOUT_TYPE.model_construct(**dict(wire))
 
     async def run_group(
-        self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
+        self, client: vf.ClientConfig, task: vf.WireTask, model_name: str, group_size: int, cache_salt: str | None
     ) -> list[Rollout]:
-        """Run a group of rollouts for ``task_idx`` (group-scoring envs); return typed Traces."""
+        """Run ``group_size`` rollouts of ``task`` (from ``sample()``), scored together — for
+        group-scored envs (``@group_reward``), which must run + score the group in one place."""
         wires = await self.env_client.run_group(
-            task_idx=task_idx,
+            task=task,
             n=group_size,
             client=client,
             model=model_name,
@@ -221,8 +234,16 @@ class EvalEnv(Env):
 
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
-        n = self.num_tasks if self.config.num_examples < 0 else min(self.config.num_examples, self.num_tasks)
-        self.examples = [{"task_idx": i} for i in range(n)]
+        if self.num_tasks is None:
+            # Infinite taskset: no count to enumerate, so eval must be explicitly bounded.
+            if self.config.num_examples < 0:
+                raise ValueError(f"Env {self.name} is infinite (no task count); set num_examples to bound the eval")
+            n = self.config.num_examples
+        else:
+            n = self.num_tasks if self.config.num_examples < 0 else min(self.config.num_examples, self.num_tasks)
+        # The orchestrator pulls tasks (the server hands out the next one), so an example is just
+        # a slot to fill — `n` of them. The served task is identified by the returned Trace's idx.
+        self.examples = [{} for _ in range(n)]
 
 
 EnvT = TypeVar("EnvT", bound=Env)

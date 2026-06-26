@@ -349,6 +349,8 @@ class RolloutDispatcher:
             if group.kind != kind or group.rollouts_to_schedule <= 0:
                 continue
             env = envs.get(group.env_name)
+            # A group-scored env runs as one indivisible `run_group` (needs all permits at once);
+            # a non-group env schedules one `run_rollout` at a time (one permit each).
             cost = group.rollouts_to_schedule if env.requires_group_scoring else 1
             if cost <= self.available_permits:
                 return await self.schedule_group_rollout(gid, group)
@@ -380,7 +382,6 @@ class RolloutDispatcher:
         return GroupState(
             kind=kind,
             env_name=env_name,
-            task_idx=example["task_idx"],
             rollouts_to_schedule=group_size,
             target_rollouts=group_size,
             eval_step=eval_step,
@@ -427,27 +428,49 @@ class RolloutDispatcher:
         else:
             cache_salt = None
 
+        # `sample()` is the only pull (server-owned cursor + shuffle/epoch); a group samples its
+        # task once, so all its rollouts share one task.
+        if group.task is None:
+            try:
+                group.task = await env.sample()
+            except Exception as exc:
+                # sample() runs in the scheduling path, outside the inflight-task error handling
+                # that turns run_rollout/run_group failures into error markers — so an unguarded
+                # error here would kill the dispatch loop. Leave the group pending and retry next
+                # tick instead (a transient env-server hiccup recovers; a dead server stalls
+                # rather than crashes).
+                if group_id in self.groups:
+                    get_logger().warning(f"sample() failed for env {group.env_name!r}; retrying: {exc}")
+                return False
+            if group_id not in self.groups:  # group dropped while awaiting sample()
+                return False
+            group.task_idx = group.task.idx
         if env.requires_group_scoring:
+            # Group-scored: one `run_group` runs + scores the whole group together (it can't be
+            # split). Holds `group_size` permits until the group completes.
             permits = group.rollouts_to_schedule
             group.rollouts_to_schedule = 0
             await self.acquire(permits)
             task: asyncio.Task = asyncio.create_task(
                 env.run_group(
                     client=client,
-                    task_idx=group.task_idx,
+                    task=group.task,
                     model_name=model_name,
                     group_size=permits,
                     cache_salt=cache_salt,
                 )
             )
         else:
+            # Non-group: schedule one `run_rollout` of the group's task — one permit, freed when
+            # this rollout returns, so a slow rollout never holds the whole group's permits and
+            # concurrency stays at `max_concurrent`.
             permits = 1
             group.rollouts_to_schedule -= 1
             await self.acquire(permits)
             task = asyncio.create_task(
                 env.run_rollout(
                     client=client,
-                    task_idx=group.task_idx,
+                    task=group.task,
                     model_name=model_name,
                     cache_salt=cache_salt,
                 )

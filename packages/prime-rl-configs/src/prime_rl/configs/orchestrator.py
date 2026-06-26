@@ -149,8 +149,8 @@ class EnvConfig(vf.EnvServerConfig):
     address: str | None = None
     """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically. The ``pool`` sizes the spawned server."""
 
-    ratio: float | None = Field(None, gt=0)
-    """Sampling weight for this environment in the buffer. When None for all envs, samples uniformly across all available problems. When set, must be set on all envs — values are relative weights normalized to probabilities (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
+    ratio: float = Field(1.0, gt=0)
+    """Relative sampling weight for this environment during training. Defaults to 1.0, so envs are sampled in equal parts (1:1:1); set explicit weights to change the mix (normalized to probabilities — e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
 
     max_retries: int = Field(3, ge=0)
     """Times the env server retries a failed rollout before returning an error."""
@@ -243,6 +243,21 @@ class TrainEnvConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _default_shuffle(cls, data):
+        """Training shuffles by default. Configured via ``--<env>.taskset.shuffle`` (a
+        ``ShuffleConfig``); set it explicitly to pick a seed. Eval envs leave it unset →
+        deterministic. Skipped when the installed verifiers predates ``ShuffleConfig`` (the slim
+        configs package can resolve an older published verifiers)."""
+        if isinstance(data, dict) and "shuffle" in vf.TasksetConfig.model_fields:
+            taskset = data.get("taskset")
+            if taskset is None:
+                data["taskset"] = {"shuffle": {}}
+            elif isinstance(taskset, dict) and "shuffle" not in taskset:
+                taskset["shuffle"] = {}
+        return data
+
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
@@ -300,15 +315,6 @@ class TrainConfig(BaseConfig):
             raise ValueError(
                 f"Duplicate training environment names: {set(duplicates)}. Each env must have a unique name."
             )
-        return self
-
-    @model_validator(mode="after")
-    def validate_env_ratios(self):
-        ratios = [env.ratio for env in self.env]
-        if all(r is None for r in ratios):
-            return self
-        if any(r is None for r in ratios):
-            raise ValueError("Either all envs must have a ratio or none of them. Got a mix of set and unset ratios.")
         return self
 
 
