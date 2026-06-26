@@ -11,6 +11,15 @@ def setup_vllm_env(config: InferenceConfig):
     # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
+    # Force the V1 GPU model runner. vLLM 0.23.0 routes dense Llama/Mistral/Qwen3 to the
+    # V2 runner, which has no `_preprocess` hook for our padded-input scrub (see
+    # inference/vllm/padded_input_scrub.py) and doesn't zero the padded decode tail
+    # itself; that stale tail poisons CUDA-graph replay as NaN logits (reproduced on
+    # Nemotron-Nano SWE, PR #2506; upstream fix vllm#42779 is still unmerged). V1 keeps
+    # the scrub effective for every model and is also required for routed-experts capture
+    # (the NIXL PD path rejects V2). setdefault so it stays overridable.
+    os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "0")
+
     deep_gemm_enabled = "1" if config.use_deep_gemm else "0"
     os.environ["VLLM_USE_DEEP_GEMM"] = deep_gemm_enabled
     os.environ["VLLM_MOE_USE_DEEP_GEMM"] = deep_gemm_enabled
