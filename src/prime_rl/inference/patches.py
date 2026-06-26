@@ -15,6 +15,7 @@ def transformers_v5_compat():
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
     _patch_lora_key_prefix()
+    _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
@@ -179,6 +180,29 @@ def monkey_patch_strip_routed_experts_from_chat():
     logger.info(
         "Stripped routed_experts from chat-completions responses (PD router merges only the /generate object form)."
     )
+
+
+def _patch_qwen35_moe_lora_format():
+    """Force Qwen3.5-MoE onto vLLM's 2D per-expert LoRA format.
+
+    vLLM 0.23.0 defaults ``Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = True``,
+    which makes the LoRA loader expect 3D stacked-expert adapters
+    (``base_layer.lora_{A,B}.weight`` / ``lora_{A,B}.weight``, experts folded into the
+    rank dim; see ``_stack_moe_lora_weights``). Our trainer instead emits the 2D
+    per-expert layout (``{expert_id}.gate_proj.lora_A.weight`` ...) from
+    ``MultiLoRAGroupedExperts.state_dict_for_adapter`` -- vLLM only consults that layout
+    when ``is_3d_moe_weight`` is False (or ``enable_mixed_moe_lora_format=True``).
+    Without this override the adapters fail to load with key/shape mismatches.
+
+    The rest of the old Qwen3.5 LoRA shim (the in_proj_qkvz packed-mapping fix and the
+    N-slice ``can_replace_layer`` / ``slice_lora_a`` generalizations for vllm#36372) is
+    handled natively by 0.23.0 and was dropped. Remove this too once we either adopt the
+    3D stacked save format (like gpt-oss) or start the engine with
+    ``enable_mixed_moe_lora_format=True``.
+    """
+    from vllm.model_executor.models.qwen3_5 import Qwen3_5MoeForConditionalGeneration
+
+    Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = False
 
 
 def _patch_lora_key_prefix():
