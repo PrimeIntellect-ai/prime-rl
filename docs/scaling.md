@@ -92,10 +92,12 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 
 EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP communication volume per layer and improving the training throughput. EP is only available with the custom model implementation (`model.impl = "custom"` or `"auto"` for supported families).
 
+`ep` defaults to `"auto"`, which resolves at startup to the largest valid EP degree up to 8. It loads the model config to read `num_experts`, then picks the biggest divisor of `num_experts` that also divides the FSDP island size (`world_size // dp_replicate`), is a multiple of `cp`, and is <= 8. For non-MoE models, resolves to 1 (no-op). Set `ep` to an explicit integer to override:
+
 ```toml
 [trainer.model]
 impl = "custom"
-ep = 8                     # EP degree; must divide num_experts
+ep = 8                     # explicit EP degree; must divide num_experts
 ep_comm_backend = "torch"  # or "deepep"
 ```
 
@@ -121,7 +123,7 @@ cp_style = "ulysses"         # "ring"
 | `trainer.model.ac.mode = "selective"` | medium | small | 
 | `trainer.model.ac_offloading` | extra | a bit more |
 
-Enable selective AC (custom impl only) for the best memory/throughput tradeoff:
+AC and AC offloading are enabled by default (full mode). For the best memory/throughput tradeoff, switch to selective AC (custom impl only):
 
 ```toml
 [trainer.model.ac]
@@ -129,55 +131,41 @@ mode = "selective"
 targets = ["norm", "attn_proj"]  # see Reference for the full list per architecture
 ```
 
-We reccomend also using `ac_offloading` and `ac_offloading.max_inflight_activations = 5` to further reduce the memory footprint in tradeoff for some throughput. We've observed this feature to be very effective, lowering the peak memory usage by 30-40% in some cases, while only lossing ~3-5% of throughput:
-
-```toml
-[trainer.model.ac_offloading]
-max_inflight_activations = 5
-```
+`ac_offloading` is also on by default with `max_inflight_activations = 5`. We've observed this feature to be very effective, lowering the peak memory usage by 30-40% in some cases, while only lossing ~3-5% of throughput. To disable either, set `model.ac = "None"` or `model.ac_offloading = "None"`.
 
 ### Optimizer Offloading
 
-Offloading optimizer states to CPU is a near-free memory win at low GPU counts:
+Offloading optimizer states to CPU is enabled by default (`optim_cpu_offload = true`) — a near-free memory win at low GPU counts:
 
 ```toml
-[trainer.optim]
-# any optimizer type
-type = "adamw"
-
 [trainer.model]
-optim_cpu_offload = true
+optim_cpu_offload = true   # already the default
 ```
 
-Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_concurrent_runs > 1` (multi-tenant training). Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
+Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_concurrent_runs > 1` (multi-tenant training) — set `optim_cpu_offload = false` for multi-run. Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
 
 ### LM Head Chunking
 
-The vanilla LM head materializes a `[batch * seq, vocab]` logits tensor on every step — a major memory tax when the vocabulary is large (often >100K). `fused_lm_head_token_chunk_size` swaps in a custom fused linear + logprob/entropy kernel that streams through `chunk_size` tokens at a time, avoiding the materialization:
+The vanilla LM head materializes a `[batch * seq, vocab]` logits tensor on every step — a major memory tax when the vocabulary is large (often >100K). `fused_lm_head_token_chunk_size` swaps in a custom fused linear + logprob/entropy kernel that streams through `chunk_size` tokens at a time, avoiding the materialization. It defaults to `1024` for RL training:
 
 ```toml
 [trainer.model]
-fused_lm_head_token_chunk_size = "auto"     # picks 8192 for RL
-# or explicit:
-# fused_lm_head_token_chunk_size = 1024     # smaller = lower memory, more launches
-# fused_lm_head_token_chunk_size = "disabled"  # default; vanilla LM head
+fused_lm_head_token_chunk_size = 1024       # default
+# fused_lm_head_token_chunk_size = "auto"   # picks 8192 for RL
+# fused_lm_head_token_chunk_size = "disabled"  # vanilla LM head
 ```
 
-`auto` is a safe starting point for RL. Drop the chunk size further when peak memory is still tight (e.g. with very long sequences); raise it to amortize kernel-launch overhead. Only available with `model.impl = "custom"`, and currently RL-only — the SFT trainer rejects integer values.
+Drop the chunk size further when peak memory is still tight (e.g. with very long sequences); raise it to amortize kernel-launch overhead. SFT training silently disables this (not supported yet). Only available with `model.impl = "custom"`.
 
 ## Memory-Tight Recipe
 
-The kitchen-sink config for fitting large MoE on limited GPUs at acceptable throughput:
+The kitchen-sink config for fitting large MoE on limited GPUs at acceptable throughput. AC, AC offloading, compile, fused LM head chunking, optimizer offload, and EP auto-resolution are on by default — only CP needs to be set explicitly (and EP overridden if auto-resolution is not desired):
 
 ```toml
 [trainer.model]
 impl = "custom"
-fused_lm_head_token_chunk_size = 1024
 ep = 8
 cp = 2
-optim_cpu_offload = true
-
-[trainer.model.compile]
 
 [trainer.model.ac]
 freq = 1
@@ -186,7 +174,7 @@ freq = 1
 max_inflight_activations = 1
 ```
 
-Walks through every memory lever in order: FSDP+EP shard the weights, CP shards the activations along the token dim, AC + AC offloading shrink the activation footprint, fused LM head chunks the loss, `torch.compile` reduces fragmentation, optim offload moves Adam state off GPU. Apply selectively — each knob has a throughput cost.
+The defaults already cover: fused LM head chunking (`1024`), `torch.compile` (fullgraph=False), AC (full mode), AC offloading (`max_inflight_activations=5`), and optimizer CPU offload. Walks through every memory lever in order: FSDP+EP shard the weights, CP shards the activations along the token dim, AC + AC offloading shrink the activation footprint, fused LM head chunks the loss, `torch.compile` reduces fragmentation, optim offload moves Adam state off GPU. Apply selectively — each knob has a throughput cost.
 
 ## SLURM
 

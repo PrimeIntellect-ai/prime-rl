@@ -43,7 +43,7 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     get_load_balance_stats,
 )
-from prime_rl.trainer.parallel_dims import get_parallel_dims
+from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     build_bin_cost,
@@ -120,6 +120,9 @@ def train(config: TrainerConfig):
     multi_run_manager = setup_multi_run_manager(
         config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank), config.model.lora
     )
+
+    # Resolve ep="auto" to a concrete integer before creating parallel dims
+    resolve_ep(config.model)
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
