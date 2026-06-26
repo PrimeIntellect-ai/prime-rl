@@ -243,20 +243,13 @@ class TrainEnvConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
-    @model_validator(mode="before")
-    @classmethod
-    def _default_shuffle(cls, data):
-        """Training shuffles by default. Configured via ``--<env>.taskset.shuffle`` (a
-        ``ShuffleConfig``); set it explicitly to pick a seed. Eval envs leave it unset →
-        deterministic. Skipped when the installed verifiers predates ``ShuffleConfig`` (the slim
-        configs package can resolve an older published verifiers)."""
-        if isinstance(data, dict) and "shuffle" in vf.TasksetConfig.model_fields:
-            taskset = data.get("taskset")
-            if taskset is None:
-                data["taskset"] = {"shuffle": {}}
-            elif isinstance(taskset, dict) and "shuffle" not in taskset:
-                taskset["shuffle"] = {}
-        return data
+    @model_validator(mode="after")
+    def _default_shuffle(self):
+        """Training shuffles by default; set ``--<env>.taskset.shuffle.seed`` to pick a seed. Eval
+        envs leave it unset → deterministic."""
+        if self.taskset.shuffle is None:
+            self.taskset.shuffle = vf.ShuffleConfig()
+        return self
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Rollouts generated per example for GRPO group-relative advantages.

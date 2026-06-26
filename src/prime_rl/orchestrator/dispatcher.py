@@ -434,20 +434,12 @@ class RolloutDispatcher:
             try:
                 group.task = await env.sample()
             except Exception as exc:
-                # sample() runs in the scheduling path, outside the inflight-task error handling
-                # that turns run_rollout/run_group failures into error markers — so an unguarded
-                # error here would kill the dispatch loop. Leave the group pending and retry next
-                # tick instead (a transient env-server hiccup recovers; a dead server stalls
-                # rather than crashes).
-                if group_id in self.groups:
-                    get_logger().warning(f"sample() failed for env {group.env_name!r}; retrying: {exc}")
+                get_logger().warning(f"sample() failed for env {group.env_name!r}; retrying: {exc}")
                 return False
             if group_id not in self.groups:  # group dropped while awaiting sample()
                 return False
             group.task_idx = group.task.idx
         if env.requires_group_scoring:
-            # Group-scored: one `run_group` runs + scores the whole group together (it can't be
-            # split). Holds `group_size` permits until the group completes.
             permits = group.rollouts_to_schedule
             group.rollouts_to_schedule = 0
             await self.acquire(permits)
@@ -461,9 +453,6 @@ class RolloutDispatcher:
                 )
             )
         else:
-            # Non-group: schedule one `run_rollout` of the group's task — one permit, freed when
-            # this rollout returns, so a slow rollout never holds the whole group's permits and
-            # concurrency stays at `max_concurrent`.
             permits = 1
             group.rollouts_to_schedule -= 1
             await self.acquire(permits)
