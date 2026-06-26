@@ -47,11 +47,11 @@ id = "reverse-text"
 
 CLI: `--env.0.id reverse-text --env.1.id math-env`.
 
-**Dicts** — TOML uses a section; CLI takes a JSON string: `--vllm-extra '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `advantage`) reject JSON strings; use dotted keys (`--orchestrator.algo.advantage.type custom`) or a TOML overlay file.
+**Dicts** — TOML uses a section; CLI takes a JSON string: `--vllm-extra '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `algo`) reject JSON strings; use dotted keys (`--orchestrator.algo.type custom`) or a TOML overlay file.
 
-**Discriminated unions** — set the `type` field to pick the variant (`[orchestrator.advantage] type = "max_rl"`). Omit `type` to keep the default variant.
+**Discriminated unions** — set the `type` field to pick the variant (`[orchestrator.algo] type = "max_rl"`). Omit `type` to keep the default variant.
 
-**Algorithms** — `[orchestrator.algo.advantage] type = "grpo" | "max_rl" | "opd" | "opsd" | "sft" | "echo" | "reward" | "custom"` — the advantage type names the algorithm (credit assignment + loss routing, fused), and each type's class defaults are its vetted setting; any other key you set is your own assembly (e.g. `[orchestrator.algo.advantage.roles.user] alpha = 0.1` for echo — setting any echo role replaces the whole role table). There is no preset layer. Per-env override: `[[orchestrator.train.env]]` `advantage = { type = "echo" }` (the env assembles its own algorithm). prime-rl only hosts the trainable policy; frozen models are inline external endpoints on the algorithm — `[orchestrator.algo.teacher]` (alias for `model`) with `name` + `base_url` folds into the slot the type declares (`advantage.model` for opd/opsd, `sampling.source` for sft). `model = "policy"` points a component at the live policy (opsd's default). See `docs/algorithms.md`.
+**Algorithms** — `[orchestrator.algo] type = "grpo" | "max_rl" | "opd" | "opsd" | "sft" | "echo" | "custom"` — the type names the algorithm (credit assignment + loss routing, fused), and each type's class defaults are its vetted setting; any other key you set is your own assembly (e.g. `[orchestrator.algo.roles.user] alpha = 0.1` for echo — setting any echo role replaces the whole role table). There is no preset layer. Per-env override: `[orchestrator.train.env.algo] type = "opd"` (the env assembles its own algorithm). prime-rl only hosts the trainable policy; frozen models are inline external endpoints on the algorithm — `[orchestrator.algo.teacher]` (alias for `model`) with `name` + `base_url` folds into the slot the type declares (`algo.model` for opd/opsd, `sampling.source` for sft). `model = "policy"` points a component at the live policy (opsd's default). See `docs/algorithms.md`.
 
 **`BaseModel | None` fields** — bare flag enables defaults; nested override enables and sets:
 
@@ -64,7 +64,7 @@ In TOML, an empty section header (`[ckpt]`) does the same.
 
 ## RL trainer token exports
 
-For rollout debugging, enable trainer-side token export with `trainer.enable_token_export = true` (or `--enable-token-export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence. Single-run/fallback exports go under `output_dir/token_exports/step_<step>/rank_<rank>.jsonl`; multi-run trainer exports with packer metadata go under the owning run directory, `output_dir/<run_id>/token_exports/step_<run_step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, component weight streams (rl/ce/ref_kl), advantage, reward, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.
+For rollout debugging, enable trainer-side token export with `trainer.enable_token_export = true` (or `--enable-token-export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence. Single-run/fallback exports go under `output_dir/token_exports/step_<step>/rank_<rank>.jsonl`; multi-run trainer exports with packer metadata go under the owning run directory, `output_dir/<run_id>/token_exports/step_<run_step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, component weight streams (rl/ce/ref_kl), advantages, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.
 
 ```toml
 enable_token_export = true

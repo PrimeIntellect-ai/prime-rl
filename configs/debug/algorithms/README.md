@@ -32,29 +32,31 @@ CUDA_VISIBLE_DEVICES=1 uv run inference \
 
 ## Run the debug configs
 
+Every config writes to the default `outputs/` directory, so running two back-to-back — or re-running one — fails with `FileExistsError`. Pass a distinct `--output-dir outputs/<algo>` per config (recommended for a sweep) or `--clean-output-dir` to wipe and restart.
+
 ```bash
 # GRPO (no frozen model)
-uv run rl @ configs/debug/algorithms/grpo.toml
+uv run rl @ configs/debug/algorithms/grpo.toml --output-dir outputs/grpo
 
 # MaxRL (no frozen model)
-uv run rl @ configs/debug/algorithms/max_rl.toml
+uv run rl @ configs/debug/algorithms/max_rl.toml --output-dir outputs/max_rl
 
 # OPD (needs the frozen model on port 8001)
-uv run rl @ configs/debug/algorithms/opd.toml
-uv run rl @ configs/debug/algorithms/opd_lora.toml
+uv run rl @ configs/debug/algorithms/opd.toml --output-dir outputs/opd
+uv run rl @ configs/debug/algorithms/opd_lora.toml --output-dir outputs/opd_lora
 
 # SFT distillation (needs the frozen model on port 8001)
-uv run rl @ configs/debug/algorithms/sft_distill.toml
-uv run rl @ configs/debug/algorithms/sft_distill_lora.toml
+uv run rl @ configs/debug/algorithms/sft_distill.toml --output-dir outputs/sft_distill
+uv run rl @ configs/debug/algorithms/sft_distill_lora.toml --output-dir outputs/sft_distill_lora
 
 # Self-distillation against the live policy (no frozen model)
-uv run rl @ configs/debug/algorithms/self_distill.toml
+uv run rl @ configs/debug/algorithms/self_distill.toml --output-dir outputs/self_distill
 
 # ECHO (no frozen model; multi-turn env)
-uv run rl @ configs/debug/algorithms/echo.toml
+uv run rl @ configs/debug/algorithms/echo.toml --output-dir outputs/echo
 
 # Mixed per-env algorithms: GRPO + OPD in one run (needs the frozen model on port 8001)
-uv run rl @ configs/debug/algorithms/mixed_grpo_opd.toml
+uv run rl @ configs/debug/algorithms/mixed_grpo_opd.toml --output-dir outputs/mixed_grpo_opd
 ```
 
 See [docs/algorithms.md](../../../docs/algorithms.md) for what each algorithm does and how to compose custom ones.
