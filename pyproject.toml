@@ -72,6 +72,8 @@ envs = [
     "math-env",
     "math-python",
     "reverse-text",
+    "rlm-swe",
+    "rlm-search",
     "uuid-ctf-v1",
     "wiki-search",
     "wordle",
@@ -222,6 +224,8 @@ logic-env = { path = "deps/research-environments/environments/logic_env", editab
 math-env = { path = "deps/research-environments/environments/math_env", editable = true }
 math-python = { path = "deps/verifiers/environments/math_python", editable = true }
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
+rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable = true }
+rlm-search = { path = "deps/research-environments/environments/rlm_search", editable = true }
 uuid-ctf-v1 = { path = "deps/research-environments/environments/uuid_ctf_v1", editable = true }
 wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
 wordle = { path = "deps/verifiers/environments/wordle", editable = true }
