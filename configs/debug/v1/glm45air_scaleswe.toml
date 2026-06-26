@@ -3,7 +3,7 @@
 # (trainer.enable_router_replay replays the routed-expert decisions returned by inference via
 # enable_return_routed_experts) — GLM-4.5-Air is a glm4_moe model, which supports routed_experts.
 #
-# 2 train + 2 infer nodes. Trainer uses cp=8 (ulysses) plus
+# 2 train + 4 infer nodes. Trainer uses cp=8 (ulysses) plus
 # the memory improvements from the GLM-5.1 prod run (research-prod rlm5/prod.toml): LM-head token
 # chunking, activation checkpointing (freq=1) + activation offloading (max_inflight=1), optimizer
 # CPU offload, and skip-gather / skip-optimizer checkpointing. Derived from
@@ -23,7 +23,7 @@ pre_run_command = 'timeout 120 prime sandbox delete --label "$SLURM_JOB_NAME" -y
 type = "multi_node"
 num_train_nodes = 2
 num_infer_nodes = 1
-num_infer_replicas = 2
+num_infer_replicas = 4
 
 [wandb]
 project = "swe-ablations"
