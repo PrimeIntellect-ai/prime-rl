@@ -106,12 +106,13 @@ RUN --mount=type=cache,target=/app/.cache/uv \
 ARG INCLUDE_NIXL_FROM_SOURCE=0
 ARG NIXL_VERSION=0.10.1
 RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
-        git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git /tmp/nixl \
+        VIRTUAL_ENV=/app/.venv uv pip install pip \
+        && git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git /tmp/nixl \
         && cd /tmp/nixl \
         && PKG_CONFIG_PATH=/opt/ucx/lib/pkgconfig \
            LD_LIBRARY_PATH=/opt/ucx/lib:/opt/ucx/lib/ucx \
            /app/.venv/bin/python -m pip wheel . --no-deps --wheel-dir=/app/deps \
-        && /app/.venv/bin/pip install --reinstall --no-deps /app/deps/nixl_cu12-*.whl \
+        && VIRTUAL_ENV=/app/.venv uv pip install --reinstall --no-deps /app/deps/nixl_cu12-*.whl \
         && rm -rf /tmp/nixl /app/deps/nixl_cu12-*.whl; \
     fi
 
