@@ -62,7 +62,8 @@ interval = 10
 max_completion_tokens = 2048
 
 [[orchestrator.eval.env]]
-id = "math500"
+name = "math500"
+taskset = { id = "math500-v1" }
 num_examples = 30
 group_size = 4
 

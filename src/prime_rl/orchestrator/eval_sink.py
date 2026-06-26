@@ -131,7 +131,7 @@ class EvalSink:
 
         if valid:
             rewards = [r.reward for r in valid]
-            lens = [r.completion_len for r in valid]
+            lens = [sum(b.output_len for b in r.branches) for r in valid]
             metrics.group_size = self.group_size_for(env_name)
             metrics.reward_mean = float(sum(rewards) / len(rewards))
             metrics.completion_len_mean = float(sum(lens) / len(lens))

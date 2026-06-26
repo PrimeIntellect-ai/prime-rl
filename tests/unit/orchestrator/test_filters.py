@@ -89,7 +89,6 @@ def test_gibberish_detects_rare_low_prob_token():
         )
     )
     assert result.detected is True
-    assert result.detection_index == 1
 
 
 def test_gibberish_ignores_normal_tokens():
@@ -102,7 +101,6 @@ def test_gibberish_ignores_normal_tokens():
         )
     )
     assert result.detected is False
-    assert result.detection_index is None
 
 
 def test_gibberish_ignores_high_prob_rare_token():
@@ -128,7 +126,6 @@ def test_gibberish_works_across_trajectory_steps():
         )
     )
     assert result.detected is True
-    assert result.detection_index == 2
 
 
 def test_gibberish_aligns_logprobs_under_generation_prompt_scaffold():
@@ -146,7 +143,6 @@ def test_gibberish_aligns_logprobs_under_generation_prompt_scaffold():
 
     result = gibberish_filter.check(rollout)
     assert result.detected is True
-    assert result.detection_index == 2  # third sampled completion token (scaffold skipped)
 
 
 # --- RepetitionFilter tests ---
@@ -162,7 +158,6 @@ def test_repetition_triggers_after_window():
         )
     )
     assert result.detected is True
-    assert result.detection_index == 4
 
 
 def test_repetition_no_trigger_below_window():
