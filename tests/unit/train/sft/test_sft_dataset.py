@@ -1,10 +1,12 @@
 from collections import Counter
 
 import pytest
+import torch
 from datasets import Dataset, interleave_datasets
+from renderers import create_renderer
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.sft.data import SFTDataset
+from prime_rl.trainer.sft.data import CatDataset, SFTDataset
 from prime_rl.trainer.utils import print_sample
 
 
@@ -24,7 +26,7 @@ def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
     """Tests that an error is raised if no supported SFT message fields are provided."""
     dataset = build_dummy_dataset("a", 1)
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    sft_dataset = SFTDataset(dataset, tokenizer=tokenizer)
+    sft_dataset = SFTDataset(dataset, tokenizer=tokenizer, renderer=create_renderer(tokenizer))
     with pytest.raises(ValueError):
         next(iter(sft_dataset))
 
@@ -194,7 +196,7 @@ def test_multiturn_loss_mask():
         ]
     )
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    dataset = SFTDataset(dataset, tokenizer=tokenizer, max_examples=1)
+    dataset = SFTDataset(dataset, tokenizer=tokenizer, renderer=create_renderer(tokenizer), max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
@@ -257,7 +259,7 @@ def test_multiturn_loss_mask_with_tools():
 
     dataset = Dataset.from_list([tool_example])
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    dataset = SFTDataset(dataset, tokenizer=tokenizer, max_examples=1)
+    dataset = SFTDataset(dataset, tokenizer=tokenizer, renderer=create_renderer(tokenizer), max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
@@ -282,10 +284,16 @@ def test_messages_rows_are_equivalent_to_empty_prompt_completion():
     ]
 
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
-    messages_dataset = SFTDataset(Dataset.from_list([{"messages": messages}]), tokenizer=tokenizer, max_examples=1)
+    messages_dataset = SFTDataset(
+        Dataset.from_list([{"messages": messages}]),
+        tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
+        max_examples=1,
+    )
     split_dataset = SFTDataset(
         Dataset.from_list([{"prompt": [], "completion": messages}]),
         tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
         max_examples=1,
     )
 
@@ -304,11 +312,87 @@ def test_messages_take_precedence_over_prompt_and_completion():
         "completion": [{"role": "assistant", "content": "Ignored completion"}],
     }
 
-    messages_dataset = SFTDataset(Dataset.from_list([row]), tokenizer=tokenizer, max_examples=1)
+    messages_dataset = SFTDataset(
+        Dataset.from_list([row]),
+        tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
+        max_examples=1,
+    )
     expected_dataset = SFTDataset(
         Dataset.from_list([{"prompt": [], "completion": row["messages"]}]),
         tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
         max_examples=1,
     )
 
     assert next(iter(messages_dataset)) == next(iter(expected_dataset))
+
+
+def _sft_sample(
+    input_ids: list[int],
+    *,
+    mm_kwargs: dict[str, torch.Tensor] | None = None,
+    mm_token_type_ids: list[int] | None = None,
+) -> dict:
+    return {
+        "input_ids": input_ids,
+        "position_ids": list(range(len(input_ids))),
+        "loss_mask": [True] * len(input_ids),
+        "target_ids": [x + 1 for x in input_ids],
+        "mm_kwargs": mm_kwargs,
+        "mm_token_type_ids": mm_token_type_ids,
+    }
+
+
+def test_cat_dataset_packs_multimodal_samples():
+    dataset = CatDataset(
+        [
+            _sft_sample(
+                [1, 2],
+                mm_kwargs={
+                    "pixel_values": torch.ones(2, 3),
+                    "image_grid_thw": torch.tensor([[1, 1, 2]]),
+                },
+                mm_token_type_ids=[0, 1],
+            ),
+            _sft_sample(
+                [3, 4, 5],
+                mm_kwargs={
+                    "pixel_values": 2 * torch.ones(3, 3),
+                    "image_grid_thw": torch.tensor([[1, 1, 3]]),
+                },
+                mm_token_type_ids=[0, 1, 1],
+            ),
+        ],
+        seq_len=5,
+    )
+
+    packed = next(iter(dataset))
+
+    assert packed["input_ids"] == [1, 2, 3, 4, 5]
+    assert packed["mm_token_type_ids"] == [0, 1, 0, 1, 1]
+    assert packed["mm_kwargs"]["pixel_values"].shape == (5, 3)
+    assert packed["mm_kwargs"]["image_grid_thw"].tolist() == [[1, 1, 2], [1, 1, 3]]
+
+
+def test_cat_dataset_packs_text_and_multimodal_samples():
+    dataset = CatDataset(
+        [
+            _sft_sample(
+                [1, 2],
+                mm_kwargs={
+                    "pixel_values": torch.ones(2, 3),
+                    "image_grid_thw": torch.tensor([[1, 1, 2]]),
+                },
+                mm_token_type_ids=[0, 1],
+            ),
+            _sft_sample([3, 4]),
+        ],
+        seq_len=8,
+    )
+
+    packed = next(iter(dataset))
+
+    assert packed["input_ids"] == [1, 2, 3, 4]
+    assert packed["mm_kwargs"] is not None
+    assert packed["mm_token_type_ids"] == [0, 1, 0, 0]

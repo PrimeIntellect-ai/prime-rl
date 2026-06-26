@@ -148,6 +148,34 @@ def _flatten_mm_items(
     return out
 
 
+def _append_sample_to_pack(pack: dict[str, Any], sample: dict[str, Any]) -> None:
+    existing_len = len(pack["input_ids"])
+    sample_len = len(sample["input_ids"])
+
+    for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
+        value = sample[key]
+        assert isinstance(value, list)
+        pack[key].extend(value)
+
+    sample_mm_kwargs = sample.get("mm_kwargs")
+    if sample_mm_kwargs is None:
+        if pack["mm_token_type_ids"] is not None:
+            pack["mm_token_type_ids"].extend([0] * sample_len)
+        return
+
+    if pack["mm_kwargs"] is None:
+        pack["mm_kwargs"] = {key: value for key, value in sample_mm_kwargs.items()}
+    else:
+        for key, value in sample_mm_kwargs.items():
+            pack["mm_kwargs"][key] = torch.cat([pack["mm_kwargs"][key], value], dim=0)
+
+    sample_mm_type_ids = sample.get("mm_token_type_ids")
+    if pack["mm_token_type_ids"] is None and sample_mm_type_ids is not None:
+        pack["mm_token_type_ids"] = [0] * existing_len
+    if pack["mm_token_type_ids"] is not None:
+        pack["mm_token_type_ids"].extend(sample_mm_type_ids or [0] * sample_len)
+
+
 def _drop_null_fields(value: Any) -> Any:
     """Recursively strip ``None``-valued keys from dict structures.
 
@@ -206,8 +234,8 @@ class SFTDataset(StatefulIterableDataset):
     def __init__(
         self,
         dataset: Dataset,
-        tokenizer: PreTrainedTokenizer,
-        renderer: Renderer,
+        tokenizer: PreTrainedTokenizer | None,
+        renderer: Renderer | None = None,
         shuffle: bool = True,
         seed: int = 0,
         seq_len: int = 128,
@@ -246,6 +274,11 @@ class SFTDataset(StatefulIterableDataset):
         self.data_world_size = get_world().world_size // non_dp_size * num_workers
 
     def _process(self, example: dict) -> dict | None:
+        if self.tokenizer is None:
+            return example
+        if self.renderer is None:
+            raise ValueError("SFT processing requires a renderer.")
+
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
             # as a whole-chat training sample with an empty prompt.
@@ -424,7 +457,6 @@ class SFTDataset(StatefulIterableDataset):
             # Process example
             processed_example = self._process(cast(dict, example))
 
-            # If processed example is None, skip it (e.g. if no trainable tokens fit)
             if processed_example is None:
                 continue
 
@@ -444,10 +476,9 @@ class SFTDataset(StatefulIterableDataset):
 class CatDataset(StatefulIterableDataset):
     """A dataset that concatenates samples into a single sequence with a fixed length.
 
-    Text-only: packs multiple samples back-to-back into a fixed-length window.
-    Multimodal samples (with ``mm_kwargs``) are passed through individually —
-    packing pixel buffers across samples while keeping image placeholders
-    aligned isn't worth the bookkeeping for an effective micro_batch_size of 1.
+    Multimodal payloads are carried alongside token arrays. If any sample in a
+    pack has images, ``mm_token_type_ids`` is backfilled with zeros for text-only
+    spans and image kwargs are concatenated along their leading item dimension.
     """
 
     def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
@@ -462,40 +493,64 @@ class CatDataset(StatefulIterableDataset):
         self.dataset.load_state_dict(state_dict["dataset"])
 
     def __iter__(self):
-        packed_samples, seq_len = defaultdict(list), 0
+        packed_samples: dict[str, Any] = {
+            "input_ids": [],
+            "position_ids": [],
+            "loss_mask": [],
+            "target_ids": [],
+            "mm_kwargs": None,
+            "mm_token_type_ids": None,
+        }
+        seq_len = 0
         for sample in self.dataset:
-            if sample.get("mm_kwargs") is not None:
-                # Yield any in-flight text pack first to keep ordering deterministic,
-                # then yield the multimodal sample standalone.
-                if seq_len > 0:
-                    yield self._finalize_text_pack(packed_samples, self.seq_len)
-                    packed_samples, seq_len = defaultdict(list), 0
-                yield sample
-                continue
+            sample_len = len(sample["input_ids"])
+            if seq_len > 0 and seq_len + sample_len > self.seq_len:
+                yield self._finalize_pack(packed_samples, self.seq_len)
+                packed_samples = {
+                    "input_ids": [],
+                    "position_ids": [],
+                    "loss_mask": [],
+                    "target_ids": [],
+                    "mm_kwargs": None,
+                    "mm_token_type_ids": None,
+                }
+                seq_len = 0
 
-            for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
-                value = sample[key]
-                assert isinstance(value, list)
-                packed_samples[key].extend(value)
-            seq_len += len(sample["input_ids"])
+            _append_sample_to_pack(packed_samples, sample)
+            seq_len += sample_len
 
             if seq_len >= self.seq_len:
-                yield self._finalize_text_pack(packed_samples, self.seq_len)
-                packed_samples, seq_len = defaultdict(list), 0
+                yield self._finalize_pack(packed_samples, self.seq_len)
+                packed_samples = {
+                    "input_ids": [],
+                    "position_ids": [],
+                    "loss_mask": [],
+                    "target_ids": [],
+                    "mm_kwargs": None,
+                    "mm_token_type_ids": None,
+                }
+                seq_len = 0
 
-    def _finalize_text_pack(self, packed: dict[str, list], seq_len: int) -> dict:
-        result: dict[str, Any] = {k: v[:seq_len] for k, v in packed.items()}
-        result["mm_kwargs"] = None
-        result["mm_token_type_ids"] = None
+        if seq_len > 0:
+            yield self._finalize_pack(packed_samples, self.seq_len)
+
+    def _finalize_pack(self, packed: dict[str, Any], seq_len: int) -> dict:
+        result: dict[str, Any] = {
+            k: packed[k][:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
+        }
+        result["mm_kwargs"] = packed["mm_kwargs"]
+        result["mm_token_type_ids"] = (
+            packed["mm_token_type_ids"][:seq_len] if packed["mm_token_type_ids"] is not None else None
+        )
         return result
 
 
 class StackDataset(StatefulIterableDataset):
     """A dataset that stacks samples into batch with a fixed area.
 
-    Text-only path. Multimodal samples (with ``mm_kwargs``) bypass bucketing
-    entirely and are emitted one at a time so pixel buffers stay aligned with
-    their image placeholders.
+    Text-only path. Multimodal samples (with ``mm_kwargs``) bypass stack
+    bucketing and are emitted one at a time; use ``pack_function = "cat"``
+    for multimodal sequence packing.
     """
 
     def __init__(self, dataset: StatefulIterableDataset, max_area: int):
@@ -647,8 +702,9 @@ def stack_collate(samples: list[Sample]) -> Batch:
 
 
 def cat_collate(samples: list[Sample]) -> Batch:
-    # Multimodal samples are emitted solo by CatDataset (not packed); treat
-    # single-sample batches with mm_kwargs as the multimodal path.
+    # CatDataset emits exactly one packed sample per dataloader item. For
+    # multimodal packs, keep the packed sequence as batch size 1 and move the
+    # concatenated model-forward kwargs to CUDA.
     if len(samples) == 1 and samples[0].get("mm_kwargs") is not None:
         sample = samples[0]
         mm_type_ids = sample.get("mm_token_type_ids")
