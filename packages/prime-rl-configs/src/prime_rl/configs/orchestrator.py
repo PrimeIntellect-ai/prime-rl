@@ -246,10 +246,11 @@ class TrainEnvConfig(EnvConfig):
     @model_validator(mode="before")
     @classmethod
     def _default_shuffle(cls, data):
-        """Training shuffles by default (reshuffled each epoch, seed offset per env-server so a pool
-        draws divergent streams). Configured via ``--<env>.taskset.shuffle`` (a ``ShuffleConfig``);
-        set it explicitly to pick a seed. Eval envs leave it unset → deterministic."""
-        if isinstance(data, dict):
+        """Training shuffles by default. Configured via ``--<env>.taskset.shuffle`` (a
+        ``ShuffleConfig``); set it explicitly to pick a seed. Eval envs leave it unset →
+        deterministic. Skipped when the installed verifiers predates ``ShuffleConfig`` (the slim
+        configs package can resolve an older published verifiers)."""
+        if isinstance(data, dict) and "shuffle" in vf.TasksetConfig.model_fields:
             taskset = data.get("taskset")
             if taskset is None:
                 data["taskset"] = {"shuffle": {}}
