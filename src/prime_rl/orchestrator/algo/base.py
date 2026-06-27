@@ -47,7 +47,7 @@ import asyncio
 from collections import defaultdict
 from typing import TYPE_CHECKING, ClassVar
 
-from prime_rl.configs.algorithm import ActionLossType, AlgorithmConfig, FrozenModelConfig
+from prime_rl.configs.algorithm import ActionLossType, AlgoConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.utils.logger import get_logger
 
@@ -129,7 +129,7 @@ class Algorithm:
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+    def __init__(self, config: AlgoConfig, policy_pool: InferencePool, renderer: Renderer | None):
         self.policy_pool = policy_pool
         self.renderer = renderer
         self.connected_pools: list[InferencePool] = []  # frozen pools connected in setup(); closed at shutdown

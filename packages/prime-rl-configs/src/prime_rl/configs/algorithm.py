@@ -157,7 +157,7 @@ class EchoFilterConfig(BaseConfig):
 # ---------------------------------------------------------------------------
 
 
-class BaseAlgorithmConfig(BaseConfig):
+class BaseAlgoConfig(BaseConfig):
     """Base for every algorithm: the shared sampling component and the
     cross-cutting source/loss compatibility check. Each subclass sets ``type``
     (the discriminator), declares its loss routing (``action_loss_type``), and
@@ -190,7 +190,7 @@ class BaseAlgorithmConfig(BaseConfig):
         return self
 
 
-class GRPOAlgorithmConfig(BaseAlgorithmConfig):
+class GRPOAlgoConfig(BaseAlgoConfig):
     type: Literal["grpo"] = "grpo"
     """GRPO: scalar advantage = reward minus the per-group mean baseline,
     consumed by the ``rl`` loss component on the rollout's action tokens."""
@@ -201,7 +201,7 @@ class GRPOAlgorithmConfig(BaseAlgorithmConfig):
     """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
 
 
-class EchoAlgorithmConfig(GRPOAlgorithmConfig):
+class EchoAlgoConfig(GRPOAlgoConfig):
     type: Literal["echo"] = "echo"  # type: ignore[assignment]
     """ECHO: group-relative advantage on action tokens (GRPO), plus weighted
     CE on env-provided tokens of later turns (tool output, user feedback),
@@ -218,7 +218,7 @@ class EchoAlgorithmConfig(GRPOAlgorithmConfig):
     """Optional user-supplied filter narrowing the role-selected tokens."""
 
 
-class MaxRLAlgorithmConfig(BaseAlgorithmConfig):
+class MaxRLAlgoConfig(BaseAlgoConfig):
     type: Literal["max_rl"] = "max_rl"
     """MaxRL (arXiv:2602.02710): scalar advantage = (reward − group mean) /
     group mean, consumed by the ``rl`` loss component. Normalizing by the
@@ -233,7 +233,7 @@ class MaxRLAlgorithmConfig(BaseAlgorithmConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
 
-class OPDAlgorithmConfig(BaseAlgorithmConfig):
+class OPDAlgoConfig(BaseAlgoConfig):
     type: Literal["opd"] = "opd"
     """On-policy distillation: the per-token signal is the reverse KL to
     a reference model, evaluated in the trainer from reference prefill
@@ -255,7 +255,7 @@ class OPDAlgorithmConfig(BaseAlgorithmConfig):
     """Maximum concurrent prefill requests per batch."""
 
 
-class OPSDAlgorithmConfig(BaseAlgorithmConfig):
+class OPSDAlgoConfig(BaseAlgoConfig):
     type: Literal["opsd"] = "opsd"
     """On-policy self-distillation (SDFT, https://arxiv.org/abs/2601.19897):
     the per-token signal is the reverse KL against the live policy conditioned
@@ -282,7 +282,7 @@ class OPSDAlgorithmConfig(BaseAlgorithmConfig):
     """Maximum concurrent prefill requests per batch."""
 
 
-class SFTAlgorithmConfig(BaseAlgorithmConfig):
+class SFTAlgoConfig(BaseAlgoConfig):
     type: Literal["sft"] = "sft"
     """SFT distillation: cross-entropy on the sampled tokens. The ``ce`` loss
     ignores advantages and SFT assigns none — it trains on every sampled token.
@@ -305,13 +305,8 @@ class SFTAlgorithmConfig(BaseAlgorithmConfig):
         return self
 
 
-AlgorithmConfig: TypeAlias = Annotated[
-    GRPOAlgorithmConfig
-    | EchoAlgorithmConfig
-    | MaxRLAlgorithmConfig
-    | OPDAlgorithmConfig
-    | OPSDAlgorithmConfig
-    | SFTAlgorithmConfig,
+AlgoConfig: TypeAlias = Annotated[
+    GRPOAlgoConfig | EchoAlgoConfig | MaxRLAlgoConfig | OPDAlgoConfig | OPSDAlgoConfig | SFTAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit

@@ -7,7 +7,7 @@ import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
-from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig
+from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout
@@ -15,10 +15,10 @@ from prime_rl.transport.types import TrainingSample
 
 FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
 
-_ALGO = pydantic.TypeAdapter(AlgorithmConfig)
+_ALGO = pydantic.TypeAdapter(AlgoConfig)
 
 
-def _build(**kwargs) -> AlgorithmConfig:
+def _build(**kwargs) -> AlgoConfig:
     """Validate an algorithm config — ``algo.type`` is the discriminator (the
     bundle IS the algorithm)."""
     return _ALGO.validate_python(kwargs)

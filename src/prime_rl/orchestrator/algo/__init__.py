@@ -49,7 +49,7 @@ from prime_rl.orchestrator.types import Rollout
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.configs.algorithm import AlgorithmConfig
+    from prime_rl.configs.algorithm import AlgoConfig
     from prime_rl.utils.client import InferencePool
 
 # Runtime dispatch is keyed on ``algo.type`` — it names the algorithm, and
@@ -64,7 +64,7 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
 }
 
 
-def build_algorithm(config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None) -> Algorithm:
+def build_algorithm(config: AlgoConfig, policy_pool: InferencePool, renderer: Renderer | None) -> Algorithm:
     cls = ALGORITHM_CLASSES[config.type]
     assert cls.action_loss_type == config.action_loss_type  # config and runtime declare in two places
     # The Algorithm is the runtime of the algorithm config's training signal

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from prime_rl.configs.algorithm import GRPOAlgorithmConfig, TokensLengthPenaltyConfig
+from prime_rl.configs.algorithm import GRPOAlgoConfig, TokensLengthPenaltyConfig
 from prime_rl.orchestrator.algo.advantage import efficiency_shaping
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.utils import get_tool_response_len
@@ -21,7 +21,7 @@ class GRPOAlgorithm(Algorithm):
     policy per example; credit = reward minus the group mean (optionally
     length-shaped); action tokens feed the ``rl`` loss."""
 
-    def __init__(self, config: GRPOAlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+    def __init__(self, config: GRPOAlgoConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
         self.length_penalty = config.length_penalty
 

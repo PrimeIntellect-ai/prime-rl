@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from prime_rl.configs.algorithm import OPDAlgorithmConfig
+from prime_rl.configs.algorithm import OPDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.utils.client import StaticInferencePool
 
@@ -28,7 +28,7 @@ class OPDAlgorithm(Algorithm):
 
     action_loss_type = "ref_kl"
 
-    def __init__(self, config: OPDAlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+    def __init__(self, config: OPDAlgoConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
         self.max_concurrent = config.max_concurrent
         self.teacher = config.teacher

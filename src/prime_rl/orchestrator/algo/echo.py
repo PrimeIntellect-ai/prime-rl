@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import partial
 from typing import TYPE_CHECKING, Callable
 
-from prime_rl.configs.algorithm import EchoAlgorithmConfig
+from prime_rl.configs.algorithm import EchoAlgoConfig
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.utils.utils import import_object
 
@@ -23,7 +23,7 @@ class EchoAlgorithm(GRPOAlgorithm):
     mask and its denominator. An optional user filter narrows the selection
     per rollout (e.g. dropping tool-output warnings)."""
 
-    def __init__(self, config: EchoAlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+    def __init__(self, config: EchoAlgoConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
         self.role_weights = {
             role: role_config.alpha

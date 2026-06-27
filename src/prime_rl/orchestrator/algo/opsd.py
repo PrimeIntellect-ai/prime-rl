@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from prime_rl.configs.algorithm import OPSDAlgorithmConfig
+from prime_rl.configs.algorithm import OPSDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
 
 if TYPE_CHECKING:
@@ -30,7 +30,7 @@ class OPSDAlgorithm(Algorithm):
 
     action_loss_type = "ref_kl"
 
-    def __init__(self, config: OPSDAlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+    def __init__(self, config: OPSDAlgoConfig, policy_pool: InferencePool, renderer: Renderer | None):
         super().__init__(config, policy_pool, renderer)
         assert renderer is not None, "opsd requires the renderer"
         self.demo_key = config.demo_key

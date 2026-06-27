@@ -7,8 +7,8 @@ from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
-    AlgorithmConfig,
-    GRPOAlgorithmConfig,
+    AlgoConfig,
+    GRPOAlgoConfig,
 )
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -220,7 +220,7 @@ class TrainEnvConfig(EnvConfig):
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
 
-    algo: AlgorithmConfig | None = None
+    algo: AlgoConfig | None = None
     """Training algorithm for this env. Inherits from the top-level
     ``orchestrator.algo`` when unset; set ``type`` (and its params) to give
     this env its own algorithm."""
@@ -447,7 +447,7 @@ class OrchestratorExperimentalConfig(BaseConfig):
 
 
 class OrchestratorConfig(BaseConfig):
-    algo: AlgorithmConfig = GRPOAlgorithmConfig()
+    algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm: sampling plus the per-token training signal (credit
     assignment and loss routing, fused — its ``type`` names the algorithm).
     Defaults to ``grpo``. Override per env via ``[[orchestrator.train.env]]``'s
