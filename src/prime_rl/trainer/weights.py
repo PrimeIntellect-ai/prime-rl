@@ -1,7 +1,7 @@
 import json
 import warnings
 from pathlib import Path
-from typing import Literal, cast
+from typing import Generator, Literal, cast
 
 import torch
 from huggingface_hub import split_torch_state_dict_into_shards
@@ -31,6 +31,23 @@ def _strip_pytorch_wrapper_prefix(key: str) -> str:
     for prefix in PYTORCH_WRAPPER_PREFIXES:
         key = key.replace(prefix, "")
     return key
+
+
+def filter_state_dict_by_layers(
+    state_dict: dict[str, Tensor], num_layers: int, layer_prefix: str
+) -> Generator[tuple[int, dict[str, Tensor]], None, None]:
+    """Yield non-layer weights first, then each layer's weights.
+
+    Yields (layer_idx, layer_state_dict) where layer_idx is -1 for the non-layer
+    dict and the actual layer index (0, 1, ...) for layer dicts.
+    """
+    yield -1, {key: value for key, value in state_dict.items() if not key.startswith(layer_prefix)}
+
+    for i in range(num_layers):
+        yield (
+            i,
+            {key: value for key, value in state_dict.items() if key.startswith(f"{layer_prefix}{i}.")},
+        )
 
 
 def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.layers.") -> int:

@@ -1,11 +1,14 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 import torch
 from safetensors.torch import load_file, save_file
 from torch import Tensor
+
+if TYPE_CHECKING:
+    from torch.nn import Module
 
 SPARSE_UPDATE_FORMAT = "prime-rl-sparse-update"
 SPARSE_UPDATE_VERSION = 1
@@ -57,9 +60,15 @@ def save_sparse_update(
     *,
     step: int,
     base_step: int,
-    compute_dtype: torch.dtype = torch.bfloat16,
+    compute_dtype: torch.dtype | None = torch.bfloat16,
 ) -> SparseUpdateStats:
-    """Save changed compute-dtype values between two dense state dicts."""
+    """Save changed values between two dense state dicts.
+
+    When ``compute_dtype`` is set, tensors are cast to that dtype before diffing
+    (e.g. BF16 to skip changes invisible after quantization). When ``None``, the
+    native dtype of each tensor is preserved — used for kernel-format patches
+    where quantization has already been applied.
+    """
     save_dir.mkdir(parents=True, exist_ok=True)
 
     patch_tensors: dict[str, Tensor] = {}
@@ -68,7 +77,10 @@ def save_sparse_update(
     changed_numel = 0
 
     for tensor_idx, (name, current) in enumerate(current_state.items()):
-        current_compute = to_compute_tensor(current, compute_dtype)
+        if compute_dtype is not None:
+            current_compute = to_compute_tensor(current, compute_dtype)
+        else:
+            current_compute = current.detach().to(device="cpu", copy=True).contiguous()
         previous = previous_state.get(name)
         total_numel += current_compute.numel()
 
@@ -117,7 +129,7 @@ def save_sparse_update(
         "version": SPARSE_UPDATE_VERSION,
         "step": step,
         "base_step": base_step,
-        "compute_dtype": _dtype_name(compute_dtype),
+        "compute_dtype": _dtype_name(compute_dtype) if compute_dtype is not None else None,
         "patch_file": SPARSE_UPDATE_PATCH_NAME if patch_tensors else None,
         "tensors": tensor_entries,
         "stats": {
@@ -177,5 +189,53 @@ def apply_sparse_update(
         values = patch_tensors[entry["values"]].to(dtype=dtype)
         tensor.reshape(-1).index_copy_(0, indices, values)
         state_dict[name] = tensor.contiguous()
+
+    return manifest
+
+
+@torch.no_grad()
+def apply_sparse_update_to_params(
+    model: "Module",
+    patch_dir: Path,
+    *,
+    expected_base_step: int | None = None,
+    device: str | torch.device = "cuda",
+) -> dict:
+    """Apply a sparse value update directly to GPU model parameters in-place.
+
+    Unlike ``apply_sparse_update`` which operates on a dense CPU state dict,
+    this function loads patch tensors directly onto the target device and
+    scatters changed values into the model's named parameters via ``index_copy_``.
+    No CPU cache is required.
+    """
+
+    manifest = load_sparse_update_manifest(patch_dir)
+    if expected_base_step is not None and manifest["base_step"] != expected_base_step:
+        raise ValueError(f"Sparse update base step mismatch: cache={expected_base_step} patch={manifest['base_step']}")
+
+    patch_file = manifest.get("patch_file")
+    patch_tensors = load_file(patch_dir / patch_file, device=str(device)) if patch_file else {}
+
+    params = dict(model.named_parameters())
+    for entry in manifest["tensors"]:
+        name = entry["name"]
+        if name not in params:
+            raise KeyError(f"Sparse update refers to parameter not present in model: {name}")
+
+        param = params[name]
+        expected_shape = tuple(entry["shape"])
+        if tuple(param.shape) != expected_shape:
+            raise ValueError(
+                f"Sparse update shape mismatch for {name}: param={tuple(param.shape)} patch={expected_shape}"
+            )
+
+        dtype = _dtype_from_name(entry["dtype"])
+        if param.dtype != dtype:
+            raise ValueError(f"Sparse update dtype mismatch for {name}: param={param.dtype} patch={dtype}")
+
+        indices = patch_tensors[entry["indices"]].to(dtype=torch.long, device=device)
+        values = patch_tensors[entry["values"]].to(dtype=dtype, device=device)
+
+        param.data.reshape(-1).index_copy_(0, indices, values)
 
     return manifest

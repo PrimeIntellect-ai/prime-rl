@@ -6,7 +6,13 @@ from torch.nn import Module
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 
 from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
-from prime_rl.utils.sparse_update import apply_sparse_update, is_sparse_update_dir, to_compute_tensor
+from prime_rl.utils.sparse_update import (
+    apply_sparse_update,
+    apply_sparse_update_to_params,
+    is_sparse_update_dir,
+    load_sparse_update_manifest,
+    to_compute_tensor,
+)
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -34,7 +40,11 @@ class FileSystemWeightUpdateWorker(Worker):
         path = Path(weight_path)
 
         if is_sparse_update_dir(path):
-            self._update_weights_from_sparse_update_patch(model, path)
+            manifest = load_sparse_update_manifest(path)
+            if manifest.get("compute_dtype") is None:
+                self._update_weights_from_kernel_patch(model, path)
+            else:
+                self._update_weights_from_sparse_update_patch(model, path)
             return
 
         weights_iterator = self._get_weights_iterator(model, path)
@@ -84,6 +94,21 @@ class FileSystemWeightUpdateWorker(Worker):
             self._iter_sparse_update_state_dict(),
             self.model_runner.model_config,
             self.vllm_config,
+        )
+        self._sparse_update_step = manifest["step"]
+
+    def _update_weights_from_kernel_patch(self, model: Module, patch_dir: Path) -> None:
+        """Apply a kernel-format sparse patch directly to GPU params via index_copy_.
+
+        No CPU cache is needed — patch tensors are loaded onto the GPU and scattered
+        into the model's named parameters in-place.
+        """
+        self._sparse_update_step = getattr(self, "_sparse_update_step", 0)
+        manifest = apply_sparse_update_to_params(
+            model,
+            patch_dir,
+            expected_base_step=self._sparse_update_step,
+            device=self.device,
         )
         self._sparse_update_step = manifest["step"]
 

@@ -15,12 +15,15 @@ from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import maybe_clean
 from prime_rl.trainer.weights import (
+    filter_state_dict_by_layers,
     gather_weights_on_master,
+    get_max_layer_num,
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.sparse_update import SparseUpdateStats, save_sparse_update, to_compute_tensor
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
+from prime_rl.utils.vlm import get_layer_prefix
 
 
 class FileSystemWeightBroadcast(WeightBroadcast):
@@ -31,6 +34,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
     ):
         super().__init__(output_dir, lora_config)
         self.sparse = config.sparse
+        self.kernel_format = config.sparse and config.kernel_format
         self.save_format: Literal["safetensors", "torch"] = config.save_format
         self.save_sharded = config.save_sharded if lora_config is None else False
         self.world = get_world()
@@ -58,20 +62,54 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             state_dict = revert_weight_conversion(model, state_dict)
         return state_dict
 
+    def _collect_kernel_state_dict(self, model: nn.Module) -> dict[str, Tensor]:
+        """Gather model weights and convert to vLLM kernel format per-layer.
+
+        Uses ``convert_layer_to_vllm_kernel`` for layer weights (handles stacking
+        and optional FP8 quantization). Non-layer weights are kept in HF format.
+        """
+        from torch.distributed.tensor import DTensor as _DTensor
+
+        raw_state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
+        if not self.world.is_master:
+            return {}
+
+        layer_prefix = get_layer_prefix(model.config)
+        num_layers = get_max_layer_num(raw_state_dict, layer_prefix)
+        kernel_state: dict[str, Tensor] = {}
+
+        for layer_idx, layer_sd in filter_state_dict_by_layers(raw_state_dict, num_layers, layer_prefix):
+            # Resolve any remaining DTensors
+            for key in list(layer_sd):
+                if isinstance(layer_sd[key], _DTensor):
+                    layer_sd[key] = layer_sd[key].to(torch.bfloat16).full_tensor()
+
+            if layer_idx < 0 or not isinstance(model, PreTrainedModelPrimeRL):
+                # Non-layer weights or non-custom models: keep as-is
+                kernel_state.update(layer_sd)
+            else:
+                converted = model.convert_layer_to_vllm_kernel(layer_sd, layer_idx, quantize_fp8=False)
+                kernel_state.update(converted)
+
+        # Move everything to CPU for diffing
+        return {name: tensor.to("cpu").contiguous() for name, tensor in kernel_state.items()}
+
     def prepare_baseline(self, model: nn.Module, step: int) -> None:
         if not self.sparse:
             return
 
-        state_dict = self._collect_model_state_dict(model)
+        if self.kernel_format:
+            state_dict = self._collect_kernel_state_dict(model)
+        else:
+            state_dict = self._collect_model_state_dict(model)
         if self.world.is_master:
-            self._sparse_update_previous_state_dict = {
-                name: to_compute_tensor(tensor, torch.bfloat16) for name, tensor in state_dict.items()
-            }
+            self._sparse_update_previous_state_dict = {name: tensor.contiguous() for name, tensor in state_dict.items()}
             self._sparse_update_previous_step = step
             total_numel = sum(tensor.numel() for tensor in self._sparse_update_previous_state_dict.values())
             self.logger.info(
                 f"Prepared sparse update baseline at step {step} "
-                f"({len(self._sparse_update_previous_state_dict)} tensors, {total_numel:,} values)"
+                f"(kernel_format={self.kernel_format}, "
+                f"{len(self._sparse_update_previous_state_dict)} tensors, {total_numel:,} values)"
             )
 
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
@@ -110,6 +148,8 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
                     self.logger.debug(f"Saving weights for run {idx} to {save_dir}")
                     if self.sparse and not adapter_only:
+                        if self.kernel_format:
+                            state_dict = self._collect_kernel_state_dict(model)
                         self._save_sparse_update_patch(state_dict, save_dir, step)
                     else:
                         save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
@@ -144,14 +184,19 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         if self._sparse_update_previous_state_dict is None:
             raise RuntimeError("Sparse update baseline was not prepared before the first sparse broadcast.")
 
-        current_state = {name: to_compute_tensor(tensor, torch.bfloat16) for name, tensor in state_dict.items()}
+        if self.kernel_format:
+            current_state = {name: tensor.contiguous() for name, tensor in state_dict.items()}
+            compute_dtype = None
+        else:
+            current_state = {name: to_compute_tensor(tensor, torch.bfloat16) for name, tensor in state_dict.items()}
+            compute_dtype = torch.bfloat16
         stats = save_sparse_update(
             self._sparse_update_previous_state_dict,
             current_state,
             save_dir,
             step=step,
             base_step=self._sparse_update_previous_step,
-            compute_dtype=torch.bfloat16,
+            compute_dtype=compute_dtype,
         )
         self._sparse_update_previous_state_dict = current_state
         self._sparse_update_previous_step = step

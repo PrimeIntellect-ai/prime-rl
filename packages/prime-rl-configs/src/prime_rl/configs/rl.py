@@ -319,6 +319,13 @@ class RLConfig(BaseConfig):
                     and trainer_weight_broadcast.sparse
                 ):
                     raise ValueError("trainer.weight_broadcast.sparse = true requires filesystem weight broadcast.")
+                if (
+                    isinstance(trainer_weight_broadcast, TrainerFileSystemWeightBroadcastConfig)
+                    and trainer_weight_broadcast.kernel_format
+                ):
+                    raise ValueError(
+                        "trainer.weight_broadcast.kernel_format = true requires filesystem weight broadcast."
+                    )
 
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
                 self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(

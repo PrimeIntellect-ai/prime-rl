@@ -116,6 +116,7 @@ All metrics print to the console log (and W&B when configured).
 | trainer | `time/wait_for_batch` | **high → orchestrator is bottleneck** |
 | trainer | `time/forward_backward`, `time/broadcast_weights`, `time/save_ckpt` | phase timings |
 | trainer | `sparse_update/{sparsity,changed_numel,patch_bytes}` | sparse filesystem weight-sync payload metrics when `trainer.weight_broadcast.sparse = true` |
+| trainer | `sparse_update/{sparsity,changed_numel,patch_bytes,patched_tensors}` | sparse filesystem weight-sync metrics when `trainer.weight_broadcast.sparse = true` (add `kernel_format = true` for GPU-direct application without CPU cache) |
 | trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU % |
 | orchestrator | `time/step`, `time/generate_completions`, `time/update_weights` | phase timings |
 | orchestrator | `time/wait_for_ckpt` | **high → trainer is bottleneck** |

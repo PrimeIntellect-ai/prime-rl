@@ -125,7 +125,18 @@ type = "filesystem"
 sparse = true
 ```
 
-Sparse sync captures the trainer's initial BF16 weight view after model load or checkpoint resume. Each later broadcast writes `sparse_update_manifest.json` plus sparse changed values under `broadcasts/step_N/`; inference reconstructs the dense BF16 view locally and reloads it through the normal vLLM path. This mode is for full-model filesystem broadcast and is not supported with LoRA adapter broadcast or multi-run training.
+By default, sparse sync captures the trainer's initial BF16 weight view after model load or checkpoint resume. Each later broadcast writes `sparse_update_manifest.json` plus sparse changed values under `broadcasts/step_N/`; inference reconstructs the dense BF16 view locally and reloads it through the normal vLLM path.
+
+For models that implement kernel-format conversion (`convert_layer_to_vllm_kernel`), set `kernel_format = true` to write sparse patches in vLLM kernel format with stacked parameter names. The receiver applies patches directly to GPU parameters via `index_copy_` without maintaining a CPU weight cache:
+
+```toml
+[trainer.weight_broadcast]
+type = "filesystem"
+sparse = true
+kernel_format = true
+```
+
+This mode is for full-model filesystem broadcast and is not supported with LoRA adapter broadcast or multi-run training.
 
 ## Multi-Tenant Training
 

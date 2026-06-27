@@ -1,7 +1,7 @@
 import pickle
 import time
 from pathlib import Path
-from typing import Callable, Generator, cast
+from typing import Callable, cast
 
 import torch
 import torch.nn as nn
@@ -15,7 +15,7 @@ from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
-from prime_rl.trainer.weights import get_max_layer_num
+from prime_rl.trainer.weights import filter_state_dict_by_layers, get_max_layer_num
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 from prime_rl.utils.pathing import sync_wait_for_path
@@ -66,23 +66,6 @@ def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclComm
         # Clean up individual tensors
         for _, value in items:
             del value
-
-
-def filter_state_dict_by_layers(
-    state_dict: dict[str, torch.Tensor], num_layers: int, layer_prefix: str
-) -> Generator[tuple[int, dict[str, torch.Tensor]], None, None]:
-    """Yield non-layer weights first, then each layer's weights.
-
-    Yields (layer_idx, layer_state_dict) where layer_idx is -1 for the non-layer
-    dict and the actual layer index (0, 1, ...) for layer dicts.
-    """
-    yield -1, {key: value for key, value in state_dict.items() if not key.startswith(layer_prefix)}
-
-    for i in range(num_layers):
-        yield (
-            i,
-            {key: value for key, value in state_dict.items() if key.startswith(f"{layer_prefix}{i}.")},
-        )
 
 
 def preprocess_layer_checkpoint(
