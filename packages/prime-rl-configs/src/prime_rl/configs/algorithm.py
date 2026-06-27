@@ -252,9 +252,6 @@ class OPDAlgoConfig(BaseAlgoConfig):
     ``"policy"`` is not even representable here (use ``opsd`` for
     demo-conditioned self-teaching)."""
 
-    max_concurrent: int = Field(32, ge=1)
-    """Maximum concurrent prefill requests per batch."""
-
 
 class OPSDAlgoConfig(BaseAlgoConfig):
     type: Literal["opsd"] = "opsd"
@@ -278,9 +275,6 @@ class OPSDAlgoConfig(BaseAlgoConfig):
     """Content of the leading system message carrying the demonstration.
     Receives ``{demonstration}``; the original question stays in the (verbatim)
     user turn, so it isn't templated here."""
-
-    max_concurrent: int = Field(32, ge=1)
-    """Maximum concurrent prefill requests against the policy."""
 
     renderer: RendererConfig = AutoRendererConfig()
     """Renderer family for the hint block. The tokenizer is always the live

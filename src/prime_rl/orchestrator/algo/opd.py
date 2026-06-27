@@ -28,25 +28,20 @@ class OPDAlgorithm(Algorithm):
 
     def __init__(self, config: OPDAlgoConfig, policy_pool: InferencePool):
         super().__init__(config, policy_pool)
-        self.max_concurrent = config.max_concurrent
         self.teacher = config.teacher
         self.teacher_pool: StaticInferencePool | None = None  # static teacher endpoint, connected in setup()
-        self._semaphore: asyncio.Semaphore | None = None  # bounds concurrent teacher queries; created in setup()
 
     async def setup(self) -> None:
         pool = await self.connect(self.teacher)
         if not isinstance(pool, StaticInferencePool):
             raise TypeError("opd teacher must be a static endpoint — prefill scoring needs fixed endpoints")
         self.teacher_pool = pool
-        self._semaphore = asyncio.Semaphore(self.max_concurrent)
 
     async def score_rollout(self, rollout: Rollout) -> None:
         pool = self.teacher_pool
-        semaphore = self._semaphore
-        assert pool is not None and semaphore is not None, "Algorithm.setup() must run first"
+        assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
 
         async def score_sample(sample: TrainingSample) -> None:
-            async with semaphore:
-                sample.ref_logprobs = await pool.score(list(sample.token_ids))
+            sample.ref_logprobs = await pool.score(list(sample.token_ids))
 
         await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))
