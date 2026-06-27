@@ -16,10 +16,10 @@ customized:
    decisions, surface them as base64 raw-byte payloads without requiring a vLLM
    source fork.
 
-3. Raw image refs for multimodal rollouts — renderers send lightweight raw
-   descriptor refs for new images and ``None`` for cache-only prior images.
-   This handler materializes refs through multimodal adapters and turns cache
-   misses into a structured retryable error.
+3. Raw image refs for multimodal rollouts — renderers send a lightweight raw
+   descriptor ref at every image slot (current and prior turns alike). This
+   handler materializes every ref through multimodal adapters; there is no
+   cache-only ``None`` path, so an unresolved ref is a hard error, not a retry.
 
 4. Server-side ``max_tokens`` defaulting — upstream ``ServingTokens`` now applies
    this itself (via ``GenerateRequest.is_sampling_param_provided`` +
@@ -167,31 +167,10 @@ async def _client_set_max_tokens(raw_request: Request | None) -> bool:
     return isinstance(sp, dict) and "max_tokens" in sp
 
 
-def _is_missing_mm_cache_error(exc: BaseException) -> bool:
-    return "Expected a cached item for mm_hash=" in str(exc)
 
 
-def _cache_only_mm_hashes(features: Any) -> list[str]:
-    missing: list[str] = []
-    kwargs_data = features.kwargs_data or {}
-    for modality, hashes in features.mm_hashes.items():
-        items = kwargs_data.get(modality)
-        if items is None:
-            missing.extend(f"{modality}:{mm_hash}" for mm_hash in hashes)
-            continue
-        for idx, mm_hash in enumerate(hashes):
-            if idx >= len(items) or items[idx] is None:
-                missing.append(f"{modality}:{mm_hash}")
-    return missing
 
 
-def _missing_mm_cache_message(features: Any, exc: BaseException) -> str:
-    hashes = _cache_only_mm_hashes(features)
-    if not hashes:
-        return str(exc)
-    joined = ", ".join(hashes[:8])
-    suffix = "" if len(hashes) <= 8 else f", ... (+{len(hashes) - 8} more)"
-    return f"vLLM multimodal cache miss for {joined}{suffix}"
 
 
 @lru_cache(maxsize=8)
@@ -263,8 +242,10 @@ async def _decode_raw_mm_kwargs(
         placeholders = features.mm_placeholders.get(modality, [])
         items = kwargs_data.get(modality)
         if items is None:
-            mm_kwargs[modality] = [None] * len(hashes)
-            continue
+            raise _MMImageRefError(
+                "v1 raw multimodal: modality %r arrived with no ref payload; every image must "
+                "carry a raw ref (cache-only None entries are no longer supported)" % modality
+            )
         if len(items) != len(hashes):
             raise _MMImageRefError(
                 f"Multimodal kwargs/hash length mismatch for {modality}: {len(items)} != {len(hashes)}"
@@ -477,18 +458,9 @@ class PrimeRlServingTokens(ServingTokens):
         final_capture = _FinalOutputCapture(result_generator)
         result_generator = final_capture
 
-        try:
-            response = await super().serve_tokens_full_generator(
-                request, result_generator, request_id, model_name, request_metadata
-            )
-        except AssertionError as exc:
-            if request.features is not None and _is_missing_mm_cache_error(exc):
-                return self.create_error_response(
-                    message=_missing_mm_cache_message(request.features, exc),
-                    err_type="missing_mm_cache_item",
-                    status_code=HTTPStatus.CONFLICT,
-                )
-            raise
+        response = await super().serve_tokens_full_generator(
+            request, result_generator, request_id, model_name, request_metadata
+        )
 
         if not isinstance(response, GenerateResponse):
             return response
