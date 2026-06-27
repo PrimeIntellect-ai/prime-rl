@@ -340,6 +340,14 @@ class RLConfig(BaseConfig):
             elif self.weight_broadcast.type in ("filesystem", "sparse_filesystem"):
                 if self.trainer.weight_broadcast.type not in ("filesystem", "sparse_filesystem"):
                     self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
+                if (
+                    isinstance(self.trainer.weight_broadcast, TrainerSparseFileSystemWeightBroadcastConfig)
+                    and self.trainer.model.lora is not None
+                ):
+                    raise ValueError(
+                        "Sparse filesystem weight broadcast is not supported with LoRA. "
+                        "Use type = 'filesystem' for LoRA adapter broadcasts."
+                    )
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
                     type=self.weight_broadcast.type
                 )
