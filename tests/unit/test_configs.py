@@ -248,6 +248,24 @@ def test_orchestrator_vlm_requires_renderer():
     assert config.renderer is not None
 
 
+def test_trainer_vlm_pack_multimodal_rejects_cp():
+    with pytest.raises(ValidationError, match="pack_multimodal.*context parallelism"):
+        TrainerConfig.model_validate(
+            {
+                "model": {
+                    "cp": 2,
+                    "optimization_dtype": "bfloat16",
+                    "reduce_dtype": "bfloat16",
+                    "vlm": {
+                        "vision_encoder_attr": "model.visual",
+                        "language_model_attr": "model.language_model",
+                    },
+                },
+                "pack_multimodal": True,
+            }
+        )
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})

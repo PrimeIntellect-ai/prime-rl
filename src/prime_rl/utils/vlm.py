@@ -110,26 +110,19 @@ def supports_packed_multimodal_training(model: nn.Module) -> bool:
     return False
 
 
-def get_packed_mm_disabled_reasons(
+def validate_multi_modal_pack(
     model: nn.Module,
     *,
-    enabled: bool,
     attn_impl: str,
-    cp_enabled: bool,
-    cp_size: int | None = None,
-) -> list[str]:
-    """Return reasons multimodal packing should be disabled for this runtime."""
-    reasons = []
-    if not enabled:
-        reasons.append("trainer.pack_multimodal=false")
+) -> None:
+    """Raise if this runtime cannot safely train packed multimodal batches."""
     if not supports_packed_multimodal_training(model):
-        reasons.append("model_support=false")
+        raise ValueError("Packed multimodal training requires model support")
     if attn_impl not in PACKED_MM_ATTN_IMPLS:
-        reasons.append(f"attn={attn_impl}")
-    if cp_enabled:
-        cp_label = cp_size if cp_size is not None else "enabled"
-        reasons.append(f"cp={cp_label}")
-    return reasons
+        raise ValueError(
+            "Packed multimodal training requires a varlen flash attention implementation "
+            f"({', '.join(PACKED_MM_ATTN_IMPLS)}), got {attn_impl!r}"
+        )
 
 
 def get_layer_prefix(model_config: PretrainedConfig, override: str | None = None) -> str:

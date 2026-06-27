@@ -26,7 +26,7 @@ from prime_rl.utils.cp import (
     shard_for_cp,
 )
 from prime_rl.utils.logger import format_time, setup_logger
-from prime_rl.utils.vlm import get_packed_mm_disabled_reasons, supports_packed_multimodal_training
+from prime_rl.utils.vlm import supports_packed_multimodal_training, validate_multi_modal_pack
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
@@ -150,18 +150,12 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
-    mm_pack_reasons = get_packed_mm_disabled_reasons(
-        model,
-        enabled=config.pack_multimodal,
-        attn_impl=config.model.attn,
-        cp_enabled=parallel_dims.cp_enabled,
-        cp_size=config.model.cp,
+    pack_multimodal = config.pack_multimodal and (
+        config.model.vlm is not None or supports_packed_multimodal_training(model)
     )
-    pack_multimodal = not mm_pack_reasons
     if pack_multimodal:
+        validate_multi_modal_pack(model, attn_impl=config.model.attn)
         logger.info("Multimodal packing enabled")
-    elif config.model.vlm is not None or supports_packed_multimodal_training(model):
-        logger.info(f"Multimodal packing disabled ({', '.join(mm_pack_reasons)})")
 
     # Set up the loss function
     logger.info(f"Setting up loss function ({config.loss})")

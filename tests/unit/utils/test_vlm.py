@@ -1,8 +1,9 @@
 from types import SimpleNamespace
 
+import pytest
 import torch.nn as nn
 
-from prime_rl.utils.vlm import get_packed_mm_disabled_reasons, supports_packed_multimodal_training
+from prime_rl.utils.vlm import supports_packed_multimodal_training, validate_multi_modal_pack
 
 
 class _Model(nn.Module):
@@ -26,23 +27,21 @@ def test_packed_mm_support_reads_model_capability():
     assert not supports_packed_multimodal_training(_Model())
 
 
-def test_packed_mm_gate_allows_only_supported_runtime():
+def test_validate_multi_modal_pack_allows_supported_runtime():
     model = _Model(supports_packed_mm=True)
 
-    assert (
-        get_packed_mm_disabled_reasons(model, enabled=True, attn_impl="flash_attention_2", cp_enabled=False, cp_size=1)
-        == []
-    )
-    assert get_packed_mm_disabled_reasons(model, enabled=True, attn_impl="sdpa", cp_enabled=False) == ["attn=sdpa"]
-    assert get_packed_mm_disabled_reasons(model, enabled=True, attn_impl="fa4", cp_enabled=True, cp_size=2) == ["cp=2"]
-    assert get_packed_mm_disabled_reasons(model, enabled=False, attn_impl="fa4", cp_enabled=False) == [
-        "trainer.pack_multimodal=false"
-    ]
+    validate_multi_modal_pack(model, attn_impl="flash_attention_2")
 
 
-def test_packed_mm_gate_rejects_models_without_capability():
+def test_validate_multi_modal_pack_rejects_models_without_capability():
     model = _Model()
 
-    assert get_packed_mm_disabled_reasons(model, enabled=True, attn_impl="flash_attention_2", cp_enabled=False) == [
-        "model_support=false"
-    ]
+    with pytest.raises(ValueError, match="model support"):
+        validate_multi_modal_pack(model, attn_impl="flash_attention_2")
+
+
+def test_validate_multi_modal_pack_rejects_non_varlen_attention():
+    model = _Model(supports_packed_mm=True)
+
+    with pytest.raises(ValueError, match="flash attention"):
+        validate_multi_modal_pack(model, attn_impl="sdpa")
