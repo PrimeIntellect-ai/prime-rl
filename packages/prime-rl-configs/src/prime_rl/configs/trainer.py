@@ -486,12 +486,6 @@ class SparseFileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     When enabled, the receiver applies patches directly to GPU parameters via index_copy_ without a CPU cache.
     Requires the model to implement ``convert_layer_to_vllm_kernel``."""
 
-    save_sharded: bool = True
-    """Save the weight checkpoint in sharded format (used for full checkpoints)."""
-
-    save_format: Literal["safetensors", "torch"] = "safetensors"
-    """Weight checkpoint serialization format (used for full checkpoints)."""
-
 
 class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["nccl"] = "nccl"

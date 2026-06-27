@@ -35,15 +35,13 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
     def __init__(
         self, output_dir: Path, config: SparseFileSystemWeightBroadcastConfig, lora_config: LoRAConfig | None = None
     ):
-        # Re-use the parent's filesystem config fields by passing a FileSystemWeightBroadcastConfig
+        # Sparse broadcast doesn't use the parent's checkpoint-saving fields, but we inherit
+        # _collect_model_state_dict, _notify_orchestrator, and the multi-run/world infrastructure.
         from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
 
         super().__init__(
             output_dir,
-            FileSystemWeightBroadcastConfig(
-                save_sharded=config.save_sharded,
-                save_format=config.save_format,
-            ),
+            FileSystemWeightBroadcastConfig(),
             lora_config,
         )
         self.kernel_format = config.kernel_format
@@ -86,21 +84,6 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
 
         return {name: tensor.to("cpu").contiguous() for name, tensor in kernel_state.items()}
 
-    def prepare_baseline(self, model: nn.Module, step: int) -> None:
-        if self.kernel_format:
-            state_dict = self._collect_kernel_state_dict(model)
-        else:
-            state_dict = self._collect_model_state_dict(model)
-        if self.world.is_master:
-            self._sparse_update_previous_state_dict = {name: tensor.contiguous() for name, tensor in state_dict.items()}
-            self._sparse_update_previous_step = step
-            total_numel = sum(tensor.numel() for tensor in self._sparse_update_previous_state_dict.values())
-            self.logger.info(
-                f"Prepared sparse update baseline at step {step} "
-                f"(kernel_format={self.kernel_format}, "
-                f"{len(self._sparse_update_previous_state_dict)} tensors, {total_numel:,} values)"
-            )
-
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast weights by saving a sparse patch to shared filesystem and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting sparse weights to inference engine via shared filesystem")
@@ -112,25 +95,34 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
         else:
             state_dict = self._collect_model_state_dict(model)
 
+        # Lazily initialize the baseline on the first broadcast
+        if self._sparse_update_previous_state_dict is None:
+            if self.world.is_master:
+                self._sparse_update_previous_state_dict = {
+                    name: tensor.contiguous() for name, tensor in state_dict.items()
+                }
+                self._sparse_update_previous_step = step
+                total_numel = sum(t.numel() for t in self._sparse_update_previous_state_dict.values())
+                self.logger.info(
+                    f"Prepared sparse update baseline at step {step} "
+                    f"(kernel_format={self.kernel_format}, "
+                    f"{len(self._sparse_update_previous_state_dict)} tensors, {total_numel:,} values)"
+                )
+            return
+
         for idx in self.multi_run_manager.ready_to_update_idxs:
             if self.world.is_master:
-                try:
-                    save_dir = get_step_path(
-                        get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
-                        self.multi_run_manager.progress[idx].step,
-                    )
-                    save_dir.mkdir(parents=True, exist_ok=True)
-                    self._save_sparse_update_patch(state_dict, save_dir, step)
-                    self._notify_orchestrator(save_dir)
+                save_dir = get_step_path(
+                    get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
+                    self.multi_run_manager.progress[idx].step,
+                )
+                save_dir.mkdir(parents=True, exist_ok=True)
+                self._save_sparse_update_patch(state_dict, save_dir, step)
+                self._notify_orchestrator(save_dir)
 
-                    if self.multi_run_manager.get_orchestrator_config(self.multi_run_manager.idx_2_id[idx]) is None:
-                        shutil.rmtree(self.multi_run_manager.get_run_dir(idx))
-                except FileNotFoundError:
-                    self.logger.warning(f"Run {idx} is deleted, skipping")
-                except Exception as e:
-                    self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
-                finally:
-                    self.multi_run_manager.ready_to_update[idx] = False
+                if self.multi_run_manager.get_orchestrator_config(self.multi_run_manager.idx_2_id[idx]) is None:
+                    shutil.rmtree(self.multi_run_manager.get_run_dir(idx))
+                self.multi_run_manager.ready_to_update[idx] = False
 
         if self.world.is_master:
             self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")

@@ -43,7 +43,13 @@ class SparseFileSystemWeightUpdateWorker(FileSystemWeightUpdateWorker):
         self._sparse_update_last_full_weight_path: str | None = None
         self._sparse_update_last_full_weight_step: int | None = None
 
+    def _ensure_initialized(self) -> None:
+        """Lazily initialize sparse state if init_broadcaster was not called."""
+        if not hasattr(self, "_sparse_update_step"):
+            self.init_broadcaster()
+
     def update_weights_from_path(self, weight_path: str) -> None:
+        self._ensure_initialized()
         model = self._get_model()
         path = Path(weight_path)
 
@@ -60,6 +66,9 @@ class SparseFileSystemWeightUpdateWorker(FileSystemWeightUpdateWorker):
         self._sparse_update_state_dict = None
         self._sparse_update_last_full_weight_path = weight_path
         self._sparse_update_last_full_weight_step = self._extract_step(path)
+        # Sync the step counter so the next sparse patch validates correctly
+        if self._sparse_update_last_full_weight_step is not None:
+            self._sparse_update_step = self._sparse_update_last_full_weight_step
 
     def _apply_kernel_patch(self, model: Module, patch_dir: Path) -> None:
         """Apply a kernel-format sparse patch directly to GPU params via index_copy_."""

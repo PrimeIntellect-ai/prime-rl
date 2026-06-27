@@ -16,6 +16,3 @@ class WeightBroadcast(ABC):
     @abstractmethod
     def broadcast_weights(self, model: nn.Module, step: int):
         pass
-
-    def prepare_baseline(self, model: nn.Module, step: int) -> None:
-        pass

@@ -228,9 +228,6 @@ def train(config: TrainerConfig):
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
 
-    if weight_broadcast is not None:
-        weight_broadcast.prepare_baseline(model, step=progress.step)
-
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
     if config.data.fake:

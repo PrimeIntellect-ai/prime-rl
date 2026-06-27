@@ -32,9 +32,6 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
-from prime_rl.configs.trainer import (
-    SparseFileSystemWeightBroadcastConfig as TrainerSparseFileSystemWeightBroadcastConfig,
-)
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
@@ -316,12 +313,6 @@ class RLConfig(BaseConfig):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference."""
         if self.weight_broadcast is not None:
             if self.weight_broadcast.type == "nccl":
-                if isinstance(self.trainer.weight_broadcast, TrainerSparseFileSystemWeightBroadcastConfig):
-                    raise ValueError(
-                        "trainer.weight_broadcast.type = 'sparse_filesystem' requires "
-                        "weight_broadcast.type = 'filesystem' or 'sparse_filesystem'."
-                    )
-
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
                 self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
@@ -340,14 +331,6 @@ class RLConfig(BaseConfig):
             elif self.weight_broadcast.type in ("filesystem", "sparse_filesystem"):
                 if self.trainer.weight_broadcast.type not in ("filesystem", "sparse_filesystem"):
                     self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
-                if (
-                    isinstance(self.trainer.weight_broadcast, TrainerSparseFileSystemWeightBroadcastConfig)
-                    and self.trainer.model.lora is not None
-                ):
-                    raise ValueError(
-                        "Sparse filesystem weight broadcast is not supported with LoRA. "
-                        "Use type = 'filesystem' for LoRA adapter broadcasts."
-                    )
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
                     type=self.weight_broadcast.type
                 )

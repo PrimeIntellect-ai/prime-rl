@@ -615,30 +615,3 @@ def test_sparse_filesystem_weight_broadcast_validates():
     assert isinstance(config.trainer.weight_broadcast, SparseFileSystemWeightBroadcastConfig)
     assert config.trainer.weight_broadcast.kernel_format is True
     assert config.orchestrator.weight_broadcast.type == "sparse_filesystem"
-
-
-def test_sparse_filesystem_weight_broadcast_rejects_lora():
-    """sparse_filesystem weight broadcast + LoRA is rejected at config validation time."""
-    with pytest.raises(ValidationError, match="not supported with LoRA"):
-        RLConfig.model_validate(
-            {
-                "weight_broadcast": {"type": "sparse_filesystem"},
-                "trainer": {
-                    "weight_broadcast": {"type": "sparse_filesystem"},
-                    "model": {"lora": {"rank": 8}},
-                },
-                "orchestrator": {"renderer": {"name": "default"}},
-            }
-        )
-
-
-def test_sparse_filesystem_weight_broadcast_rejects_nccl_shared():
-    """sparse_filesystem trainer config + nccl shared config is rejected."""
-    with pytest.raises(ValidationError, match="requires.*weight_broadcast.type"):
-        RLConfig.model_validate(
-            {
-                "weight_broadcast": {"type": "nccl"},
-                "trainer": {"weight_broadcast": {"type": "sparse_filesystem"}},
-                "orchestrator": {"renderer": {"name": "default"}},
-            }
-        )
