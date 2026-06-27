@@ -3,8 +3,8 @@ from typing import TYPE_CHECKING, Iterable
 
 import torch
 from torch.nn import Module
+from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 
-from prime_rl.inference.vllm.worker.filesystem import FileSystemWeightUpdateWorker
 from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
 from prime_rl.utils.sparse_update import (
     apply_sparse_update,
@@ -23,7 +23,34 @@ else:
     Worker = object
 
 
-class SparseFileSystemWeightUpdateWorker(FileSystemWeightUpdateWorker):
+def get_vllm_model(model_runner) -> Module:
+    """Extract the underlying model from a vLLM model runner."""
+    if hasattr(model_runner.model, "runnable"):
+        model = model_runner.model.runnable
+    else:
+        model = model_runner.model
+    assert isinstance(model, Module)
+    return model
+
+
+def get_weights_iterator(model: Module, weight_path: Path | str, load_config, model_config):
+    """Build a vLLM weights iterator from a checkpoint path or model name."""
+    model_loader = get_model_loader(load_config)
+    assert isinstance(model_loader, DefaultModelLoader)
+    revision = None
+    if not Path(weight_path).exists():
+        revision = getattr(model_config, "revision", None)
+    local_source = DefaultModelLoader.Source(
+        str(weight_path),
+        revision=revision,
+        prefix="",
+        fall_back_to_pt=getattr(model, "fall_back_to_pt_during_load", True),
+        allow_patterns_overrides=getattr(model, "allow_patterns_overrides", None),
+    )
+    return model_loader._get_weights_iterator(local_source)
+
+
+class SparseFileSystemWeightUpdateWorker(Worker):
     """vLLM worker extension for applying sparse weight patches via shared filesystem.
 
     Detects sparse patches by the presence of a ``sparse_update_manifest.json`` and
@@ -34,7 +61,7 @@ class SparseFileSystemWeightUpdateWorker(FileSystemWeightUpdateWorker):
     - **HF format** (``compute_dtype="bfloat16"``): reconstructs a dense CPU state dict
       cache and reloads through vLLM's normal layerwise checkpoint path.
 
-    Full checkpoints (no manifest) fall through to the parent's checkpoint loading path.
+    Full checkpoints (no manifest) are loaded through the standard vLLM checkpoint path.
     """
 
     def init_broadcaster(self) -> None:
@@ -43,6 +70,10 @@ class SparseFileSystemWeightUpdateWorker(FileSystemWeightUpdateWorker):
         self._sparse_update_last_full_weight_path: str | None = None
         self._sparse_update_last_full_weight_step: int | None = None
 
+    def liveness_probe(self) -> None:
+        """No-op RPC used by the API server liveness endpoint."""
+        return None
+
     def _ensure_initialized(self) -> None:
         """Lazily initialize sparse state if init_broadcaster was not called."""
         if not hasattr(self, "_sparse_update_step"):
@@ -50,7 +81,7 @@ class SparseFileSystemWeightUpdateWorker(FileSystemWeightUpdateWorker):
 
     def update_weights_from_path(self, weight_path: str) -> None:
         self._ensure_initialized()
-        model = self._get_model()
+        model = get_vllm_model(self.model_runner)
         path = Path(weight_path)
 
         if is_sparse_update_dir(path):
@@ -62,11 +93,11 @@ class SparseFileSystemWeightUpdateWorker(FileSystemWeightUpdateWorker):
             return
 
         # Full checkpoint: load through normal vLLM path
-        super().update_weights_from_path(weight_path)
+        weights_iterator = get_weights_iterator(model, path, self.load_config, self.model_runner.model_config)
+        load_weights_checkpoint_layerwise(model, weights_iterator, self.model_runner.model_config, self.vllm_config)
         self._sparse_update_state_dict = None
         self._sparse_update_last_full_weight_path = weight_path
         self._sparse_update_last_full_weight_step = self._extract_step(path)
-        # Sync the step counter so the next sparse patch validates correctly
         if self._sparse_update_last_full_weight_step is not None:
             self._sparse_update_step = self._sparse_update_last_full_weight_step
 
@@ -108,7 +139,7 @@ class SparseFileSystemWeightUpdateWorker(FileSystemWeightUpdateWorker):
 
         self._sparse_update_state_dict = {
             name: to_compute_tensor(tensor, torch.bfloat16)
-            for name, tensor in self._get_weights_iterator(model, source)
+            for name, tensor in get_weights_iterator(model, source, self.load_config, self.model_runner.model_config)
         }
         if (
             "lm_head.weight" not in self._sparse_update_state_dict
