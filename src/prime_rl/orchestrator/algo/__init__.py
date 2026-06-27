@@ -68,7 +68,9 @@ def build_algorithm(config: AlgorithmConfig, policy_pool: InferencePool, rendere
     cls = ALGORITHM_CLASSES[config.type]
     assert cls.action_loss_type == config.action_loss_type  # config and runtime declare in two places
     # The Algorithm is the runtime of the algorithm config's training signal
-    # (its sibling Sampler interprets the sampling half).
+    # (its sibling Sampler interprets the sampling half). Every algorithm is
+    # handed the live policy pool — opsd self-distills against it, others may
+    # judge against it or ignore it — plus its own frozen references via setup().
     return cls(config, policy_pool, renderer)
 
 

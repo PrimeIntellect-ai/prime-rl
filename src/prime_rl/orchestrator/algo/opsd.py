@@ -36,7 +36,10 @@ class OPSDAlgorithm(Algorithm):
         self.demo_key = config.demo_key
         self.template = config.template
         self.max_concurrent = config.max_concurrent
-        self.teacher_pool = policy_pool  # self-distillation: the teacher is the live policy
+        # Self-distillation: the teacher *is* the live policy. Scoring against
+        # the shared policy pool tracks its current weights, model name, and
+        # endpoint churn for free.
+        self.teacher_pool = self.policy_pool
 
     def _demonstration(self, rollout: Rollout) -> str:
         demonstration = rollout.info.get(self.demo_key)

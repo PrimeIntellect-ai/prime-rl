@@ -35,8 +35,10 @@ phase functions (:func:`finalize_rollout`, :func:`finalize_group`,
 :func:`finalize_batch`) and reads the class declarations; it never branches on
 algorithm config fields or model roles — liveness of a reference is the only
 runtime distinction. prime-rl hosts exactly one model — the trainable policy,
-whose pool is passed in; every frozen model reference is an external endpoint
-the algorithm *connects to* (never launches) in :meth:`Algorithm.setup`.
+whose pool every algorithm is handed (``self.policy_pool``): use it for
+anything that scores against the live model (opsd's self-distillation teacher,
+an LLM judge, ...). Every *frozen* model an algorithm needs is an external
+endpoint it *connects to* (never launches) and owns, in :meth:`Algorithm.setup`.
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ import asyncio
 from collections import defaultdict
 from typing import TYPE_CHECKING, ClassVar
 
-from prime_rl.configs.algorithm import ActionLossType, AlgorithmConfig, FrozenModelConfig, ModelReference
+from prime_rl.configs.algorithm import ActionLossType, AlgorithmConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.utils.logger import get_logger
 
@@ -121,7 +123,8 @@ class Algorithm:
     then be filtered out.
 
     Constructed with the algorithm config it interprets plus the two
-    host-owned resources: the policy pool and the policy's renderer (the
+    host-owned resources: the live policy pool (``self.policy_pool`` — always
+    available, never closed by the algorithm) and the policy's renderer (the
     canonical messages → token ids path; ``None`` under MITO)."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
@@ -129,20 +132,18 @@ class Algorithm:
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
         self.policy_pool = policy_pool
         self.renderer = renderer
-        self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
+        self.connected_pools: list[InferencePool] = []  # frozen pools connected in setup(); closed at shutdown
 
     async def setup(self) -> None:
         """Connect client pools to the algorithm's frozen models — override
         and resolve each reference via :meth:`connect`. The base has nothing
         to connect."""
 
-    async def connect(self, reference: ModelReference) -> InferencePool:
-        """Resolve a model reference to a client pool: the live policy's own
-        pool, or a freshly connected pool to a frozen endpoint. Only the
-        latter is tracked in ``connected_pools`` — the host closes what the
-        algorithm opened, and nothing else, at shutdown."""
-        if reference == "policy":
-            return self.policy_pool
+    async def connect(self, reference: FrozenModelConfig) -> InferencePool:
+        """Connect a client pool to a frozen model endpoint and track it in
+        ``connected_pools`` — the host closes what the algorithm opened, at
+        shutdown. The live policy is never connected here; opsd receives the
+        policy pool directly."""
         pool = await connect_frozen_pool(reference)
         self.connected_pools.append(pool)
         return pool
