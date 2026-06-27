@@ -188,8 +188,8 @@ class ModelConfig(BaseModelConfig):
     debug: DebugModelConfig = DebugModelConfig()
     """Debugging knobs for the model and distributed training."""
 
-    fused_lm_head_token_chunk_size: int | Literal["auto", "disabled"] = 1024
-    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``auto`` auto-enables (RL training picks 8192); ``disabled`` uses the vanilla LM head. SFT training silently disables this (not supported yet)."""
+    fused_lm_head_token_chunk_size: int | Literal["disabled"] = 1024
+    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. SFT training silently disables this (not supported yet)."""
 
     @model_validator(mode="before")
     @classmethod
@@ -655,13 +655,6 @@ class TrainerConfig(BaseConfig):
             self.tokenizer.name = self.model.name
         if self.tokenizer.trust_remote_code is None:
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_fused_lm_head_token_chunk_size(self):
-        if self.model.fused_lm_head_token_chunk_size == "auto":
-            self.model.fused_lm_head_token_chunk_size = 8192
-
         return self
 
     @model_validator(mode="after")
