@@ -1,6 +1,6 @@
 # Training
 
-This page covers everything you need to launch, observe, checkpoint, and recover a `prime-rl` training run — the RL trainer, the SFT trainer, and the related on-policy distillation mode. For multi-node and cluster layouts, see [Scaling](scaling.md). For the loss math and algorithm knobs, see [Algorithms](algorithms.md).
+This page covers everything you need to launch, observe, checkpoint, and recover a `prime-rl` training run — the RL trainer (and the distillation algorithms that run through it) and the SFT trainer. For multi-node and cluster layouts, see [Scaling](scaling.md). For the loss math and algorithm knobs, see [Algorithms](algorithms.md).
 
 > **AI agents working in this repo:** the equivalent runbooks are at [`skills/training/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/skills/training) — top-level routing in [`skills/training/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/training/SKILL.md), launch details in [`skills/training/start-run/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/training/start-run/SKILL.md), and check-in / restart procedures in [`skills/training/monitor-run/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/training/monitor-run/SKILL.md).
 
@@ -10,7 +10,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [RL Trainer](#rl-trainer)
   - [Launch](#launch)
   - [Useful Knobs](#useful-knobs)
-  - [Training Modes (RL / OPD / SFT)](#training-modes-rl--opd--sft)
+  - [Algorithms](#algorithms)
   - [Important Metrics](#important-metrics)
 - [SFT Trainer](#sft-trainer)
   - [Dataset Format](#dataset-format)
@@ -59,7 +59,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
-| `orchestrator.training_mode` | `rl` (default), `opd`, or `sft`. See [Training modes](#training-modes-rl--opd--sft). |
+| `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
 | `[[orchestrator.train.env]]` | Training environments. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Environments](configuration.md#environments-orchestratortrainenv). |
 | `[[orchestrator.eval.env]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
@@ -81,24 +81,29 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
 | `--dry-run` | Resolve + validate the full config, write per-process TOMLs to `<output_dir>/configs/`, and exit without launching. The fastest way to debug a misbehaving config. |
 
-### Training Modes (RL / OPD / SFT)
+### Algorithms
 
-The RL entrypoint supports three training modes, switched via `orchestrator.training_mode`:
+The RL entrypoint supports several training algorithms, switched via `[orchestrator.algo]`'s `type` (see [Algorithms](algorithms.md#the-algorithm-abstraction) for the full reference, model references, and per-algorithm customization):
 
-| Mode | Student | Teacher | Use case |
-|---|---|---|---|
-| `rl` | Required | Forbidden | Standard RL |
-| `opd` | Required | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): student generates rollouts, trainer minimizes KL to teacher logprobs |
-| `sft` | Required | Required, any OpenAI-compatible endpoint | Hard-distill: teacher generates rollouts, student trains on them |
+| `algo.type` | Frozen model | Use case |
+|---|---|---|
+| `grpo` (default) | None | Standard group-relative RL |
+| `max_rl` | None | [MaxRL](https://arxiv.org/abs/2602.02710): GRPO with mean-normalized advantages (maximum-likelihood RL) |
+| `opd` | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): the policy generates rollouts, the trainer minimizes per-token reverse KL to a reference model |
+| `sft` | Required, any OpenAI-compatible endpoint | Hard-distill: a frozen model generates rollouts, the policy trains on its tokens |
+| `opsd` | None — the live policy is its own reference (no deployment) | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own reference conditioned on expert demonstrations |
+| `echo` | None | GRPO plus cross-entropy on env-observation tokens |
 
-The `rl` entrypoint only manages student-policy inference. For OPD and (local-vLLM) SFT, start the teacher inference server manually and point `[orchestrator.teacher.client]` at it:
+A new algorithm is a named class in code, not a config — see [Algorithms § Authoring an Algorithm](algorithms.md#authoring-an-algorithm).
+
+Frozen models are declared inline on the algorithm, named where the model is used — `[orchestrator.algo.teacher]` for `opd` (the frozen model scored against), `[orchestrator.algo.sampling.source]` for `sft` (the model it samples from) — each with `name` + `base_url`. `opsd` declares no frozen model: it self-distills against the live policy. The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `base_url` at them:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \
-  --model.name <teacher> --server.port 8001
+  --model.name <frozen-model> --server.port 8001
 ```
 
-The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no teacher, no orchestrator. Use `orchestrator.training_mode = "sft"` only when you want a teacher to generate the supervision on the fly.
+The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no orchestrator. Use the `sft` algorithm only when you want a frozen model to generate the supervision on the fly.
 
 ### Important Metrics
 

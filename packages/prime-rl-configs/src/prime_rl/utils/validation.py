@@ -22,9 +22,6 @@ def propagate_shared_fields(data: Any) -> Any:
         The original footgun the mutex was designed to catch — a sub-config
         value silently winning over a later CLI shared override — is still
         caught because that scenario produces *different* values.
-      - **Aliased sub-paths**: ``orchestrator.model.*`` is checked against its
-        ``orchestrator.student.model.*`` alias (and vice versa), so the
-        conflict fires regardless of which spelling the user wrote.
     """
     if not isinstance(data, dict):
         return data
@@ -51,36 +48,34 @@ def propagate_shared_fields(data: Any) -> Any:
 
     conflicts: list[tuple[str, str]] = []
 
-    def propagate(shared_path: str, *targets: str, aliases: tuple[str, ...] = ()) -> None:
-        """Verbatim shared → targets. Records *disagreeing* overlap (incl. alias
-        spellings) into ``conflicts`` and fills each target if the shared value
-        is set. Matching values are silently accepted so the materialized
-        config round-trips through re-load.
+    def propagate(shared_path: str, *targets: str) -> None:
+        """Verbatim shared → targets. Records *disagreeing* overlap into
+        ``conflicts`` and fills each target if the shared value is set. Matching
+        values are silently accepted so the materialized config round-trips
+        through re-load.
         """
         value = get(shared_path)
         if value is None:
             return
-        for sub in (*targets, *aliases):
-            sub_value = get(sub)
+        for target in targets:
+            sub_value = get(target)
             if sub_value is not None and sub_value != value:
-                conflicts.append((shared_path, sub))
+                conflicts.append((shared_path, target))
         for target in targets:
             fill(target, value)
 
-    # [model] → trainer / orchestrator (student, via AliasChoices) / inference.
+    # [model] → trainer / orchestrator / inference.
     propagate(
         "model.name",
         "trainer.model.name",
         "inference.model.name",
         "orchestrator.model.name",
-        aliases=("orchestrator.student.model.name",),
     )
     propagate(
         "model.vlm",
         "trainer.model.vlm",
         "inference.model.vlm",
         "orchestrator.model.vlm",
-        aliases=("orchestrator.student.model.vlm",),
     )
 
     # [log]
@@ -224,18 +219,18 @@ def validate_shared_model_name(
 ) -> None:
     # Orchestrator must match inference (it queries the inference server)
     if inference is not None:
-        if inference.model.name != orchestrator.student.model.name:
+        if inference.model.name != orchestrator.model.name:
             raise ValueError(
-                f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.student.model.name}) are not the same. "
+                f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. "
                 "The orchestrator queries the inference server and must use the same model name."
             )
         return
 
     if trainer.model.name.startswith("Jackmin108/"):  # The TT MoE models will have a different name on the orchestrator
         return
-    if trainer.model.name != orchestrator.student.model.name:
+    if trainer.model.name != orchestrator.model.name:
         raise ValueError(
-            f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.student.model.name}) are not the same. Please specify the same model name for both."
+            f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. Please specify the same model name for both."
         )
 
 

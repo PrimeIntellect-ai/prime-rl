@@ -3813,7 +3813,7 @@ requires-dist = [
     { name = "renderers", specifier = ">=0.1.8.dev28" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomli-w", specifier = ">=1.2.0" },
-    { name = "verifiers", specifier = ">=0.1.15.dev388" },
+    { name = "verifiers", specifier = ">=0.1.15.dev390" },
 ]
 
 [[package]]

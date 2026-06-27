@@ -71,7 +71,12 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     orchestration metadata lives on it directly (set by the dispatcher once the rollout
     returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
     fields are ``exclude=True``, so dumping a Rollout yields a plain trace — the on-disk
-    ``results.jsonl`` is unchanged."""
+    ``results.jsonl`` is unchanged.
+
+    It is also the single currency the scoring hooks receive: a hook reads the trace
+    directly (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``) and writes
+    credit through :meth:`assign_advantages` (scalar broadcast or per-token), which
+    spreads over the samples' trainable (mask-True) tokens."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)  # ``samples`` holds msgspec structs
 
@@ -81,10 +86,41 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
-    advantage: float | None = Field(default=None, exclude=True)
+    # Per-token rl advantage stream, full-length-N (= len(token_ids)) per
+    # sample, concatenated across the rollout's samples in order; 0.0 on
+    # non-trainable positions. None = no credit assigned (advantage-based
+    # filters skip it; the wire ships no advantage stream).
+    advantages: list[float] | None = Field(default=None, exclude=True)
     is_filtered: bool = Field(default=False, exclude=True)
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
     eval_step: int | None = Field(default=None, exclude=True)
+
+    def assign_advantages(self, values: float | list[float]) -> None:
+        """Write the rl advantage stream: a scalar broadcast over the
+        rollout's trainable (mask-True) tokens (0.0 elsewhere), or a per-token
+        list already aligned full-length to the samples' concatenated
+        ``token_ids``. A rollout never assigned ships no advantage stream."""
+        total = sum(len(sample.token_ids) for sample in self.samples)
+        if isinstance(values, (int, float)):
+            self.advantages = [
+                float(values) if trainable else 0.0 for sample in self.samples for trainable in sample.mask
+            ]
+            return
+        if len(values) != total:
+            raise ValueError(
+                f"per-token advantages must align with the rollout's tokens: "
+                f"got {len(values)}, expected {total} (env '{self.env_name}')."
+            )
+        self.advantages = [float(v) for v in values]
+
+    def scalar_advantage(self) -> float | None:
+        """Scalar view of the per-token advantage stream for monitoring: the
+        mean over assigned (non-zero) positions — exact for the uniform GRPO
+        case, 0.0 for a zero-advantage group, None when no credit was assigned."""
+        if not self.advantages:
+            return None
+        nonzero = [a for a in self.advantages if a != 0.0]
+        return sum(nonzero) / len(nonzero) if nonzero else 0.0
 
 
 @dataclass

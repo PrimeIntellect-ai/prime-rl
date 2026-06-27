@@ -17,11 +17,17 @@ def _routed_experts(data, dtype=np.uint8):
     )
 
 
+def _encoded(arr) -> EncodedTensor:
+    a = np.asarray(arr)
+    return EncodedTensor(data=a.tobytes(), shape=list(a.shape), dtype=str(a.dtype))
+
+
 @pytest.fixture
 def make_training_example():
     def _make_training_example(
         temperature: float = 1.0,
-        training_mode: str = "rl",
+        ce_weights: list[float] | None = None,
+        rl_weights: list[float] | None = None,
         env_name: str = "test-env",
     ) -> TrainingSample:
         return TrainingSample(
@@ -29,10 +35,10 @@ def make_training_example():
             mask=[False, False, True, True],
             logprobs=[0.0, 0.0, -0.1, -0.2],
             temperatures=[temperature, temperature, temperature, temperature],
-            teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
-            advantage=1.0,
+            advantages=[0.0, 0.0, 1.0, 1.0],
             env_name=env_name,
-            training_mode=training_mode,
+            ce_weights=ce_weights,
+            rl_weights=rl_weights,
         )
 
     return _make_training_example
@@ -46,7 +52,7 @@ def make_sized_training_example(length: int, env_name: str = "test-env") -> Trai
         mask=[False] * prompt_len + [True],
         logprobs=[0.0] * prompt_len + [-0.1],
         temperatures=[1.0] * length,
-        advantage=1.0,
+        advantages=[0.0] * prompt_len + [1.0],
         env_name=env_name,
     )
 
@@ -73,6 +79,57 @@ def make_flops_config():
         num_hidden_layers=2,
         head_dim=8,
     )
+
+
+def test_training_sample_requires_env_name():
+    with pytest.raises(TypeError, match="env_name"):
+        TrainingSample(
+            token_ids=[1, 2, 3, 4],
+            mask=[False, False, True, True],
+            logprobs=[0.0, 0.0, -0.1, -0.2],
+            temperatures=[1.0, 1.0, 1.0, 1.0],
+            advantages=[0.0, 0.0, 1.0, 1.0],
+        )
+
+
+@pytest.mark.parametrize(
+    ("rollout_count", "num_train_workers", "expected_batches_per_worker"), [(4, 2, 2), (5, 2, 3), (7, 1, 7), (11, 4, 3)]
+)
+def test_prepare_batch_balances_micro_batches_across_workers(
+    make_training_example, rollout_count, num_train_workers, expected_batches_per_worker
+):
+    examples = [make_training_example() for i in range(rollout_count)]
+
+    batches_per_gpu = prepare_batch(
+        rollouts=examples,
+        seq_len=4,
+        num_train_workers=num_train_workers,
+        idxs=[0] * rollout_count,
+        num_loras=1,
+        bin_cost=build_bin_cost(None),
+    )
+
+    assert all(len(worker_batches) == expected_batches_per_worker for worker_batches in batches_per_gpu)
+
+    flat_batches = _flatten_batches(batches_per_gpu)
+    assert len(examples) <= len(flat_batches) < len(examples) + num_train_workers
+
+    # Identify real vs padding batches by content, not position — the packer
+    # distributes by workload, so a dummy can land anywhere in the order.
+    real_batches = [batch for batch in flat_batches if _has_loss_tokens(batch)]
+    dummy_batches = [batch for batch in flat_batches if not _has_loss_tokens(batch)]
+    assert len(real_batches) == len(examples)
+
+    # Verify real rollouts have expected non-zero advantages and loss mask
+    # (the advantage stream is 0.0 on prompt positions, the scalar on completion)
+    for batch in real_batches:
+        assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 2
+        assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 2
+
+    # Verify padded batches have zero advantages and loss mask
+    for batch in dummy_batches:
+        assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 0
+        assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 0
 
 
 def test_randomized_packing_invariants():
@@ -190,54 +247,6 @@ def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
     assert sum(len(batch.sequence_lengths) > 1 for batch in real_batches) == 3
 
 
-def test_training_sample_requires_env_name():
-    with pytest.raises(TypeError, match="env_name"):
-        TrainingSample(
-            token_ids=[1, 2, 3, 4],
-            mask=[False, False, True, True],
-            logprobs=[0.0, 0.0, -0.1, -0.2],
-            temperatures=[1.0, 1.0, 1.0, 1.0],
-            advantage=1.0,
-        )
-
-
-@pytest.mark.parametrize(
-    ("rollout_count", "num_train_workers", "expected_batches_per_worker"), [(4, 2, 2), (5, 2, 3), (7, 1, 7), (11, 4, 3)]
-)
-def test_prepare_batch_balances_micro_batches_across_workers(
-    make_training_example, rollout_count, num_train_workers, expected_batches_per_worker
-):
-    examples = [make_training_example() for i in range(rollout_count)]
-
-    batches_per_gpu = prepare_batch(
-        rollouts=examples,
-        seq_len=4,
-        num_train_workers=num_train_workers,
-        idxs=[0] * rollout_count,
-        num_loras=1,
-        bin_cost=build_bin_cost(None),
-    )
-
-    assert all(len(worker_batches) == expected_batches_per_worker for worker_batches in batches_per_gpu)
-
-    flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
-    assert len(examples) <= len(flat_batches) < len(examples) + num_train_workers
-    print(flat_batches)
-
-    # Real rollouts and dummy padding can be interleaved across workers by the
-    # FLOP-balanced partition, so classify by content rather than position.
-    real_batches = [b for b in flat_batches if any(advantage != 0.0 for advantage in b.advantages)]
-    assert len(real_batches) == len(examples)
-    for batch in real_batches:
-        assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 4
-        assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 2
-
-    # Dummy padding batches have zero advantages and loss mask.
-    for batch in flat_batches:
-        if all(advantage == 0.0 for advantage in batch.advantages):
-            assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 0
-
-
 def test_prepare_batch_packs_different_temperatures(make_training_example):
     """With per-token temperatures, samples can be packed together regardless of their temperature values."""
     example1 = make_training_example(temperature=0.7, env_name="env-a")
@@ -252,10 +261,10 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
         bin_cost=build_bin_cost(None),
     )
 
-    flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
+    flat_batches = _flatten_batches(batches_per_gpu)
     # With per-token temperatures, samples can now be packed together
     assert len(flat_batches) == 1
-    # Each sample has 4 tokens (2 prompt + 2 completion), so 8 total tokens
+    # Each sample has 4 tokens, so 8 total tokens
     assert len(flat_batches[0].temperatures) == 8
     # First sample (4 tokens): all get temp 0.7
     assert flat_batches[0].temperatures[:4] == [0.7, 0.7, 0.7, 0.7]
@@ -264,20 +273,47 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     assert flat_batches[0].env_names == ["env-a"] * 4 + ["env-b"] * 4
 
 
-def test_prepare_sample_propagates_training_mode(make_training_example):
-    example = make_training_example(training_mode="sft")
+def test_prepare_sample_propagates_weight_streams(make_training_example):
+    example = make_training_example(ce_weights=[0.0, 0.0, 1.0, 1.0], rl_weights=[0.0, 0.0, 0.0, 0.0])
 
     micro_batch = prepare_sample(example, seq_len=16)
 
-    assert micro_batch.training_mode == "sft"
+    assert micro_batch.ce_weights == [0.0, 0.0, 1.0, 1.0]
+    assert micro_batch.rl_weights == [0.0, 0.0, 0.0, 0.0]
 
 
-def test_prepare_batch_does_not_pack_mixed_training_mode(make_training_example):
-    rl_example = make_training_example(training_mode="rl")
-    sft_example = make_training_example(training_mode="sft")
+def test_prepare_sample_uniform_rl_keeps_streams_none(make_training_example):
+    micro_batch = prepare_sample(make_training_example(), seq_len=16)
+
+    assert micro_batch.rl_weights is None
+    assert micro_batch.ce_weights is None
+    assert micro_batch.ref_kl_weights is None
+
+
+@pytest.mark.parametrize("streams_on_longer", [True, False])
+def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_longer):
+    """Component membership is per token, so samples feeding different
+    components pack together. The stream-less sample's positions must backfill
+    with the stream defaults (rl 1.0, ce 0.0) on whichever side of the pack
+    boundary it lands — a wrong-side backfill silently reroutes tokens between
+    components while keeping every array length-aligned."""
+    longer = TrainingSample(
+        token_ids=[1, 2, 3, 4, 5, 6],
+        mask=[False, False, False, True, True, True],
+        logprobs=[0.0, 0.0, 0.0, -0.1, -0.1, -0.1],
+        temperatures=[1.0] * 6,
+        advantages=[0.0] * 3 + [1.0] * 3,
+        env_name="test-env",
+        ce_weights=[0.0, 0.0, 0.0, 1.0, 1.0, 1.0] if streams_on_longer else None,
+        rl_weights=[0.0] * 6 if streams_on_longer else None,
+    )
+    shorter = make_training_example(
+        ce_weights=None if streams_on_longer else [0.0, 0.0, 1.0, 1.0],
+        rl_weights=None if streams_on_longer else [0.0, 0.0, 0.0, 0.0],
+    )
 
     batches_per_gpu = prepare_batch(
-        rollouts=[rl_example, sft_example],
+        rollouts=[longer, shorter],
         seq_len=16,
         num_train_workers=1,
         idxs=[0, 0],
@@ -285,14 +321,60 @@ def test_prepare_batch_does_not_pack_mixed_training_mode(make_training_example):
         bin_cost=build_bin_cost(None),
     )
 
-    flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
-    assert len(flat_batches) == 2
-    assert {batch.training_mode for batch in flat_batches} == {"rl", "sft"}
+    flat_batches = _flatten_batches(batches_per_gpu)
+    assert len(flat_batches) == 1
+    batch = flat_batches[0]
+    # FFD places the longer sample first; every stream value must sit at its
+    # sample's offset, with the stream-less side backfilled.
+    if streams_on_longer:
+        assert batch.rl_weights == [0.0] * 6 + [1.0] * 4
+        assert batch.ce_weights == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0] + [0.0] * 4
+    else:
+        assert batch.rl_weights == [1.0] * 6 + [0.0] * 4
+        assert batch.ce_weights == [0.0] * 6 + [0.0, 0.0, 1.0, 1.0]
+
+
+@pytest.mark.parametrize("refs_on_longer", [True, False])
+def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, refs_on_longer):
+    """Packing a ref-bearing sample (e.g. OPD) with a ref-less one (e.g. GRPO)
+    must keep ``ref_logprobs`` position-aligned with ``input_ids`` — placeholder
+    0.0s on the ref-less tokens, both when the bin gains refs after ref-less
+    content (backfill) and when ref-less content lands in a ref-bearing bin."""
+    longer = TrainingSample(
+        token_ids=[1, 2, 3, 4, 5, 6],
+        mask=[False, False, False, True, True, True],
+        logprobs=[0.0, 0.0, 0.0, -0.1, -0.1, -0.1],
+        temperatures=[1.0] * 6,
+        ref_logprobs=[-1.5] * 6 if refs_on_longer else None,
+        advantages=[0.0] * 3 + [1.0] * 3,
+        env_name="test-env",
+    )
+    shorter = make_training_example()
+    shorter.ref_logprobs = None if refs_on_longer else [-1.5] * 4
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[longer, shorter],
+        seq_len=16,
+        pad_to_multiple_of=1,
+        num_train_workers=1,
+        idxs=[0, 0],
+        num_loras=1,
+        bin_cost=build_bin_cost(None),
+    )
+    flat_batches = _flatten_batches(batches_per_gpu)
+    assert len(flat_batches) == 1  # both samples share one bin
+    bin_content = flat_batches[0]
+    assert len(bin_content.ref_logprobs) == len(bin_content.input_ids)
+    # FFD places the longer sample first; refs must sit at their sample's offset
+    if refs_on_longer:
+        assert bin_content.ref_logprobs == [-1.5] * 6 + [0.0] * 4
+    else:
+        assert bin_content.ref_logprobs == [0.0] * 6 + [-1.5] * 4
 
 
 def test_prepare_sample_with_routed_experts():
     """Routed experts are passed through prepare_sample and match input_ids length."""
-    # 2 prompt + 2 completion = 4 tokens, 2 layers, topk=2
+    # 4 tokens, 2 layers, topk=2
     routed_experts = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]], [[1, 0], [3, 2]]]
     routed_payload = _routed_experts(routed_experts)
     sample = TrainingSample(
@@ -300,7 +382,7 @@ def test_prepare_sample_with_routed_experts():
         mask=[False, False, True, True],
         logprobs=[0.0, 0.0, -0.1, -0.2],
         temperatures=[1.0, 1.0, 1.0, 1.0],
-        advantage=1.0,
+        advantages=[0.0, 0.0, 1.0, 1.0],
         env_name="test-env",
         routed_experts=routed_payload,
     )
@@ -320,7 +402,7 @@ def test_prepare_sample_truncates_routed_experts():
         mask=[False, False, True, True],
         logprobs=[0.0, 0.0, -0.1, -0.2],
         temperatures=[1.0, 1.0, 1.0, 1.0],
-        advantage=1.0,
+        advantages=[0.0, 0.0, 1.0, 1.0],
         env_name="test-env",
         routed_experts=routed_payload,
     )
@@ -329,11 +411,6 @@ def test_prepare_sample_truncates_routed_experts():
     assert micro_batch.routed_experts is not None
     assert micro_batch.routed_experts == expected_payload
     assert micro_batch.env_names == ["test-env"] * 3
-
-
-def _encoded(arr) -> EncodedTensor:
-    a = np.asarray(arr)
-    return EncodedTensor(data=a.tobytes(), shape=list(a.shape), dtype=str(a.dtype))
 
 
 def test_prepare_sample_truncates_mm_at_image_boundary():
@@ -348,7 +425,7 @@ def test_prepare_sample_truncates_mm_at_image_boundary():
         mask=[False, False, False, False, False, True, True],
         logprobs=[0.0] * 7,
         temperatures=[1.0] * 7,
-        advantage=1.0,
+        advantages=[0.0] * 6 + [1.0],
         env_name="test-env",
         mm_token_type_ids=mm_token_type_ids,
         mm_kwargs={"pixel_values": _encoded(pixel_values), "image_grid_thw": _encoded(grid)},
@@ -375,7 +452,7 @@ def test_prepare_sample_none_routed_experts():
         mask=[False, False, True, True],
         logprobs=[0.0, 0.0, -0.1, -0.2],
         temperatures=[1.0, 1.0, 1.0, 1.0],
-        advantage=1.0,
+        advantages=[0.0, 0.0, 1.0, 1.0],
         env_name="test-env",
     )
 

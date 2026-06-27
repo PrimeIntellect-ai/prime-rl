@@ -47,6 +47,7 @@ def make_training_sample() -> TrainingSample:
         mask=[False, True],
         logprobs=[0.0, -0.1],
         temperatures=[1.0, 1.0],
+        advantages=[0.0, 1.0],
         env_name="test-env",
     )
 
