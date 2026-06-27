@@ -71,19 +71,28 @@ Expected value:
 - Confidence for a real debate-shape win: 45%. Confidence that the checkpoint
   exists and is the right next Gemma4 experiment: 95%.
 
-## Pad Token Incident
+## Pad Token Guard
 
-This was not harmless serialization padding. Gemma4 was genuinely generating
-pad token id `0` inside the trainable span.
+Correction after artifact audit: the mechanism/risk is real, but the stronger
+claim that we had preserved raw rollout evidence of Gemma4 generating token id
+`0` inside the trainable span is not currently supported by local saved
+artifacts.
 
-Root cause:
+What is confirmed:
 
 - Gemma4 has `pad_token_id = 0`.
-- The renderer/client path did not block pad-token generation.
+- The renderer/client path did not block pad-token generation by token id.
 - An initial attempt passed bad-token ids through `SamplingParams.extra_args`,
   but vLLM did not consume that field automatically for `/inference/v1/generate`.
+- A direct scan of saved Gemma transport batches found no token id `0` in
+  stored `TrainingSample.completion_ids` across 54 `train_rollouts.bin` files,
+  992 samples, and 1,509,326 completion tokens.
 
-Final fix shape:
+Therefore, treat this as a production hardening/contract fix for a valid
+model-specific failure class, not as a proven diagnosis of a preserved bad
+rollout unless a raw offending response is recovered.
+
+Final guard shape:
 
 - `deps/renderers/renderers/gemma4.py`: Gemma4 renderer exposes
   `get_bad_words_token_ids() == [[pad_token_id]]`.
