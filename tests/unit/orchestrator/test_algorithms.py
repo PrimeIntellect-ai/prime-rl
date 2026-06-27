@@ -221,7 +221,7 @@ def _echo_algorithm(roles: dict | None = None, filter_fn=None) -> EchoAlgorithm:
     kwargs: dict = {"type": "echo"}
     if roles is not None:
         kwargs["roles"] = roles
-    algo = EchoAlgorithm(_build(**kwargs), MagicMock(), MagicMock())
+    algo = EchoAlgorithm(_build(**kwargs), MagicMock())
     algo.filter_fn = filter_fn
     return algo
 

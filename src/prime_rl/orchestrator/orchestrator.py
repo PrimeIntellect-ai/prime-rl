@@ -37,7 +37,6 @@ if TYPE_CHECKING:
     from prime_rl.utils.monitor.base import Monitor
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.algo import finalize_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -240,7 +239,7 @@ class Orchestrator:
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
-            config.train.env, policy_pool=self.policy_inference, renderer=self.renderer, renderer_config=config.renderer
+            config.train.env, policy_pool=self.policy_inference, renderer_config=config.renderer
         )
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
@@ -522,12 +521,6 @@ class Orchestrator:
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
 
-        # Per-env reference scoring runs at the batch boundary; envs without a
-        # reference are a no-op, so this is unconditional.
-        t = time.perf_counter()
-        await finalize_batch(self.train_envs, batch.rollouts)
-        scoring_time = time.perf_counter() - t
-
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.update_dispatch_gate()
         trim_process_memory()
@@ -539,7 +532,6 @@ class Orchestrator:
             progress=self.progress,
             step_time=step_time,
             save_ckpt_time=save_ckpt_time,
-            scoring_time=scoring_time,
             pre_filter_seen=self.train_sink.pre_filter_seen,
             pre_filter_dropped=self.train_sink.pre_filter_dropped,
             pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),

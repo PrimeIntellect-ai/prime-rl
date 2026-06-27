@@ -10,8 +10,6 @@ from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.utils import get_tool_response_len
 
 if TYPE_CHECKING:
-    from renderers.base import Renderer
-
     from prime_rl.orchestrator.types import Rollout
     from prime_rl.utils.client import InferencePool
 
@@ -21,8 +19,8 @@ class GRPOAlgorithm(Algorithm):
     policy per example; credit = reward minus the group mean (optionally
     length-shaped); action tokens feed the ``rl`` loss."""
 
-    def __init__(self, config: GRPOAlgoConfig, policy_pool: InferencePool, renderer: Renderer | None):
-        super().__init__(config, policy_pool, renderer)
+    def __init__(self, config: GRPOAlgoConfig, policy_pool: InferencePool):
+        super().__init__(config, policy_pool)
         self.length_penalty = config.length_penalty
 
     async def score_group(self, group: list[Rollout]) -> None:

@@ -36,6 +36,7 @@ executes them.
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, model_validator
+from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.config import BaseConfig
@@ -279,7 +280,13 @@ class OPSDAlgoConfig(BaseAlgoConfig):
     user turn, so it isn't templated here."""
 
     max_concurrent: int = Field(32, ge=1)
-    """Maximum concurrent prefill requests per batch."""
+    """Maximum concurrent prefill requests against the policy."""
+
+    renderer: RendererConfig = AutoRendererConfig()
+    """Renderer family for the hint block. The tokenizer is always the live
+    policy's (self-distillation has no separate model — not configurable).
+    Defaults to ``"auto"`` (resolved from the policy tokenizer); set explicitly
+    to match a non-auto policy renderer."""
 
 
 class SFTAlgoConfig(BaseAlgoConfig):

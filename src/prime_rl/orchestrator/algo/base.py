@@ -1,50 +1,45 @@
-"""The per-env algorithm runtime: base class and pipeline phase functions.
+"""The per-env algorithm runtime: the :class:`Algorithm` base class.
 
 Each named class in this package *is* one training algorithm, one module per
-algorithm: it owns the algorithm's three scoring hooks directly —
-``score_rollout`` (per arrival), ``score_group`` (per group), ``score_batch``
-(per batch) — and declares which loss component its action tokens feed
-(``action_loss_type``). Reading a module top to bottom reads the
-algorithm; writing your own is subclassing :class:`Algorithm` and overriding
-the hooks its signal needs. Shared math (group normalization, prefill
-alignment) lives as plain functions in ``advantage.py``; duplication of
-orchestration between similar algorithms (e.g. OPD and OPSD) is accepted so
-each module stays self-contained.
+algorithm: it owns the algorithm's two scoring hooks directly —
+``score_rollout`` (per arrival) and ``score_group`` (per group) — and declares
+which loss component its action tokens feed (``action_loss_type``). Reading a
+module top to bottom reads the algorithm; writing your own is subclassing
+:class:`Algorithm` and overriding the hooks its signal needs. Shared math (group
+normalization, prefill alignment) lives as plain functions in ``advantage.py``;
+duplication of orchestration between similar algorithms (e.g. OPD and OPSD) is
+accepted so each module stays self-contained.
 
-The three hooks are one scope-and-timing ladder — each wider scope is
-unlocked by a later barrier, so the two axes coincide. All three are
-``async`` (any stage may do I/O); a hook that only does advantage math never
-awaits:
+The two hooks are one scope-and-timing ladder — the wider scope is unlocked by
+a later barrier, so the two axes coincide. Both are ``async`` (either may do
+I/O); a hook that only does advantage math never awaits:
 
 - ``score_rollout(rollout)`` — one rollout, on arrival: rollout-local signals
-  (raw reward, process rewards, echo's observation weighting). No siblings.
+  (raw reward, process rewards, echo's observation weighting) *and* per-rollout
+  I/O against another model — an inference pool the algorithm connected in
+  ``setup()`` (a frozen teacher) or the live policy (opsd's self-distillation),
+  queried with bounded concurrency. No siblings.
 - ``score_group(group)`` — the cohort, on group completion, *before* filtering
   (filters read the streams): group-relative credit (GRPO/MaxRL baselines).
-- ``score_batch(batch)`` — the batch's survivors, *after* filtering: the home
-  for I/O against another model — an inference pool the algorithm connected in
-  ``setup()`` (e.g. a teacher) — where queries are batched for concurrency and,
-  running after filtering, dropped rollouts cost nothing.
 
 How rollouts are *produced* is not the algorithm's concern: that is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`, and sample construction
 (interleaving, with observation-token provenance via structural node
 attribution) is pure pipeline.
 
-The pipeline (dispatcher, train sink, orchestrator) calls the module-level
-phase functions (:func:`finalize_rollout`, :func:`finalize_group`,
-:func:`finalize_batch`) and reads the class declarations; it never branches on
-algorithm config fields or model roles — liveness of a reference is the only
-runtime distinction. prime-rl hosts exactly one model — the trainable policy,
-whose pool every algorithm is handed (``self.policy_pool``): use it for
-anything that scores against the live model (opsd's self-distillation teacher,
-an LLM judge, ...). Every *frozen* model an algorithm needs is an external
-endpoint it *connects to* (never launches) and owns, in :meth:`Algorithm.setup`.
+The pipeline (train sink) drives each algorithm through its non-virtual
+:meth:`Algorithm.finalize_rollout` / :meth:`Algorithm.finalize_group` methods
+and reads the class declarations; it never branches on algorithm config fields
+or model roles — liveness of a reference is the only runtime distinction.
+prime-rl hosts exactly one model — the trainable policy, whose pool every
+algorithm is handed (``self.policy_pool``): use it for anything that scores
+against the live model (opsd's self-distillation teacher, an LLM judge, ...).
+Every *frozen* model an algorithm needs is an external endpoint it *connects to*
+(never launches) and owns, in :meth:`Algorithm.setup`.
 """
 
 from __future__ import annotations
 
-import asyncio
-from collections import defaultdict
 from typing import TYPE_CHECKING, ClassVar
 
 from prime_rl.configs.algorithm import ActionLossType, AlgoConfig, FrozenModelConfig
@@ -53,9 +48,7 @@ from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from renderers import RendererConfig
-    from renderers.base import Renderer
 
-    from prime_rl.orchestrator.envs import TrainEnvs
     from prime_rl.orchestrator.types import Rollout
     from prime_rl.utils.client import InferencePool
 
@@ -91,47 +84,43 @@ class Algorithm:
     interprets the ``sampling`` half).
 
     Everything on this class is yours to override; the pipeline drives the
-    compilation through the module-level phase functions below
-    (:func:`finalize_rollout` / :func:`finalize_group` / :func:`finalize_batch`)
-    and never calls anything else. The surface is:
+    compilation through the non-virtual :meth:`finalize_rollout` /
+    :meth:`finalize_group` methods and never calls anything else. The surface is:
 
     - declarations — which loss component the action tokens feed
       (``action_loss_type``);
     - lifecycle — :meth:`setup` connects client pools to the frozen models
       the algorithm declares, resolving each reference via :meth:`connect`;
-    - the three scoring hooks, each ``async`` and given the :class:`Rollout`
+    - the two scoring hooks, each ``async`` and given the :class:`Rollout`
       directly — read the trace, write credit via
       :meth:`Rollout.assign_advantages`. They are
-      async so any stage may do I/O — e.g. a process-reward model at arrival,
-      or a judge at group time whose signal a pre-batch filter then reads; a
-      hook that only does advantage math simply never awaits.
+      async so either stage may do I/O — e.g. a process-reward model or a
+      teacher at arrival, or a judge at group time whose signal a pre-batch
+      filter then reads; a hook that only does advantage math simply never
+      awaits.
 
-      - :meth:`score_rollout` — one rollout, on arrival: rollout-local credit
-        or observation ce weights. Default: nothing.
+      - :meth:`score_rollout` — one rollout, on arrival: rollout-local credit,
+        observation ce weights, or per-token results from a model the algorithm
+        connected in :meth:`setup` (e.g. teacher reference logprobs). Default:
+        nothing.
       - :meth:`score_group` — the cohort, *before* filtering (filters read the
         streams): group-relative credit. Default: nothing — rollouts keep
         ``advantages=None``, so advantage-based filters skip them.
-      - :meth:`score_batch` — the batch's survivors, *after* filtering:
-        query an inference pool the algorithm connected to another model in
-        :meth:`setup` (e.g. a teacher) and attach per-token results (e.g.
-        reference logprobs). Default: nothing.
 
-    ``score_batch`` is the home for I/O against another model: it runs after
-    filtering, so only survivors cost that compute. I/O in ``score_rollout`` /
-    ``score_group`` runs *before* the pre-batch filters — do it when a filter
-    must read the result, accepting that it pays compute on rollouts that may
-    then be filtered out.
+    Model I/O lives in :meth:`score_rollout`: it runs at arrival, *before* the
+    pre-batch filters, so it pays compute on rollouts that may then be filtered
+    out — accepted for the simpler one-rollout-at-a-time shape.
 
-    Constructed with the algorithm config it interprets plus the two
-    host-owned resources: the live policy pool (``self.policy_pool`` — always
-    available, never closed by the algorithm) and the policy's renderer (the
-    canonical messages → token ids path; ``None`` under MITO)."""
+    Constructed with the algorithm config it interprets plus the live policy
+    pool (``self.policy_pool`` — always available, never closed by the
+    algorithm). An algorithm that needs to tokenize (e.g. opsd's demonstration
+    hint) builds its own renderer in :meth:`setup` from its config; the policy's
+    renderer is not threaded in."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
-    def __init__(self, config: AlgoConfig, policy_pool: InferencePool, renderer: Renderer | None):
+    def __init__(self, config: AlgoConfig, policy_pool: InferencePool):
         self.policy_pool = policy_pool
-        self.renderer = renderer
         self.connected_pools: list[InferencePool] = []  # frozen pools connected in setup(); closed at shutdown
 
     async def setup(self) -> None:
@@ -150,44 +139,27 @@ class Algorithm:
 
     async def score_rollout(self, rollout: Rollout) -> None:
         """Arrival phase, one rollout, before its group is complete: write
-        rollout-local credit (``rollout.assign_advantages``) or observation ce
-        weights (echo). No siblings, no group stats."""
+        rollout-local credit (``rollout.assign_advantages``), observation ce
+        weights (echo), or per-token results from a model — an inference pool
+        connected in :meth:`setup`, or the live policy (opsd). No siblings, no
+        group stats."""
 
     async def score_group(self, group: list[Rollout]) -> None:
         """Group phase, the finalized cohort, before filtering: write
         group-relative credit."""
 
-    async def score_batch(self, batch: list[Rollout]) -> None:
-        """Ship phase, survivors only, after filtering, async: query the
-        inference pools the algorithm connected in :meth:`setup` and attach
-        per-token results (e.g. reference logprobs)."""
+    async def finalize_rollout(self, rollout: Rollout) -> None:
+        """Arrival phase (non-virtual): rollout-local scoring as each rollout is
+        tokenized."""
+        if rollout.samples:
+            await self.score_rollout(rollout)
 
-
-async def finalize_rollout(algorithm: Algorithm, rollout: Rollout) -> None:
-    """Arrival phase: rollout-local scoring as each rollout is tokenized."""
-    if rollout.samples:
-        await algorithm.score_rollout(rollout)
-
-
-async def finalize_group(algorithm: Algorithm, rollouts: list[Rollout]) -> None:
-    """Group phase: group-relative scoring, then stamp each sample's wire
-    fields (the advantage stream + loss routing). After this the records are
-    frozen — groups die at stamping."""
-    await algorithm.score_group(rollouts)
-    for rollout in rollouts:
-        stamp_advantages(rollout)
-        for sample in rollout.samples:
-            stamp_loss_routing(sample, algorithm.action_loss_type)
-
-
-async def finalize_batch(train_envs: TrainEnvs, rollouts: list[Rollout]) -> None:
-    """Ship phase: run each env's ``score_batch`` over its unfiltered rollouts
-    (survivors), concurrently across envs. Per-env concurrency is bounded by
-    the algorithm's own config; envs without references return immediately."""
-    by_env: dict[str, list[Rollout]] = defaultdict(list)
-    for rollout in rollouts:
-        if not rollout.is_filtered:
-            by_env[rollout.env_name].append(rollout)
-    await asyncio.gather(
-        *(train_envs.get(env_name).algorithm.score_batch(env_rollouts) for env_name, env_rollouts in by_env.items())
-    )
+    async def finalize_group(self, rollouts: list[Rollout]) -> None:
+        """Group phase (non-virtual): group-relative scoring, then stamp each
+        sample's wire fields (the advantage stream + loss routing). After this
+        the records are frozen — groups die at stamping."""
+        await self.score_group(rollouts)
+        for rollout in rollouts:
+            stamp_advantages(rollout)
+            for sample in rollout.samples:
+                stamp_loss_routing(sample, self.action_loss_type)

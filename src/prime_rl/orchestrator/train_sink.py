@@ -1,7 +1,9 @@
 """TrainSink: three-level rollout sink for the training side.
 
 1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
-   dispatcher producing more rollouts). Errored rollouts skip this.
+   dispatcher producing more rollouts), then the env algorithm's
+   ``finalize_rollout`` (rollout-local scoring + any reference I/O). Errored
+   rollouts skip this.
 2. ``process_group`` — filters errored rollouts, hands survivors to the env
    algorithm's ``finalize_group`` (advantages + per-sample wire stamping),
    runs the pre-batch filter pass.
@@ -9,7 +11,7 @@
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
 ``add()`` returns ``TrainBatch | None``. I/O concerns (ship to trainer,
-save_rollouts, monitor.log, reference scoring) live on the orchestrator.
+save_rollouts, monitor.log) live on the orchestrator.
 """
 
 from __future__ import annotations
@@ -19,7 +21,6 @@ import uuid
 from collections import defaultdict
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.algo import finalize_group, finalize_rollout
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import trace_to_samples
@@ -152,9 +153,9 @@ class TrainSink:
         )
         rollout.samples = samples or []
         # Arrival phase: rollout-local scoring (raw reward, echo observation
-        # weighting) runs as soon as the rollout is tokenized — before its
-        # group is complete.
-        await finalize_rollout(self.train_envs.get(rollout.env_name).algorithm, rollout)
+        # weighting, opd/opsd reference logprobs) runs as soon as the rollout is
+        # tokenized — before its group is complete.
+        await self.train_envs.get(rollout.env_name).algorithm.finalize_rollout(rollout)
 
     async def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
@@ -187,7 +188,7 @@ class TrainSink:
         # Advantages + per-sample wire stamping (advantage stream, loss
         # routing) are the algorithm's job (finalize_group); the sink only
         # owns the grouping mechanics.
-        await finalize_group(env.algorithm, survivors)
+        await env.algorithm.finalize_group(survivors)
 
         # The env has a single sampling temperature; fan it out per token
         # (context tokens are masked out, so their temperature is don't-care).

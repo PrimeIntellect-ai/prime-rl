@@ -8,8 +8,6 @@ from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.utils.client import StaticInferencePool
 
 if TYPE_CHECKING:
-    from renderers.base import Renderer
-
     from prime_rl.orchestrator.types import Rollout
     from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
@@ -28,26 +26,27 @@ class OPDAlgorithm(Algorithm):
 
     action_loss_type = "ref_kl"
 
-    def __init__(self, config: OPDAlgoConfig, policy_pool: InferencePool, renderer: Renderer | None):
-        super().__init__(config, policy_pool, renderer)
+    def __init__(self, config: OPDAlgoConfig, policy_pool: InferencePool):
+        super().__init__(config, policy_pool)
         self.max_concurrent = config.max_concurrent
         self.teacher = config.teacher
         self.teacher_pool: StaticInferencePool | None = None  # static teacher endpoint, connected in setup()
+        self._semaphore: asyncio.Semaphore | None = None  # bounds concurrent teacher queries; created in setup()
 
     async def setup(self) -> None:
         pool = await self.connect(self.teacher)
         if not isinstance(pool, StaticInferencePool):
             raise TypeError("opd teacher must be a static endpoint — prefill scoring needs fixed endpoints")
         self.teacher_pool = pool
+        self._semaphore = asyncio.Semaphore(self.max_concurrent)
 
-    async def score_batch(self, batch: list[Rollout]) -> None:
+    async def score_rollout(self, rollout: Rollout) -> None:
         pool = self.teacher_pool
-        assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
-        semaphore = asyncio.Semaphore(self.max_concurrent)
-        samples = [sample for rollout in batch for sample in rollout.samples]
+        semaphore = self._semaphore
+        assert pool is not None and semaphore is not None, "Algorithm.setup() must run first"
 
         async def score_sample(sample: TrainingSample) -> None:
             async with semaphore:
                 sample.ref_logprobs = await pool.score(list(sample.token_ids))
 
-        await asyncio.gather(*(score_sample(sample) for sample in samples))
+        await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))

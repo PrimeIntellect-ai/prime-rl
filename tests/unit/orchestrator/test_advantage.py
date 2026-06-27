@@ -147,14 +147,14 @@ def _scalar(rollout: Rollout) -> float:
 
 def _grpo(group: list[Rollout], length_penalty=None) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
-    algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), policy_pool=None, renderer=None)
+    algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), policy_pool=None)
     asyncio.run(algo.score_group(group))
     return [_scalar(rollout) for rollout in group]
 
 
 def _max_rl(group: list[Rollout]) -> list[float]:
     """Drive ``MaxRLAlgorithm.score_group`` and read back each per-rollout scalar."""
-    algo = MaxRLAlgorithm(MaxRLAlgoConfig(), policy_pool=None, renderer=None)
+    algo = MaxRLAlgorithm(MaxRLAlgoConfig(), policy_pool=None)
     asyncio.run(algo.score_group(group))
     return [_scalar(rollout) for rollout in group]
 
