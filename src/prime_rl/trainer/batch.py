@@ -95,37 +95,10 @@ def _truncate_mm(
     return cut, sliced
 
 
-def _encoded_tensor_itemsize(encoded: EncodedTensor) -> int:
-    dtype = encoded.dtype.replace("numpy.", "").replace("torch.", "")
-    return np.dtype(dtype).itemsize
-
-
-def _validate_encoded_tensor_payload(encoded: EncodedTensor) -> None:
-    expected_nbytes = int(np.prod(encoded.shape)) * _encoded_tensor_itemsize(encoded)
-    if len(encoded.data) != expected_nbytes:
-        raise ValueError(
-            "EncodedTensor byte length does not match dtype and shape: "
-            f"dtype={encoded.dtype}, shape={encoded.shape}, "
-            f"data_nbytes={len(encoded.data)}, expected_nbytes={expected_nbytes}"
-        )
-
-
-def _append_encoded_tensor(dst: EncodedTensor, src: EncodedTensor, key: str) -> None:
-    _validate_encoded_tensor_payload(dst)
-    _validate_encoded_tensor_payload(src)
-    if dst.dtype != src.dtype:
-        raise ValueError(f"Cannot pack mm_kwargs[{key!r}] with different dtypes: {dst.dtype} vs {src.dtype}")
-    if len(dst.shape) == 0 or len(dst.shape) != len(src.shape) or dst.shape[1:] != src.shape[1:]:
-        raise ValueError(f"Cannot pack mm_kwargs[{key!r}] with incompatible shapes: {dst.shape} vs {src.shape}")
-    dst.data += src.data
-    dst.shape[0] += src.shape[0]
-
-
 def _append_mm_kwargs(dst: dict[str, EncodedTensor], src: dict[str, EncodedTensor]) -> None:
-    if set(dst) != set(src):
-        raise ValueError(f"Cannot pack mm_kwargs with different keys: {sorted(dst)} vs {sorted(src)}")
     for key in dst:
-        _append_encoded_tensor(dst[key], src[key], key)
+        dst[key].data += src[key].data
+        dst[key].shape[0] += src[key].shape[0]
 
 
 def _can_pack_mm_kwargs(dst: dict[str, EncodedTensor] | None, src: dict[str, EncodedTensor] | None) -> bool:
@@ -138,10 +111,6 @@ def _can_pack_mm_kwargs(dst: dict[str, EncodedTensor] | None, src: dict[str, Enc
         and dst[key].shape[1:] == src[key].shape[1:]
         for key in dst
     )
-
-
-def _has_video_tokens(sample: MicroBatch) -> bool:
-    return sample.mm_token_type_ids is not None and 2 in sample.mm_token_type_ids
 
 
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
@@ -284,8 +253,6 @@ class _MicroBatchBin:
         if not pack_multimodal:
             return False
         if self.first_lora_idx != lora_idx:
-            return False
-        if (existing_mm_sample is not None and _has_video_tokens(existing_mm_sample)) or _has_video_tokens(sample):
             return False
         if existing_mm_sample is not None and sample_is_mm:
             return _can_pack_mm_kwargs(existing_mm_sample.mm_kwargs, sample.mm_kwargs)
