@@ -1,12 +1,41 @@
+from pathlib import Path
 from typing import Generator, Iterable
 
 import torch
 from torch.nn import Module
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
+from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
 
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
+
+
+def get_vllm_model(model_runner) -> Module:
+    """Extract the underlying model from a vLLM model runner."""
+    if hasattr(model_runner.model, "runnable"):
+        return model_runner.model.runnable
+    assert isinstance(model_runner.model, Module)
+    return model_runner.model
+
+
+def get_weights_iterator(
+    model: Module, weight_path: Path | str, load_config, model_config
+) -> Iterable[tuple[str, torch.Tensor]]:
+    """Build a vLLM weights iterator from a checkpoint path or model name."""
+    model_loader = get_model_loader(load_config)
+    assert isinstance(model_loader, DefaultModelLoader)
+    revision = None
+    if not Path(weight_path).exists():
+        revision = getattr(model_config, "revision", None)
+    local_source = DefaultModelLoader.Source(
+        str(weight_path),
+        revision=revision,
+        prefix="",
+        fall_back_to_pt=getattr(model, "fall_back_to_pt_during_load", True),
+        allow_patterns_overrides=getattr(model, "allow_patterns_overrides", None),
+    )
+    return model_loader._get_weights_iterator(local_source)
 
 
 def load_weights_checkpoint_layerwise(

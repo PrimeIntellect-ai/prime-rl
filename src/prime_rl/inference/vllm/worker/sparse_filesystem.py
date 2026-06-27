@@ -3,9 +3,12 @@ from typing import TYPE_CHECKING, Iterable
 
 import torch
 from torch.nn import Module
-from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 
-from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
+from prime_rl.inference.vllm.worker.weight_transfer import (
+    get_vllm_model,
+    get_weights_iterator,
+    load_weights_checkpoint_layerwise,
+)
 from prime_rl.utils.sparse_update import (
     apply_sparse_update,
     apply_sparse_update_to_params,
@@ -21,33 +24,6 @@ if TYPE_CHECKING:
     Worker = Worker
 else:
     Worker = object
-
-
-def get_vllm_model(model_runner) -> Module:
-    """Extract the underlying model from a vLLM model runner."""
-    if hasattr(model_runner.model, "runnable"):
-        model = model_runner.model.runnable
-    else:
-        model = model_runner.model
-    assert isinstance(model, Module)
-    return model
-
-
-def get_weights_iterator(model: Module, weight_path: Path | str, load_config, model_config):
-    """Build a vLLM weights iterator from a checkpoint path or model name."""
-    model_loader = get_model_loader(load_config)
-    assert isinstance(model_loader, DefaultModelLoader)
-    revision = None
-    if not Path(weight_path).exists():
-        revision = getattr(model_config, "revision", None)
-    local_source = DefaultModelLoader.Source(
-        str(weight_path),
-        revision=revision,
-        prefix="",
-        fall_back_to_pt=getattr(model, "fall_back_to_pt_during_load", True),
-        allow_patterns_overrides=getattr(model, "allow_patterns_overrides", None),
-    )
-    return model_loader._get_weights_iterator(local_source)
 
 
 class SparseFileSystemWeightUpdateWorker(Worker):
