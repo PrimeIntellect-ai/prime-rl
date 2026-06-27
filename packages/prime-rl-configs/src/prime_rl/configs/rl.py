@@ -32,6 +32,9 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
+from prime_rl.configs.trainer import (
+    SparseFileSystemWeightBroadcastConfig as TrainerSparseFileSystemWeightBroadcastConfig,
+)
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
@@ -329,8 +332,11 @@ class RLConfig(BaseConfig):
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
             elif self.weight_broadcast.type in ("filesystem", "sparse_filesystem"):
-                if self.trainer.weight_broadcast.type not in ("filesystem", "sparse_filesystem"):
-                    self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
+                if self.trainer.weight_broadcast.type != self.weight_broadcast.type:
+                    if self.weight_broadcast.type == "sparse_filesystem":
+                        self.trainer.weight_broadcast = TrainerSparseFileSystemWeightBroadcastConfig()
+                    else:
+                        self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
                     type=self.weight_broadcast.type
                 )

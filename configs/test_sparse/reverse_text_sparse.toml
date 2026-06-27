@@ -1,0 +1,36 @@
+# End-to-end test: reverse text with sparse filesystem weight broadcast
+
+max_steps = 6
+seq_len = 2048
+
+[ckpt]
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator]
+batch_size = 64
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[inference]
+gpu_memory_utilization = 0.7
+
+[weight_broadcast]
+type = "sparse_filesystem"
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
