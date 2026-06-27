@@ -471,19 +471,26 @@ class BaseWeightBroadcastConfig(BaseConfig):
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
-    sparse: bool = False
-    """Write sparse value patches instead of full HF-compatible checkpoints for filesystem weight broadcast."""
-
-    kernel_format: bool = False
-    """Write sparse patches in vLLM kernel format (stacked param names, optional FP8 quantization) instead of HF format.
-    When enabled, the receiver applies patches directly to GPU parameters via index_copy_ without a CPU cache.
-    Requires the model to implement ``convert_layer_to_vllm_kernel``."""
-
     save_sharded: bool = True
     """Save the weight checkpoint in sharded format."""
 
     save_format: Literal["safetensors", "torch"] = "safetensors"
     """Weight checkpoint serialization format."""
+
+
+class SparseFileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    type: Literal["sparse_filesystem"] = "sparse_filesystem"
+
+    kernel_format: bool = False
+    """Write sparse patches in vLLM kernel format (stacked param names) instead of HF format.
+    When enabled, the receiver applies patches directly to GPU parameters via index_copy_ without a CPU cache.
+    Requires the model to implement ``convert_layer_to_vllm_kernel``."""
+
+    save_sharded: bool = True
+    """Save the weight checkpoint in sharded format (used for full checkpoints)."""
+
+    save_format: Literal["safetensors", "torch"] = "safetensors"
+    """Weight checkpoint serialization format (used for full checkpoints)."""
 
 
 class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
@@ -507,7 +514,8 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | SparseFileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 

@@ -117,22 +117,20 @@ LoRA pairs naturally with [multi-tenant training](#multi-tenant-training) — ea
 
 ## Sparse Filesystem Weight Sync
 
-Filesystem weight broadcast defaults to writing a full HF-compatible checkpoint at each policy update. To send sparse BF16 value patches instead, enable sparse updates on the trainer filesystem broadcast config:
+Filesystem weight broadcast defaults to writing a full HF-compatible checkpoint at each policy update. To send sparse value patches instead, use the `sparse_filesystem` transport type:
 
 ```toml
 [trainer.weight_broadcast]
-type = "filesystem"
-sparse = true
+type = "sparse_filesystem"
 ```
 
-By default, sparse sync captures the trainer's initial BF16 weight view after model load or checkpoint resume. Each later broadcast writes `sparse_update_manifest.json` plus sparse changed values under `broadcasts/step_N/`; inference reconstructs the dense BF16 view locally and reloads it through the normal vLLM path.
+Sparse sync captures the trainer's initial BF16 weight view after model load or checkpoint resume. Each later broadcast writes `sparse_update_manifest.json` plus sparse changed values under `broadcasts/step_N/`; inference reconstructs the dense BF16 view locally and reloads it through the normal vLLM path.
 
 For models that implement kernel-format conversion (`convert_layer_to_vllm_kernel`), set `kernel_format = true` to write sparse patches in vLLM kernel format with stacked parameter names. The receiver applies patches directly to GPU parameters via `index_copy_` without maintaining a CPU weight cache:
 
 ```toml
 [trainer.weight_broadcast]
-type = "filesystem"
-sparse = true
+type = "sparse_filesystem"
 kernel_format = true
 ```
 

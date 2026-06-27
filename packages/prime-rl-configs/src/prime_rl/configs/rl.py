@@ -32,6 +32,9 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
+from prime_rl.configs.trainer import (
+    SparseFileSystemWeightBroadcastConfig as TrainerSparseFileSystemWeightBroadcastConfig,
+)
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
@@ -115,7 +118,7 @@ class SharedModelConfig(BaseConfig):
 
 
 class SharedWeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem"] = "filesystem"
+    type: Literal["nccl", "filesystem", "sparse_filesystem"] = "filesystem"
     """Weight broadcast transport."""
 
     port: int = 29501
@@ -313,18 +316,10 @@ class RLConfig(BaseConfig):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference."""
         if self.weight_broadcast is not None:
             if self.weight_broadcast.type == "nccl":
-                trainer_weight_broadcast = self.trainer.weight_broadcast
-                if (
-                    isinstance(trainer_weight_broadcast, TrainerFileSystemWeightBroadcastConfig)
-                    and trainer_weight_broadcast.sparse
-                ):
-                    raise ValueError("trainer.weight_broadcast.sparse = true requires filesystem weight broadcast.")
-                if (
-                    isinstance(trainer_weight_broadcast, TrainerFileSystemWeightBroadcastConfig)
-                    and trainer_weight_broadcast.kernel_format
-                ):
+                if isinstance(self.trainer.weight_broadcast, TrainerSparseFileSystemWeightBroadcastConfig):
                     raise ValueError(
-                        "trainer.weight_broadcast.kernel_format = true requires filesystem weight broadcast."
+                        "trainer.weight_broadcast.type = 'sparse_filesystem' requires "
+                        "weight_broadcast.type = 'filesystem' or 'sparse_filesystem'."
                     )
 
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
@@ -342,10 +337,12 @@ class RLConfig(BaseConfig):
                     inference_world_size=inference_world_size,
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
-            elif self.weight_broadcast.type == "filesystem":
-                if self.trainer.weight_broadcast.type != "filesystem":
+            elif self.weight_broadcast.type in ("filesystem", "sparse_filesystem"):
+                if self.trainer.weight_broadcast.type not in ("filesystem", "sparse_filesystem"):
                     self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
-                self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
+                self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
+                    type=self.weight_broadcast.type
+                )
             if self.inference is not None:
                 self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
