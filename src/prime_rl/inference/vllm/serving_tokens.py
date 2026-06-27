@@ -194,10 +194,10 @@ def _materialize_raw_image_ref_sync(
     trust_remote_code: bool,
 ):
     from PIL import Image
-    from renderers.mm_store import raw_image_path, split_mmraw_ref
+    from renderers.mm_store import raw_image_path, split_raw_mm_ref
 
     try:
-        ref = split_mmraw_ref(raw_ref)
+        ref = split_raw_mm_ref(raw_ref)
         if ref.modality != expected_modality:
             raise ValueError(f"Expected modality {expected_modality!r}, got {ref.modality!r}")
         if ref.mm_hash != expected_hash:
