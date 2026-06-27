@@ -147,14 +147,18 @@ srun bash -s <<'CLEANUP_SH'
     pkill -9 -x mooncake_client 2>/dev/null
     sleep 2
     rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
-    # Node-local compile caches from this job on this host (see cache-node-local.sh).
-    rm -rf /tmp/torch_inductor_${SLURM_JOB_ID}_$(hostname -s) \
-           /tmp/triton_cache_${SLURM_JOB_ID}_$(hostname -s) \
-           /tmp/vllm_cache_${SLURM_JOB_ID}_$(hostname -s) \
-           /tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname -s) 2>/dev/null
+    if [ "${PRIME_RL_CLEAN_COMPILE_CACHE:-0}" = "1" ]; then
+        rm -rf /tmp/torch_inductor_${SLURM_JOB_ID}_$(hostname -s) \
+               /tmp/triton_cache_${SLURM_JOB_ID}_$(hostname -s) \
+               /tmp/vllm_cache_${SLURM_JOB_ID}_$(hostname -s) \
+               /tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname -s) 2>/dev/null
+        cache_action=cleaned
+    else
+        cache_action=preserved
+    fi
     procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::|mooncake_" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
-    echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
+    echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB compile_cache=$cache_action"
 CLEANUP_SH
 
 # Run inference
@@ -330,6 +334,7 @@ srun --kill-on-bad-exit=1 bash -c '
     # Required for graph compilation to work
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
 
+    PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_STATS_LOG_DIR="$OUTPUT_DIR/logs/inference" \
     uv run --no-sync inference \
         @ $CONFIG_PATH \
         2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &

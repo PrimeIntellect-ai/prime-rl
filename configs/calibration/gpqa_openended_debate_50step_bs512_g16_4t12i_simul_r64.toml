@@ -1,11 +1,9 @@
 # Fifty-step GPQA open-ended simultaneous debate run (default schedule: propose a||b -> critique a||b -> judge) for one 16-node GH200 allocation.
 #
-# Topology: 3 train nodes + 13 independent inference replicas (TP=4 per 4xGH200 node).
-# Balanced for the patched decode rate (~4.3k tok/s/replica): trainer ~3.3 min/step,
-# rollout ~4 min/step at bs512.
-# Serving runs with the vLLM 0.22 sampler hot-path patches (fix/inference-hotpath):
-# decode measured at ~4.2k tok/s/node under full production sampling, 3.04x the
-# unpatched baseline.
+# Topology: 4 train nodes + 12 independent inference replicas (TP=4 per
+# 4xGH200 node). This is the current production-shaped LoRA-64 4t12i baseline
+# for sampler A/B gates; compare native vs finite-top-k sampled-logprob with
+# startup excluded from the primary metric.
 #
 # Dataset: joanvelja GPQA open-ended (546 examples), 90/10 seeded split
 # (num_eval_examples=55, seed=42 -> train=491 / eval=55, disjoint).
@@ -78,7 +76,7 @@ training_mode = "rl"
 target_lag = 3
 batch_size = 512
 group_size = 16
-max_inflight_rollouts = 1424
+max_inflight_rollouts = 2300   # pair with inference.max_num_seqs=256 (raising one alone buys nothing); ~192/replica over 12
 max_off_policy_steps = 8
 dump_trajectory = false
 dump_failed_train_rollouts = true
@@ -169,7 +167,10 @@ dp = 1
 [inference.vllm_extra]
 moe_backend = "triton"
 gdn_prefill_backend = "triton"
-max_num_seqs = 128
+language_model_only = true
+skip_mm_profiling = true
+mm_processor_cache_gb = 0.0
+max_num_seqs = 256   # decode-slot cap; compute-starved (SM-issue 16%) + KV headroom -> raise; pair with max_inflight_rollouts=2300
 max_num_batched_tokens = 131072
 performance_mode = "throughput"
 generation_config = "vllm"

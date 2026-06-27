@@ -20,9 +20,26 @@ launch_inference_rank() {
         --parallel.dp "$dp" --data-parallel-size-local 1 --api-server-count 1)
     [ -n "$rpc" ] && cmd+=(--data-parallel-rpc-port "$rpc")
     [ -n "$extra" ] && cmd+=(--vllm-extra "$extra")
+    # Opt-in Nsight Systems profiling of the head DP-rank server (PRIME_RL_NSYS=1).
+    # Time-window via PRIME_RL_NSYS_DELAY/DURATION (seconds); no-op when unset.
+    # With a duration, keep the target alive and wait for normal process exit;
+    # otherwise nsys exits after capture and the top-level wait -n tears down.
+    local -a nsys_prefix=()
+    if [ "${PRIME_RL_NSYS:-0}" = "1" ] && [ "$port" = "$BACKEND_PORT" ]; then
+        mkdir -p "$OUTPUT_DIR/nsys"
+        nsys_prefix=("${PRIME_RL_NSYS_BIN:-nsys}" profile
+            --trace=cuda,nvtx,osrt,cublas,cudnn --cuda-memory-usage=true
+            --sample=process-tree --cpuctxsw=process-tree
+            --gpu-metrics-devices=cuda-visible --gpu-metrics-set=gh100
+            --force-overwrite=true --stats=false --kill=none
+            ${PRIME_RL_NSYS_DURATION:+--stop-on-exit=false}
+            ${PRIME_RL_NSYS_DELAY:+--delay=$PRIME_RL_NSYS_DELAY}
+            ${PRIME_RL_NSYS_DURATION:+--duration=$PRIME_RL_NSYS_DURATION}
+            -o "$OUTPUT_DIR/nsys/infer_node${INFER_NODE_RANK}_dp0")
+    fi
     if [ -n "$nixl" ]; then
-        CUDA_VISIBLE_DEVICES="$gpus" VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl" "${cmd[@]}" 2>&1 | tee -a "$log" &
+        CUDA_VISIBLE_DEVICES="$gpus" PRIME_RL_JIT_MONITOR_LOG_DIR="$OUTPUT_DIR/logs/inference" PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_STATS_LOG_DIR="$OUTPUT_DIR/logs/inference" VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl" "${nsys_prefix[@]}" "${cmd[@]}" 2>&1 | tee -a "$log" &
     else
-        CUDA_VISIBLE_DEVICES="$gpus" "${cmd[@]}" 2>&1 | tee -a "$log" &
+        CUDA_VISIBLE_DEVICES="$gpus" PRIME_RL_JIT_MONITOR_LOG_DIR="$OUTPUT_DIR/logs/inference" PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_STATS_LOG_DIR="$OUTPUT_DIR/logs/inference" "${nsys_prefix[@]}" "${cmd[@]}" 2>&1 | tee -a "$log" &
     fi
 }

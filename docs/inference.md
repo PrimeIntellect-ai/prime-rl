@@ -16,6 +16,7 @@ This page covers the inference configuration and the supported features/deployme
     - [KV Cache Offload](#kv-cache-offload)
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
     - [Other vLLM features](#other-vllm-features)
+    - [Finite-top-k sampled-logprob fast path](#finite-top-k-sampled-logprob-fast-path)
     - [Router Replay](#router-replay)
 
 
@@ -249,6 +250,83 @@ We support various other vLLM features. Some of those, such as `enable_dbo`, `en
 [inference.vllm_extra]
 headless = true
 ```
+
+### Finite-top-k sampled-logprob fast path
+
+PrimeRL can opt into a narrow vLLM sampler fast path for rollout policies that
+need only the sampled token's processed behavior-policy logprob. It avoids
+vLLM's full-vocabulary processed-logprob tensor for the finite-top-k case:
+
+```text
+processed logits -> top-K slice -> top-p in K-space -> sample -> scalar logprob
+```
+
+Enable it only for workloads that match the current contract:
+
+```text
+logprobs_mode = processed_logprobs
+sampled-token logprobs only, no requested top alternatives
+random sampling, not greedy
+finite uniform top_k <= 64
+uniform 0 < top_p <= 1
+no per-request RNG generators
+CUDA logits
+```
+
+The path is default-off and version-guarded. It currently supports the pinned
+vLLM and FlashInfer versions in the PrimeRL runtime. If either version drifts,
+the patch raises during vLLM startup so the run does not silently use an
+unvalidated kernel path.
+
+Operator knobs:
+
+```bash
+export PRIME_RL_ENABLE_FINITE_TOPK_SAMPLED_LOGPROB=1
+export PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_TAIL=triton
+export PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_DENSE_PRESENCE=1
+export PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_STATS_INTERVAL=1000
+export PRIME_RL_LOG_FINITE_TOPK_SAMPLED_LOGPROB_FALLBACK=1
+```
+
+Optional warmup/JIT probe knobs:
+
+```bash
+export PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_PRECOMPILE_TAIL=1
+export PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_PRECOMPILE_TOP_K=20
+export PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_PRECOMPILE_TOP_P=0.95
+export PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_PRECOMPILE_VOCAB=248320
+export PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_PRECOMPILE_BATCHES=1,128,256
+```
+
+The precompile knob is default-off and experimental. It calls the patched
+Triton K-tail at `Sampler` construction time before vLLM's post-warmup JIT
+monitor is active. It is useful as a warmup/JIT diagnostic, but it is not a
+proven way to eliminate first-traffic sampler-tail JIT. Production-shaped
+probes showed that batch-1-only warmup was insufficient, and that even warming
+the first observed learner batch shapes did not eliminate `_k_tail_uniform_kernel`
+post-ready JIT. It also does not cover unrelated vLLM/MoE/LoRA kernels.
+
+Set `PRIME_RL_ENABLE_FINITE_TOPK_SAMPLED_LOGPROB=0` or unset it to disable the
+path. The older `PRIME_RL_ENABLE_FLASHINFER_SAMPLED_LOGPROB` and
+`PRIME_RL_FLASHINFER_SAMPLER_*` names are compatibility aliases for existing
+experiment launchers.
+
+Fallback is automatic for unsupported request shapes, including explicit
+`logprob_token_ids`, requested top alternatives, mixed `top_k`/`top_p`, `top_k`
+larger than 64, greedy rows, per-request generators, non-CUDA logits, and
+non-processed-logprob modes. With stats enabled, vLLM logs fast/fallback call
+counts, row hit rate, batch-size buckets, and fallback reasons. Multi-node
+launches also write JSONL sidecars under `logs/inference/` named
+`finite_topk_sampler_stats_*.jsonl`; use `learner_row_hit_rate` and
+`fallback_reason_by_traffic` there when separating learner traffic from
+vLLM warmup/profiling calls.
+
+The post-warmup Triton JIT monitor writes `jit_monitor_*.jsonl` sidecars in the
+same directory. Those records include the kernel name plus a sanitized `details`
+object for Triton hook fields such as `key`, `repr`, `already_compiled`,
+`is_manual_warmup`, and `compile` when Triton provides them. Use those fields
+when debugging whether a post-ready compile is a genuinely new specialization
+or a warmup/lifecycle mismatch.
 
 ### Router Replay
 

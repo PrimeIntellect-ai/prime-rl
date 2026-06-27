@@ -209,14 +209,18 @@ srun "${LANE_SRUN_OPTS[@]}" \
     pkill -9 -x mooncake_client 2>/dev/null
     sleep 2
     rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
-    # Node-local compile caches from this job on this host (see cache-node-local.sh).
-    rm -rf /tmp/torch_inductor_${SLURM_JOB_ID}_$(hostname -s) \
-           /tmp/triton_cache_${SLURM_JOB_ID}_$(hostname -s) \
-           /tmp/vllm_cache_${SLURM_JOB_ID}_$(hostname -s) \
-           /tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname -s) 2>/dev/null
+    if [ "${PRIME_RL_CLEAN_COMPILE_CACHE:-0}" = "1" ]; then
+        rm -rf /tmp/torch_inductor_${SLURM_JOB_ID}_$(hostname -s) \
+               /tmp/triton_cache_${SLURM_JOB_ID}_$(hostname -s) \
+               /tmp/vllm_cache_${SLURM_JOB_ID}_$(hostname -s) \
+               /tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname -s) 2>/dev/null
+        cache_action=cleaned
+    else
+        cache_action=preserved
+    fi
     procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::|mooncake_" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
-    echo "[node-cleanup] $(hostname) lane=$LANE_TAG procs=$procs gpu_mem=${gpu}MiB"
+    echo "[node-cleanup] $(hostname) lane=$LANE_TAG procs=$procs gpu_mem=${gpu}MiB compile_cache=$cache_action"
 CLEANUP_SH
 
 # Run RL
@@ -259,6 +263,8 @@ srun "${LANE_SRUN_OPTS[@]}" \
         exit 1
     fi
     echo "[lane] $(hostname) LANE_NODE_RANK=$LANE_NODE_RANK of $HOSTNAMES_STR"
+    TRAINER_PID=""
+    ORCHESTRATOR_PID=""
 
 {% if num_infer_nodes > 0 -%}
 
@@ -437,7 +443,16 @@ else
     echo $HOSTNAMES_STR | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 
     (
-        WANDB_SHARED_LABEL=trainer uv run --no-sync torchrun \
+        # Opt-in Nsight Systems profiling of the trainer (PRIME_RL_NSYS_TRAINER=1);
+        # captures all local ranks via process-tree. With a duration, keep the
+        # target alive and wait for normal process exit; otherwise nsys exits
+        # after capture and the top-level wait -n tears down.
+        TRAINER_NSYS=""
+        if [ "${PRIME_RL_NSYS_TRAINER:-0}" = "1" ] && [ "$TRAIN_NODE_RANK" -eq 0 ]; then
+            mkdir -p "$OUTPUT_DIR/nsys"
+            TRAINER_NSYS="${PRIME_RL_NSYS_BIN:-nsys} profile --trace=cuda,nvtx,osrt,cublas,cudnn --cuda-memory-usage=true --sample=process-tree --cpuctxsw=process-tree --gpu-metrics-devices=cuda-visible --gpu-metrics-set=gh100 --force-overwrite=true --stats=false --kill=none ${PRIME_RL_NSYS_DURATION:+--stop-on-exit=false} ${PRIME_RL_NSYS_DELAY:+--delay=$PRIME_RL_NSYS_DELAY} ${PRIME_RL_NSYS_DURATION:+--duration=$PRIME_RL_NSYS_DURATION} -o $OUTPUT_DIR/nsys/trainer_node${TRAIN_NODE_RANK}"
+        fi
+        WANDB_SHARED_LABEL=trainer $TRAINER_NSYS uv run --no-sync torchrun \
             --role=trainer \
             --nnodes=$NUM_TRAIN_NODES \
             --nproc-per-node=$GPUS_PER_NODE \
@@ -457,6 +472,7 @@ else
         fi
         exit "$TRAINER_STATUS"
     ) &
+    TRAINER_PID=$!
 {% if num_infer_nodes > 0 %}    fi{% endif %}
 {% if num_infer_nodes > 0 %}
 # Launch the orchestrator on one node. Default is trainer rank 0 (LANE_NODE_RANK ==
@@ -471,15 +487,50 @@ if [ "$LANE_NODE_RANK" -eq "$ORCH_NODE_RANK" ]; then
     {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
     {% endif %}WANDB_SHARED_LABEL=orchestrator uv run --no-sync orchestrator $ORCHESTRATOR_ARGS \
         2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
+    ORCHESTRATOR_PID=$!
 fi
 {% endif %}
 
 # Wait for the first background job to exit and propagate its exit code. This
-# turns background process crashes (router, orchestrator) into task failures
-# that --kill-on-bad-exit=1 can broadcast to the other nodes so the whole job
-# tears down instead of leaving zombies holding the allocation.
+# turns background process crashes into task failures that --kill-on-bad-exit=1
+# can broadcast to the other nodes. A clean orchestrator exit is not enough to
+# tear down the lane: the trainer may still be consuming the final shipped batch
+# and writing token exports/checkpoints.
+set +e
 wait -n
 EXIT_CODE=$?
+set -e
+
+if [ "$EXIT_CODE" -eq 0 ]; then
+    if [ -n "${ORCHESTRATOR_PID:-}" ] && kill -0 "$ORCHESTRATOR_PID" 2>/dev/null; then
+        echo "[$(hostname)] background component exited cleanly - waiting for orchestrator pid $ORCHESTRATOR_PID"
+        set +e
+        wait "$ORCHESTRATOR_PID"
+        ORCHESTRATOR_STATUS=$?
+        set -e
+        if [ "$ORCHESTRATOR_STATUS" -ne 0 ]; then
+            EXIT_CODE=$ORCHESTRATOR_STATUS
+        fi
+    fi
+fi
+
+if [ "$EXIT_CODE" -eq 0 ] && [ ! -f "$OUTPUT_DIR/control/trainer_done" ]; then
+    echo "[$(hostname)] clean component exit before trainer_done - waiting for trainer_done before teardown"
+    if [ -n "${TRAINER_PID:-}" ] && kill -0 "$TRAINER_PID" 2>/dev/null; then
+        set +e
+        wait "$TRAINER_PID"
+        TRAINER_STATUS=$?
+        set -e
+        if [ "$TRAINER_STATUS" -ne 0 ]; then
+            EXIT_CODE=$TRAINER_STATUS
+        fi
+    else
+        while [ ! -f "$OUTPUT_DIR/control/trainer_done" ]; do
+            sleep 2
+        done
+    fi
+fi
+
 REMAINING_PIDS=$(jobs -p)
 {%- if cleanup_grace_period %}
 # Cross-node teardown is driven by `srun --kill-on-bad-exit=1`, which reaps peer

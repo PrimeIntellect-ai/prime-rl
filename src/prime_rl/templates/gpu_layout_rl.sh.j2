@@ -120,9 +120,15 @@ for spec in "${INFERENCE_SPECS[@]}"; do
     log_file="$OUTPUT_DIR/logs/inference/server_${server_idx}.log"
     rpc_root="/tmp/vllm-rpc-${USER:-prime}-${LANE_TAG}-${server_idx}"
     cache_root="/tmp/prime-rl-vllm-cache-${USER:-prime}-${LANE_TAG}-${server_idx}"
-    rm -rf "$rpc_root" "$cache_root"
+    rm -rf "$rpc_root"
+    if [ "${PRIME_RL_CLEAN_COMPILE_CACHE:-0}" = "1" ]; then
+        rm -rf "$cache_root"
+        cache_action=cleaned
+    else
+        cache_action=preserved
+    fi
     mkdir -p "$rpc_root" "$cache_root/vllm" "$cache_root/torchinductor" "$cache_root/triton" "$cache_root/xdg"
-    echo "Starting inference server_${server_idx} on $(hostname) gpu=${gpu_id} port=${port}" | tee "$log_file"
+    echo "Starting inference server_${server_idx} on $(hostname) gpu=${gpu_id} port=${port} compile_cache=$cache_action" | tee "$log_file"
     setsid env \
         CUDA_VISIBLE_DEVICES="$gpu_id" \
         VLLM_RPC_BASE_PATH="$rpc_root" \
@@ -130,6 +136,8 @@ for spec in "${INFERENCE_SPECS[@]}"; do
         TORCHINDUCTOR_CACHE_DIR="$cache_root/torchinductor" \
         TRITON_CACHE_DIR="$cache_root/triton" \
         XDG_CACHE_HOME="$cache_root/xdg" \
+        PRIME_RL_JIT_MONITOR_LOG_DIR="$OUTPUT_DIR/logs/inference" \
+        PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_STATS_LOG_DIR="$OUTPUT_DIR/logs/inference" \
         uv run --no-sync inference \
             @ "$CONFIG_DIR/inference.toml" \
             --server.host 0.0.0.0 \

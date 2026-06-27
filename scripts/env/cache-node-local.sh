@@ -4,7 +4,9 @@
 # writers on a shared Lustre/NFS path corrupt them (observed "Stale file handle"
 # autotune races, and a suspected source of cross-rank engine faults). /tmp is a
 # per-node tmpfs on Isambard GH200; scope the dirs by job + host so concurrent
-# jobs (and the shared, never-wiped /tmp) never collide.
+# jobs (and the shared, never-wiped /tmp) never collide. Set
+# PRIME_RL_COMPILE_CACHE_NAMESPACE to reuse a pinned cache across jobs on the
+# same host after verifying the model/code/vLLM/CUDA shape is unchanged.
 #
 # Single source of truth: every launch path (sbatch RL/SFT/inference, in-alloc
 # gpu_layout, offline-eval) sources this so no path can leak compile artifacts
@@ -13,7 +15,16 @@
 #
 # Idempotent and side-effect-safe to source from `set -euo pipefail` scripts.
 
-_cache_scope="${SLURM_JOB_ID:-${USER:-prime}}_$(hostname -s)"
+_cache_host="$(hostname -s)"
+if [ -n "${PRIME_RL_COMPILE_CACHE_NAMESPACE:-}" ]; then
+    if [[ ! "$PRIME_RL_COMPILE_CACHE_NAMESPACE" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+        echo "PRIME_RL_COMPILE_CACHE_NAMESPACE must contain only A-Z, a-z, 0-9, _, ., and -" >&2
+        return 2 2>/dev/null || exit 2
+    fi
+    _cache_scope="${PRIME_RL_COMPILE_CACHE_NAMESPACE}_${_cache_host}"
+else
+    _cache_scope="${SLURM_JOB_ID:-${USER:-prime}}_${_cache_host}"
+fi
 
 export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/tmp/torch_inductor_${_cache_scope}}"
 export INDUCTOR_CACHE_DIR="${INDUCTOR_CACHE_DIR:-$TORCHINDUCTOR_CACHE_DIR}"
@@ -26,4 +37,4 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/tmp/xdg_cache_${_cache_scope}}"
 
 mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$VLLM_CACHE_ROOT" "$XDG_CACHE_HOME"
 
-unset _cache_scope
+unset _cache_scope _cache_host

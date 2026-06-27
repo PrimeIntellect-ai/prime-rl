@@ -15,8 +15,11 @@ def transformers_v5_compat():
     if not hasattr(Qwen3VLMoeTextConfig, "tie_word_embeddings"):
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
+    from prime_rl.inference.vllm.flashinfer_sampler import apply_flashinfer_sampled_logprob_patch
+    from prime_rl.inference.vllm.jit_monitor import apply_jit_monitor_file_logging_patch
     from prime_rl.inference.vllm.sampler_perf import apply_sampler_perf_patches
 
+    apply_jit_monitor_file_logging_patch()
     _patch_qwen35_lora()
     _patch_lora_key_prefix()
     monkey_patch_nano_v3_reasoning_parser()
@@ -24,6 +27,7 @@ def transformers_v5_compat():
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
     apply_sampler_perf_patches()
+    apply_flashinfer_sampled_logprob_patch()
     monkey_patch_kv_xfer_finished_tolerate_freed()
 
 
