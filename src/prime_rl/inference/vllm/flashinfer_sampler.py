@@ -1,13 +1,13 @@
 """Opt-in finite-top-k sampled-logprob fast path for vLLM 0.22.0.
 
-PrimeRL's rollout paths ask vLLM for processed sampled-token logprobs, but do
-not consume top alternatives or token ranks. The renderer path forces
-``SamplingParams.logprobs=1`` to make completion logprobs appear in its internal
-response, but Prime still only reads the sampled token's scalar logprob. vLLM's
-native processed path materializes full-vocabulary processed logprobs before
-gathering that scalar. This patch handles the narrow finite-top-k case directly:
+PrimeRL's rollout paths ask vLLM for processed sampled-token logprobs. The
+renderer path forces sampled-token completion logprobs, while the learner
+consumes only the sampled token's scalar logprob. vLLM's native processed path
+materializes full-vocabulary processed logprobs before gathering that scalar
+and, for width-1 requests, the top alternate. This patch handles the narrow
+finite-top-k case directly:
 
-    processed logits -> top-K slice -> top-p in K-space -> sample -> scalar logprob
+    processed logits -> top-K slice -> top-p in K-space -> sample -> logprob columns
 
 The current implementation uses FlashInfer for value/index top-k selection and
 a small K-space tail for sampling/logprob. It is environment-gated and
@@ -56,6 +56,8 @@ _PRECOMPILE_TAIL_TOP_P_ENV = "PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_PRECOMPILE_TO
 _PRECOMPILE_TAIL_VOCAB_ENV = "PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_PRECOMPILE_VOCAB"
 _PRECOMPILE_TAIL_BATCH_ENV = "PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_PRECOMPILE_BATCH"
 _PRECOMPILE_TAIL_BATCHES_ENV = "PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_PRECOMPILE_BATCHES"
+_BOUNDARY_TIE_GUARD_ENV = "PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_BOUNDARY_TIE_GUARD"
+_TOP_P_BOUNDARY_TIE_ATOL = 5e-7
 _PATCH_MARKER = "_prime_rl_finite_topk_sampled_logprob"
 _INIT_PATCH_MARKER = "_prime_rl_finite_topk_sampled_logprob_init"
 _SUPPORTED_FLASHINFER = "0.6.11.post2"
@@ -117,6 +119,10 @@ def _use_triton_tail() -> bool:
 
 def _precompile_tail_enabled() -> bool:
     return _truthy(os.environ.get(_PRECOMPILE_TAIL_ENV))
+
+
+def _boundary_tie_guard_enabled() -> bool:
+    return _truthy(os.environ.get(_BOUNDARY_TIE_GUARD_ENV))
 
 
 def _precompile_tail_top_k() -> int:
@@ -484,10 +490,10 @@ def _fallback_traffic_class(
     """Classify fallbacks so synthetic warmup does not poison learner hit rate."""
 
     # vLLM's profiling/warmup sampler calls use SamplingMetadata without a live
-    # InputBatch and without the OpenAI chat width-1 logprob request shape. The
-    # debate learner traffic has a live InputBatch once real requests arrive.
+    # InputBatch and without a concrete output-logprob request width. The debate
+    # learner traffic has a live InputBatch once real requests arrive.
     if (
-        rejection_reason == "max_num_logprobs_not_width1"
+        rejection_reason == "max_num_logprobs_unsupported"
         and sampling_metadata.max_num_logprobs is None
         and _input_batch_cpu_fields(logits.shape[0]) is None
     ):
@@ -735,7 +741,7 @@ def _resolve_fast_path_sampling_with_reason(
     if logprobs_mode != "processed_logprobs":
         return None, "logprobs_mode_not_processed_logprobs"
     if sampling_metadata.max_num_logprobs not in {0, 1}:
-        return None, "max_num_logprobs_not_width1"
+        return None, "max_num_logprobs_unsupported"
     if sampling_metadata.logprob_token_ids:
         return None, "explicit_logprob_token_ids"
     if sampling_metadata.generators:
@@ -807,6 +813,9 @@ def _k_tail_uniform_kernel(
     uniforms,
     out_sampled_ids,
     out_sampled_logprobs,
+    out_top_ids,
+    out_top_logprobs,
+    out_selected_token_ranks,
     K,
     top_p,
     K_BLOCK: tl.constexpr,
@@ -838,26 +847,99 @@ def _k_tail_uniform_kernel(
         tl.where(offsets == sample_rank, row_vals, -float("inf")),
         axis=0,
     )
+    top_id = tl.load(ids + row * K)
+    top_val = tl.load(vals + row * K)
+    selected_rank = tl.sum(tl.where(keep & (row_vals >= sampled_val), 1, 0), axis=0)
 
     tl.store(out_sampled_ids + row, sampled_id)
     tl.store(out_sampled_logprobs + row, sampled_val - max_val - tl.log(support_sum))
+    tl.store(out_top_ids + row, top_id)
+    tl.store(out_top_logprobs + row, top_val - max_val - tl.log(support_sum))
+    tl.store(out_selected_token_ranks + row, selected_rank)
 
 
 def _next_power_of_two(value: int) -> int:
     return 1 << (value - 1).bit_length()
 
 
-def _flashinfer_support(
+def _has_top_k_boundary_tie(sorted_values: torch.Tensor, top_k: int) -> bool:
+    if sorted_values.shape[-1] <= top_k:
+        return False
+    return bool(torch.any(sorted_values[:, top_k - 1] == sorted_values[:, top_k]).item())
+
+
+def _has_top_p_boundary_tie(sorted_values: torch.Tensor, top_p: float) -> bool:
+    if top_p >= 1.0 or sorted_values.shape[-1] <= 1:
+        return False
+
+    weights = torch.softmax(sorted_values, dim=-1, dtype=torch.float32)
+    prefix = weights.cumsum(dim=-1)
+    keep = (prefix - weights) < top_p
+    included_counts = keep.to(torch.int64).sum(dim=-1)
+    valid = (included_counts > 0) & (included_counts < sorted_values.shape[-1])
+    if not bool(valid.any().item()):
+        return False
+
+    boundary_left = included_counts.clamp(1, sorted_values.shape[-1] - 1) - 1
+    boundary_right = included_counts.clamp(0, sorted_values.shape[-1] - 1)
+    left_values = sorted_values.gather(1, boundary_left.unsqueeze(1)).squeeze(1)
+    right_values = sorted_values.gather(1, boundary_right.unsqueeze(1)).squeeze(1)
+    boundary_ties = torch.isclose(
+        left_values,
+        right_values,
+        rtol=0.0,
+        atol=_TOP_P_BOUNDARY_TIE_ATOL,
+    )
+    return bool(torch.any(valid & boundary_ties).item())
+
+
+def _boundary_tie_rejection_reason(
+    sorted_values: torch.Tensor,
+    *,
+    top_p: float,
+    top_k_boundary_tie: bool,
+    boundary_tie_guard: bool,
+) -> str | None:
+    if not boundary_tie_guard:
+        return None
+    if top_k_boundary_tie:
+        return "top_k_boundary_tie"
+    if _has_top_p_boundary_tie(sorted_values, top_p):
+        return "top_p_boundary_tie"
+    return None
+
+
+def _flashinfer_top_k_sorted(
     flashinfer: Any,
     logits: torch.Tensor,
-    sampling_metadata: Any,
     top_k: int,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    assert sampling_metadata.top_p is not None
-
+) -> tuple[torch.Tensor, torch.Tensor]:
     vals, ids = flashinfer.top_k(logits.contiguous(), top_k, sorted=False)
     vals, order = vals.sort(dim=-1, descending=True)
     ids = ids.gather(-1, order)
+    return vals, ids
+
+
+def _flashinfer_top_k_sorted_with_optional_tie_probe(
+    flashinfer: Any,
+    logits: torch.Tensor,
+    top_k: int,
+    detect_boundary_tie: bool,
+) -> tuple[torch.Tensor, torch.Tensor, bool]:
+    probe_k = top_k + 1 if detect_boundary_tie else top_k
+    vals, ids = _flashinfer_top_k_sorted(flashinfer, logits, probe_k)
+    boundary_tie = detect_boundary_tie and _has_top_k_boundary_tie(vals, top_k)
+    if probe_k == top_k:
+        return vals, ids, boundary_tie
+    return vals[:, :top_k].contiguous(), ids[:, :top_k].contiguous(), boundary_tie
+
+
+def _flashinfer_support_from_top_k(
+    vals: torch.Tensor,
+    ids: torch.Tensor,
+    sampling_metadata: Any,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    assert sampling_metadata.top_p is not None
 
     weights = torch.softmax(vals, dim=-1, dtype=torch.float32)
     prefix = weights.cumsum(dim=-1)
@@ -871,19 +953,55 @@ def _flashinfer_support(
     return ids, support_vals, support_logprobs
 
 
+def _support_top1_and_ranks(
+    ids: torch.Tensor,
+    support_logprobs: torch.Tensor,
+    sampled_logprobs: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    top_logprobs, top_offsets = support_logprobs.max(dim=-1)
+    top_ids = ids.gather(1, top_offsets.unsqueeze(1)).squeeze(1).long()
+    selected_token_ranks = (support_logprobs >= sampled_logprobs.unsqueeze(1)).sum(dim=-1).to(torch.int32)
+    return top_ids, top_logprobs, selected_token_ranks
+
+
+def _build_logprob_columns(
+    sampled: torch.Tensor,
+    sampled_logprobs: torch.Tensor,
+    top_ids: torch.Tensor,
+    top_logprobs: torch.Tensor,
+    selected_token_ranks: torch.Tensor,
+    *,
+    max_num_logprobs: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    sampled_i32 = sampled.to(torch.int32)
+    sampled_logprobs = sampled_logprobs.to(torch.float32)
+    selected_token_ranks = selected_token_ranks.to(torch.int32)
+    if max_num_logprobs == 0:
+        return (
+            sampled_i32.unsqueeze(-1),
+            sampled_logprobs.unsqueeze(-1),
+            selected_token_ranks,
+        )
+    if max_num_logprobs == 1:
+        return (
+            torch.stack((sampled_i32, top_ids.to(torch.int32)), dim=1),
+            torch.stack((sampled_logprobs, top_logprobs.to(torch.float32)), dim=1),
+            selected_token_ranks,
+        )
+    raise ValueError(f"unsupported max_num_logprobs={max_num_logprobs}")
+
+
 def _sample_with_logprob_torch(
-    flashinfer: Any,
-    logits: torch.Tensor,
+    vals: torch.Tensor,
+    ids: torch.Tensor,
     sampling_metadata: Any,
-    top_k: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     from vllm.v1.sample.ops.topk_topp_sampler import random_sample
 
-    ids, support_vals, support_logprobs = _flashinfer_support(
-        flashinfer,
-        logits,
+    ids, support_vals, support_logprobs = _flashinfer_support_from_top_k(
+        vals,
+        ids,
         sampling_metadata,
-        top_k,
     )
     probs = torch.softmax(support_vals, dim=-1, dtype=torch.float32)
     sampled_in_topk = random_sample(probs, sampling_metadata.generators)
@@ -892,35 +1010,44 @@ def _sample_with_logprob_torch(
         1,
         sampled_in_topk.unsqueeze(1),
     ).squeeze(1)
-    return sampled, sampled_logprobs
+    top_ids, top_logprobs, selected_token_ranks = _support_top1_and_ranks(
+        ids,
+        support_logprobs,
+        sampled_logprobs,
+    )
+    return sampled, sampled_logprobs, top_ids, top_logprobs, selected_token_ranks
 
 
 def _sample_with_logprob_triton(
-    flashinfer: Any,
-    logits: torch.Tensor,
-    top_k: int,
+    vals: torch.Tensor,
+    ids: torch.Tensor,
     top_p: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    vals, ids = flashinfer.top_k(logits.contiguous(), top_k, sorted=False)
-    vals, order = vals.sort(dim=-1, descending=True)
-    ids = ids.gather(-1, order)
-
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    vals = vals.contiguous()
+    ids = ids.contiguous()
+    top_k = vals.shape[-1]
     batch_size = vals.shape[0]
     uniforms = torch.rand(batch_size, device=vals.device, dtype=torch.float32)
     sampled = torch.empty(batch_size, device=vals.device, dtype=torch.int64)
     sampled_logprobs = torch.empty(batch_size, device=vals.device, dtype=torch.float32)
+    top_ids = torch.empty(batch_size, device=vals.device, dtype=torch.int64)
+    top_logprobs = torch.empty(batch_size, device=vals.device, dtype=torch.float32)
+    selected_token_ranks = torch.empty(batch_size, device=vals.device, dtype=torch.int32)
     _k_tail_uniform_kernel[(batch_size,)](
         vals,
         ids,
         uniforms,
         sampled,
         sampled_logprobs,
+        top_ids,
+        top_logprobs,
+        selected_token_ranks,
         top_k,
         top_p,
         K_BLOCK=_next_power_of_two(top_k),
         num_warps=1,
     )
-    return sampled, sampled_logprobs
+    return sampled, sampled_logprobs, top_ids, top_logprobs, selected_token_ranks
 
 
 def _maybe_precompile_triton_tail(logger) -> None:
@@ -972,7 +1099,8 @@ def _maybe_precompile_triton_tail(logger) -> None:
                     dtype=torch.float32,
                 )
                 for top_p in top_p_values:
-                    _sample_with_logprob_triton(flashinfer, logits, top_k, top_p)
+                    vals, ids = _flashinfer_top_k_sorted(flashinfer, logits, top_k)
+                    _sample_with_logprob_triton(vals, ids, top_p)
             torch.cuda.synchronize(device)
     except Exception as exc:
         logger.warning(
@@ -1024,6 +1152,30 @@ def apply_flashinfer_sampled_logprob_patch() -> None:
         setattr(__init__, _INIT_PATCH_MARKER, True)
         Sampler.__init__ = __init__
 
+    def _sample_native_from_processed_logits(
+        self,
+        logits: torch.Tensor,
+        sampling_metadata,
+        max_num_logprobs: int,
+    ) -> SamplerOutput:
+        sampled, processed_logprobs = self.topk_topp_sampler(
+            logits,
+            sampling_metadata.generators,
+            sampling_metadata.top_k,
+            sampling_metadata.top_p,
+        )
+        assert processed_logprobs is not None
+        sampled = sampled.long()
+        logprobs_tensors = self.gather_logprobs(
+            processed_logprobs,
+            max_num_logprobs,
+            token_ids=sampled,
+        )
+        return SamplerOutput(
+            sampled_token_ids=sampled.to(torch.int32).unsqueeze(-1),
+            logprobs_tensors=logprobs_tensors,
+        )
+
     def forward(
         self,
         logits: torch.Tensor,
@@ -1069,8 +1221,6 @@ def apply_flashinfer_sampled_logprob_patch() -> None:
                 logprobs_mode_override=logprobs_mode_override,
             )
         top_k, top_p = sampling
-        _record_stats(forward, logger, logits.shape[0], fast_path=True)
-        _maybe_log_output_token_stats(forward, logger, sampling_metadata)
 
         logits = logits.to(torch.float32)
         dense_presence_reason = _presence_only_logits_processors_reason(
@@ -1103,6 +1253,54 @@ def apply_flashinfer_sampled_logprob_patch() -> None:
                 sampling_metadata.temperature,
                 sampling_metadata.all_random,
             )
+        for processor in sampling_metadata.logitsprocs.argmax_invariant:
+            logits = processor.apply(logits)
+        boundary_tie_guard = _boundary_tie_guard_enabled()
+        vals, ids, top_k_boundary_tie = _flashinfer_top_k_sorted_with_optional_tie_probe(
+            flashinfer,
+            logits,
+            top_k,
+            detect_boundary_tie=boundary_tie_guard,
+        )
+        max_num_logprobs = sampling_metadata.max_num_logprobs or 0
+        rejection_reason = _boundary_tie_rejection_reason(
+            vals,
+            top_p=top_p,
+            top_k_boundary_tie=top_k_boundary_tie,
+            boundary_tie_guard=boundary_tie_guard,
+        )
+        if rejection_reason is not None:
+            traffic_class = _fallback_traffic_class(
+                logits,
+                sampling_metadata,
+                rejection_reason,
+            )
+            _record_stats(
+                forward,
+                logger,
+                logits.shape[0],
+                fast_path=False,
+                fallback_reason=rejection_reason,
+                traffic_class=traffic_class,
+            )
+            _log_first_fallback(
+                forward,
+                logger,
+                logits,
+                sampling_metadata,
+                logprobs_mode,
+                predict_bonus_token,
+                rejection_reason,
+            )
+            return _sample_native_from_processed_logits(
+                self,
+                logits,
+                sampling_metadata,
+                max_num_logprobs,
+            )
+
+        _record_stats(forward, logger, logits.shape[0], fast_path=True)
+        _maybe_log_output_token_stats(forward, logger, sampling_metadata)
         hit_count = getattr(forward, "_prime_rl_flashinfer_sampled_logprob_hit_count", 0)
         if hit_count < _hit_log_limit():
             setattr(forward, "_prime_rl_flashinfer_sampled_logprob_hit_count", hit_count + 1)
@@ -1124,30 +1322,33 @@ def apply_flashinfer_sampled_logprob_patch() -> None:
                 skip_temperature,
                 sampling_metadata.max_num_logprobs,
             )
-        for processor in sampling_metadata.logitsprocs.argmax_invariant:
-            logits = processor.apply(logits)
         if _use_triton_tail():
-            sampled, sampled_logprobs = _sample_with_logprob_triton(
-                flashinfer,
-                logits,
-                top_k,
+            sampled, sampled_logprobs, top_ids, top_logprobs, selected_token_ranks = _sample_with_logprob_triton(
+                vals,
+                ids,
                 top_p,
             )
         else:
-            sampled, sampled_logprobs = _sample_with_logprob_torch(
-                flashinfer,
-                logits,
+            sampled, sampled_logprobs, top_ids, top_logprobs, selected_token_ranks = _sample_with_logprob_torch(
+                vals,
+                ids,
                 sampling_metadata,
-                top_k,
             )
-        sampled_i32 = sampled.to(torch.int32)
+        token_ids, logprobs, ranks = _build_logprob_columns(
+            sampled,
+            sampled_logprobs,
+            top_ids,
+            top_logprobs,
+            selected_token_ranks,
+            max_num_logprobs=max_num_logprobs,
+        )
         logprobs_tensors = LogprobsTensors(
-            logprob_token_ids=sampled_i32.unsqueeze(-1),
-            logprobs=sampled_logprobs.to(torch.float32).unsqueeze(-1),
-            selected_token_ranks=torch.ones_like(sampled_i32, dtype=torch.int32),
+            logprob_token_ids=token_ids,
+            logprobs=logprobs,
+            selected_token_ranks=ranks,
         )
         return SamplerOutput(
-            sampled_token_ids=sampled_i32.unsqueeze(-1),
+            sampled_token_ids=sampled.to(torch.int32).unsqueeze(-1),
             logprobs_tensors=logprobs_tensors,
         )
 

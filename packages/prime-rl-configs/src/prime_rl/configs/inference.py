@@ -269,6 +269,44 @@ class InferenceExperimentalConfig(BaseConfig):
     pass
 
 
+class FiniteTopKSampledLogprobConfig(BaseConfig):
+    enabled: bool | None = None
+    """Enable the finite-top-k processed sampled-logprob fast path. None preserves ambient environment settings."""
+
+    tail: Literal["torch", "triton"] = "triton"
+    """K-space sampler tail implementation."""
+
+    dense_presence: bool = True
+    """Use the dense presence-penalty shortcut when the request shape supports it."""
+
+    stats_interval: int = Field(1000, ge=0)
+    """Log sampler fast-path/fallback stats every N calls. Zero disables interval logging."""
+
+    hit_log_limit: int = Field(6, ge=0)
+    """Maximum number of first-hit fast-path log lines."""
+
+    log_fallback: bool = True
+    """Log the first fallback reason for debugging production traffic drift."""
+
+    precompile_tail: bool = True
+    """Precompile the Triton K-space tail during vLLM startup."""
+
+    precompile_top_k: int = Field(20, ge=1)
+    """Top-k used for sampler-tail precompile."""
+
+    precompile_top_p: float = Field(0.95, gt=0.0, le=1.0)
+    """Top-p used for sampler-tail precompile."""
+
+    precompile_vocab: int = Field(248320, ge=1)
+    """Vocabulary size used for sampler-tail precompile buffers."""
+
+    precompile_batches: list[int] = Field(default_factory=lambda: [1, 128, 256])
+    """Batch sizes used for sampler-tail precompile."""
+
+    boundary_tie_guard: bool = False
+    """Fall back to native vLLM on exact top-k/top-p boundary ties."""
+
+
 class InferenceConfig(BaseConfig):
     server: ServerConfig = ServerConfig()
 
@@ -330,6 +368,9 @@ class InferenceConfig(BaseConfig):
 
     use_deep_gemm: bool = False
     """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
+
+    finite_topk_sampled_logprob: FiniteTopKSampledLogprobConfig = FiniteTopKSampledLogprobConfig()
+    """Config-backed environment bundle for the finite-top-k sampled-logprob fast path."""
 
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 

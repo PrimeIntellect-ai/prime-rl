@@ -151,6 +151,40 @@ async def _client_set_max_tokens(raw_request: Request | None) -> bool:
     return isinstance(sp, dict) and "max_tokens" in sp
 
 
+def _normalize_bad_words_token_ids(raw: Any) -> list[list[int]]:
+    if not isinstance(raw, list):
+        raise ValueError("extra_args.bad_words_token_ids must be a list of token-id lists")
+
+    normalized: list[list[int]] = []
+    for sequence in raw:
+        if not isinstance(sequence, list) or not sequence:
+            raise ValueError("extra_args.bad_words_token_ids entries must be non-empty lists")
+        token_ids: list[int] = []
+        for token_id in sequence:
+            if isinstance(token_id, bool) or not isinstance(token_id, int) or token_id < 0:
+                raise ValueError("extra_args.bad_words_token_ids values must be non-negative integers")
+            token_ids.append(token_id)
+        normalized.append(token_ids)
+    return normalized
+
+
+def _promote_bad_words_token_ids_extra_arg(sampling_params: SamplingParams) -> None:
+    extra_args = sampling_params.extra_args
+    if not isinstance(extra_args, dict):
+        return
+
+    raw = extra_args.get("bad_words_token_ids")
+    if raw is None:
+        return
+
+    token_ids = _normalize_bad_words_token_ids(raw)
+    extra_args = dict(extra_args)
+    extra_args.pop("bad_words_token_ids")
+    existing = sampling_params.bad_words_token_ids or []
+    sampling_params._bad_words_token_ids = [*existing, *token_ids]
+    sampling_params.extra_args = extra_args or None
+
+
 class PrimeRlServingTokens(ServingTokens):
     """ServingTokens + DP-rank routing + compact routed experts + max_tokens defaulting."""
 
@@ -238,6 +272,7 @@ class PrimeRlServingTokens(ServingTokens):
             )
 
         sampling_params: SamplingParams = request.sampling_params
+        _promote_bad_words_token_ids_extra_arg(sampling_params)
 
         # Upstream ``ServingTokens.serve_tokens`` parses ``request.kv_transfer_params``
         # but never threads it into the engine, so PD disagg never fires on

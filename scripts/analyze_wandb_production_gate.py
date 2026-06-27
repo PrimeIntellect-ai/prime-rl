@@ -25,6 +25,8 @@ DEFAULT_E2E_FAIL_RATIO = 1.03
 DEFAULT_SERVING_PASS_RATIO = 1.10
 DEFAULT_MIN_TRAINER_ROWS = 2
 DEFAULT_MIN_ACTIVE_INFERENCE_ROWS = 10
+DEFAULT_MIN_RUNNING_CAP = 1024.0
+DEFAULT_MIN_WAITING_POSITIVE_FRACTION = 0.5
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,10 @@ class ComparisonReport:
     candidate_trainer_rows: int
     baseline_active_inference_rows: int
     candidate_active_inference_rows: int
+    baseline_running_cap: float | None
+    candidate_running_cap: float | None
+    baseline_waiting_positive_fraction: float | None
+    candidate_waiting_positive_fraction: float | None
     step_speed_ratio: float | None
     serving_throughput_ratio: float | None
     implied_decode_ratio: float | None
@@ -329,6 +335,10 @@ def classify_comparison(
     candidate_trainer_rows: int,
     baseline_active_inference_rows: int,
     candidate_active_inference_rows: int,
+    baseline_running_cap: float | None,
+    candidate_running_cap: float | None,
+    baseline_waiting_positive_fraction: float | None,
+    candidate_waiting_positive_fraction: float | None,
     step_speed_ratio: float | None,
     serving_throughput_ratio: float | None,
     e2e_pass_ratio: float,
@@ -336,6 +346,8 @@ def classify_comparison(
     serving_pass_ratio: float,
     min_trainer_rows: int,
     min_active_inference_rows: int,
+    min_running_cap: float,
+    min_waiting_positive_fraction: float,
 ) -> tuple[str, list[str]]:
     reasons = []
     if baseline_trainer_rows < min_trainer_rows:
@@ -348,21 +360,43 @@ def classify_comparison(
         reasons.append(
             f"candidate active inference rows {candidate_active_inference_rows} < {min_active_inference_rows}"
         )
+    if baseline_running_cap is None:
+        reasons.append("baseline running cap missing")
+    elif baseline_running_cap < min_running_cap:
+        reasons.append(f"baseline running cap {baseline_running_cap:.0f} < {min_running_cap:.0f}")
+    if candidate_running_cap is None:
+        reasons.append("candidate running cap missing")
+    elif candidate_running_cap < min_running_cap:
+        reasons.append(f"candidate running cap {candidate_running_cap:.0f} < {min_running_cap:.0f}")
+    if baseline_waiting_positive_fraction is None:
+        reasons.append("baseline waiting-positive fraction missing")
+    elif baseline_waiting_positive_fraction < min_waiting_positive_fraction:
+        reasons.append(
+            f"baseline waiting-positive fraction {baseline_waiting_positive_fraction:.3f} "
+            f"< {min_waiting_positive_fraction:.3f}"
+        )
+    if candidate_waiting_positive_fraction is None:
+        reasons.append("candidate waiting-positive fraction missing")
+    elif candidate_waiting_positive_fraction < min_waiting_positive_fraction:
+        reasons.append(
+            f"candidate waiting-positive fraction {candidate_waiting_positive_fraction:.3f} "
+            f"< {min_waiting_positive_fraction:.3f}"
+        )
     if reasons:
         return "missing", reasons
     if step_speed_ratio is None:
         reasons.append("missing step speed ratio")
         return "missing", reasons
     if serving_throughput_ratio is None:
-        reasons.append("missing serving throughput ratio")
+        reasons.append("missing W&B aggregate throughput ratio")
     elif serving_throughput_ratio < serving_pass_ratio:
-        reasons.append(f"serving throughput {serving_throughput_ratio:.3f}x < {serving_pass_ratio:.3f}x")
+        reasons.append(f"W&B aggregate throughput {serving_throughput_ratio:.3f}x < {serving_pass_ratio:.3f}x")
 
     if step_speed_ratio >= e2e_pass_ratio:
         if not reasons:
             reasons.append(f"E2E {step_speed_ratio:.3f}x >= {e2e_pass_ratio:.3f}x")
             return "pass", reasons
-        reasons.append(f"E2E {step_speed_ratio:.3f}x passes but serving/supporting gate does not")
+        reasons.append(f"E2E {step_speed_ratio:.3f}x passes but W&B aggregate/supporting gate does not")
         return "mixed", reasons
     if step_speed_ratio >= e2e_fail_ratio:
         reasons.append(
@@ -382,6 +416,8 @@ def compare_reports(
     serving_pass_ratio: float = DEFAULT_SERVING_PASS_RATIO,
     min_trainer_rows: int = DEFAULT_MIN_TRAINER_ROWS,
     min_active_inference_rows: int = DEFAULT_MIN_ACTIVE_INFERENCE_ROWS,
+    min_running_cap: float = DEFAULT_MIN_RUNNING_CAP,
+    min_waiting_positive_fraction: float = DEFAULT_MIN_WAITING_POSITIVE_FRACTION,
 ) -> ComparisonReport:
     step_speed_ratio = safe_ratio(baseline.trainer.step_mean_s, candidate.trainer.step_mean_s)
     serving_throughput_ratio = safe_ratio(
@@ -393,6 +429,10 @@ def compare_reports(
         candidate_trainer_rows=candidate.trainer.rows,
         baseline_active_inference_rows=baseline.inference.active_rows,
         candidate_active_inference_rows=candidate.inference.active_rows,
+        baseline_running_cap=baseline.inference.running_cap,
+        candidate_running_cap=candidate.inference.running_cap,
+        baseline_waiting_positive_fraction=baseline.inference.waiting_positive_fraction,
+        candidate_waiting_positive_fraction=candidate.inference.waiting_positive_fraction,
         step_speed_ratio=step_speed_ratio,
         serving_throughput_ratio=serving_throughput_ratio,
         e2e_pass_ratio=e2e_pass_ratio,
@@ -400,6 +440,8 @@ def compare_reports(
         serving_pass_ratio=serving_pass_ratio,
         min_trainer_rows=min_trainer_rows,
         min_active_inference_rows=min_active_inference_rows,
+        min_running_cap=min_running_cap,
+        min_waiting_positive_fraction=min_waiting_positive_fraction,
     )
     return ComparisonReport(
         baseline=baseline.label,
@@ -410,6 +452,10 @@ def compare_reports(
         candidate_trainer_rows=candidate.trainer.rows,
         baseline_active_inference_rows=baseline.inference.active_rows,
         candidate_active_inference_rows=candidate.inference.active_rows,
+        baseline_running_cap=baseline.inference.running_cap,
+        candidate_running_cap=candidate.inference.running_cap,
+        baseline_waiting_positive_fraction=baseline.inference.waiting_positive_fraction,
+        candidate_waiting_positive_fraction=candidate.inference.waiting_positive_fraction,
         step_speed_ratio=step_speed_ratio,
         serving_throughput_ratio=serving_throughput_ratio,
         implied_decode_ratio=safe_ratio(
@@ -470,17 +516,20 @@ def print_comparisons(comparisons: list[ComparisonReport]) -> None:
         return
     print()
     print(
-        "| baseline | candidate | decision | trainer rows | active inf rows | step speed ratio | "
-        "serving throughput ratio | implied decode ratio | wait frac delta | wait speed ratio | "
+        "| baseline | candidate | decision | trainer rows | active inf rows | inf cap | waiting+ frac | "
+        "step speed ratio | W&B agg tok/s ratio | implied decode ratio | wait frac delta | wait speed ratio | "
         "fwd/bwd ratio | broadcast ratio | reasons |"
     )
-    print("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+    print("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for comparison in comparisons:
         print(
             f"| {comparison.baseline} | {comparison.candidate} | "
             f"{comparison.decision} | "
             f"{comparison.baseline_trainer_rows}/{comparison.candidate_trainer_rows} | "
             f"{comparison.baseline_active_inference_rows}/{comparison.candidate_active_inference_rows} | "
+            f"{fmt(comparison.baseline_running_cap, 0)}/{fmt(comparison.candidate_running_cap, 0)} | "
+            f"{fmt(comparison.baseline_waiting_positive_fraction)}/"
+            f"{fmt(comparison.candidate_waiting_positive_fraction)} | "
             f"{fmt(comparison.step_speed_ratio)} | "
             f"{fmt(comparison.serving_throughput_ratio)} | "
             f"{fmt(comparison.implied_decode_ratio)} | "
@@ -562,6 +611,21 @@ def parse_args() -> argparse.Namespace:
         type=positive_int,
         default=DEFAULT_MIN_ACTIVE_INFERENCE_ROWS,
     )
+    parser.add_argument(
+        "--min-running-cap",
+        type=float,
+        default=DEFAULT_MIN_RUNNING_CAP,
+        help=(
+            "Minimum observed aggregate running_requests cap in each arm. "
+            "Default is a conservative full-production floor; use 256 for single-replica lanes."
+        ),
+    )
+    parser.add_argument(
+        "--min-waiting-positive-fraction",
+        type=float,
+        default=DEFAULT_MIN_WAITING_POSITIVE_FRACTION,
+        help="Minimum fraction of active inference rows with waiting_requests > 0 in each arm.",
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of Markdown.")
     return parser.parse_args()
 
@@ -594,6 +658,8 @@ def main() -> None:
             serving_pass_ratio=args.serving_pass_ratio,
             min_trainer_rows=args.min_trainer_rows,
             min_active_inference_rows=args.min_active_inference_rows,
+            min_running_cap=args.min_running_cap,
+            min_waiting_positive_fraction=args.min_waiting_positive_fraction,
         )
         for baseline, candidate in args.compare
     ]
@@ -610,13 +676,13 @@ def main() -> None:
         )
     else:
         print_markdown(reports, args.serving_ratios)
-    print_comparisons(comparisons)
-    if comparisons:
-        print()
-        print(
-            "Note: W&B inference metrics are aggregate telemetry. Use vLLM "
-            "per-replica logs to satisfy high-pressure row gates."
-        )
+        print_comparisons(comparisons)
+        if comparisons:
+            print()
+            print(
+                "Note: W&B inference metrics are aggregate telemetry. Use vLLM "
+                "per-replica logs to satisfy high-pressure row gates."
+            )
 
 
 if __name__ == "__main__":

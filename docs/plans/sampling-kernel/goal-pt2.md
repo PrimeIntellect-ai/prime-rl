@@ -32,8 +32,9 @@ native vLLM logits processors when needed
 or Prime dense-presence specialization when safe
   -> FlashInfer top_k(values, ids)
   -> sort K values
-  -> Triton K-tail top-p/sample/scalar-logprob
-  -> width-1 LogprobsTensors for the sampled token
+  -> Triton K-tail top-p/sample/logprob columns
+  -> LogprobsTensors with sampled-only columns for max_num_logprobs=0
+     or sampled+top1 columns for max_num_logprobs=1
 ```
 
 The important result from Part 1:
@@ -130,8 +131,11 @@ vLLM native top-k masking can keep more than K on boundary ties.
 The Triton tail samples with distribution-equivalent uniforms.
 It does not preserve vLLM's exact per-row RNG bitstream.
 
-selected_token_ranks is a placeholder.
-This is acceptable only for the Prime sampled-token-only response shape.
+For max_num_logprobs=0, the fast path returns the sampled-token column and the
+exact selected-token rank inside the retained top-p/top-k support.
+
+For max_num_logprobs=1, it returns vLLM-shaped sampled+top1 columns and the
+same selected-token rank. It is still not a general arbitrary-top-logprobs API.
 ```
 
 Verdict: semantic overfit is real but mostly controlled. It becomes a bug only if
@@ -226,15 +230,21 @@ uv run --no-sync python scripts/analyze_wandb_production_gate.py \
   --e2e-fail-ratio 1.03 \
   --serving-pass-ratio 1.10 \
   --min-trainer-rows 2 \
-  --min-active-inference-rows 10
+  --min-active-inference-rows 10 \
+  --min-running-cap 1024 \
+  --min-waiting-positive-fraction 0.5
 ```
 
 The comparison table includes `decision = pass | weak_positive | mixed | fail |
 missing`. Use the same `--skip-trainer-rows` and `--max-trainer-rows` values for
 both arms; otherwise the comparison is not a same-window A/B. The row minimums
 make the scorer fail closed if either arm has too little trainer or inference
-evidence. W&B inference metrics are aggregate telemetry; still use vLLM
-per-replica logs for the high-pressure row gate.
+evidence. The running-cap and waiting-positive fraction gates prevent an
+underfed candidate from passing on E2E alone. W&B `inference/agg/*` metrics are
+summed aggregate telemetry, so the full-production scorer uses a conservative
+aggregate running floor of 1024 rather than the single-replica cap of 256. Use
+`--min-running-cap 256` only for explicit single-replica/two-node serving lanes.
+Still use vLLM per-replica logs for the high-pressure row gate.
 
 W&B analyzer logic coverage:
 
@@ -1981,7 +1991,7 @@ Current output:
 | training canary token export | pass | native 4/2 files/STABLE, rows 32, bad numeric 0; patched 4/2 files/STABLE, rows 32, bad numeric 0 |
 | production config shape | pass | configs/calibration/gpqa_openended_debate_50step_bs512_g16_4t12i_simul_r64.toml, checked 24 fields, mismatches 0 |
 | trainer Nsight hook | pass | src/prime_rl/templates/multi_node_rl.sbatch.j2, checked 8 snippets, missing 0 |
-| sampler-tail specialization | pass | constexprs=[7], top_p_values=[0.95], error=none |
+| sampler-tail specialization | pass | constexprs=[10], top_p_values=[0.95], error=none |
 | full production E2E | missing | requires real production topology; not provable from the two-node lane |
 | full production topology preflight | missing | requires 16 nodes (4 train + 12 inference); allocation has 4, allowed lane has 2 |
 

@@ -46,6 +46,18 @@ DEFAULT_REQUIRED_TRAIN_NODES = 4
 DEFAULT_REQUIRED_INFER_REPLICAS = 12
 DEFAULT_PRODUCTION_CONFIG = Path("configs/calibration/gpqa_openended_debate_50step_bs512_g16_4t12i_simul_r64.toml")
 DEFAULT_TRAINER_TEMPLATE = Path("src/prime_rl/templates/multi_node_rl.sbatch.j2")
+DEFAULT_PYPROJECT = Path("pyproject.toml")
+DEFAULT_PATCHES_PATH = Path("src/prime_rl/inference/patches.py")
+DEFAULT_INFERENCE_TEMPLATES = (
+    Path("src/prime_rl/templates/inference.sbatch.j2"),
+    Path("src/prime_rl/templates/gpu_layout_rl.sh.j2"),
+    Path("src/prime_rl/templates/_launch_rank.sh.j2"),
+)
+DEFAULT_SAMPLER_SOURCE = Path("src/prime_rl/inference/vllm/flashinfer_sampler.py")
+DEFAULT_SAMPLER_CONTRACT_SWEEP = Path("scripts/probe_prime_flashinfer_sampler_contract_sweep.py")
+DEFAULT_SAMPLER_CONTRACT_SWEEP_RESULT = Path("docs/plans/sampling-kernel/sampler_contract_sweep_latest.json")
+DEFAULT_RENDERER_CLIENT = Path("deps/renderers/renderers/client.py")
+DEFAULT_SERVING_TOKENS_TEST = Path("tests/unit/inference/test_serving_tokens.py")
 
 EXPECTED_PRODUCTION_FIELDS: tuple[tuple[tuple[str, ...], Any], ...] = (
     (("model", "name"), "Qwen/Qwen3.5-35B-A3B"),
@@ -72,6 +84,18 @@ EXPECTED_PRODUCTION_FIELDS: tuple[tuple[tuple[str, ...], Any], ...] = (
     (("inference", "parallel", "dp"), 1),
     (("inference", "vllm_extra", "max_num_seqs"), 256),
     (("inference", "vllm_extra", "max_num_batched_tokens"), 131072),
+    (("inference", "finite_topk_sampled_logprob", "enabled"), True),
+    (("inference", "finite_topk_sampled_logprob", "tail"), "triton"),
+    (("inference", "finite_topk_sampled_logprob", "dense_presence"), True),
+    (("inference", "finite_topk_sampled_logprob", "stats_interval"), 1000),
+    (("inference", "finite_topk_sampled_logprob", "hit_log_limit"), 6),
+    (("inference", "finite_topk_sampled_logprob", "log_fallback"), True),
+    (("inference", "finite_topk_sampled_logprob", "precompile_tail"), True),
+    (("inference", "finite_topk_sampled_logprob", "precompile_top_k"), 20),
+    (("inference", "finite_topk_sampled_logprob", "precompile_top_p"), 0.95),
+    (("inference", "finite_topk_sampled_logprob", "precompile_vocab"), 248320),
+    (("inference", "finite_topk_sampled_logprob", "precompile_batches"), [1, 128, 256]),
+    (("inference", "finite_topk_sampled_logprob", "boundary_tie_guard"), True),
 )
 EXPECTED_TRAINER_NSYS_SNIPPETS = (
     "PRIME_RL_NSYS_TRAINER",
@@ -83,6 +107,17 @@ EXPECTED_TRAINER_NSYS_SNIPPETS = (
     "PRIME_RL_NSYS_DURATION:+--stop-on-exit=false",
     "uv run --no-sync torchrun",
 )
+EXPECTED_PLUGIN_SNIPPETS = (
+    (DEFAULT_PYPROJECT.name, '[project.entry-points."vllm.general_plugins"]'),
+    (DEFAULT_PYPROJECT.name, 'prime_rl = "prime_rl.inference.patches:transformers_v5_compat"'),
+    (DEFAULT_PATCHES_PATH.name, "def transformers_v5_compat"),
+    (
+        DEFAULT_PATCHES_PATH.name,
+        "from prime_rl.inference.vllm.flashinfer_sampler import apply_flashinfer_sampled_logprob_patch",
+    ),
+    (DEFAULT_PATCHES_PATH.name, "apply_flashinfer_sampled_logprob_patch()"),
+)
+EXPECTED_INFERENCE_TEMPLATE_SNIPPET = "PRIME_RL_FINITE_TOPK_SAMPLED_LOGPROB_STATS_LOG_DIR"
 
 
 @dataclass(frozen=True)
@@ -187,6 +222,27 @@ class TrainerNsysHookGate:
 
 
 @dataclass(frozen=True)
+class InferenceSamplerRuntimeHookGate:
+    paths: list[str]
+    checked_snippets: int
+    missing_snippets: list[str]
+    pass_gate: bool
+
+
+@dataclass(frozen=True)
+class SamplerContractSweepResultGate:
+    path: str
+    rows: int
+    failures: int
+    max_expected_patched_logprob_diff: float | None
+    max_forced_logprob_diff: float | None
+    native_cols: list[int]
+    patched_cols: list[int]
+    mismatches: list[str]
+    pass_gate: bool
+
+
+@dataclass(frozen=True)
 class TailSpecializationGate:
     kernel_parameters: list[str]
     kernel_constexprs: list[int]
@@ -199,6 +255,7 @@ class TailSpecializationGate:
 class ProductionPreflight:
     production_config: ProductionConfigGate
     trainer_nsys_hook: TrainerNsysHookGate
+    inference_sampler_runtime_hooks: InferenceSamplerRuntimeHookGate
     tail_specialization: TailSpecializationGate
     production_readiness: ProductionReadinessGate
     full_production_ready: bool
@@ -211,8 +268,10 @@ class GoalAudit:
     training_canary: TrainingCanaryGate
     jit: JitGate
     sampler_stats: SamplerStatsGate
+    sampler_contract_sweep: SamplerContractSweepResultGate
     production_config: ProductionConfigGate
     trainer_nsys_hook: TrainerNsysHookGate
+    inference_sampler_runtime_hooks: InferenceSamplerRuntimeHookGate
     tail_specialization: TailSpecializationGate
     production_readiness: ProductionReadinessGate
     full_production_e2e_gate: str
@@ -607,6 +666,255 @@ def audit_trainer_nsys_hook(path: Path) -> TrainerNsysHookGate:
     )
 
 
+def _read_text_or_missing(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    return path.read_text()
+
+
+def audit_inference_sampler_runtime_hooks(
+    *,
+    pyproject_path: Path = DEFAULT_PYPROJECT,
+    patches_path: Path = DEFAULT_PATCHES_PATH,
+    template_paths: tuple[Path, ...] = DEFAULT_INFERENCE_TEMPLATES,
+    sampler_source_path: Path = DEFAULT_SAMPLER_SOURCE,
+    contract_sweep_path: Path = DEFAULT_SAMPLER_CONTRACT_SWEEP,
+    renderer_client_path: Path = DEFAULT_RENDERER_CLIENT,
+    serving_tokens_test_path: Path = DEFAULT_SERVING_TOKENS_TEST,
+) -> InferenceSamplerRuntimeHookGate:
+    missing = []
+    checked = 0
+
+    text_by_label = {
+        DEFAULT_PYPROJECT.name: _read_text_or_missing(pyproject_path),
+        DEFAULT_PATCHES_PATH.name: _read_text_or_missing(patches_path),
+    }
+    for label, snippet in EXPECTED_PLUGIN_SNIPPETS:
+        checked += 1
+        text = text_by_label[label]
+        if text is None:
+            missing.append(f"{label}: file missing")
+        elif snippet not in text:
+            missing.append(f"{label}: {snippet}")
+
+    for template_path in template_paths:
+        checked += 1
+        text = _read_text_or_missing(template_path)
+        label = template_path.name
+        if text is None:
+            missing.append(f"{label}: file missing")
+        elif EXPECTED_INFERENCE_TEMPLATE_SNIPPET not in text:
+            missing.append(f"{label}: {EXPECTED_INFERENCE_TEMPLATE_SNIPPET}")
+
+    runtime_contract_snippets = (
+        (sampler_source_path, "_has_top_p_boundary_tie"),
+        (sampler_source_path, '"top_p_boundary_tie"'),
+        (sampler_source_path, "_TOP_P_BOUNDARY_TIE_ATOL = 5e-7"),
+        (sampler_source_path, "torch.isclose("),
+        (sampler_source_path, "atol=_TOP_P_BOUNDARY_TIE_ATOL"),
+        (contract_sweep_path, "production_vocab_specs"),
+        (contract_sweep_path, "248320"),
+        (contract_sweep_path, "--include-width1"),
+        (contract_sweep_path, "probe_failed"),
+        (contract_sweep_path, "_BOUNDARY_TIE_GUARD_ENV"),
+        (renderer_client_path, 'sp["logprobs"] = 0'),
+        (renderer_client_path, "isinstance(raw_completion_ids, list)"),
+        (renderer_client_path, "token_id < 0"),
+        (renderer_client_path, "len(completion_logprobs) != len(completion_ids)"),
+        (renderer_client_path, "math.isfinite(logprob)"),
+        (serving_tokens_test_path, "test_generate_logprobs_zero_serializes_sampled_completion_logprob"),
+    )
+    for path, snippet in runtime_contract_snippets:
+        checked += 1
+        text = _read_text_or_missing(path)
+        label = path.name
+        if text is None:
+            missing.append(f"{label}: file missing")
+        elif snippet not in text:
+            missing.append(f"{label}: {snippet}")
+
+    return InferenceSamplerRuntimeHookGate(
+        paths=[
+            str(pyproject_path),
+            str(patches_path),
+            *(str(path) for path in template_paths),
+            str(sampler_source_path),
+            str(contract_sweep_path),
+            str(renderer_client_path),
+            str(serving_tokens_test_path),
+        ],
+        checked_snippets=checked,
+        missing_snippets=missing,
+        pass_gate=not missing,
+    )
+
+
+def _summary_number(summary: dict[str, Any], key: str) -> float | None:
+    value = summary.get(key)
+    if value is None:
+        return None
+    return float(value)
+
+
+def _row_bool_mismatch(row: dict[str, Any], index: int, key: str, expected: bool) -> str | None:
+    actual = row.get(key)
+    if actual == expected:
+        return None
+    return f"results[{index}].{key}: expected {expected}, got {actual}"
+
+
+def _row_int_mismatch(row: dict[str, Any], index: int, key: str, expected: int) -> str | None:
+    actual = row.get(key)
+    if actual == expected:
+        return None
+    return f"results[{index}].{key}: expected {expected}, got {actual}"
+
+
+def _validate_sampler_contract_rows(
+    results: list[dict[str, Any]],
+    *,
+    min_rows: int,
+    max_diff: float,
+) -> list[str]:
+    if len(results) < min_rows:
+        return [f"results: expected at least {min_rows} rows, got {len(results)}"]
+
+    mismatches = []
+    top_ks = set()
+    max_num_logprobs_values = set()
+    dense_presence_values = set()
+    for index, row in enumerate(results):
+        expected_cols = int(row.get("max_num_logprobs", -1)) + 1
+        top_ks.add(row.get("top_k"))
+        max_num_logprobs_values.add(row.get("max_num_logprobs"))
+        dense_presence_values.add(row.get("dense_presence_enabled"))
+
+        for key in (
+            "env_enabled",
+            "patch_marker",
+            "fastpath_allowed",
+        ):
+            mismatch = _row_bool_mismatch(row, index, key, True)
+            if mismatch is not None:
+                mismatches.append(mismatch)
+        for key in (
+            "expected_patched_sampled_token_mismatches",
+            "expected_patched_logprob_token_id_mismatches",
+            "expected_patched_selected_rank_mismatches",
+        ):
+            mismatch = _row_int_mismatch(row, index, key, 0)
+            if mismatch is not None:
+                mismatches.append(mismatch)
+
+        if row.get("device") != "cuda":
+            mismatches.append(f"results[{index}].device: expected cuda, got {row.get('device')}")
+        if row.get("vocab_size") != 248320:
+            mismatches.append(f"results[{index}].vocab_size: expected 248320, got {row.get('vocab_size')}")
+        if row.get("top_p") != 0.95:
+            mismatches.append(f"results[{index}].top_p: expected 0.95, got {row.get('top_p')}")
+        if row.get("top_k") not in {20, 64}:
+            mismatches.append(f"results[{index}].top_k: expected one of [20, 64], got {row.get('top_k')}")
+        if row.get("max_num_logprobs") not in {0, 1}:
+            mismatches.append(
+                f"results[{index}].max_num_logprobs: expected one of [0, 1], got {row.get('max_num_logprobs')}"
+            )
+        if row.get("native_cols") != expected_cols:
+            mismatches.append(f"results[{index}].native_cols: expected {expected_cols}, got {row.get('native_cols')}")
+        if row.get("patched_cols") != expected_cols:
+            mismatches.append(f"results[{index}].patched_cols: expected {expected_cols}, got {row.get('patched_cols')}")
+
+        max_expected = row.get("max_expected_patched_logprob_diff")
+        if max_expected is None or float(max_expected) > max_diff:
+            mismatches.append(
+                f"results[{index}].max_expected_patched_logprob_diff: expected <= {max_diff}, got {max_expected}"
+            )
+        max_forced = row.get("max_forced_logprob_diff")
+        if max_forced is None or float(max_forced) > max_diff:
+            mismatches.append(f"results[{index}].max_forced_logprob_diff: expected <= {max_diff}, got {max_forced}")
+
+    if top_ks != {20, 64}:
+        mismatches.append(f"results.top_k coverage: expected [20, 64], got {sorted(top_ks)}")
+    if max_num_logprobs_values != {0, 1}:
+        mismatches.append(f"results.max_num_logprobs coverage: expected [0, 1], got {sorted(max_num_logprobs_values)}")
+    if dense_presence_values != {False, True}:
+        mismatches.append(
+            f"results.dense_presence_enabled coverage: expected [False, True], got {sorted(dense_presence_values)}"
+        )
+    return mismatches
+
+
+def audit_sampler_contract_sweep_result(
+    path: Path = DEFAULT_SAMPLER_CONTRACT_SWEEP_RESULT,
+    *,
+    min_rows: int = 12,
+    max_diff: float = 1e-6,
+) -> SamplerContractSweepResultGate:
+    if not path.exists():
+        return SamplerContractSweepResultGate(
+            path=str(path),
+            rows=0,
+            failures=-1,
+            max_expected_patched_logprob_diff=None,
+            max_forced_logprob_diff=None,
+            native_cols=[],
+            patched_cols=[],
+            mismatches=["file missing"],
+            pass_gate=False,
+        )
+
+    try:
+        data = json.loads(path.read_text())
+        summary = data["summary"]
+        results = list(data.get("results", []))
+        rows = int(summary.get("rows", 0))
+        failures = int(summary.get("failures", -1))
+        max_expected = _summary_number(summary, "max_expected_patched_logprob_diff")
+        max_forced = _summary_number(summary, "max_forced_logprob_diff")
+        native_cols = list(summary.get("native_cols", []))
+        patched_cols = list(summary.get("patched_cols", []))
+    except Exception as exc:
+        return SamplerContractSweepResultGate(
+            path=str(path),
+            rows=0,
+            failures=-1,
+            max_expected_patched_logprob_diff=None,
+            max_forced_logprob_diff=None,
+            native_cols=[],
+            patched_cols=[],
+            mismatches=[f"{type(exc).__name__}: {exc}"],
+            pass_gate=False,
+        )
+
+    mismatches = []
+    if rows < min_rows:
+        mismatches.append(f"rows: expected at least {min_rows}, got {rows}")
+    if failures != 0:
+        mismatches.append(f"failures: expected 0, got {failures}")
+    if max_expected is None or max_expected > max_diff:
+        mismatches.append(f"max_expected_patched_logprob_diff: expected <= {max_diff}, got {max_expected}")
+    if max_forced is None or max_forced > max_diff:
+        mismatches.append(f"max_forced_logprob_diff: expected <= {max_diff}, got {max_forced}")
+    if native_cols != [1, 2]:
+        mismatches.append(f"native_cols: expected [1, 2], got {native_cols}")
+    if patched_cols != [1, 2]:
+        mismatches.append(f"patched_cols: expected [1, 2], got {patched_cols}")
+    if rows != len(results):
+        mismatches.append(f"summary rows: expected {len(results)}, got {rows}")
+    mismatches.extend(_validate_sampler_contract_rows(results, min_rows=min_rows, max_diff=max_diff))
+
+    return SamplerContractSweepResultGate(
+        path=str(path),
+        rows=rows,
+        failures=failures,
+        max_expected_patched_logprob_diff=max_expected,
+        max_forced_logprob_diff=max_forced,
+        native_cols=native_cols,
+        patched_cols=patched_cols,
+        mismatches=mismatches,
+        pass_gate=not mismatches,
+    )
+
+
 def audit_tail_specialization() -> TailSpecializationGate:
     try:
         from prime_rl.inference.vllm import flashinfer_sampler
@@ -614,6 +922,7 @@ def audit_tail_specialization() -> TailSpecializationGate:
         signature = inspect.signature(flashinfer_sampler._k_tail_uniform_kernel.fn)
         parameters = list(signature.parameters)
         constexprs = list(flashinfer_sampler._k_tail_uniform_kernel.constexprs)
+        k_block_index = parameters.index("K_BLOCK") if "K_BLOCK" in parameters else None
         top_p_values = flashinfer_sampler._precompile_tail_top_p_values()
         pass_gate = (
             "TOP_P" not in signature.parameters
@@ -621,7 +930,7 @@ def audit_tail_specialization() -> TailSpecializationGate:
             and signature.parameters["K"].annotation is inspect.Signature.empty
             and signature.parameters["top_p"].annotation is inspect.Signature.empty
             and signature.parameters["K_BLOCK"].annotation == "tl.constexpr"
-            and constexprs == [7]
+            and constexprs == [k_block_index]
             and top_p_values == [0.95]
         )
         return TailSpecializationGate(
@@ -644,16 +953,23 @@ def audit_tail_specialization() -> TailSpecializationGate:
 def production_preflight(args: argparse.Namespace) -> ProductionPreflight:
     production_config = audit_production_config(args.production_config)
     trainer_nsys_hook = audit_trainer_nsys_hook(args.trainer_template)
+    inference_sampler_runtime_hooks = audit_inference_sampler_runtime_hooks(
+        pyproject_path=getattr(args, "pyproject", DEFAULT_PYPROJECT),
+        patches_path=getattr(args, "patches_path", DEFAULT_PATCHES_PATH),
+        template_paths=tuple(getattr(args, "inference_templates", DEFAULT_INFERENCE_TEMPLATES)),
+    )
     tail_specialization = audit_tail_specialization()
     production_readiness = audit_production_readiness(args)
     return ProductionPreflight(
         production_config=production_config,
         trainer_nsys_hook=trainer_nsys_hook,
+        inference_sampler_runtime_hooks=inference_sampler_runtime_hooks,
         tail_specialization=tail_specialization,
         production_readiness=production_readiness,
         full_production_ready=(
             production_config.pass_gate
             and trainer_nsys_hook.pass_gate
+            and inference_sampler_runtime_hooks.pass_gate
             and tail_specialization.pass_gate
             and production_readiness.pass_gate
         ),
@@ -684,6 +1000,7 @@ def audit(args: argparse.Namespace) -> GoalAudit:
     training_canary = audit_training_canary(args.r56_dir, args.r57_dir)
     jit = audit_jit(args.r77_inference_dir)
     sampler_stats = audit_sampler_stats(args.r77_inference_dir)
+    sampler_contract_sweep = audit_sampler_contract_sweep_result(args.sampler_contract_sweep_result)
     preflight = production_preflight(args)
     local_two_node_gates_pass = (
         broad.pass_gate
@@ -691,6 +1008,8 @@ def audit(args: argparse.Namespace) -> GoalAudit:
         and training_canary.pass_gate
         and jit.pass_gate
         and sampler_stats.pass_gate
+        and sampler_contract_sweep.pass_gate
+        and preflight.inference_sampler_runtime_hooks.pass_gate
         and preflight.tail_specialization.pass_gate
     )
     return GoalAudit(
@@ -699,8 +1018,10 @@ def audit(args: argparse.Namespace) -> GoalAudit:
         training_canary=training_canary,
         jit=jit,
         sampler_stats=sampler_stats,
+        sampler_contract_sweep=sampler_contract_sweep,
         production_config=preflight.production_config,
         trainer_nsys_hook=preflight.trainer_nsys_hook,
+        inference_sampler_runtime_hooks=preflight.inference_sampler_runtime_hooks,
         tail_specialization=preflight.tail_specialization,
         production_readiness=preflight.production_readiness,
         full_production_e2e_gate="missing",
@@ -744,6 +1065,14 @@ def print_markdown(report: GoalAudit) -> None:
         f"learner fallback rows {report.sampler_stats.learner_fallback_rows} |"
     )
     print(
+        "| sampler contract sweep | "
+        f"{'pass' if report.sampler_contract_sweep.pass_gate else 'fail'} | "
+        f"{report.sampler_contract_sweep.path}, rows {report.sampler_contract_sweep.rows}, "
+        f"failures {report.sampler_contract_sweep.failures}, "
+        f"max expected diff {report.sampler_contract_sweep.max_expected_patched_logprob_diff}, "
+        f"mismatches {len(report.sampler_contract_sweep.mismatches)} |"
+    )
+    print(
         "| training canary token export | "
         f"{'pass' if report.training_canary.pass_gate else 'fail'} | "
         f"native {report.training_canary.native.jsonl_files}/{report.training_canary.native.stable_files} "
@@ -766,6 +1095,13 @@ def print_markdown(report: GoalAudit) -> None:
         f"missing {len(report.trainer_nsys_hook.missing_snippets)} |"
     )
     print(
+        "| inference sampler runtime hooks | "
+        f"{'pass' if report.inference_sampler_runtime_hooks.pass_gate else 'fail'} | "
+        f"{len(report.inference_sampler_runtime_hooks.paths)} files, "
+        f"checked {report.inference_sampler_runtime_hooks.checked_snippets} snippets, "
+        f"missing {len(report.inference_sampler_runtime_hooks.missing_snippets)} |"
+    )
+    print(
         "| sampler-tail specialization | "
         f"{'pass' if report.tail_specialization.pass_gate else 'fail'} | "
         f"constexprs={report.tail_specialization.kernel_constexprs}, "
@@ -784,7 +1120,13 @@ def print_markdown(report: GoalAudit) -> None:
     )
     print()
     print(f"local_two_node_gates_pass: {str(report.local_two_node_gates_pass).lower()}")
-    full_production_ready = report.production_config.pass_gate and report.production_readiness.pass_gate
+    full_production_ready = (
+        report.production_config.pass_gate
+        and report.trainer_nsys_hook.pass_gate
+        and report.inference_sampler_runtime_hooks.pass_gate
+        and report.tail_specialization.pass_gate
+        and report.production_readiness.pass_gate
+    )
     print(f"full_production_ready: {str(full_production_ready).lower()}")
     print("goal_complete: false")
 
@@ -803,6 +1145,13 @@ def print_preflight_markdown(report: ProductionPreflight) -> None:
         f"{'pass' if report.trainer_nsys_hook.pass_gate else 'fail'} | "
         f"{report.trainer_nsys_hook.path}, checked {report.trainer_nsys_hook.checked_snippets} snippets, "
         f"missing {len(report.trainer_nsys_hook.missing_snippets)} |"
+    )
+    print(
+        "| inference sampler runtime hooks | "
+        f"{'pass' if report.inference_sampler_runtime_hooks.pass_gate else 'fail'} | "
+        f"{len(report.inference_sampler_runtime_hooks.paths)} files, "
+        f"checked {report.inference_sampler_runtime_hooks.checked_snippets} snippets, "
+        f"missing {len(report.inference_sampler_runtime_hooks.missing_snippets)} |"
     )
     print(
         "| sampler-tail specialization | "
@@ -841,13 +1190,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--required-inference-replicas", type=int, default=DEFAULT_REQUIRED_INFER_REPLICAS)
     parser.add_argument("--production-config", type=Path, default=DEFAULT_PRODUCTION_CONFIG)
     parser.add_argument("--trainer-template", type=Path, default=DEFAULT_TRAINER_TEMPLATE)
+    parser.add_argument("--sampler-contract-sweep-result", type=Path, default=DEFAULT_SAMPLER_CONTRACT_SWEEP_RESULT)
+    parser.add_argument("--pyproject", type=Path, default=DEFAULT_PYPROJECT)
+    parser.add_argument("--patches-path", type=Path, default=DEFAULT_PATCHES_PATH)
+    parser.add_argument(
+        "--inference-template",
+        dest="inference_templates",
+        action="append",
+        type=Path,
+        default=None,
+        help="Inference launch template to check. May be repeated; defaults to all production templates.",
+    )
     parser.add_argument(
         "--preflight-only",
         action="store_true",
         help="Check only production config/template/topology readiness, without reading prior run logs.",
     )
     parser.add_argument("--json", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.inference_templates is None:
+        args.inference_templates = DEFAULT_INFERENCE_TEMPLATES
+    return args
 
 
 def main() -> None:

@@ -1060,11 +1060,16 @@ fresh W&B init read:
       --e2e-fail-ratio 1.03 \
       --serving-pass-ratio 1.10 \
       --min-trainer-rows 2 \
-      --min-active-inference-rows 10
+      --min-active-inference-rows 10 \
+      --min-running-cap 1024 \
+      --min-waiting-positive-fraction 0.5
   output:
     comparison rows include decision = pass | weak_positive | mixed | fail | missing
     W&B inference metrics are aggregate telemetry; vLLM per-replica logs still
-    adjudicate high-pressure serving rows.
+    adjudicate high-pressure serving rows. The running-cap and waiting-positive
+    fraction gates fail closed when an arm is underfed. The full-production W&B
+    scorer uses an aggregate running floor of 1024; only explicit
+    single-replica/two-node serving lanes should opt down to 256.
   analyzer logic coverage:
     uv run --no-sync pytest tests/unit/inference/test_wandb_production_gate.py
   pitfall:

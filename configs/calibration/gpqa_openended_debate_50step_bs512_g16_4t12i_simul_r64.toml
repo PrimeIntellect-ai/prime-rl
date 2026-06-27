@@ -157,6 +157,20 @@ max_cpu_loras = 4
 enable_prefix_caching = true
 enable_dbo = false
 
+[inference.finite_topk_sampled_logprob]
+enabled = true
+tail = "triton"
+dense_presence = true
+stats_interval = 1000
+hit_log_limit = 6
+log_fallback = true
+precompile_tail = true
+precompile_top_k = 20
+precompile_top_p = 0.95
+precompile_vocab = 248320
+precompile_batches = [1, 128, 256]
+boundary_tie_guard = true
+
 [inference.model]
 max_model_len = 32768
 

@@ -1,5 +1,9 @@
+import json
+import sys
+
 import pytest
 
+import scripts.analyze_wandb_production_gate as gate
 from scripts.analyze_wandb_production_gate import (
     InferenceSummary,
     LengthSummary,
@@ -26,6 +30,8 @@ def _report(
     broadcast_mean_s: float,
     throughput_mean: float,
     implied_decode_mean: float,
+    running_cap: float = 1024.0,
+    waiting_positive_fraction: float = 1.0,
 ) -> RunReport:
     return RunReport(
         label=label,
@@ -52,10 +58,10 @@ def _report(
         inference=InferenceSummary(
             rows=1,
             active_rows=1,
-            running_cap=256.0,
+            running_cap=running_cap,
             saturated_fraction=1.0,
-            waiting_positive_fraction=1.0,
-            running_median=256.0,
+            waiting_positive_fraction=waiting_positive_fraction,
+            running_median=running_cap,
             waiting_median=64.0,
             kv_cache_mean_median=0.2,
             kv_cache_max_median=0.4,
@@ -247,6 +253,10 @@ def test_roofline_and_ab_comparison_ratios() -> None:
     assert comparison.candidate_trainer_rows == 1
     assert comparison.baseline_active_inference_rows == 1
     assert comparison.candidate_active_inference_rows == 1
+    assert comparison.baseline_running_cap == pytest.approx(1024.0)
+    assert comparison.candidate_running_cap == pytest.approx(1024.0)
+    assert comparison.baseline_waiting_positive_fraction == pytest.approx(1.0)
+    assert comparison.candidate_waiting_positive_fraction == pytest.approx(1.0)
     assert comparison.step_speed_ratio == pytest.approx(200.0 / 180.0)
     assert comparison.serving_throughput_ratio == pytest.approx(1.25)
     assert comparison.implied_decode_ratio == pytest.approx(1.1)
@@ -270,6 +280,12 @@ def test_comparison_classification_distinguishes_weak_fail_and_mixed() -> None:
             serving_pass_ratio=1.10,
             min_trainer_rows=2,
             min_active_inference_rows=10,
+            baseline_running_cap=256.0,
+            candidate_running_cap=256.0,
+            min_running_cap=256.0,
+            baseline_waiting_positive_fraction=1.0,
+            candidate_waiting_positive_fraction=1.0,
+            min_waiting_positive_fraction=0.5,
         )[0]
         == "weak_positive"
     )
@@ -286,6 +302,12 @@ def test_comparison_classification_distinguishes_weak_fail_and_mixed() -> None:
             serving_pass_ratio=1.10,
             min_trainer_rows=2,
             min_active_inference_rows=10,
+            baseline_running_cap=256.0,
+            candidate_running_cap=256.0,
+            min_running_cap=256.0,
+            baseline_waiting_positive_fraction=1.0,
+            candidate_waiting_positive_fraction=1.0,
+            min_waiting_positive_fraction=0.5,
         )[0]
         == "fail"
     )
@@ -301,11 +323,17 @@ def test_comparison_classification_distinguishes_weak_fail_and_mixed() -> None:
         serving_pass_ratio=1.10,
         min_trainer_rows=2,
         min_active_inference_rows=10,
+        baseline_running_cap=256.0,
+        candidate_running_cap=256.0,
+        min_running_cap=256.0,
+        baseline_waiting_positive_fraction=1.0,
+        candidate_waiting_positive_fraction=1.0,
+        min_waiting_positive_fraction=0.5,
     )
     assert decision == "mixed"
     assert reasons == [
-        "serving throughput 1.050x < 1.100x",
-        "E2E 1.090x passes but serving/supporting gate does not",
+        "W&B aggregate throughput 1.050x < 1.100x",
+        "E2E 1.090x passes but W&B aggregate/supporting gate does not",
     ]
 
 
@@ -322,6 +350,12 @@ def test_comparison_classification_fails_closed_on_insufficient_rows() -> None:
         serving_pass_ratio=1.10,
         min_trainer_rows=2,
         min_active_inference_rows=10,
+        baseline_running_cap=256.0,
+        candidate_running_cap=256.0,
+        min_running_cap=256.0,
+        baseline_waiting_positive_fraction=1.0,
+        candidate_waiting_positive_fraction=1.0,
+        min_waiting_positive_fraction=0.5,
     )
 
     assert decision == "missing"
@@ -329,6 +363,149 @@ def test_comparison_classification_fails_closed_on_insufficient_rows() -> None:
         "baseline trainer rows 1 < 2",
         "baseline active inference rows 9 < 10",
     ]
+
+
+def test_comparison_fails_closed_when_candidate_is_underfed() -> None:
+    baseline = _report(
+        label="native",
+        step_mean_s=200.0,
+        wait_mean_s=80.0,
+        wait_fraction=0.4,
+        fwd_mean_s=100.0,
+        broadcast_mean_s=20.0,
+        throughput_mean=10000.0,
+        implied_decode_mean=9000.0,
+    )
+    candidate = _report(
+        label="patched",
+        step_mean_s=180.0,
+        wait_mean_s=60.0,
+        wait_fraction=1.0 / 3.0,
+        fwd_mean_s=100.0,
+        broadcast_mean_s=18.0,
+        throughput_mean=12500.0,
+        implied_decode_mean=9900.0,
+        waiting_positive_fraction=0.0,
+    )
+
+    comparison = compare_reports(
+        baseline,
+        candidate,
+        min_trainer_rows=1,
+        min_active_inference_rows=1,
+    )
+
+    assert comparison.decision == "missing"
+    assert comparison.reasons == ["candidate waiting-positive fraction 0.000 < 0.500"]
+
+
+def test_comparison_fails_closed_when_candidate_running_cap_is_low() -> None:
+    baseline = _report(
+        label="native",
+        step_mean_s=200.0,
+        wait_mean_s=80.0,
+        wait_fraction=0.4,
+        fwd_mean_s=100.0,
+        broadcast_mean_s=20.0,
+        throughput_mean=10000.0,
+        implied_decode_mean=9000.0,
+    )
+    candidate = _report(
+        label="patched",
+        step_mean_s=180.0,
+        wait_mean_s=60.0,
+        wait_fraction=1.0 / 3.0,
+        fwd_mean_s=100.0,
+        broadcast_mean_s=18.0,
+        throughput_mean=12500.0,
+        implied_decode_mean=9900.0,
+        running_cap=64.0,
+        waiting_positive_fraction=1.0,
+    )
+
+    comparison = compare_reports(
+        baseline,
+        candidate,
+        min_trainer_rows=1,
+        min_active_inference_rows=1,
+    )
+
+    assert comparison.decision == "missing"
+    assert comparison.reasons == ["candidate running cap 64 < 1024"]
+
+
+def test_comparison_defaults_to_full_production_aggregate_running_floor() -> None:
+    baseline = _report(
+        label="native",
+        step_mean_s=200.0,
+        wait_mean_s=80.0,
+        wait_fraction=0.4,
+        fwd_mean_s=100.0,
+        broadcast_mean_s=20.0,
+        throughput_mean=10000.0,
+        implied_decode_mean=9000.0,
+        running_cap=256.0,
+    )
+    candidate = _report(
+        label="patched",
+        step_mean_s=180.0,
+        wait_mean_s=60.0,
+        wait_fraction=1.0 / 3.0,
+        fwd_mean_s=100.0,
+        broadcast_mean_s=18.0,
+        throughput_mean=12500.0,
+        implied_decode_mean=9900.0,
+        running_cap=256.0,
+    )
+
+    comparison = compare_reports(
+        baseline,
+        candidate,
+        min_trainer_rows=1,
+        min_active_inference_rows=1,
+    )
+
+    assert comparison.decision == "missing"
+    assert comparison.reasons == [
+        "baseline running cap 256 < 1024",
+        "candidate running cap 256 < 1024",
+    ]
+
+
+def test_comparison_can_score_single_replica_lane_with_running_cap_override() -> None:
+    baseline = _report(
+        label="native",
+        step_mean_s=200.0,
+        wait_mean_s=80.0,
+        wait_fraction=0.4,
+        fwd_mean_s=100.0,
+        broadcast_mean_s=20.0,
+        throughput_mean=10000.0,
+        implied_decode_mean=9000.0,
+        running_cap=256.0,
+    )
+    candidate = _report(
+        label="patched",
+        step_mean_s=180.0,
+        wait_mean_s=60.0,
+        wait_fraction=1.0 / 3.0,
+        fwd_mean_s=100.0,
+        broadcast_mean_s=18.0,
+        throughput_mean=12500.0,
+        implied_decode_mean=9900.0,
+        running_cap=256.0,
+    )
+
+    comparison = compare_reports(
+        baseline,
+        candidate,
+        min_trainer_rows=1,
+        min_active_inference_rows=1,
+        min_running_cap=256.0,
+    )
+
+    assert comparison.decision == "pass"
+    assert comparison.reasons == ["E2E 1.111x >= 1.080x"]
 
 
 def test_comparison_table_reports_row_counts(capsys: pytest.CaptureFixture[str]) -> None:
@@ -364,4 +541,73 @@ def test_comparison_table_reports_row_counts(capsys: pytest.CaptureFixture[str])
     output = capsys.readouterr().out
     assert "trainer rows" in output
     assert "active inf rows" in output
-    assert "| native | patched | pass | 1/1 | 1/1 |" in output
+    assert "inf cap" in output
+    assert "waiting+ frac" in output
+    assert "W&B agg tok/s ratio" in output
+    assert "| native | patched | pass | 1/1 | 1/1 | 1024/1024 | 1.000/1.000 |" in output
+
+
+def test_json_output_is_machine_parseable_with_comparisons(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def history_row(step: float, wait: float, throughput: float) -> dict[str, float]:
+        return {
+            "time/step": step,
+            "time/wait_for_batch": wait,
+            "time/forward_backward": 100.0,
+            "time/broadcast_weights": 10.0,
+            "inference/agg/running_requests": 1024.0,
+            "inference/agg/waiting_requests": 1.0,
+            "inference/agg/avg_tpot_seconds": 0.01,
+            "inference/agg/throughput": throughput,
+        }
+
+    rows_by_id = {
+        "base": [history_row(200.0, 80.0, 10000.0)],
+        "cand": [history_row(180.0, 60.0, 12500.0)],
+    }
+
+    class FakeRun:
+        def __init__(self, run_id: str) -> None:
+            self.id = run_id
+            self.name = run_id
+            self.state = "finished"
+            self.created_at = "2026-06-26T00:00:00"
+            self.summary = {"_runtime": 123.0}
+
+        def scan_history(self, page_size: int):
+            return rows_by_id[self.id]
+
+    class FakeApi:
+        def __init__(self, timeout: int) -> None:
+            pass
+
+        def run(self, path: str) -> FakeRun:
+            return FakeRun(path.rsplit("/", 1)[-1])
+
+    monkeypatch.setattr(gate.wandb, "Api", FakeApi)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "analyze_wandb_production_gate.py",
+            "native=base",
+            "patched=cand",
+            "--compare",
+            "native,patched",
+            "--min-trainer-rows",
+            "1",
+            "--min-active-inference-rows",
+            "1",
+            "--json",
+        ],
+    )
+
+    gate.main()
+
+    output = capsys.readouterr().out
+    parsed = json.loads(output)
+    assert parsed["comparisons"][0]["decision"] == "pass"
+    assert "| baseline |" not in output
+    assert "Note: W&B inference metrics" not in output
