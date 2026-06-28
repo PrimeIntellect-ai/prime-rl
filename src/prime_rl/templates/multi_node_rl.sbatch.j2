@@ -211,7 +211,7 @@ srun --kill-on-bad-exit=1 bash -c '
 
 if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     INFER_NODE_RANK=$SLURM_PROCID
-    # Inference env vars: launcher defaults + [inference.env_vars]
+    # Inference env vars: launcher defaults + [env_vars] + [inference.env_vars]
 {%- for key, value in inference_env_vars.items() %}
     export {{ key }}="{{ value }}"
 {%- endfor %}
@@ -374,7 +374,7 @@ else
     TRAIN_NODE_RANK=$SLURM_PROCID
 {%- endif %}
 
-    # Trainer env vars: launcher defaults + [trainer.env_vars]
+    # Trainer env vars: launcher defaults + [env_vars] + [trainer.env_vars]
 {%- for key, value in trainer_env_vars.items() %}
     export {{ key }}="{{ value }}"
 {%- endfor %}
@@ -407,7 +407,7 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.base-url $INFER_URLS"
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.admin-base-url $ADMIN_URLS"
 {%- if orchestrator_env_vars %}
-    # Orchestrator env vars from [orchestrator.env_vars]
+    # Orchestrator env vars from [env_vars] + [orchestrator.env_vars]
 {%- for key, value in orchestrator_env_vars.items() %}
     export {{ key }}="{{ value }}"
 {%- endfor %}

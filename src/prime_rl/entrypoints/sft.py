@@ -46,7 +46,6 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path) 
     trainer_env_vars = {
         **DEFAULT_COMMON_ENV_VARS,
         **DEFAULT_TRAINER_ENV_VARS,
-        "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE", "1"),
         **config.env_vars,
     }
 

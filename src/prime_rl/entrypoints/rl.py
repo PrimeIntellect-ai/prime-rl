@@ -173,6 +173,7 @@ def rl_local(config: RLConfig):
                         **os.environ,
                         **DEFAULT_COMMON_ENV_VARS,
                         **DEFAULT_INFERENCE_ENV_VARS,
+                        **config.env_vars,
                         **config.inference.env_vars,
                         "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids)),
                     },
@@ -229,6 +230,7 @@ def rl_local(config: RLConfig):
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
                     "WANDB_ARGS": json.dumps(start_command),
+                    **config.env_vars,
                     **config.orchestrator.env_vars,
                     **wandb_shared_env,
                     "WANDB_SHARED_LABEL": "orchestrator",
@@ -278,6 +280,7 @@ def rl_local(config: RLConfig):
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
                     "WANDB_ARGS": json.dumps(start_command),
+                    **config.env_vars,
                     **config.trainer.env_vars,
                     **wandb_shared_env,
                     "WANDB_SHARED_LABEL": "trainer",
@@ -375,12 +378,12 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
     trainer_env_vars = {
         **DEFAULT_COMMON_ENV_VARS,
         **DEFAULT_TRAINER_ENV_VARS,
-        "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE", "1"),
+        **config.env_vars,
         **config.trainer.env_vars,
     }
-    orchestrator_env_vars = {**DEFAULT_COMMON_ENV_VARS, **config.orchestrator.env_vars}
+    orchestrator_env_vars = {**DEFAULT_COMMON_ENV_VARS, **config.env_vars, **config.orchestrator.env_vars}
     inference_env_vars = (
-        {**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.inference.env_vars}
+        {**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars, **config.inference.env_vars}
         if config.inference
         else {}
     )
