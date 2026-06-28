@@ -71,17 +71,3 @@ PS: If using the tmux helper, you can run the command in the `Terminal` (window 
 ```bash
 uv run rl @ examples/glm5_llmd/rl.toml --output-dir /shared/outputs/glm5-llmd
 ```
-
-Output of the command:
-```
-XXX:XX:XX    INFO Wrote subconfigs to /shared/outputs/glm5-llmd/configs [rl.py::515]
-XXX:XX:XX    INFO Wrote SLURM script to /shared/outputs/glm5-llmd/rl.sbatch [rl.py::534]
-XXX:XX:XX    INFO Submitting: sbatch /shared/outputs/glm5-llmd/rl.sbatch [rl.py::540]
-XXX:XX:XX SUCCESS Submitted batch job YYYY
-
-Logs:
-  Trainer:          tail -F /shared/outputs/glm5-llmd/logs/trainer.log
-  Orchestrator:     tail -F /shared/outputs/glm5-llmd/logs/orchestrator.log
-  Inference:        tail -F /shared/outputs/glm5-llmd/logs/inference.log
-  Envs:             tail -F /shared/outputs/glm5-llmd/logs/envs/*/*.log
-```

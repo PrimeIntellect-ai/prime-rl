@@ -46,21 +46,3 @@ PS: If using the tmux helper, you can run the command in the `Terminal` (window 
 ```bash
 uv run rl @ examples/qwen30b_math/rl.toml --output-dir /shared/outputs/qwen30b-math
 ```
-
-Output of the command:
-```
-XXX:XX:XX    INFO Wrote subconfigs to /shared/outputs/qwen30b-math/configs [rl.py::515]
-XXX:XX:XX    INFO Wrote SLURM script to /shared/outputs/qwen30b-math/rl.sbatch [rl.py::534]
-XXX:XX:XX    INFO Submitting: sbatch /shared/outputs/qwen30b-math/rl.sbatch [rl.py::540]
-XXX:XX:XX SUCCESS Submitted batch job YYYY
-
-Logs:
-  Trainer:          tail -F /shared/outputs/qwen30b-math/logs/trainer.log
-  Orchestrator:     tail -F /shared/outputs/qwen30b-math/logs/orchestrator.log
-  Inference:        tail -F /shared/outputs/qwen30b-math/logs/inference.log
-  Envs:             tail -F /shared/outputs/qwen30b-math/logs/envs/*/*.log
-   Train:           tail -F /shared/outputs/qwen30b-math/logs/envs/train/*.log
-    math:           tail -F /shared/outputs/qwen30b-math/logs/envs/train/math.log 
-```
-
-
