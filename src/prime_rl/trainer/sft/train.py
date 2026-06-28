@@ -215,6 +215,9 @@ def train(config: SFTConfig):
             dataloader=dataloader if not config.ckpt.skip_dataloader else None,
         )
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
+        # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
+        if not config.ckpt.skip_progress:
+            progress.step += 1
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if config.ckpt.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
@@ -347,37 +350,6 @@ def train(config: SFTConfig):
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
-        if (
-            ckpt_manager is not None
-            and (config.ckpt and config.ckpt.interval)
-            and not (is_first_step or is_last_step)
-            and progress.step % config.ckpt.interval == 0
-        ):
-            save_ckpt_time = 0
-
-            if not config.ckpt.weights_only:
-                # Save full checkpoint
-                logger.info(f"Saving checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
-
-            ckpt_manager.maybe_clean()
-
-            # Save weight checkpoint
-            if weight_ckpt_manager is not None:
-                logger.info(f"Saving weight checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                weight_ckpt_manager.save(progress.step, model, tokenizer)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
-                weight_ckpt_manager.maybe_clean()
-        else:
-            save_ckpt_time = 0
-
-        # Break if we have reached the maximum number of steps
-        if config.max_steps is not None and progress.step >= config.max_steps:
-            break
-
         memory_profiler = (
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
         )
@@ -482,6 +454,35 @@ def train(config: SFTConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
+        # Checkpoint the step we just finished. The last step's checkpoint is written once after
+        # the loop, so skip it here to avoid a double-save.
+        if (
+            ckpt_manager is not None
+            and (config.ckpt and config.ckpt.interval)
+            and not is_last_step
+            and progress.step % config.ckpt.interval == 0
+        ):
+            save_ckpt_time = 0
+
+            if not config.ckpt.weights_only:
+                # Save full checkpoint
+                logger.info(f"Saving checkpoint at step {progress.step}")
+                save_ckpt_start_time = time.perf_counter()
+                ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+
+            ckpt_manager.maybe_clean()
+
+            # Save weight checkpoint
+            if weight_ckpt_manager is not None:
+                logger.info(f"Saving weight checkpoint at step {progress.step}")
+                save_ckpt_start_time = time.perf_counter()
+                weight_ckpt_manager.save(progress.step, model, tokenizer)
+                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+                weight_ckpt_manager.maybe_clean()
+        else:
+            save_ckpt_time = 0
+
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
             memory_profiler.step()
@@ -585,11 +586,14 @@ def train(config: SFTConfig):
             monitor.log({**moe_log_metrics, "step": progress.step}, step=progress.step)
 
         is_first_step = False
-        progress.step += 1
 
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
+
+        if is_last_step:
+            break
+        progress.step += 1
 
     if config.trace_path:
         prof.__exit__(None, None, None)
