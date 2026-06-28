@@ -43,6 +43,9 @@ def resolve_image_offload_dir(
     hosted_run_dir = _run_id_dir(env)
     if hosted_run_dir is not None:
         return (hosted_run_dir / IMAGE_ASSET_SUBDIR).resolve()
+    run_dir = env.get(RUN_DIR_ENV, "").strip()
+    if run_dir:
+        return (Path(run_dir).resolve() / IMAGE_ASSET_SUBDIR).resolve()
     return (output_dir.resolve() / IMAGE_ASSET_SUBDIR).resolve()
 
 
@@ -62,11 +65,12 @@ def run_asset_env(
     storage = config.images.storage
     env[IMAGE_STORAGE_ENV] = storage
 
-    if not env.get(RUN_ID_ENV):
+    if not env.get(RUN_ID_ENV) and not env.get(RUN_DIR_ENV):
         env[RUN_DIR_ENV] = str(output_dir.resolve())
 
     if storage == IMAGE_STORAGE_OFFLOAD:
-        env[IMAGE_OFFLOAD_DIR_ENV] = str(resolve_image_offload_dir(output_dir, config, env))
+        if not env.get(IMAGE_OFFLOAD_DIR_ENV):
+            env[IMAGE_OFFLOAD_DIR_ENV] = str(resolve_image_offload_dir(output_dir, config, env))
     elif storage == IMAGE_STORAGE_INLINE:
         env.pop(IMAGE_OFFLOAD_DIR_ENV, None)
     else:
