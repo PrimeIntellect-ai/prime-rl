@@ -582,12 +582,10 @@ def train(config: TrainerConfig):
                 for idx in multi_run_manager.used_idxs:
                     multi_run_manager.ready_to_update[idx] = False
 
-        # Checkpoint the step we just finished (model = policy v{progress.step}). The last step's
-        # checkpoint is written once after the loop, so skip it here to avoid a double-save.
+        # Checkpoint the step we just finished (model = policy v{progress.step}).
         if config.max_concurrent_runs > 1:
-            # Multi-run: Save per-run checkpoints using each run's orchestrator config.
-            # Trainer-level ckpt config can be set by the combined rl entrypoint,
-            # but MultiCheckpointManager has a different save signature.
+            # Multi-run: save per-run checkpoints every step (interval-gated inside
+            # MultiCheckpointManager); there is no after-loop final save for multi-run.
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(optimizer, scheduler)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
@@ -595,6 +593,7 @@ def train(config: TrainerConfig):
         elif (
             ckpt_manager is not None
             and (config.ckpt and config.ckpt.interval)
+            # the last step is written once after the loop (final ckpt), so skip it here
             and not is_last_step
             and progress.step % config.ckpt.interval == 0
         ):
