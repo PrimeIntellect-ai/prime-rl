@@ -13,6 +13,26 @@ from prime_rl.utils.logger import get_logger
 PRIME_RL_PROC_PREFIX = "PRIME-RL"
 
 
+# Applied to every launched component (trainer, orchestrator, inference).
+DEFAULT_COMMON_ENV_VARS: dict[str, str] = {
+    "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+    "PYTHONUNBUFFERED": "1",
+    "OMP_NUM_THREADS": "1",
+    "GIT_LFS_SKIP_SMUDGE": "1",
+}
+
+DEFAULT_TRAINER_ENV_VARS: dict[str, str] = {
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+}
+
+DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
+    "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
+    "VLLM_ENGINE_READY_TIMEOUT_S": "4200",
+    "UCX_TLS": "all",
+}
+
+
 def set_proc_title(name: str) -> None:
     """Set the process title for visibility in tools like ``ps`` and ``htop``.
 
