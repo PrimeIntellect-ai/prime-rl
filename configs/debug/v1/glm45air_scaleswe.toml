@@ -9,7 +9,7 @@
 # CPU offload, and skip-gather / skip-optimizer checkpointing. Derived from
 # configs/debug/v1/scaleswe.toml + GLM-4.5-Air model settings from the int5 opencode configs.
 
-max_steps = 400
+max_steps = 1000
 seq_len = 65536
 
 [slurm]
