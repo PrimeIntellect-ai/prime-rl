@@ -69,7 +69,7 @@ def _mm_sample(value: float, env_name: str = "test-env") -> TrainingSample:
         logprobs=[0.0, -0.1, -0.2],
         temperatures=[1.0, 1.0, 1.0],
         env_name=env_name,
-        advantage=1.0,
+        advantages=[0.0, 1.0, 1.0],
         mm_token_type_ids=[0, 1, 0],
         mm_kwargs={
             "pixel_values": _encoded_tensor([[value, value + 1]], np.float32),
@@ -183,7 +183,7 @@ def test_multipacker_pack_preserves_mm_kwargs_modality_and_run_tagging(tmp_path,
     """MultiPacker keeps multimodal and text microbatches aligned across ranks."""
     from prime_rl.trainer.batch import _is_multimodal_sample
 
-    manager, packer, sent = _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size=2, seq_len=3)
+    manager, packer, sent = _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size=2, seq_len=5)
     a, b = manager.id_2_idx["run_a"], manager.id_2_idx["run_b"]
     for idx, value in ((a, 1.0), (b, 10.0)):
         packer.buffers[idx].append((_mm_sample(value), 0))
@@ -233,7 +233,7 @@ def test_multipacker_pack_packs_mm_kwargs_within_each_run_when_enabled(tmp_path,
     from prime_rl.trainer.batch import _is_multimodal_sample
 
     manager, packer, sent = _packer_with_two_runs(
-        tmp_path, monkeypatch, dp_world_size=2, seq_len=6, pack_multimodal=True
+        tmp_path, monkeypatch, dp_world_size=1, seq_len=12, pack_multimodal=True
     )
     a, b = manager.id_2_idx["run_a"], manager.id_2_idx["run_b"]
     for idx, base in ((a, 1.0), (b, 10.0)):

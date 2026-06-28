@@ -14,15 +14,8 @@ class _Model(nn.Module):
             self.supports_packed_multimodal_training = supports_packed_mm
 
 
-class _Wrapper(nn.Module):
-    def __init__(self, module):
-        super().__init__()
-        self.module = module
-
-
 def test_packed_mm_support_reads_model_capability():
     assert supports_packed_multimodal_training(_Model(supports_packed_mm=True))
-    assert supports_packed_multimodal_training(_Wrapper(_Model(supports_packed_mm=True)))
     assert not supports_packed_multimodal_training(_Model(supports_packed_mm=False))
     assert not supports_packed_multimodal_training(_Model())
 

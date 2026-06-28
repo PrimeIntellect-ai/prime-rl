@@ -102,12 +102,7 @@ def get_final_logit_softcapping(model_config: PretrainedConfig) -> float | None:
 
 def supports_packed_multimodal_training(model: nn.Module) -> bool:
     """Return whether the model advertises safe packed multimodal training."""
-    for candidate in _iter_wrapped_modules(model):
-        supported = getattr(candidate, "supports_packed_multimodal_training", None)
-        if supported is not None:
-            return bool(supported)
-
-    return False
+    return bool(getattr(model, "supports_packed_multimodal_training", False))
 
 
 def validate_multi_modal_pack(
@@ -161,13 +156,3 @@ def _resolve_attr(obj, dotted_path: str):
         if obj is None:
             return None
     return obj
-
-
-def _iter_wrapped_modules(model: nn.Module):
-    """Yield a module and common wrapper inners without depending on wrapper types."""
-    seen: set[int] = set()
-    current = model
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        yield current
-        current = getattr(current, "module", None)

@@ -454,7 +454,7 @@ def test_prepare_batch_packs_multimodal_with_text_when_enabled():
         mask=[False, True, True],
         logprobs=[0.0, -0.1, -0.2],
         temperatures=[1.0, 1.0, 1.0],
-        advantage=1.0,
+        advantages=[0.0, 1.0, 1.0],
         env_name="mm-env",
         mm_token_type_ids=[0, 1, 0],
         mm_kwargs={
@@ -467,7 +467,7 @@ def test_prepare_batch_packs_multimodal_with_text_when_enabled():
         mask=[False, True],
         logprobs=[0.0, -0.3],
         temperatures=[0.7, 0.7],
-        advantage=1.0,
+        advantages=[0.0, 1.0],
         env_name="text-env",
     )
 
@@ -498,7 +498,7 @@ def test_prepare_batch_keeps_multimodal_and_text_separate_when_disabled():
         mask=[False, True, True],
         logprobs=[0.0, -0.1, -0.2],
         temperatures=[1.0, 1.0, 1.0],
-        advantage=1.0,
+        advantages=[0.0, 1.0, 1.0],
         env_name="mm-env",
         mm_token_type_ids=[0, 1, 0],
         mm_kwargs={
@@ -511,7 +511,7 @@ def test_prepare_batch_keeps_multimodal_and_text_separate_when_disabled():
         mask=[False, True],
         logprobs=[0.0, -0.3],
         temperatures=[0.7, 0.7],
-        advantage=1.0,
+        advantages=[0.0, 1.0],
         env_name="text-env",
     )
 
