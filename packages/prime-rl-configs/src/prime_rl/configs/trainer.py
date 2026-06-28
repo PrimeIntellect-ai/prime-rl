@@ -122,19 +122,19 @@ class ModelConfig(BaseModelConfig):
     attn: AttnImplementation = "flash_attention_2"
     """Attention implementation. With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
 
-    compile: CompileConfig | None = None
+    compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""
 
-    ac: ActivationCheckpointConfig | None = None
+    ac: ActivationCheckpointConfig | None = ActivationCheckpointConfig()
     """Activation checkpointing configuration. If None, activation checkpointing is disabled."""
 
-    ac_offloading: ActivationOffloadingConfig | None = None
+    ac_offloading: ActivationOffloadingConfig | None = ActivationOffloadingConfig()
     """Activation offloading configuration. If None, activation offloading is disabled."""
 
     fsdp_cpu_offload: bool = False
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
-    optim_cpu_offload: bool = False
+    optim_cpu_offload: bool = True
     """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
 
     reshard_after_forward: bool = True
@@ -143,8 +143,8 @@ class ModelConfig(BaseModelConfig):
     dp_replicate: int = 1
     """Data parallel dim where model weights are replicated."""
 
-    ep: int = 1
-    """Expert parallelism degree for MoE layers. 1 disables EP."""
+    ep: int | Literal["auto"] = "auto"
+    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves to ``min(fsdp_island_size, 8)`` for MoE models (where ``fsdp_island_size = world_size // dp_replicate``), and to 1 for non-MoE models. Set an explicit integer to override."""
 
     ep_comm_backend: EPCommBackend = "torch"
     """Communication backend for expert parallelism. ``torch`` uses TorchTitan all-to-all collectives; ``deepep`` uses DeepEP custom kernels."""
@@ -188,8 +188,8 @@ class ModelConfig(BaseModelConfig):
     debug: DebugModelConfig = DebugModelConfig()
     """Debugging knobs for the model and distributed training."""
 
-    fused_lm_head_token_chunk_size: int | Literal["auto", "disabled"] = "disabled"
-    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``auto`` auto-enables (RL training picks 8192); ``disabled`` uses the vanilla LM head. Integer values aren't supported for SFT training."""
+    fused_lm_head_token_chunk_size: int | Literal["disabled"] = 1024
+    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. SFT training silently disables this (not supported yet)."""
 
     @model_validator(mode="before")
     @classmethod
@@ -258,7 +258,7 @@ class ModelConfig(BaseModelConfig):
         if self.ep_comm_backend == "torch":
             return self
 
-        if self.ep <= 1:
+        if isinstance(self.ep, int) and self.ep <= 1:
             raise ValueError(f"model.ep_comm_backend='{self.ep_comm_backend}' requires model.ep > 1.")
 
         return self
@@ -510,7 +510,7 @@ class TrainerConfig(BaseConfig):
     data: DataLoaderConfig = DataLoaderConfig()
 
     loss: LossConfig = DefaultLossConfig()
-    """Loss config for rl-mode batches. opd and sft batches dispatch to their own loss fns unconditionally and do not read this."""
+    """Loss config for the rl loss component (see ``setup_rl_loss_fn``). The ce / ref_kl components are fixed and do not read this."""
 
     optim: OptimizerConfig = AdamWConfig()
 
@@ -658,15 +658,8 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_fused_lm_head_token_chunk_size(self):
-        if self.model.fused_lm_head_token_chunk_size == "auto":
-            self.model.fused_lm_head_token_chunk_size = 8192
-
-        return self
-
-    @model_validator(mode="after")
     def ep_only_with_custom_impl(self):
-        if self.model.ep > 1 and self.model.impl not in ("custom", "auto"):
+        if self.model.ep != 1 and self.model.ep != "auto" and self.model.impl not in ("custom", "auto"):
             raise ValueError("EP is only supported with the custom implementation or auto mode")
 
         return self

@@ -41,7 +41,9 @@ def _build_rollout(*, example_id: int, reward: float, task: str) -> Rollout:
         rewards={"reward": reward},
     )
     rollout.env_name = task
-    rollout.advantage = reward / 2
+    # Per-token advantage stream (full-length-N): 0.0 on the 3 prompt tokens,
+    # reward/2 on the 2 completion (mask-True) tokens.
+    rollout.advantages = [0.0, 0.0, 0.0, reward / 2, reward / 2]
     return rollout
 
 

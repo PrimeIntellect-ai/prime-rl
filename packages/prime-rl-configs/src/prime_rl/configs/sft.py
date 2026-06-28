@@ -367,18 +367,12 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_and_disable_chunked_loss(self):
-        if isinstance(self.model.fused_lm_head_token_chunk_size, int):
-            raise ValueError(
-                "Chunked loss is not supported for SFT training yet, please set "
-                "`model.fused_lm_head_token_chunk_size` to 'disabled'"
-            )
-
         self.model.fused_lm_head_token_chunk_size = "disabled"
         return self
 
     @model_validator(mode="after")
     def ep_only_with_custom_impl(self):
-        if self.model.ep > 1 and self.model.impl not in ("custom", "auto"):
+        if self.model.ep != 1 and self.model.ep != "auto" and self.model.impl not in ("custom", "auto"):
             raise ValueError("EP is only supported with the custom implementation or auto mode")
 
         return self
