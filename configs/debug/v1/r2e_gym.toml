@@ -35,7 +35,6 @@ name = "Qwen/Qwen3.5-4B"
 # --- Trainer ---
 
 [trainer]
-pack_multimodal = false
 
 [trainer.model]
 cp = 4

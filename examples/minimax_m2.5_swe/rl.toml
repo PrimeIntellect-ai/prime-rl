@@ -24,7 +24,6 @@ interval = 100
 project = "minimax-swe"
 
 [trainer]
-pack_multimodal = false
 
 [trainer.model]
 impl = "custom"

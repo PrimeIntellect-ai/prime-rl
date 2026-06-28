@@ -17,7 +17,6 @@ keep_last = 1
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [trainer]
-pack_multimodal = false
 
 [trainer.model]
 cp = 2
