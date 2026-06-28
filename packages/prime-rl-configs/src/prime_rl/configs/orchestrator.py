@@ -13,6 +13,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
+    EnvVars,
     FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
@@ -499,6 +500,9 @@ class OrchestratorConfig(BaseConfig):
     rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer."""
 
     log: LogConfig = LogConfig()
+
+    env_vars: EnvVars = {}
+    """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
 
     wandb: WandbWithExtrasConfig | None = None
 
