@@ -189,12 +189,12 @@ Both backends support the 2 most important things:
 ### Routing policies
 The 2 policies you might want to configure are:
 - `consistent_hash` - this is the default policy that optimizes for KV cache re-use across turns - this works by hashing a request header to determine where to route the request to. You can configure what to hash by setting
-`orchestrator.student.client.extra_headers_from_state` to the header the `router` expects to be set.
+`orchestrator.model.client.extra_headers_from_state` to the header the `router` expects to be set.
 
 We set it to a sensible default, that works with all verifiers environments.
 
 ```toml
-[orchestrator.student.client.extra_headers_from_state]
+[orchestrator.model.client.extra_headers_from_state]
 X-Session-ID = "trajectory_id" # this is the default - each rollout has a unique trajectory_id and router expects X-Session-ID
 ```
 
@@ -244,6 +244,8 @@ For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLL
 For optimal P/D disaggregation deployment, we automatically set the decode `all2all_backend` to `deepep_low_latency` and the prefill `all2all_backend` to `deepep_high_throughput`. We currently don't support customizing all2all backends for P/D disaggragation out of the box. You can do this by overriding the slurm template only.
 
 For KV cache transfer, we utilize the NIXL connector. This is the default and only currently supported connector. We aim to support more advanced options, such as D->P transfer, or Mooncake Connector in the future.
+
+> **Required:** The pip-wheel NIXL's bundled UCX segfaults on the prefill→decode KV transfer. You must build NIXL against UCX 1.19.x from source — see [Disaggregated Prefill/Decode Inference](advanced.md#disaggregated-prefilldecode-inference) in the Advanced docs for the full setup.
 
 For configuring various knobs with environment variables, we enable you to configure prefill and decode environment variables separately. This is useful if you want to configure different environment variables for the prefill and decode stages.
 

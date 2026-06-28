@@ -5,3 +5,4 @@ batch_size = 2
 
 [model]
 seq_len = 1024
+compile = "None"

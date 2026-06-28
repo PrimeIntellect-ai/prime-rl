@@ -4,7 +4,7 @@
   A group-scoring task that runs N rollouts in one call reserves N permits.
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched rollout eventually reaches
-  ``out_q`` exactly once as a ``TrainRollout`` / ``EvalRollout``. Failures
+  ``out_q`` exactly once as a ``Rollout``. Failures
   (env error, empty trajectory, task exception, off-policy cancel) carry
   ``trace.error`` set; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
@@ -15,7 +15,9 @@
   the weight update) bumps ``off_policy_steps`` on in-flight train rollouts and
   drops groups past ``max_off_policy_steps``.
   Eval rollouts are measurements for the policy version they started with,
-  so they are allowed to finish even if training advances.
+  so they are allowed to finish even if training advances. Train rollouts
+  sampled from a frozen model never age — their sampler doesn't change
+  with policy updates.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
   count-to-``group_size`` finalization still fires.
 """
@@ -114,7 +116,7 @@ class DispatcherMetrics:
 class RolloutDispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules
-    rollouts under shared capacity, and emits ``FinishedRollout``\\ s to
+    rollouts under shared capacity, and emits ``Rollout``\\ s to
     ``out_q``. The watcher drives ``on_version_pending`` for off-policy
     cancellation; the orchestrator triggers eval epochs."""
 
@@ -125,26 +127,20 @@ class RolloutDispatcher:
         eval_envs: EvalEnvs | None,
         train_source: TrainSource,
         eval_source: EvalSource | None,
-        inference: InferencePool,
-        eval_inference: InferencePool,
+        policy_pool: InferencePool,
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
-        training_mode: Literal["rl", "opd", "sft"],
-        use_cache_salt: bool = True,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
         self.eval_envs = eval_envs
-        # Train rollouts go to ``inference`` (the teacher in SFT mode);
-        # eval always evaluates the student, so it uses ``eval_inference``.
-        self.inference = inference
-        self.eval_inference = eval_inference
+        # Train rollouts go to the env sampler's pool; eval always
+        # evaluates the policy.
+        self.policy_pool = policy_pool
         self.train_source = train_source
         self.eval_source = eval_source
-        self.training_mode = training_mode
-        self.use_cache_salt = use_cache_salt
         self.max_off_policy_steps = max_off_policy_steps
 
         self.max_inflight = max_inflight_rollouts
@@ -174,14 +170,13 @@ class RolloutDispatcher:
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
 
-    @property
-    def train_model_name(self) -> str:
-        """Model name for *train* rollouts. In SFT mode train data comes from
-        the teacher pool, so use its model name; otherwise the live student
-        policy. (Eval always uses ``policy.model_name`` — the student.)"""
-        if self.training_mode == "sft":
-            return self.inference.model_name
-        return self.policy.model_name
+    def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
+        """``(pool, model_name, is_live)`` for *train* rollouts of this env —
+        the env sampler's pool. (Eval always uses the policy.)"""
+        sampler = self.train_envs.get(env_name).sampler
+        if sampler.samples_from_live_policy:
+            return sampler.pool, self.policy.model_name, True
+        return sampler.pool, sampler.pool.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -276,6 +271,10 @@ class RolloutDispatcher:
         cancelled = 0
         for meta in self.inflight.values():
             if meta.kind != "train":
+                continue
+            # Frozen-sourced rollouts never go stale — their sampler doesn't
+            # change with policy updates.
+            if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
                 continue
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:
@@ -394,14 +393,15 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the rollout pool (teacher in SFT) via the
-        # renderer/token train client. Eval always evaluates the student and
+        # Train rollouts use the env sampler's pool via the
+        # renderer/token train client. Eval always evaluates the policy and
         # goes through the eval client (chat-completions) — the same path the
         # legacy orchestrator used, so eval scores stay comparable.
         if group.kind == "eval":
-            pool, model_name = self.eval_inference, self.policy.model_name
+            pool, model_name = self.policy_pool, self.policy.model_name
+            live_sourced = True
         else:
-            pool, model_name = self.inference, self.train_model_name
+            pool, model_name, live_sourced = self._train_pool_for(group.env_name)
 
         # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
@@ -422,7 +422,10 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        if group.kind == "eval" or self.use_cache_salt:
+        # Frozen-sourced train rollouts hit a frozen pool; salting per policy
+        # version would invalidate its prefix cache every weight update for
+        # no reason.
+        if live_sourced:
             cache_salt = str(group.policy_version_at_start)
         else:
             cache_salt = None

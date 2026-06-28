@@ -167,6 +167,25 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_env_algo_overrides_top_level():
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
+            "algo": {"type": "echo"},
+            "train": {"env": [{"id": "a", "algo": {"type": "grpo"}}, {"id": "b"}]},
+        }
+    )
+    env_a, env_b = config.train.env
+    # Env a sets its own algorithm; only env b inherits the top-level echo algorithm.
+    assert env_a.algo is not None and env_a.algo.type == "grpo"
+    assert env_b.algo is not None and env_b.algo.type == "echo"
+
+    # Resolved configs round-trip.
+    dumped = config.model_dump(exclude_none=True)
+    reloaded = OrchestratorConfig.model_validate(dumped)
+    assert reloaded.train.env[0].algo is not None and reloaded.train.env[0].algo.type == "grpo"
+
+
 def test_trainer_enable_token_export_cli_flag():
     assert not cli(TrainerConfig, args=[]).enable_token_export
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
@@ -189,7 +208,7 @@ def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
 
     assert config.inference is not None
     assert config.inference.parallel.dp == 2
-    assert config.orchestrator.student.client.dp_rank_count == 2
+    assert config.orchestrator.model.client.dp_rank_count == 2
 
 
 def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
@@ -211,21 +230,19 @@ def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
     assert config.inference is not None
     assert config.inference.data_parallel_size_local == 2
     assert config.inference.parallel.dp == 2
-    assert config.orchestrator.student.client.dp_rank_count == 1
+    assert config.orchestrator.model.client.dp_rank_count == 1
 
 
 def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="renderer"):
         OrchestratorConfig.model_validate(
             {
-                "student": {
-                    "model": {
-                        "name": "Qwen/Qwen3-VL-4B-Instruct",
-                        "vlm": {
-                            "vision_encoder_attr": "model.visual",
-                            "language_model_attr": "model.language_model",
-                        },
-                    }
+                "model": {
+                    "name": "Qwen/Qwen3-VL-4B-Instruct",
+                    "vlm": {
+                        "vision_encoder_attr": "model.visual",
+                        "language_model_attr": "model.language_model",
+                    },
                 },
                 "renderer": None,
             }
@@ -233,14 +250,12 @@ def test_orchestrator_vlm_requires_renderer():
 
     config = OrchestratorConfig.model_validate(
         {
-            "student": {
-                "model": {
-                    "name": "Qwen/Qwen3-VL-4B-Instruct",
-                    "vlm": {
-                        "vision_encoder_attr": "model.visual",
-                        "language_model_attr": "model.language_model",
-                    },
-                }
+            "model": {
+                "name": "Qwen/Qwen3-VL-4B-Instruct",
+                "vlm": {
+                    "vision_encoder_attr": "model.visual",
+                    "language_model_attr": "model.language_model",
+                },
             },
         }
     )
@@ -282,7 +297,7 @@ def test_shared_model_name_propagates_to_subconfigs():
         }
     )
     assert config.trainer.model.name == model_name
-    assert config.orchestrator.student.model.name == model_name
+    assert config.orchestrator.model.name == model_name
     assert config.inference is not None and config.inference.model.name == model_name
     assert config.trainer.tokenizer.name == model_name
     assert config.orchestrator.tokenizer.name == model_name
@@ -337,7 +352,7 @@ def test_explicit_subconfig_tokenizer_name_survives_shared_model_propagation():
 
     This is the case that the old RL-level ``auto_setup_tokenizer`` fix-up got
     wrong: it unconditionally re-derived ``orchestrator.tokenizer.name`` from
-    ``orchestrator.student.model.name`` after propagation, silently overriding
+    ``orchestrator.model.name`` after propagation, silently overriding
     the user's explicit value. The ``mode="before"`` ``auto_setup_shared_configs``
     propagator fixes this because it propagates the model name into the raw
     dict before sub-configs are built, so ``OrchestratorConfig``'s own
@@ -357,7 +372,7 @@ def test_explicit_subconfig_tokenizer_name_survives_shared_model_propagation():
     )
     # Shared model.name reached every sub-config that didn't override it.
     assert config.trainer.model.name == "M"
-    assert config.orchestrator.student.model.name == "M"
+    assert config.orchestrator.model.name == "M"
     # Trainer didn't specify a tokenizer, so it falls back to the propagated model name.
     assert config.trainer.tokenizer.name == "M"
     # Orchestrator's explicit tokenizer name survived.

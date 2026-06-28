@@ -32,7 +32,7 @@ from prime_rl.trainer.model import (
     setup_tokenizer,
     setup_model,
 )
-from prime_rl.trainer.parallel_dims import get_parallel_dims
+from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
@@ -93,6 +93,9 @@ def train(config: SFTConfig):
 
     if config.model.lora is not None:
         setup_multi_run_manager(config.output_dir, 1, torch.device("cuda", world.local_rank), config.model.lora)
+
+    # Resolve ep="auto" to a concrete integer before creating parallel dims
+    resolve_ep(config.model)
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model, config.data.seq_len)

@@ -8,7 +8,7 @@ To test the elastic inference pool without having the `rl` entrypoint start the 
    uv run rl @ examples/alphabet_sort/rl_elastic.toml
    ```
 
-   The config uses `[orchestrator.client.elastic]` with `hostname = "localhost"` and `port = 8000`. The orchestrator will wait for at least one ready server before starting rollouts.
+   The config uses `[orchestrator.model.client.elastic]` with `hostname = "localhost"` and `port = 8000`. The orchestrator will wait for at least one ready server before starting rollouts.
 
 2. **Start the inference server manually** (in a separate terminal or on another machine):
 
