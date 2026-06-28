@@ -76,6 +76,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
+from prime_rl.utils.run_assets import configure_run_asset_env
 from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
     clean_exit,
@@ -99,11 +100,6 @@ MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 # dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
-
-# Drop per-node training sidecars when dumping a Trace to disk (rollout jsonl / wandb
-# tables): multimodal descriptors and router replay are training inputs, not part of the
-# rollout record. `__all__` applies the exclude to every node in the list.
-ROLLOUT_DUMP_EXCLUDE = {"nodes": {"__all__": {"multi_modal_data", "routed_experts"}}}
 
 
 class Orchestrator:
@@ -845,6 +841,7 @@ async def run_orchestrator(config: OrchestratorConfig) -> None:
     """Top-level entrypoint. Wrapped in ``@clean_exit`` so wandb is flushed
     on exit (success or crash); keeps that out of the class.
     """
+    configure_run_asset_env(config.output_dir, config.multimodal)
     await Orchestrator(config).start()
 
 

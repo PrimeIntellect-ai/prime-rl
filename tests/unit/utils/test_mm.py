@@ -110,6 +110,30 @@ def test_build_mm_refs_rejects_legacy_descriptor_without_raw_envelope(tmp_path):
         build_mm_refs(multi_modal_data, messages)
 
 
+def test_build_mm_refs_accepts_inline_data_uri():
+    data_uri = "data:image/png;base64,aGVsbG8="
+    multi_modal_data = SimpleNamespace(
+        mm_items={"image": [_qwen_item([[1, 1, 1]])]},
+        mm_hashes={"image": ["a" * 32]},
+        mm_placeholders={"image": []},
+    )
+    messages = [
+        {
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": data_uri},
+                }
+            ]
+        }
+    ]
+
+    refs = build_mm_refs(multi_modal_data, messages)
+
+    assert refs is not None
+    assert refs.uris == [data_uri]
+
+
 def test_raw_image_materializer_synthesizes_qwen_placeholder_from_descriptor():
     materializer = RawImageMaterializer("unused", trust_remote_code=False)
     materializer._image_processor = _ImageProcessor()

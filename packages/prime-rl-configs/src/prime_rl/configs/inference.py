@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
-from prime_rl.configs.shared import BaseModelConfig, LogConfig, SlurmConfig
+from prime_rl.configs.shared import BaseModelConfig, LogConfig, MultimodalConfig, SlurmConfig
 from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
@@ -434,6 +434,9 @@ class InferenceConfig(BaseConfig):
     """Only validate and dump resolved configs, then exit early."""
 
     experimental: InferenceExperimentalConfig = InferenceExperimentalConfig()
+
+    multimodal: MultimodalConfig = MultimodalConfig()
+    """Raw multimodal storage policy shared with trainer and orchestrator."""
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):

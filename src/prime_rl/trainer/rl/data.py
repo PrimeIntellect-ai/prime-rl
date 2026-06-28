@@ -9,7 +9,7 @@ from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig, MissingMMImagePolicy
-from prime_rl.multimodal.adapters.base import ForwardPolicy
+from prime_rl.multimodal.adapters.base import ForwardPolicy, MaterializedMM
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
@@ -19,6 +19,7 @@ from prime_rl.transport import (
     TransportConfig,
     setup_micro_batch_receiver,
 )
+from prime_rl.transport.types import MMRefs
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.mm import RawImageMaterializer, missing_file_uris
 
@@ -58,6 +59,9 @@ class TensorMicroBatch(TypedDict):
     # Packer-derived metadata used for run-local debug exports.
     run_id: str | None
     run_step: int | None
+
+
+MaterializedMMParts = tuple[dict[str, Tensor] | None, ForwardPolicy | None]
 
 
 class FakeDataLoader:
@@ -213,9 +217,7 @@ class DataLoader:
         self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, dp_rank, start_step, config)
         self.mm_materializer = RawImageMaterializer(model_name, trust_remote_code=model_trust_remote_code)
         self.missing_mm_image_policy = missing_mm_image_policy
-        self.last_mm_materialize_time = 0.0
-        self.last_mm_images_materialized = 0
-        self.last_mm_images_placeholdered = 0
+        self._reset_mm_stats()
 
     def wait_for_batch(self) -> None:
         if self.world.is_master:
@@ -229,10 +231,58 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
+        self._reset_mm_stats()
+        return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+
+    def _reset_mm_stats(self) -> None:
         self.last_mm_materialize_time = 0.0
         self.last_mm_images_materialized = 0
         self.last_mm_images_placeholdered = 0
-        return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+
+    @staticmethod
+    def _materialized_mm_parts(materialized: MaterializedMM | None) -> MaterializedMMParts:
+        if materialized is None:
+            return None, None
+        return materialized.kwargs, materialized.forward_policy
+
+    @staticmethod
+    def _mm_run_context(micro_batch: MicroBatch) -> str:
+        run_idx = next((i for i, n in enumerate(micro_batch.lora_num_tokens or []) if n > 0), None)
+        return f"run_idx={run_idx}, run_id={micro_batch.run_id}, run_step={micro_batch.run_step}"
+
+    def _materialize_mm_refs(self, micro_batch: MicroBatch, refs: MMRefs) -> MaterializedMMParts:
+        materialize_start = time.perf_counter()
+        try:
+            materialized = self.mm_materializer.materialize(refs)
+        except FileNotFoundError as exc:
+            self.last_mm_materialize_time += time.perf_counter() - materialize_start
+            if self.missing_mm_image_policy == "error":
+                get_logger().error(
+                    f"raw image materialization failed ({self._mm_run_context(micro_batch)}, uris={refs.uris}): {exc!r}"
+                )
+                raise
+            return self._synthesize_missing_mm_placeholder(micro_batch, refs)
+
+        self.last_mm_materialize_time += time.perf_counter() - materialize_start
+        self.last_mm_images_materialized += len(refs.uris)
+        return self._materialized_mm_parts(materialized)
+
+    def _synthesize_missing_mm_placeholder(self, micro_batch: MicroBatch, refs: MMRefs) -> MaterializedMMParts:
+        placeholder_start = time.perf_counter()
+        materialized = self.mm_materializer.synthesize_placeholder(refs)
+        self.last_mm_materialize_time += time.perf_counter() - placeholder_start
+        self.last_mm_images_placeholdered += len(refs.uris)
+        micro_batch.loss_mask = [False] * len(micro_batch.loss_mask)
+        micro_batch.advantages = [0.0] * len(micro_batch.advantages)
+
+        missing_uris = missing_file_uris(refs.uris)
+        get_logger().warning(
+            "raw image materialization missing image(s); using zero-loss placeholder "
+            f"({self._mm_run_context(micro_batch)}, "
+            f"missing_uris={missing_uris or ['<unknown: disappeared during read>']}, "
+            f"uris={refs.uris})"
+        )
+        return self._materialized_mm_parts(materialized)
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
@@ -244,56 +294,7 @@ class DataLoader:
         if micro_batch.mm_kwargs:
             raise ValueError("Processed multimodal mm_kwargs are unsupported in v1; use raw mm_refs")
         if micro_batch.mm_refs is not None:
-            materialize_start = time.perf_counter()
-            try:
-                materialized = self.mm_materializer.materialize(micro_batch.mm_refs)
-                if materialized is not None:
-                    mm_kwargs = materialized.kwargs
-                    mm_forward_policy = materialized.forward_policy
-                self.last_mm_materialize_time += time.perf_counter() - materialize_start
-                self.last_mm_images_materialized += len(micro_batch.mm_refs.uris)
-            except FileNotFoundError as exc:
-                self.last_mm_materialize_time += time.perf_counter() - materialize_start
-                run_idx = next((i for i, n in enumerate(micro_batch.lora_num_tokens or []) if n > 0), None)
-                if self.missing_mm_image_policy == "error":
-                    get_logger().error(
-                        f"raw image materialization failed (run_idx={run_idx}, run_id={micro_batch.run_id}, "
-                        f"run_step={micro_batch.run_step}, uris={micro_batch.mm_refs.uris}): {exc!r}"
-                    )
-                    raise
-
-                placeholder_start = time.perf_counter()
-                try:
-                    materialized = self.mm_materializer.synthesize_placeholder(micro_batch.mm_refs)
-                    if materialized is not None:
-                        mm_kwargs = materialized.kwargs
-                        mm_forward_policy = materialized.forward_policy
-                except Exception as placeholder_exc:
-                    get_logger().error(
-                        f"raw image placeholder synthesis failed after missing image "
-                        f"(run_idx={run_idx}, run_id={micro_batch.run_id}, run_step={micro_batch.run_step}, "
-                        f"uris={micro_batch.mm_refs.uris}): {placeholder_exc!r}"
-                    )
-                    raise placeholder_exc from exc
-
-                self.last_mm_materialize_time += time.perf_counter() - placeholder_start
-                self.last_mm_images_placeholdered += len(micro_batch.mm_refs.uris)
-                micro_batch.loss_mask = [False] * len(micro_batch.loss_mask)
-                micro_batch.advantages = [0.0] * len(micro_batch.advantages)
-                missing_uris = missing_file_uris(micro_batch.mm_refs.uris)
-                get_logger().warning(
-                    "raw image materialization missing image(s); using zero-loss placeholder "
-                    f"(run_idx={run_idx}, run_id={micro_batch.run_id}, run_step={micro_batch.run_step}, "
-                    f"missing_uris={missing_uris or ['<unknown: disappeared during read>']}, "
-                    f"uris={micro_batch.mm_refs.uris})"
-                )
-            except Exception as exc:
-                run_idx = next((i for i, n in enumerate(micro_batch.lora_num_tokens or []) if n > 0), None)
-                get_logger().error(
-                    f"raw image materialization failed (run_idx={run_idx}, run_id={micro_batch.run_id}, "
-                    f"run_step={micro_batch.run_step}, uris={micro_batch.mm_refs.uris}): {exc!r}"
-                )
-                raise
+            mm_kwargs, mm_forward_policy = self._materialize_mm_refs(micro_batch, micro_batch.mm_refs)
         routed_experts = None
         packed_routed_experts = micro_batch.routed_experts
         if packed_routed_experts is not None:

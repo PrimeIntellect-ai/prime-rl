@@ -11,10 +11,13 @@ deltas here:
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+from types import SimpleNamespace
 
 import numpy as np
 import pybase64
+import pytest
 from vllm.entrypoints.openai.engine.protocol import UsageInfo
 from vllm.entrypoints.serve.disagg.protocol import GenerateResponse, GenerateResponseChoice
 
@@ -25,8 +28,10 @@ from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
     _build_usage,
     _client_set_max_tokens,
+    _decode_raw_mm_kwargs,
     _FinalOutputCapture,
     _GenerateRoutedExpertsCapture,
+    _MMImageRefError,
 )
 
 
@@ -313,8 +318,8 @@ def test_materialize_raw_image_ref_uses_generic_family_payload(tmp_path, monkeyp
 
     out = serving_tokens._materialize_raw_image_ref_sync(
         raw_ref,
-        expected_modality="image",
-        expected_hash=mm_hash,
+        feature_modality="image",
+        mm_hash=mm_hash,
         expected_placeholder_length=7,
         processor_model_name="model",
         trust_remote_code=True,
@@ -329,3 +334,89 @@ def test_materialize_raw_image_ref_uses_generic_family_payload(tmp_path, monkeyp
     assert item.family == "test_family"
     assert item.layout_fingerprint == fingerprint
     assert item.payload == {"adapter_owned": [1, 2, 3]}
+
+
+def test_materialize_raw_image_ref_accepts_inline_data_uri(tmp_path, monkeypatch):
+    from PIL import Image
+    from renderers.mm_store import raw_mm_ref
+
+    from prime_rl.inference.vllm import serving_tokens
+
+    image_path = tmp_path / "image.png"
+    Image.new("RGB", (8, 6), color=(16, 32, 48)).save(image_path)
+    raw = image_path.read_bytes()
+    data_uri = f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
+
+    mm_hash = hashlib.sha256(raw).hexdigest()[:32]
+    fingerprint = "f" * 32
+    raw_ref = raw_mm_ref(
+        run_id="serving",
+        family="test_family",
+        fingerprint=fingerprint,
+        modality="image",
+        mm_hash=mm_hash,
+        raw_uri=data_uri,
+        payload={"adapter_owned": [4, 5, 6]},
+    )
+    processor = object()
+    captured = {}
+
+    class _Adapter:
+        def materialize_for_vllm(self, image_processor, item, image, expected_placeholder_length):
+            captured["image_processor"] = image_processor
+            captured["item"] = item
+            captured["image_size"] = image.size
+            captured["expected_placeholder_length"] = expected_placeholder_length
+            return {"materialized": True}
+
+    monkeypatch.setattr(serving_tokens, "_load_image_processor", lambda _model, _trust: processor)
+    monkeypatch.setattr(serving_tokens, "get_multimodal_adapter", lambda _family: _Adapter())
+
+    out = serving_tokens._materialize_raw_image_ref_sync(
+        raw_ref,
+        feature_modality="image",
+        mm_hash=mm_hash,
+        expected_placeholder_length=7,
+        processor_model_name="model",
+        trust_remote_code=True,
+    )
+
+    assert out == {"materialized": True}
+    assert captured["image_processor"] is processor
+    assert captured["image_size"] == (8, 6)
+    assert captured["expected_placeholder_length"] == 7
+    assert captured["item"].payload == {"adapter_owned": [4, 5, 6]}
+
+
+def test_decode_raw_mm_kwargs_rejects_none_items():
+    features = SimpleNamespace(
+        mm_hashes={"image": ["a" * 32]},
+        mm_placeholders={"image": [SimpleNamespace(length=1)]},
+        kwargs_data={"image": [None]},
+    )
+
+    with pytest.raises(_MMImageRefError, match="raw descriptor refs"):
+        asyncio.run(
+            _decode_raw_mm_kwargs(
+                features,
+                processor_model_name="model",
+                trust_remote_code=True,
+            )
+        )
+
+
+def test_decode_raw_mm_kwargs_requires_parallel_placeholders():
+    features = SimpleNamespace(
+        mm_hashes={"image": ["a" * 32]},
+        mm_placeholders={"image": []},
+        kwargs_data={"image": ["mmraw:v2:anything"]},
+    )
+
+    with pytest.raises(_MMImageRefError, match="placeholder/hash length mismatch"):
+        asyncio.run(
+            _decode_raw_mm_kwargs(
+                features,
+                processor_model_name="model",
+                trust_remote_code=True,
+            )
+        )

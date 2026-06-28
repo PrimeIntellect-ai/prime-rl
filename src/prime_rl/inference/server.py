@@ -3,10 +3,13 @@ import os
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.config import cli
+from prime_rl.utils.run_assets import configure_run_asset_env
 
 
 def setup_vllm_env(config: InferenceConfig):
     """Set vLLM environment variables based on config. Must be called before importing vLLM."""
+
+    configure_run_asset_env(config.output_dir, config.multimodal)
 
     # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")

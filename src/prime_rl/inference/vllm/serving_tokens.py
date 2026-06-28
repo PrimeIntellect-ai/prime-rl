@@ -18,8 +18,8 @@ customized:
 
 3. Raw image refs for multimodal rollouts — renderers send a lightweight raw
    descriptor ref at every image slot (current and prior turns alike). This
-   handler materializes every ref through multimodal adapters; there is no
-   cache-only ``None`` path, so an unresolved ref is a hard error, not a retry.
+   handler materializes every ref through multimodal adapters before vLLM sees
+   the request.
 
 4. Server-side ``max_tokens`` defaulting — upstream ``ServingTokens`` now applies
    this itself (via ``GenerateRequest.is_sampling_param_provided`` +
@@ -33,6 +33,7 @@ delegates to upstream so we track future vLLM changes for free.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 from collections.abc import AsyncGenerator, AsyncIterable
 from dataclasses import dataclass
@@ -178,48 +179,106 @@ def _load_image_processor(model_name: str, trust_remote_code: bool):
     return image_processor
 
 
+def _parse_raw_image_ref(raw_ref: str, *, feature_modality: str, mm_hash: str):
+    from renderers.mm_store import split_raw_mm_ref
+
+    try:
+        ref = split_raw_mm_ref(raw_ref)
+    except ValueError as exc:
+        raise _MMImageRefError(str(exc)) from exc
+
+    if ref.modality != feature_modality:
+        raise _MMImageRefError(f"Expected feature modality {feature_modality!r}, got {ref.modality!r}")
+    if ref.mm_hash != mm_hash:
+        raise _MMImageRefError(f"Expected image hash {mm_hash}, got {ref.mm_hash}")
+    return ref
+
+
+def _read_verified_raw_image(ref) -> bytes:
+    from renderers.mm_store import raw_image_path
+
+    label = ref.raw_image_id or ref.raw_uri or "raw image"
+    if ref.raw_image_id is not None:
+        try:
+            raw = raw_image_path(run_id=ref.run_id, raw_image_id=ref.raw_image_id).read_bytes()
+        except OSError as exc:
+            raise _MMImageRefError(f"Unable to read raw image asset {ref.raw_image_id!r}: {exc}") from exc
+    elif isinstance(ref.raw_uri, str) and ref.raw_uri.startswith("data:image/"):
+        marker = ";base64,"
+        if marker not in ref.raw_uri:
+            raise _MMImageRefError("Inline raw image refs must use base64 data:image URIs")
+        raw = base64.b64decode(ref.raw_uri.split(marker, 1)[1])
+    else:
+        raise _MMImageRefError(f"Unsupported raw image source {label!r}")
+
+    actual_hash = hashlib.sha256(raw).hexdigest()[:32]
+    if actual_hash != ref.mm_hash:
+        raise _MMImageRefError(f"Raw image hash mismatch: expected {ref.mm_hash}, got {actual_hash}")
+    return raw
+
+
+def _decode_raw_image(raw: bytes, *, raw_image_id: str):
+    from PIL import Image
+
+    try:
+        return Image.open(BytesIO(raw)).convert("RGB")
+    except OSError as exc:
+        raise _MMImageRefError(f"Unable to decode raw image asset {raw_image_id!r}: {exc}") from exc
+
+
 def _materialize_raw_image_ref_sync(
     raw_ref: str,
     *,
-    expected_modality: str,
-    expected_hash: str,
+    feature_modality: str,
+    mm_hash: str,
     expected_placeholder_length: int | None,
     processor_model_name: str,
     trust_remote_code: bool,
 ):
-    from PIL import Image
-    from renderers.mm_store import raw_image_path, split_raw_mm_ref
+    ref = _parse_raw_image_ref(raw_ref, feature_modality=feature_modality, mm_hash=mm_hash)
+    raw = _read_verified_raw_image(ref)
+    image = _decode_raw_image(raw, raw_image_id=ref.raw_image_id or "inline image")
+    image_processor = _load_image_processor(processor_model_name, trust_remote_code)
+    item = RawMMItem(
+        modality=ref.modality,
+        family=ref.family,
+        layout_fingerprint=ref.fingerprint,
+        payload=dict(ref.payload),
+        raw_ref=raw_ref,
+    )
+    adapter = get_multimodal_adapter(ref.family)
+    return adapter.materialize_for_vllm(
+        image_processor,
+        item,
+        image,
+        expected_placeholder_length,
+    )
 
-    try:
-        ref = split_raw_mm_ref(raw_ref)
-        if ref.modality != expected_modality:
-            raise ValueError(f"Expected modality {expected_modality!r}, got {ref.modality!r}")
-        if ref.mm_hash != expected_hash:
-            raise ValueError(f"Expected image hash {expected_hash}, got {ref.mm_hash}")
 
-        raw = raw_image_path(run_id=ref.run_id, raw_image_id=ref.raw_image_id).read_bytes()
-        actual_hash = hashlib.sha256(raw).hexdigest()[:32]
-        if actual_hash != ref.mm_hash:
-            raise ValueError(f"Raw image hash mismatch: expected {ref.mm_hash}, got {actual_hash}")
+def _raw_ref_payloads_for_feature(
+    features: Any, feature_modality: str, hashes: list[str]
+) -> tuple[list[str], list[Any]]:
+    from renderers.mm_store import is_raw_mm_ref
 
-        image_processor = _load_image_processor(processor_model_name, trust_remote_code)
-        item = RawMMItem(
-            modality=ref.modality,
-            family=ref.family,
-            layout_fingerprint=ref.fingerprint,
-            payload=dict(ref.payload),
-            raw_ref=raw_ref,
+    kwargs_data = features.kwargs_data
+    if kwargs_data is None or feature_modality not in kwargs_data:
+        raise _MMImageRefError(f"v1 raw multimodal: modality {feature_modality!r} arrived with no raw refs")
+
+    raw_refs = kwargs_data[feature_modality]
+    placeholders = features.mm_placeholders.get(feature_modality)
+    if placeholders is None:
+        raise _MMImageRefError(f"v1 raw multimodal: modality {feature_modality!r} arrived with no placeholders")
+    if len(raw_refs) != len(hashes):
+        raise _MMImageRefError(
+            f"Multimodal kwargs/hash length mismatch for {feature_modality}: {len(raw_refs)} != {len(hashes)}"
         )
-        adapter = get_multimodal_adapter(ref.family)
-        image = Image.open(BytesIO(raw)).convert("RGB")
-        return adapter.materialize_for_vllm(
-            image_processor,
-            item,
-            image,
-            expected_placeholder_length,
+    if len(placeholders) != len(hashes):
+        raise _MMImageRefError(
+            f"Multimodal placeholder/hash length mismatch for {feature_modality}: {len(placeholders)} != {len(hashes)}"
         )
-    except Exception as exc:
-        raise _MMImageRefError(str(exc)) from exc
+    if not all(is_raw_mm_ref(item) for item in raw_refs):
+        raise _MMImageRefError("v1 multimodal inference accepts raw descriptor refs only")
+    return raw_refs, placeholders
 
 
 async def _decode_raw_mm_kwargs(
@@ -227,43 +286,24 @@ async def _decode_raw_mm_kwargs(
     *,
     processor_model_name: str,
     trust_remote_code: bool,
-) -> dict[str, list[Any | None]]:
-    from renderers.mm_store import IMAGE_REF_PREFIX
-
-    kwargs_data = features.kwargs_data or {}
-    mm_kwargs: dict[str, list[Any | None]] = {}
-    for modality, hashes in features.mm_hashes.items():
-        placeholders = features.mm_placeholders.get(modality, [])
-        items = kwargs_data.get(modality)
-        if items is None:
-            raise _MMImageRefError(
-                "v1 raw multimodal: modality %r arrived with no ref payload; every image must "
-                "carry a raw ref (cache-only None entries are no longer supported)" % modality
-            )
-        if len(items) != len(hashes):
-            raise _MMImageRefError(
-                f"Multimodal kwargs/hash length mismatch for {modality}: {len(items)} != {len(hashes)}"
-            )
-        decoded: list[Any | None] = []
-        for idx, item in enumerate(items):
-            if item is None:
-                decoded.append(None)
-                continue
-            if not isinstance(item, str) or not item.startswith(f"{IMAGE_REF_PREFIX}:"):
-                raise _MMImageRefError("v1 multimodal inference accepts raw descriptor refs only")
-            placeholder_length = placeholders[idx].length if idx < len(placeholders) else None
+) -> dict[str, list[Any]]:
+    mm_kwargs: dict[str, list[Any]] = {}
+    for feature_modality, hashes in features.mm_hashes.items():
+        raw_refs, placeholders = _raw_ref_payloads_for_feature(features, feature_modality, hashes)
+        decoded: list[Any] = []
+        for idx, raw_ref in enumerate(raw_refs):
             decoded.append(
                 await asyncio.to_thread(
                     _materialize_raw_image_ref_sync,
-                    item,
-                    expected_modality=modality,
-                    expected_hash=hashes[idx],
-                    expected_placeholder_length=placeholder_length,
+                    raw_ref,
+                    feature_modality=feature_modality,
+                    mm_hash=hashes[idx],
+                    expected_placeholder_length=placeholders[idx].length,
                     processor_model_name=processor_model_name,
                     trust_remote_code=trust_remote_code,
                 )
             )
-        mm_kwargs[modality] = decoded
+        mm_kwargs[feature_modality] = decoded
     return mm_kwargs
 
 

@@ -12,11 +12,13 @@ the ``rl`` launcher under torchrun).
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.run_assets import configure_run_asset_env
 
 
 def main():
     set_proc_title("Trainer")
     config = cli(TrainerConfig)
+    configure_run_asset_env(config.output_dir, config.multimodal)
     from prime_rl.trainer.rl.train import train
 
     train(config)

@@ -4,9 +4,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-RAW_MM_ITEM_KIND = "prime_raw_mm_item"
-RAW_MM_ITEM_VERSION = 1
-PROCESSED_MM_KEYS = {"pixel_values", "image_embeds", "image_features"}
+from renderers.mm_store import RAW_MM_ITEM_KIND, RAW_MM_ITEM_VERSION
+
+PROCESSED_MM_KEYS = frozenset({"pixel_values", "image_embeds", "image_features"})
 
 
 @dataclass(frozen=True)
@@ -29,38 +29,50 @@ def contains_processed_payload_key(value: Any) -> bool:
     return False
 
 
-def parse_raw_mm_item(value: Any) -> RawMMItem:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"v1 multimodal sidecars must be raw descriptor dicts, got {type(value).__name__}")
+def _descriptor_mapping(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    raise TypeError(f"v1 multimodal sidecars must be raw descriptor dicts, got {type(value).__name__}")
+
+
+def _required_str(value: Mapping[str, Any], field: str) -> str:
+    item = value.get(field)
+    if isinstance(item, str) and item:
+        return item
+    raise ValueError(f"raw multimodal descriptor is missing {field}")
+
+
+def _optional_str(value: Mapping[str, Any], field: str) -> str | None:
+    item = value.get(field)
+    if item is None or isinstance(item, str):
+        return item
+    raise ValueError(f"raw multimodal descriptor {field} must be a string when present")
+
+
+def _payload(value: Mapping[str, Any]) -> dict[str, Any]:
+    payload = value.get("payload")
+    if not isinstance(payload, Mapping):
+        raise ValueError("raw multimodal descriptor payload must be a dict")
+    return {str(k): v for k, v in payload.items()}
+
+
+def _validate_envelope(value: Mapping[str, Any]) -> None:
     if contains_processed_payload_key(value):
         raise TypeError("v1 multimodal sidecars must not carry processed multimodal payloads")
     if value.get("kind") != RAW_MM_ITEM_KIND:
         raise ValueError("raw multimodal descriptor is missing the common envelope kind")
-    if int(value.get("version", -1)) != RAW_MM_ITEM_VERSION:
+    if value.get("version") != RAW_MM_ITEM_VERSION:
         raise ValueError(f"unsupported raw multimodal descriptor version: {value.get('version')!r}")
-    modality = value.get("modality")
-    family = value.get("family")
-    layout_fingerprint = value.get("layout_fingerprint")
-    payload = value.get("payload")
-    if not isinstance(modality, str) or not modality:
-        raise ValueError("raw multimodal descriptor is missing modality")
-    if not isinstance(family, str) or not family:
-        raise ValueError("raw multimodal descriptor is missing family")
-    if not isinstance(layout_fingerprint, str) or not layout_fingerprint:
-        raise ValueError("raw multimodal descriptor is missing layout_fingerprint")
-    if not isinstance(payload, Mapping):
-        raise ValueError("raw multimodal descriptor payload must be a dict")
-    raw_ref = value.get("raw_ref")
-    if raw_ref is not None and not isinstance(raw_ref, str):
-        raise ValueError("raw multimodal descriptor raw_ref must be a string when present")
-    vllm_modality = value.get("vllm_modality")
-    if vllm_modality is not None and not isinstance(vllm_modality, str):
-        raise ValueError("raw multimodal descriptor vllm_modality must be a string when present")
+
+
+def parse_raw_mm_item(value: Any) -> RawMMItem:
+    descriptor = _descriptor_mapping(value)
+    _validate_envelope(descriptor)
     return RawMMItem(
-        modality=modality,
-        family=family,
-        layout_fingerprint=layout_fingerprint,
-        payload={str(k): v for k, v in payload.items()},
-        raw_ref=raw_ref,
-        vllm_modality=vllm_modality,
+        modality=_required_str(descriptor, "modality"),
+        family=_required_str(descriptor, "family"),
+        layout_fingerprint=_required_str(descriptor, "layout_fingerprint"),
+        payload=_payload(descriptor),
+        raw_ref=_optional_str(descriptor, "raw_ref"),
+        vllm_modality=_optional_str(descriptor, "vllm_modality"),
     )

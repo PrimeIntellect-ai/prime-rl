@@ -9,6 +9,7 @@ from prime_rl.configs.shared import (
     FileSystemTransportConfig,
     HeartbeatConfig,
     MetricsServerConfig,
+    MultimodalConfig,
     TrainerLogConfig,
     TransportConfig,
     WandbConfig,
@@ -568,6 +569,9 @@ class TrainerConfig(BaseConfig):
 
     missing_mm_image_policy: MissingMMImagePolicy = "placeholder_zero_loss"
     """Policy when raw multimodal image files disappear before trainer materialization. ``placeholder_zero_loss`` warns, synthesizes zero-valued image tensors with the original descriptor geometry, and masks out the affected microbatch loss; ``error`` preserves fail-fast behavior."""
+
+    multimodal: MultimodalConfig = MultimodalConfig()
+    """Raw multimodal storage policy shared with orchestrator and inference."""
 
     enable_token_export: bool = False
     """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""

@@ -118,7 +118,7 @@ def rl_local(config: RLConfig):
         "WANDB_SHARED_MODE": "1",
         "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex),
     }
-    shared_run_asset_env = run_asset_env(config.orchestrator.output_dir)
+    shared_run_asset_env = run_asset_env(config.orchestrator.output_dir, multimodal=config.multimodal)
 
     # Validate client port matches inference server port
     if config.inference is not None and not config.orchestrator.model.client.is_elastic:

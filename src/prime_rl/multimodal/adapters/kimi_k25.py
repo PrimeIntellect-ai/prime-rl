@@ -1,20 +1,13 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import Any
+
+from renderers.image_layout_specs import KIMI_K25_IMAGE_LAYOUT, KimiK25ImageLayoutSpec
 
 from prime_rl.multimodal.adapters.base import ForwardPolicy, MaterializedMM
 from prime_rl.multimodal.schema import RawMMItem
-
-KIMI_K25_DEFAULTS = {
-    "patch_size": 14,
-    "merge_kernel_size": 2,
-    "in_patch_limit": 16384,
-    "patch_limit_on_one_side": 512,
-    "fixed_output_tokens": None,
-    "image_mean": [0.5, 0.5, 0.5],
-    "image_std": [0.5, 0.5, 0.5],
-}
 
 
 def _tensorize(value: Any):
@@ -25,20 +18,48 @@ def _tensorize(value: Any):
     return torch.as_tensor(value).contiguous()
 
 
-def _cfg_value(image_processor: Any, name: str) -> Any:
-    for source in (
-        image_processor,
-        getattr(image_processor, "media_proc_cfg", None),
-        getattr(image_processor, "config", None),
-    ):
-        if source is None:
-            continue
-        if isinstance(source, dict) and name in source:
-            return source[name]
-        value = getattr(source, name, None)
-        if value is not None:
-            return value
-    return KIMI_K25_DEFAULTS[name]
+def _media_proc_cfg(image_processor: Any) -> Mapping[str, Any]:
+    cfg = getattr(image_processor, "media_proc_cfg", None)
+    if not isinstance(cfg, Mapping):
+        raise ValueError("Kimi image processor must expose media_proc_cfg")
+    return cfg
+
+
+def _required_cfg(cfg: Mapping[str, Any], name: str) -> Any:
+    if name not in cfg:
+        raise ValueError(f"Kimi image processor media_proc_cfg is missing {name!r}")
+    return cfg[name]
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
+def _float_triple(value: Any, *, name: str) -> tuple[float, float, float]:
+    if not isinstance(value, list | tuple) or len(value) != 3:
+        raise ValueError(f"Kimi image processor media_proc_cfg[{name!r}] must be a length-3 sequence")
+    return (float(value[0]), float(value[1]), float(value[2]))
+
+
+def _processor_layout(image_processor: Any) -> KimiK25ImageLayoutSpec:
+    cfg = _media_proc_cfg(image_processor)
+    layout = KimiK25ImageLayoutSpec(
+        patch_size=int(_required_cfg(cfg, "patch_size")),
+        merge_kernel_size=int(_required_cfg(cfg, "merge_kernel_size")),
+        in_patch_limit=int(_required_cfg(cfg, "in_patch_limit")),
+        patch_limit_on_one_side=int(_required_cfg(cfg, "patch_limit_on_one_side")),
+        fixed_output_tokens=_optional_int(_required_cfg(cfg, "fixed_output_tokens")),
+        image_mean=_float_triple(_required_cfg(cfg, "image_mean"), name="image_mean"),
+        image_std=_float_triple(_required_cfg(cfg, "image_std"), name="image_std"),
+    )
+    if layout != KIMI_K25_IMAGE_LAYOUT:
+        raise ValueError(
+            "Kimi image processor layout does not match renderer layout contract: "
+            f"expected {KIMI_K25_IMAGE_LAYOUT}, got {layout}"
+        )
+    return layout
 
 
 def _grid_payload(item: RawMMItem) -> list[int]:
@@ -75,16 +96,16 @@ class KimiK25Adapter:
     def processor_fingerprint(self, image_processor: Any) -> str:
         from renderers.mm_store import image_layout_fingerprint
 
-        fixed_output_tokens = _cfg_value(image_processor, "fixed_output_tokens")
+        layout = _processor_layout(image_processor)
         return image_layout_fingerprint(
             family=self.family,
-            patch_size=int(_cfg_value(image_processor, "patch_size")),
-            merge_kernel_size=int(_cfg_value(image_processor, "merge_kernel_size")),
-            in_patch_limit=int(_cfg_value(image_processor, "in_patch_limit")),
-            patch_limit_on_one_side=int(_cfg_value(image_processor, "patch_limit_on_one_side")),
-            fixed_output_tokens=None if fixed_output_tokens is None else int(fixed_output_tokens),
-            image_mean=list(_cfg_value(image_processor, "image_mean")),
-            image_std=list(_cfg_value(image_processor, "image_std")),
+            patch_size=layout.patch_size,
+            merge_kernel_size=layout.merge_kernel_size,
+            in_patch_limit=layout.in_patch_limit,
+            patch_limit_on_one_side=layout.patch_limit_on_one_side,
+            fixed_output_tokens=layout.fixed_output_tokens,
+            image_mean=list(layout.image_mean),
+            image_std=list(layout.image_std),
         )
 
     def materialize_for_trainer(
@@ -145,14 +166,16 @@ class KimiK25Adapter:
             return None
         import torch
 
-        patch_size = int(_cfg_value(image_processor, "patch_size"))
+        layout = _processor_layout(image_processor)
         grids: list[list[int]] = []
         pixel_values: list[torch.Tensor] = []
         for item in items:
             self.validate_item(item)
             grid = _grid_payload(item)
             grids.append(grid)
-            pixel_values.append(torch.zeros((math.prod(grid), 3, patch_size, patch_size), dtype=torch.float32))
+            pixel_values.append(
+                torch.zeros((math.prod(grid), 3, layout.patch_size, layout.patch_size), dtype=torch.float32)
+            )
         return MaterializedMM(
             kwargs={
                 "pixel_values": torch.cat(pixel_values, dim=0).contiguous(),

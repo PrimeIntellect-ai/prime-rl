@@ -60,6 +60,20 @@ class SlurmConfig(BaseConfig):
 
 
 ServerType = Literal["vllm", "openai"]
+MultimodalImageStorage = Literal["offload", "inline"]
+
+
+class MultimodalImageConfig(BaseConfig):
+    storage: MultimodalImageStorage = "offload"
+    """How raw image bytes are transported. ``offload`` writes data images to run assets; ``inline`` keeps base64 data-image URIs in the multimodal payload."""
+
+    offload_dir: Path | None = None
+    """Directory for offloaded image assets. Supports environment expansion such as ``/data/outputs/run_${RUN_ID}/assets/images``. When unset, prime-rl resolves a run-scoped default."""
+
+
+class MultimodalConfig(BaseConfig):
+    images: MultimodalImageConfig = MultimodalImageConfig()
+    """Raw multimodal image storage configuration."""
 
 
 class VLMConfig(BaseConfig):
