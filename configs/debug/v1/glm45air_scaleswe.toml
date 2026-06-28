@@ -13,7 +13,7 @@ max_steps = 1000
 seq_len = 65536
 
 [slurm]
-job_name = "glm45air-swe"
+job_name = "glm45air-rlm"
 project_dir = "."
 partition = "all"
 # Clean up this run's orphaned prime sandboxes before launch (label == SLURM job name).
@@ -27,7 +27,7 @@ num_infer_replicas = 4
 
 [wandb]
 project = "swe-ablations"
-name = "glm45air-scaleswe"
+name = "glm45air-scaleswe-rlm"
 
 [weight_broadcast]
 type = "nccl"
@@ -84,7 +84,7 @@ preserve_all_thinking = true
 [[orchestrator.train.env]]
 name = "scaleswe"
 taskset = { id = "scaleswe-v1" }
-harness = { id = "bash_edit", runtime = { type = "prime", labels = ["glm45air-swe"] } }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-rlm"] } }
 
 [orchestrator.prime_monitor]
 
@@ -97,7 +97,7 @@ skip_first_step = false
 [[orchestrator.eval.env]]
 name = "swebench-verified"
 taskset = { id = "swebench-verified-v1", use_prime_registry = true }
-harness = { id = "bash_edit", runtime = { type = "prime", labels = ["glm45air-swe"] } }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-rlm"] } }
 timeout = { rollout = 3600 }
 
 # --- Inference ---
