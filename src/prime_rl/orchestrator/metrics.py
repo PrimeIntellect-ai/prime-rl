@@ -39,6 +39,11 @@ class MetricsBuilder:
                 "task_idx": [r.task.idx for r in rollouts],
                 "env_name": [r.env_name for r in rollouts],
                 "reward": [r.reward for r in rollouts],
+                # True when the rollout has a non-zero advantage stream, i.e. the sample the
+                # zero-advantage filter would keep (see effective_reward below).
+                "nonzero_advantage": [
+                    r.advantages is not None and any(a != 0.0 for a in r.advantages) for r in rollouts
+                ],
                 "is_truncated": [r.is_truncated for r in rollouts],
                 "is_filtered": [r.is_filtered for r in rollouts],
                 "stop_condition": [r.stop_condition for r in rollouts],
@@ -64,6 +69,17 @@ class MetricsBuilder:
             expected = grouped.env_name.first().map(env_group_size)
             solve_all = (reward_per_problem == expected).mean()
             return solve_none, solve_all, 1 - solve_none - solve_all
+
+        def effective_reward_stats(df):
+            """Mean/max/min reward over only the non-zero-advantage rollouts — the reward as it
+            would look if the zero-advantage filter were applied before the batch. Per-example
+            mean first (matching the plain reward metric), then aggregated across examples.
+            Returns None when no rollout has a non-zero advantage."""
+            nonzero = df[df.nonzero_advantage]
+            if nonzero.empty:
+                return None
+            per_example = nonzero.groupby("group_id").reward.mean()
+            return per_example.mean(), per_example.max(), per_example.min()
 
         by_example = results_df.groupby("group_id")
         solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
@@ -123,6 +139,10 @@ class MetricsBuilder:
             "step": step,
         }
 
+        eff = effective_reward_stats(results_df)
+        if eff is not None:
+            to_log["effective_reward/all/mean"], to_log["effective_reward/all/max"], to_log["effective_reward/all/min"] = eff
+
         # Per-env metrics
         per_env_columns = [
             "seq_len",
@@ -148,6 +168,9 @@ class MetricsBuilder:
             to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
             to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
             to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
+            env_eff = effective_reward_stats(env_df)
+            if env_eff is not None:
+                to_log[f"effective_reward/{env}/mean"], to_log[f"effective_reward/{env}/max"], to_log[f"effective_reward/{env}/min"] = env_eff
             sn, sa, eb = compute_solve_rates(env_df)
             to_log[f"solve_none/{env}"] = sn
             to_log[f"solve_all/{env}"] = sa
