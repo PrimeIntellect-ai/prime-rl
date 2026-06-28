@@ -22,7 +22,14 @@ from httpx import AsyncClient
 from renderers import RendererConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import ClientIdentity, client_identity, load_lora_adapter, setup_admin_clients, setup_clients
+from prime_rl.utils.client import (
+    ClientIdentity,
+    PrefillScorer,
+    client_identity,
+    load_lora_adapter,
+    setup_admin_clients,
+    setup_clients,
+)
 from prime_rl.utils.logger import get_logger
 
 # --- Shared discovery functions ---
@@ -138,6 +145,7 @@ class ElasticInferencePool:
 
         self._sync_task: asyncio.Task | None = None
         self._started = False
+        self._scorer = PrefillScorer()
 
     @classmethod
     async def from_config(
@@ -233,6 +241,9 @@ class ElasticInferencePool:
         while not self.train_clients:
             await asyncio.sleep(self.sync_interval)
         return min(self.train_clients, key=lambda c: load[client_identity(c)])
+
+    async def score(self, token_ids: list[int]) -> list[float]:
+        return await self._scorer.score(self.train_clients, self.model_name, token_ids)
 
     @property
     def admin_clients(self) -> list[AsyncClient]:
@@ -467,6 +478,7 @@ class ElasticInferencePool:
         for ip in list(self._servers.keys()):
             await self._remove_server(ip)
 
+        await self._scorer.aclose()
         self._train_clients = []
         self._eval_clients = []
         self._client_urls = []

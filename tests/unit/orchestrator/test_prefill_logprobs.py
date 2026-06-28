@@ -2,11 +2,8 @@ import asyncio
 import json
 
 import httpx
-import openai
-from verifiers.v1.clients.config import EvalClientConfig
 
-from prime_rl.orchestrator import utils as orchestrator_utils
-from prime_rl.transport import TrainingSample
+from prime_rl.utils.client import prefill_logprobs
 
 
 class _FakeOpenAIClient:
@@ -16,7 +13,7 @@ class _FakeOpenAIClient:
     ``AsyncAPIClient._process_response``."""
 
     def __init__(self, payload: dict):
-        # Match what AsyncOpenAI exposes — utils.py reads ``str(client.base_url)``.
+        # Match what AsyncOpenAI exposes — prefill_logprobs reads ``str(openai.base_url)``.
         self.base_url = "http://fake-host:8000/v1"
         self._payload = payload
         self.calls: list[dict] = []
@@ -31,9 +28,9 @@ class _FakeOpenAIClient:
         )
 
 
-def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
+def test_prefill_logprobs_uses_inference_generate():
     async def _run():
-        fake_client = _FakeOpenAIClient(
+        fake_openai = _FakeOpenAIClient(
             {
                 "request_id": "gen-test",
                 "choices": [],
@@ -42,30 +39,15 @@ def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
                 "kv_transfer_params": None,
             }
         )
-        # compute_teacher_logprobs constructs AsyncOpenAI directly; hand back the fake.
-        monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kwargs: fake_client)
+        result = await prefill_logprobs(fake_openai, "ref-model", [1, 2, 3])
 
-        sample = TrainingSample(
-            token_ids=[1, 2, 3],
-            mask=[False, True, True],
-            logprobs=[0.0, -0.1, -0.2],
-            temperatures=[1.0, 1.0, 1.0],
-            env_name="test-env",
-        )
-
-        result = await orchestrator_utils.compute_teacher_logprobs(
-            clients=[EvalClientConfig(base_url="http://fake-host:8000/v1")],
-            model_name="teacher-model",
-            samples=[sample],
-        )
-
-        assert result == [[0.0, -0.7, -0.3]]
-        assert fake_client.calls == [
+        assert result == [0.0, -0.7, -0.3]
+        assert fake_openai.calls == [
             {
                 "url": "http://fake-host:8000/inference/v1/generate",
                 "cast_to": httpx.Response,
                 "body": {
-                    "model": "teacher-model",
+                    "model": "ref-model",
                     "token_ids": [1, 2, 3],
                     "sampling_params": {
                         "max_tokens": 1,

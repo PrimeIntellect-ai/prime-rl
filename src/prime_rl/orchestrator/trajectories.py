@@ -78,8 +78,6 @@ def trace_to_samples(
                 mask=[m and not has_error for m in mask],
                 logprobs=branch.logprobs,
                 temperatures=[],  # filled by TrainSink.process_group
-                teacher_logprobs=None,
-                advantage=None,
                 env_name=env_name,
                 mm_refs=mm_refs,
                 mm_token_type_ids=mm_token_type_ids,

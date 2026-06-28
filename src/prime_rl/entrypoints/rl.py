@@ -12,6 +12,7 @@ from threading import Event, Thread
 import pynvml
 import tomli_w
 
+from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.inference import vllm_overrides_fragment
@@ -120,16 +121,16 @@ def rl_local(config: RLConfig):
     shared_run_asset_env = run_asset_env(config.orchestrator.output_dir)
 
     # Validate client port matches inference server port
-    if config.inference is not None and not config.orchestrator.student.client.is_elastic:
+    if config.inference is not None and not config.orchestrator.model.client.is_elastic:
         from urllib.parse import urlparse
 
-        base_url = config.orchestrator.student.client.base_url[0]
+        base_url = config.orchestrator.model.client.base_url[0]
         parsed = urlparse(base_url)
         client_port = parsed.port
         expected_port = config.inference.server.port
         if client_port != expected_port:
             raise ValueError(
-                f"orchestrator.student.client.base_url port ({client_port}) does not match "
+                f"orchestrator.model.client.base_url port ({client_port}) does not match "
                 f"inference.server.port ({expected_port}). "
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
@@ -183,19 +184,26 @@ def rl_local(config: RLConfig):
             monitor_threads.append(monitor_thread)
         else:
             logger.warning(
-                "No [inference] block configured - the student inference server will not be started here. "
-                "All training modes (rl/opd/sft) require a student inference pool for evals + weight sync; "
-                "make sure one is running at orchestrator.student.client.base_url "
-                f"({', '.join(config.orchestrator.student.client.base_url)}), otherwise the orchestrator "
+                "No [inference] block configured - the policy inference server will not be started here. "
+                "Every algorithm requires a policy inference pool for evals + weight sync; "
+                "make sure one is running at orchestrator.model.client.base_url "
+                f"({', '.join(config.orchestrator.model.client.base_url)}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
 
-        if config.orchestrator.teacher:
+        frozen_endpoints: list[str] = []
+        for env in config.orchestrator.train.env:
+            algo = env.algo
+            assert algo is not None, "TrainEnvConfig.algo must be resolved before launch (inherit_env_algorithms)"
+            for ref in (algo.sampling.source, getattr(algo, "teacher", None)):
+                if isinstance(ref, FrozenModelConfig):
+                    frozen_endpoints.append(f"{ref.name} ({', '.join(ref.base_url)})")
+        if frozen_endpoints:
+            endpoints = ", ".join(dict.fromkeys(frozen_endpoints))
             logger.info(
-                "orchestrator.teacher is configured - the rl entrypoint does not start teacher inference "
-                "servers. Make sure your teacher endpoint at "
-                f"{', '.join(config.orchestrator.teacher.client.base_url)} is running before the "
-                "orchestrator starts, otherwise rollouts will hang."
+                "Frozen model references are configured - the rl entrypoint does not start them. "
+                f"Make sure these endpoints are serving before the orchestrator starts: {endpoints}; "
+                "otherwise rollouts will hang."
             )
 
         orchestrator_cmd = ["orchestrator", "@", (config_dir / ORCHESTRATOR_TOML).as_posix()]

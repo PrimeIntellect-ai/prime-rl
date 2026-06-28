@@ -10,7 +10,7 @@ from typing import Protocol, runtime_checkable
 import httpx
 import verifiers.v1 as vf
 from httpx import AsyncClient
-from openai import NotFoundError
+from openai import AsyncOpenAI, NotFoundError
 from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig
@@ -73,9 +73,46 @@ class InferencePool(Protocol):
         """Update weights on all inference servers."""
         ...
 
+    async def score(self, token_ids: list[int]) -> list[float]:
+        """Prefill-score ``token_ids`` under the pool's model — one logprob per token."""
+        ...
+
     async def stop(self) -> None:
         """Stop the inference pool."""
         ...
+
+
+class PrefillScorer:
+    """Prefill-scores token ids against a pool's *current* endpoints. Resolves one
+    client per endpoint, cached by endpoint identity — so it fills once for a
+    static pool and tolerates churn for an elastic one (a departed endpoint is
+    simply never selected again; its client is closed at stop). Round-robins over
+    the live endpoints."""
+
+    def __init__(self) -> None:
+        self._clients: dict = {}  # client_identity -> AsyncOpenAI, one per endpoint
+        self._rr = 0
+
+    async def score(self, configs: list[vf.ClientConfig], model: str, token_ids: list[int]) -> list[float]:
+        if not configs:
+            raise RuntimeError("no inference endpoints available to prefill-score")
+        cfg = configs[self._rr % len(configs)]
+        self._rr += 1
+        key = client_identity(cfg)
+        openai = self._clients.get(key)
+        if openai is None:
+            # Build the OpenAI client straight from the config fields — works for any
+            # ClientConfig type; resolve_client would hand back an EvalClient (no `.openai`)
+            # for these chat-completions teacher configs.
+            openai = self._clients[key] = AsyncOpenAI(
+                base_url=cfg.base_url,
+                api_key=os.environ.get(cfg.api_key_var) or "EMPTY",
+                default_headers=cfg.headers or None,
+            )
+        return await prefill_logprobs(openai, model, token_ids)
+
+    async def aclose(self) -> None:
+        await asyncio.gather(*(c.close() for c in self._clients.values()))
 
 
 class StaticInferencePool:
@@ -103,6 +140,7 @@ class StaticInferencePool:
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
+        self._scorer = PrefillScorer()
         self.model_name = model_name
 
     @property
@@ -137,8 +175,13 @@ class StaticInferencePool:
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
 
+    async def score(self, token_ids: list[int]) -> list[float]:
+        """Prefill-score ``token_ids`` under this pool's model (one logprob per
+        token, 0.0 for the leading token). Delegates to the shared scorer."""
+        return await self._scorer.score(self.train_clients, self.model_name, token_ids)
+
     async def stop(self) -> None:
-        pass
+        await self._scorer.aclose()
 
 
 async def setup_inference_pool(
@@ -521,3 +564,39 @@ async def init_nccl_broadcast(
             for client_num, admin_client in enumerate(admin_clients)
         ]
     )
+
+
+async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:
+    """Prefill-score ``token_ids`` under ``model`` via ``/inference/v1/generate``
+    + ``prompt_logprobs`` (the prime-rl server-side extension in
+    ``inference/vllm/serving_tokens.py``). Returns one logprob per token (0.0 for
+    the leading token, which has no preceding context)."""
+    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
+
+    # `/inference/v1/generate` is mounted at server root, not under `/v1`: pass an
+    # absolute URL so the SDK skips the base-url merge. vLLM's `GenerateResponse`
+    # isn't an `openai.BaseModel`, so the SDK parse layer rejects it as `cast_to`;
+    # `cast_to=httpx.Response` lets the SDK still build the request (auth, retries,
+    # timeouts) and hand back the raw response for us to validate.
+    base = str(openai.base_url).rstrip("/").removesuffix("/v1")
+    http_response = await openai.post(
+        f"{base}/inference/v1/generate",
+        cast_to=httpx.Response,
+        body={
+            "model": model,
+            "token_ids": token_ids,
+            "sampling_params": {"max_tokens": 1, "temperature": 1.0, "top_p": 1.0, "prompt_logprobs": 1},
+        },
+    )
+    response = GenerateResponse.model_validate_json(http_response.content)
+    # `prompt_logprobs[i]` is a `{token_id: Logprob}` dict, or `None` for the
+    # leading token (no preceding context). Flatten to `list[float]`.
+    flat: list[float] = []
+    for entry in response.prompt_logprobs or []:
+        if not entry:
+            flat.append(0.0)
+            continue
+        first = next(iter(entry.values()))
+        lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
+        flat.append(float(lp) if lp is not None else 0.0)
+    return flat

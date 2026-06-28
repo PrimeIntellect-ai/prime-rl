@@ -54,7 +54,7 @@ from vllm.entrypoints.serve.disagg.protocol import (
     GenerateResponseChoice,
 )
 from vllm.entrypoints.serve.disagg.serving import ServingTokens
-from vllm.entrypoints.utils import get_max_tokens
+from vllm.entrypoints.serve.utils.api_utils import get_max_tokens
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
@@ -165,12 +165,6 @@ async def _client_set_max_tokens(raw_request: Request | None) -> bool:
         return True
     sp = body.get("sampling_params")
     return isinstance(sp, dict) and "max_tokens" in sp
-
-
-
-
-
-
 
 
 @lru_cache(maxsize=8)

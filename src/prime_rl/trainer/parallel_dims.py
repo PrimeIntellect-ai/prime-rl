@@ -270,7 +270,58 @@ class ParallelDims:
         return get_logger()
 
 
+def _is_moe_model(config: ModelConfig) -> bool:
+    """Return True if the model has MoE layers, by loading its HuggingFace config."""
+    from transformers import AutoConfig
+
+    model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    return hasattr(model_config, "num_experts") or hasattr(model_config, "n_routed_experts")
+
+
+def resolve_ep(config: ModelConfig) -> None:
+    """Resolve ``ep="auto"`` in-place to a concrete integer.
+
+    For MoE models, resolves to ``min(fsdp_island_size, 8)`` where
+    ``fsdp_island_size = world_size // dp_replicate``. For non-MoE
+    models, resolves to 1 (no-op).
+    """
+    if config.ep != "auto":
+        return
+
+    # EP requires the custom implementation; skip auto-resolution for HF impl
+    if config.impl not in ("custom", "auto"):
+        config.ep = 1
+        get_logger().info(f"EP auto: impl='{config.impl}' does not support EP, resolving ep=1")
+        return
+
+    world_size = dist.get_world_size()
+
+    if not _is_moe_model(config):
+        config.ep = 1
+        get_logger().info("EP auto: model is not MoE, resolving ep=1")
+        return
+
+    dp_replicate = config.dp_replicate
+    fsdp_island_size = world_size // dp_replicate  # pp is always 1
+    resolved_ep = min(fsdp_island_size, 8)
+
+    config.ep = resolved_ep
+    get_logger().info(f"EP auto: world_size={world_size}, dp_replicate={dp_replicate} -> resolved ep={resolved_ep}")
+
+    if config.ep_comm_backend != "torch" and config.ep <= 1:
+        raise ValueError(
+            f"model.ep_comm_backend='{config.ep_comm_backend}' requires ep > 1, "
+            f"but auto-resolved ep=1 (world_size={world_size}). "
+            "Set ep explicitly or use ep_comm_backend='torch'."
+        )
+
+
 def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> ParallelDims:
+    assert isinstance(config.ep, int), (
+        f"config.ep must be resolved to an int before get_parallel_dims; got {config.ep!r}. "
+        "Call resolve_ep(config) first."
+    )
+
     # Initialize parallel dimensions
     parallel_dims = ParallelDims(
         dp_replicate=config.dp_replicate,

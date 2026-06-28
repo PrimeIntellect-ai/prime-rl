@@ -1,0 +1,49 @@
+# Self-distillation (SDFT, https://arxiv.org/abs/2601.19897) against the live
+# policy itself: the reference for each completion is the current model
+# conditioned on the expert demonstration — no extra deployment needed.
+# reverse-text carries the demonstration in its top-level `answer` field.
+#   uv run rl @ configs/debug/algorithms/self_distill.toml
+
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "algorithms-debug"
+name = "debug-self-distill"
+
+[orchestrator]
+batch_size = 32
+group_size = 1
+
+# reverse-text's demo lives in the "answer" column.
+[orchestrator.algo]
+type = "opsd"
+demo_key = "answer"
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[orchestrator.eval]
+interval = 1
+num_examples = 128
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.eval.env]]
+id = "reverse-text"
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+gpu_memory_utilization = 0.5

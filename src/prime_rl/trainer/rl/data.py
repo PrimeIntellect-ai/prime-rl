@@ -30,9 +30,8 @@ class TensorMicroBatch(TypedDict):
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
     advantages: Float[Tensor, "batch seq"]
-    rewards: Float[Tensor, "batch seq"] | None
     inference_logprobs: Float[Tensor, "batch seq"]
-    teacher_logprobs: Float[Tensor, "batch seq"] | None
+    ref_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
     env_names: list[str]
@@ -50,9 +49,11 @@ class TensorMicroBatch(TypedDict):
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
-    # Selects loss dispatch (rl/opd → default loss with mode-specific taus,
-    # sft → sft loss). All samples in a micro batch share the same mode.
-    training_mode: str
+    # Per-token component weight streams. ``None`` means absent: no ce/ref_kl
+    # component, rl weight 1.0 on every loss-masked token.
+    rl_weights: Float[Tensor, "batch seq"] | None
+    ce_weights: Float[Tensor, "batch seq"] | None
+    ref_kl_weights: Float[Tensor, "batch seq"] | None
 
     # Packer-derived metadata used for run-local debug exports.
     run_id: str | None
@@ -123,9 +124,8 @@ class FakeDataLoader:
             "input_ids": input_ids.unsqueeze(0),
             "position_ids": position_ids.unsqueeze(0),
             "advantages": advantages.unsqueeze(0),
-            "rewards": None,
             "inference_logprobs": inference_logprobs.unsqueeze(0),
-            "teacher_logprobs": None,
+            "ref_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
             "env_names": ["fake"] * input_ids.shape[0],
             "sequence_lengths": sequence_lengths,
@@ -135,7 +135,9 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_forward_policy": None,
             "mm_token_type_ids": None,
-            "training_mode": "rl",
+            "rl_weights": None,
+            "ce_weights": None,
+            "ref_kl_weights": None,
             "run_id": None,
             "run_step": None,
         }
@@ -155,9 +157,8 @@ class FakeDataLoader:
             ),
             "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
             "advantages": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
-            "rewards": None,
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
-            "teacher_logprobs": None,
+            "ref_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
             "env_names": ["fake"] * self.seq_len,
             "sequence_lengths": [self.seq_len],
@@ -167,7 +168,9 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_forward_policy": None,
             "mm_token_type_ids": None,
-            "training_mode": "rl",
+            "rl_weights": None,
+            "ce_weights": None,
+            "ref_kl_weights": None,
             "run_id": None,
             "run_step": None,
         }
@@ -307,12 +310,9 @@ class DataLoader:
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
             advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
-            rewards=torch.tensor(micro_batch.rewards, dtype=torch.float).unsqueeze(0)
-            if micro_batch.rewards is not None
-            else None,
             inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
-            teacher_logprobs=torch.tensor(micro_batch.teacher_logprobs, dtype=torch.float).unsqueeze(0)
-            if micro_batch.teacher_logprobs is not None
+            ref_logprobs=torch.tensor(micro_batch.ref_logprobs, dtype=torch.float).unsqueeze(0)
+            if micro_batch.ref_logprobs is not None
             else None,
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
@@ -325,7 +325,15 @@ class DataLoader:
             if micro_batch.mm_token_type_ids is not None
             else None,
             routed_experts=routed_experts,
-            training_mode=micro_batch.training_mode,
+            rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)
+            if micro_batch.rl_weights is not None
+            else None,
+            ce_weights=torch.tensor(micro_batch.ce_weights, dtype=torch.float).unsqueeze(0)
+            if micro_batch.ce_weights is not None
+            else None,
+            ref_kl_weights=torch.tensor(micro_batch.ref_kl_weights, dtype=torch.float).unsqueeze(0)
+            if micro_batch.ref_kl_weights is not None
+            else None,
             run_id=micro_batch.run_id,
             run_step=micro_batch.run_step,
         )

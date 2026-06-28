@@ -3,8 +3,8 @@
 ``Orchestrator`` owns the shared state (policy, progress, ckpt, monitor)
 and drives the pipeline. Components are single-purpose:
 
-- ``RolloutDispatcher`` schedules rollouts; emits ``TrainRollout`` /
-  ``EvalRollout`` on its queue.
+- ``RolloutDispatcher`` schedules rollouts; emits ``Rollout`` (train/eval
+  discriminated by ``kind``) on its queue.
 - ``TrainSink`` ingests train rollouts (tokenize → advantages → filters)
   and returns a ``TrainBatch`` when the threshold is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (with
@@ -60,19 +60,18 @@ from prime_rl.orchestrator.types import (
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
-    compute_teacher_logprobs,
     get_weight_dir,
     intercept_vf_logging,
     save_rollouts,
     set_default_executor,
-    setup_student_inference_pool,
+    setup_policy_inference_pool,
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
-from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
+from prime_rl.utils.client import init_nccl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
@@ -122,7 +121,7 @@ class Orchestrator:
 
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
-    student_inference: InferencePool
+    policy_inference: InferencePool
     monitor: Monitor
     sender: TrainingBatchSender
     train_envs: TrainEnvs
@@ -137,7 +136,6 @@ class Orchestrator:
     # Set by ``setup()`` only when relevant config is present
     renderer: Renderer | None
     mm_token_type_ids_mapping: dict[int, int] | None
-    teacher_inference: InferencePool | None
     heart: Heartbeat | None
     usage_reporter: UsageReporter | None
     inference_metrics: InferenceMetricsCollector | None
@@ -154,7 +152,8 @@ class Orchestrator:
         # Route the in-process v1 library logging through our handler. The
         # env server runs in a child process, so its logging is separate.
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
-        get_logger().info(f"Starting orchestrator ({config.training_mode})")
+        algorithms = sorted({env.algo.type for env in config.train.env if env.algo is not None})
+        get_logger().info(f"Starting orchestrator (algorithm: {', '.join(algorithms)})")
 
         if config.bench:
             get_logger().warning(f"Running in benchmark mode (max_steps={config.max_steps})")
@@ -178,7 +177,6 @@ class Orchestrator:
         # config is present
         self.renderer = None
         self.mm_token_type_ids_mapping = None
-        self.teacher_inference = None
         self.heart = None
         self.usage_reporter = None
         self.inference_metrics = None
@@ -206,12 +204,14 @@ class Orchestrator:
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
 
-        # Student inference pool
+        # The one model prime-rl hosts: the live policy. Frozen model
+        # references are external endpoints — each env's Algorithm builds its
+        # own pools in ``setup()`` below.
         get_logger().info(
-            f"Initializing student inference pool (base_url={', '.join(config.student.client.base_url)}, "
-            f"model={config.student.model.name})"
+            f"Initializing policy inference pool (base_url={', '.join(config.model.client.base_url)}, "
+            f"model={config.model.name})"
         )
-        self.renderer, self.student_inference = await setup_student_inference_pool(
+        self.renderer, self.policy_inference = await setup_policy_inference_pool(
             config=config, tokenizer=self.tokenizer
         )
         self.mm_token_type_ids_mapping = (
@@ -219,21 +219,6 @@ class Orchestrator:
         )
         if self.mm_token_type_ids_mapping == {}:
             self.mm_token_type_ids_mapping = None
-
-        if config.teacher is not None:
-            get_logger().info(
-                f"Initializing teacher inference pool (base_url={', '.join(config.teacher.client.base_url)}, "
-                f"model={config.teacher.model.name})"
-            )
-            self.teacher_inference = await setup_inference_pool(
-                config.teacher.client,
-                model_name=config.teacher.model.name,
-                # SFT rolls the teacher out through the renderer client (token-in/out) so its
-                # rollouts carry tokens directly — training is renderer-only. (OPD reads teacher
-                # logprobs via prefill, so its pool client type is moot.)
-                train_client_type="renderer",
-                renderer_config=config.renderer,
-            )
 
         get_logger().info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
         self.monitor = setup_monitor(
@@ -258,10 +243,9 @@ class Orchestrator:
         post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
 
         get_logger().info("Loading training environments")
-        self.train_envs = TrainEnvs(config.train.env, max_seq_len=config.seq_len)
-        if config.training_mode == "sft":
-            for env in self.train_envs:
-                env.sampling_args.pop("logprobs", None)
+        self.train_envs = TrainEnvs(
+            config.train.env, policy_pool=self.policy_inference, renderer_config=config.renderer
+        )
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
         )
@@ -290,20 +274,21 @@ class Orchestrator:
                 self.resume_step = config.ckpt.resume_step
 
         # Resume below may bump ``policy.version`` and the LoRA model name
-        self.policy.model_name = self.student_inference.model_name
+        self.policy.model_name = self.policy_inference.model_name
 
-        get_logger().info("Waiting for student inference pool to be ready")
-        await self.student_inference.wait_for_ready(config.student.model.name)
-        get_logger().success("Student inference pool ready")
-        if self.teacher_inference is not None:
-            assert config.teacher is not None
-            get_logger().info("Waiting for teacher inference pool to be ready")
-            await self.teacher_inference.wait_for_ready(config.teacher.model.name)
-            get_logger().success("Teacher inference pool ready")
+        get_logger().info("Waiting for policy inference pool to be ready")
+        await self.policy_inference.wait_for_ready(config.model.name)
+        get_logger().success("Policy inference pool ready")
+        # Build + ready pools for each env's frozen sampling source and the
+        # algorithm's frozen reference model
+        await asyncio.gather(
+            *(env.sampler.setup() for env in self.train_envs),
+            *(env.algorithm.setup() for env in self.train_envs),
+        )
 
         if config.wandb is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(
-                self.student_inference.admin_clients,
+                self.policy_inference.admin_clients,
                 roles=config.inference_metrics_roles,
             )
             await self.inference_metrics.start()
@@ -311,7 +296,7 @@ class Orchestrator:
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
-                self.student_inference.admin_clients,
+                self.policy_inference.admin_clients,
                 config.weight_broadcast.host,
                 config.weight_broadcast.port,
                 config.weight_broadcast.timeout,
@@ -322,7 +307,7 @@ class Orchestrator:
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
         self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
-        self.lora_name = config.student.model.lora.name if config.student.model.lora else None
+        self.lora_name = config.model.lora.name if config.model.lora else None
 
         if self.resume_step is not None and self.ckpt_manager is not None:
             self.ckpt_manager.load(self.progress, step=self.resume_step)
@@ -332,22 +317,13 @@ class Orchestrator:
             weights_path = get_weight_dir(
                 config.output_dir, self.progress.step, check_exists=check_exists, wait_timeout=wait_timeout
             )
-            await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=self.progress.step)
+            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=self.progress.step)
             if self.lora_name is not None:
-                self.student_inference.update_model_name(self.lora_name)
+                self.policy_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
             self.policy.version = self.progress.step
         else:
             get_logger().info("Training from scratch")
-
-        # SFT train rollouts come from the teacher when configured; otherwise
-        # they use the existing student rollout pool.
-        if config.training_mode == "sft" and self.teacher_inference is not None:
-            rollout_inference = self.teacher_inference
-            use_cache_salt = False
-        else:
-            rollout_inference = self.student_inference
-            use_cache_salt = True
 
         self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source: EvalSource | None = (
@@ -368,14 +344,11 @@ class Orchestrator:
             eval_envs=self.eval_envs,
             train_source=self.train_source,
             eval_source=self.eval_source,
-            inference=rollout_inference,
-            eval_inference=self.student_inference,
+            policy_pool=self.policy_inference,
             policy=self.policy,
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
-            training_mode=config.training_mode,
-            use_cache_salt=use_cache_salt,
         )
         self.metrics = MetricsBuilder(config)
         self.train_sink = TrainSink(
@@ -392,7 +365,7 @@ class Orchestrator:
         self.watcher = WeightWatcher(
             config,
             policy=self.policy,
-            inference=self.student_inference,
+            inference=self.policy_inference,
             observers=[self.dispatcher, self],
             lora_name=self.lora_name,
             ckpt_step=self.progress.step,
@@ -473,7 +446,7 @@ class Orchestrator:
             trim_process_memory()
 
     async def main_loop(self) -> None:
-        """Consume ``FinishedRollout``\\ s from the dispatcher and route them
+        """Consume ``Rollout``\\ s from the dispatcher and route them
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
@@ -502,7 +475,7 @@ class Orchestrator:
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
-        side-effects (ckpt, save_rollouts, teacher logprobs, sender.send,
+        side-effects (ckpt, save_rollouts, reference scoring, sender.send,
         metrics, heartbeat, progress, eval trigger). The sink has already
         done all data-transformation work."""
         config = self.config
@@ -546,24 +519,12 @@ class Orchestrator:
                 f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
-        # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables); drop the
-        # per-node multimodal tensors — they're for training, not the rollout record, and bloat it.
-        rollout_dicts = [r.model_dump(mode="json", exclude=ROLLOUT_DUMP_EXCLUDE) for r in batch.rollouts]
+        # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables); to_record
+        # drops the per-node training tensors — they're for training, not the rollout record, and
+        # can't round-trip json (raw numpy bytes).
+        rollout_dicts = [r.to_record() for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
-
-        teacher_logprobs_time = 0.0  # opd only
-        if config.training_mode == "opd" and self.teacher_inference is not None:
-            assert config.teacher is not None
-            t = time.perf_counter()
-            teacher_logprobs_list = await compute_teacher_logprobs(
-                clients=self.teacher_inference.train_clients,
-                model_name=config.teacher.model.name,
-                samples=batch.samples,
-            )
-            for ex, lp in zip(batch.samples, teacher_logprobs_list):
-                ex.teacher_logprobs = lp
-            teacher_logprobs_time = time.perf_counter() - t
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.update_dispatch_gate()
@@ -576,7 +537,6 @@ class Orchestrator:
             progress=self.progress,
             step_time=step_time,
             save_ckpt_time=save_ckpt_time,
-            teacher_logprobs_time=teacher_logprobs_time,
             pre_filter_seen=self.train_sink.pre_filter_seen,
             pre_filter_dropped=self.train_sink.pre_filter_dropped,
             pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
@@ -586,7 +546,7 @@ class Orchestrator:
         self.monitor.log_distributions(
             distributions={
                 "rewards": [r.reward for r in batch.rollouts],
-                "advantages": [r.advantage for r in batch.rollouts if r.advantage is not None],
+                "advantages": [a for r in batch.rollouts if (a := r.scalar_advantage()) is not None],
             },
             step=step,
         )
@@ -754,7 +714,7 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
             return
 
-        rollout_dicts = [r.model_dump(mode="json", exclude=ROLLOUT_DUMP_EXCLUDE) for r in batch.rollouts]
+        rollout_dicts = [r.to_record() for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
         await asyncio.to_thread(
             save_rollouts,
@@ -857,11 +817,12 @@ class Orchestrator:
             self.component_tasks.clear()
             if self.inference_metrics is not None:
                 await self.inference_metrics.stop()
-            if self.student_inference is not None:
-                await self.student_inference.stop()
-            if self.teacher_inference is not None:
-                await self.teacher_inference.stop()
+            if getattr(self, "policy_inference", None) is not None:
+                await self.policy_inference.stop()
             if self.train_envs is not None:
+                for env in self.train_envs:
+                    for pool in (*env.sampler.connected_pools, *env.algorithm.connected_pools):
+                        await pool.stop()
                 self.train_envs.shutdown()
             if self.eval_envs is not None:
                 self.eval_envs.shutdown()
