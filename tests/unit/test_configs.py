@@ -263,19 +263,29 @@ def test_orchestrator_vlm_requires_renderer():
     assert config.renderer is not None
 
 
-def test_trainer_vlm_pack_multimodal_rejects_cp():
+@pytest.mark.parametrize(
+    "vlm",
+    [
+        None,
+        {
+            "vision_encoder_attr": "model.visual",
+            "language_model_attr": "model.language_model",
+        },
+    ],
+)
+def test_trainer_pack_multimodal_rejects_cp(vlm):
+    model_config = {
+        "cp": 2,
+        "optimization_dtype": "bfloat16",
+        "reduce_dtype": "bfloat16",
+    }
+    if vlm is not None:
+        model_config["vlm"] = vlm
+
     with pytest.raises(ValidationError, match="pack_multimodal.*context parallelism"):
         TrainerConfig.model_validate(
             {
-                "model": {
-                    "cp": 2,
-                    "optimization_dtype": "bfloat16",
-                    "reduce_dtype": "bfloat16",
-                    "vlm": {
-                        "vision_encoder_attr": "model.visual",
-                        "language_model_attr": "model.language_model",
-                    },
-                },
+                "model": model_config,
                 "pack_multimodal": True,
             }
         )

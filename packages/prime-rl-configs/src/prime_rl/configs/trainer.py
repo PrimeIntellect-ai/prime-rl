@@ -603,8 +603,8 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def multimodal_pack_incompatible_with_cp(self):
-        if self.pack_multimodal and self.model.vlm is not None and self.model.cp > 1:
-            raise ValueError("trainer.pack_multimodal is not supported with VLM context parallelism")
+        if self.pack_multimodal and self.model.cp > 1:
+            raise ValueError("trainer.pack_multimodal is not supported with context parallelism")
         return self
 
     @model_validator(mode="after")
