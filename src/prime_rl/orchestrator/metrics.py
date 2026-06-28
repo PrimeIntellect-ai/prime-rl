@@ -135,7 +135,11 @@ class MetricsBuilder:
 
         eff = effective_reward_stats(results_df)
         if eff is not None:
-            to_log["effective_reward/all/mean"], to_log["effective_reward/all/max"], to_log["effective_reward/all/min"] = eff
+            (
+                to_log["effective_reward/all/mean"],
+                to_log["effective_reward/all/max"],
+                to_log["effective_reward/all/min"],
+            ) = eff
 
         # Per-env metrics
         per_env_columns = [
@@ -164,7 +168,11 @@ class MetricsBuilder:
             to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
             env_eff = effective_reward_stats(env_df)
             if env_eff is not None:
-                to_log[f"effective_reward/{env}/mean"], to_log[f"effective_reward/{env}/max"], to_log[f"effective_reward/{env}/min"] = env_eff
+                (
+                    to_log[f"effective_reward/{env}/mean"],
+                    to_log[f"effective_reward/{env}/max"],
+                    to_log[f"effective_reward/{env}/min"],
+                ) = env_eff
             sn, sa, eb = compute_solve_rates(env_df)
             to_log[f"solve_none/{env}"] = sn
             to_log[f"solve_all/{env}"] = sa
