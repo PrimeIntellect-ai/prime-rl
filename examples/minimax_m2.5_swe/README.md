@@ -66,9 +66,9 @@ Logs:
   Trainer:          tail -F /shared/outputs/minimax-swe/logs/trainer.log
   Orchestrator:     tail -F /shared/outputs/minimax-swe/logs/orchestrator.log
   Inference:        tail -F /shared/outputs/minimax-swe/logs/inference.log
-  Envs:             tail -F /shared/outputs/minimax-swe/logs/envs/*/*/*.log
-   Train:           tail -F /shared/outputs/minimax-swe/logs/envs/train/*/*.log
-    swe:           tail -F /shared/outputs/minimax-swe/logs/envs/train/swe/*.log 
+  Envs:             tail -F /shared/outputs/minimax-swe/logs/envs/*/*.log
+   Train:           tail -F /shared/outputs/minimax-swe/logs/envs/train/*.log
+    swe:           tail -F /shared/outputs/minimax-swe/logs/envs/train/swe.log 
 ```
 
 

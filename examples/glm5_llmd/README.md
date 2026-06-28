@@ -83,5 +83,5 @@ Logs:
   Trainer:          tail -F /shared/outputs/glm5-llmd/logs/trainer.log
   Orchestrator:     tail -F /shared/outputs/glm5-llmd/logs/orchestrator.log
   Inference:        tail -F /shared/outputs/glm5-llmd/logs/inference.log
-  Envs:             tail -F /shared/outputs/glm5-llmd/logs/envs/*/*/*.log
+  Envs:             tail -F /shared/outputs/glm5-llmd/logs/envs/*/*.log
 ```

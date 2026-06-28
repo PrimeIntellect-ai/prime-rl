@@ -58,9 +58,9 @@ Logs:
   Trainer:          tail -F /shared/outputs/qwen30b-math/logs/trainer.log
   Orchestrator:     tail -F /shared/outputs/qwen30b-math/logs/orchestrator.log
   Inference:        tail -F /shared/outputs/qwen30b-math/logs/inference.log
-  Envs:             tail -F /shared/outputs/qwen30b-math/logs/envs/*/*/*.log
-   Train:           tail -F /shared/outputs/qwen30b-math/logs/envs/train/*/*.log
-    math:           tail -F /shared/outputs/qwen30b-math/logs/envs/train/math/*.log 
+  Envs:             tail -F /shared/outputs/qwen30b-math/logs/envs/*/*.log
+   Train:           tail -F /shared/outputs/qwen30b-math/logs/envs/train/*.log
+    math:           tail -F /shared/outputs/qwen30b-math/logs/envs/train/math.log 
 ```
 
 
