@@ -39,8 +39,6 @@ class MetricsBuilder:
                 "task_idx": [r.task.idx for r in rollouts],
                 "env_name": [r.env_name for r in rollouts],
                 "reward": [r.reward for r in rollouts],
-                # True when the rollout has a non-zero advantage stream, i.e. the sample the
-                # zero-advantage filter would keep (see effective_reward below).
                 "nonzero_advantage": [
                     r.advantages is not None and any(a != 0.0 for a in r.advantages) for r in rollouts
                 ],
@@ -71,10 +69,6 @@ class MetricsBuilder:
             return solve_none, solve_all, 1 - solve_none - solve_all
 
         def effective_reward_stats(df):
-            """Mean/max/min reward over only the non-zero-advantage rollouts — the reward as it
-            would look if the zero-advantage filter were applied before the batch. Per-example
-            mean first (matching the plain reward metric), then aggregated across examples.
-            Returns None when no rollout has a non-zero advantage."""
             nonzero = df[df.nonzero_advantage]
             if nonzero.empty:
                 return None
