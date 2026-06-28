@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from prime_rl.configs.algorithm import GRPOAlgoConfig, TokensLengthPenaltyConfig
+from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, TokensLengthPenaltyConfig
 from prime_rl.orchestrator.algo.advantage import efficiency_shaping
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.utils import get_tool_response_len
@@ -38,6 +38,21 @@ class GRPOAlgorithm(Algorithm):
                 dtype=rewards.dtype,
             )
             advantages = efficiency_shaping(rewards, costs)
+        elif isinstance(lp, LinearLengthPenaltyConfig):
+            # Linear pass_rate-scaled penalty subtracted from each reward before the baseline:
+            # coef * completion + context_coef * (total - completion) over the group's longest
+            # sequence, plus turns_coef * turns over the group's most turns.
+            completion = torch.tensor([rollout.completion_len for rollout in group], dtype=rewards.dtype)
+            total = torch.tensor([rollout.total_tokens for rollout in group], dtype=rewards.dtype)
+            penalty_frac = (lp.coef * completion + lp.context_coef * (total - completion)) / total.max().clamp(min=1)
+            if lp.turns_coef:
+                turns = torch.tensor([rollout.num_turns for rollout in group], dtype=rewards.dtype)
+                penalty_frac = penalty_frac + lp.turns_coef * (turns / turns.max().clamp(min=1))
+            penalty = rewards.mean() * penalty_frac
+            if lp.gate_by_correctness:
+                penalty = penalty * rewards
+            shaped_rewards = rewards - penalty
+            advantages = shaped_rewards - shaped_rewards.mean()
         else:  # TurnsLengthPenaltyConfig
             costs = torch.tensor([rollout.num_turns for rollout in group], dtype=rewards.dtype)
             advantages = efficiency_shaping(rewards, costs)

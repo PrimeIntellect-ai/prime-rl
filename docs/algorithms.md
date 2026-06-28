@@ -282,7 +282,7 @@ The default advantage is per-group reward minus per-group baseline (DR-GRPO with
 
 This is intentionally simple — it does the right thing for most envs. Write a named algorithm class when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …) — see [Authoring an Algorithm](#authoring-an-algorithm).
 
-Two built-in **length penalties** (`length_penalty` on the `grpo`-family algorithms) can be layered on top to discourage rambling: `tokens` penalizes long completions by weighted token cost, `turns` penalizes long multi-turn rollouts by turn count.
+Three built-in **length penalties** (`length_penalty` on the `grpo`-family algorithms) can be layered on top to discourage rambling: `tokens` penalizes long completions by weighted token cost, `turns` penalizes long multi-turn rollouts by turn count, and `linear` subtracts a single `pass_rate`-scaled penalty combining completion tokens (`coef`), non-completion / context tokens (`context_coef`), and turns (`turns_coef`) — each normalized by the group's own max, with `context_coef` and `turns_coef` defaulting to `0.1`.
 
 ```toml
 [orchestrator.algo]
