@@ -328,9 +328,10 @@ class Orchestrator:
 
         if self.resume_step is not None and self.ckpt_manager is not None:
             self.ckpt_manager.load(self.progress, step=self.resume_step)
-            # The checkpoint finished step ``resume_step`` (policy v{resume_step}); resume the
-            # pipeline at the next step, sampling from that policy in ``broadcasts/step_{resume_step}``.
-            self.progress.step += 1
+            # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
+            # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
+            # trainer even when ``ckpt.skip_progress`` left the counter unrestored.
+            self.progress.step = self.resume_step + 1
             get_logger().info(f"Resuming orchestrator from checkpoint step {self.resume_step}")
             check_exists = config.weight_broadcast.type != "nccl"
             wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
