@@ -377,7 +377,6 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     sequence_lengths = [len(sample.input_ids) for _, sample in bin_content.samples]
     assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
     assert sum(seq_lens) == len(input_ids), (seq_lens, len(input_ids))
-    first_sample = bin_content.first_sample
 
     return MicroBatch(
         input_ids=input_ids,
