@@ -51,6 +51,7 @@ job_name = "glm5-llmd"
 partition = "all" # FILL IN: set to your cluster's partition
 
 [trainer]
+pack_multimodal = false
 dist_timeout_seconds = 1800
 enable_token_export = true
 
