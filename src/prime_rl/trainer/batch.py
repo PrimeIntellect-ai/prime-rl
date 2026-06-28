@@ -202,7 +202,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
-        mm_kwargs=copy.deepcopy(mm_kwargs),
+        mm_kwargs=mm_kwargs,
         training_mode=training_example.training_mode,
         seq_lens=[len(input_ids)],
     )

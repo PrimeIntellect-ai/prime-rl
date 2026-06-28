@@ -48,6 +48,7 @@ harness = { id = "default", runtime = { type = "subprocess" } }
 # MODEL_RENDERER_MAP to Qwen3VLRenderer at runtime; no explicit name needed.
 
 [trainer]
+pack_multimodal = false
 
 [trainer.model]
 optimization_dtype = "bfloat16"
