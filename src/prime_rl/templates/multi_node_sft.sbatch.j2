@@ -102,7 +102,7 @@ srun --kill-on-bad-exit=1 bash -c '
 
     TRAIN_NODE_RANK=$SLURM_PROCID
 
-    # Trainer env vars: launcher defaults + [sft.env_vars]
+    # Trainer env vars: launcher defaults + [env_vars]
 {%- for key, value in trainer_env_vars.items() %}
     export {{ key }}="{{ value }}"
 {%- endfor %}

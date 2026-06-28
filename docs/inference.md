@@ -257,7 +257,7 @@ prefill_env_vars = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="ski
 decode_env_vars = {"VLLM_DEEP_GEMM_WARMUP"="skip"}
 ```
 
-These are role-specific and layer on top of [`[inference.env_vars]`](configuration.md#environment-variables-componentenv_vars), which applies to all inference processes regardless of role.
+These are role-specific and layer on top of [`env_vars`](configuration.md#environment-variables) shared by all inference processes regardless of role.
 
 ### Other vLLM features
 We support various other vLLM features. Some of those, such as `enable_dbo`, `enable_eplb` are exposed as a top-level config fields. For those that are not, you can configure them by setting `inference.vllm_extra` to the desired value.
