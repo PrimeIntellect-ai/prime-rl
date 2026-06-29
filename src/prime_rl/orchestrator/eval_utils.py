@@ -1,18 +1,23 @@
-import numpy as np
+import math
 
 
-def _pass_at_k(n: int, c: int, k: int) -> float:
-    """Unbiased estimator of pass@k (Chen et al., 2021).
+def compute_pass_metrics(rewards: list[float]) -> dict[str, float]:
+    """Unbiased pass@k and pass^k for one example's binary (0/1) rewards.
 
-    Computes 1 - C(n-c, k) / C(n, k) in a numerically stable way.
+    pass@k = 1 - C(n-c, k) / C(n, k)  (at least one of k samples correct)
+    pass^k = C(c, k) / C(n, k)        (all k samples correct)
+
+    ``n`` = number of rewards, ``c`` = number correct, ``k`` = powers of 2 in [1, n].
+    ``math.comb`` returns 0 when ``k`` exceeds its first argument, so the edge cases
+    (``n - c < k`` → pass@k = 1; ``c < k`` → pass^k = 0) fall out without branching.
     """
-    if n - c < k:
-        return 1.0
-    return 1.0 - np.prod(1.0 - k / np.arange(n - c + 1, n + 1))
-
-
-def compute_pass_at_k(rewards: list[float]) -> dict[str, float]:
     n = len(rewards)
-    c = sum(r == 1.0 for r in rewards)
-    ks = [2**i for i in range(n.bit_length())]
-    return {f"pass@{k}": _pass_at_k(n, c, k) for k in ks}
+    c = sum(1 for r in rewards if r == 1.0)
+    out: dict[str, float] = {}
+    k = 1
+    while k <= n:
+        n_choose_k = math.comb(n, k)
+        out[f"pass@{k}"] = 1.0 - math.comb(n - c, k) / n_choose_k
+        out[f"pass^{k}"] = math.comb(c, k) / n_choose_k
+        k *= 2
+    return out

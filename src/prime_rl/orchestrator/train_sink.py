@@ -75,6 +75,10 @@ class TrainSink:
         # ``process_batch``. Fuel for the per-env success log breakdown
         self.arrivals_by_env: dict[str, int] = defaultdict(int)
         self.errors_by_env: dict[str, int] = defaultdict(int)
+        # Full arrival window since the last ship — every rollout that came back, errored and
+        # filtered included. This is the ``all`` set for the metric matrix (its non-errored,
+        # non-filtered subset is ``effective``); reset in ``process_batch``.
+        self.arrivals_window: list[Rollout] = []
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -124,6 +128,7 @@ class TrainSink:
         await self.process_rollout(rollout)
         env_name = rollout.env_name
         self.arrivals_by_env[env_name] += 1
+        self.arrivals_window.append(rollout)
         if rollout.has_error:
             self.errors_by_env[env_name] += 1
         self.pending_groups[rollout.group_id].append(rollout)
@@ -257,26 +262,15 @@ class TrainSink:
         # Samples are pre-built by ``process_rollout``; ``process_group``
         # already stamped the advantage stream and loss routing on each sample
         samples: list[TrainingSample] = []
-        prefill_lens: list[int] = []
-        decode_lens: list[int] = []
-        samples_per_rollout: list[int] = []
         num_prefill = 0
         num_decode = 0
         for r in cohort:
-            samples_per_rollout.append(len(r.samples))
-            prefill = 0
-            decode = 0
             for sample in r.samples:
                 sample_decode = sum(sample.mask)
-                sample_prefill = len(sample.token_ids) - sample_decode
-                decode += sample_decode
-                prefill += sample_prefill
+                num_decode += sample_decode
+                num_prefill += len(sample.token_ids) - sample_decode
                 if not r.is_filtered:
                     samples.append(sample)
-            prefill_lens.append(prefill)
-            decode_lens.append(decode)
-            num_prefill += prefill
-            num_decode += decode
 
         n_trainable = sum(1 for r in cohort if not r.is_filtered)
 
@@ -284,16 +278,17 @@ class TrainSink:
             n_trainable=n_trainable,
             num_prefill_tokens=num_prefill,
             num_decode_tokens=num_decode,
-            rollout_prefill_lens=prefill_lens,
-            rollout_decode_lens=decode_lens,
-            samples_per_rollout=samples_per_rollout,
             samples_shipped=len(samples),
             arrivals_by_env=dict(self.arrivals_by_env),
             errors_by_env=dict(self.errors_by_env),
         )
+        # ``all_rollouts`` is the whole arrival window (errored + filtered + survivors); the
+        # shipped ``cohort`` is its trainable slice. Hand both to the orchestrator and reset.
+        all_rollouts = self.arrivals_window
+        self.arrivals_window = []
         self.arrivals_by_env.clear()
         self.errors_by_env.clear()
-        return TrainBatch(rollouts=cohort, samples=samples, metrics=metrics)
+        return TrainBatch(rollouts=cohort, samples=samples, metrics=metrics, all_rollouts=all_rollouts)
 
     def reset_pre_filter_stats(self) -> None:
         self.pre_filter_seen = 0

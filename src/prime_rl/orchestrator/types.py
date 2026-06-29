@@ -125,16 +125,14 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
 
 @dataclass
 class TrainBatchMetrics:
-    """Per-batch aggregates from ``TrainSink.process_batch``; consumed by
-    ``MetricsBuilder.build``. ``arrivals_by_env`` / ``errors_by_env`` count
-    rollouts at the sink."""
+    """Per-batch aggregates from ``TrainSink.process_batch``. ``arrivals_by_env`` /
+    ``errors_by_env`` count rollouts at the sink; token totals feed ``progress/*`` and the
+    usage reporter. Distributional rollout metrics are computed separately by
+    ``compute_rollout_metrics`` over ``TrainBatch.all_rollouts``."""
 
     n_trainable: int
     num_prefill_tokens: int
     num_decode_tokens: int
-    rollout_prefill_lens: list[int]
-    rollout_decode_lens: list[int]
-    samples_per_rollout: list[int]
     samples_shipped: int
     arrivals_by_env: dict[str, int] = field(default_factory=dict)
     errors_by_env: dict[str, int] = field(default_factory=dict)
@@ -142,66 +140,25 @@ class TrainBatchMetrics:
 
 @dataclass
 class TrainBatch:
-    """``samples`` is the trainer-bound payload (post-filter survivors);
-    ``rollouts`` is the full cohort kept for orchestrator-side I/O."""
+    """``samples`` is the trainer-bound payload (post-filter survivors); ``rollouts`` is the
+    shipped cohort kept for orchestrator-side I/O (disk, sample tables). ``all_rollouts`` is
+    the full arrival window since the last ship — errored and filtered included — the ``all``
+    set for the metric matrix; its non-errored, non-filtered subset is ``effective``."""
 
     rollouts: list[Rollout]
     samples: list[TrainingSample]
     metrics: TrainBatchMetrics
-
-
-@dataclass
-class EvalBatchMetrics:
-    """Typed per-batch metrics from ``EvalSink.process_batch``. Final wandb
-    dict derived via ``to_wandb_dict`` at log time."""
-
-    n_rollouts: int
-    n_cancelled: int
-    n_errored: int
-    n_examples: int = 0
-    group_size: int = 1
-    reward_mean: float = 0.0
-    completion_len_mean: float = 0.0
-    completion_len_max: float = 0.0
-    completion_len_min: float = 0.0
-    truncation_rate: float = 0.0
-    no_response_rate: float = 0.0
-    num_turns_mean: float = 0.0
-    num_turns_min: float = 0.0
-    num_turns_max: float = 0.0
-    pass_at_k: dict[str, float] = field(default_factory=dict)
-
-    def to_wandb_dict(self, *, env_name: str, step: int) -> dict[str, float]:
-        prefix = f"eval/{env_name}"
-        out: dict[str, float] = {
-            "step": float(step),
-            f"{prefix}/cancelled_count": float(self.n_cancelled),
-            f"{prefix}/errored_count": float(self.n_errored),
-        }
-        if self.n_examples > 0:
-            out[f"{prefix}/avg@{self.group_size}"] = self.reward_mean
-            out[f"{prefix}/completion_len/mean"] = self.completion_len_mean
-            out[f"{prefix}/completion_len/max"] = self.completion_len_max
-            out[f"{prefix}/completion_len/min"] = self.completion_len_min
-            out[f"{prefix}/is_truncated/mean"] = self.truncation_rate
-            out[f"{prefix}/no_response/mean"] = self.no_response_rate
-            out[f"{prefix}/num_turns/mean"] = self.num_turns_mean
-            out[f"{prefix}/num_turns/min"] = self.num_turns_min
-            out[f"{prefix}/num_turns/max"] = self.num_turns_max
-            for k, v in self.pass_at_k.items():
-                out[f"{prefix}/{k}"] = v
-        return out
+    all_rollouts: list[Rollout]
 
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch. ``metrics`` is the typed view from
-    ``EvalSink.process_batch``."""
+    """One env's eval epoch. ``rollouts`` is the full returned cohort (errored included) — the
+    ``all`` set for the metric matrix."""
 
     env_name: str
     step: int
     rollouts: list[Rollout]
-    metrics: EvalBatchMetrics
 
 
 class VersionObserver(Protocol):

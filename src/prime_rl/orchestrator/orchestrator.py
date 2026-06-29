@@ -7,9 +7,9 @@ and drives the pipeline. Components are single-purpose:
   discriminated by ``kind``) on its queue.
 - ``TrainSink`` ingests train rollouts (tokenize → advantages → filters)
   and returns a ``TrainBatch`` when the threshold is met.
-- ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (with
-  per-env metrics) on epoch completion.
-- ``MetricsBuilder`` builds the per-step train W&B dict.
+- ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
+  returned cohort) on epoch completion.
+- ``compute_rollout_metrics`` builds the per-step train/eval W&B metrics.
 - ``WeightWatcher`` advances ``Policy`` and notifies observers.
 - ``PeriodicLogger`` polls the components on a shared interval for the
   ``_timestamp``-axis pipeline log.
@@ -44,12 +44,12 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.metrics import MetricsBuilder
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
+from prime_rl.orchestrator.rollout_metrics import compute_rollout_metrics
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
@@ -124,7 +124,6 @@ class Orchestrator:
     train_sink: TrainSink
     dispatcher: RolloutDispatcher
     watcher: WeightWatcher
-    metrics: MetricsBuilder
     lag_monitor: EventLoopLagMonitor
     periodic_logger: PeriodicLogger
 
@@ -345,7 +344,6 @@ class Orchestrator:
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
         )
-        self.metrics = MetricsBuilder(config)
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
@@ -525,17 +523,56 @@ class Orchestrator:
         self.update_dispatch_gate()
         trim_process_memory()
 
-        metrics = self.metrics.build(
-            step=step,
-            rollouts=batch.rollouts,
-            metrics=batch.metrics,
-            progress=self.progress,
-            step_time=step_time,
-            save_ckpt_time=save_ckpt_time,
-            pre_filter_seen=self.train_sink.pre_filter_seen,
-            pre_filter_dropped=self.train_sink.pre_filter_dropped,
-            pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
-        )
+        # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``all`` is the full
+        # arrival window (errored + filtered included); ``effective`` is its non-errored,
+        # non-filtered subset (≈ what actually trained).
+        all_rollouts = batch.all_rollouts
+        effective = [r for r in all_rollouts if not r.has_error and not r.is_filtered]
+        env_group_size = {env.resolved_name: env.group_size for env in config.train.env}
+        metrics: dict[str, float] = {}
+        for subset, pool in (("all", all_rollouts), ("effective", effective)):
+            metrics |= compute_rollout_metrics(
+                pool, prefix="train/agg", subset=subset, env_group_size=env_group_size, include_filters=True
+            )
+            per_env: dict[str, list[Rollout]] = {}
+            for r in pool:
+                per_env.setdefault(r.env_name, []).append(r)
+            for env_name, env_rollouts in per_env.items():
+                metrics |= compute_rollout_metrics(
+                    env_rollouts,
+                    prefix=f"train/{env_name}",
+                    subset=subset,
+                    env_group_size=env_group_size,
+                    include_filters=True,
+                )
+
+        # Progress / timing / env-share / pre-filter accounting (assembled here, not in the
+        # shared rollout-metric function); kept over the shipped cohort to preserve semantics.
+        num_tokens = sum(r.num_total_tokens for r in batch.rollouts)
+        metrics |= {
+            "progress/tokens": num_tokens,
+            "progress/prefill_tokens": batch.metrics.num_prefill_tokens,
+            "progress/decode_tokens": batch.metrics.num_decode_tokens,
+            "progress/samples": len(batch.rollouts),
+            "progress/problems": len({r.group_id for r in batch.rollouts}),
+            "progress/total_tokens": self.progress.total_tokens,
+            "progress/total_samples": self.progress.total_samples,
+            "progress/total_problems": self.progress.total_problems,
+            "time/step": step_time,
+            "time/save_ckpt": save_ckpt_time,
+            "step": step,
+        }
+        batch_share: dict[str, int] = {}
+        for r in batch.rollouts:
+            batch_share[r.env_name] = batch_share.get(r.env_name, 0) + 1
+        for env_name, count in batch_share.items():
+            metrics[f"batch/{env_name}"] = count / len(batch.rollouts)
+        if self.train_sink.pre_filter_seen > 0:
+            metrics["pre_filters/all/dropped_rate"] = (
+                self.train_sink.pre_filter_dropped / self.train_sink.pre_filter_seen
+            )
+            for name, count in self.train_sink.pre_filter_dropped_by_name.items():
+                metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
         self.monitor.log(metrics, step=step)
         self.monitor.log_samples(batch.rollouts, step=step)
         self.monitor.log_distributions(
@@ -706,7 +743,7 @@ class Orchestrator:
         """Persist + log one completed eval epoch (save_rollouts,
         monitor.log_eval_samples, monitor.log)."""
         if not batch.rollouts:
-            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
+            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
             return
 
         rollout_dicts = [r.to_record() for r in batch.rollouts]
@@ -723,21 +760,42 @@ class Orchestrator:
             get_logger().warning(
                 f"Eval {batch.env_name} step {batch.step} had mixed policy versions: {sorted(policy_versions)}"
             )
-        metrics = batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step)
+        # Rollout metrics over {all,effective} (eval batches are per-env, so no `agg` axis).
+        # ``effective`` = non-errored; pass@k / pass^k only over the effective set.
+        assert self.eval_envs is not None
+        rollouts = batch.rollouts
+        effective = [r for r in rollouts if not r.has_error]
+        env_group_size = {batch.env_name: self.eval_envs.get(batch.env_name).config.group_size}
+        metrics: dict[str, float] = {}
+        for subset, pool in (("all", rollouts), ("effective", effective)):
+            metrics |= compute_rollout_metrics(
+                pool,
+                prefix=f"eval/{batch.env_name}",
+                subset=subset,
+                env_group_size=env_group_size,
+                include_pass_at_k=(subset == "effective"),
+            )
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
+        metrics["step"] = float(batch.step)
         self.monitor.log(metrics, step=batch.step)
 
-        n_total = batch.metrics.n_rollouts
-        error_rate = ((batch.metrics.n_cancelled + batch.metrics.n_errored) / n_total) if n_total else 0.0
+        # Success line — reward / turns / truncation over the effective set, error rate over the
+        # full returned cohort.
+        n_total = len(rollouts)
+        n_errored = sum(1 for r in rollouts if r.has_error)
+        error_rate = n_errored / n_total if n_total else 0.0
+        reward_mean = sum(r.reward for r in effective) / len(effective) if effective else 0.0
+        num_turns_mean = sum(r.num_turns for r in effective) / len(effective) if effective else 0.0
+        truncation_rate = sum(1 for r in effective if r.is_truncated) / len(effective) if effective else 0.0
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
-        branches_mean = sum(r.num_branches for r in batch.rollouts) / len(batch.rollouts)
+        branches_mean = sum(r.num_branches for r in rollouts) / len(rollouts)
 
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
-            f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {batch.metrics.reward_mean:.4f} | "
-            f"Turns {batch.metrics.num_turns_mean:.1f} | Branches {branches_mean:.1f} | "
-            f"Error {error_rate:.1%} | Truncation {batch.metrics.truncation_rate:.1%}"
+            f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {reward_mean:.4f} | "
+            f"Turns {num_turns_mean:.1f} | Branches {branches_mean:.1f} | "
+            f"Error {error_rate:.1%} | Truncation {truncation_rate:.1%}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:
