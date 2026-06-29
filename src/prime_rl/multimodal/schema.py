@@ -6,8 +6,6 @@ from typing import Any
 
 from renderers.mm_store import RAW_MM_ITEM_KIND, RAW_MM_ITEM_VERSION
 
-PROCESSED_MM_KEYS = frozenset({"pixel_values", "image_embeds", "image_features"})
-
 
 @dataclass(frozen=True)
 class RawMMItem:
@@ -18,16 +16,6 @@ class RawMMItem:
     payload: dict[str, Any]
     raw_ref: str | None = None
     vllm_modality: str | None = None
-
-
-def contains_processed_payload_key(value: Any) -> bool:
-    if isinstance(value, Mapping):
-        return bool(PROCESSED_MM_KEYS.intersection(value)) or any(
-            contains_processed_payload_key(v) for v in value.values()
-        )
-    if isinstance(value, list | tuple):
-        return any(contains_processed_payload_key(v) for v in value)
-    return False
 
 
 def _descriptor_mapping(value: Any) -> Mapping[str, Any]:
@@ -58,8 +46,6 @@ def _payload(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _validate_envelope(value: Mapping[str, Any]) -> None:
-    if contains_processed_payload_key(value):
-        raise TypeError("v1 multimodal sidecars must not carry processed multimodal payloads")
     if value.get("kind") != RAW_MM_ITEM_KIND:
         raise ValueError("raw multimodal descriptor is missing the common envelope kind")
     if value.get("version") != RAW_MM_ITEM_VERSION:

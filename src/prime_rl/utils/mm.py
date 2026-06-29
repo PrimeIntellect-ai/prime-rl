@@ -9,12 +9,7 @@ from urllib.parse import unquote, urlparse
 
 from prime_rl.multimodal.adapters.base import MaterializedMM, MultimodalAdapter
 from prime_rl.multimodal.registry import get_multimodal_adapter
-from prime_rl.multimodal.schema import (
-    PROCESSED_MM_KEYS,
-    RawMMItem,
-    contains_processed_payload_key,
-    parse_raw_mm_item,
-)
+from prime_rl.multimodal.schema import RawMMItem, parse_raw_mm_item
 from prime_rl.transport.types import MMRefs
 
 IMAGE_MODALITY = "image"
@@ -63,31 +58,6 @@ def image_uris_from_messages(messages: Iterable[Any]) -> list[str]:
     return uris
 
 
-def _normalize_json_value(value: Any, path: str) -> Any:
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    if isinstance(value, tuple):
-        return [_normalize_json_value(v, f"{path}[]") for v in value]
-    if isinstance(value, list):
-        return [_normalize_json_value(v, f"{path}[]") for v in value]
-    if isinstance(value, Mapping):
-        return {str(k): _normalize_json_value(v, f"{path}.{k}") for k, v in value.items()}
-    raise TypeError(
-        f"v1 multimodal sidecars must be JSON-safe raw image descriptors; {path} has unsupported {type(value).__name__}"
-    )
-
-
-def validate_raw_mm_item(item: Mapping[str, Any]) -> dict[str, Any]:
-    if contains_processed_payload_key(item):
-        raise TypeError(
-            "v1 multimodal sidecars must be raw image descriptors, not processed payloads "
-            f"({', '.join(sorted(PROCESSED_MM_KEYS))})"
-        )
-    normalized = {str(k): _normalize_json_value(v, str(k)) for k, v in item.items()}
-    parse_raw_mm_item(normalized)
-    return normalized
-
-
 def _validate_modalities(mm_items: Mapping[str, list[Any]]) -> None:
     unsupported = sorted(
         modality for modality, items in mm_items.items() if items and modality not in SUPPORTED_MODALITIES
@@ -99,13 +69,20 @@ def _validate_modalities(mm_items: Mapping[str, list[Any]]) -> None:
         )
 
 
+def _raw_item_dicts(items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    item_dicts = [dict(item) for item in items]
+    for item in item_dicts:
+        parse_raw_mm_item(item)
+    return item_dicts
+
+
 def build_mm_refs(multi_modal_data: Any, messages: Iterable[Any]) -> MMRefs | None:
     mm_items = _field(multi_modal_data, "mm_items", None)
     if not mm_items:
         return None
     _validate_modalities(mm_items)
 
-    image_items = [validate_raw_mm_item(item) for item in mm_items.get(IMAGE_MODALITY, [])]
+    image_items = _raw_item_dicts(mm_items.get(IMAGE_MODALITY, []))
     if not image_items:
         return None
 
@@ -149,7 +126,7 @@ def _parse_image_refs(refs: MMRefs) -> tuple[list[RawMMItem], list[str]]:
             "Raw image refs must have matching URI, descriptor, and hash counts "
             f"(uris={len(refs.uris)}, descriptors={len(image_item_dicts)}, hashes={len(image_hashes)})"
         )
-    return [parse_raw_mm_item(validate_raw_mm_item(item)) for item in image_item_dicts], image_hashes
+    return [parse_raw_mm_item(item) for item in image_item_dicts], image_hashes
 
 
 def _single_family_adapter(items: list[RawMMItem]) -> MultimodalAdapter:

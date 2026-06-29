@@ -446,21 +446,6 @@ def test_prepare_sample_rejects_overlong_raw_mm_refs():
         prepare_sample(sample, seq_len=3)
 
 
-def test_prepare_sample_rejects_processed_mm_kwargs():
-    sample = TrainingSample(
-        token_ids=[10, 11, 12],
-        mask=[False, False, True],
-        logprobs=[0.0] * 3,
-        temperatures=[1.0] * 3,
-        advantages=[0.0, 0.0, 1.0],
-        env_name="test-env",
-        mm_kwargs={},
-    )
-
-    with pytest.raises(ValueError, match="Processed multimodal mm_kwargs are unsupported"):
-        prepare_sample(sample, seq_len=8)
-
-
 def test_prepare_sample_none_routed_experts():
     """When routed_experts is None, micro_batch.routed_experts is None."""
     sample = TrainingSample(

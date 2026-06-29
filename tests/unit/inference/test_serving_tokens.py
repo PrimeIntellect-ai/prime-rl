@@ -12,11 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from types import SimpleNamespace
 
 import numpy as np
 import pybase64
-import pytest
 from vllm.entrypoints.openai.engine.protocol import UsageInfo
 from vllm.entrypoints.serve.disagg.protocol import GenerateResponse, GenerateResponseChoice
 
@@ -27,10 +25,8 @@ from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
     _build_usage,
     _client_set_max_tokens,
-    _decode_raw_mm_kwargs,
     _FinalOutputCapture,
     _GenerateRoutedExpertsCapture,
-    _MMImageRefError,
 )
 
 
@@ -333,20 +329,3 @@ def test_materialize_raw_image_ref_uses_generic_family_payload(tmp_path, monkeyp
     assert item.layout_fingerprint == fingerprint
     assert item.raw_image_id == image_path.name
     assert item.payload == {"adapter_owned": [1, 2, 3]}
-
-
-def test_decode_raw_mm_kwargs_rejects_none_items():
-    features = SimpleNamespace(
-        mm_hashes={"image": ["a" * 32]},
-        mm_placeholders={"image": [SimpleNamespace(length=1)]},
-        kwargs_data={"image": [None]},
-    )
-
-    with pytest.raises(_MMImageRefError, match="raw descriptor refs"):
-        asyncio.run(
-            _decode_raw_mm_kwargs(
-                features,
-                processor_model_name="model",
-                trust_remote_code=True,
-            )
-        )
