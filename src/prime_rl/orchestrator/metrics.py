@@ -31,7 +31,7 @@ class MetricsBuilder:
         existing dashboards / alerts keep working."""
         num_rollouts = len(rollouts)
         num_unique_examples = len({r.group_id for r in rollouts})
-        num_tokens = sum(r.total_tokens for r in rollouts)
+        num_tokens = sum(r.num_total_tokens for r in rollouts)
 
         results_df = pd.DataFrame(
             {
@@ -42,7 +42,7 @@ class MetricsBuilder:
                 "is_truncated": [r.is_truncated for r in rollouts],
                 "is_filtered": [r.is_filtered for r in rollouts],
                 "stop_condition": [r.stop_condition for r in rollouts],
-                "seq_len": [r.total_tokens for r in rollouts],
+                "seq_len": [r.num_total_tokens for r in rollouts],
                 "prefill_len": metrics.rollout_prefill_lens,
                 "decode_len": metrics.rollout_decode_lens,
                 "samples_per_rollout": metrics.samples_per_rollout,

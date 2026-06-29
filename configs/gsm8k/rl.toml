@@ -25,7 +25,7 @@ args = { dataset_name = "openai/gsm8k", dataset_subset = "main", math_verify_max
 [inference] # Default inference config
 
 # Mirror of Qwen/Qwen3-0.6B; PI's template patch always re-emits prior
-# <think> blocks. Match that with the qwen3 renderer's preserve_all_thinking.
+# <think> blocks. Match that with renderer thinking_retention.
 [orchestrator.renderer]
 name = "auto"
-preserve_all_thinking = true
+thinking_retention = "all"

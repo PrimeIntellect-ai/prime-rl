@@ -1,6 +1,4 @@
-# v1 port of configs/rlm_swe/qwen35_4b.toml — identical except the env blocks, which load
-# the v1 `r2e-gym-v1` taskset through the rlm harness on the prime runtime instead of the
-# v0 `rlm_swe` composable env. Same model / trainer / inference / orchestrator knobs.
+# Qwen3.5-4B SWE RL on the v1 `r2e-gym-v1` taskset through the rlm harness on the prime runtime.
 
 output_dir = "/beegfs/mika/rlm-swe-qwen35-4b"
 max_steps = 400
