@@ -74,19 +74,28 @@ def compute_rollout_metrics(
     for name, getter in _DIST_SPECS:
         out |= _dist(f"{p}/{name}", [float(getter(r)) for r in rollouts])
 
-    # Timing (per-rollout span durations from the v1 Trace)
+    # Timing (per-rollout span durations from the v1 Trace; total is the full end-to-end across
+    # all four phases — unused phases default to a 0-duration span)
+    setup = [r.timing.setup.duration for r in rollouts]
     generation = [r.timing.generation.duration for r in rollouts]
+    finalize = [r.timing.finalize.duration for r in rollouts]
     scoring = [r.timing.scoring.duration for r in rollouts]
+    out |= _dist(f"{p}/timing/setup", setup)
     out |= _dist(f"{p}/timing/generation", generation)
+    out |= _dist(f"{p}/timing/finalize", finalize)
     out |= _dist(f"{p}/timing/scoring", scoring)
-    out |= _dist(f"{p}/timing/total", [g + s for g, s in zip(generation, scoring)])
+    out |= _dist(f"{p}/timing/total", [sum(spans) for spans in zip(setup, generation, finalize, scoring)])
 
-    # Custom env @metrics — union of keys, averaged over the rollouts that report each
+    # Custom env @metrics and per-reward-component values — union of keys, averaged over the
+    # rollouts that report each (the summed reward is the `reward` metric above)
     for name in sorted({name for r in rollouts for name in r.metrics}):
         out |= _dist(f"{p}/metrics/{name}", [r.metrics[name] for r in rollouts if name in r.metrics])
+    for name in sorted({name for r in rollouts for name in r.rewards}):
+        out |= _dist(f"{p}/rewards/{name}", [r.rewards[name] for r in rollouts if name in r.rewards])
 
     # Per-rollout boolean rates
     out[f"{p}/is_truncated/mean"] = _rate([r.is_truncated for r in rollouts])
+    out[f"{p}/is_completed/mean"] = _rate([r.is_completed for r in rollouts])
     # error_rate is structurally 0 on `effective` (it excludes errored) — surface it on `all` only
     if subset == "all":
         out[f"{p}/error_rate"] = _rate([r.has_error for r in rollouts])

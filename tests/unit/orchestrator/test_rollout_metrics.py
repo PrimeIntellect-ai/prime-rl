@@ -22,19 +22,25 @@ def mk(
     group_id: str = "g0",
     is_filtered: bool = False,
     filter_results: dict | None = None,
+    is_completed: bool = True,
+    rewards: dict | None = None,
+    setup: float = 0.0,
     generation: float = 0.0,
+    finalize: float = 0.0,
     scoring: float = 0.0,
 ):
     """A duck-typed stand-in for ``Rollout`` exposing only the Trace properties the metric
     function reads (keeps the test fast and free of the message-graph machinery)."""
     return SimpleNamespace(
         reward=reward,
+        rewards=rewards or {},
         num_total_tokens=num_total_tokens,
         num_input_tokens=num_input_tokens,
         num_output_tokens=num_output_tokens,
         num_turns=num_turns,
         num_branches=num_branches,
         is_truncated=is_truncated,
+        is_completed=is_completed,
         has_response=has_response,
         has_error=has_error,
         stop_condition=stop_condition,
@@ -44,7 +50,9 @@ def mk(
         is_filtered=is_filtered,
         filter_results=filter_results or {},
         timing=SimpleNamespace(
+            setup=SimpleNamespace(duration=setup),
             generation=SimpleNamespace(duration=generation),
+            finalize=SimpleNamespace(duration=finalize),
             scoring=SimpleNamespace(duration=scoring),
         ),
     )
@@ -117,6 +125,27 @@ def test_custom_metrics_averaged_over_reporters():
     out = compute_rollout_metrics(rollouts, prefix="train/agg", subset="all", env_group_size={"env": 2})
     assert out["train/agg/all/metrics/acc/mean"] == 2.0  # over both reporters
     assert out["train/agg/all/metrics/fmt/mean"] == 5.0  # over the single reporter
+
+
+def test_reward_components_broken_out():
+    rollouts = [mk(rewards={"correct": 1.0, "format": 0.0}), mk(rewards={"correct": 0.0, "format": 1.0})]
+    out = compute_rollout_metrics(rollouts, prefix="train/agg", subset="all", env_group_size={"env": 2})
+    assert out["train/agg/all/rewards/correct/mean"] == 0.5
+    assert out["train/agg/all/rewards/format/mean"] == 0.5
+
+
+def test_timing_total_sums_all_phases():
+    rollouts = [mk(setup=1.0, generation=2.0, finalize=0.5, scoring=0.5)]
+    out = compute_rollout_metrics(rollouts, prefix="train/agg", subset="all", env_group_size={"env": 1})
+    assert out["train/agg/all/timing/setup/mean"] == 1.0
+    assert out["train/agg/all/timing/finalize/mean"] == 0.5
+    assert out["train/agg/all/timing/total/mean"] == 4.0  # setup + generation + finalize + scoring
+
+
+def test_is_completed_rate():
+    rollouts = [mk(is_completed=True), mk(is_completed=False)]
+    out = compute_rollout_metrics(rollouts, prefix="eval/x", subset="all", env_group_size={"env": 2})
+    assert out["eval/x/all/is_completed/mean"] == 0.5
 
 
 def test_filters_only_when_included():
