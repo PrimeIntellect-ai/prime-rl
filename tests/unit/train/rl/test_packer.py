@@ -78,7 +78,7 @@ def _mm_sample(value: float, env_name: str = "test-env") -> TrainingSample:
     )
 
 
-def _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size, seq_len, pack_multimodal: bool = False):
+def _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size, seq_len):
     """Set up a MultiPacker over two discovered runs; capture sent grids."""
     reset_world()
     runs._MULTI_RUN_MANAGER = None
@@ -110,7 +110,6 @@ def _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size, seq_len, pack_mu
         config=FileSystemTransportConfig(),
         bin_cost=build_bin_cost(None),
         start_step=0,
-        pack_multimodal=pack_multimodal,
     )
     return manager, packer, sent
 
@@ -228,13 +227,11 @@ def test_multipacker_pack_mm_padding_is_zero_loss(tmp_path, monkeypatch):
         assert all(advantage == 0.0 for advantage in dummy.advantages)
 
 
-def test_multipacker_pack_packs_mm_kwargs_within_each_run_when_enabled(tmp_path, monkeypatch):
-    """Compatible eager multimodal samples pack within a run but never across runs."""
+def test_multipacker_pack_packs_mm_kwargs_within_each_run(tmp_path, monkeypatch):
+    """Eager multimodal samples pack within a run but never across runs."""
     from prime_rl.trainer.batch import _is_multimodal_sample
 
-    manager, packer, sent = _packer_with_two_runs(
-        tmp_path, monkeypatch, dp_world_size=1, seq_len=12, pack_multimodal=True
-    )
+    manager, packer, sent = _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size=1, seq_len=12)
     a, b = manager.id_2_idx["run_a"], manager.id_2_idx["run_b"]
     for idx, base in ((a, 1.0), (b, 10.0)):
         packer.buffers[idx].append((_mm_sample(base), 0))

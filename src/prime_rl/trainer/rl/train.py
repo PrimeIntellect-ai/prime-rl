@@ -156,10 +156,7 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
-    pack_multimodal = config.pack_multimodal and (
-        config.model.vlm is not None or supports_packed_multimodal_training(model)
-    )
-    if pack_multimodal:
+    if config.model.vlm is not None or supports_packed_multimodal_training(model):
         validate_multi_modal_pack(model, attn_impl=config.model.attn)
         logger.info("Multimodal packing enabled")
 
@@ -253,7 +250,6 @@ def train(config: TrainerConfig):
             tokenizer,
             build_bin_cost(model.config),
             config.rollout_transport,
-            pack_multimodal=pack_multimodal,
         )
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)

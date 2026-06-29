@@ -481,10 +481,7 @@ def get_model(
                 "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
         # Context parallelism patches the global flash-attention dispatch to do the
-        # Ulysses all-to-all, which is causal- and sharded-sequence-only. The vision
-        # encoder runs *before* CP sharding (full, replicated patches) with
-        # bidirectional attention, so it must not go through that path. Pin it to
-        # sdpa so it dispatches around the patched flash_attention_2 entry.
+        # Ulysses all-to-all, which is causal- and sharded-sequence-only.
         vision_config = getattr(model_config, "vision_config", None)
         if config.cp > 1 and vision_config is not None:
             vision_config._attn_implementation = "sdpa"
@@ -680,31 +677,17 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     # Params kept out of FSDP entirely (full/replicated on every rank).
     fsdp_ignored_params: set[nn.Parameter] = set()
 
-    def _keep_out_of_fsdp_if_frozen(module: nn.Module, name: str) -> None:
-        # Under CP, the multimodal merge (prepare_vlm_inputs_for_context_parallel)
-        # runs the vision encoder and embed_tokens *standalone, before the root FSDP
-        # forward*. FSDP2 requires the first forward of an iteration to go through the
-        # root, so a separately-sharded module called here lazy-inits as its own root
-        # and then collides with the real root forward ("FSDP state has already been
-        # lazily initialized"). Keeping such a module out of FSDP (full/replicated,
-        # materialized later by model.to_empty()) avoids that — but only safely when
-        # it is FROZEN, since ignored params get no FSDP gradient reduction. So:
-        # frozen -> ignore; trainable -> refuse (don't silently change what trains).
+    def _ignore_frozen_params(module: nn.Module, name: str) -> None:
         params = list(module.parameters())
         if not params:
             return
-        if all(not p.requires_grad for p in params):
-            fsdp_ignored_params.update(params)
-            get_logger().info(f"CP+VLM: keeping frozen {name} out of FSDP (ignored_params).")
-        else:
+        if any(p.requires_grad for p in params):
             raise ValueError(
-                f"VLM context parallelism (cp={config.cp}) requires a frozen {name}: it runs in "
-                f"the pre-shard multimodal merge, before the FSDP root forward, so it cannot be "
-                f"FSDP-sharded — and an unsharded *trainable* module would silently lose its "
-                f"gradient reduction. Freeze it (e.g. train with LoRA, or set freeze_vision_encoder "
-                f"for the vision encoder), or apply the structural fix (run the pre-shard merge "
-                f"through the root forward)."
+                f"VLM context parallelism (cp={config.cp}) requires frozen {name}; it runs before "
+                "the FSDP root forward and is kept out of FSDP."
             )
+        fsdp_ignored_params.update(params)
+        get_logger().info(f"CP+VLM: keeping frozen {name} out of FSDP (ignored_params).")
 
     if is_vlm_training:
         vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
@@ -712,7 +695,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             raise ValueError(f"VLM model {config.name} has no recognized vision encoder")
 
         if cp_vlm:
-            _keep_out_of_fsdp_if_frozen(vision_encoder, "vision encoder")
+            _ignore_frozen_params(vision_encoder, "vision encoder")
         else:
             fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
             get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
@@ -720,13 +703,11 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
 
-    # embed_tokens is also invoked in the pre-shard merge (to embed text before
-    # scattering image embeds) -> same FSDP-root conflict; keep it out of FSDP when
-    # frozen, else refuse (see _keep_out_of_fsdp_if_frozen).
+    # embed_tokens is also invoked in the pre-shard merge, before the FSDP root forward.
     if cp_vlm:
         embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
         if embed_module is not None:
-            _keep_out_of_fsdp_if_frozen(embed_module, "embed_tokens")
+            _ignore_frozen_params(embed_module, "embed_tokens")
 
     for transformer_block in transformer_layers:
         block_mlp = getattr(transformer_block, "mlp", None)

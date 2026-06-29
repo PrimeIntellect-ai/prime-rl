@@ -448,7 +448,7 @@ def test_prepare_sample_truncates_mm_at_image_boundary():
     assert n_placeholders == mb.mm_kwargs["pixel_values"].shape[0]  # ppt == 1 here
 
 
-def test_prepare_batch_packs_multimodal_with_text_when_enabled():
+def test_prepare_batch_packs_multimodal_with_text():
     mm_sample = TrainingSample(
         token_ids=[10, 11, 12],
         mask=[False, True, True],
@@ -478,7 +478,6 @@ def test_prepare_batch_packs_multimodal_with_text_when_enabled():
         idxs=[0, 0],
         num_loras=1,
         bin_cost=build_bin_cost(None),
-        pack_multimodal=True,
     )
 
     batch = batches_per_gpu[0][0]
@@ -490,46 +489,6 @@ def test_prepare_batch_packs_multimodal_with_text_when_enabled():
     assert batch.mm_kwargs["pixel_values"].shape == [1, 2]
     assert batch.mm_kwargs["image_grid_thw"].shape == [1, 3]
     assert batch.env_names == ["mm-env"] * 3 + ["text-env"] * 2
-
-
-def test_prepare_batch_keeps_multimodal_and_text_separate_when_disabled():
-    mm_sample = TrainingSample(
-        token_ids=[10, 11, 12],
-        mask=[False, True, True],
-        logprobs=[0.0, -0.1, -0.2],
-        temperatures=[1.0, 1.0, 1.0],
-        advantages=[0.0, 1.0, 1.0],
-        env_name="mm-env",
-        mm_token_type_ids=[0, 1, 0],
-        mm_kwargs={
-            "pixel_values": _encoded(np.array([[1.0, 2.0]], dtype=np.float32)),
-            "image_grid_thw": _encoded(np.array([[1, 2, 2]], dtype=np.int64)),
-        },
-    )
-    text_sample = TrainingSample(
-        token_ids=[20, 21],
-        mask=[False, True],
-        logprobs=[0.0, -0.3],
-        temperatures=[0.7, 0.7],
-        advantages=[0.0, 1.0],
-        env_name="text-env",
-    )
-
-    batches_per_gpu = prepare_batch(
-        rollouts=[mm_sample, text_sample],
-        seq_len=8,
-        num_train_workers=1,
-        idxs=[0, 0],
-        num_loras=1,
-        bin_cost=build_bin_cost(None),
-        pack_multimodal=False,
-    )
-
-    batches = batches_per_gpu[0]
-    assert len(batches) == 2
-    assert [batch.seq_lens for batch in batches] == [[3], [2]]
-    assert [batch.mm_kwargs is not None for batch in batches] == [True, False]
-
 
 def test_prepare_sample_none_routed_experts():
     """When routed_experts is None, micro_batch.routed_experts is None."""

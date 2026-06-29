@@ -189,7 +189,6 @@ class DataLoader:
         tokenizer: PreTrainedTokenizer,
         bin_cost: Callable[[Sequence[int]], int],
         config: TransportConfig,
-        pack_multimodal: bool = False,
     ):
         self.world = get_world()
 
@@ -202,7 +201,6 @@ class DataLoader:
                 pad_to_multiple_of=pad_to_multiple_of,
                 bin_cost=bin_cost,
                 start_step=start_step,
-                pack_multimodal=pack_multimodal,
             )
 
         non_dp_world_size = self.world.world_size // dp_world_size

@@ -100,24 +100,6 @@ def _truncate_mm(
     return cut, sliced
 
 
-def _append_mm_kwargs(dst: dict[str, EncodedTensor], src: dict[str, EncodedTensor]) -> None:
-    for key in dst:
-        dst[key].data += src[key].data
-        dst[key].shape[0] += src[key].shape[0]
-
-
-def _can_pack_mm_kwargs(dst: dict[str, EncodedTensor] | None, src: dict[str, EncodedTensor] | None) -> bool:
-    if dst is None or src is None or set(dst) != set(src):
-        return False
-    return all(
-        dst[key].dtype == src[key].dtype
-        and len(dst[key].shape) > 0
-        and len(dst[key].shape) == len(src[key].shape)
-        and dst[key].shape[1:] == src[key].shape[1:]
-        for key in dst
-    )
-
-
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
@@ -256,37 +238,15 @@ class _MicroBatchBin:
     def first_sample(self) -> MicroBatch:
         return self.samples[0][1]
 
-    @property
-    def first_lora_idx(self) -> int:
-        return self.samples[0][0]
-
-    @property
-    def first_multimodal_sample(self) -> MicroBatch | None:
-        for _, sample in self.samples:
-            if _is_multimodal_sample(sample):
-                return sample
-        return None
-
-    def can_add(self, sample: MicroBatch, max_seq_len: int, lora_idx: int, pack_multimodal: bool) -> bool:
+    def can_add(self, sample: MicroBatch, max_seq_len: int) -> bool:
         # Loss routing is per token (component weight streams), so samples of
-        # different loss types pack together freely. Multimodal packing is still
-        # constrained by modality sidecars, length, routed experts, and LoRA/run.
+        # different loss types pack together freely. The packer groups by
+        # run/LoRA before this point.
         first_sample = self.first_sample
         if self.length + len(sample.input_ids) > max_seq_len:
             return False
         if (first_sample.routed_experts is None) != (sample.routed_experts is None):
             return False
-
-        sample_is_mm = _is_multimodal_sample(sample)
-        existing_mm_sample = self.first_multimodal_sample
-        if existing_mm_sample is None and not sample_is_mm:
-            return True
-        if not pack_multimodal:
-            return False
-        if self.first_lora_idx != lora_idx:
-            return False
-        if existing_mm_sample is not None and sample_is_mm:
-            return _can_pack_mm_kwargs(existing_mm_sample.mm_kwargs, sample.mm_kwargs)
         return True
 
     def add(self, lora_idx: int, sample: MicroBatch) -> None:
@@ -370,8 +330,10 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
             if mm_kwargs is None:
                 mm_kwargs = copy.deepcopy(sample.mm_kwargs)
             else:
-                _append_mm_kwargs(mm_kwargs, sample.mm_kwargs)
-        seq_lens.extend(sample.seq_lens if sample.seq_lens is not None else [sample_len])
+                for key in mm_kwargs:
+                    mm_kwargs[key].data += sample.mm_kwargs[key].data
+                    mm_kwargs[key].shape[0] += sample.mm_kwargs[key].shape[0]
+        seq_lens.extend(sample.seq_lens)
         lora_num_tokens[lora_idx] += sample_len
 
     sequence_lengths = [len(sample.input_ids) for _, sample in bin_content.samples]
@@ -422,16 +384,12 @@ def packed_samples_into_micro_bs(
     num_loras: int,
     num_train_workers: int,
     bin_cost: Callable[[Sequence[int]], int],
-    pack_multimodal: bool = False,
 ) -> list[MicroBatch]:
     """
     Pack samples into micro_batch efficiently.
-    We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
-    With per-token temperatures, samples can be packed together regardless of their temperature values.
-
-    Multimodal samples are only packed when ``pack_multimodal`` is true. They
-    can pack with text spans from the same run/LoRA and with compatible eager
-    ``mm_kwargs`` samples. Packed batches preserve sample boundaries in ``seq_lens``.
+    We follow the First Fit Decreasing algorithm to pack samples into bins and
+    minimize potential padding while never truncating. Packed batches preserve
+    sample boundaries in ``seq_lens``.
     """
     # Sort by (lora_idx, -length) for packing efficiency
     samples.sort(key=lambda x: (x[0], -len(x[1].input_ids)))
@@ -439,10 +397,9 @@ def packed_samples_into_micro_bs(
     bins: list[_MicroBatchBin] = []
 
     for idx, sample in samples:
-        # Try to find a bin that can fit this sequence. Multimodal samples only
-        # pack when explicitly enabled and their sidecar tensors are compatible.
+        # Try to find a bin that can fit this sequence.
         for bin_content in bins:
-            if bin_content.can_add(sample, max_seq_len, idx, pack_multimodal):
+            if bin_content.can_add(sample, max_seq_len):
                 bin_content.add(idx, sample)
                 break
         else:
@@ -518,8 +475,7 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         )
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
-    if micro_batch.seq_lens is not None:
-        micro_batch.seq_lens.append(padding_size)
+    micro_batch.seq_lens.append(padding_size)
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
     micro_batch.env_names.extend([""] * padding_size)
@@ -589,7 +545,6 @@ def prepare_batch(
     num_loras: int,
     bin_cost: Callable[[Sequence[int]], int],
     pad_to_multiple_of: int = 1,
-    pack_multimodal: bool = False,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -608,7 +563,6 @@ def prepare_batch(
         num_loras,
         num_train_workers,
         bin_cost,
-        pack_multimodal=pack_multimodal,
     )
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 

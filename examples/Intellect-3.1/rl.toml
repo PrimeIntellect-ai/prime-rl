@@ -23,9 +23,6 @@ interval = 100
 [wandb]
 project = "intellect-3.1"
 
-[trainer]
-pack_multimodal = false
-
 [trainer.model]
 impl = "custom"
 attn = "flash_attention_3"

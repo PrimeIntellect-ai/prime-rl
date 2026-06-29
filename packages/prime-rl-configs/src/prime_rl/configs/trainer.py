@@ -568,9 +568,6 @@ class TrainerConfig(BaseConfig):
     enable_token_export: bool = False
     """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
 
-    pack_multimodal: bool = True
-    """Pack multimodal samples together when the active model path supports packed multimodal position boundaries."""
-
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
         if self.model.ep_comm_backend == "deepep" and self.optim.max_norm is not None:
@@ -599,12 +596,6 @@ class TrainerConfig(BaseConfig):
                 "freeze_vision_encoder=false is incompatible with LoRA. "
                 "LoRA freezes all non-adapter parameters including the vision encoder."
             )
-        return self
-
-    @model_validator(mode="after")
-    def multimodal_pack_incompatible_with_cp(self):
-        if self.pack_multimodal and self.model.cp > 1:
-            raise ValueError("trainer.pack_multimodal is not supported with context parallelism")
         return self
 
     @model_validator(mode="after")

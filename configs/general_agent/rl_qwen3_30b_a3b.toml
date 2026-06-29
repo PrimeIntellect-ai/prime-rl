@@ -20,9 +20,6 @@ keep_last = 1
 [model]
 name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 
-[trainer]
-pack_multimodal = false
-
 [trainer.model]
 cp = 2
 
