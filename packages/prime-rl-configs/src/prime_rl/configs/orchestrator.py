@@ -462,10 +462,6 @@ class AdaptiveConcurrencyConfig(BaseConfig):
     enough to engage the offload tier, and rely on ``preemption_rate_threshold``
     as the backoff."""
 
-    enabled: bool = True
-    """Adapt the in-flight limit at runtime. When False, concurrency is pinned at
-    ``max_inflight_rollouts`` (the legacy static behavior)."""
-
     target_kv_usage: float = Field(0.8, gt=0.0, le=1.0)
     """Target GPU KV cache utilization. The limit grows while usage is below this."""
 
@@ -595,10 +591,10 @@ class OrchestratorConfig(BaseConfig):
     """Rollout-mode batching only. Multiplier used to derive ``max_inflight_rollouts`` from ``batch_size`` when ``max_inflight_rollouts`` is unset. Values below 1.0 intentionally cap in-flight rollout capacity below ``batch_size``."""
 
     max_inflight_rollouts: int | None = Field(None, ge=1)
-    """Hard upper clamp on rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset). By default this is a ceiling for the adaptive controller (``adaptive_concurrency``), not the operating point; set ``adaptive_concurrency.enabled=false`` to pin concurrency here instead."""
+    """Hard upper clamp on rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset). This is the ceiling for the adaptive controller (``adaptive_concurrency``), not the operating point; disable the controller (``--no-orchestrator.adaptive-concurrency``) to pin concurrency at this value instead."""
 
-    adaptive_concurrency: AdaptiveConcurrencyConfig = AdaptiveConcurrencyConfig()
-    """Adaptive in-flight concurrency controller. On by default: ramps the effective in-flight limit toward ``target_kv_usage`` GPU KV utilization, clamped by ``max_inflight_rollouts``."""
+    adaptive_concurrency: AdaptiveConcurrencyConfig | None = AdaptiveConcurrencyConfig()
+    """Adaptive in-flight concurrency controller. Enabled whenever set (the default): ramps the effective in-flight limit toward ``target_kv_usage`` GPU KV utilization, clamped by ``max_inflight_rollouts``. Disable with ``--no-orchestrator.adaptive-concurrency`` (sets it to None) to pin concurrency at ``max_inflight_rollouts``."""
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Output sequences returned per example during training."""

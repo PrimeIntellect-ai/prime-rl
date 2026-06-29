@@ -339,8 +339,8 @@ class Orchestrator:
         wandb_enabled = config.wandb is not None
         adaptive = config.adaptive_concurrency
         # When adaptive control is on, ramp from ``min_inflight`` toward the clamp;
-        # otherwise pin at the clamp (legacy static behavior).
-        initial_inflight = adaptive.min_inflight if adaptive.enabled else config.max_inflight_rollouts
+        # when disabled (``--no-adaptive-concurrency``) pin at the clamp.
+        initial_inflight = adaptive.min_inflight if adaptive is not None else config.max_inflight_rollouts
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
@@ -353,7 +353,7 @@ class Orchestrator:
             max_off_policy_steps=config.max_off_policy_steps,
             initial_inflight=initial_inflight,
         )
-        if adaptive.enabled:
+        if adaptive is not None:
             self.concurrency_controller = ConcurrencyController(
                 dispatcher=self.dispatcher,
                 admin_clients=self.policy_inference.admin_clients,
