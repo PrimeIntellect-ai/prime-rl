@@ -19,22 +19,22 @@ class GRPOAlgorithm(Algorithm):
 
     def __init__(self, config: GRPOAlgoConfig, policy_pool: InferencePool):
         super().__init__(config, policy_pool)
-        self.length_pen = config.length_pen
+        self.length_penalty = config.length_penalty
 
     async def score_group(self, group: list[Rollout]) -> None:
         rewards = torch.tensor([rollout.reward for rollout in group], dtype=torch.float32)
-        length_pen = self.length_pen
-        if length_pen is None:
+        length_penalty = self.length_penalty
+        if length_penalty is None:
             advantages = rewards - rewards.mean()
         else:
-            completion = torch.tensor([rollout.num_output_tokens for rollout in group], dtype=rewards.dtype)
+            output = torch.tensor([rollout.num_output_tokens for rollout in group], dtype=rewards.dtype)
             total = torch.tensor([rollout.num_total_tokens for rollout in group], dtype=rewards.dtype)
             turns = torch.tensor([rollout.num_turns for rollout in group], dtype=rewards.dtype)
-            input = total - completion
+            input = total - output
             penalty_frac = (
-                length_pen.completion_pen * (completion / completion.max().clamp(min=1))
-                + length_pen.input_pen * (input / input.max().clamp(min=1))
-                + length_pen.turns_pen * (turns / turns.max().clamp(min=1))
+                length_penalty.num_output_tokens_weight * (output / output.max().clamp(min=1))
+                + length_penalty.num_input_tokens_weight * (input / input.max().clamp(min=1))
+                + length_penalty.num_turns_weight * (turns / turns.max().clamp(min=1))
             )
             penalty = rewards.mean() * penalty_frac
             shaped_rewards = rewards - penalty

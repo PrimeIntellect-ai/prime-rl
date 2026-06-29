@@ -96,14 +96,14 @@ class LinearLengthPenaltyConfig(BaseConfig):
 
     type: Literal["linear"] = "linear"
 
-    completion_pen: float = Field(0.25, ge=0, allow_inf_nan=False)
-    """Scale on the completion-token term. Each reward is reduced by ``completion_pen * pass_rate * (model completion tokens / group's max completion tokens)`` — where ``pass_rate`` is the group's mean reward — before the GRPO baseline subtraction. Finite and non-negative; 0 disables the term."""
+    num_output_tokens_weight: float = Field(0.25, ge=0, allow_inf_nan=False)
+    """Scale on the output-token term. Each reward is reduced by ``num_output_tokens_weight * pass_rate * (rollout num_output_tokens / group's max num_output_tokens)`` — where ``pass_rate`` is the group's mean reward — before the GRPO baseline subtraction. Finite and non-negative; 0 disables the term."""
 
-    input_pen: float = Field(0.1, ge=0, allow_inf_nan=False)
-    """Scale on the input-token term — tokens the model conditioned on but did not generate (``total_tokens - completion_len``: prompts, tool responses), as a fraction of the group's max input tokens. 0 disables the term."""
+    num_input_tokens_weight: float = Field(0.1, ge=0, allow_inf_nan=False)
+    """Scale on the input-token term — tokens the model conditioned on but did not generate (``num_total_tokens - num_output_tokens``: prompts, tool responses), as a fraction of the group's max input tokens. 0 disables the term."""
 
-    turns_pen: float = Field(0.1, ge=0, allow_inf_nan=False)
-    """Scale on the turns term (``pass_rate * (model turns / group's max turns)``). 0 disables the term."""
+    num_turns_weight: float = Field(0.1, ge=0, allow_inf_nan=False)
+    """Scale on the turns term (``pass_rate * (rollout num_turns / group's max num_turns)``). 0 disables the term."""
 
 
 LengthPenaltyConfig: TypeAlias = LinearLengthPenaltyConfig
@@ -196,8 +196,8 @@ class GRPOAlgoConfig(BaseAlgoConfig):
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
-    length_pen: LengthPenaltyConfig | None = None
-    """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of completion-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
+    length_penalty: LengthPenaltyConfig | None = None
+    """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
 
 
 class EchoAlgoConfig(GRPOAlgoConfig):
