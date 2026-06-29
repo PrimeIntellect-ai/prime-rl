@@ -32,6 +32,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends --force-yes \
     libnl-route-3-dev \
     libibverbs-dev \
     librdmacm-dev \
+    python3.12 \
+    python3.12-venv \
+    python3.12-dev \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
     && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 ARG UCX_VERSION=1.19.1
@@ -60,7 +64,10 @@ ADD https://astral.sh/uv/install.sh /uv-installer.sh
 # Set install dir to location accessible to non-root users
 RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
 ENV PATH="/usr/local/bin:$PATH"
-ENV UV_PYTHON_INSTALL_DIR="/usr/local/share/uv/python"
+# Build .venv against the system CPython (== the runtime stage's apt python3.12,
+# same Ubuntu 24.04 base => same 3.12.x), so the venv's recorded interpreter
+# matches the runtime interpreter and no bin/python relink is needed at runtime.
+ENV UV_PYTHON_PREFERENCE=only-system
 ENV UV_CACHE_DIR="/usr/local/share/uv/cache"
 # Force a real in-project venv directory. uv's centralized project environments
 # (preview today, possibly default later) otherwise place the env in the uv cache
@@ -223,10 +230,6 @@ COPY --from=builder /opt/ucx /opt/ucx
 # Copy and set up entrypoint script
 COPY --chown=appuser:appuser scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
-
-RUN rm /app/.venv/bin/python && ln -s /usr/local/bin/python /app/.venv/bin/python
-RUN rm /app/.venv/bin/python3 && ln -s /usr/local/bin/python /app/.venv/bin/python3
-RUN rm /app/.venv/bin/python3.12 && ln -s /usr/local/bin/python /app/.venv/bin/python3.12
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
