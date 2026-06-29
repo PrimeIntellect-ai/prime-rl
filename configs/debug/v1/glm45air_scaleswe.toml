@@ -12,6 +12,11 @@
 max_steps = 1000
 seq_len = 65536
 
+# Redirect compile/JIT caches to node-local /tmp (per user + job) to avoid
+# slow/contended shared-FS caches and FS lock deadlocks.
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/triton-cache-$USER-$SLURM_JOB_ID"
+
 [slurm]
 job_name = "glm45air-swe"
 project_dir = "."
@@ -106,6 +111,11 @@ timeout = { rollout = 3600 }
 gpu_memory_utilization = 0.85
 enable_prefix_caching = true
 enable_return_routed_experts = true
+
+# vLLM + FlashInfer caches on node-local /tmp (see [env_vars]).
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/.vllm_cache_$(whoami)"
+FLASHINFER_WORKSPACE_BASE = "/tmp/flashinfer-$(whoami)"
 
 [inference.model]
 max_model_len = 65536
