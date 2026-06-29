@@ -105,9 +105,6 @@ class LinearLengthPenaltyConfig(BaseConfig):
     turns_coef: float = Field(0.1, ge=0, allow_inf_nan=False)
     """Scale on the turns term (``pass_rate * (model turns / group's max turns)``). 0 disables the term."""
 
-    gate_by_correctness: bool = False
-    """When True, scale each rollout's penalty by its reward (``penalty * reward``), so correct rollouts (``reward == 1``) are penalized and incorrect ones (``reward == 0``) are not. When False, every rollout is penalized equally."""
-
 
 LengthPenaltyConfig: TypeAlias = LinearLengthPenaltyConfig
 

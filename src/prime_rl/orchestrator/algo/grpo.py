@@ -32,13 +32,11 @@ class GRPOAlgorithm(Algorithm):
             # sequence, plus turns_coef * turns over the group's most turns.
             completion = torch.tensor([rollout.completion_len for rollout in group], dtype=rewards.dtype)
             total = torch.tensor([rollout.total_tokens for rollout in group], dtype=rewards.dtype)
-            penalty_frac = (lp.coef * completion + lp.context_coef * (total - completion)) / total.max().clamp(min=1)
-            if lp.turns_coef:
-                turns = torch.tensor([rollout.num_turns for rollout in group], dtype=rewards.dtype)
-                penalty_frac = penalty_frac + lp.turns_coef * (turns / turns.max().clamp(min=1))
+            turns = torch.tensor([rollout.num_turns for rollout in group], dtype=rewards.dtype)
+            penalty_frac = (lp.coef * completion + lp.context_coef * (total - completion)) / total.max().clamp(
+                min=1
+            ) + lp.turns_coef * (turns / turns.max().clamp(min=1))
             penalty = rewards.mean() * penalty_frac
-            if lp.gate_by_correctness:
-                penalty = penalty * rewards
             shaped_rewards = rewards - penalty
             advantages = shaped_rewards - shaped_rewards.mean()
         for rollout, advantage in zip(group, advantages.tolist(), strict=True):

@@ -217,14 +217,6 @@ def test_linear_turns_term_penalizes_more_turns():
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
 
-def test_linear_gate_by_correctness_spares_incorrect():
-    """With gating the penalty scales by reward, so incorrect rollouts (reward 0) take
-    none — two incorrect rollouts of very different length get the same advantage."""
-    cfg = LinearLengthPenaltyConfig(coef=0.25, context_coef=0.0, turns_coef=0.0, gate_by_correctness=True)
-    advs = _grpo(_make_group(rewards=[1.0, 0.0, 0.0], completion_lengths=[50, 10, 1000]), length_penalty=cfg)
-    assert advs[1] == pytest.approx(advs[2], abs=1e-6)
-
-
 # --------------------------------------------------------------------------
 # assign_advantages: scalar broadcast over the rollout's trainable tokens.
 # --------------------------------------------------------------------------
