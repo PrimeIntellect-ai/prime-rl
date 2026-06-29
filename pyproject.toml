@@ -112,7 +112,6 @@ envs = [
     "reverse-text",
     "reverse-text-v1",
     "rlm-search",
-    "rlm-swe",
     "scaleswe-v1",
     "simpleqa-v1",
     "simpleqa-verified-v1",
@@ -189,7 +188,6 @@ override-dependencies = [
     "transformers==5.6.2",
     "torch>=2.9.0",
     "openenv-core",
-    "verifiers>=0.1.15.dev404",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
@@ -287,7 +285,6 @@ redsearcher-v1 = { path = "deps/research-environments/environments/redsearcher_v
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
 reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editable = true }
 rlm-search = { path = "deps/research-environments/environments/rlm_search", editable = true }
-rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable = true }
 scaleswe-v1 = { path = "deps/research-environments/environments/scaleswe_v1", editable = true }
 simpleqa-v1 = { path = "deps/research-environments/environments/simpleqa_v1", editable = true }
 simpleqa-verified-v1 = { path = "deps/research-environments/environments/simpleqa_verified_v1", editable = true }
