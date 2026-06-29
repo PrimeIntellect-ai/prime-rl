@@ -79,11 +79,11 @@ def _common_metrics(
     for name in sorted({name for r in rollouts for name in r.rewards}):
         out |= _dist(f"{p}/rewards/{name}", [r.rewards[name] for r in rollouts if name in r.rewards])
 
-    # Per-rollout boolean rates; error_rate is structurally 0 on `effective`, so log it on `all` only
+    # Per-rollout boolean rates; has_error is structurally 0 on `effective`, so log it on `all` only
     out[f"{p}/is_truncated/mean"] = _rate([r.is_truncated for r in rollouts])
     out[f"{p}/is_completed/mean"] = _rate([r.is_completed for r in rollouts])
     if subset == "all":
-        out[f"{p}/error_rate"] = _rate([r.has_error for r in rollouts])
+        out[f"{p}/has_error/mean"] = _rate([r.has_error for r in rollouts])
 
     # Stop-condition breakdown: generation_truncated over all rollouts, per-condition rate over the
     # rollouts that recorded a condition

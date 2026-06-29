@@ -82,14 +82,14 @@ def test_eval_reward_logged_as_avg_at_k():
     assert not any(k.startswith("eval/x/effective/reward") for k in out)
 
 
-def test_all_carries_error_rate_effective_does_not():
+def test_all_carries_has_error_effective_does_not():
     pool_all = [mk(), mk(has_error=True), mk(is_filtered=True)]
     out_all = compute_train_metrics(pool_all, prefix="train/agg", subset="all", env_group_size={"env": 3})
-    assert out_all["train/agg/all/error_rate"] == 1 / 3
+    assert out_all["train/agg/all/has_error/mean"] == 1 / 3
 
     effective = [r for r in pool_all if not r.has_error and not r.is_filtered]
     out_eff = compute_train_metrics(effective, prefix="train/agg", subset="effective", env_group_size={"env": 3})
-    assert not any(k.endswith("/error_rate") for k in out_eff)
+    assert not any(k.endswith("/has_error/mean") for k in out_eff)
 
 
 def test_rates_use_mean_suffix():
