@@ -178,8 +178,8 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     assert micro_batch.run_step == 0
 
 
-def test_multipacker_pack_preserves_mm_kwargs_modality_and_run_tagging(tmp_path, monkeypatch):
-    """MultiPacker keeps multimodal and text microbatches aligned across ranks."""
+def test_multipacker_pack_preserves_mm_kwargs_and_run_tagging(tmp_path, monkeypatch):
+    """MultiPacker packs each run separately and preserves multimodal sidecars."""
     from prime_rl.trainer.batch import _is_multimodal_sample
 
     manager, packer, sent = _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size=2, seq_len=5)
@@ -192,9 +192,6 @@ def test_multipacker_pack_preserves_mm_kwargs_modality_and_run_tagging(tmp_path,
     assert sent, "pack() sent nothing"
     grid = sent[-1]
     assert len(grid) == 2
-
-    for step_mbs in zip(*grid):
-        assert len({_is_multimodal_sample(mb) for mb in step_mbs}) == 1
 
     mm_mbs = [mb for rank in grid for mb in rank if _is_multimodal_sample(mb)]
     assert mm_mbs, "no MM microbatches produced"

@@ -550,10 +550,8 @@ def prepare_batch(
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
     Each micro batch is shape [1, seq_len], the number of samples is not fixed per micro batch.
 
-    FSDP requires all ranks to execute the same operations at each step. If one rank
-    processes a multimodal batch (triggering the vision encoder) while another processes
-    a text-only batch, the all-gather will hang. We separate micro batches by modality
-    and distribute them so that at each step index, all ranks see the same modality.
+    VLM models handle text-only samples with a synthetic dummy vision path, so
+    microbatches can be distributed through one generic packing path.
     """
     all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
@@ -566,22 +564,10 @@ def prepare_batch(
     )
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
-    # Separate by modality so each step index has uniform modality across all ranks
-    mm_batches = [b for b in micro_batches if _is_multimodal_sample(b)]
-    text_batches = [b for b in micro_batches if not _is_multimodal_sample(b)]
+    micro_batches = _pad_group_for_distribution(micro_batches, num_train_workers)
 
-    # Pad each group independently so its count is divisible by num_train_workers
-    mm_batches = _pad_group_for_distribution(mm_batches, num_train_workers)
-    text_batches = _pad_group_for_distribution(text_batches, num_train_workers)
-
-    # Alignment check after distribution padding so the dummy batches are covered too
-    for micro_batch in (*mm_batches, *text_batches):
+    # Alignment check after distribution padding so the dummy batches are covered too.
+    for micro_batch in micro_batches:
         _assert_token_arrays_aligned(micro_batch)
 
-    batches_per_gpu: list[list[MicroBatch]] = [[] for _ in range(num_train_workers)]
-    for group in (mm_batches, text_batches):
-        group_batches_per_gpu = _distribute_group(group, num_train_workers, bin_cost)
-        for worker_idx, worker_batches in enumerate(group_batches_per_gpu):
-            batches_per_gpu[worker_idx].extend(worker_batches)
-
-    return batches_per_gpu
+    return _distribute_group(micro_batches, num_train_workers, bin_cost)

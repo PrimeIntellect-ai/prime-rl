@@ -727,8 +727,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     if shard_norm_and_lm_head:
         # This optimization breaks weight tying
         embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
-        # Under CP+VLM the embedding is kept out of FSDP (frozen, ignored above) so
-        # the pre-shard merge can call it standalone — skip sharding it here.
+        # Under CP+VLM the embedding is kept out of FSDP for pre-shard VLM prep.
         if not cp_vlm:
             fully_shard(
                 embed_module,
@@ -752,9 +751,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         mp_policy=mp_policy,
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
-        # Exclude the pre-shard-merge modules kept out of FSDP (vision encoder +
-        # frozen embeddings under CP) so the root unit doesn't re-shard them; they
-        # stay full/replicated for the standalone pre-shard merge calls.
         ignored_params=fsdp_ignored_params or None,
     )
 
@@ -1218,18 +1214,12 @@ def forward(
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
     # for Gemma3). Passed straight through to ``model(**kwargs)`` so
     # the model's HF forward signature is the schema. ``mm_token_type_ids``
-    # is split out because it's prime-rl-computed (from token ids),
-    # not a renderer/processor output.
+    # is split out because it's prime-rl-computed (from token ids).
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     seq_lens: Int[Tensor, "segments"] | None = None,
     seq_lens_are_global: bool = False,
 ) -> PrimeLmOutput:
-    if input_ids is None and inputs_embeds is None:
-        raise ValueError("forward requires either input_ids or inputs_embeds")
-    if inputs_embeds is not None and mm_kwargs:
-        raise ValueError("forward does not support passing both inputs_embeds and mm_kwargs")
-
     # Build kwargs for model forward
     kwargs = {
         "labels": labels,
@@ -1247,9 +1237,6 @@ def forward(
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        # Qwen-style MRoPE models compute 3D multimodal positions from
-        # ``image_grid_thw`` internally; trainer 2D positions are only valid for
-        # non-MRoPE multimodal models.
         if "image_grid_thw" not in mm_kwargs:
             kwargs["position_ids"] = position_ids
         elif seq_lens is not None:
@@ -1282,27 +1269,18 @@ def prepare_vlm_inputs_for_context_parallel(
     mm_token_type_ids: Tensor | None,
     seq_lens: Tensor | None,
 ) -> tuple[Tensor, Tensor]:
-    for candidate in _iter_wrapped_modules(model):
-        method = getattr(candidate, "prepare_vlm_inputs_for_context_parallel", None)
-        if callable(method):
-            return method(
-                input_ids=input_ids,
-                position_ids=position_ids,
-                mm_token_type_ids=mm_token_type_ids,
-                seq_lens=seq_lens,
-                **mm_kwargs,
-            )
+    method = getattr(model, "prepare_vlm_inputs_for_context_parallel", None)
+    # Generic HF VLMs may not implement the pre-shard merge hook.
+    if callable(method):
+        return method(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            mm_token_type_ids=mm_token_type_ids,
+            seq_lens=seq_lens,
+            **mm_kwargs,
+        )
 
     raise NotImplementedError(
         "This VLM model does not implement prepare_vlm_inputs_for_context_parallel; "
         "context parallelism is only supported for models with an explicit pre-shard multimodal merge path."
     )
-
-
-def _iter_wrapped_modules(model: nn.Module):
-    seen: set[int] = set()
-    current = model
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        yield current
-        current = getattr(current, "module", None)

@@ -490,6 +490,45 @@ def test_prepare_batch_packs_multimodal_with_text():
     assert batch.mm_kwargs["image_grid_thw"].shape == [1, 3]
     assert batch.env_names == ["mm-env"] * 3 + ["text-env"] * 2
 
+
+def test_prepare_batch_distributes_mixed_modality_generically():
+    mm_sample = TrainingSample(
+        token_ids=[10, 11, 12],
+        mask=[False, True, True],
+        logprobs=[0.0, -0.1, -0.2],
+        temperatures=[1.0, 1.0, 1.0],
+        advantages=[0.0, 1.0, 1.0],
+        env_name="mm-env",
+        mm_token_type_ids=[0, 1, 0],
+        mm_kwargs={
+            "pixel_values": _encoded(np.array([[1.0, 2.0]], dtype=np.float32)),
+            "image_grid_thw": _encoded(np.array([[1, 2, 2]], dtype=np.int64)),
+        },
+    )
+    text_sample = TrainingSample(
+        token_ids=[20, 21],
+        mask=[False, True],
+        logprobs=[0.0, -0.3],
+        temperatures=[0.7, 0.7],
+        advantages=[0.0, 1.0],
+        env_name="text-env",
+    )
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[mm_sample, text_sample],
+        seq_len=3,
+        num_train_workers=2,
+        idxs=[0, 0],
+        num_loras=1,
+        bin_cost=build_bin_cost(None),
+    )
+
+    batches = _flatten_batches(batches_per_gpu)
+    assert len(batches) == 2
+    assert sorted(batch.seq_lens for batch in batches) == [[2], [3]]
+    assert sorted(batch.mm_kwargs is not None for batch in batches) == [False, True]
+
+
 def test_prepare_sample_none_routed_experts():
     """When routed_experts is None, micro_batch.routed_experts is None."""
     sample = TrainingSample(

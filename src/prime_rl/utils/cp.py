@@ -151,11 +151,6 @@ def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int, seq_dim: int
         The shard of the tensor for the current rank.
     """
 
-    if seq_dim == 1:
-        assert t.shape[0] == 1, "For CP, tensor must have batch dimension of 1"
-    elif seq_dim == 2:
-        assert t.ndim == 3 and t.shape[1] == 1, "3D CP tensors must have shape [*, 1, seq]"
-
     if t.shape[seq_dim] % cp_world_size != 0:
         raise ValueError(
             f"CP requires sequence dimension {seq_dim} to be divisible by cp size: "
@@ -168,6 +163,8 @@ def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int, seq_dim: int
 
 
 def shard_position_ids_for_cp(position_ids: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Tensor:
+    # Qwen MRoPE positions are [3, batch, seq]; generic 3D tensors like
+    # inputs_embeds are [batch, seq, hidden] and should still shard on dim 1.
     if position_ids.ndim == 3:
         return shard_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size, seq_dim=2)
     return shard_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
@@ -246,6 +243,8 @@ def setup_cp_attention_params(
     seq_lens: torch.Tensor | None = None,
 ) -> None:
     if position_ids.ndim == 3:
+        # Qwen MRoPE positions are [3, batch, seq], so packed sample
+        # boundaries come from seq_lens instead of 2D position-id resets.
         total_tokens = position_ids.shape[2]
         if seq_lens is None:
             cu_seqlens = torch.tensor([0, total_tokens], dtype=torch.int32, device=position_ids.device)

@@ -217,6 +217,36 @@ def test_vlm_forward():
     assert out_mm["logits"].shape == (1, input_ids_mm.shape[1], vocab)
 
 
+def test_vlm_context_parallel_text_only_prep_runs_dummy_vision(monkeypatch):
+    """Text-only VLM CP prep still enters the vision path with a zero-contribution dummy."""
+    config = _tiny_vlm_config()
+    with torch.device("cuda"), default_dtype(torch.float32):
+        model = Qwen3_5MoeForCausalLM(config)
+    inject_prime_lm_head(model)
+
+    calls = 0
+    original_forward = model.model.visual.forward
+
+    def wrapped_forward(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_forward(*args, **kwargs)
+
+    monkeypatch.setattr(model.model.visual, "forward", wrapped_forward)
+
+    input_ids = torch.randint(0, 200, (1, 20), device="cuda")
+    seq_lens = torch.tensor([20], device="cuda")
+
+    inputs_embeds, position_ids = model.prepare_vlm_inputs_for_context_parallel(
+        input_ids=input_ids,
+        seq_lens=seq_lens,
+    )
+
+    assert calls == 1
+    torch.testing.assert_close(inputs_embeds, model.model.language_model.embed_tokens(input_ids))
+    torch.testing.assert_close(position_ids, torch.arange(20, device="cuda").unsqueeze(0))
+
+
 def test_vlm_backward():
     """Gradients flow through both vision scatter and text model."""
     config = _tiny_vlm_config()

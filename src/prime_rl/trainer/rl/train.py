@@ -28,7 +28,6 @@ from prime_rl.utils.cp import (
     shard_position_ids_for_cp,
 )
 from prime_rl.utils.logger import format_time, setup_logger
-from prime_rl.utils.vlm import supports_packed_multimodal_training, validate_multi_modal_pack
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
@@ -155,10 +154,6 @@ def train(config: TrainerConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
-
-    if config.model.vlm is not None or supports_packed_multimodal_training(model):
-        validate_multi_modal_pack(model, attn_impl=config.model.attn)
-        logger.info("Multimodal packing enabled")
 
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Setting up loss function ({config.loss})")
@@ -438,13 +433,11 @@ def train(config: TrainerConfig):
             forward_seq_lens = seq_lens
             forward_seq_lens_are_global = False
             if cp_enabled:
-                if mm_kwargs is not None:
+                if config.model.vlm is not None:
                     if config.model.cp_style != "ulysses":
                         raise NotImplementedError(
-                            "Context parallelism with VLM/multimodal training is only supported with cp_style='ulysses'"
+                            "Context parallelism with VLM training is only supported with cp_style='ulysses'"
                         )
-                    if mm_token_type_ids is None:
-                        raise ValueError("VLM context parallelism requires mm_token_type_ids")
                     if seq_lens is None:
                         raise ValueError("VLM context parallelism requires seq_lens to preserve packed boundaries")
 
@@ -452,7 +445,7 @@ def train(config: TrainerConfig):
                         model,
                         input_ids=input_ids,
                         position_ids=None,
-                        mm_kwargs=mm_kwargs,
+                        mm_kwargs=mm_kwargs or {},
                         mm_token_type_ids=mm_token_type_ids,
                         seq_lens=seq_lens,
                     )
@@ -473,6 +466,7 @@ def train(config: TrainerConfig):
                         cp_rank=cp_rank,
                         cp_world_size=cp_size,
                     )
+                    # VLM tensors were already merged into inputs_embeds above.
                     forward_mm_kwargs = None
                     forward_seq_lens_are_global = True
                 else:

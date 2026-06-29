@@ -255,10 +255,11 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         if cp_group is None or build_cp_context is None:
             return None
         global_seq_len = local_seq_len * self.cp_world_size
+        # VLM CP passes global seq_lens; text CP may pass local cu_seqlens
+        # recomputed from already-sharded position_ids.
         if cu_seqlens is not None and int(cu_seqlens[-1].item()) == global_seq_len:
             global_cu_seqlens = cu_seqlens.to(device=device, dtype=torch.int32)
         else:
-            # Older text CP paths only pass local cu_seqlens into the model.
             global_cu_seqlens = torch.tensor([0, global_seq_len], dtype=torch.int32, device=device)
         return build_cp_context(
             cu_seqlens=global_cu_seqlens,
@@ -1019,6 +1020,8 @@ class Qwen3_5MoeVLMModel(nn.Module):
                 )
             image_mask = image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+        else:
+            inputs_embeds = inputs_embeds + image_embeds.sum() * 0.0
 
         if position_ids is None:
             if image_grid_thw is not None:
@@ -1104,8 +1107,6 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
         self._is_vlm = hasattr(config, "vision_config")
-        self.supports_packed_multimodal_training = self._is_vlm
-        self.supports_ulysses_vlm_cp_training = self._is_vlm
 
         if self._is_vlm:
             self.model = Qwen3_5MoeVLMModel(config)
@@ -1145,8 +1146,6 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         mm_token_type_ids: torch.LongTensor | None = None,
         seq_lens: torch.LongTensor | None = None,
     ) -> tuple[torch.FloatTensor, torch.LongTensor]:
-        if not self._is_vlm:
-            raise ValueError("prepare_vlm_inputs_for_context_parallel is only available for Qwen3.5 VLM models")
         return self.model.prepare_inputs_embeds_and_position_ids(
             input_ids=input_ids,
             position_ids=position_ids,
