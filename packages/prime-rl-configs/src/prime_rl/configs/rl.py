@@ -16,6 +16,7 @@ from prime_rl.configs.orchestrator import (
     OrchestratorConfig,
 )
 from prime_rl.configs.shared import (
+    EnvVars,
     MultimodalConfig,
     SlurmConfig,
     VLMConfig,
@@ -188,6 +189,9 @@ class RLConfig(BaseConfig):
 
     inference: InferenceConfig | None = None
     """Inference server configuration. If None, the rl entrypoint will not start an inference server (useful for elastic inference pools or manually started servers)."""
+
+    env_vars: EnvVars = {}
+    """Extra environment variables for every launched RL component. Component-specific env_vars override these."""
 
     output_dir: Path = Path("outputs")
     """Output directory. Should be unique per experiment."""

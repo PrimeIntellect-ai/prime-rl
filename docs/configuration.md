@@ -17,7 +17,8 @@ Every `prime-rl` entrypoint uses [`pydantic-config`](https://github.com/PrimeInt
   - [Optional Sub-Configs](#optional-sub-configs)
   - [None](#none)
   - [Discriminated Unions](#discriminated-unions)
-  - [Environments (`[[orchestrator.train.env]]`)](#environments-orchestratortrainenv)
+  - [Environments](#environments-orchestratortrainenv)
+  - [Environment Variables](#environment-variables)
 - [Examples](#examples)
 
 ## Sources and Precedence
@@ -164,6 +165,39 @@ args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
 `args` is forwarded verbatim to the environment's `load_environment(**args)`.
 
 The same `id` can appear multiple times across train and eval (or with different `args`) — useful for evaluating on a held-out split of the env you're training on, or comparing two configurations of the same env side by side. When `id` is reused, set a distinct `name` on each entry; `name` defaults to `id` and must be unique across all envs in the same group.
+
+### Environment Variables
+
+OS environment variables exported into launched component process(es). In `rl` configs, top-level `[env_vars]` applies to trainer, inference, and orchestrator:
+
+```toml
+[env_vars]
+HF_HUB_OFFLINE = "1"
+TOKENIZERS_PARALLELISM = "false"
+```
+
+Component-specific tables layer on top:
+
+```toml
+[trainer.env_vars]
+NCCL_DEBUG = "INFO"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:False"
+
+[inference.env_vars]
+VLLM_USE_DEEP_GEMM = "1"
+
+[orchestrator.env_vars]
+PI_USAGE_BASE_URL = "https://..."
+```
+
+The `rl` launcher applies these the same way in both single-node and multi-node (SLURM) runs. Precedence, low to high:
+
+1. The launcher's own defaults — **your `env_vars` override these**.
+2. Your top-level `[env_vars]`.
+3. Your `[component.env_vars]`.
+4. Orchestration-critical vars the launcher always sets last — `CUDA_VISIBLE_DEVICES` (GPU partitioning), `WANDB_SHARED_*` (the single shared W&B run), and `VF_RENDERER_IMAGE_OFFLOAD_DIR` (raw multimodal image asset path) — **these cannot be overridden** from `env_vars`.
+
+For standalone `sft` and `inference` configs, `[env_vars]` applies to that entrypoint's process(es). For disaggregated P/D inference, the role-specific [`deployment.{prefill,decode}_env_vars`](inference.md) layer on top of any shared inference env vars.
 
 ## Examples
 
