@@ -1113,18 +1113,6 @@ wheels = [
 ]
 
 [[package]]
-name = "fastokens"
-version = "0.2.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/14/8e/7e88ec1d48db5a6e8d8d44318ce285e38c04b81508bdc2a60e17045a116f/fastokens-0.2.0.tar.gz", hash = "sha256:ef0e175de5c8cb1b616b3210d75dce1fab78e35fc02f77f03f7847d4678be686", size = 675822, upload-time = "2026-05-17T10:32:55.642Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b4/54/e0e4318ee1ad0b5196df72cf93615bba0b81f7869d659a44ccc475969151/fastokens-0.2.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:160253f8d30747cf66e7ed895c513e16f7b173dd9e644fa641e2eecbd43a616a", size = 3303534, upload-time = "2026-05-17T10:32:37.462Z" },
-    { url = "https://files.pythonhosted.org/packages/64/44/bfff90e4b1a43c17edf7305dafbd56dc992bbe832cc08da78f1f50104c2d/fastokens-0.2.0-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:b61b9fe5b41e0bb36ad86e7551dc53293c9833909ef07b1cdbaa2055b06c3b3e", size = 3254096, upload-time = "2026-05-17T10:32:28.489Z" },
-    { url = "https://files.pythonhosted.org/packages/05/bf/1cad7f0e8d03f5f5b2b417cda8859e4d968d2eebdca0cd336b23d7dbbdbb/fastokens-0.2.0-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:01b9bdba818d7b2c67d57d9917faf7a1dad32ece0734440130de94ad768b819f", size = 3336689, upload-time = "2026-05-17T10:32:46.21Z" },
-    { url = "https://files.pythonhosted.org/packages/97/d7/f5fb2564e16b1f5733e05c41b090f95a3fe767f6b888ba7d864193bc5447/fastokens-0.2.0-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:d068bc50082ad67d5d542847075f1f7b8d10f703274e56e241312f18b4d9e772", size = 3598064, upload-time = "2026-05-17T10:32:54.109Z" },
-]
-
-[[package]]
 name = "fastsafetensors"
 version = "0.3.2"
 source = { registry = "https://pypi.org/simple" }
@@ -4359,7 +4347,6 @@ wheels = [
 name = "renderers"
 source = { editable = "deps/renderers" }
 dependencies = [
-    { name = "fastokens", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "jinja2", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "openai", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4371,7 +4358,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastokens", specifier = ">=0.2.0" },
     { name = "jinja2" },
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
