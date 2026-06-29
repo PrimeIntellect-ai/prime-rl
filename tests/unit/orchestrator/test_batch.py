@@ -415,7 +415,6 @@ def _mm_refs() -> MMRefs:
                 "image": [
                     {
                         "kind": "prime_raw_mm_item",
-                        "version": 1,
                         "modality": "image",
                         "family": "qwen_vl",
                         "layout_fingerprint": "f" * 32,

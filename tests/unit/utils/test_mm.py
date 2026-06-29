@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import torch
 
 from prime_rl.multimodal.adapters.base import ForwardPolicy, MaterializedMM
-from prime_rl.multimodal.schema import RAW_MM_ITEM_KIND, RAW_MM_ITEM_VERSION
+from prime_rl.multimodal.schema import RAW_MM_ITEM_KIND
 from prime_rl.trainer.rl.data import DataLoader
 from prime_rl.transport.types import MicroBatch, MMRefs
 from prime_rl.utils.mm import build_mm_refs
@@ -26,7 +26,6 @@ class _MissingMaterializer:
 def _qwen_item(grid, uri: str = "file:///tmp/missing-image.png"):
     return {
         "kind": RAW_MM_ITEM_KIND,
-        "version": RAW_MM_ITEM_VERSION,
         "modality": "image",
         "family": "qwen_vl",
         "layout_fingerprint": "f" * 32,

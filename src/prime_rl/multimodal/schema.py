@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from renderers.mm_store import RAW_MM_ITEM_KIND, RAW_MM_ITEM_VERSION
+from renderers.mm_store import RAW_MM_ITEM_KIND
 
 
 @dataclass(frozen=True)
@@ -48,8 +48,6 @@ def _payload(value: Mapping[str, Any]) -> dict[str, Any]:
 def _validate_envelope(value: Mapping[str, Any]) -> None:
     if value.get("kind") != RAW_MM_ITEM_KIND:
         raise ValueError("raw multimodal descriptor is missing the common envelope kind")
-    if value.get("version") != RAW_MM_ITEM_VERSION:
-        raise ValueError(f"unsupported raw multimodal descriptor version: {value.get('version')!r}")
 
 
 def parse_raw_mm_item(value: Any) -> RawMMItem:
