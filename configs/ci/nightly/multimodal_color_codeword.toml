@@ -25,6 +25,8 @@ name = "color-codeword"
 taskset = { id = "color-codeword-v1", images_per_turn = 1, num_examples = 1000 }
 harness = { id = "default", runtime = { type = "subprocess" } }
 
+[trainer]
+
 [trainer.model]
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"

@@ -16,6 +16,8 @@ keep_last = 1
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
+[trainer]
+
 [trainer.model]
 cp = 2
 

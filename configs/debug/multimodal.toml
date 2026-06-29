@@ -47,6 +47,8 @@ harness = { id = "default", runtime = { type = "subprocess" } }
 # Default renderer (AutoRendererConfig) resolves Qwen3-VL-4B-Instruct from
 # MODEL_RENDERER_MAP to Qwen3VLRenderer at runtime; no explicit name needed.
 
+[trainer]
+
 [trainer.model]
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
