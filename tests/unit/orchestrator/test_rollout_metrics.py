@@ -102,7 +102,7 @@ def test_solve_rates_per_env_group_size():
     out = compute_rollout_metrics(rollouts, prefix="train/agg", subset="all", env_group_size={"a": 2, "b": 4})
     assert out["train/agg/all/solve_all"] == 0.5
     assert out["train/agg/all/solve_none"] == 0.5
-    assert out["train/agg/all/effective_batch_size"] == 0.0
+    assert out["train/agg/all/solved_some"] == 0.0
 
 
 def test_stop_condition_breakdown():
