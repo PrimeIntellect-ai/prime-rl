@@ -128,7 +128,7 @@ class TrainBatchMetrics:
     """Per-batch aggregates from ``TrainSink.process_batch``. ``arrivals_by_env`` /
     ``errors_by_env`` count rollouts at the sink; token totals feed ``progress/*`` and the
     usage reporter. Distributional rollout metrics are computed separately by
-    ``compute_train_metrics`` over ``TrainBatch.all_rollouts``."""
+    ``compute_train_metrics`` over ``TrainBatch.rollouts`` / ``.effective``."""
 
     n_trainable: int
     num_prefill_tokens: int
@@ -140,25 +140,33 @@ class TrainBatchMetrics:
 
 @dataclass
 class TrainBatch:
-    """``samples`` is the trainer-bound payload (post-filter survivors); ``rollouts`` is the
-    shipped cohort kept for orchestrator-side I/O (disk, sample tables). ``all_rollouts`` is
-    the full arrival window since the last ship — errored and filtered included — the ``all``
-    set for the metric matrix; its non-errored, non-filtered subset is ``effective``."""
+    """``rollouts`` is the full arrival window since the last ship (errored + filtered included);
+    ``effective`` is the clean subset ≈ what actually trained. ``samples`` is the trainer-bound
+    payload (the shipped cohort's post-filter survivors)."""
 
     rollouts: list[Rollout]
     samples: list[TrainingSample]
     metrics: TrainBatchMetrics
-    all_rollouts: list[Rollout]
+
+    @property
+    def effective(self) -> list[Rollout]:
+        """Non-errored, non-filtered rollouts — a view referencing the same traces, not copies."""
+        return [r for r in self.rollouts if not r.has_error and not r.is_filtered]
 
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch. ``rollouts`` is the full returned cohort (errored included) — the
-    ``all`` set for the metric matrix."""
+    """One env's eval epoch. ``rollouts`` is the full returned cohort (errored included);
+    ``effective`` is the non-errored subset."""
 
     env_name: str
     step: int
     rollouts: list[Rollout]
+
+    @property
+    def effective(self) -> list[Rollout]:
+        """Non-errored, non-filtered rollouts — a view referencing the same traces, not copies."""
+        return [r for r in self.rollouts if not r.has_error and not r.is_filtered]
 
 
 class VersionObserver(Protocol):

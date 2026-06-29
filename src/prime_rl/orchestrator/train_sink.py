@@ -282,13 +282,14 @@ class TrainSink:
             arrivals_by_env=dict(self.arrivals_by_env),
             errors_by_env=dict(self.errors_by_env),
         )
-        # ``all_rollouts`` is the whole arrival window (errored + filtered + survivors); the
-        # shipped ``cohort`` is its trainable slice. Hand both to the orchestrator and reset.
+        # ``rollouts`` is the whole arrival window (errored + filtered + survivors); ``samples``
+        # is the shipped cohort's trainable payload. ``TrainBatch.effective`` derives the clean
+        # subset on demand. Hand off and reset the window.
         all_rollouts = self.arrivals_window
         self.arrivals_window = []
         self.arrivals_by_env.clear()
         self.errors_by_env.clear()
-        return TrainBatch(rollouts=cohort, samples=samples, metrics=metrics, all_rollouts=all_rollouts)
+        return TrainBatch(rollouts=all_rollouts, samples=samples, metrics=metrics)
 
     def reset_pre_filter_stats(self) -> None:
         self.pre_filter_seen = 0

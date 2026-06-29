@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from prime_rl.orchestrator.eval_utils import compute_pass_metrics
 from prime_rl.orchestrator.metrics import compute_eval_metrics, compute_train_metrics
+from prime_rl.orchestrator.types import EvalBatch, TrainBatch, TrainBatchMetrics
 
 
 def mk(
@@ -56,6 +57,17 @@ def mk(
             scoring=SimpleNamespace(duration=scoring),
         ),
     )
+
+
+def test_batch_effective_filters_errored_and_filtered():
+    rollouts = [mk(), mk(has_error=True), mk(is_filtered=True), mk()]
+    tb = TrainBatch(rollouts=rollouts, samples=[], metrics=TrainBatchMetrics(0, 0, 0, 0))
+    assert len(tb.rollouts) == 4  # rollouts holds everything generated
+    assert len(tb.effective) == 2  # the view drops errored + filtered
+    assert all(not r.has_error and not r.is_filtered for r in tb.effective)
+    # effective is a view of references, not copies
+    assert all(e in tb.rollouts for e in tb.effective)
+    assert EvalBatch(env_name="x", step=0, rollouts=rollouts).effective == tb.effective
 
 
 def test_empty_returns_empty():

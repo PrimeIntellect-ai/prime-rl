@@ -496,7 +496,7 @@ class Orchestrator:
         if batch.metrics.n_trainable == 0:
             self.consecutive_empty_batches += 1
             get_logger().warning(
-                f"Step {step}: post-batch filters dropped all {len(batch.rollouts)} rollouts "
+                f"Step {step}: no trainable rollouts (0 of {len(batch.rollouts)} generated survived errors + filters) "
                 f"(consecutive empty batches: {self.consecutive_empty_batches}/{MAX_CONSECUTIVE_EMPTY_BATCHES})"
             )
             if self.consecutive_empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
@@ -508,7 +508,7 @@ class Orchestrator:
         self.consecutive_empty_batches = 0
         if batch.metrics.n_trainable / len(batch.rollouts) <= 0.1:
             get_logger().warning(
-                f"Only {batch.metrics.n_trainable}/{len(batch.rollouts)} rollouts in the batch are trainable "
+                f"Only {batch.metrics.n_trainable}/{len(batch.rollouts)} generated rollouts are trainable "
                 f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
@@ -523,11 +523,11 @@ class Orchestrator:
         self.update_dispatch_gate()
         trim_process_memory()
 
-        # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``all`` is the full
-        # arrival window (errored + filtered included); ``effective`` is its non-errored,
-        # non-filtered subset (≈ what actually trained).
-        all_rollouts = batch.all_rollouts
-        effective = [r for r in all_rollouts if not r.has_error and not r.is_filtered]
+        # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``batch.rollouts`` is the
+        # full arrival window (errored + filtered included); ``batch.effective`` is the clean
+        # subset (≈ what actually trained).
+        all_rollouts = batch.rollouts
+        effective = batch.effective
         env_group_size = {env.resolved_name: env.group_size for env in config.train.env}
         metrics: dict[str, float] = {}
         for subset, pool in (("all", all_rollouts), ("effective", effective)):
@@ -568,11 +568,11 @@ class Orchestrator:
             for name, count in self.train_sink.pre_filter_dropped_by_name.items():
                 metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
         self.monitor.log(metrics, step=step)
-        self.monitor.log_samples(batch.rollouts, step=step)
+        self.monitor.log_samples(effective, step=step)
         self.monitor.log_distributions(
             distributions={
-                "rewards": [r.reward for r in batch.rollouts],
-                "advantages": [a for r in batch.rollouts if (a := r.scalar_advantage()) is not None],
+                "rewards": [r.reward for r in effective],
+                "advantages": [a for r in effective if (a := r.scalar_advantage()) is not None],
             },
             step=step,
         )
@@ -686,25 +686,27 @@ class Orchestrator:
         return body, payload
 
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
-        """Per-step ``Step …`` success line. Multi-env runs append an
-        indented ``╰─`` line per env. ``Error`` is relative to arrivals at
-        the sink (errored rollouts may have been group-dropped before
-        reaching ``batch.rollouts``)."""
+        """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per
+        env. ``Error`` is the sink-level rate (errored arrivals / total arrivals); the quality
+        metrics are over ``batch.effective`` (the clean, trained-on subset), while ``Trainable``
+        is relative to all generated rollouts."""
         n_arrivals_total = sum(batch.metrics.arrivals_by_env.values())
         n_errors_total = sum(batch.metrics.errors_by_env.values())
-        n_survivors = len(batch.rollouts)
+        effective = batch.effective
+        n_generated = len(batch.rollouts)
+        n_effective = max(len(effective), 1)
         n_trainable = batch.metrics.n_trainable
         error_rate = (n_errors_total / n_arrivals_total) if n_arrivals_total else 0.0
-        trainable_rate = (n_trainable / n_survivors) if n_survivors else 0.0
-        reward_mean = sum(r.reward for r in batch.rollouts) / max(n_survivors, 1)
-        max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
-        turns_mean = sum(r.num_turns for r in batch.rollouts) / max(n_survivors, 1)
-        branches_mean = sum(r.num_branches for r in batch.rollouts) / max(n_survivors, 1)
-        truncation_rate = sum(1 for r in batch.rollouts if r.is_truncated) / max(n_survivors, 1)
+        trainable_rate = (n_trainable / n_generated) if n_generated else 0.0
+        reward_mean = sum(r.reward for r in effective) / n_effective
+        max_off_policy = max((r.off_policy_steps for r in effective), default=0)
+        turns_mean = sum(r.num_turns for r in effective) / n_effective
+        branches_mean = sum(r.num_branches for r in effective) / n_effective
+        truncation_rate = sum(1 for r in effective if r.is_truncated) / n_effective
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
-            f"Trainable {n_trainable}/{n_survivors} ({trainable_rate:.1%}) | "
+            f"Trainable {n_trainable}/{n_generated} ({trainable_rate:.1%}) | "
             f"Turns {turns_mean:.1f} | Branches {branches_mean:.1f} | Max Off-Policy {max_off_policy} | "
             f"Error {error_rate:.1%} | Truncation {truncation_rate:.1%}"
         )
@@ -712,11 +714,11 @@ class Orchestrator:
             get_logger().success(head)
             return
 
-        env_names = sorted(set(batch.metrics.arrivals_by_env) | {r.env_name for r in batch.rollouts})
+        env_names = sorted(set(batch.metrics.arrivals_by_env) | {r.env_name for r in effective})
         name_width = max(len(n) for n in env_names) if env_names else 0
         lines = [head]
         for env_name in env_names:
-            env_rollouts = [r for r in batch.rollouts if r.env_name == env_name]
+            env_rollouts = [r for r in effective if r.env_name == env_name]
             n_env_arrivals = batch.metrics.arrivals_by_env.get(env_name, 0)
             n_env_errors = batch.metrics.errors_by_env.get(env_name, 0)
             ratio = (n_env_arrivals / n_arrivals_total) if n_arrivals_total else 0.0
@@ -758,7 +760,7 @@ class Orchestrator:
         # ``effective`` = non-errored; pass@k / pass^k only over the effective set.
         assert self.eval_envs is not None
         rollouts = batch.rollouts
-        effective = [r for r in rollouts if not r.has_error]
+        effective = batch.effective
         group_size = self.eval_envs.get(batch.env_name).config.group_size
         metrics: dict[str, float] = {}
         for subset, pool in (("all", rollouts), ("effective", effective)):
