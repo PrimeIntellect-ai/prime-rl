@@ -84,7 +84,7 @@ max_inflight_rollouts = 512
 
 [orchestrator.renderer]
 name = "glm-4.5"
-preserve_all_thinking = true
+thinking_retention = "all"
 
 [[orchestrator.train.env]]
 name = "scaleswe"
