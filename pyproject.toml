@@ -43,6 +43,7 @@ dependencies = [
     "orjson>=3.10",
     "pandas>=2.0",
     "msgspec>=0.18",
+    "torchao>=0.17.0",
 ]
 
 [project.scripts]
