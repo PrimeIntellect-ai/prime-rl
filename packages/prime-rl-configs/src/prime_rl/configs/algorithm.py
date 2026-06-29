@@ -91,20 +91,6 @@ class SamplingConfig(BaseConfig):
 # ---------------------------------------------------------------------------
 
 
-class TokensLengthPenaltyConfig(BaseConfig):
-    type: Literal["tokens"] = "tokens"
-
-    completion_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on model completion tokens. Finite and non-negative."""
-
-    tool_response_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on tool-response tokens (read from the rollout's ``*_total_tool_response_tokens`` harness metric; 0 if absent). Finite and non-negative."""
-
-
-class TurnsLengthPenaltyConfig(BaseConfig):
-    type: Literal["turns"] = "turns"
-
-
 class LinearLengthPenaltyConfig(BaseConfig):
     """Linear ``pass_rate``-scaled penalty subtracted from each reward before the GRPO baseline — the sum of three terms (completion tokens, non-completion tokens, turns), each normalized by the group's own max and disabled by setting its coefficient to 0."""
 
@@ -123,10 +109,7 @@ class LinearLengthPenaltyConfig(BaseConfig):
     """When True, scale each rollout's penalty by its reward (``penalty * reward``), so correct rollouts (``reward == 1``) are penalized and incorrect ones (``reward == 0``) are not. When False, every rollout is penalized equally."""
 
 
-LengthPenaltyConfig: TypeAlias = Annotated[
-    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig | LinearLengthPenaltyConfig,
-    Field(discriminator="type"),
-]
+LengthPenaltyConfig: TypeAlias = LinearLengthPenaltyConfig
 
 
 class EchoRoleConfig(BaseConfig):

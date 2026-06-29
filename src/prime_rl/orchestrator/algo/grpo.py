@@ -4,10 +4,8 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, TokensLengthPenaltyConfig
-from prime_rl.orchestrator.algo.advantage import efficiency_shaping
+from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.utils import get_tool_response_len
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
@@ -28,17 +26,7 @@ class GRPOAlgorithm(Algorithm):
         lp = self.length_penalty
         if lp is None:
             advantages = rewards - rewards.mean()
-        elif isinstance(lp, TokensLengthPenaltyConfig):
-            costs = torch.tensor(
-                [
-                    lp.completion_weight * rollout.completion_len
-                    + lp.tool_response_weight * get_tool_response_len(rollout)
-                    for rollout in group
-                ],
-                dtype=rewards.dtype,
-            )
-            advantages = efficiency_shaping(rewards, costs)
-        elif isinstance(lp, LinearLengthPenaltyConfig):
+        else:
             # Linear pass_rate-scaled penalty subtracted from each reward before the baseline:
             # coef * completion + context_coef * (total - completion) over the group's longest
             # sequence, plus turns_coef * turns over the group's most turns.
@@ -53,8 +41,5 @@ class GRPOAlgorithm(Algorithm):
                 penalty = penalty * rewards
             shaped_rewards = rewards - penalty
             advantages = shaped_rewards - shaped_rewards.mean()
-        else:  # TurnsLengthPenaltyConfig
-            costs = torch.tensor([rollout.num_turns for rollout in group], dtype=rewards.dtype)
-            advantages = efficiency_shaping(rewards, costs)
         for rollout, advantage in zip(group, advantages.tolist(), strict=True):
             rollout.assign_advantages(advantage)
