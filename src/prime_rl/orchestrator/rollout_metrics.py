@@ -23,9 +23,9 @@ Subset = Literal["all", "effective"]
 
 # Distributional metrics: (name, getter). Each emits mean/max/min over the rollout list.
 _DIST_SPECS: list[tuple[str, Callable[["Rollout"], float]]] = [
-    ("seq_len", lambda r: r.num_total_tokens),
-    ("prompt_len", lambda r: r.num_input_tokens),
-    ("completion_len", lambda r: r.num_output_tokens),
+    ("num_total_tokens", lambda r: r.num_total_tokens),
+    ("num_input_tokens", lambda r: r.num_input_tokens),
+    ("num_output_tokens", lambda r: r.num_output_tokens),
     ("num_turns", lambda r: r.num_turns),
     ("num_branches", lambda r: r.num_branches),
     ("reward", lambda r: r.reward),
@@ -87,7 +87,6 @@ def compute_rollout_metrics(
 
     # Per-rollout boolean rates
     out[f"{p}/is_truncated/mean"] = _rate([r.is_truncated for r in rollouts])
-    out[f"{p}/no_response/mean"] = _rate([not r.has_response for r in rollouts])
     # error_rate is structurally 0 on `effective` (it excludes errored) — surface it on `all` only
     if subset == "all":
         out[f"{p}/error_rate"] = _rate([r.has_error for r in rollouts])
@@ -114,9 +113,10 @@ def compute_rollout_metrics(
     out[f"{p}/solve_all"] = solve_all / n_groups
     out[f"{p}/effective_batch_size"] = 1 - (solve_none + solve_all) / n_groups
 
-    # Train-only: filter-pipeline rates (eval has no filters)
+    # Train-only: the filtered-out rate (a top-level rollout metric) plus per-filter detection
+    # rates under filters/ (eval has no filter pipeline, so these are gated off there).
     if include_filters:
-        out[f"{p}/filters/is_filtered/mean"] = _rate([r.is_filtered for r in rollouts])
+        out[f"{p}/is_filtered/mean"] = _rate([r.is_filtered for r in rollouts])
         for name in sorted({name for r in rollouts for name in r.filter_results}):
             out[f"{p}/filters/{name}/mean"] = _rate([r.filter_results.get(name, False) for r in rollouts])
 

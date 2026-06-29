@@ -59,11 +59,11 @@ def test_key_prefixes_and_flat_stats():
     out = compute_rollout_metrics(rollouts, prefix="train/agg", subset="all", env_group_size={"env": 2})
     assert out["train/agg/all/reward/mean"] == 0.5
     # max/min are flat over rollouts (not over per-group means)
-    assert out["train/agg/all/seq_len/mean"] == 15.0
-    assert out["train/agg/all/seq_len/max"] == 20.0
-    assert out["train/agg/all/seq_len/min"] == 10.0
-    assert out["train/agg/all/prompt_len/mean"] == 4.0
-    assert out["train/agg/all/completion_len/mean"] == 6.0
+    assert out["train/agg/all/num_total_tokens/mean"] == 15.0
+    assert out["train/agg/all/num_total_tokens/max"] == 20.0
+    assert out["train/agg/all/num_total_tokens/min"] == 10.0
+    assert out["train/agg/all/num_input_tokens/mean"] == 4.0
+    assert out["train/agg/all/num_output_tokens/mean"] == 6.0
 
 
 def test_all_carries_error_rate_effective_does_not():
@@ -77,10 +77,10 @@ def test_all_carries_error_rate_effective_does_not():
 
 
 def test_rates_use_mean_suffix():
-    rollouts = [mk(is_truncated=True, has_response=False), mk(is_truncated=False, has_response=True)]
+    rollouts = [mk(is_truncated=True), mk(is_truncated=False)]
     out = compute_rollout_metrics(rollouts, prefix="eval/x", subset="all", env_group_size={"env": 2})
     assert out["eval/x/all/is_truncated/mean"] == 0.5
-    assert out["eval/x/all/no_response/mean"] == 0.5
+    assert not any("no_response" in k for k in out)
 
 
 def test_solve_rates_per_env_group_size():
@@ -122,12 +122,14 @@ def test_custom_metrics_averaged_over_reporters():
 def test_filters_only_when_included():
     rollouts = [mk(is_filtered=True, filter_results={"gibberish": True}), mk(filter_results={"gibberish": False})]
     without = compute_rollout_metrics(rollouts, prefix="train/agg", subset="all", env_group_size={"env": 2})
+    assert "train/agg/all/is_filtered/mean" not in without
     assert not any("/filters/" in k for k in without)
 
     with_filters = compute_rollout_metrics(
         rollouts, prefix="train/agg", subset="all", env_group_size={"env": 2}, include_filters=True
     )
-    assert with_filters["train/agg/all/filters/is_filtered/mean"] == 0.5
+    # is_filtered is a top-level rollout metric; per-filter detection stays under filters/
+    assert with_filters["train/agg/all/is_filtered/mean"] == 0.5
     assert with_filters["train/agg/all/filters/gibberish/mean"] == 0.5
 
 
