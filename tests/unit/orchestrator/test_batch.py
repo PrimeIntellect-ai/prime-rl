@@ -419,7 +419,7 @@ def _mm_refs() -> MMRefs:
                         "modality": "image",
                         "family": "qwen_vl",
                         "layout_fingerprint": "f" * 32,
-                        "raw_image_id": "image.png",
+                        "raw_image_uri": "file:///tmp/image.png",
                         "payload": {"image_grid_thw": [[1, 1, 1]]},
                     }
                 ]

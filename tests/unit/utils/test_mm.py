@@ -23,14 +23,14 @@ class _MissingMaterializer:
         )
 
 
-def _qwen_item(grid):
+def _qwen_item(grid, uri: str = "file:///tmp/missing-image.png"):
     return {
         "kind": RAW_MM_ITEM_KIND,
         "version": RAW_MM_ITEM_VERSION,
         "modality": "image",
         "family": "qwen_vl",
         "layout_fingerprint": "f" * 32,
-        "raw_image_id": "image.png",
+        "raw_image_uri": uri,
         "payload": {"image_grid_thw": grid},
     }
 
@@ -38,7 +38,7 @@ def _qwen_item(grid):
 def _refs(uri: str = "file:///tmp/missing-image.png") -> MMRefs:
     return MMRefs(
         descriptor={
-            "mm_items": {"image": [_qwen_item([[1, 1, 1]])]},
+            "mm_items": {"image": [_qwen_item([[1, 1, 1]], uri)]},
             "mm_hashes": {"image": ["a" * 32]},
         },
         uris=[uri],
@@ -76,21 +76,11 @@ def test_build_mm_refs_accepts_offloaded_file_uri(tmp_path):
     image_path = tmp_path / "image.png"
     image_path.write_bytes(b"image")
     multi_modal_data = SimpleNamespace(
-        mm_items={"image": [_qwen_item([[1, 1, 1]])]},
+        mm_items={"image": [_qwen_item([[1, 1, 1]], image_path.as_uri())]},
         mm_hashes={"image": ["a" * 32]},
     )
-    messages = [
-        {
-            "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": image_path.as_uri()},
-                }
-            ]
-        }
-    ]
 
-    refs = build_mm_refs(multi_modal_data, messages)
+    refs = build_mm_refs(multi_modal_data)
 
     assert refs is not None
     assert refs.uris == [image_path.as_uri()]

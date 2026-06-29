@@ -69,7 +69,7 @@ def trace_to_samples(
         mm_token_type_ids: list[int] | None = None
         mmd = branch.multi_modal_data
         if mmd is not None:
-            mm_refs = build_mm_refs(mmd, branch.messages)
+            mm_refs = build_mm_refs(mmd)
             mapping = mm_token_type_ids_mapping or {}
             mm_token_type_ids = [mapping.get(t, 0) for t in token_ids]
         samples.append(

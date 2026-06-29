@@ -280,7 +280,6 @@ def test_materialize_raw_image_ref_uses_generic_family_payload(tmp_path, monkeyp
     image_dir.mkdir(parents=True)
     image_path = image_dir / "image.png"
     Image.new("RGB", (8, 6), color=(32, 64, 128)).save(image_path)
-    monkeypatch.setenv("VF_RENDERER_IMAGE_OFFLOAD_DIR", str(image_dir))
 
     mm_hash = hashlib.sha256(image_path.read_bytes()).hexdigest()[:32]
     fingerprint = "f" * 32
@@ -289,7 +288,7 @@ def test_materialize_raw_image_ref_uses_generic_family_payload(tmp_path, monkeyp
         fingerprint=fingerprint,
         modality="image",
         mm_hash=mm_hash,
-        raw_image_id=image_path.name,
+        raw_image_uri=image_path.as_uri(),
         payload={"adapter_owned": [1, 2, 3]},
     )
     processor = object()
@@ -327,5 +326,5 @@ def test_materialize_raw_image_ref_uses_generic_family_payload(tmp_path, monkeyp
     item = captured["item"]
     assert item.family == "test_family"
     assert item.layout_fingerprint == fingerprint
-    assert item.raw_image_id == image_path.name
+    assert item.raw_image_uri == image_path.as_uri()
     assert item.payload == {"adapter_owned": [1, 2, 3]}

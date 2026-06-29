@@ -126,7 +126,8 @@ def rl_local(config: RLConfig):
         "WANDB_SHARED_MODE": "1",
         "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex),
     }
-    shared_run_asset_env = build_run_asset_env(config.orchestrator.output_dir, multimodal=config.multimodal)
+    inherited_env = dict(os.environ)
+    writer_run_asset_env = build_run_asset_env(config.orchestrator.output_dir, multimodal=config.multimodal)
 
     # Validate client port matches inference server port
     if config.inference is not None and not config.orchestrator.model.client.is_elastic:
@@ -172,7 +173,7 @@ def rl_local(config: RLConfig):
                 inference_process = Popen(
                     inference_cmd,
                     env={
-                        **shared_run_asset_env,
+                        **inherited_env,
                         **DEFAULT_COMMON_ENV_VARS,
                         **DEFAULT_INFERENCE_ENV_VARS,
                         **config.env_vars,
@@ -227,7 +228,7 @@ def rl_local(config: RLConfig):
                 stdout=log_file,
                 stderr=log_file,
                 env={
-                    **shared_run_asset_env,
+                    **writer_run_asset_env,
                     **DEFAULT_COMMON_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
@@ -276,7 +277,7 @@ def rl_local(config: RLConfig):
             trainer_process = Popen(
                 trainer_cmd,
                 env={
-                    **shared_run_asset_env,
+                    **inherited_env,
                     **DEFAULT_COMMON_ENV_VARS,
                     **DEFAULT_TRAINER_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",

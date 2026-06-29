@@ -42,22 +42,6 @@ def missing_file_uris(uris: Iterable[str]) -> list[str]:
     return missing
 
 
-def image_uris_from_messages(messages: Iterable[Any]) -> list[str]:
-    uris: list[str] = []
-    for message in messages:
-        content = _field(message, "content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if _field(part, "type") != "image_url":
-                continue
-            image_url = _field(part, "image_url")
-            url = image_url if isinstance(image_url, str) else _field(image_url, "url")
-            if isinstance(url, str):
-                uris.append(url)
-    return uris
-
-
 def _validate_modalities(mm_items: Mapping[str, list[Any]]) -> None:
     unsupported = sorted(
         modality for modality, items in mm_items.items() if items and modality not in SUPPORTED_MODALITIES
@@ -69,20 +53,25 @@ def _validate_modalities(mm_items: Mapping[str, list[Any]]) -> None:
         )
 
 
-def _raw_item_dicts(items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    item_dicts = [dict(item) for item in items]
-    for item in item_dicts:
-        parse_raw_mm_item(item)
-    return item_dicts
+def _raw_item_dicts(items: Iterable[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    item_dicts: list[dict[str, Any]] = []
+    uris: list[str] = []
+    for item in items:
+        item_dict = dict(item)
+        parsed = parse_raw_mm_item(item_dict)
+        file_uri_to_path(parsed.raw_image_uri)
+        item_dicts.append(item_dict)
+        uris.append(parsed.raw_image_uri)
+    return item_dicts, uris
 
 
-def build_mm_refs(multi_modal_data: Any, messages: Iterable[Any]) -> MMRefs | None:
+def build_mm_refs(multi_modal_data: Any) -> MMRefs | None:
     mm_items = _field(multi_modal_data, "mm_items", None)
     if not mm_items:
         return None
     _validate_modalities(mm_items)
 
-    image_items = _raw_item_dicts(mm_items.get(IMAGE_MODALITY, []))
+    image_items, uris = _raw_item_dicts(mm_items.get(IMAGE_MODALITY, []))
     if not image_items:
         return None
 
@@ -93,15 +82,6 @@ def build_mm_refs(multi_modal_data: Any, messages: Iterable[Any]) -> MMRefs | No
             "Raw image descriptor/hash mismatch: "
             f"{len(image_items)} image descriptors but {len(image_hashes)} image hashes"
         )
-
-    uris = image_uris_from_messages(messages)
-    if len(uris) != len(image_items):
-        raise ValueError(
-            "Raw image URI/descriptor mismatch: "
-            f"{len(uris)} image refs in messages but {len(image_items)} image descriptors"
-        )
-    for uri in uris:
-        file_uri_to_path(uri)
 
     return MMRefs(
         descriptor={
