@@ -27,8 +27,8 @@ class GRPOAlgorithm(Algorithm):
         if length_pen is None:
             advantages = rewards - rewards.mean()
         else:
-            completion = torch.tensor([rollout.completion_len for rollout in group], dtype=rewards.dtype)
-            total = torch.tensor([rollout.total_tokens for rollout in group], dtype=rewards.dtype)
+            completion = torch.tensor([rollout.num_output_tokens for rollout in group], dtype=rewards.dtype)
+            total = torch.tensor([rollout.num_total_tokens for rollout in group], dtype=rewards.dtype)
             turns = torch.tensor([rollout.num_turns for rollout in group], dtype=rewards.dtype)
             input = total - completion
             penalty_frac = (

@@ -63,7 +63,7 @@ class TrainSink:
         self.pending_batch: list[Rollout] = []
         # Running token total of ``pending_batch`` (token-batched runs), kept in
         # sync on append/pop so the readiness check never re-walks the uncached
-        # ``Trace.total_tokens`` graph property per arrival.
+        # ``Trace.num_total_tokens`` graph property per arrival.
         self.pending_tokens: int = 0
 
         # Reset by the orchestrator after each ship via ``reset_pre_filter_stats``
@@ -216,7 +216,7 @@ class TrainSink:
             r.is_filtered = False
             self.pending_batch.append(r)
             if self.token_batch_size is not None:
-                self.pending_tokens += r.total_tokens
+                self.pending_tokens += r.num_total_tokens
 
         # Per-group summary. One line per finalized group; per-filter
         # detection breakdown lives at debug level in ``apply_filters``
@@ -243,7 +243,7 @@ class TrainSink:
             cut = 0
             running = 0
             for i, r in enumerate(self.pending_batch):
-                running += r.total_tokens
+                running += r.num_total_tokens
                 cut = i + 1
                 if running >= self.token_batch_size:
                     break
