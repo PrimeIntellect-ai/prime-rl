@@ -2,7 +2,7 @@ import math
 from types import SimpleNamespace
 
 from prime_rl.orchestrator.eval_utils import compute_pass_metrics
-from prime_rl.orchestrator.rollout_metrics import compute_eval_metrics, compute_train_metrics
+from prime_rl.orchestrator.metrics import compute_eval_metrics, compute_train_metrics
 
 
 def mk(

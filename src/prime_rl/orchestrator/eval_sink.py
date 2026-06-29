@@ -112,7 +112,7 @@ class EvalSink:
     def process_batch(self, key: tuple[str, int]) -> EvalBatch:
         """Pop the finished ``(env, eval_step)`` epoch and return the ``EvalBatch`` with its full
         returned cohort (errored rollouts included — they're the ``all`` set for the metric
-        matrix). Metrics are computed downstream by ``compute_rollout_metrics`` over the
+        matrix). Metrics are computed downstream by ``compute_eval_metrics`` over the
         all/effective subsets, so the sink does no aggregation."""
         env_name, step = key
         rollouts = self.pending_batches.pop(key, [])

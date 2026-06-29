@@ -9,7 +9,7 @@ and drives the pipeline. Components are single-purpose:
   and returns a ``TrainBatch`` when the threshold is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
   returned cohort) on epoch completion.
-- ``compute_rollout_metrics`` builds the per-step train/eval W&B metrics.
+- ``compute_train_metrics`` / ``compute_eval_metrics`` build the per-step W&B metrics.
 - ``WeightWatcher`` advances ``Policy`` and notifies observers.
 - ``PeriodicLogger`` polls the components on a shared interval for the
   ``_timestamp``-axis pipeline log.
@@ -44,12 +44,12 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
+from prime_rl.orchestrator.metrics import compute_eval_metrics, compute_train_metrics
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
-from prime_rl.orchestrator.rollout_metrics import compute_eval_metrics, compute_train_metrics
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (

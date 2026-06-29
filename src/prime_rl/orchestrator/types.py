@@ -128,7 +128,7 @@ class TrainBatchMetrics:
     """Per-batch aggregates from ``TrainSink.process_batch``. ``arrivals_by_env`` /
     ``errors_by_env`` count rollouts at the sink; token totals feed ``progress/*`` and the
     usage reporter. Distributional rollout metrics are computed separately by
-    ``compute_rollout_metrics`` over ``TrainBatch.all_rollouts``."""
+    ``compute_train_metrics`` over ``TrainBatch.all_rollouts``."""
 
     n_trainable: int
     num_prefill_tokens: int
