@@ -88,7 +88,7 @@ name = "zai-org/GLM-5.1-FP8"
 
 [orchestrator.renderer]
 name = "glm-5.1"
-preserve_all_thinking = true
+clear_thinking = false
 
 [orchestrator.train.sampling]
 temperature = 1.0
