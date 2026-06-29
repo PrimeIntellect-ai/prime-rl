@@ -62,6 +62,11 @@ RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.
 ENV PATH="/usr/local/bin:$PATH"
 ENV UV_PYTHON_INSTALL_DIR="/usr/local/share/uv/python"
 ENV UV_CACHE_DIR="/usr/local/share/uv/cache"
+# Force a real in-project venv directory. uv's centralized project environments
+# (preview today, possibly default later) otherwise place the env in the uv cache
+# and make .venv a symlink into it, which the runtime stage's `COPY /app` can't
+# follow (the cache store lives outside /app), leaving the venv missing.
+ENV UV_PROJECT_ENVIRONMENT="/app/.venv"
 
 # Install Python dependencies (The gradual copies help with caching)
 WORKDIR /app
