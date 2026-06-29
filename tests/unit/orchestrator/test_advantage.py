@@ -128,9 +128,9 @@ def _scalar(rollout: Rollout) -> float:
     return rollout.advantages[mask.index(True)]
 
 
-def _grpo(group: list[Rollout], length_penalty=None) -> list[float]:
+def _grpo(group: list[Rollout], length_pen=None) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
-    algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), policy_pool=None)
+    algo = GRPOAlgorithm(GRPOAlgoConfig(length_pen=length_pen), policy_pool=None)
     asyncio.run(algo.score_group(group))
     return [_scalar(rollout) for rollout in group]
 
@@ -177,7 +177,7 @@ def test_linear_equal_lengths_reduce_to_plain_grpo():
     fraction, so subtracting it leaves the centered advantages unchanged."""
     penalized = _grpo(
         _make_group(rewards=[1.0, 0.0, 1.0], completion_lengths=[10, 10, 10], num_turns=[2, 2, 2]),
-        length_penalty=LinearLengthPenaltyConfig(),
+        length_pen=LinearLengthPenaltyConfig(),
     )
     plain = _grpo(_make_group(rewards=[1.0, 0.0, 1.0], completion_lengths=[10, 10, 10], num_turns=[2, 2, 2]))
     assert penalized == pytest.approx(plain, abs=1e-6)
@@ -186,8 +186,8 @@ def test_linear_equal_lengths_reduce_to_plain_grpo():
 def test_linear_completion_term_penalizes_longer():
     """With only the completion term, longer completions get a larger penalty and a
     lower advantage; advantages stay zero-mean."""
-    cfg = LinearLengthPenaltyConfig(coef=0.25, context_coef=0.0, turns_coef=0.0)
-    advs = _grpo(_make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 20, 30]), length_penalty=cfg)
+    cfg = LinearLengthPenaltyConfig(completion_pen=0.25, input_pen=0.0, turns_pen=0.0)
+    advs = _grpo(_make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 20, 30]), length_pen=cfg)
     assert advs[0] > advs[1] > advs[2]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
@@ -195,12 +195,12 @@ def test_linear_completion_term_penalizes_longer():
 def test_linear_context_term_penalizes_more_context():
     """The context term penalizes non-completion (prompt / tool-response) tokens: at
     equal completion length, more context tokens yields a lower advantage."""
-    cfg = LinearLengthPenaltyConfig(coef=0.0, context_coef=0.25, turns_coef=0.0)
+    cfg = LinearLengthPenaltyConfig(completion_pen=0.0, input_pen=0.25, turns_pen=0.0)
     group = [
         _build_rollout(1.0, sampled_lengths=[10], obs_lengths=[]),
         _build_rollout(1.0, sampled_lengths=[10], obs_lengths=[100]),
     ]
-    asyncio.run(GRPOAlgorithm(GRPOAlgoConfig(length_penalty=cfg), policy_pool=None).score_group(group))
+    asyncio.run(GRPOAlgorithm(GRPOAlgoConfig(length_pen=cfg), policy_pool=None).score_group(group))
     advs = [_scalar(rollout) for rollout in group]
     assert advs[0] > advs[1]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
@@ -208,10 +208,10 @@ def test_linear_context_term_penalizes_more_context():
 
 def test_linear_turns_term_penalizes_more_turns():
     """The turns term penalizes higher turn counts at equal token lengths."""
-    cfg = LinearLengthPenaltyConfig(coef=0.0, context_coef=0.0, turns_coef=0.25)
+    cfg = LinearLengthPenaltyConfig(completion_pen=0.0, input_pen=0.0, turns_pen=0.25)
     advs = _grpo(
         _make_group(rewards=[1.0, 1.0], completion_lengths=[100, 100], num_turns=[1, 4]),
-        length_penalty=cfg,
+        length_pen=cfg,
     )
     assert advs[0] > advs[1]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
