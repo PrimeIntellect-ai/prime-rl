@@ -193,7 +193,7 @@ class PrimeMonitor(Monitor):
             frontend_url = prime_config.frontend_url
 
         payload: dict[str, Any] = {
-            "base_model": run_config.student.model.name if run_config else "unknown",
+            "base_model": run_config.model.name if run_config else "unknown",
             "max_steps": (run_config.max_steps if run_config else None) or 0,
         }
         if run_config:
@@ -348,7 +348,7 @@ class PrimeMonitor(Monitor):
                 {
                     "messages": [m.model_dump(mode="json") for m in branch.messages],
                     "reward": rollout.reward,
-                    "advantage": rollout.advantage,
+                    "advantage": rollout.scalar_advantage(),
                     "num_input_tokens": branch.prompt_len,
                     "num_output_tokens": branch.completion_len,
                 }
@@ -370,7 +370,7 @@ class PrimeMonitor(Monitor):
                     "task": rollout.task.model_dump_json(),
                     "info": json.dumps(rollout.info),
                     "reward": rollout.reward,
-                    "advantage": rollout.advantage,
+                    "advantage": rollout.scalar_advantage(),
                     "metrics": json.dumps(rollout.metrics),
                     "timing": rollout.timing.model_dump_json(),
                     "num_input_tokens": branches[-1].prompt_len,

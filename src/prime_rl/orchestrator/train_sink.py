@@ -1,14 +1,17 @@
 """TrainSink: three-level rollout sink for the training side.
 
 1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
-   dispatcher producing more rollouts). Errored rollouts skip this.
-2. ``process_group`` — filters errored rollouts, computes advantages over
-   survivors, runs the pre-batch filter pass.
+   dispatcher producing more rollouts), then the env algorithm's
+   ``finalize_rollout`` (rollout-local scoring + any reference I/O). Errored
+   rollouts skip this.
+2. ``process_group`` — filters errored rollouts, hands survivors to the env
+   algorithm's ``finalize_group`` (advantages + per-sample wire stamping),
+   runs the pre-batch filter pass.
 3. ``process_batch`` — applies post-batch filter annotations and assembles
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
 ``add()`` returns ``TrainBatch | None``. I/O concerns (ship to trainer,
-save_rollouts, monitor.log, teacher logprobs) live on the orchestrator.
+save_rollouts, monitor.log) live on the orchestrator.
 """
 
 from __future__ import annotations
@@ -18,7 +21,6 @@ import uuid
 from collections import defaultdict
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.advantage import assign_advantages
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import trace_to_samples
@@ -126,7 +128,7 @@ class TrainSink:
             self.errors_by_env[env_name] += 1
         self.pending_groups[rollout.group_id].append(rollout)
         if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
-            self.process_group(rollout.group_id)
+            await self.process_group(rollout.group_id)
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
@@ -150,8 +152,12 @@ class TrainSink:
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
         )
         rollout.samples = samples or []
+        # Arrival phase: rollout-local scoring (raw reward, echo observation
+        # weighting, opd/opsd reference logprobs) runs as soon as the rollout is
+        # tokenized — before its group is complete.
+        await self.train_envs.get(rollout.env_name).algorithm.finalize_rollout(rollout)
 
-    def process_group(self, group_id: uuid.UUID) -> None:
+    async def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
         when ``requires_group_scoring`` and any failed), assign advantages,
         run pre-batch filters, append survivors to ``pending_batch``."""
@@ -179,19 +185,16 @@ class TrainSink:
             )
             return
 
-        assign_advantages(survivors, env.advantage_fn)
+        # Advantages + per-sample wire stamping (advantage stream, loss
+        # routing) are the algorithm's job (finalize_group); the sink only
+        # owns the grouping mechanics.
+        await env.algorithm.finalize_group(survivors)
 
-        # Propagate to the pre-tokenized samples so the orchestrator can
-        # collect samples at ship time without re-walking rollouts. The env
-        # has a single sampling temperature; fan it out per token (context
-        # tokens are masked out, so their temperature is don't-care).
+        # The env has a single sampling temperature; fan it out per token
+        # (context tokens are masked out, so their temperature is don't-care).
         temperature = env.sampling_args["temperature"]
         for r in survivors:
             for sample in r.samples:
-                sample.advantage = r.advantage
-                sample.reward = r.reward
-                sample.env_name = r.env_name
-                sample.training_mode = self.config.training_mode
                 sample.temperatures = [temperature] * len(sample.token_ids)
 
         if self.pre_filters:
@@ -252,7 +255,7 @@ class TrainSink:
             apply_filters(self.post_filters, cohort)
 
         # Samples are pre-built by ``process_rollout``; ``process_group``
-        # already set advantage/reward on each sample
+        # already stamped the advantage stream and loss routing on each sample
         samples: list[TrainingSample] = []
         prefill_lens: list[int] = []
         decode_lens: list[int] = []

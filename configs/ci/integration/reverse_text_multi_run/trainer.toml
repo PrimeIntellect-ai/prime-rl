@@ -6,6 +6,7 @@ enable_token_export = true
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 seq_len = 65536
 fused_lm_head_token_chunk_size = 8192
+optim_cpu_offload = false
 
 [model.lora]
 rank = 8

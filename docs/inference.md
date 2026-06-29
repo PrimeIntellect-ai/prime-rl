@@ -189,12 +189,12 @@ Both backends support the 2 most important things:
 ### Routing policies
 The 2 policies you might want to configure are:
 - `consistent_hash` - this is the default policy that optimizes for KV cache re-use across turns - this works by hashing a request header to determine where to route the request to. You can configure what to hash by setting
-`orchestrator.student.client.extra_headers_from_state` to the header the `router` expects to be set.
+`orchestrator.model.client.extra_headers_from_state` to the header the `router` expects to be set.
 
 We set it to a sensible default, that works with all verifiers environments.
 
 ```toml
-[orchestrator.student.client.extra_headers_from_state]
+[orchestrator.model.client.extra_headers_from_state]
 X-Session-ID = "trajectory_id" # this is the default - each rollout has a unique trajectory_id and router expects X-Session-ID
 ```
 
@@ -245,15 +245,19 @@ For optimal P/D disaggregation deployment, we automatically set the decode `all2
 
 For KV cache transfer, we utilize the NIXL connector. This is the default and only currently supported connector. We aim to support more advanced options, such as D->P transfer, or Mooncake Connector in the future.
 
+> **Required:** The pip-wheel NIXL's bundled UCX segfaults on the prefill→decode KV transfer. You must build NIXL against UCX 1.19.x from source — see [Disaggregated Prefill/Decode Inference](advanced.md#disaggregated-prefilldecode-inference) in the Advanced docs for the full setup.
+
 For configuring various knobs with environment variables, we enable you to configure prefill and decode environment variables separately. This is useful if you want to configure different environment variables for the prefill and decode stages.
 
 ```toml
 [inference.deployment]
 type = "disaggregated"
 
-prefill_env_overrides = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="skip"}
-decode_env_overrides = {"VLLM_DEEP_GEMM_WARMUP"="skip"}
+prefill_env_vars = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="skip"}
+decode_env_vars = {"VLLM_DEEP_GEMM_WARMUP"="skip"}
 ```
+
+These are role-specific and layer on top of [`env_vars`](configuration.md#environment-variables) shared by all inference processes regardless of role.
 
 ### Other vLLM features
 We support various other vLLM features. Some of those, such as `enable_dbo`, `enable_eplb` are exposed as a top-level config fields. For those that are not, you can configure them by setting `inference.vllm_extra` to the desired value.

@@ -64,16 +64,8 @@ rm -f $OUTPUT_DIR/logs/inference/*.log
 ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 
-# General
-export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export PYTHONUNBUFFERED=1
-export OMP_NUM_THREADS=1
-export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
-export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
-export FLASHINFER_WORKSPACE_BASE=/tmp/flashinfer-$(whoami)
-
 export WANDB_SHARED_MODE=1
-export WANDB_SHARED_RUN_ID=$(python3 -c "import uuid; print(uuid.uuid4().hex)")
+export WANDB_SHARED_RUN_ID=${WANDB_SHARED_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
 
 # Networking
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
@@ -210,7 +202,6 @@ srun --kill-on-bad-exit=1 bash -c '
 
     # Higher ulimit
     ulimit -n 65536
-    export GIT_LFS_SKIP_SMUDGE=1
 
     # Infiniband setup
     IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
@@ -219,9 +210,11 @@ srun --kill-on-bad-exit=1 bash -c '
 {% if num_infer_nodes > 0 -%}
 
 if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
-    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     INFER_NODE_RANK=$SLURM_PROCID
-    export VLLM_WORKER_MULTIPROC_METHOD=spawn
+    # Inference env vars: launcher defaults + [env_vars] + [inference.env_vars]
+{%- for key, value in inference_env_vars.items() %}
+    export {{ key }}="{{ value }}"
+{%- endfor %}
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
 {%- if kv_offload %}
@@ -244,18 +237,12 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {% if is_disaggregated -%}
     # PD disaggregated: NIXL KV transfer + role-based inference
     read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
-{%- if use_deep_gemm %}
-    export VLLM_USE_DEEP_GEMM=1
-    export VLLM_MOE_USE_DEEP_GEMM=1
-{%- endif %}
 
     # Bind gloo to the interface that owns LOCAL_IP (the rendezvous IP) — NIC
     # names vary across clusters (bond0, eth0, ...). If the lookup fails, leave
     # GLOO_SOCKET_IFNAME unset so gloo falls back to its own detection.
     GLOO_IFNAME=$(ip -o -4 addr show to "$LOCAL_IP" 2>/dev/null | awk "{print \$2; exit}")
     if [ -n "$GLOO_IFNAME" ]; then export GLOO_SOCKET_IFNAME=$GLOO_IFNAME; fi
-    export VLLM_ENGINE_READY_TIMEOUT_S=4200
-    export UCX_TLS=all
     # Enumerate RDMA NICs for UCX/NIXL from sysfs (ibv_devices is not on the job
     # PATH). Prefer InfiniBand ports and fall back to RoCE: "all" would also pick
     # up non-functional devices (e.g. an Ethernet bond UCX cannot open), which
@@ -290,7 +277,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         PORT=$PREFILL_PORT
         START_RANK=$((ROLE_RANK * INFERENCE_DP_LOCAL))
         HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + SUB_REPLICA * NODES_PER_PREFILL_REPLICA))]}"
-{% for key, value in prefill_env_overrides.items() %}
+{% for key, value in prefill_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
@@ -304,7 +291,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         PORT=$DECODE_PORT
         START_RANK=$((ROLE_RANK * INFERENCE_DP_LOCAL))
         HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + NUM_PREFILL_NODES + SUB_REPLICA * NODES_PER_DECODE_REPLICA))]}"
-{% for key, value in decode_env_overrides.items() %}
+{% for key, value in decode_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
         ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG{{ decode_vllm_extra_json }}"
@@ -387,10 +374,10 @@ else
     TRAIN_NODE_RANK=$SLURM_PROCID
 {%- endif %}
 
-    export HF_HUB_OFFLINE=1
-
-    # This is required for compilation to work correctly
-    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+    # Trainer env vars: launcher defaults + [env_vars] + [trainer.env_vars]
+{%- for key, value in trainer_env_vars.items() %}
+    export {{ key }}="{{ value }}"
+{%- endfor %}
 
     echo $HOSTNAMES_STR | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 
@@ -417,8 +404,14 @@ else
 {% if orchestrator_on_inference %}ORCH_PROCID=$((NUM_INFER_NODES - 1)){% else %}ORCH_PROCID=$NUM_INFER_NODES{% endif %}
 if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
-    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.base-url $INFER_URLS"
-    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.admin-base-url $ADMIN_URLS"
+    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.base-url $INFER_URLS"
+    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.admin-base-url $ADMIN_URLS"
+{%- if orchestrator_env_vars %}
+    # Orchestrator env vars from [env_vars] + [orchestrator.env_vars]
+{%- for key, value in orchestrator_env_vars.items() %}
+    export {{ key }}="{{ value }}"
+{%- endfor %}
+{%- endif %}
     {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
     {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
         2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &

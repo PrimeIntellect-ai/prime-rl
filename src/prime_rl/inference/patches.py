@@ -1,5 +1,4 @@
 import torch
-from vllm.triton_utils import tl, triton
 
 from prime_rl.inference.vllm.padded_input_scrub import monkey_patch_vllm_padded_input_scrub
 
@@ -15,10 +14,9 @@ def transformers_v5_compat():
     if not hasattr(Qwen3VLMoeTextConfig, "tie_word_embeddings"):
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
-    _patch_qwen35_lora()
     _patch_lora_key_prefix()
+    _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
-    monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
@@ -184,199 +182,27 @@ def monkey_patch_strip_routed_experts_from_chat():
     )
 
 
-@triton.jit
-def _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel(
-    y_ptr,
-    y_q_ptr,
-    y_s_ptr,
-    M: tl.int64,
-    N: tl.int64,
-    y_s_col_stride: tl.int64,
-    eps,
-    clamp_limit,
-    fp8_min: tl.constexpr,
-    fp8_max: tl.constexpr,
-    use_ue8m0: tl.constexpr,
-    HAS_CLAMP: tl.constexpr,
-    GROUP_SIZE: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-):
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
-    N_2 = N // 2
+def _patch_qwen35_moe_lora_format():
+    """Force Qwen3.5-MoE onto vLLM's 2D per-expert LoRA format.
 
-    m_offset = (pid_m * BLOCK_M).to(tl.int64)
-    n_offset = (pid_n * BLOCK_N).to(tl.int64)
-    if m_offset >= M:
-        return
+    vLLM 0.23.0 defaults ``Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = True``,
+    which makes the LoRA loader expect 3D stacked-expert adapters
+    (``base_layer.lora_{A,B}.weight`` / ``lora_{A,B}.weight``, experts folded into the
+    rank dim; see ``_stack_moe_lora_weights``). Our trainer instead emits the 2D
+    per-expert layout (``{expert_id}.gate_proj.lora_A.weight`` ...) from
+    ``MultiLoRAGroupedExperts.state_dict_for_adapter`` -- vLLM only consults that layout
+    when ``is_3d_moe_weight`` is False (or ``enable_mixed_moe_lora_format=True``).
+    Without this override the adapters fail to load with key/shape mismatches.
 
-    offs_n = tl.arange(0, BLOCK_N).to(tl.int64)
-    offs_m = tl.arange(0, BLOCK_M).to(tl.int64)
-
-    base_y_ptr = y_ptr + m_offset * N + n_offset
-    act_in_ptrs = base_y_ptr + offs_m[:, None] * N + offs_n[None, :]
-
-    act_in = tl.load(act_in_ptrs)
-    mul_in = tl.load(act_in_ptrs + N_2)
-
-    if HAS_CLAMP:
-        act_in = tl.minimum(act_in.to(tl.float32), clamp_limit).to(y_ptr.dtype.element_ty)
-        mul_in = tl.clamp(mul_in.to(tl.float32), -clamp_limit, clamp_limit).to(y_ptr.dtype.element_ty)
-    act_in = act_in.to(tl.float32)
-    one_f32 = tl.cast(1, tl.float32)
-    silu_out = (act_in / (one_f32 + tl.exp(-act_in))).to(y_ptr.dtype.element_ty)
-    y = (silu_out * mul_in).to(tl.float32)
-
-    absmax = tl.maximum(tl.max(tl.abs(y), axis=1), eps)
-    scale_raw = absmax * (1.0 / fp8_max)
-    y_s = tl.math.exp2(tl.ceil(tl.log2(scale_raw))) if use_ue8m0 else scale_raw
-    y_s = tl.reshape(y_s, (BLOCK_M, 1))
-    y_q = tl.clamp(y / y_s, fp8_min, fp8_max).to(y_q_ptr.dtype.element_ty)
-
-    base_y_q_ptr = y_q_ptr + m_offset * N_2 + n_offset
-    y_q_ptrs = base_y_q_ptr + offs_m[:, None] * N_2 + offs_n[None, :]
-    tl.store(y_q_ptrs, y_q)
-
-    group_id = n_offset // GROUP_SIZE
-    base_y_s_ptr = y_s_ptr + group_id * y_s_col_stride + m_offset
-    y_s_ptrs = base_y_s_ptr + offs_m
-    y_s = tl.reshape(y_s, (BLOCK_M,))
-    tl.store(y_s_ptrs, y_s)
-
-
-def _silu_mul_per_token_group_quant_fp8_colmajor_int64(
-    input: torch.Tensor,
-    output: torch.Tensor | None = None,
-    use_ue8m0: bool | None = None,
-    eps: float = 1e-10,
-    clamp_limit: float | None = None,
-):
-    from vllm.platforms import current_platform
-    from vllm.utils.deep_gemm import is_deep_gemm_e8m0_used
-
-    group_size = 128
-    assert input.ndim == 2
-    if output is not None:
-        assert output.ndim == 2
-    assert input.size(0) % group_size == 0
-    assert input.size(1) % (group_size * 2) == 0
-
-    if use_ue8m0 is None:
-        use_ue8m0 = is_deep_gemm_e8m0_used()
-
-    M, N = input.size()
-    N_2 = N // 2
-
-    fp8_dtype = current_platform.fp8_dtype()
-    if output is None:
-        output = torch.empty((M, N_2), dtype=fp8_dtype, device=input.device)
-
-    output_scales = torch.empty(((N_2 // group_size), M), dtype=torch.float32, device=input.device).transpose(0, 1)
-
-    block_m = 8
-    block_n = group_size
-    assert M % block_m == 0
-    assert N_2 % block_n == 0
-
-    finfo = torch.finfo(fp8_dtype)
-    fp8_min = -224.0 if current_platform.is_fp8_fnuz() else finfo.min
-    fp8_max = 224.0 if current_platform.is_fp8_fnuz() else finfo.max
-
-    has_clamp = clamp_limit is not None
-    grid = (M // block_m, N_2 // block_n)
-    _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel[grid](
-        input,
-        output,
-        output_scales,
-        M,
-        N,
-        output_scales.stride(-1),
-        eps,
-        clamp_limit if has_clamp else 0.0,
-        fp8_min,
-        fp8_max,
-        use_ue8m0,
-        has_clamp,
-        group_size,
-        block_m,
-        block_n,
-    )
-
-    return output, output_scales
-
-
-def monkey_patch_deep_gemm_silu_mul_quant_int64():
-    import sys
-
-    from vllm.logger import init_logger
-    from vllm.model_executor.layers.quantization.utils import fp8_utils
-
-    logger = init_logger(__name__)
-
-    fp8_utils.silu_mul_per_token_group_quant_fp8_colmajor = _silu_mul_per_token_group_quant_fp8_colmajor_int64
-
-    deep_gemm_moe_module = sys.modules.get("vllm.model_executor.layers.fused_moe.experts.deep_gemm_moe")
-    if deep_gemm_moe_module is not None:
-        deep_gemm_moe_module.silu_mul_per_token_group_quant_fp8_colmajor = (
-            _silu_mul_per_token_group_quant_fp8_colmajor_int64
-        )
-
-    logger.warning("Enabled int64-addressing Triton patch for vLLM DeepGEMM SiLU/mul FP8 quant.")
-
-
-def _patch_qwen35_lora():
-    """Fix Qwen3.5 LoRA: align packed_modules_mapping with output_sizes.
-
-    Qwen3.5's GDN layers use create_qkvz_proj with 4 output_sizes (q, k, v, z)
-    but packed_modules_mapping only lists 2 entries, causing an IndexError
-    during LoRA initialization.
-
-    Also generalizes MergedColumnParallelLinearWithLoRA.can_replace_layer
-    to accept any number of packed modules (not just 2), and generalizes
-    MergedColumnParallelLinearWithShardedLoRA.slice_lora_a to handle N
-    subloras instead of the hardcoded 2 (needed for fully_sharded_loras=True).
-
-    Upstream: https://github.com/vllm-project/vllm/issues/36372
+    The rest of the old Qwen3.5 LoRA shim (the in_proj_qkvz packed-mapping fix and the
+    N-slice ``can_replace_layer`` / ``slice_lora_a`` generalizations for vllm#36372) is
+    handled natively by 0.23.0 and was dropped. Remove this too once we either adopt the
+    3D stacked save format (like gpt-oss) or start the engine with
+    ``enable_mixed_moe_lora_format=True``.
     """
-    from vllm.lora.layers.column_parallel_linear import (
-        MergedColumnParallelLinearWithLoRA,
-        MergedColumnParallelLinearWithShardedLoRA,
-    )
-    from vllm.model_executor.models.qwen3_5 import (
-        Qwen3_5ForCausalLMBase,
-        Qwen3_5ForConditionalGeneration,
-        Qwen3_5MoeForConditionalGeneration,
-    )
-
-    qkvz_fix = ["in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z"]
-
-    Qwen3_5ForCausalLMBase.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
-    Qwen3_5ForConditionalGeneration.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
+    from vllm.model_executor.models.qwen3_5 import Qwen3_5MoeForConditionalGeneration
 
     Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = False
-
-    from vllm.lora.layers.utils import _not_fully_sharded_can_replace
-
-    @classmethod
-    @_not_fully_sharded_can_replace
-    def can_replace_layer(cls, source_layer, lora_config, packed_modules_list, model_config=None):
-        from vllm.model_executor.layers.linear import MergedColumnParallelLinear
-
-        return type(source_layer) is MergedColumnParallelLinear and len(packed_modules_list) == len(
-            source_layer.output_sizes
-        )
-
-    MergedColumnParallelLinearWithLoRA.can_replace_layer = can_replace_layer
-
-    def slice_lora_a(self, lora_a):
-        output_shard_size = self.lora_a_stacked[0].shape[2]
-        output_start_idx = self.tp_rank * output_shard_size
-        return [
-            a[output_start_idx : output_start_idx + output_shard_size, :] if a is not None else None for a in lora_a
-        ]
-
-    MergedColumnParallelLinearWithShardedLoRA.slice_lora_a = slice_lora_a
 
 
 def _patch_lora_key_prefix():
@@ -781,9 +607,10 @@ def monkey_patch_minimax_m2_for_lora():
         still runs for all wrapped layers when any adapter is active — and it
         asserts inputs are float16/bfloat16. Qwen3 MoE doesn't have this
         problem because its gate uses the model dtype.
-        Fix: recreate the gate in model dtype and remove the float32 cast.
-        FusedMoE already has router_logits_dtype=float32, so routing precision
-        is preserved inside the expert dispatch.
+        Fix: rebuild the gate as GateLinear with a bf16 weight (out_dtype=float32
+        keeps fp32 router logits). vLLM 0.23.0's own forward already drops the
+        float32 input cast. FusedMoE also has router_logits_dtype=float32, so
+        routing precision is preserved inside the expert dispatch.
 
     Problem 2 — Adapter key naming mismatch:
         PrimeRL saves adapter keys using its internal naming convention
@@ -805,13 +632,17 @@ def monkey_patch_minimax_m2_for_lora():
 
     def _patched_init(self, config, quant_config=None, prefix=""):
         _original_init(self, config, quant_config, prefix)
-        from vllm.model_executor.layers.linear import ReplicatedLinear
+        from vllm.model_executor.layers.fused_moe.router.gate_linear import GateLinear
 
-        self.gate = ReplicatedLinear(
+        # vLLM 0.23.0 builds the gate as GateLinear with a float32 weight; rebuild it
+        # with a bf16 weight (model dtype) so the LoRA Triton kernel's float16/bfloat16
+        # assertion passes, keeping out_dtype=float32 so router logits stay fp32 (the
+        # GateLinear bf16xbf16->fp32 path).
+        self.gate = GateLinear(
             config.hidden_size,
             config.num_local_experts,
             bias=False,
-            quant_config=None,
+            out_dtype=torch.float32,
             prefix=f"{prefix}.gate",
         )
 
