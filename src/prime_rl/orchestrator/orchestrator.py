@@ -49,7 +49,7 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
-from prime_rl.orchestrator.rollout_metrics import compute_rollout_metrics
+from prime_rl.orchestrator.rollout_metrics import compute_eval_metrics, compute_train_metrics
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
@@ -531,19 +531,13 @@ class Orchestrator:
         env_group_size = {env.resolved_name: env.group_size for env in config.train.env}
         metrics: dict[str, float] = {}
         for subset, pool in (("all", all_rollouts), ("effective", effective)):
-            metrics |= compute_rollout_metrics(
-                pool, prefix="train/agg", subset=subset, env_group_size=env_group_size, include_filters=True
-            )
+            metrics |= compute_train_metrics(pool, prefix="train/agg", subset=subset, env_group_size=env_group_size)
             per_env: dict[str, list[Rollout]] = {}
             for r in pool:
                 per_env.setdefault(r.env_name, []).append(r)
             for env_name, env_rollouts in per_env.items():
-                metrics |= compute_rollout_metrics(
-                    env_rollouts,
-                    prefix=f"train/{env_name}",
-                    subset=subset,
-                    env_group_size=env_group_size,
-                    include_filters=True,
+                metrics |= compute_train_metrics(
+                    env_rollouts, prefix=f"train/{env_name}", subset=subset, env_group_size=env_group_size
                 )
 
         # Progress / timing / env-share / pre-filter accounting (assembled here, not in the
@@ -766,17 +760,9 @@ class Orchestrator:
         rollouts = batch.rollouts
         effective = [r for r in rollouts if not r.has_error]
         group_size = self.eval_envs.get(batch.env_name).config.group_size
-        env_group_size = {batch.env_name: group_size}
         metrics: dict[str, float] = {}
         for subset, pool in (("all", rollouts), ("effective", effective)):
-            metrics |= compute_rollout_metrics(
-                pool,
-                prefix=f"eval/{batch.env_name}",
-                subset=subset,
-                env_group_size=env_group_size,
-                reward_label=f"avg@{group_size}",
-                include_pass_at_k=(subset == "effective"),
-            )
+            metrics |= compute_eval_metrics(pool, prefix=f"eval/{batch.env_name}", subset=subset, group_size=group_size)
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
         self.monitor.log(metrics, step=batch.step)

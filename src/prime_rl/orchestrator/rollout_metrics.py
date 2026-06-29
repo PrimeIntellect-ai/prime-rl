@@ -1,13 +1,14 @@
-"""Unified rollout-metric aggregation.
+"""Train and eval rollout metrics.
 
-One pure function computes the rollout metric set over an arbitrary list of rollouts and
-returns a wandb dict already keyed ``{prefix}/{subset}/<metric>/<stat>``. It is called once
-per cell of the ``{train,eval} / {agg,<env>} / {all,effective}`` matrix at the batch boundary
-(see ``orchestrator.finalize_train_batch`` / ``finalize_eval_batch``).
+``compute_train_metrics`` and ``compute_eval_metrics`` each build a wandb dict for one slice of a
+batch (the agg pool or a single env, one of the all/effective subsets), keyed
+``{prefix}/{subset}/<metric>/<stat>``. Both layer on ``_common_metrics`` for the metrics shared
+across train and eval, then add their own — train the reward distribution + filter-pipeline rates,
+eval the ``avg@<k>`` score + pass@k / pass^k.
 
-No I/O, no pandas — plain Python aggregation over the ``vf.Trace`` properties each rollout
-already exposes. Aggregation is flat over the rollout list (means/min/max/rates), except the
-solve rates, which group by ``group_id``.
+No I/O, no pandas — plain Python over the ``vf.Trace`` properties each rollout exposes.
+Aggregation is flat over the rollout list (means/min/max/rates) except the solve rates, which
+group by ``group_id``.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
 
 Subset = Literal["all", "effective"]
 
-# Distributional metrics: (name, getter). Each emits mean/max/min over the rollout list.
+# Distributional metrics shared by train and eval: (name, getter). Each emits mean/max/min.
 _DIST_SPECS: list[tuple[str, Callable[["Rollout"], float]]] = [
     ("num_total_tokens", lambda r: r.num_total_tokens),
     ("num_input_tokens", lambda r: r.num_input_tokens),
@@ -47,44 +48,20 @@ def _rate(flags: list[bool]) -> float:
     return sum(flags) / len(flags) if flags else 0.0
 
 
-def compute_rollout_metrics(
-    rollouts: list["Rollout"],
-    *,
-    prefix: str,
-    subset: Subset,
-    env_group_size: dict[str, int],
-    reward_label: str | None = None,
-    include_filters: bool = False,
-    include_pass_at_k: bool = False,
+def _common_metrics(
+    rollouts: list["Rollout"], *, prefix: str, subset: Subset, env_group_size: dict[str, int]
 ) -> dict[str, float]:
-    """Aggregate one slice of a batch into a wandb dict.
-
-    ``prefix`` is the ``{train,eval}/{agg,<env>}`` head; ``subset`` is ``all`` or
-    ``effective`` and completes the key path. ``env_group_size`` maps env name → configured
-    group size (the full-solve threshold; the slice can pool multiple envs, so it is looked up
-    per group's env). ``reward_label`` (eval passes ``avg@<k>``) logs reward as that single mean
-    key instead of the ``reward`` mean/max/min distribution. ``include_filters`` (train) adds the
-    filter-pipeline rates; ``include_pass_at_k`` (eval) adds pass@k / pass^k. Empty input → ``{}``.
-    """
+    """The metrics common to train and eval over one ``{prefix}/{subset}`` slice. Empty → ``{}``."""
     if not rollouts:
         return {}
     p = f"{prefix}/{subset}"
     out: dict[str, float] = {}
 
-    # Distributional metrics
+    # Distributional token / turn / branch metrics
     for name, getter in _DIST_SPECS:
         out |= _dist(f"{p}/{name}", [float(getter(r)) for r in rollouts])
 
-    # Reward: train logs the full distribution; eval logs a single ``avg@<k>`` mean (for the
-    # `effective` subset that is the conventional avg@group_size score).
-    rewards = [float(r.reward) for r in rollouts]
-    if reward_label is not None:
-        out[f"{p}/{reward_label}"] = sum(rewards) / len(rewards)
-    else:
-        out |= _dist(f"{p}/reward", rewards)
-
-    # Timing (per-rollout span durations from the v1 Trace; total is the full end-to-end across
-    # all four phases — unused phases default to a 0-duration span)
+    # Timing: per-phase spans + the full end-to-end total (unused phases default to a 0 span)
     setup = [r.timing.setup.duration for r in rollouts]
     generation = [r.timing.generation.duration for r in rollouts]
     finalize = [r.timing.finalize.duration for r in rollouts]
@@ -96,21 +73,20 @@ def compute_rollout_metrics(
     out |= _dist(f"{p}/timing/total", [sum(spans) for spans in zip(setup, generation, finalize, scoring)])
 
     # Custom env @metrics and per-reward-component values — union of keys, averaged over the
-    # rollouts that report each (the summed reward is the `reward` metric above)
+    # rollouts that report each (the summed reward is added by the train/eval wrappers)
     for name in sorted({name for r in rollouts for name in r.metrics}):
         out |= _dist(f"{p}/metrics/{name}", [r.metrics[name] for r in rollouts if name in r.metrics])
     for name in sorted({name for r in rollouts for name in r.rewards}):
         out |= _dist(f"{p}/rewards/{name}", [r.rewards[name] for r in rollouts if name in r.rewards])
 
-    # Per-rollout boolean rates
+    # Per-rollout boolean rates; error_rate is structurally 0 on `effective`, so log it on `all` only
     out[f"{p}/is_truncated/mean"] = _rate([r.is_truncated for r in rollouts])
     out[f"{p}/is_completed/mean"] = _rate([r.is_completed for r in rollouts])
-    # error_rate is structurally 0 on `effective` (it excludes errored) — surface it on `all` only
     if subset == "all":
         out[f"{p}/error_rate"] = _rate([r.has_error for r in rollouts])
 
-    # Stop-condition breakdown: generation_truncated over all rollouts, then per-condition rate
-    # over the rollouts that recorded a condition (matches the previous value_counts(normalize)).
+    # Stop-condition breakdown: generation_truncated over all rollouts, per-condition rate over the
+    # rollouts that recorded a condition
     out[f"{p}/stop_condition/generation_truncated"] = _rate(
         [r.is_truncated and r.stop_condition != "prompt_too_long" for r in rollouts]
     )
@@ -118,9 +94,8 @@ def compute_rollout_metrics(
     for condition in sorted(set(conditions)):
         out[f"{p}/stop_condition/{condition}"] = conditions.count(condition) / len(conditions)
 
-    # Solve rates (per group): solved_none if no rollout earned reward, solved_all if every
-    # configured slot did (sum == env group size), solved_some the remainder — the mixed-reward
-    # groups (the ones that carry GRPO signal).
+    # Solve rates (per group): none / all of the group's configured slots earned reward; some is the
+    # mixed-reward remainder (the groups that carry GRPO signal)
     groups: dict = {}
     for r in rollouts:
         groups.setdefault(r.group_id, []).append(r)
@@ -132,24 +107,42 @@ def compute_rollout_metrics(
     out[f"{p}/solved_none"] = solved_none / n_groups
     out[f"{p}/solved_all"] = solved_all / n_groups
     out[f"{p}/solved_some"] = 1 - (solved_none + solved_all) / n_groups
+    return out
 
-    # Train-only: the filtered-out rate (a top-level rollout metric) plus per-filter detection
-    # rates under filters/ (eval has no filter pipeline, so these are gated off there).
-    if include_filters:
-        out[f"{p}/is_filtered/mean"] = _rate([r.is_filtered for r in rollouts])
-        for name in sorted({name for r in rollouts for name in r.filter_results}):
-            out[f"{p}/filters/{name}/mean"] = _rate([r.filter_results.get(name, False) for r in rollouts])
 
-    # Eval-only: pass@k / pass^k, averaged over examples (only for binary-reward tasks)
-    if include_pass_at_k:
-        rewards = [r.reward for r in rollouts]
-        if set(rewards).issubset({0.0, 1.0}):
-            by_example: dict = {}
-            for r in rollouts:
-                by_example.setdefault(r.group_id, []).append(r.reward)
-            per_example = [compute_pass_metrics(rs) for rs in by_example.values()]
-            for key in sorted({k for d in per_example for k in d}):
-                values = [d[key] for d in per_example if key in d]
-                out[f"{p}/{key}"] = sum(values) / len(values)
+def compute_train_metrics(
+    rollouts: list["Rollout"], *, prefix: str, subset: Subset, env_group_size: dict[str, int]
+) -> dict[str, float]:
+    """Train metrics: the common set plus the reward distribution and filter-pipeline rates."""
+    out = _common_metrics(rollouts, prefix=prefix, subset=subset, env_group_size=env_group_size)
+    if not rollouts:
+        return out
+    p = f"{prefix}/{subset}"
+    out |= _dist(f"{p}/reward", [float(r.reward) for r in rollouts])
+    out[f"{p}/is_filtered/mean"] = _rate([r.is_filtered for r in rollouts])
+    for name in sorted({name for r in rollouts for name in r.filter_results}):
+        out[f"{p}/filters/{name}/mean"] = _rate([r.filter_results.get(name, False) for r in rollouts])
+    return out
 
+
+def compute_eval_metrics(
+    rollouts: list["Rollout"], *, prefix: str, subset: Subset, group_size: int
+) -> dict[str, float]:
+    """Eval metrics: the common set plus the ``avg@<group_size>`` score, and — on the effective
+    subset, for binary-reward tasks — pass@k / pass^k averaged over examples."""
+    env_group_size = {r.env_name: group_size for r in rollouts}
+    out = _common_metrics(rollouts, prefix=prefix, subset=subset, env_group_size=env_group_size)
+    if not rollouts:
+        return out
+    p = f"{prefix}/{subset}"
+    out[f"{p}/avg@{group_size}"] = sum(float(r.reward) for r in rollouts) / len(rollouts)
+    rewards = [r.reward for r in rollouts]
+    if subset == "effective" and set(rewards).issubset({0.0, 1.0}):
+        by_example: dict = {}
+        for r in rollouts:
+            by_example.setdefault(r.group_id, []).append(r.reward)
+        per_example = [compute_pass_metrics(rs) for rs in by_example.values()]
+        for key in sorted({k for d in per_example for k in d}):
+            values = [d[key] for d in per_example if key in d]
+            out[f"{p}/{key}"] = sum(values) / len(values)
     return out
