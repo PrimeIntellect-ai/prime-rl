@@ -44,16 +44,16 @@ def format_log_message(
             log_lines.append(f"{i2}{'All nodes:':<{col - 1}}tail -F {log_dir}/inference/node_*.log")
     if train_env_names:
         env_log_dir = log_dir / "envs"
-        log_lines.append(f"{i1}{'Envs:':<{col}}tail -F {env_log_dir}/*/*/*.log")
-        log_lines.append(f"{i2}{'Train:':<{col - 1}}tail -F {env_log_dir}/train/*/*.log")
+        log_lines.append(f"{i1}{'Envs:':<{col}}tail -F {env_log_dir}/*/*.log")
+        log_lines.append(f"{i2}{'Train:':<{col - 1}}tail -F {env_log_dir}/train/*.log")
         for name in train_env_names:
             short = name if len(name) <= max_name else name[: max_name - 3] + "..."
-            log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/train/{name}/*.log")
+            log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/train/{name}.log")
         if eval_env_names:
-            log_lines.append(f"{i2}{'Eval:':<{col - 1}}tail -F {env_log_dir}/eval/*/*.log")
+            log_lines.append(f"{i2}{'Eval:':<{col - 1}}tail -F {env_log_dir}/eval/*.log")
             for name in eval_env_names:
                 short = name if len(name) <= max_name else name[: max_name - 3] + "..."
-                log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/eval/{name}/*.log")
+                log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/eval/{name}.log")
     return "Logs:\n" + "\n".join(log_lines)
 
 
