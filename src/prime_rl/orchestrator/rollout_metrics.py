@@ -28,7 +28,6 @@ _DIST_SPECS: list[tuple[str, Callable[["Rollout"], float]]] = [
     ("num_output_tokens", lambda r: r.num_output_tokens),
     ("num_turns", lambda r: r.num_turns),
     ("num_branches", lambda r: r.num_branches),
-    ("reward", lambda r: r.reward),
 ]
 
 
@@ -54,6 +53,7 @@ def compute_rollout_metrics(
     prefix: str,
     subset: Subset,
     env_group_size: dict[str, int],
+    reward_label: str | None = None,
     include_filters: bool = False,
     include_pass_at_k: bool = False,
 ) -> dict[str, float]:
@@ -62,8 +62,9 @@ def compute_rollout_metrics(
     ``prefix`` is the ``{train,eval}/{agg,<env>}`` head; ``subset`` is ``all`` or
     ``effective`` and completes the key path. ``env_group_size`` maps env name → configured
     group size (the full-solve threshold; the slice can pool multiple envs, so it is looked up
-    per group's env). ``include_filters`` (train) adds the filter-pipeline rates;
-    ``include_pass_at_k`` (eval) adds pass@k / pass^k. Empty input → ``{}``.
+    per group's env). ``reward_label`` (eval passes ``avg@<k>``) logs reward as that single mean
+    key instead of the ``reward`` mean/max/min distribution. ``include_filters`` (train) adds the
+    filter-pipeline rates; ``include_pass_at_k`` (eval) adds pass@k / pass^k. Empty input → ``{}``.
     """
     if not rollouts:
         return {}
@@ -73,6 +74,14 @@ def compute_rollout_metrics(
     # Distributional metrics
     for name, getter in _DIST_SPECS:
         out |= _dist(f"{p}/{name}", [float(getter(r)) for r in rollouts])
+
+    # Reward: train logs the full distribution; eval logs a single ``avg@<k>`` mean (for the
+    # `effective` subset that is the conventional avg@group_size score).
+    rewards = [float(r.reward) for r in rollouts]
+    if reward_label is not None:
+        out[f"{p}/{reward_label}"] = sum(rewards) / len(rewards)
+    else:
+        out |= _dist(f"{p}/reward", rewards)
 
     # Timing (per-rollout span durations from the v1 Trace; total is the full end-to-end across
     # all four phases — unused phases default to a 0-duration span)

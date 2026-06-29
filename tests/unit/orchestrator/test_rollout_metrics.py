@@ -74,6 +74,15 @@ def test_key_prefixes_and_flat_stats():
     assert out["train/agg/all/num_output_tokens/mean"] == 6.0
 
 
+def test_eval_reward_logged_as_avg_at_k():
+    rollouts = [mk(reward=1.0), mk(reward=0.0)]
+    out = compute_rollout_metrics(
+        rollouts, prefix="eval/x", subset="effective", env_group_size={"env": 2}, reward_label="avg@8"
+    )
+    assert out["eval/x/effective/avg@8"] == 0.5  # same value as the mean, under the avg@k key
+    assert not any(k.startswith("eval/x/effective/reward/") for k in out)
+
+
 def test_all_carries_error_rate_effective_does_not():
     pool_all = [mk(), mk(has_error=True), mk(is_filtered=True)]
     out_all = compute_rollout_metrics(pool_all, prefix="train/agg", subset="all", env_group_size={"env": 3})

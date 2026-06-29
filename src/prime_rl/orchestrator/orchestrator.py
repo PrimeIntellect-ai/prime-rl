@@ -765,7 +765,8 @@ class Orchestrator:
         assert self.eval_envs is not None
         rollouts = batch.rollouts
         effective = [r for r in rollouts if not r.has_error]
-        env_group_size = {batch.env_name: self.eval_envs.get(batch.env_name).config.group_size}
+        group_size = self.eval_envs.get(batch.env_name).config.group_size
+        env_group_size = {batch.env_name: group_size}
         metrics: dict[str, float] = {}
         for subset, pool in (("all", rollouts), ("effective", effective)):
             metrics |= compute_rollout_metrics(
@@ -773,6 +774,7 @@ class Orchestrator:
                 prefix=f"eval/{batch.env_name}",
                 subset=subset,
                 env_group_size=env_group_size,
+                reward_label=f"avg@{group_size}",
                 include_pass_at_k=(subset == "effective"),
             )
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
