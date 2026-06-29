@@ -33,7 +33,7 @@ dependencies = [
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
     "torchtitan",
-    "verifiers>=0.1.15.dev400",
+    "verifiers>=0.1.15.dev404",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
@@ -107,6 +107,8 @@ envs = [
     "simpleqa-verified-v1",
     "i3-code-v1",
     "i3-science-v1",
+    "lean-v1",
+    "prolog-v1",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -166,7 +168,7 @@ override-dependencies = [
     "transformers==5.6.2",
     "torch>=2.9.0",
     "openenv-core",
-    "verifiers>=0.1.15.dev400",
+    "verifiers>=0.1.15.dev404",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
@@ -259,6 +261,8 @@ ifeval-v1 = { path = "deps/research-environments/environments/ifeval_v1", editab
 simpleqa-verified-v1 = { path = "deps/research-environments/environments/simpleqa_verified_v1", editable = true }
 i3-code-v1 = { path = "deps/research-environments/environments/i3_code_v1", editable = true }
 i3-science-v1 = { path = "deps/research-environments/environments/i3_science_v1", editable = true }
+lean-v1 = { path = "deps/research-environments/environments/lean_v1", editable = true }
+prolog-v1 = { path = "deps/research-environments/environments/prolog_v1", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
