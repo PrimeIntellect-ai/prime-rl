@@ -221,7 +221,7 @@ class RLConfig(BaseConfig):
     weight_broadcast: SharedWeightBroadcastConfig | None = None
 
     multimodal: MultimodalConfig = MultimodalConfig()
-    """Shared raw multimodal storage policy. Propagated to trainer, orchestrator, and inference."""
+    """Shared raw multimodal image offload settings. Propagated to trainer, orchestrator, and inference."""
 
     bench: bool = False
     """Benchmark mode. Sets trainer and orchestrator to benchmark mode and, when set, suffixes the W&B project with ``-bench``."""

@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -90,7 +91,7 @@ def test_forward_policy_can_require_mm_token_type_ids():
     input_ids = torch.tensor([[1, 10, 10, 2]])
     position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
 
-    try:
+    with pytest.raises(ValueError, match="mm_token_type_ids"):
         forward(
             model,
             input_ids,
@@ -98,7 +99,3 @@ def test_forward_policy_can_require_mm_token_type_ids():
             mm_kwargs={"pixel_values": torch.ones(2, 3)},
             mm_forward_policy=ForwardPolicy(requires_mm_token_type_ids=True),
         )
-    except ValueError as exc:
-        assert "mm_token_type_ids" in str(exc)
-    else:
-        raise AssertionError("forward should require mm_token_type_ids when policy says so")

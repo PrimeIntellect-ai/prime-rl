@@ -357,12 +357,16 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
         kv_offload_device_name=offload.device_name if is_mooncake else "",
     )
+    image_offload_dir = (
+        os.path.expanduser(str(config.multimodal.offload_dir)) if config.multimodal.offload_dir is not None else ""
+    )
 
     if config.deployment.type == "single_node":
         script = template.render(
             **config.slurm.template_vars,
             config_path=config_dir / RL_TOML,
             output_dir=config.output_dir,
+            image_offload_dir=image_offload_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
     elif config.inference is not None and config.inference.deployment.type == "disaggregated":
@@ -374,6 +378,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             config_dir=config_dir,
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
+            image_offload_dir=image_offload_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
             nodes_per_infer_replica=infer_deploy.num_nodes,
@@ -406,6 +411,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
+            image_offload_dir=image_offload_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes,
             nodes_per_infer_replica=config.deployment.num_infer_nodes,

@@ -4,7 +4,7 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
-from renderers.image_layout_specs import KIMI_K25_IMAGE_LAYOUT, KimiK25ImageLayoutSpec
+from renderers.kimi_k25 import KIMI_K25_IMAGE_LAYOUT, KimiK25ImageLayoutSpec
 
 from prime_rl.multimodal.adapters.base import ForwardPolicy, MaterializedMM
 from prime_rl.multimodal.schema import RawMMItem
@@ -66,7 +66,9 @@ def _grid_payload(item: RawMMItem) -> list[int]:
     grid = item.payload.get("grid_thws")
     if grid is None:
         raise ValueError("Kimi raw descriptor payload is missing grid_thws")
-    if len(grid) == 1 and isinstance(grid[0], list):
+    if not isinstance(grid, list | tuple):
+        raise ValueError(f"Invalid Kimi grid_thws: {grid!r}")
+    if len(grid) == 1 and isinstance(grid[0], list | tuple):
         grid = grid[0]
     if not isinstance(grid, list | tuple) or len(grid) != 3:
         raise ValueError(f"Invalid Kimi grid_thws: {grid!r}")
@@ -121,10 +123,10 @@ class KimiK25Adapter:
         if "grid_thws" not in tensors:
             raise ValueError("Kimi processor did not return grid_thws")
         actual_grids = tensors["grid_thws"].reshape(-1, 3).tolist()
-        for idx, item in enumerate(items):
+        for idx, (item, actual_grid) in enumerate(zip(items, actual_grids, strict=True)):
             expected = _grid_payload(item)
-            if actual_grids[idx] != expected:
-                raise ValueError(f"Kimi grid mismatch at index {idx}: expected {expected}, got {actual_grids[idx]}")
+            if actual_grid != expected:
+                raise ValueError(f"Kimi grid mismatch at index {idx}: expected {expected}, got {actual_grid}")
         return MaterializedMM(kwargs=tensors, forward_policy=self.forward_policy)
 
     def materialize_for_vllm(
@@ -132,7 +134,7 @@ class KimiK25Adapter:
         image_processor: Any,
         item: RawMMItem,
         image: Any,
-        expected_placeholder_length: int | None,
+        expected_placeholder_length: int,
     ) -> Any:
         from vllm.multimodal.inputs import MultiModalFieldConfig, MultiModalKwargsItems
 
@@ -148,7 +150,7 @@ class KimiK25Adapter:
         actual_grid = tensors["grid_thws"].reshape(-1, 3).tolist()[0]
         if actual_grid != expected_grid:
             raise ValueError(f"Kimi grid mismatch: expected {expected_grid}, got {actual_grid}")
-        if expected_placeholder_length is not None and expected_placeholder_length != 1:
+        if expected_placeholder_length != 1:
             raise ValueError(f"Kimi image placeholder length mismatch: expected {expected_placeholder_length}, got 1")
         grid_sizes = tensors["grid_thws"].reshape(-1, 3).prod(-1)
         config_by_key = {

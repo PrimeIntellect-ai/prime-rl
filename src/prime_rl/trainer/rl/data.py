@@ -291,7 +291,7 @@ class DataLoader:
             micro_batch.lora_num_tokens[0] = len(micro_batch.input_ids)
         mm_kwargs: dict[str, Tensor] | None = None
         mm_forward_policy: ForwardPolicy | None = None
-        if micro_batch.mm_kwargs:
+        if micro_batch.mm_kwargs is not None:
             raise ValueError("Processed multimodal mm_kwargs are unsupported in v1; use raw mm_refs")
         if micro_batch.mm_refs is not None:
             mm_kwargs, mm_forward_policy = self._materialize_mm_refs(micro_batch, micro_batch.mm_refs)

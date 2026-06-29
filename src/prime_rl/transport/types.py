@@ -21,8 +21,8 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
 class MMRefs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """Raw multimodal sidecar references for one sample.
 
-    ``descriptor`` carries JSON-safe renderer metadata (hashes, grids, placeholder
-    layout). ``uris`` carries the raw image files that the trainer materializes
+    ``descriptor`` carries JSON-safe renderer metadata (hashes and adapter
+    payloads). ``uris`` carries the raw image files that the trainer materializes
     with its own processor. Processed tensors are intentionally not part of this
     transport.
     """
@@ -47,8 +47,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     env_name: str
     ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl component)
 
-    # Legacy eager multimodal payloads are rejected by the v1 raw-image-ref
-    # path. Keep the field so old batches fail at a clear boundary.
+    # Processed multimodal payloads are rejected by the v1 raw-image-ref path.
     mm_kwargs: dict[str, EncodedTensor] | None = None
 
     mm_refs: MMRefs | None = None
@@ -102,8 +101,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None
 
-    # Legacy eager multimodal payloads are rejected by the v1 raw-image-ref
-    # path. Keep the field so old batches fail at a clear boundary.
+    # Processed multimodal payloads are rejected by the v1 raw-image-ref path.
     mm_kwargs: dict[str, EncodedTensor] | None = None
     mm_refs: MMRefs | None = None
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)

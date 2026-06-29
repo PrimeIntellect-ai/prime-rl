@@ -31,7 +31,9 @@ def _grid_payload(item: RawMMItem) -> list[int]:
     grid = item.payload.get("image_grid_thw")
     if grid is None:
         raise ValueError("Qwen raw descriptor payload is missing image_grid_thw")
-    if len(grid) == 1 and isinstance(grid[0], list):
+    if not isinstance(grid, list | tuple):
+        raise ValueError(f"Invalid Qwen image_grid_thw: {grid!r}")
+    if len(grid) == 1 and isinstance(grid[0], list | tuple):
         grid = grid[0]
     if not isinstance(grid, list | tuple) or len(grid) != 3:
         raise ValueError(f"Invalid Qwen image_grid_thw: {grid!r}")
@@ -91,10 +93,10 @@ class QwenVLAdapter:
         if "image_grid_thw" not in tensors:
             raise ValueError("Qwen processor did not return image_grid_thw")
         actual_grids = tensors["image_grid_thw"].tolist()
-        for idx, item in enumerate(items):
+        for idx, (item, actual_grid) in enumerate(zip(items, actual_grids, strict=True)):
             expected = _grid_payload(item)
-            if actual_grids[idx] != expected:
-                raise ValueError(f"Image grid mismatch at index {idx}: expected {expected}, got {actual_grids[idx]}")
+            if actual_grid != expected:
+                raise ValueError(f"Image grid mismatch at index {idx}: expected {expected}, got {actual_grid}")
         return MaterializedMM(kwargs=tensors, forward_policy=self.forward_policy)
 
     def materialize_for_vllm(
@@ -102,7 +104,7 @@ class QwenVLAdapter:
         image_processor: Any,
         item: RawMMItem,
         image: Any,
-        expected_placeholder_length: int | None,
+        expected_placeholder_length: int,
     ) -> Any:
         from vllm.model_executor.models.qwen2_vl import _create_qwen2vl_field_factory
         from vllm.multimodal.inputs import MultiModalKwargsItems
@@ -122,7 +124,7 @@ class QwenVLAdapter:
         if actual_grid != expected_grid:
             raise ValueError(f"Image grid mismatch: expected {expected_grid}, got {actual_grid}")
         num_image_tokens = int(expected_grid[0] * expected_grid[1] * expected_grid[2] // (merge_size * merge_size))
-        if expected_placeholder_length is not None and expected_placeholder_length != num_image_tokens:
+        if expected_placeholder_length != num_image_tokens:
             raise ValueError(
                 f"Image placeholder length mismatch: expected {expected_placeholder_length}, got {num_image_tokens}"
             )
@@ -151,7 +153,7 @@ class QwenVLAdapter:
         feature_dim = self.placeholder_feature_dim(image_processor)
         pixel_values: list[torch.Tensor] = []
         image_grid_thw: list[list[int]] = []
-        for idx, item in enumerate(items):
+        for item in items:
             self.validate_item(item)
             grid = _grid_payload(item)
             pixel_values.append(torch.zeros((math.prod(grid), feature_dim), dtype=torch.float32))

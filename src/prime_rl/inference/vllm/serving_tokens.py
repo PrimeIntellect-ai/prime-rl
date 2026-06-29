@@ -33,7 +33,6 @@ delegates to upstream so we track future vLLM changes for free.
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 from collections.abc import AsyncGenerator, AsyncIterable
 from dataclasses import dataclass
@@ -197,19 +196,10 @@ def _parse_raw_image_ref(raw_ref: str, *, feature_modality: str, mm_hash: str):
 def _read_verified_raw_image(ref) -> bytes:
     from renderers.mm_store import raw_image_path
 
-    label = ref.raw_image_id or ref.raw_uri or "raw image"
-    if ref.raw_image_id is not None:
-        try:
-            raw = raw_image_path(run_id=ref.run_id, raw_image_id=ref.raw_image_id).read_bytes()
-        except OSError as exc:
-            raise _MMImageRefError(f"Unable to read raw image asset {ref.raw_image_id!r}: {exc}") from exc
-    elif isinstance(ref.raw_uri, str) and ref.raw_uri.startswith("data:image/"):
-        marker = ";base64,"
-        if marker not in ref.raw_uri:
-            raise _MMImageRefError("Inline raw image refs must use base64 data:image URIs")
-        raw = base64.b64decode(ref.raw_uri.split(marker, 1)[1])
-    else:
-        raise _MMImageRefError(f"Unsupported raw image source {label!r}")
+    try:
+        raw = raw_image_path(raw_image_id=ref.raw_image_id).read_bytes()
+    except OSError as exc:
+        raise _MMImageRefError(f"Unable to read raw image asset {ref.raw_image_id!r}: {exc}") from exc
 
     actual_hash = hashlib.sha256(raw).hexdigest()[:32]
     if actual_hash != ref.mm_hash:
@@ -231,18 +221,19 @@ def _materialize_raw_image_ref_sync(
     *,
     feature_modality: str,
     mm_hash: str,
-    expected_placeholder_length: int | None,
+    expected_placeholder_length: int,
     processor_model_name: str,
     trust_remote_code: bool,
 ):
     ref = _parse_raw_image_ref(raw_ref, feature_modality=feature_modality, mm_hash=mm_hash)
     raw = _read_verified_raw_image(ref)
-    image = _decode_raw_image(raw, raw_image_id=ref.raw_image_id or "inline image")
+    image = _decode_raw_image(raw, raw_image_id=ref.raw_image_id)
     image_processor = _load_image_processor(processor_model_name, trust_remote_code)
     item = RawMMItem(
         modality=ref.modality,
         family=ref.family,
         layout_fingerprint=ref.fingerprint,
+        raw_image_id=ref.raw_image_id,
         payload=dict(ref.payload),
         raw_ref=raw_ref,
     )
@@ -291,14 +282,14 @@ async def _decode_raw_mm_kwargs(
     for feature_modality, hashes in features.mm_hashes.items():
         raw_refs, placeholders = _raw_ref_payloads_for_feature(features, feature_modality, hashes)
         decoded: list[Any] = []
-        for idx, raw_ref in enumerate(raw_refs):
+        for raw_ref, mm_hash, placeholder in zip(raw_refs, hashes, placeholders, strict=True):
             decoded.append(
                 await asyncio.to_thread(
                     _materialize_raw_image_ref_sync,
                     raw_ref,
                     feature_modality=feature_modality,
-                    mm_hash=hashes[idx],
-                    expected_placeholder_length=placeholders[idx].length,
+                    mm_hash=mm_hash,
+                    expected_placeholder_length=placeholder.length,
                     processor_model_name=processor_model_name,
                     trust_remote_code=trust_remote_code,
                 )

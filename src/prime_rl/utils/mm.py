@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 from collections.abc import Iterable, Mapping
 from io import BytesIO
@@ -35,29 +34,6 @@ def file_uri_to_path(uri: str) -> Path:
     if parsed.netloc not in ("", "localhost"):
         raise ValueError(f"file:// multimodal refs must be local paths, got {uri!r}")
     return Path(unquote(parsed.path))
-
-
-def data_image_uri_to_bytes(uri: str) -> bytes:
-    if not uri.startswith("data:image/"):
-        raise ValueError(f"Expected data:image URI, got {uri!r}")
-    marker = ";base64,"
-    if marker not in uri:
-        raise ValueError("data:image URI must use base64 encoding")
-    _, b64 = uri.split(marker, 1)
-    return base64.b64decode(b64)
-
-
-def image_uri_to_bytes(uri: str) -> bytes:
-    if uri.startswith("data:image/"):
-        return data_image_uri_to_bytes(uri)
-    return file_uri_to_path(uri).read_bytes()
-
-
-def validate_image_uri(uri: str) -> None:
-    if uri.startswith("data:image/"):
-        data_image_uri_to_bytes(uri)
-        return
-    file_uri_to_path(uri)
 
 
 def missing_file_uris(uris: Iterable[str]) -> list[str]:
@@ -123,13 +99,6 @@ def _validate_modalities(mm_items: Mapping[str, list[Any]]) -> None:
         )
 
 
-def _placeholder_dict(placeholder: Any) -> dict[str, int]:
-    return {
-        "offset": int(_field(placeholder, "offset")),
-        "length": int(_field(placeholder, "length")),
-    }
-
-
 def build_mm_refs(multi_modal_data: Any, messages: Iterable[Any]) -> MMRefs | None:
     mm_items = _field(multi_modal_data, "mm_items", None)
     if not mm_items:
@@ -148,14 +117,6 @@ def build_mm_refs(multi_modal_data: Any, messages: Iterable[Any]) -> MMRefs | No
             f"{len(image_items)} image descriptors but {len(image_hashes)} image hashes"
         )
 
-    mm_placeholders = _field(multi_modal_data, "mm_placeholders", {}) or {}
-    image_placeholders = [_placeholder_dict(p) for p in mm_placeholders.get(IMAGE_MODALITY, [])]
-    if image_placeholders and len(image_placeholders) != len(image_items):
-        raise ValueError(
-            "Raw image placeholder/descriptor mismatch: "
-            f"{len(image_placeholders)} placeholders but {len(image_items)} image descriptors"
-        )
-
     uris = image_uris_from_messages(messages)
     if len(uris) != len(image_items):
         raise ValueError(
@@ -163,13 +124,12 @@ def build_mm_refs(multi_modal_data: Any, messages: Iterable[Any]) -> MMRefs | No
             f"{len(uris)} image refs in messages but {len(image_items)} image descriptors"
         )
     for uri in uris:
-        validate_image_uri(uri)
+        file_uri_to_path(uri)
 
     return MMRefs(
         descriptor={
             "mm_items": {IMAGE_MODALITY: image_items},
             "mm_hashes": {IMAGE_MODALITY: image_hashes},
-            "mm_placeholders": {IMAGE_MODALITY: image_placeholders},
         },
         uris=uris,
     )
@@ -213,7 +173,7 @@ def _load_verified_images(uris: list[str], expected_hashes: list[str]) -> list[A
 
     images = []
     for uri, expected_hash in zip(uris, expected_hashes, strict=True):
-        raw = image_uri_to_bytes(uri)
+        raw = file_uri_to_path(uri).read_bytes()
         actual_hash = sha256_32(raw)
         if actual_hash != expected_hash:
             raise ValueError(f"Raw image hash mismatch for {uri}: expected {expected_hash}, got {actual_hash}")

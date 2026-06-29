@@ -563,7 +563,7 @@ class OrchestratorConfig(BaseConfig):
     experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
 
     multimodal: MultimodalConfig = MultimodalConfig()
-    """Raw multimodal storage policy shared with trainer and inference."""
+    """Raw multimodal image offload settings shared with trainer and inference."""
 
     @model_validator(mode="before")
     @classmethod

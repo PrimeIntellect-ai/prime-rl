@@ -168,7 +168,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
     """Check if a sample contains multimodal data (images)."""
-    return sample.mm_refs is not None or sample.mm_kwargs is not None
+    return sample.mm_refs is not None
 
 
 @dataclass
@@ -291,7 +291,6 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_refs=first_sample.mm_refs if _is_multimodal_sample(first_sample) else None,
-        mm_kwargs=first_sample.mm_kwargs if _is_multimodal_sample(first_sample) else None,
         rl_weights=streams["rl_weights"],
         ce_weights=streams["ce_weights"],
         ref_kl_weights=streams["ref_kl_weights"],

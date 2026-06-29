@@ -1187,7 +1187,7 @@ def forward(
         "temperature": temperature,
     }
 
-    if mm_kwargs:
+    if mm_kwargs is not None:
         # Forward the per-model multimodal tensors verbatim, plus the
         # token→modality map derived from renderer token ids.
         kwargs.update(mm_kwargs)

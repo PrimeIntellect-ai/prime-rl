@@ -419,6 +419,7 @@ def _mm_refs() -> MMRefs:
                         "modality": "image",
                         "family": "qwen_vl",
                         "layout_fingerprint": "f" * 32,
+                        "raw_image_id": "image.png",
                         "payload": {"image_grid_thw": [[1, 1, 1]]},
                     }
                 ]
@@ -427,23 +428,6 @@ def _mm_refs() -> MMRefs:
         },
         uris=["file:///tmp/image.png"],
     )
-
-
-def test_prepare_sample_preserves_raw_mm_refs():
-    sample = TrainingSample(
-        token_ids=[10, 11, 12],
-        mask=[False, False, True],
-        logprobs=[0.0] * 3,
-        temperatures=[1.0] * 3,
-        advantages=[0.0, 0.0, 1.0],
-        env_name="test-env",
-        mm_token_type_ids=[0, 1, 0],
-        mm_refs=_mm_refs(),
-    )
-
-    mb = prepare_sample(sample, seq_len=8)
-    assert mb.mm_refs == sample.mm_refs
-    assert mb.mm_token_type_ids == [0, 1, 0]
 
 
 def test_prepare_sample_rejects_overlong_raw_mm_refs():

@@ -42,7 +42,7 @@ class MultimodalAdapter(Protocol):
         image_processor: Any,
         item: "RawMMItem",
         image: "Image",
-        expected_placeholder_length: int | None,
+        expected_placeholder_length: int,
     ) -> Any: ...
 
     def synthesize_placeholder(

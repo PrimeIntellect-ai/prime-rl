@@ -59,9 +59,18 @@ export PROJECT_DIR={{ project_dir }}
 export CONFIG_DIR={{ config_dir }}
 export OUTPUT_DIR={{ output_dir }}
 export ORCHESTRATOR_OUTPUT_DIR={{ orchestrator_output_dir }}
-if [ -z "${VF_RENDERER_IMAGE_OFFLOAD_DIR:-}" ] && [ -z "${PRIME_RL_RUN_DIR:-}" ] && [ -z "${RUN_ID:-}" ]; then
-    export PRIME_RL_RUN_DIR="$ORCHESTRATOR_OUTPUT_DIR"
+{% if image_offload_dir %}
+export VF_RENDERER_IMAGE_OFFLOAD_DIR="{{ image_offload_dir }}"
+{% else %}
+if [ -z "${VF_RENDERER_IMAGE_OFFLOAD_DIR:-}" ]; then
+    if [ -n "${RUN_ID:-}" ]; then
+        RUN_ASSET_ID="${RUN_ID#run_}"
+        export VF_RENDERER_IMAGE_OFFLOAD_DIR="/data/outputs/run_${RUN_ASSET_ID}/assets/images"
+    else
+        export VF_RENDERER_IMAGE_OFFLOAD_DIR="$ORCHESTRATOR_OUTPUT_DIR/assets/images"
+    fi
 fi
+{% endif %}
 mkdir -p $OUTPUT_DIR/logs/trainer $OUTPUT_DIR/logs/inference
 rm -f $OUTPUT_DIR/logs/inference/*.log
 ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log

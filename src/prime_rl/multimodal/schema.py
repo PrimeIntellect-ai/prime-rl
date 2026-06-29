@@ -14,6 +14,7 @@ class RawMMItem:
     modality: str
     family: str
     layout_fingerprint: str
+    raw_image_id: str
     payload: dict[str, Any]
     raw_ref: str | None = None
     vllm_modality: str | None = None
@@ -72,6 +73,7 @@ def parse_raw_mm_item(value: Any) -> RawMMItem:
         modality=_required_str(descriptor, "modality"),
         family=_required_str(descriptor, "family"),
         layout_fingerprint=_required_str(descriptor, "layout_fingerprint"),
+        raw_image_id=_required_str(descriptor, "raw_image_id"),
         payload=_payload(descriptor),
         raw_ref=_optional_str(descriptor, "raw_ref"),
         vllm_modality=_optional_str(descriptor, "vllm_modality"),

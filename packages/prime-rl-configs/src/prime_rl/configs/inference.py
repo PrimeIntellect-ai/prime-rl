@@ -436,7 +436,7 @@ class InferenceConfig(BaseConfig):
     experimental: InferenceExperimentalConfig = InferenceExperimentalConfig()
 
     multimodal: MultimodalConfig = MultimodalConfig()
-    """Raw multimodal storage policy shared with trainer and orchestrator."""
+    """Raw multimodal image offload settings shared with trainer and orchestrator."""
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
