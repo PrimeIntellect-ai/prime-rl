@@ -35,7 +35,7 @@ from prime_rl.utils.process import (
     monitor_process,
     set_proc_title,
 )
-from prime_rl.utils.run_assets import run_asset_env
+from prime_rl.utils.run_assets import build_run_asset_env
 
 RL_TOML = "rl.toml"
 RL_SBATCH = "rl.sbatch"
@@ -126,7 +126,7 @@ def rl_local(config: RLConfig):
         "WANDB_SHARED_MODE": "1",
         "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex),
     }
-    shared_run_asset_env = run_asset_env(config.orchestrator.output_dir, multimodal=config.multimodal)
+    shared_run_asset_env = build_run_asset_env(config.orchestrator.output_dir, multimodal=config.multimodal)
 
     # Validate client port matches inference server port
     if config.inference is not None and not config.orchestrator.model.client.is_elastic:

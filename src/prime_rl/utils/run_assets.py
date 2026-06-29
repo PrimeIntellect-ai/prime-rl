@@ -7,6 +7,7 @@ from string import Template
 
 from prime_rl.configs.shared import MultimodalConfig
 
+# Contract: must match renderers.mm_store.IMAGE_OFFLOAD_DIR_ENV.
 IMAGE_OFFLOAD_DIR_ENV = "VF_RENDERER_IMAGE_OFFLOAD_DIR"
 RUN_ID_ENV = "RUN_ID"
 
@@ -32,6 +33,7 @@ def resolve_image_offload_dir(
     multimodal: MultimodalConfig,
     env: Mapping[str, str],
 ) -> Path:
+    """Resolve image asset dir by precedence: offload_dir, RUN_ID hosted path, then output_dir/assets/images."""
     explicit = multimodal.offload_dir
     if explicit is not None:
         return _expand_path(explicit, env)
@@ -41,7 +43,7 @@ def resolve_image_offload_dir(
     return (output_dir.resolve() / IMAGE_ASSET_SUBDIR).resolve()
 
 
-def run_asset_env(
+def build_run_asset_env(
     output_dir: Path,
     multimodal: MultimodalConfig | None = None,
     base: Mapping[str, str] | None = None,
@@ -60,7 +62,7 @@ def run_asset_env(
     return env
 
 
-def configure_run_asset_env(output_dir: Path, multimodal: MultimodalConfig) -> None:
+def apply_run_asset_env(output_dir: Path, multimodal: MultimodalConfig) -> None:
     if os.environ.get(IMAGE_OFFLOAD_DIR_ENV):
         return
-    os.environ.update(run_asset_env(output_dir, multimodal=multimodal))
+    os.environ.update(build_run_asset_env(output_dir, multimodal=multimodal))
