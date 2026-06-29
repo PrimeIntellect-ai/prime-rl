@@ -1,11 +1,11 @@
 """Unit tests for the adaptive concurrency control law (``decide_limit``)."""
 
-from prime_rl.configs.orchestrator import AdaptiveConcurrencyConfig
+from prime_rl.configs.orchestrator import ConcurrencyConfig
 from prime_rl.orchestrator.concurrency import decide_limit
 
 
 def _decide(**overrides):
-    config = overrides.pop("config", AdaptiveConcurrencyConfig())
+    config = overrides.pop("config", ConcurrencyConfig())
     kwargs = dict(
         current_limit=100,
         inflight=95,  # saturating (>= 0.9 * 100)
@@ -71,6 +71,6 @@ def test_grow_clamped_to_max_inflight():
 
 
 def test_backoff_clamped_to_min_inflight():
-    config = AdaptiveConcurrencyConfig(min_inflight=8)
+    config = ConcurrencyConfig(min_inflight=8)
     new, _ = _decide(current_limit=10, inflight=10, kv_usage=0.99, config=config)
     assert new == 8

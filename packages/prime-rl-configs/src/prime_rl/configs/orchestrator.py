@@ -443,7 +443,7 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
-class AdaptiveConcurrencyConfig(BaseConfig):
+class ConcurrencyConfig(BaseConfig):
     """Closed-loop controller for the in-flight rollout limit.
 
     Instead of holding concurrency at a fixed ceiling, the controller ramps the
@@ -591,10 +591,10 @@ class OrchestratorConfig(BaseConfig):
     """Rollout-mode batching only. Multiplier used to derive ``max_inflight_rollouts`` from ``batch_size`` when ``max_inflight_rollouts`` is unset. Values below 1.0 intentionally cap in-flight rollout capacity below ``batch_size``."""
 
     max_inflight_rollouts: int | None = Field(None, ge=1)
-    """Hard upper clamp on rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset). This is the ceiling for the adaptive controller (``adaptive_concurrency``), not the operating point; disable the controller (``--no-orchestrator.adaptive-concurrency``) to pin concurrency at this value instead."""
+    """Hard upper clamp on rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset). This is the ceiling for the concurrency controller (``concurrency``), not the operating point."""
 
-    adaptive_concurrency: AdaptiveConcurrencyConfig | None = AdaptiveConcurrencyConfig()
-    """Adaptive in-flight concurrency controller. Enabled whenever set (the default): ramps the effective in-flight limit toward ``target_kv_usage`` GPU KV utilization, clamped by ``max_inflight_rollouts``. Disable with ``--no-orchestrator.adaptive-concurrency`` (sets it to None) to pin concurrency at ``max_inflight_rollouts``."""
+    concurrency: ConcurrencyConfig = ConcurrencyConfig()
+    """In-flight concurrency controller: ramps the effective in-flight rollout limit toward ``target_kv_usage`` GPU KV utilization, clamped by ``max_inflight_rollouts``."""
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Output sequences returned per example during training."""

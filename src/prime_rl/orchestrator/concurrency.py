@@ -1,4 +1,4 @@
-"""Adaptive in-flight concurrency control for the rollout dispatcher.
+"""In-flight concurrency control for the rollout dispatcher.
 
 The dispatcher caps concurrency with ``current_limit``; this controller adjusts
 that limit at runtime to keep the inference server's GPU KV cache near a target
@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 from httpx import AsyncClient
 
-from prime_rl.configs.orchestrator import AdaptiveConcurrencyConfig
+from prime_rl.configs.orchestrator import ConcurrencyConfig
 from prime_rl.orchestrator.inference_metrics import build_metrics_endpoints, parse_prometheus_text
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.logger import get_logger
@@ -56,7 +56,7 @@ def decide_limit(
     kv_delta: float,
     preemption_rate: float,
     max_inflight: int,
-    config: AdaptiveConcurrencyConfig,
+    config: ConcurrencyConfig,
 ) -> tuple[int, str]:
     """Pure control law. Returns ``(new_limit, decision)`` where decision is one
     of ``"grow" | "backoff" | "hold"``. ``kv_delta`` is the per-tick change in the
@@ -96,7 +96,7 @@ class ConcurrencyController:
         admin_clients: list[AsyncClient],
         roles: list[str | None] | None,
         max_inflight: int,
-        config: AdaptiveConcurrencyConfig,
+        config: ConcurrencyConfig,
     ) -> None:
         self.dispatcher = dispatcher
         self.config = config
@@ -158,7 +158,7 @@ class ConcurrencyController:
         self.dispatcher.set_limit(new_limit)
         if new_limit != before:
             get_logger().debug(
-                f"adaptive concurrency: {decision} {before}->{new_limit} - kv={ewma:.2f} "
+                f"concurrency: {decision} {before}->{new_limit} - kv={ewma:.2f} "
                 f"dkv={self.kv_delta:+.3f} preempt/s={signal.preemption_rate:.2f} "
                 f"inflight={self.dispatcher.inflight_permits}"
             )
