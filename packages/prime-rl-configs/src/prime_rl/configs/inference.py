@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
-from prime_rl.configs.shared import BaseModelConfig, LogConfig, SlurmConfig
+from prime_rl.configs.shared import BaseModelConfig, EnvVars, LogConfig, SlurmConfig
 from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
@@ -300,10 +300,10 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     decode_port: int = 8200
     """Port for decode vLLM instances."""
 
-    prefill_env_overrides: dict[str, str] = {}
+    prefill_env_vars: EnvVars = {}
     """Extra environment variables exported only on prefill nodes."""
 
-    decode_env_overrides: dict[str, str] = {}
+    decode_env_vars: EnvVars = {}
     """Extra environment variables exported only on decode nodes."""
 
     prefill_vllm_overrides: dict[str, Any] = {}
@@ -351,6 +351,9 @@ class InferenceConfig(BaseConfig):
 
     log: LogConfig = LogConfig()
     """Logging configuration."""
+
+    env_vars: EnvVars = {}
+    """Extra environment variables for the inference server process(es). Merged on top of the launcher defaults."""
 
     enable_lora: bool = False
     """Enable LoRA. Forwarded as ``--enable-lora``."""

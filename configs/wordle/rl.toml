@@ -35,7 +35,7 @@ max_completion_tokens = 1024
 
 # Qwen3 finetune with the standard PI template patch (byte-identical to
 # PrimeIntellect/Qwen3-0.6B base); always re-emits prior <think> blocks.
-# Match that with the qwen3 renderer's preserve_all_thinking.
+# Match that with renderer thinking_retention.
 [orchestrator.renderer]
 name = "qwen3"
-preserve_all_thinking = true
+thinking_retention = "all"

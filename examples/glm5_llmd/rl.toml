@@ -31,8 +31,8 @@ num_decode_nodes = 8
 num_decode_replicas = 1
 # skip warmup for faster start in cost of some jit overhead early
 # ucx needs to be set else random segfaults, vllm can't autoset before importing for some reason
-prefill_env_overrides = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="skip", "UCX_RCACHE_MAX_UNRELEASED"="1024"}
-decode_env_overrides = {"VLLM_DEEP_GEMM_WARMUP"="skip", "UCX_RCACHE_MAX_UNRELEASED"="1024"}
+prefill_env_vars = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="skip", "UCX_RCACHE_MAX_UNRELEASED"="1024"}
+decode_env_vars = {"VLLM_DEEP_GEMM_WARMUP"="skip", "UCX_RCACHE_MAX_UNRELEASED"="1024"}
 
 # gives the most KV cache while keeping decent throughput, KV cache increase comes in from lower deep-ep LL static buffers
 prefill_vllm_overrides = {"enable_dbo"=true}
@@ -88,7 +88,7 @@ name = "zai-org/GLM-5.1-FP8"
 
 [orchestrator.renderer]
 name = "glm-5.1"
-preserve_all_thinking = true
+clear_thinking = false
 
 [orchestrator.train.sampling]
 temperature = 1.0
@@ -96,17 +96,9 @@ extra_body = {chat_template_kwargs = {clear_thinking = false}}
 
 
 [[orchestrator.train.env]]
-id = "rlm_swe"
 name = "r2e"
-num_workers = 16
-
-[orchestrator.train.env.args]
-max_turns = 300
-timeout_seconds = 21600
-summarize_at_tokens = [35000, 80000]
-poll_interval = 5
-rlm_ref = "907115a79b2a50d193863e7ea1f3550acb4386f0"
-labels = ["glm5-llmd"]
+taskset = { id = "r2e-gym-v1" }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["glm5-llmd"] } }
 
 [inference]
 enable_expert_parallel = true
