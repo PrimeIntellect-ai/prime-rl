@@ -109,18 +109,20 @@ def compute_rollout_metrics(
     for condition in sorted(set(conditions)):
         out[f"{p}/stop_condition/{condition}"] = conditions.count(condition) / len(conditions)
 
-    # Solve rates (per group): solve_none if no rollout earned reward, solve_all if every
+    # Solve rates (per group): solved_none if no rollout earned reward, solved_all if every
     # configured slot did (sum == env group size), solved_some the remainder — the mixed-reward
     # groups (the ones that carry GRPO signal).
     groups: dict = {}
     for r in rollouts:
         groups.setdefault(r.group_id, []).append(r)
-    solve_none = sum(1 for g in groups.values() if sum(r.reward for r in g) == 0)
-    solve_all = sum(1 for g in groups.values() if sum(r.reward for r in g) == env_group_size.get(g[0].env_name, len(g)))
+    solved_none = sum(1 for g in groups.values() if sum(r.reward for r in g) == 0)
+    solved_all = sum(
+        1 for g in groups.values() if sum(r.reward for r in g) == env_group_size.get(g[0].env_name, len(g))
+    )
     n_groups = len(groups)
-    out[f"{p}/solve_none"] = solve_none / n_groups
-    out[f"{p}/solve_all"] = solve_all / n_groups
-    out[f"{p}/solved_some"] = 1 - (solve_none + solve_all) / n_groups
+    out[f"{p}/solved_none"] = solved_none / n_groups
+    out[f"{p}/solved_all"] = solved_all / n_groups
+    out[f"{p}/solved_some"] = 1 - (solved_none + solved_all) / n_groups
 
     # Train-only: the filtered-out rate (a top-level rollout metric) plus per-filter detection
     # rates under filters/ (eval has no filter pipeline, so these are gated off there).

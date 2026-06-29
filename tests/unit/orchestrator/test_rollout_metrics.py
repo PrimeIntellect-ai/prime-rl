@@ -92,7 +92,7 @@ def test_rates_use_mean_suffix():
 
 
 def test_solve_rates_per_env_group_size():
-    # group A (env=a, size 2): both solved -> solve_all; group B (env=b, size 4): none -> solve_none
+    # group A (env=a, size 2): both solved -> solved_all; group B (env=b, size 4): none -> solved_none
     rollouts = [
         mk(reward=1.0, env_name="a", group_id="A"),
         mk(reward=1.0, env_name="a", group_id="A"),
@@ -100,8 +100,8 @@ def test_solve_rates_per_env_group_size():
         mk(reward=0.0, env_name="b", group_id="B"),
     ]
     out = compute_rollout_metrics(rollouts, prefix="train/agg", subset="all", env_group_size={"a": 2, "b": 4})
-    assert out["train/agg/all/solve_all"] == 0.5
-    assert out["train/agg/all/solve_none"] == 0.5
+    assert out["train/agg/all/solved_all"] == 0.5
+    assert out["train/agg/all/solved_none"] == 0.5
     assert out["train/agg/all/solved_some"] == 0.0
 
 
