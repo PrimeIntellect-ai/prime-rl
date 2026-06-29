@@ -132,6 +132,7 @@ class RolloutDispatcher:
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
+        initial_inflight: int | None = None,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -143,7 +144,13 @@ class RolloutDispatcher:
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
 
+        # ``max_inflight`` is the hard upper clamp; ``current_limit`` is the
+        # operating point, adjusted at runtime by the adaptive concurrency
+        # controller (defaults to the clamp when no controller drives it).
         self.max_inflight = max_inflight_rollouts
+        self.current_limit = min(
+            initial_inflight if initial_inflight is not None else max_inflight_rollouts, max_inflight_rollouts
+        )
         self.inflight_permits = 0
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
@@ -188,7 +195,13 @@ class RolloutDispatcher:
 
     @property
     def available_permits(self) -> int:
-        return self.max_inflight - self.inflight_permits
+        return self.current_limit - self.inflight_permits
+
+    def set_limit(self, limit: int) -> None:
+        """Set the operating in-flight limit (clamped to ``[1, max_inflight]``).
+        Called by the adaptive concurrency controller; a no-op relative to the
+        clamp keeps legacy static behavior when no controller runs."""
+        self.current_limit = max(1, min(limit, self.max_inflight))
 
     @property
     def inflight_by_env(self) -> dict[tuple[RolloutKind, str], int]:
@@ -664,6 +677,7 @@ class RolloutDispatcher:
     def gauges(self) -> dict[str, float]:
         """Instantaneous, read-only gauges sampled by the periodic logger."""
         return {
+            "dispatcher/current_limit": float(self.current_limit),
             "dispatcher/inflight_train": float(self.inflight_train_count),
             "dispatcher/inflight_eval": float(self.inflight_eval_count),
             "dispatcher/queued/eval": float(self.queued_eval_examples),

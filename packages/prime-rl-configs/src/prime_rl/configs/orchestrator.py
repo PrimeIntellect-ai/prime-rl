@@ -443,6 +443,62 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
+class AdaptiveConcurrencyConfig(BaseConfig):
+    """Closed-loop controller for the in-flight rollout limit.
+
+    Instead of holding concurrency at a fixed ceiling, the controller ramps the
+    effective limit toward whatever keeps the inference server's GPU KV cache near
+    ``target_kv_usage``. It grows the limit only once usage has *settled* at the
+    current concurrency (so the still-growing KV of long in-flight rollouts can
+    materialize before more are admitted — avoiding overshoot from the lagging
+    signal) and backs off on a hard KV high-water mark or rising preemptions.
+    ``max_inflight_rollouts`` remains the hard upper clamp.
+
+    Note on CPU KV offloading: ``target_kv_usage`` tracks the *GPU* KV pool
+    (``vllm:kv_cache_usage_perc``), which is the binding constraint for active
+    decoding. vLLM exposes no occupancy metric for the CPU offload tier, so a
+    GPU+CPU "total" cannot be targeted directly. If CPU offloading is enabled and
+    you want to use it, raise ``target_kv_usage`` toward ~0.95 so the GPU runs hot
+    enough to engage the offload tier, and rely on ``preemption_rate_threshold``
+    as the backoff."""
+
+    enabled: bool = True
+    """Adapt the in-flight limit at runtime. When False, concurrency is pinned at
+    ``max_inflight_rollouts`` (the legacy static behavior)."""
+
+    target_kv_usage: float = Field(0.8, gt=0.0, le=1.0)
+    """Target GPU KV cache utilization. The limit grows while usage is below this."""
+
+    high_water_kv_usage: float = Field(0.95, gt=0.0, le=1.0)
+    """KV utilization above which the controller backs the limit off."""
+
+    min_inflight: int = Field(8, ge=1)
+    """Lower clamp and ramp starting point for the effective limit."""
+
+    interval: float = Field(5.0, gt=0.0)
+    """Seconds between control ticks (also the inference-metrics poll period)."""
+
+    ewma_alpha: float = Field(0.3, gt=0.0, le=1.0)
+    """Smoothing factor for the KV utilization signal (higher = more reactive)."""
+
+    settle_threshold: float = Field(0.02, ge=0.0)
+    """Max per-tick rise in smoothed KV utilization for usage to count as
+    "settled". The limit only grows when settled, which paces the ramp to the
+    rate at which in-flight rollouts' KV materializes."""
+
+    growth_factor: float = Field(1.5, gt=1.0)
+    """Multiplicative step when growing far below target; the effective step
+    tapers smoothly to ~1.0 as utilization approaches ``target_kv_usage``."""
+
+    backoff_factor: float = Field(0.8, gt=0.0, lt=1.0)
+    """Multiplicative cut applied to the limit when congested (KV high-water or
+    preemptions)."""
+
+    preemption_rate_threshold: float = Field(1.0, ge=0.0)
+    """Preemptions per second above which the controller treats the server as
+    oversubscribed and backs off."""
+
+
 class OrchestratorExperimentalConfig(BaseConfig):
     pass
 
@@ -539,7 +595,10 @@ class OrchestratorConfig(BaseConfig):
     """Rollout-mode batching only. Multiplier used to derive ``max_inflight_rollouts`` from ``batch_size`` when ``max_inflight_rollouts`` is unset. Values below 1.0 intentionally cap in-flight rollout capacity below ``batch_size``."""
 
     max_inflight_rollouts: int | None = Field(None, ge=1)
-    """Maximum number of rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
+    """Hard upper clamp on rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset). By default this is a ceiling for the adaptive controller (``adaptive_concurrency``), not the operating point; set ``adaptive_concurrency.enabled=false`` to pin concurrency here instead."""
+
+    adaptive_concurrency: AdaptiveConcurrencyConfig = AdaptiveConcurrencyConfig()
+    """Adaptive in-flight concurrency controller. On by default: ramps the effective in-flight limit toward ``target_kv_usage`` GPU KV utilization, clamped by ``max_inflight_rollouts``."""
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Output sequences returned per example during training."""

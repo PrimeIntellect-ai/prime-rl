@@ -29,6 +29,8 @@ COUNTER_KEYS = {
     "vllm:nixl_num_failed_transfers_total": "nixl_failed_transfers_total",
     "vllm:nixl_num_failed_notifications_total": "nixl_failed_notifications_total",
     "vllm:nixl_num_kv_expired_reqs_total": "nixl_kv_expired_requests_total",
+    "vllm:num_preemptions": "num_preemptions_total",
+    "vllm:num_preemptions_total": "num_preemptions_total",
 }
 
 GAUGE_KEYS = {
@@ -68,6 +70,7 @@ HISTOGRAM_COUNT_KEYS = {
 class EngineRollup:
     running_requests: float = 0.0
     waiting_requests: float = 0.0
+    num_preemptions_total: float = 0.0
     kv_cache_usage_perc: float = 0.0
     cpu_cache_usage_perc: float | None = None
     gpu_prefix_cache_hit_rate: float | None = None
