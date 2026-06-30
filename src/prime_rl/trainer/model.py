@@ -326,7 +326,11 @@ def _patch_qwen3_5_linear_attn_varlen():
             device = inputs_embeds.device if inputs_embeds is not None else input_ids.device
             cu_seqlens, _ = get_cu_seqlens_from_seq_lens(
                 provided_seq_lens.to(device=device),
-                total_tokens=None if seq_lens_are_global else position_ids.shape[-1] if position_ids is not None else None,
+                total_tokens=None
+                if seq_lens_are_global
+                else position_ids.shape[-1]
+                if position_ids is not None
+                else None,
             )
         elif attn_impl in ("flash_attention_2", "flash_attention_3", "fa4") and position_ids is not None:
             pids = position_ids
