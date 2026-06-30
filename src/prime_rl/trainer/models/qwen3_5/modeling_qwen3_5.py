@@ -182,7 +182,7 @@ class Qwen3_5VLMModel(nn.Module):
             inputs_embeds=inputs_embeds,
             position_ids=position_ids,
             use_cache=None,
-            seq_lens=seq_lens if seq_lens_are_global else None,
+            seq_lens=seq_lens,
             seq_lens_are_global=seq_lens_are_global,
         )
 
@@ -326,7 +326,8 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
                 past_key_values=None,
                 inputs_embeds=inputs_embeds,
                 use_cache=None,
-                seq_lens=seq_lens if seq_lens_are_global else None,
+                seq_lens=seq_lens,
+                seq_lens_are_global=seq_lens_are_global,
             )
 
         hidden_states = outputs.last_hidden_state
