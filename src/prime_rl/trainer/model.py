@@ -499,6 +499,13 @@ def get_model(
         _patch_qwen3_5_text_position_ids()
         _patch_qwen3_5_moe_conversion_mapping()
         _patch_qwen3_5_linear_attn_varlen()
+    if config.vlm is not None and config.cp > 1 and config.cp_style == "ulysses":
+        vision_config = getattr(model_config, "vision_config", None)
+        if vision_config is not None:
+            logger.info("Using SDPA for VLM vision encoder under CP")
+            vision_config._attn_implementation = "sdpa"
+            if hasattr(vision_config, "_attn_implementation_internal"):
+                vision_config._attn_implementation_internal = "sdpa"
     for subconfig_key in getattr(model_config, "sub_configs", {}):
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
