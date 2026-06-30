@@ -354,9 +354,6 @@ class EvalRollouts:
     def __init__(self, rollouts: list[Rollout] | None = None) -> None:
         self.rollouts = rollouts if rollouts is not None else []
 
-    def append(self, rollout: Rollout) -> None:
-        self.rollouts.append(rollout)
-
     def __len__(self) -> int:
         return len(self.rollouts)
 

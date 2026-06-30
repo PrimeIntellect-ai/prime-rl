@@ -556,11 +556,8 @@ class Orchestrator:
             "time/save_ckpt": save_ckpt_time,
             "step": step,
         }
-        batch_share: dict[str, int] = {}
-        for r in batch.rollouts:
-            batch_share[r.env_name] = batch_share.get(r.env_name, 0) + 1
-        for env_name, count in batch_share.items():
-            metrics[f"batch/{env_name}"] = count / len(batch.rollouts)
+        for env_name, env_pool in batch.rollouts.by_env().items():
+            metrics[f"batch/{env_name}"] = len(env_pool) / len(batch.rollouts)
         if self.train_sink.pre_filter_seen > 0:
             metrics["pre_filters/all/dropped_rate"] = (
                 self.train_sink.pre_filter_dropped / self.train_sink.pre_filter_seen
