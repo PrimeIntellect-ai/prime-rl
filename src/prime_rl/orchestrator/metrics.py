@@ -44,6 +44,47 @@ class Stat:
         return {f"{prefix}/mean": self.mean(), f"{prefix}/max": self.max(), f"{prefix}/min": self.min()}
 
 
+class TimingMetrics:
+    """Per-phase rollout duration distributions, nested so ``metrics.timing.setup.mean()`` reads
+    naturally. ``total`` is the per-rollout sum across all phases."""
+
+    PHASES = ("setup", "generation", "finalize", "scoring")
+
+    def __init__(self, rollouts: list["Rollout"]) -> None:
+        self.rollouts = rollouts
+
+    def _phase(self, name: str) -> Stat:
+        return Stat([getattr(r.timing, name).duration for r in self.rollouts])
+
+    @property
+    def setup(self) -> Stat:
+        return self._phase("setup")
+
+    @property
+    def generation(self) -> Stat:
+        return self._phase("generation")
+
+    @property
+    def finalize(self) -> Stat:
+        return self._phase("finalize")
+
+    @property
+    def scoring(self) -> Stat:
+        return self._phase("scoring")
+
+    @property
+    def total(self) -> Stat:
+        return Stat([sum(getattr(r.timing, p).duration for p in self.PHASES) for r in self.rollouts])
+
+    def to_dict(self, prefix: str) -> dict[str, float]:
+        """``{prefix}/<phase>/{mean,max,min}`` for each phase, plus ``{prefix}/total/...``."""
+        out: dict[str, float] = {}
+        for phase in self.PHASES:
+            out |= self._phase(phase).to_dict(f"{prefix}/{phase}")
+        out |= self.total.to_dict(f"{prefix}/total")
+        return out
+
+
 class RolloutMetrics:
     """Metrics shared by train and eval over a rollout list. Distributional metrics are ``Stat``s
     (mean/max/min); boolean metrics are ``Stat``s of 0/1 (use ``.mean()`` for the rate). ``to_wandb``
@@ -74,32 +115,8 @@ class RolloutMetrics:
         return Stat([float(r.num_branches) for r in self.rollouts])
 
     @property
-    def timing_setup(self) -> Stat:
-        return Stat([r.timing.setup.duration for r in self.rollouts])
-
-    @property
-    def timing_generation(self) -> Stat:
-        return Stat([r.timing.generation.duration for r in self.rollouts])
-
-    @property
-    def timing_finalize(self) -> Stat:
-        return Stat([r.timing.finalize.duration for r in self.rollouts])
-
-    @property
-    def timing_scoring(self) -> Stat:
-        return Stat([r.timing.scoring.duration for r in self.rollouts])
-
-    @property
-    def timing_total(self) -> Stat:
-        return Stat(
-            [
-                r.timing.setup.duration
-                + r.timing.generation.duration
-                + r.timing.finalize.duration
-                + r.timing.scoring.duration
-                for r in self.rollouts
-            ]
-        )
+    def timing(self) -> TimingMetrics:
+        return TimingMetrics(self.rollouts)
 
     # Boolean rate metrics (0/1 distributions — ``.mean()`` is the rate)
     @property
@@ -162,11 +179,7 @@ class RolloutMetrics:
         out |= self.num_output_tokens.to_dict(f"{p}/num_output_tokens")
         out |= self.num_turns.to_dict(f"{p}/num_turns")
         out |= self.num_branches.to_dict(f"{p}/num_branches")
-        out |= self.timing_setup.to_dict(f"{p}/timing/setup")
-        out |= self.timing_generation.to_dict(f"{p}/timing/generation")
-        out |= self.timing_finalize.to_dict(f"{p}/timing/finalize")
-        out |= self.timing_scoring.to_dict(f"{p}/timing/scoring")
-        out |= self.timing_total.to_dict(f"{p}/timing/total")
+        out |= self.timing.to_dict(f"{p}/timing")
         for name, stat in self.custom("metrics").items():
             out |= stat.to_dict(f"{p}/metrics/{name}")
         for name, stat in self.custom("rewards").items():

@@ -163,9 +163,10 @@ def test_custom_metrics_and_reward_components():
 
 
 def test_timing_total_sums_all_phases():
-    out = TrainRollouts([mk(setup=1.0, generation=2.0, finalize=0.5, scoring=0.5)]).metrics.to_wandb(
-        prefix="train/agg", subset="all"
-    )
+    m = TrainRollouts([mk(setup=1.0, generation=2.0, finalize=0.5, scoring=0.5)]).metrics
+    assert m.timing.setup.mean() == 1.0  # nested fluent access
+    assert m.timing.total.mean() == 4.0
+    out = m.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/timing/setup/mean"] == 1.0
     assert out["train/agg/all/timing/finalize/mean"] == 0.5
     assert out["train/agg/all/timing/total/mean"] == 4.0
