@@ -26,6 +26,10 @@ class ControlSignal:
     """Max GPU KV cache utilization across the (decode) engines, in [0, 1]."""
     preemption_rate: float
     """Engine preemptions per second since the previous poll."""
+    tps: float
+    """Total generation throughput (tokens/sec) across the (decode) engines since the
+    previous poll. Continuous load signal — unlike rollout completion rate it stays
+    meaningful for long (hour-long) rollouts."""
 
 
 COUNTER_KEYS = {
@@ -418,6 +422,7 @@ class InferenceMetricsCollector:
         *,
         wandb_enabled: bool = False,
         on_sample: Callable[[ControlSignal], None] | None = None,
+        poll_interval: float = POLL_INTERVAL,
     ):
         self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
         self.metric_history: dict[str, deque[float]] = {}
@@ -425,6 +430,9 @@ class InferenceMetricsCollector:
         self.task: asyncio.Task | None = None
         self.wandb_enabled = wandb_enabled
         self.on_sample = on_sample
+        # Poll cadence = controller tick (also the inference-metrics period). Drives
+        # the concurrency controller's decision rate; defaults to the module constant.
+        self.poll_interval = poll_interval
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
 
     async def start(self):
@@ -437,7 +445,7 @@ class InferenceMetricsCollector:
                     await self.collect_and_log()
                 except Exception as e:
                     get_logger().debug(f"Inference metrics poll failed: {e!r}")
-                await asyncio.sleep(POLL_INTERVAL)
+                await asyncio.sleep(self.poll_interval)
 
         self.task = asyncio.create_task(poll_loop())
 
@@ -446,7 +454,10 @@ class InferenceMetricsCollector:
 
         async def fetch(endpoint: MetricsEndpoint) -> str | None:
             try:
-                response = await endpoint.client.get("/metrics", timeout=5.0)
+                # Generous read timeout: the admin client itself has no timeout and the
+                # generation path retries, so a 5s cap here was the *only* thing tripping
+                # when the router's /metrics is slow under high concurrency.
+                response = await endpoint.client.get("/metrics", timeout=30.0)
                 response.raise_for_status()
                 return response.text
             except Exception as e:
@@ -476,6 +487,7 @@ class InferenceMetricsCollector:
         signal = ControlSignal(
             kv_usage=max(kv_values) if kv_values else 0.0,
             preemption_rate=counter_rate(signal_samples, self.previous, "num_preemptions_total") or 0.0,
+            tps=counter_rate(signal_samples, self.previous, "generation_tokens_total") or 0.0,
         )
 
         for sample in samples:

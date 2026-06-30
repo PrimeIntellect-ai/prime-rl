@@ -357,6 +357,7 @@ class Orchestrator:
             roles=config.inference_metrics_roles,
             wandb_enabled=wandb_enabled and config.collect_inference_metrics,
             on_sample=self.concurrency_controller.update,
+            poll_interval=config.concurrency.interval,
         )
         await self.inference_metrics.start()
         self.train_sink = TrainSink(

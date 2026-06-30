@@ -461,6 +461,13 @@ class ConcurrencyConfig(BaseConfig):
     interval: float = Field(5.0, gt=0.0)
     """Seconds between control ticks (also the inference-metrics poll period)."""
 
+    min_seconds_between_grows: float = Field(60.0, ge=0.0)
+    """Minimum wall-clock seconds since the last limit change before another grow is
+    allowed. Ensures the segment-average throughput that becomes the gradient baseline
+    is taken over enough ticks (≈ this / ``interval`` samples) to be reliable, so a
+    burst of fast completions right after a grow can't poison it. A no-op for slow
+    (e.g. hour-long) rollouts, where the turnover gate dominates."""
+
     ewma_alpha: float = Field(0.3, gt=0.0, le=1.0)
     """Smoothing factor for the KV utilization signal (higher = more reactive)."""
 
@@ -469,13 +476,22 @@ class ConcurrencyConfig(BaseConfig):
     "settled". The limit only grows when settled, which paces the ramp to the
     rate at which in-flight rollouts' KV materializes."""
 
-    growth_factor: float = Field(1.5, gt=1.0)
-    """Multiplicative step when growing far below target; the effective step
-    tapers smoothly to ~1.0 as utilization approaches ``target_kv_usage``."""
+    growth_factor: float = Field(1.2, gt=1.0)
+    """Multiplicative step when growing. Conservative by default — every grow is
+    gated on a completion turnover AND a throughput gain (below), so a small step
+    suffices and bounds how much un-observed load one step can commit."""
 
     backoff_factor: float = Field(0.8, gt=0.0, lt=1.0)
     """Multiplicative cut applied to the limit when congested (KV high-water or
-    preemptions)."""
+    preemptions) — trims toward what's running without throwing away good concurrency
+    (re-growth is gated/slow, so an over-aggressive cut would oscillate)."""
+
+    min_throughput_gain: float = Field(0.05, ge=0.0)
+    """Minimum fractional rise in inference generation throughput (tokens/s) since the
+    last grow required to grow again. Below this the ramp holds — it has reached the
+    useful-concurrency knee. This bottleneck-agnostic stop signal keeps KV-blind /
+    runtime-bound workloads (small models, sandbox-bound) from running away when KV
+    never approaches target, and works for any rollout length since TPS is continuous."""
 
     preemption_rate_threshold: float = Field(1.0, ge=0.0)
     """Preemptions per second above which the controller treats the server as

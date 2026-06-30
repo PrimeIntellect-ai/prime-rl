@@ -151,6 +151,9 @@ class RolloutDispatcher:
         start = initial_inflight if initial_inflight is not None else (max_inflight_rollouts or 1)
         self.current_limit = start if max_inflight_rollouts is None else min(start, max_inflight_rollouts)
         self.inflight_permits = 0
+        # Cumulative completed rollouts (incl. errors): drives the concurrency
+        # controller's turnover pacing and throughput-gradient gate.
+        self.total_completed: int = 0
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
         )
@@ -511,6 +514,7 @@ class RolloutDispatcher:
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_rollouts
         self.release(meta.rollout_count)
+        self.total_completed += meta.rollout_count
         group = self.groups.get(meta.group_id)
 
         is_synth_exception = False
