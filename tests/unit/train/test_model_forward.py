@@ -58,17 +58,6 @@ class _CaptureModel(nn.Module):
         return {"logits": torch.zeros(*shape, 4)}
 
 
-class _CaptureSeqLensModel(_CaptureModel):
-    _prime_rl_supports_packed_boundaries = True
-
-    def forward(self, seq_lens=None, seq_lens_are_global=False, **kwargs):
-        if seq_lens is not None:
-            kwargs["seq_lens"] = seq_lens
-        if seq_lens_are_global:
-            kwargs["seq_lens_are_global"] = seq_lens_are_global
-        return super().forward(**kwargs)
-
-
 def test_setup_fsdp_vlm_context_parallel_ignores_frozen_vision_encoder(monkeypatch):
     model = _TinyVLM()
     for param in model.model.visual.parameters():
@@ -192,7 +181,7 @@ def test_forward_does_not_leak_seq_lens_to_generic_text_models():
 
 def test_forward_strips_position_ids_and_forwards_seq_lens_for_mrope_vlm():
     """Qwen-style MRoPE VLMs build 3D positions internally from seq_lens."""
-    model = _CaptureSeqLensModel(SimpleNamespace(model_type="qwen3_5_moe"))
+    model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
     input_ids = torch.tensor([[1, 10, 10, 2, 20, 20]])
     position_ids = torch.tensor([[0, 1, 2, 0, 1, 2]])
     seq_lens = torch.tensor([3, 3])
@@ -207,11 +196,11 @@ def test_forward_strips_position_ids_and_forwards_seq_lens_for_mrope_vlm():
 
     assert model.kwargs is not None
     assert "position_ids" not in model.kwargs
-    torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
+    assert "seq_lens" not in model.kwargs
 
 
 def test_forward_accepts_premerged_inputs_embeds_without_cp_metadata():
-    model = _CaptureSeqLensModel(SimpleNamespace(model_type="qwen3_5_moe"))
+    model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
     inputs_embeds = torch.randn(1, 4, 8)
     position_ids = torch.arange(12).view(3, 1, 4)
     seq_lens = torch.tensor([2, 2])
@@ -229,12 +218,12 @@ def test_forward_accepts_premerged_inputs_embeds_without_cp_metadata():
     assert "input_ids" not in model.kwargs
     torch.testing.assert_close(model.kwargs["inputs_embeds"], inputs_embeds)
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
-    torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
-    assert model.kwargs["seq_lens_are_global"] is True
+    assert "seq_lens" not in model.kwargs
+    assert "seq_lens_are_global" not in model.kwargs
 
 
 def test_forward_passes_raw_vlm_inputs_with_context_parallel_metadata():
-    model = _CaptureSeqLensModel(SimpleNamespace(model_type="qwen3_5_moe"))
+    model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
     input_ids = torch.tensor([[1, 10, 10, 2]])
     position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
     seq_lens = torch.tensor([4])
@@ -257,7 +246,7 @@ def test_forward_passes_raw_vlm_inputs_with_context_parallel_metadata():
     torch.testing.assert_close(model.kwargs["input_ids"], input_ids)
     assert "inputs_embeds" not in model.kwargs
     assert "position_ids" not in model.kwargs
-    torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
+    assert "seq_lens" not in model.kwargs
     assert model.kwargs["cp_group"] is cp_group
     assert model.kwargs["cp_rank"] == 1
     assert model.kwargs["cp_world_size"] == 2

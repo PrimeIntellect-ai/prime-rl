@@ -1,4 +1,3 @@
-import inspect
 import logging
 import os
 import time
@@ -1201,16 +1200,6 @@ def setup_model(
     return model
 
 
-def _supports_packed_boundaries(model: nn.Module) -> bool:
-    supports_packed_boundaries = getattr(model, "_prime_rl_supports_packed_boundaries", None)
-    if supports_packed_boundaries is None:
-        supports_packed_boundaries = isinstance(model, PreTrainedModelPrimeRL) and (
-            "seq_lens" in inspect.signature(model.forward).parameters
-        )
-        setattr(model, "_prime_rl_supports_packed_boundaries", supports_packed_boundaries)
-    return supports_packed_boundaries
-
-
 def forward(
     model: nn.Module,
     input_ids: Int[Tensor, "batch seq"] | None,
@@ -1233,7 +1222,7 @@ def forward(
     cp_world_size: int | None = None,
     cp_style: str | None = None,
 ) -> PrimeLmOutput:
-    forwards_seq_lens = seq_lens is not None and _supports_packed_boundaries(model)
+    forwards_seq_lens = seq_lens is not None and isinstance(model, PreTrainedModelPrimeRL)
 
     # Build kwargs for model forward
     kwargs = {
