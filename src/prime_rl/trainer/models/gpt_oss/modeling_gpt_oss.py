@@ -85,9 +85,7 @@ class GptOssMoE(nn.Module):
         super().__init__()
         # GptOssGroupedExperts has fused gate_up_proj + per-expert biases; the
         # current FP8/MXFP8 grouped-GEMM paths don't model that yet.
-        assert getattr(config, "grouped_mm_quant", None) is None, (
-            "FP8/MXFP8 grouped GEMM is not supported for GPT-OSS"
-        )
+        assert getattr(config, "grouped_mm_quant", None) is None, "FP8/MXFP8 grouped GEMM is not supported for GPT-OSS"
         self.num_experts = config.num_local_experts
         self.top_k = config.num_experts_per_tok
         self.router = GptOssTopKRouter(config)

@@ -314,9 +314,7 @@ class ModelConfig(BaseModelConfig):
     @model_validator(mode="after")
     def quantization_only_with_custom_impl(self):
         if self.quantization is not None and self.impl not in ("custom", "auto"):
-            raise ValueError(
-                f"{self.quantization.type} training is only supported with model.impl='custom' or 'auto'."
-            )
+            raise ValueError(f"{self.quantization.type} training is only supported with model.impl='custom' or 'auto'.")
         return self
 
     @model_validator(mode="after")
