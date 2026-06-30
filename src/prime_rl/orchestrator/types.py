@@ -13,7 +13,7 @@ from verifiers.v1.task import TaskT
 from prime_rl.transport import TrainingSample
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.metrics import EvalRollouts, TrainRollouts
+    from prime_rl.orchestrator.metrics.rollouts import EvalRollouts, TrainRollouts
 
 
 @dataclass

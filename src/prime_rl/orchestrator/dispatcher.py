@@ -129,9 +129,10 @@ class RolloutDispatcher:
         eval_source: EvalSource | None,
         policy_pool: InferencePool,
         policy: Policy,
-        max_inflight_rollouts: int,
+        max_inflight_rollouts: int | None,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
+        initial_inflight: int | None = None,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -143,8 +144,16 @@ class RolloutDispatcher:
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
 
+        # ``max_inflight`` is the hard upper clamp (None = no clamp, the limit is
+        # bounded only by the KV target); ``current_limit`` is the operating point,
+        # adjusted at runtime by the concurrency controller.
         self.max_inflight = max_inflight_rollouts
+        start = initial_inflight if initial_inflight is not None else (max_inflight_rollouts or 1)
+        self.current_limit = start if max_inflight_rollouts is None else min(start, max_inflight_rollouts)
         self.inflight_permits = 0
+        # Cumulative completed rollouts (incl. errors): drives the concurrency
+        # controller's turnover pacing and throughput-gradient gate.
+        self.total_completed: int = 0
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
         )
@@ -152,8 +161,11 @@ class RolloutDispatcher:
         self.inflight: dict[asyncio.Task, InflightRollout] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
 
-        # Bounded so the dispatcher backpressures on a slow sink
-        self.out_q: asyncio.Queue[Rollout] = asyncio.Queue(maxsize=max(8, self.max_inflight))
+        # Bounded so the dispatcher backpressures on a slow sink (unbounded when
+        # there's no hard clamp — the dispatch gate handles trainer-lag backpressure)
+        self.out_q: asyncio.Queue[Rollout] = asyncio.Queue(
+            maxsize=max(8, self.max_inflight) if self.max_inflight is not None else 0
+        )
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -188,7 +200,14 @@ class RolloutDispatcher:
 
     @property
     def available_permits(self) -> int:
-        return self.max_inflight - self.inflight_permits
+        return self.current_limit - self.inflight_permits
+
+    def set_limit(self, limit: int) -> None:
+        """Set the operating in-flight limit, clamped to ``[1, max_inflight]``
+        (no upper clamp when ``max_inflight`` is None). Called by the concurrency
+        controller each tick."""
+        limit = max(1, limit)
+        self.current_limit = limit if self.max_inflight is None else min(limit, self.max_inflight)
 
     @property
     def inflight_by_env(self) -> dict[tuple[RolloutKind, str], int]:
@@ -495,6 +514,7 @@ class RolloutDispatcher:
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_rollouts
         self.release(meta.rollout_count)
+        self.total_completed += meta.rollout_count
         group = self.groups.get(meta.group_id)
 
         is_synth_exception = False
@@ -670,6 +690,7 @@ class RolloutDispatcher:
     def gauges(self) -> dict[str, float]:
         """Instantaneous, read-only gauges sampled by the periodic logger."""
         return {
+            "dispatcher/current_limit": float(self.current_limit),
             "dispatcher/inflight_train": float(self.inflight_train_count),
             "dispatcher/inflight_eval": float(self.inflight_eval_count),
             "dispatcher/queued/eval": float(self.queued_eval_examples),

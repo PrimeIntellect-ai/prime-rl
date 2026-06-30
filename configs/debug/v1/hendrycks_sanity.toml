@@ -11,12 +11,20 @@ project = "hendrycks-sanity"
 name = "v1"
 
 [deployment]
-num_train_gpus = 4
-num_infer_gpus = 4
+num_train_gpus = 6
+num_infer_gpus = 2
 
 [slurm]
-job_name = "hendrycks-modal"
+job_name = "hendrycks-v1"
 partition = "all"
+
+# Keep uv's cache + prepared env-script interpreters node-local (off shared NFS).
+# Injected into every component; the subprocess runtime inherits these into each
+# scoring process. (Model/hub weights stay on the shared HF cache — not relocated.)
+[env_vars]
+UV_CACHE_DIR = "/tmp/uv-cache"
+UV_PYTHON_INSTALL_DIR = "/tmp/uv-python"
+XDG_CACHE_HOME = "/tmp/xdg"
 
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
@@ -25,12 +33,17 @@ name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 batch_size = 512
 group_size = 8
 seq_len = 8192
-max_inflight_rollouts = 256
+
+# Hard ceiling on in-flight rollouts. Without it the KV-based controller ramps
+# unbounded on a small model (KV never nears target) and overwhelmed the runtime.
+[orchestrator.concurrency]
+max_inflight_rollouts = 1024
+initial_inflight_rollouts = 64
 
 [[orchestrator.train.env]]
 name = "hendrycks-math"
 taskset = { id = "math-env-v1", dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
-harness = { id = "default", runtime = { type = "modal" } }
+harness = { id = "default", runtime = { type = "subprocess" } }
 timeout = { scoring = 300 }
 
 [orchestrator.eval]
@@ -39,7 +52,7 @@ interval = 50
 [[orchestrator.eval.env]]
 name = "aime2024"
 taskset = { id = "aime24-v1" }
-harness = { id = "default", runtime = { type = "modal" } }
+harness = { id = "default", runtime = { type = "subprocess" } }
 timeout = { scoring = 300 }
 group_size = 32
 

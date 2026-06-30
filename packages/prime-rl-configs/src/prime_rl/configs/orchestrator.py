@@ -443,6 +443,61 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
+class ConcurrencyConfig(BaseConfig):
+    """Closed-loop controller for the in-flight rollout limit: instead of a fixed ceiling, it ramps the effective limit toward whatever keeps the inference server's GPU KV cache near ``target_kv_usage``, growing only once usage has *settled* at the current concurrency (so the still-growing KV of long in-flight rollouts materializes before more are admitted, avoiding overshoot from the lagging signal) and backing off on a hard KV high-water mark or rising preemptions, optionally clamped by ``max_inflight_rollouts``. ``target_kv_usage`` tracks the *GPU* KV pool (``vllm:kv_cache_usage_perc``), the binding constraint for active decoding; vLLM exposes no occupancy metric for the CPU offload tier, so a GPU+CPU "total" can't be targeted directly — with CPU offloading enabled, raise ``target_kv_usage`` toward ~0.95 so the GPU runs hot enough to engage the offload tier and rely on ``preemption_rate_threshold`` as the backoff."""
+
+    target_kv_usage: float = Field(0.8, gt=0.0, le=1.0)
+    """Target GPU KV cache utilization. The limit grows while usage is below this."""
+
+    high_water_kv_usage: float = Field(0.95, gt=0.0, le=1.0)
+    """KV utilization above which the controller backs the limit off."""
+
+    initial_inflight_rollouts: int | None = Field(None, ge=1)
+    """Ramp starting point for the effective limit. None starts at the lower clamp (``group_size``). Must be >= ``group_size`` and <= ``max_inflight_rollouts``."""
+
+    max_inflight_rollouts: int | None = Field(None, ge=1)
+    """Hard upper clamp on rollouts kept in-flight. None means no hard ceiling — the limit is bounded only by the KV target. Not derived from ``batch_size``. The lower clamp is always ``group_size`` (a group-scoring group reserves that many permits at once)."""
+
+    interval: float = Field(5.0, gt=0.0)
+    """Seconds between control ticks (also the inference-metrics poll period)."""
+
+    min_seconds_between_grows: float = Field(60.0, ge=0.0)
+    """Minimum wall-clock seconds since the last limit change before another grow is
+    allowed. Ensures the segment-average throughput that becomes the gradient baseline
+    is taken over enough ticks (≈ this / ``interval`` samples) to be reliable, so a
+    burst of fast completions right after a grow can't poison it. A no-op for slow
+    (e.g. hour-long) rollouts, where the turnover gate dominates."""
+
+    ewma_alpha: float = Field(0.3, gt=0.0, le=1.0)
+    """Smoothing factor for the KV utilization signal (higher = more reactive)."""
+
+    settle_threshold: float = Field(0.02, ge=0.0)
+    """Max per-tick rise in smoothed KV utilization for usage to count as
+    "settled". The limit only grows when settled, which paces the ramp to the
+    rate at which in-flight rollouts' KV materializes."""
+
+    growth_factor: float = Field(1.2, gt=1.0)
+    """Multiplicative step when growing. Conservative by default — every grow is
+    gated on a completion turnover AND a throughput gain (below), so a small step
+    suffices and bounds how much un-observed load one step can commit."""
+
+    backoff_factor: float = Field(0.8, gt=0.0, lt=1.0)
+    """Multiplicative cut applied to the limit when congested (KV high-water or
+    preemptions) — trims toward what's running without throwing away good concurrency
+    (re-growth is gated/slow, so an over-aggressive cut would oscillate)."""
+
+    min_throughput_gain: float = Field(0.05, ge=0.0)
+    """Minimum fractional rise in inference generation throughput (tokens/s) since the
+    last grow required to grow again. Below this the ramp holds — it has reached the
+    useful-concurrency knee. This bottleneck-agnostic stop signal keeps KV-blind /
+    runtime-bound workloads (small models, sandbox-bound) from running away when KV
+    never approaches target, and works for any rollout length since TPS is continuous."""
+
+    preemption_rate_threshold: float = Field(1.0, ge=0.0)
+    """Preemptions per second above which the controller treats the server as
+    oversubscribed and backs off."""
+
+
 class OrchestratorExperimentalConfig(BaseConfig):
     pass
 
@@ -535,11 +590,8 @@ class OrchestratorConfig(BaseConfig):
     token_batch_size: int | None = Field(None, ge=1)
     """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
 
-    oversampling_factor: float | None = Field(None, gt=0)
-    """Rollout-mode batching only. Multiplier used to derive ``max_inflight_rollouts`` from ``batch_size`` when ``max_inflight_rollouts`` is unset. Values below 1.0 intentionally cap in-flight rollout capacity below ``batch_size``."""
-
-    max_inflight_rollouts: int | None = Field(None, ge=1)
-    """Maximum number of rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
+    concurrency: ConcurrencyConfig = ConcurrencyConfig()
+    """In-flight concurrency controller: ramps the effective in-flight rollout limit toward ``concurrency.target_kv_usage`` GPU KV utilization, clamped by ``concurrency.max_inflight_rollouts``."""
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Output sequences returned per example during training."""
@@ -701,29 +753,24 @@ class OrchestratorConfig(BaseConfig):
         if not has_rollout_batch and not has_token_batch:
             self.batch_size = 128
 
-        if has_token_batch:
-            if self.oversampling_factor is not None:
-                raise ValueError("oversampling_factor can only be set when batch_size is set")
-            if self.max_inflight_rollouts is None:
-                raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
-        else:
+        if has_rollout_batch:
             assert self.batch_size is not None
             if self.batch_size % self.group_size != 0:
                 raise ValueError("Batch size must be divisible by the number of samples per problem")
-            oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
-            resolved_max_inflight_rollouts = max(
-                self.group_size,
-                int(self.batch_size * oversampling_factor),
-            )
-            if self.max_inflight_rollouts is not None and self.oversampling_factor is not None:
-                expected_max_inflight_rollouts = resolved_max_inflight_rollouts
-                if self.max_inflight_rollouts != expected_max_inflight_rollouts:
-                    raise ValueError("max_inflight_rollouts conflicts with oversampling_factor * batch_size")
-            if self.max_inflight_rollouts is None:
-                self.max_inflight_rollouts = resolved_max_inflight_rollouts
 
-        if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.group_size:
-            raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
+        # The in-flight limit's lower clamp is ``group_size``: a group-scoring group
+        # reserves that many permits at once, so anything smaller could never schedule.
+        concurrency = self.concurrency
+        if concurrency.max_inflight_rollouts is not None and concurrency.max_inflight_rollouts < self.group_size:
+            raise ValueError("concurrency.max_inflight_rollouts must be >= group_size")
+        if concurrency.initial_inflight_rollouts is not None:
+            if concurrency.initial_inflight_rollouts < self.group_size:
+                raise ValueError("concurrency.initial_inflight_rollouts must be >= group_size")
+            if (
+                concurrency.max_inflight_rollouts is not None
+                and concurrency.initial_inflight_rollouts > concurrency.max_inflight_rollouts
+            ):
+                raise ValueError("concurrency.initial_inflight_rollouts must be <= concurrency.max_inflight_rollouts")
 
         # Propagate the top-level ``group_size`` into each train env that didn't set its own.
         for env_cfg in self.train.env:

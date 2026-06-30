@@ -39,12 +39,13 @@ if TYPE_CHECKING:
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
+from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.filters import setup_filters
-from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
+from prime_rl.orchestrator.metrics.inference import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
@@ -133,6 +134,7 @@ class Orchestrator:
     heart: Heartbeat | None
     usage_reporter: UsageReporter | None
     inference_metrics: InferenceMetricsCollector | None
+    concurrency_controller: ConcurrencyController | None
     eval_envs: EvalEnvs | None
     eval_sink: EvalSink | None
     eval_source: EvalSource | None
@@ -174,6 +176,7 @@ class Orchestrator:
         self.heart = None
         self.usage_reporter = None
         self.inference_metrics = None
+        self.concurrency_controller = None
         self.eval_envs = None
         self.eval_sink = None
         self.eval_source = None
@@ -280,13 +283,6 @@ class Orchestrator:
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
-        if config.wandb is not None and config.collect_inference_metrics:
-            self.inference_metrics = InferenceMetricsCollector(
-                self.policy_inference.admin_clients,
-                roles=config.inference_metrics_roles,
-            )
-            await self.inference_metrics.start()
-
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
@@ -330,9 +326,11 @@ class Orchestrator:
             else None
         )
 
-        assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
         log_interval = config.log.interval
         wandb_enabled = config.wandb is not None
+        # The concurrency controller always ramps the in-flight limit from
+        # ``initial_inflight_rollouts`` (default ``group_size``) within the
+        # ``[group_size, max_inflight_rollouts]`` clamp.
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
@@ -340,10 +338,28 @@ class Orchestrator:
             eval_source=self.eval_source,
             policy_pool=self.policy_inference,
             policy=self.policy,
-            max_inflight_rollouts=config.max_inflight_rollouts,
+            max_inflight_rollouts=config.concurrency.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
+            initial_inflight=config.concurrency.initial_inflight_rollouts or config.group_size,
         )
+        self.concurrency_controller = ConcurrencyController(
+            dispatcher=self.dispatcher,
+            min_inflight=config.group_size,
+            max_inflight=config.concurrency.max_inflight_rollouts,
+            config=config.concurrency,
+        )
+        # The metrics collector is the sole ``/metrics`` poller: it always runs
+        # (drives the controller via ``on_sample``) and additionally logs to W&B
+        # when enabled.
+        self.inference_metrics = InferenceMetricsCollector(
+            self.policy_inference.admin_clients,
+            roles=config.inference_metrics_roles,
+            wandb_enabled=wandb_enabled and config.collect_inference_metrics,
+            on_sample=self.concurrency_controller.update,
+            poll_interval=config.concurrency.interval,
+        )
+        await self.inference_metrics.start()
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
@@ -657,7 +673,8 @@ class Orchestrator:
         # Unified inflight tail: total, then train/eval split, then per-env
         # (only when more than one env of a kind makes the split ambiguous)
         inflight_part = (
-            f"{inflight_train + inflight_eval} inflight rollouts (train={inflight_train}, eval={inflight_eval}"
+            f"{inflight_train + inflight_eval}/{self.dispatcher.current_limit} inflight rollouts "
+            f"(train={inflight_train}, eval={inflight_eval}"
         )
         if multi_train or multi_eval:
             env_pairs = [(e.name, inflight_by_env.get(("train", e.name), 0)) for e in self.train_envs]

@@ -119,6 +119,8 @@ All metrics print to the console log (and W&B when configured).
 | orchestrator | `time/step`, `time/generate_completions`, `time/update_weights` | phase timings |
 | orchestrator | `time/wait_for_ckpt` | **high → trainer is bottleneck** |
 | orchestrator | `scheduler/async_level`, `scheduler/inflight_rollouts` | scheduler state |
+| orchestrator | `concurrency/limit`, `dispatcher/current_limit` | adaptive in-flight limit (ramps toward `concurrency.target_kv_usage`) |
+| orchestrator | `concurrency/kv_usage`, `concurrency/kv_delta`, `concurrency/preemption_rate` | controller signal: smoothed GPU KV util, its per-tick change, and engine preemptions/s |
 | env server | event loop lag (min/mean/p90/p99/max), active task distribution | periodic |
 
 For live vLLM stats, query Prometheus directly:

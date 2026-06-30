@@ -17,7 +17,7 @@ import uuid
 from collections import defaultdict
 
 from prime_rl.orchestrator.envs import EvalEnvs
-from prime_rl.orchestrator.metrics import EvalRollouts
+from prime_rl.orchestrator.metrics.rollouts import EvalRollouts
 from prime_rl.orchestrator.types import EvalBatch, Rollout
 from prime_rl.utils.logger import get_logger
 

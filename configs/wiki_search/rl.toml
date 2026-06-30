@@ -28,7 +28,6 @@ target_modules = [
 [orchestrator]
 batch_size = 512
 group_size = 16
-oversampling_factor = 2.0
 
 [orchestrator.train.sampling]
 max_completion_tokens = 512
