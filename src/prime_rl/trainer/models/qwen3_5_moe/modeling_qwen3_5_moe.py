@@ -286,12 +286,13 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         # otherwise the kernel-1 left pad leaks state across sequences.
         if cp_context is not None and fla_causal_conv1d is not None:
             mixed_qkv, _ = fla_causal_conv1d(
-                x=mixed_qkv,
+                x=mixed_qkv.transpose(1, 2),
                 weight=self.conv1d.weight.squeeze(1),
                 bias=self.conv1d.bias,
                 activation=self.activation,
                 cp_context=cp_context,
             )
+            mixed_qkv = mixed_qkv.transpose(1, 2)
         elif self._causal_conv1d_fn is not None:
             seq_idx = None
             if cu_seqlens is not None:
