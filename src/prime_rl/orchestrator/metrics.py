@@ -154,14 +154,15 @@ class RolloutMetrics:
         return out
 
     def solve_rates(self) -> dict[str, float]:
-        """Per-group: ``solved_none`` (no rollout earned reward), ``solved_all`` (every rollout in
-        the group did), and ``solved_some`` (the mixed-reward remainder — the GRPO-signal groups)."""
+        """Per-group solve rates, assuming binary 0/1 rewards (unspecified for other reward ranges):
+        ``solved_none`` (the group earned no reward), ``solved_all`` (every rollout scored 1.0), and
+        ``solved_some`` (the mixed remainder — the GRPO-signal groups)."""
         groups: dict = {}
         for r in self.rollouts:
             groups.setdefault(r.group_id, []).append(r)
         n_groups = len(groups)
         solved_none = sum(1 for g in groups.values() if sum(r.reward for r in g) == 0)
-        solved_all = sum(1 for g in groups.values() if all(r.reward for r in g))
+        solved_all = sum(1 for g in groups.values() if all(r.reward == 1.0 for r in g))
         return {
             "solved_none": solved_none / n_groups,
             "solved_all": solved_all / n_groups,
