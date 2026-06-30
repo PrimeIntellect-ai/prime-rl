@@ -535,17 +535,18 @@ class Orchestrator:
                 metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
 
         # Progress / timing / env-share / pre-filter accounting (assembled here, not in the metrics
-        # objects). Totals are over the full arrival window; the prefill/decode breakdown is over the
-        # effective (shipped) subset — its branches are exactly what ``samples`` concatenates.
+        # objects). ``num_tokens`` is over the full arrival window; the input/output breakdown is over
+        # the effective (shipped) subset, summing the same ``vf.Trace`` token properties the metric
+        # matrix reports.
         num_tokens = sum(r.num_total_tokens for r in batch.rollouts)
-        num_prefill = sum(r.num_input_tokens for r in effective)
-        num_decode = sum(r.num_output_tokens for r in effective)
+        num_input = sum(r.num_input_tokens for r in effective)
+        num_output = sum(r.num_output_tokens for r in effective)
         num_rollouts = len(batch.rollouts)
         num_unique_examples = len({r.group_id for r in batch.rollouts})
         metrics |= {
             "progress/tokens": num_tokens,
-            "progress/prefill_tokens": num_prefill,
-            "progress/decode_tokens": num_decode,
+            "progress/input_tokens": num_input,
+            "progress/output_tokens": num_output,
             "progress/rollouts": num_rollouts,
             "progress/tasks": num_unique_examples,
             "progress/total_tokens": self.progress.total_tokens,
@@ -582,7 +583,7 @@ class Orchestrator:
                 self.usage_reporter.report_training_usage(
                     run_id=run_id,
                     step=step,
-                    tokens=num_prefill + num_decode,
+                    tokens=num_input + num_output,
                 )
         if self.heart is not None:
             self.heart.beat()
