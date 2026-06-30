@@ -193,9 +193,9 @@ class EnvConfig(vf.EnvServerConfig):
     def validate_env(self):
         if not self.taskset.id and not self.id:
             raise ValueError('no env configured — set taskset = { id = "<id>" } (v1) or id = "<id>" (v0/legacy)')
-        if self.resolved_name == "all":
+        if self.resolved_name == "agg":
             raise ValueError(
-                'Environment name "all" is reserved for global metric aggregation. Use a different name or id.'
+                'Environment name "agg" is reserved for cross-env metric aggregation. Use a different name or id.'
             )
         return self
 
