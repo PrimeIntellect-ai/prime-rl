@@ -55,6 +55,7 @@ except ImportError:
 
 try:
     from fla.modules import FusedRMSNormGated
+    from fla.modules.convolution import causal_conv1d as fla_causal_conv1d
     from fla.ops.cp import FLACPContext, build_cp_context
     from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 except ImportError:
@@ -62,6 +63,7 @@ except ImportError:
     FusedRMSNormGated = None  # type: ignore
     FLACPContext = None  # type: ignore
     build_cp_context = None  # type: ignore
+    fla_causal_conv1d = None  # type: ignore
 
 logger = logging.get_logger(__name__)
 
@@ -245,14 +247,21 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         self._causal_conv1d_fn = causal_conv1d_fn
         self._chunk_gated_delta_rule = chunk_gated_delta_rule or torch_chunk_gated_delta_rule
 
-    def _build_cp_context(self, local_seq_len: int, device: torch.device) -> "FLACPContext | None":
+    def _build_cp_context(
+        self,
+        local_seq_len: int,
+        device: torch.device,
+        cu_seqlens: torch.LongTensor | None = None,
+    ) -> "FLACPContext | None":
         """Build fla CP context from the local (sharded) sequence length."""
         cp_group = getattr(self, "cp_group", None)
         if cp_group is None or build_cp_context is None:
             return None
-        # Reconstruct global cu_seqlens: single contiguous sequence across all CP ranks
         global_seq_len = local_seq_len * self.cp_world_size
-        global_cu_seqlens = torch.tensor([0, global_seq_len], dtype=torch.int32, device=device)
+        if cu_seqlens is not None and int(cu_seqlens[-1].item()) == global_seq_len:
+            global_cu_seqlens = cu_seqlens.to(device=device, dtype=torch.int32)
+        else:
+            global_cu_seqlens = torch.tensor([0, global_seq_len], dtype=torch.int32, device=device)
         return build_cp_context(
             cu_seqlens=global_cu_seqlens,
             group=cp_group,
@@ -271,9 +280,19 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
+        cp_context = self._build_cp_context(seq_len, hidden_states.device, cu_seqlens)
+
         # Causal conv1d — must reset at sequence boundaries for packed batches,
         # otherwise the kernel-1 left pad leaks state across sequences.
-        if self._causal_conv1d_fn is not None:
+        if cp_context is not None and fla_causal_conv1d is not None:
+            mixed_qkv, _ = fla_causal_conv1d(
+                x=mixed_qkv,
+                weight=self.conv1d.weight.squeeze(1),
+                bias=self.conv1d.bias,
+                activation=self.activation,
+                cp_context=cp_context,
+            )
+        elif self._causal_conv1d_fn is not None:
             seq_idx = None
             if cu_seqlens is not None:
                 seg_lens = cu_seqlens[1:] - cu_seqlens[:-1]
@@ -315,7 +334,6 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
         # Use fla's native CP when available, otherwise fall back to PyTorch kernel
-        cp_context = self._build_cp_context(seq_len, hidden_states.device)
         if cp_context is not None:
             cu_seqlens = cp_context.cu_seqlens
             core_attn_out, _ = self._chunk_gated_delta_rule(
