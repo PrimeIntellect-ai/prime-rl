@@ -115,6 +115,11 @@ class DebugModelConfig(BaseConfig):
     force_balanced_routing: bool = False
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
 
+XFP8Recipe: TypeAlias = Literal[
+    "mxfp8_rceil",
+    "mxfp8_emulated_rceil",
+    "mxfp8_rceil_wgrad_with_hp",
+]
 
 class ModelConfig(BaseModelConfig):
     seq_len: int = 2048
