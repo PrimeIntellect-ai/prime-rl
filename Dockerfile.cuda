@@ -64,15 +64,12 @@ ADD https://astral.sh/uv/install.sh /uv-installer.sh
 # Set install dir to location accessible to non-root users
 RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
 ENV PATH="/usr/local/bin:$PATH"
-# Build .venv against the system CPython (== the runtime stage's apt python3.12,
-# same Ubuntu 24.04 base => same 3.12.x), so the venv's recorded interpreter
+# Build .venv against the system CPython, so the venv's recorded interpreter
 # matches the runtime interpreter and no bin/python relink is needed at runtime.
 ENV UV_PYTHON_PREFERENCE=only-system
 ENV UV_CACHE_DIR="/usr/local/share/uv/cache"
-# Force a real in-project venv directory. uv's centralized project environments
-# (preview today, possibly default later) otherwise place the env in the uv cache
-# and make .venv a symlink into it, which the runtime stage's `COPY /app` can't
-# follow (the cache store lives outside /app), leaving the venv missing.
+# Explicity set venv dir inside /app so to ensure it gets copied over during
+# the runtime stage's `COPY /app`
 ENV UV_PROJECT_ENVIRONMENT="/app/.venv"
 
 # Install Python dependencies (The gradual copies help with caching)
