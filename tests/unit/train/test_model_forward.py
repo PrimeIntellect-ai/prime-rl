@@ -1,9 +1,47 @@
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.nn as nn
 
+import prime_rl.trainer.model as trainer_model
 from prime_rl.trainer.model import forward
+
+
+class _TinyVLM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = SimpleNamespace(tie_word_embeddings=False)
+        self.model = nn.Module()
+        self.model.visual = nn.Linear(4, 4)
+        self.model.language_model = nn.Module()
+        self.model.language_model.embed_tokens = nn.Embedding(8, 4)
+        self.model.language_model.layers = nn.ModuleList([nn.Linear(4, 4)])
+        self.model.language_model.norm = nn.LayerNorm(4)
+        self.lm_head = nn.Linear(4, 8, bias=False)
+
+
+class _FakeParallelDims:
+    ep_enabled = False
+
+    def get_mesh(self, name):
+        assert name == "hsdp"
+        return "hsdp-mesh"
+
+
+def _vlm_cp_config():
+    return SimpleNamespace(
+        reduce_dtype="bfloat16",
+        fsdp_cpu_offload=False,
+        reshard_after_forward=True,
+        cp=2,
+        name="tiny-vlm",
+        vlm=SimpleNamespace(
+            vision_encoder_attr="model.visual",
+            language_model_attr="model.language_model",
+            freeze_vision_encoder=True,
+        ),
+    )
 
 
 class _CaptureModel(nn.Module):
@@ -19,6 +57,38 @@ class _CaptureModel(nn.Module):
         else:
             shape = kwargs["inputs_embeds"].shape[:2]
         return {"logits": torch.zeros(*shape, 4)}
+
+
+def test_setup_fsdp_vlm_context_parallel_shards_trainable_embeddings(monkeypatch):
+    model = _TinyVLM()
+    for param in model.model.visual.parameters():
+        param.requires_grad = False
+
+    calls = []
+
+    def fake_fully_shard(module, **kwargs):
+        calls.append((module, kwargs))
+
+    monkeypatch.setattr(trainer_model, "fully_shard", fake_fully_shard)
+
+    trainer_model.setup_fsdp(model, _vlm_cp_config(), _FakeParallelDims())
+
+    sharded_modules = [module for module, _ in calls]
+    assert model.model.language_model.embed_tokens in sharded_modules
+    assert model.model.visual not in sharded_modules
+
+    root_kwargs = calls[-1][1]
+    ignored_params = root_kwargs["ignored_params"]
+    assert set(model.model.visual.parameters()) <= ignored_params
+    assert model.model.language_model.embed_tokens.weight not in ignored_params
+
+
+def test_setup_fsdp_vlm_context_parallel_requires_frozen_vision_encoder(monkeypatch):
+    model = _TinyVLM()
+    monkeypatch.setattr(trainer_model, "fully_shard", lambda *args, **kwargs: None)
+
+    with pytest.raises(ValueError, match="requires frozen vision encoder"):
+        trainer_model.setup_fsdp(model, _vlm_cp_config(), _FakeParallelDims())
 
 
 def test_forward_passes_renderer_mm_token_type_ids_through():

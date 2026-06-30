@@ -703,12 +703,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
 
-    # embed_tokens is also invoked in the pre-shard merge, before the FSDP root forward.
-    if cp_vlm:
-        embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
-        if embed_module is not None:
-            _ignore_frozen_params(embed_module, "embed_tokens")
-
     for transformer_block in transformer_layers:
         block_mlp = getattr(transformer_block, "mlp", None)
         if parallel_dims.ep_enabled and block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
@@ -727,8 +721,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     if shard_norm_and_lm_head:
         # This optimization breaks weight tying
         embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
-        # Under CP+VLM the embedding is kept out of FSDP for pre-shard VLM prep.
-        if not cp_vlm:
+        if embed_module is not None:
             fully_shard(
                 embed_module,
                 mesh=hsdp_mesh,
