@@ -6,6 +6,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    EnvVars,
     FileSystemTransportConfig,
     HeartbeatConfig,
     MetricsServerConfig,
@@ -567,6 +568,9 @@ class TrainerConfig(BaseConfig):
 
     enable_token_export: bool = False
     """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
+
+    env_vars: EnvVars = {}
+    """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):

@@ -4,10 +4,8 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from prime_rl.configs.algorithm import GRPOAlgoConfig, TokensLengthPenaltyConfig
-from prime_rl.orchestrator.algo.advantage import efficiency_shaping
+from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.utils import get_tool_response_len
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
@@ -25,21 +23,21 @@ class GRPOAlgorithm(Algorithm):
 
     async def score_group(self, group: list[Rollout]) -> None:
         rewards = torch.tensor([rollout.reward for rollout in group], dtype=torch.float32)
-        lp = self.length_penalty
-        if lp is None:
+        length_penalty = self.length_penalty
+        if length_penalty is None:
             advantages = rewards - rewards.mean()
-        elif isinstance(lp, TokensLengthPenaltyConfig):
-            costs = torch.tensor(
-                [
-                    lp.completion_weight * rollout.completion_len
-                    + lp.tool_response_weight * get_tool_response_len(rollout)
-                    for rollout in group
-                ],
-                dtype=rewards.dtype,
+        else:
+            output = torch.tensor([rollout.num_output_tokens for rollout in group], dtype=rewards.dtype)
+            total = torch.tensor([rollout.num_total_tokens for rollout in group], dtype=rewards.dtype)
+            turns = torch.tensor([rollout.num_turns for rollout in group], dtype=rewards.dtype)
+            input = total - output
+            penalty_frac = (
+                length_penalty.num_output_tokens_weight * (output / output.max().clamp(min=1))
+                + length_penalty.num_input_tokens_weight * (input / input.max().clamp(min=1))
+                + length_penalty.num_turns_weight * (turns / turns.max().clamp(min=1))
             )
-            advantages = efficiency_shaping(rewards, costs)
-        else:  # TurnsLengthPenaltyConfig
-            costs = torch.tensor([rollout.num_turns for rollout in group], dtype=rewards.dtype)
-            advantages = efficiency_shaping(rewards, costs)
+            penalty = rewards.mean() * penalty_frac
+            shaped_rewards = rewards - penalty
+            advantages = shaped_rewards - shaped_rewards.mean()
         for rollout, advantage in zip(group, advantages.tolist(), strict=True):
             rollout.assign_advantages(advantage)

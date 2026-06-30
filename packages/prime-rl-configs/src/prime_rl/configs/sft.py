@@ -6,6 +6,7 @@ from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
+    EnvVars,
     HeartbeatConfig,
     SlurmConfig,
     TrainerLogConfig,
@@ -181,6 +182,9 @@ class SFTExperimentalConfig(BaseConfig):
 
 class SFTConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
+
+    env_vars: EnvVars = {}
+    """Extra environment variables for the SFT trainer process(es). Merged on top of the launcher defaults."""
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
