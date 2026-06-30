@@ -1,3 +1,4 @@
+import inspect
 import logging
 import os
 import time
@@ -1200,6 +1201,14 @@ def setup_model(
     return model
 
 
+def _model_accepts_seq_lens(model: nn.Module) -> bool:
+    accepts_seq_lens = getattr(model, "_prime_rl_accepts_seq_lens", None)
+    if accepts_seq_lens is None:
+        accepts_seq_lens = "seq_lens" in inspect.signature(model.forward).parameters
+        setattr(model, "_prime_rl_accepts_seq_lens", accepts_seq_lens)
+    return accepts_seq_lens
+
+
 def forward(
     model: nn.Module,
     input_ids: Int[Tensor, "batch seq"] | None,
@@ -1222,6 +1231,8 @@ def forward(
     cp_world_size: int | None = None,
     cp_style: str | None = None,
 ) -> PrimeLmOutput:
+    forwards_seq_lens = seq_lens is not None and _model_accepts_seq_lens(model)
+
     # Build kwargs for model forward
     kwargs = {
         "labels": labels,
@@ -1241,13 +1252,13 @@ def forward(
             kwargs["mm_token_type_ids"] = mm_token_type_ids
         if "image_grid_thw" not in mm_kwargs:
             kwargs["position_ids"] = position_ids
-        elif seq_lens is not None:
+        elif forwards_seq_lens:
             kwargs["seq_lens"] = seq_lens
     else:
         kwargs["position_ids"] = position_ids
-        if seq_lens is not None:
+        if forwards_seq_lens:
             kwargs["seq_lens"] = seq_lens
-        if seq_lens_are_global:
+        if seq_lens_are_global and forwards_seq_lens:
             kwargs["seq_lens_are_global"] = True
 
     if routed_experts is not None:
