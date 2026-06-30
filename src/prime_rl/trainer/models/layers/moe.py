@@ -178,7 +178,6 @@ def _run_experts_grouped_mm_impl(
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     grouped_mm_quant: GroupedMMQuant = None,
-    mxfp8_pad_groups: bool = False,
 ) -> torch.Tensor:
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
     # grouped mm between a 2D tensor and a 3D tensor
@@ -193,9 +192,9 @@ def _run_experts_grouped_mm_impl(
     elif grouped_mm_quant == "mxfp8":
         from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import mxfp8_grouped_gemm
 
-        h = F.silu(mxfp8_grouped_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets, pad_groups=mxfp8_pad_groups))
-        h = h * mxfp8_grouped_gemm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offsets, pad_groups=mxfp8_pad_groups)
-        out = mxfp8_grouped_gemm(h, w2.bfloat16().transpose(-2, -1), offsets, pad_groups=mxfp8_pad_groups).type_as(x)
+        h = F.silu(mxfp8_grouped_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
+        h = h * mxfp8_grouped_gemm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offsets)
+        out = mxfp8_grouped_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
     else:
         h = F.silu(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
         h = h * torch._grouped_mm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offs=offsets)
@@ -230,10 +229,8 @@ class GroupedExperts(nn.Module):
         w2 = self.w2.to_local()
         w3 = self.w3.to_local()
         if self.use_grouped_mm:
-            # DeepEP dispatch does not route through the @expert_parallel decorator, so token
-            # groups aren't pre-padded to 32; let the op pad them (local experts <= 32 here).
             return _run_experts_grouped_mm_impl(
-                w1, w2, w3, x, num_tokens_per_expert, grouped_mm_quant=self.grouped_mm_quant, mxfp8_pad_groups=True
+                w1, w2, w3, x, num_tokens_per_expert, grouped_mm_quant=self.grouped_mm_quant
             )
         return _run_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
 
@@ -871,7 +868,6 @@ def _run_nongated_experts_grouped_mm_impl(
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     grouped_mm_quant: GroupedMMQuant = None,
-    mxfp8_pad_groups: bool = False,
 ) -> torch.Tensor:
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
     assert x.dim() == 2
@@ -884,8 +880,8 @@ def _run_nongated_experts_grouped_mm_impl(
     elif grouped_mm_quant == "mxfp8":
         from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import mxfp8_grouped_gemm
 
-        h = relu2(mxfp8_grouped_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets, pad_groups=mxfp8_pad_groups))
-        out = mxfp8_grouped_gemm(h, w2.bfloat16().transpose(-2, -1), offsets, pad_groups=mxfp8_pad_groups).type_as(x)
+        h = relu2(mxfp8_grouped_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
+        out = mxfp8_grouped_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
     else:
         h = relu2(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
         out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
@@ -952,9 +948,8 @@ class NonGatedGroupedExperts(nn.Module):
         w2 = self.w2.to_local()
         w3 = self.w3.to_local()
         if self.use_grouped_mm:
-            # DeepEP dispatch bypasses the @expert_parallel decorator's 32-token padding.
             return _run_nongated_experts_grouped_mm_impl(
-                w1, w2, w3, x, num_tokens_per_expert, grouped_mm_quant=self.grouped_mm_quant, mxfp8_pad_groups=True
+                w1, w2, w3, x, num_tokens_per_expert, grouped_mm_quant=self.grouped_mm_quant
             )
         return _run_nongated_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
 
