@@ -1,31 +1,180 @@
-<h1>MXFP8 training on Qwen3-30B-A3B — convergence parity</h1>
-<p class="sub">SFT on <code>willcb/R1-reverse-wikipedia-paragraphs-v1-1000</code>, 8×B200, 50 steps, lr 2e-5.
-MXFP8 (torchao) loss curves track the bf16 baselines for both expert-parallel (EP=8) and non-EP (pure FSDP) configurations.</p>
-<div class="card"><svg viewBox="0 0 760 420" width="100%" style="max-width:760px">
-<rect x="0" y="0" width="760" height="420" fill="#fff"/>
-<line x1="56" y1="376.0" x2="744" y2="376.0" stroke="#eee"/><text x="48" y="380.0" text-anchor="end" font-size="11" fill="#666">0.26</text><line x1="56" y1="288.0" x2="744" y2="288.0" stroke="#eee"/><text x="48" y="292.0" text-anchor="end" font-size="11" fill="#666">1.08</text><line x1="56" y1="200.0" x2="744" y2="200.0" stroke="#eee"/><text x="48" y="204.0" text-anchor="end" font-size="11" fill="#666">1.89</text><line x1="56" y1="112.0" x2="744" y2="112.0" stroke="#eee"/><text x="48" y="116.0" text-anchor="end" font-size="11" fill="#666">2.70</text><line x1="56" y1="24.0" x2="744" y2="24.0" stroke="#eee"/><text x="48" y="28.0" text-anchor="end" font-size="11" fill="#666">3.52</text>
-<text x="56.0" y="394.0" text-anchor="middle" font-size="11" fill="#666">0</text><text x="228.0" y="394.0" text-anchor="middle" font-size="11" fill="#666">12</text><text x="400.0" y="394.0" text-anchor="middle" font-size="11" fill="#666">24</text><text x="572.0" y="394.0" text-anchor="middle" font-size="11" fill="#666">36</text><text x="744.0" y="394.0" text-anchor="middle" font-size="11" fill="#666">49</text>
-<polyline fill="none" stroke="#9aa0a6" stroke-width="2.2" stroke-dasharray="6 4" points="56.0,35.4 70.0,97.9 84.1,172.4 98.1,186.9 112.2,216.1 126.2,240.2 140.2,240.4 154.3,250.1 168.3,259.7 182.4,272.1 196.4,262.9 210.4,276.5 224.5,283.6 238.5,281.1 252.6,285.7 266.6,290.3 280.7,294.2 294.7,295.4 308.7,293.4 322.8,305.5 336.8,303.2 350.9,311.1 364.9,309.3 378.9,315.6 393.0,309.4 407.0,316.1 421.1,326.5 435.1,318.5 449.1,326.1 463.2,329.7 477.2,331.4 491.3,335.0 505.3,327.5 519.3,332.4 533.4,343.6 547.4,344.0 561.5,348.0 575.5,348.4 589.6,346.3 603.6,346.4 617.6,347.1 631.7,355.1 645.7,356.2 659.8,359.1 673.8,359.9 687.8,358.8 701.9,364.7 715.9,368.4 730.0,368.1 744.0,370.6"/><polyline fill="none" stroke="#1a73e8" stroke-width="2.2"  points="56.0,31.5 70.0,94.7 84.1,169.9 98.1,185.7 112.2,213.1 126.2,237.9 140.2,239.3 154.3,253.1 168.3,255.1 182.4,270.5 196.4,262.2 210.4,274.4 224.5,283.0 238.5,279.7 252.6,284.0 266.6,288.1 280.7,291.9 294.7,293.8 308.7,292.4 322.8,305.0 336.8,301.9 350.9,309.8 364.9,308.7 378.9,315.2 393.0,308.2 407.0,314.7 421.1,324.5 435.1,317.0 449.1,325.3 463.2,328.7 477.2,329.6 491.3,333.8 505.3,326.4 519.3,331.2 533.4,342.9 547.4,342.2 561.5,346.7 575.5,347.3 589.6,344.8 603.6,344.8 617.6,345.1 631.7,354.1 645.7,354.5 659.8,358.2 673.8,358.5 687.8,358.2 701.9,363.6 715.9,367.1 730.0,367.7 744.0,370.2"/><polyline fill="none" stroke="#e8a0a0" stroke-width="2.2" stroke-dasharray="6 4" points="56.0,35.2 70.0,96.6 84.1,171.6 98.1,187.1 112.2,214.7 126.2,239.9 140.2,241.6 154.3,251.8 168.3,257.4 182.4,271.9 196.4,262.2 210.4,275.8 224.5,283.5 238.5,280.7 252.6,285.1 266.6,289.4 280.7,293.2 294.7,295.2 308.7,293.3 322.8,305.4 336.8,303.0 350.9,310.9 364.9,309.5 378.9,315.2 393.0,309.1 407.0,315.4 421.1,326.0 435.1,317.6 449.1,325.4 463.2,328.6 477.2,330.0 491.3,333.6 505.3,326.3 519.3,331.0 533.4,342.1 547.4,341.3 561.5,345.6 575.5,346.0 589.6,343.7 603.6,344.3 617.6,344.3 631.7,353.0 645.7,353.6 659.8,356.9 673.8,357.2 687.8,357.0 701.9,362.5 715.9,366.5 730.0,366.8 744.0,369.5"/><polyline fill="none" stroke="#d93025" stroke-width="2.2"  points="56.0,31.6 70.0,95.1 84.1,169.9 98.1,185.3 112.2,212.8 126.2,238.4 140.2,239.6 154.3,251.6 168.3,258.0 182.4,270.3 196.4,262.8 210.4,276.2 224.5,284.4 238.5,282.0 252.6,286.0 266.6,291.3 280.7,294.5 294.7,296.5 308.7,294.0 322.8,306.6 336.8,304.0 350.9,312.5 364.9,310.9 378.9,317.4 393.0,311.4 407.0,317.3 421.1,327.3 435.1,318.5 449.1,326.6 463.2,329.8 477.2,331.4 491.3,335.4 505.3,327.7 519.3,331.9 533.4,342.6 547.4,342.1 561.5,346.3 575.5,347.3 589.6,344.8 603.6,345.3 617.6,344.9 631.7,353.1 645.7,353.6 659.8,357.0 673.8,358.0 687.8,357.5 701.9,362.9 715.9,366.3 730.0,365.7 744.0,368.8"/>
-<line x1="592" y1="30" x2="612" y2="30" stroke="#9aa0a6" stroke-width="2.5" stroke-dasharray="6 4"/><text x="618" y="34" font-size="11" fill="#333">nonep-bf16  (0.31)</text><line x1="592" y1="48" x2="612" y2="48" stroke="#1a73e8" stroke-width="2.5" /><text x="618" y="52" font-size="11" fill="#333">nonep-mxfp8  (0.32)</text><line x1="592" y1="66" x2="612" y2="66" stroke="#e8a0a0" stroke-width="2.5" stroke-dasharray="6 4"/><text x="618" y="70" font-size="11" fill="#333">ep-bf16  (0.32)</text><line x1="592" y1="84" x2="612" y2="84" stroke="#d93025" stroke-width="2.5" /><text x="618" y="88" font-size="11" fill="#333">ep-mxfp8  (0.33)</text>
-<text x="400" y="414" text-anchor="middle" font-size="12" fill="#444">training step</text>
-<text x="16" y="200" text-anchor="middle" font-size="12" fill="#444" transform="rotate(-90 16 200)">SFT loss</text>
-</svg></div>
-<table>
-<thead><tr><th>run</th><th>loss@0</th><th>loss@final</th><th>min</th><th>pts</th></tr></thead>
-<tbody><tr><td>nonep-bf16</td><td>3.412</td><td>0.314</td><td>0.314</td><td>50</td></tr><tr><td>nonep-mxfp8</td><td>3.448</td><td>0.318</td><td>0.318</td><td>50</td></tr><tr><td>ep-bf16</td><td>3.413</td><td>0.324</td><td>0.324</td><td>50</td></tr><tr><td>ep-mxfp8</td><td>3.447</td><td>0.331</td><td>0.331</td><td>50</td></tr></tbody>
-</table>
-<h2>What's quantized</h2>
-<ul>
-<li><b>Linear</b> — all attention/MLP <code>nn.Linear</code> → MXFP8 (<code>_to_mxfp8_then_scaled_mm</code>); routers/gates/lm_head kept in bf16.</li>
-<li><b>Grouped GEMM</b> — MoE expert matmuls → MXFP8 (<code>_to_mxfp8_then_scaled_grouped_mm</code>); 128-expert non-EP grouped GEMM chunked to ≤32 groups.</li>
-<li><b>All-to-all</b> — EP dispatch/combine wire transfer → MXFP8 (the <code>ep-mxfp8</code> run; <code>nonep-mxfp8</code> has no EP comms).</li>
-</ul>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">prime-rl · trainer · low-precision</div>
+    <h1>MXFP8 training on Qwen3-30B-A3B</h1>
+    <p class="lede">Microscaling FP8 (torchao, Blackwell) holds bf16 convergence across the full MoE stack —
+    linear layers, expert grouped GEMMs, and the expert-parallel all-to-all — in both expert-parallel and
+    pure-FSDP configurations.</p>
+    <div class="setup">
+      <span><b>Model</b> Qwen3-30B-A3B · 128 experts</span>
+      <span><b>Task</b> SFT · reverse-wikipedia</span>
+      <span><b>Hardware</b> 8×B200</span>
+      <span><b>Steps</b> 50 · lr 2e-5 · seq 4096</span>
+    </div>
+  </header>
+
+  <section class="parity">
+    <div class="parity-line">
+      <span class="dot bf"></span> bf16 <b>0.314</b>
+      <span class="arrow">vs</span>
+      <span class="dot mx"></span> MXFP8 <b>0.318</b>
+      <span class="tag">non-EP · Δ +0.004</span>
+    </div>
+    <div class="parity-line">
+      <span class="dot bf"></span> bf16 <b>0.324</b>
+      <span class="arrow">vs</span>
+      <span class="dot mx"></span> MXFP8 <b>0.314</b>
+      <span class="tag">EP=8 · Δ -0.010</span>
+    </div>
+  </section>
+
+  <div class="grid"><div class="stat bf">
+      <div class="stat-head"><span class="cfg">Non-EP</span><span class="prec bf">bf16</span></div>
+      <div class="stat-num">0.314</div>
+      <div class="stat-sub">final loss · baseline</div>
+    </div><div class="stat mx">
+      <div class="stat-head"><span class="cfg">Non-EP</span><span class="prec mx">MXFP8</span></div>
+      <div class="stat-num">0.318</div>
+      <div class="stat-sub">final loss · linear + grouped GEMM</div>
+    </div><div class="stat bf">
+      <div class="stat-head"><span class="cfg">EP=8</span><span class="prec bf">bf16</span></div>
+      <div class="stat-num">0.324</div>
+      <div class="stat-sub">final loss · baseline</div>
+    </div><div class="stat mx">
+      <div class="stat-head"><span class="cfg">EP=8</span><span class="prec mx">MXFP8</span></div>
+      <div class="stat-num">0.314</div>
+      <div class="stat-sub">final loss · linear + grouped + all-to-all</div>
+    </div></div>
+
+  <section class="card chart-card">
+    <div class="card-title">SFT loss <span>· 50 steps</span></div>
+    <canvas id="chart" width="1480" height="720"></canvas>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-title">Per-run summary</div>
+    <div class="table-scroll">
+    <table>
+      <thead><tr><th>run</th><th>quantized</th><th>loss@0</th><th>loss@final</th><th>min</th></tr></thead>
+      <tbody><tr><td class="run">Non-EP · bf16</td><td>baseline</td><td class="n">3.412</td><td class="n">0.314</td><td class="n">0.314</td></tr><tr><td class="run">Non-EP · MXFP8</td><td>linear + grouped GEMM</td><td class="n">3.448</td><td class="n">0.318</td><td class="n">0.318</td></tr><tr><td class="run">EP=8 · bf16</td><td>baseline</td><td class="n">3.413</td><td class="n">0.324</td><td class="n">0.324</td></tr><tr><td class="run">EP=8 · MXFP8</td><td>linear + grouped + all-to-all</td><td class="n">3.445</td><td class="n">0.314</td><td class="n">0.314</td></tr></tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="three">
+    <div class="part"><div class="pk">linear</div><p>Attention &amp; MLP <code>nn.Linear</code> → MXFP8 via <code>_to_mxfp8_then_scaled_mm</code>. Routers, gates, and the LM head stay in bf16.</p></div>
+    <div class="part"><div class="pk">grouped GEMM</div><p>MoE expert matmuls → MXFP8 via <code>_to_mxfp8_then_scaled_grouped_mm</code>. 128-expert non-EP GEMMs are split into ≤32-group chunks (torchao SM100 kernel cap).</p></div>
+    <div class="part"><div class="pk">all-to-all</div><p>EP dispatch/combine transfer MXFP8 payloads on the wire, dequantized to bf16 at the autograd boundary. Active in the <b>EP · MXFP8</b> run only.</p></div>
+  </section>
+
+  <footer>
+    <span>torchao 0.18.0.dev20260407</span><span>·</span>
+    <span>configs/experiments/mxfp8_qwen3_30b</span><span>·</span>
+    <span>ModelConfig.quantization = { type = "mxfp8" }</span>
+  </footer>
+</div>
+
+<script>
+const DATA = {"nonep-bf16": [3.4116, 2.8336, 2.1453, 2.0112, 1.7418, 1.5185, 1.5176, 1.4277, 1.3384, 1.2239, 1.3095, 1.1833, 1.1177, 1.1409, 1.0988, 1.0558, 1.0203, 1.009, 1.0274, 0.9152, 0.9373, 0.8642, 0.8808, 0.8222, 0.8799, 0.8179, 0.7218, 0.7959, 0.7255, 0.6922, 0.6761, 0.6429, 0.7122, 0.6667, 0.5633, 0.5598, 0.5232, 0.519, 0.5385, 0.5374, 0.531, 0.4576, 0.4472, 0.4201, 0.4128, 0.423, 0.3682, 0.3341, 0.3372, 0.3142], "nonep-mxfp8": [3.4476, 2.8633, 2.1685, 2.0227, 1.7693, 1.5404, 1.5269, 1.4001, 1.3809, 1.2393, 1.3152, 1.2026, 1.1231, 1.1541, 1.1147, 1.076, 1.0409, 1.0233, 1.037, 0.9205, 0.9492, 0.8757, 0.8859, 0.8264, 0.8909, 0.8306, 0.7401, 0.809, 0.7325, 0.7013, 0.6928, 0.6539, 0.7225, 0.6786, 0.5705, 0.5768, 0.5352, 0.5298, 0.5529, 0.5522, 0.5501, 0.4664, 0.4627, 0.4288, 0.4262, 0.4291, 0.3792, 0.3464, 0.3406, 0.3178], "ep-bf16": [3.4127, 2.8457, 2.1531, 2.0099, 1.755, 1.522, 1.5056, 1.4122, 1.3599, 1.2263, 1.316, 1.1903, 1.1193, 1.1447, 1.1039, 1.0642, 1.0289, 1.0107, 1.0286, 0.9165, 0.9385, 0.866, 0.8787, 0.8262, 0.8826, 0.8242, 0.726, 0.8034, 0.7314, 0.7021, 0.6891, 0.6564, 0.7233, 0.68, 0.5775, 0.5845, 0.5449, 0.5416, 0.5624, 0.5571, 0.5571, 0.4767, 0.4712, 0.4411, 0.4382, 0.4395, 0.3892, 0.3522, 0.3489, 0.3239], "ep-mxfp8": [3.4453, 2.8639, 2.1656, 2.0329, 1.7728, 1.5364, 1.5192, 1.3999, 1.3756, 1.2396, 1.3124, 1.1968, 1.1188, 1.1497, 1.1068, 1.0694, 1.0363, 1.0154, 1.0294, 0.9147, 0.9423, 0.8695, 0.8789, 0.8199, 0.8822, 0.8233, 0.7328, 0.8025, 0.7288, 0.6941, 0.6841, 0.641, 0.714, 0.6728, 0.5681, 0.5699, 0.5271, 0.5209, 0.5454, 0.5422, 0.5402, 0.4636, 0.4505, 0.422, 0.4163, 0.421, 0.3735, 0.3421, 0.3422, 0.3143]};
+const ORDER = ["nonep-bf16", "nonep-mxfp8", "ep-bf16", "ep-mxfp8"];
+const STYLE = {
+  "nonep-bf16": {color:"#b9c0cc", dash:[7,5], label:"non-EP · bf16"},
+  "nonep-mxfp8":{color:"#2563eb", dash:[],    label:"non-EP · MXFP8"},
+  "ep-bf16":    {color:"#d8b48a", dash:[7,5], label:"EP=8 · bf16"},
+  "ep-mxfp8":   {color:"#c2410c", dash:[],    label:"EP=8 · MXFP8"}
+};
+const cv = document.getElementById("chart"), ctx = cv.getContext("2d");
+const W = cv.width, H = cv.height, PL = 92, PR = 36, PT = 36, PB = 70;
+let maxN = Math.max(...ORDER.map(k=>DATA[k].length));
+let all = ORDER.flatMap(k=>DATA[k]);
+let ymax = Math.max(...all), ymin = Math.min(...all);
+ymax = Math.ceil(ymax*10)/10; ymin = Math.max(0, Math.floor(ymin*10)/10);
+const sx = i => PL + (W-PL-PR)*(i/(maxN-1));
+const sy = y => PT + (H-PT-PB)*(1-(y-ymin)/(ymax-ymin));
+ctx.clearRect(0,0,W,H);
+// grid + y labels
+ctx.font = "26px ui-monospace, Menlo, monospace"; ctx.fillStyle = "#9aa1ad"; ctx.strokeStyle = "#e8eaee"; ctx.lineWidth = 2;
+for(let t=0;t<=5;t++){
+  const yv = ymin+(ymax-ymin)*t/5, yy = sy(yv);
+  ctx.beginPath(); ctx.moveTo(PL,yy); ctx.lineTo(W-PR,yy); ctx.stroke();
+  ctx.textAlign="right"; ctx.textBaseline="middle"; ctx.fillText(yv.toFixed(2), PL-16, yy);
+}
+// x labels
+ctx.textAlign="center"; ctx.textBaseline="top";
+for(let t=0;t<=5;t++){ const xi=Math.round((maxN-1)*t/5); ctx.fillText(xi, sx(xi), H-PB+16); }
+ctx.fillStyle="#6b7280"; ctx.font="24px ui-monospace, monospace";
+ctx.fillText("training step", (PL+W-PR)/2, H-28);
+// lines
+for(const k of ORDER){
+  const s = STYLE[k], v = DATA[k];
+  ctx.strokeStyle = s.color; ctx.lineWidth = s.dash.length?3:4; ctx.setLineDash(s.dash);
+  ctx.beginPath(); v.forEach((y,i)=>{ const X=sx(i),Y=sy(y); i?ctx.lineTo(X,Y):ctx.moveTo(X,Y); }); ctx.stroke();
+  ctx.setLineDash([]);
+  // endpoint dot for the MXFP8 lines
+  if(!s.dash.length){ const X=sx(v.length-1),Y=sy(v[v.length-1]); ctx.fillStyle=s.color; ctx.beginPath(); ctx.arc(X,Y,7,0,7); ctx.fill(); }
+}
+document.getElementById("legend").innerHTML = ORDER.map(k=>{
+  const s=STYLE[k]; const d=s.dash.length?"dashed":"solid";
+  return `<span class="lg"><span class="ln" style="border-top:3px ${d} ${s.color}"></span>${s.label}</span>`;
+}).join("");
+</script>
+
 <style>
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:840px;margin:2rem auto;padding:0 1rem;color:#222;line-height:1.5}
-h1{font-size:1.5rem;margin-bottom:.2rem} h2{font-size:1.15rem;margin-top:1.6rem}
-.sub{color:#555;margin-top:0}
-.card{border:1px solid #eee;border-radius:10px;padding:12px;margin:1rem 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
-table{border-collapse:collapse;width:100%;font-size:.9rem}
-th,td{border-bottom:1px solid #eee;padding:6px 10px;text-align:right} th:first-child,td:first-child{text-align:left}
-code{background:#f5f5f7;padding:1px 5px;border-radius:4px;font-size:.85em}
+  :root{ --ink:#14171e; --muted:#5d6470; --faint:#8b929d; --paper:#f4f5f7; --card:#ffffff;
+    --line:#e6e8ec; --mx:#2563eb; --bf:#aab2bd; --ok:#15803d; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.55;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:920px;margin:0 auto;padding:56px 24px 72px;}
+  .eyebrow{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--mx);font-weight:600;}
+  h1{font-size:38px;line-height:1.08;letter-spacing:-.02em;margin:.35em 0 .25em;text-wrap:balance;font-weight:680;}
+  .lede{font-size:18px;color:var(--muted);max-width:64ch;margin:0 0 22px;}
+  .setup{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:13.5px;color:var(--faint);
+    border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:13px 0;}
+  .setup b{color:var(--ink);font-weight:600;margin-right:5px;}
+  .parity{display:flex;flex-wrap:wrap;gap:10px 28px;margin:24px 0 6px;}
+  .parity-line{display:flex;align-items:center;gap:9px;font-size:15px;color:var(--muted);}
+  .parity-line b{color:var(--ink);font-variant-numeric:tabular-nums;font-feature-settings:"tnum";}
+  .arrow{color:var(--faint);font-size:13px;}
+  .dot{width:11px;height:11px;border-radius:50%;display:inline-block;}
+  .dot.bf{background:var(--bf);} .dot.mx{background:var(--mx);}
+  .tag{margin-left:4px;font-size:12px;color:var(--ok);background:#eaf5ee;border:1px solid #cfe7d7;
+    padding:2px 9px;border-radius:999px;font-variant-numeric:tabular-nums;font-weight:600;}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:26px 0;}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 16px 14px;
+    border-top:3px solid var(--bf);}
+  .stat.mx{border-top-color:var(--mx);}
+  .stat-head{display:flex;justify-content:space-between;align-items:center;}
+  .cfg{font-size:12px;color:var(--faint);letter-spacing:.04em;text-transform:uppercase;}
+  .prec{font-size:11px;font-weight:700;padding:1px 7px;border-radius:5px;color:#fff;background:var(--bf);}
+  .prec.mx{background:var(--mx);}
+  .stat-num{font-size:32px;font-weight:680;margin:8px 0 1px;font-variant-numeric:tabular-nums;
+    font-family:ui-monospace,Menlo,monospace;letter-spacing:-.01em;}
+  .stat-sub{font-size:12px;color:var(--faint);}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin:18px 0;}
+  .card-title{font-size:13px;font-weight:650;letter-spacing:.02em;text-transform:uppercase;color:var(--ink);margin-bottom:14px;}
+  .card-title span{color:var(--faint);font-weight:500;text-transform:none;letter-spacing:0;}
+  canvas{width:100%;height:auto;display:block;}
+  .legend{display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;font-size:13px;color:var(--muted);
+    font-variant-numeric:tabular-nums;}
+  .lg{display:flex;align-items:center;gap:8px;}
+  .ln{width:26px;display:inline-block;}
+  .table-scroll{overflow-x:auto;}
+  table{border-collapse:collapse;width:100%;font-size:14px;}
+  th,td{padding:9px 12px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap;}
+  th{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);font-weight:600;}
+  th:first-child,td:first-child{text-align:left;} td:nth-child(2){text-align:left;color:var(--muted);}
+  td.n{font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,monospace;}
+  td.run{font-weight:600;}
+  .three{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:18px;}
+  .part{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;}
+  .pk{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--mx);margin-bottom:7px;}
+  .part p{margin:0;font-size:13.5px;color:var(--muted);}
+  code{background:#eef0f3;padding:1px 6px;border-radius:5px;font-size:.86em;
+    font-family:ui-monospace,Menlo,monospace;color:#2b3340;}
+  footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;
+    gap:10px;font-size:12.5px;color:var(--faint);font-family:ui-monospace,Menlo,monospace;}
+  @media(max-width:760px){ .grid{grid-template-columns:repeat(2,1fr);} .three{grid-template-columns:1fr;} h1{font-size:30px;} }
 </style>
