@@ -152,7 +152,6 @@ dev = [
 # *without* the cooldown — bypassing this security policy.
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
-preview = true
 no-build-isolation-package = ["flash-attn"]
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
