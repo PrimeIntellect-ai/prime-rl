@@ -66,14 +66,31 @@ class Stat:
         }
 
 
-class TimingMetrics:
-    """Per-phase rollout duration distributions, nested so ``metrics.timing.setup.mean()`` reads
-    naturally. ``total`` is the per-rollout sum across all phases."""
+class StatGroup:
+    """A nested group of named ``Stat``s. ``to_dict`` emits ``{prefix}/<name>/<stat>`` for each
+    distribution and ``group[name]`` returns one; subclasses supply the names via ``stats()``."""
+
+    def __init__(self, rollouts: list[Rollout]) -> None:
+        self.rollouts = rollouts
+
+    def stats(self) -> dict[str, Stat]:
+        raise NotImplementedError
+
+    def __getitem__(self, name: str) -> Stat:
+        return self.stats()[name]
+
+    def to_dict(self, prefix: str) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for name, stat in self.stats().items():
+            out |= stat.to_dict(f"{prefix}/{name}")
+        return out
+
+
+class TimingMetrics(StatGroup):
+    """Per-phase rollout durations, nested so ``metrics.timing.setup.mean()`` reads naturally.
+    ``total`` is the per-rollout sum across all phases."""
 
     PHASES = ("setup", "generation", "finalize", "scoring")
-
-    def __init__(self, rollouts: list["Rollout"]) -> None:
-        self.rollouts = rollouts
 
     @property
     def setup(self) -> Stat:
@@ -95,13 +112,24 @@ class TimingMetrics:
     def total(self) -> Stat:
         return Stat([sum(getattr(r.timing, p).duration for p in self.PHASES) for r in self.rollouts])
 
-    def to_dict(self, prefix: str) -> dict[str, float]:
-        """Each phase's ``{prefix}/<phase>/...`` distribution, plus ``{prefix}/total/...``."""
-        out: dict[str, float] = {}
-        for phase in self.PHASES:
-            out |= getattr(self, phase).to_dict(f"{prefix}/{phase}")
-        out |= self.total.to_dict(f"{prefix}/total")
-        return out
+    def stats(self) -> dict[str, Stat]:
+        return {**{phase: getattr(self, phase) for phase in self.PHASES}, "total": self.total}
+
+
+class CustomMetrics(StatGroup):
+    """Per-key ``Stat``s over a dynamic per-rollout dict attribute (env ``@metric``s or reward
+    components), each averaged over the rollouts that report the key."""
+
+    def __init__(self, rollouts: list[Rollout], attr: str) -> None:
+        super().__init__(rollouts)
+        self.attr = attr
+
+    def stats(self) -> dict[str, Stat]:
+        names = sorted({name for r in self.rollouts for name in getattr(r, self.attr)})
+        return {
+            name: Stat([getattr(r, self.attr)[name] for r in self.rollouts if name in getattr(r, self.attr)])
+            for name in names
+        }
 
 
 class RolloutMetrics:
@@ -109,7 +137,7 @@ class RolloutMetrics:
     (mean/max/min); boolean metrics are ``Stat``s of 0/1 (use ``.mean()`` for the rate). ``to_wandb``
     assembles the full ``{prefix}/{subset}/...`` dict; ``TrainMetrics`` / ``EvalMetrics`` extend it."""
 
-    def __init__(self, rollouts: list["Rollout"]) -> None:
+    def __init__(self, rollouts: list[Rollout]) -> None:
         self.rollouts = rollouts
 
     # Distributional metrics
@@ -137,6 +165,16 @@ class RolloutMetrics:
     def timing(self) -> TimingMetrics:
         return TimingMetrics(self.rollouts)
 
+    @property
+    def metrics(self) -> CustomMetrics:
+        """Env custom ``@metric`` outputs, keyed by name (``metrics.metrics["acc"].mean()``)."""
+        return CustomMetrics(self.rollouts, "metrics")
+
+    @property
+    def rewards(self) -> CustomMetrics:
+        """Per-component reward breakdown, keyed by name (summed into the scalar ``reward``)."""
+        return CustomMetrics(self.rollouts, "rewards")
+
     # Boolean rate metrics (0/1 distributions — ``.mean()`` is the rate)
     @property
     def is_truncated(self) -> Stat:
@@ -149,14 +187,6 @@ class RolloutMetrics:
     @property
     def has_error(self) -> Stat:
         return Stat([float(r.has_error) for r in self.rollouts])
-
-    def custom(self, attr: str) -> dict[str, Stat]:
-        """Per-key ``Stat``s for a dynamic per-rollout dict attribute (``metrics`` or ``rewards``),
-        each averaged over the rollouts that report the key."""
-        names = sorted({name for r in self.rollouts for name in getattr(r, attr)})
-        return {
-            name: Stat([getattr(r, attr)[name] for r in self.rollouts if name in getattr(r, attr)]) for name in names
-        }
 
     def stop_conditions(self) -> dict[str, float]:
         """``generation_truncated`` over all rollouts, then each recorded ``stop_condition``'s rate
@@ -200,10 +230,8 @@ class RolloutMetrics:
         out |= self.num_turns.to_dict(f"{p}/num_turns")
         out |= self.num_branches.to_dict(f"{p}/num_branches")
         out |= self.timing.to_dict(f"{p}/timing")
-        for name, stat in self.custom("metrics").items():
-            out |= stat.to_dict(f"{p}/metrics/{name}")
-        for name, stat in self.custom("rewards").items():
-            out |= stat.to_dict(f"{p}/rewards/{name}")
+        out |= self.metrics.to_dict(f"{p}/metrics")
+        out |= self.rewards.to_dict(f"{p}/rewards")
         out[f"{p}/is_truncated/mean"] = self.is_truncated.mean()
         out[f"{p}/is_completed/mean"] = self.is_completed.mean()
         # has_error is structurally 0 on the effective subset, so log it on `all` only
@@ -292,24 +320,24 @@ class TrainRollouts:
     """A list of train rollouts (everything that came back, errored + filtered included). ``effective``
     is the clean subset (a view of the same traces); ``metrics`` builds ``TrainMetrics`` over them."""
 
-    def __init__(self, rollouts: list["Rollout"] | None = None) -> None:
+    def __init__(self, rollouts: list[Rollout] | None = None) -> None:
         self.rollouts = rollouts if rollouts is not None else []
 
-    def append(self, rollout: "Rollout") -> None:
+    def append(self, rollout: Rollout) -> None:
         self.rollouts.append(rollout)
 
     def __len__(self) -> int:
         return len(self.rollouts)
 
-    def __iter__(self) -> Iterator["Rollout"]:
+    def __iter__(self) -> Iterator[Rollout]:
         return iter(self.rollouts)
 
     @property
-    def effective(self) -> "TrainRollouts":
+    def effective(self) -> TrainRollouts:
         return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered])
 
-    def by_env(self) -> dict[str, "TrainRollouts"]:
-        grouped: dict[str, list["Rollout"]] = {}
+    def by_env(self) -> dict[str, TrainRollouts]:
+        grouped: dict[str, list[Rollout]] = {}
         for r in self.rollouts:
             grouped.setdefault(r.env_name, []).append(r)
         return {env: TrainRollouts(rs) for env, rs in grouped.items()}
@@ -323,20 +351,20 @@ class EvalRollouts:
     """A list of eval rollouts (errored included). ``effective`` is the non-errored subset (a view);
     ``metrics`` builds ``EvalMetrics`` over them (which derives the ``avg@k`` group size)."""
 
-    def __init__(self, rollouts: list["Rollout"] | None = None) -> None:
+    def __init__(self, rollouts: list[Rollout] | None = None) -> None:
         self.rollouts = rollouts if rollouts is not None else []
 
-    def append(self, rollout: "Rollout") -> None:
+    def append(self, rollout: Rollout) -> None:
         self.rollouts.append(rollout)
 
     def __len__(self) -> int:
         return len(self.rollouts)
 
-    def __iter__(self) -> Iterator["Rollout"]:
+    def __iter__(self) -> Iterator[Rollout]:
         return iter(self.rollouts)
 
     @property
-    def effective(self) -> "EvalRollouts":
+    def effective(self) -> EvalRollouts:
         return EvalRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered])
 
     @property

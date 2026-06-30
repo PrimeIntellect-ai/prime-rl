@@ -159,7 +159,10 @@ def test_custom_metrics_and_reward_components():
         mk(metrics={"acc": 1.0}, rewards={"correct": 1.0, "format": 0.0}),
         mk(metrics={"acc": 3.0, "fmt": 5.0}, rewards={"correct": 0.0, "format": 1.0}),
     ]
-    out = TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset="all")
+    m = TrainRollouts(rollouts).metrics
+    assert m.metrics["acc"].mean() == 2.0  # nested group access
+    assert m.rewards["correct"].mean() == 0.5
+    out = m.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/metrics/acc/mean"] == 2.0  # over both reporters
     assert out["train/agg/all/metrics/fmt/mean"] == 5.0  # single reporter
     assert out["train/agg/all/rewards/correct/mean"] == 0.5
