@@ -976,10 +976,9 @@ class Qwen3_5MoeVLMModel(nn.Module):
 
         # Always run the vision encoder for collective symmetry: under FSDP + EP
         # all ranks share one process group, so every rank must issue the vision
-        # encoder's all-gathers in the same order each step. A text-only micro-batch
-        # would otherwise skip them and desync the collectives, deadlocking the run.
-        # The encoder is frozen, so the dummy pass produces no gradients/backward
-        # collectives; we discard its embeds by skipping the masked_scatter.
+        # encoder's collectives in the same order each step. Text-only microbatches
+        # keep the dummy embeds in the graph with zero contribution so trainable
+        # vision modules also participate in backward collectives.
         has_images = pixel_values is not None
         vision_grid_thw = image_grid_thw
         if has_images:
@@ -1009,6 +1008,8 @@ class Qwen3_5MoeVLMModel(nn.Module):
                 )
             image_mask = image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+        else:
+            inputs_embeds = inputs_embeds + image_embeds.sum() * 0.0
 
         if position_ids is None:
             if image_grid_thw is not None:
