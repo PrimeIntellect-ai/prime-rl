@@ -255,9 +255,12 @@ class TrainSink:
 
         # ``rollouts`` is the whole arrival window (errored + filtered + survivors); ``samples`` is
         # the shipped cohort's trainable payload. ``rollouts.effective`` / ``rollouts.metrics`` derive
-        # the clean subset + metric views on demand. Hand off the window and reset.
+        # the clean subset + metric views on demand. Reset the window only when the batch actually
+        # ships (non-empty samples) — an empty batch is dropped unlogged by the orchestrator, so keep
+        # accumulating its arrivals (and any overflow) into the next shipped batch's window.
         rollouts = self.pending_rollouts
-        self.pending_rollouts = TrainRollouts()
+        if samples:
+            self.pending_rollouts = TrainRollouts()
         return TrainBatch(rollouts=rollouts, samples=samples)
 
     def reset_pre_filter_stats(self) -> None:
