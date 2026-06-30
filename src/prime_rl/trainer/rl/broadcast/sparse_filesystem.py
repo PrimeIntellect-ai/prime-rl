@@ -107,13 +107,19 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
                 self._sparse_update_previous_state_dict = {
                     name: tensor.to("cpu").contiguous() for name, tensor in state_dict.items()
                 }
-                self._sparse_update_previous_step = step
+                # The baseline equals the model state the inference worker
+                # currently has (step-1), not the step we're about to train.
+                self._sparse_update_previous_step = step - 1
                 total_numel = sum(t.numel() for t in self._sparse_update_previous_state_dict.values())
                 self.logger.info(
                     f"Prepared sparse update baseline at step {step} "
                     f"(kernel_format={self.kernel_format}, gpu_diff={self.gpu_diff}, "
                     f"{len(self._sparse_update_previous_state_dict)} tensors, {total_numel:,} values)"
                 )
+            # Clear ready_to_update so the dataloader can read the next batch —
+            # the baseline init doesn't produce a patch, so there's nothing to broadcast.
+            for idx in self.multi_run_manager.used_idxs:
+                self.multi_run_manager.ready_to_update[idx] = False
             return
 
         for idx in self.multi_run_manager.ready_to_update_idxs:

@@ -130,6 +130,12 @@ class SharedWeightBroadcastConfig(BaseConfig):
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
+    gpu_diff: bool = False
+    """Run the sparse-update nonzero diff on GPU instead of CPU (sparse_filesystem only)."""
+
+    compress: bool = False
+    """zstd-compress sparse filesystem patch files (sparse_filesystem only)."""
+
 
 class BaseDeploymentConfig(BaseConfig):
     gpus_per_node: int = 8
@@ -334,7 +340,10 @@ class RLConfig(BaseConfig):
             elif self.weight_broadcast.type in ("filesystem", "sparse_filesystem"):
                 if self.trainer.weight_broadcast.type != self.weight_broadcast.type:
                     if self.weight_broadcast.type == "sparse_filesystem":
-                        self.trainer.weight_broadcast = TrainerSparseFileSystemWeightBroadcastConfig()
+                        self.trainer.weight_broadcast = TrainerSparseFileSystemWeightBroadcastConfig(
+                            gpu_diff=self.weight_broadcast.gpu_diff,
+                            compress=self.weight_broadcast.compress,
+                        )
                     else:
                         self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
