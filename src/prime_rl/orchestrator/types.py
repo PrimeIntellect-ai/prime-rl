@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Generic, Literal, Protocol
+from typing import TYPE_CHECKING, Generic, Literal, Protocol
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
 from verifiers.v1.task import TaskT
 
 from prime_rl.transport import TrainingSample
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.metrics import EvalRollouts, TrainRollouts
 
 
 @dataclass
@@ -124,48 +127,28 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
 
 
 @dataclass
-class TrainBatchMetrics:
-    """Per-batch scalars from ``TrainSink.process_batch`` that aren't derivable from the batch's
-    rollouts/samples: ``n_trainable`` (shipped non-filtered rollout count, feeds the empty-batch
-    guard) and the cohort's prefill/decode token totals (which include filtered rollouts, so they
-    differ from a sum over ``samples``; feed ``progress/*`` + the usage reporter). The rest of the
-    rollout metrics come from ``compute_train_metrics`` over ``TrainBatch.rollouts`` / ``.effective``;
-    arrival/error counts derive from ``TrainBatch.rollouts`` directly."""
+class TrainBatch:
+    """``rollouts`` is the full arrival window since the last ship (errored + filtered included; its
+    ``.effective`` / ``.metrics`` views drive logging). ``samples`` is the trainer-bound payload (the
+    shipped cohort's post-filter survivors). The scalars aren't derivable from the batch: ``n_trainable``
+    (shipped non-filtered count, feeds the empty-batch guard) and the cohort prefill/decode token totals
+    (include filtered rollouts, so not a sum over ``samples``; feed ``progress/*`` + the usage reporter)."""
 
+    rollouts: TrainRollouts
+    samples: list[TrainingSample]
     n_trainable: int
     num_prefill_tokens: int
     num_decode_tokens: int
 
 
 @dataclass
-class TrainBatch:
-    """``rollouts`` is the full arrival window since the last ship (errored + filtered included);
-    ``effective`` is the clean subset ≈ what actually trained. ``samples`` is the trainer-bound
-    payload (the shipped cohort's post-filter survivors)."""
-
-    rollouts: list[Rollout]
-    samples: list[TrainingSample]
-    metrics: TrainBatchMetrics
-
-    @property
-    def effective(self) -> list[Rollout]:
-        """Non-errored, non-filtered rollouts — a view referencing the same traces, not copies."""
-        return [r for r in self.rollouts if not r.has_error and not r.is_filtered]
-
-
-@dataclass
 class EvalBatch:
-    """One env's eval epoch. ``rollouts`` is the full returned cohort (errored included);
-    ``effective`` is the non-errored subset."""
+    """One env's eval epoch. ``rollouts`` is the full returned cohort (errored included); its
+    ``.effective`` / ``.metrics`` views drive logging."""
 
     env_name: str
     step: int
-    rollouts: list[Rollout]
-
-    @property
-    def effective(self) -> list[Rollout]:
-        """Non-errored, non-filtered rollouts — a view referencing the same traces, not copies."""
-        return [r for r in self.rollouts if not r.has_error and not r.is_filtered]
+    rollouts: EvalRollouts
 
 
 class VersionObserver(Protocol):

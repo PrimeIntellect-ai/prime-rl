@@ -23,8 +23,9 @@ from collections import defaultdict
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
+from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout, TrainBatch, TrainBatchMetrics
+from prime_rl.orchestrator.types import Rollout, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -75,7 +76,7 @@ class TrainSink:
         # filtered included. Becomes ``TrainBatch.rollouts`` (the ``all`` set; its non-errored,
         # non-filtered subset is ``effective``). Per-env arrival/error counts derive from it, so
         # they aren't tracked separately. Reset in ``process_batch``.
-        self.arrivals_window: list[Rollout] = []
+        self.arrivals_window: TrainRollouts = TrainRollouts()
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -268,17 +269,18 @@ class TrainSink:
 
         n_trainable = sum(1 for r in cohort if not r.is_filtered)
 
-        metrics = TrainBatchMetrics(
+        # ``rollouts`` is the whole arrival window (errored + filtered + survivors); ``samples`` is
+        # the shipped cohort's trainable payload. ``rollouts.effective`` / ``rollouts.metrics`` derive
+        # the clean subset + metric views on demand. Hand off the window and reset.
+        rollouts = self.arrivals_window
+        self.arrivals_window = TrainRollouts()
+        return TrainBatch(
+            rollouts=rollouts,
+            samples=samples,
             n_trainable=n_trainable,
             num_prefill_tokens=num_prefill,
             num_decode_tokens=num_decode,
         )
-        # ``rollouts`` is the whole arrival window (errored + filtered + survivors); ``samples``
-        # is the shipped cohort's trainable payload. ``TrainBatch.effective`` derives the clean
-        # subset on demand. Hand off and reset the window.
-        all_rollouts = self.arrivals_window
-        self.arrivals_window = []
-        return TrainBatch(rollouts=all_rollouts, samples=samples, metrics=metrics)
 
     def reset_pre_filter_stats(self) -> None:
         self.pre_filter_seen = 0

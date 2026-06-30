@@ -9,7 +9,8 @@ and drives the pipeline. Components are single-purpose:
   and returns a ``TrainBatch`` when the threshold is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
   returned cohort) on epoch completion.
-- ``compute_train_metrics`` / ``compute_eval_metrics`` build the per-step W&B metrics.
+- ``TrainRollouts`` / ``EvalRollouts`` carry the rollouts and build the per-step W&B metrics
+  (``batch.rollouts.metrics`` / ``.effective.metrics``).
 - ``WeightWatcher`` advances ``Policy`` and notifies observers.
 - ``PeriodicLogger`` polls the components on a shared interval for the
   ``_timestamp``-axis pipeline log.
@@ -44,7 +45,6 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.metrics import compute_eval_metrics, compute_train_metrics
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
@@ -493,7 +493,7 @@ class Orchestrator:
             )
             return
 
-        if batch.metrics.n_trainable == 0:
+        if batch.n_trainable == 0:
             self.consecutive_empty_batches += 1
             get_logger().warning(
                 f"Step {step}: no trainable rollouts (0 of {len(batch.rollouts)} generated survived errors + filters) "
@@ -506,10 +506,10 @@ class Orchestrator:
                 )
             return
         self.consecutive_empty_batches = 0
-        if batch.metrics.n_trainable / len(batch.rollouts) <= 0.1:
+        if batch.n_trainable / len(batch.rollouts) <= 0.1:
             get_logger().warning(
-                f"Only {batch.metrics.n_trainable}/{len(batch.rollouts)} generated rollouts are trainable "
-                f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
+                f"Only {batch.n_trainable}/{len(batch.rollouts)} generated rollouts are trainable "
+                f"({batch.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
         # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables); to_record
@@ -524,29 +524,21 @@ class Orchestrator:
         trim_process_memory()
 
         # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``batch.rollouts`` is the
-        # full arrival window (errored + filtered included); ``batch.effective`` is the clean
-        # subset (≈ what actually trained).
-        all_rollouts = batch.rollouts
-        effective = batch.effective
-        env_group_size = {env.resolved_name: env.group_size for env in config.train.env}
+        # full arrival window (errored + filtered included); ``.effective`` is the clean subset.
+        effective = batch.rollouts.effective
         metrics: dict[str, float] = {}
-        for subset, pool in (("all", all_rollouts), ("effective", effective)):
-            metrics |= compute_train_metrics(pool, prefix="train/agg", subset=subset, env_group_size=env_group_size)
-            per_env: dict[str, list[Rollout]] = {}
-            for r in pool:
-                per_env.setdefault(r.env_name, []).append(r)
-            for env_name, env_rollouts in per_env.items():
-                metrics |= compute_train_metrics(
-                    env_rollouts, prefix=f"train/{env_name}", subset=subset, env_group_size=env_group_size
-                )
+        for subset, pool in (("all", batch.rollouts), ("effective", effective)):
+            metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
+            for env_name, env_pool in pool.by_env().items():
+                metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
 
-        # Progress / timing / env-share / pre-filter accounting (assembled here, not in the
-        # shared rollout-metric function); kept over the shipped cohort to preserve semantics.
+        # Progress / timing / env-share / pre-filter accounting (assembled here, not in the metrics
+        # objects); over the full arrival window.
         num_tokens = sum(r.num_total_tokens for r in batch.rollouts)
         metrics |= {
             "progress/tokens": num_tokens,
-            "progress/prefill_tokens": batch.metrics.num_prefill_tokens,
-            "progress/decode_tokens": batch.metrics.num_decode_tokens,
+            "progress/prefill_tokens": batch.num_prefill_tokens,
+            "progress/decode_tokens": batch.num_decode_tokens,
             "progress/rollouts": len(batch.rollouts),
             "progress/tasks": len({r.group_id for r in batch.rollouts}),
             "progress/total_tokens": self.progress.total_tokens,
@@ -568,7 +560,7 @@ class Orchestrator:
             for name, count in self.train_sink.pre_filter_dropped_by_name.items():
                 metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
         self.monitor.log(metrics, step=step)
-        self.monitor.log_samples(effective, step=step)
+        self.monitor.log_samples(effective.rollouts, step=step)
         self.monitor.log_distributions(
             distributions={
                 "rewards": [r.reward for r in effective],
@@ -583,7 +575,7 @@ class Orchestrator:
                 self.usage_reporter.report_training_usage(
                     run_id=run_id,
                     step=step,
-                    tokens=batch.metrics.num_prefill_tokens + batch.metrics.num_decode_tokens,
+                    tokens=batch.num_prefill_tokens + batch.num_decode_tokens,
                 )
         if self.heart is not None:
             self.heart.beat()
@@ -688,7 +680,7 @@ class Orchestrator:
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per
         env. ``Error`` is the sink-level rate (errored arrivals / total arrivals); the quality
-        metrics are over ``batch.effective`` (the clean, trained-on subset), while ``Trainable``
+        metrics are over ``batch.rollouts.effective`` (the clean, trained-on subset), while ``Trainable``
         is relative to all generated rollouts."""
         # Arrival/error counts derive from the full window (``batch.rollouts``).
         arrivals_by_env: dict[str, int] = {}
@@ -699,10 +691,10 @@ class Orchestrator:
                 errors_by_env[r.env_name] = errors_by_env.get(r.env_name, 0) + 1
         n_arrivals_total = len(batch.rollouts)
         n_errors_total = sum(errors_by_env.values())
-        effective = batch.effective
+        effective = batch.rollouts.effective
         n_generated = len(batch.rollouts)
         n_effective = max(len(effective), 1)
-        n_trainable = batch.metrics.n_trainable
+        n_trainable = batch.n_trainable
         error_rate = (n_errors_total / n_arrivals_total) if n_arrivals_total else 0.0
         trainable_rate = (n_trainable / n_generated) if n_generated else 0.0
         reward_mean = sum(r.reward for r in effective) / n_effective
@@ -765,13 +757,11 @@ class Orchestrator:
             )
         # Rollout metrics over {all,effective} (eval batches are per-env, so no `agg` axis).
         # ``effective`` = non-errored; pass@k / pass^k only over the effective set.
-        assert self.eval_envs is not None
         rollouts = batch.rollouts
-        effective = batch.effective
-        group_size = self.eval_envs.get(batch.env_name).config.group_size
+        effective = rollouts.effective
         metrics: dict[str, float] = {}
         for subset, pool in (("all", rollouts), ("effective", effective)):
-            metrics |= compute_eval_metrics(pool, prefix=f"eval/{batch.env_name}", subset=subset, group_size=group_size)
+            metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
         self.monitor.log(metrics, step=batch.step)

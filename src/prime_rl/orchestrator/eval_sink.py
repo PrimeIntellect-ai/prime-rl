@@ -17,6 +17,7 @@ import uuid
 from collections import defaultdict
 
 from prime_rl.orchestrator.envs import EvalEnvs
+from prime_rl.orchestrator.metrics import EvalRollouts
 from prime_rl.orchestrator.types import EvalBatch, Rollout
 from prime_rl.utils.logger import get_logger
 
@@ -111,9 +112,9 @@ class EvalSink:
 
     def process_batch(self, key: tuple[str, int]) -> EvalBatch:
         """Pop the finished ``(env, eval_step)`` epoch and return the ``EvalBatch`` with its full
-        returned cohort (errored rollouts included — they're the ``all`` set for the metric
-        matrix). Metrics are computed downstream by ``compute_eval_metrics`` over the
-        all/effective subsets, so the sink does no aggregation."""
+        returned cohort (errored rollouts included — the ``all`` set). Metrics are computed
+        downstream via ``EvalBatch.rollouts.metrics`` over the all/effective subsets, so the sink
+        does no aggregation."""
         env_name, step = key
         rollouts = self.pending_batches.pop(key, [])
-        return EvalBatch(env_name=env_name, step=step, rollouts=rollouts)
+        return EvalBatch(env_name=env_name, step=step, rollouts=EvalRollouts(rollouts, self.group_size_for(env_name)))
