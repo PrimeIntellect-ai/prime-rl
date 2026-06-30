@@ -1,16 +1,16 @@
 # exp: GLM-4.5-Air (100B MoE) RL across our v1 SEARCH-domain envs — bring-your-own-search QA, run
-# through the rlm harness (its built-in `search` skill) on a prime sandbox. Train on the envs that
-# have a train split; eval on the fixed-test search envs. GRPO + linear length penalty.
+# through the rlm harness (its built-in `search` skill) on a prime sandbox. GRPO + linear length
+# penalty. 2 train + 4 infer nodes. Single run label (glm45air-search) for all envs.
 #
 # Mirrors configs/debug/v1/glm45air_scaleswe.toml (model/trainer/parallelism/caches): glm4_moe
 # router replay, glm-4.5 renderer, cp=8 ulysses, muon, LM-head chunking, AC + activation/optimizer
-# offload, skip-gather/optimizer ckpt. 2 train + 4 infer nodes.
+# offload, skip-gather/optimizer ckpt.
 #
 # CAVEATS (search-specific): every env is bring-your-own-search and scored by a host-side LLM judge.
 #   - The rlm `search` skill calls Serper, so SERPER_API_KEY must be reachable from the prime sandbox.
 #   - The judges (deepdive/papersearchqa gpt-5-mini, browsecomp gpt-4.1, wideseek gpt-4.1-mini,
 #     openseeker/redsearcher vf default) run host-side and need an OpenAI/PI key on the orchestrator.
-# Prime runtime is forced for all envs (these are normally subprocess) with a single run label.
+# Prime runtime is forced for all envs (these are normally subprocess) under one run label.
 
 max_steps = 1000
 seq_len = 65536
@@ -97,11 +97,11 @@ type = "linear"
 
 [orchestrator.prime_monitor]
 
-# --- Train: BYO-search QA envs with a train split (rlm `search` skill, prime sandbox) ---
+# --- Train: the search envs with usable training data (rlm `search` skill, prime sandbox) ---
 
 [[orchestrator.train.env]]
 name = "deepdive"
-taskset = { id = "deepdive-v1" } # default split qa_rl (the RL split)
+taskset = { id = "deepdive-v1" } # default split qa_rl (the RL split; no held-out eval split exists)
 harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 [[orchestrator.train.env]]
@@ -114,7 +114,17 @@ name = "wideseek"
 taskset = { id = "wideseek-v1", split = "hybrid" } # F1 reward; "hybrid" is the paper's train set
 harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
-# --- Eval: fixed-test search envs, every 20 steps (incl. step 0) ---
+[[orchestrator.train.env]]
+name = "openseeker"
+taskset = { id = "openseeker-v1" }
+harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
+
+[[orchestrator.train.env]]
+name = "redsearcher"
+taskset = { id = "redsearcher-v1" } # optional `difficulty` filter (easy/medium/hard)
+harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
+
+# --- Eval: BrowseComp (held-out search benchmark), every 20 steps (incl. step 0) ---
 
 [orchestrator.eval]
 interval = 20
@@ -123,22 +133,6 @@ skip_first_step = false
 [[orchestrator.eval.env]]
 name = "browsecomp"
 taskset = { id = "browsecomp-v1" }
-harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
-num_examples = 100
-group_size = 1
-timeout = { rollout = 3600 }
-
-[[orchestrator.eval.env]]
-name = "openseeker"
-taskset = { id = "openseeker-v1" }
-harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
-num_examples = 100
-group_size = 1
-timeout = { rollout = 3600 }
-
-[[orchestrator.eval.env]]
-name = "redsearcher"
-taskset = { id = "redsearcher-v1" }
 harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 num_examples = 100
 group_size = 1

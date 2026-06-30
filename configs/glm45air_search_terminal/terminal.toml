@@ -1,16 +1,19 @@
-# exp: GLM-4.5-Air (100B MoE) RL across our v1 TERMINAL-domain envs — agentic SWE / sandbox tasks
+# exp: GLM-4.5-Air (100B MoE) RL across our v1 TERMINAL-domain envs — agentic shell/sandbox tasks
 # run through the rlm harness (ipython-only) on a prime sandbox. Each task ships its own Docker image
-# (NEEDS_CONTAINER) which the Environment injects into the sandbox; grading is host-side inside the
-# container. Train on the SWE envs with a train split; eval on the fixed SWE/terminal benchmarks.
-# GRPO + linear length penalty.
+# (NEEDS_CONTAINER) injected into the sandbox; grading is host-side inside the container. GRPO +
+# linear length penalty. 2 train + 4 infer nodes. Single run label (glm45air-terminal) for all envs.
+#
+# Train = the terminal training sets (terminal-bench-lite + a synthetic forensic-CTF). Eval = the
+# fixed sandbox benchmarks, with terminal-bench-2 the primary terminal target (the SWE-Bench evals
+# are kept as cross-domain reference points).
+#
+# NOTE: this is the TERMINAL domain — the SWE tasksets (scaleswe-v1, r2e-gym-v1) are a separate SWE
+# domain and are intentionally NOT trained here. terminal-bench-2-v1 rlm compatibility is inferred
+# from its Harbor base (harness-opaque reward), not config-proven — smoke-test it.
 #
 # Mirrors configs/debug/v1/glm45air_scaleswe.toml (model/trainer/parallelism/caches): glm4_moe
 # router replay, glm-4.5 renderer, cp=8 ulysses, muon, LM-head chunking, AC + activation/optimizer
-# offload, skip-gather/optimizer ckpt. 2 train + 4 infer nodes. Single run label for all envs.
-#
-# Excluded (not rlm-compatible): general-agent-v1 (needs an MCP-tool harness), tau2/tau3-bench
-# (bundle their own harness on subprocess). terminal-bench-2-v1 rlm compat is inferred from its
-# Harbor base (harness-opaque reward) but not config-proven — smoke-test it.
+# offload, skip-gather/optimizer ckpt.
 
 max_steps = 1000
 seq_len = 65536
@@ -97,23 +100,31 @@ type = "linear"
 
 [orchestrator.prime_monitor]
 
-# --- Train: SWE envs with a train split (per-row Docker image in a prime sandbox, rlm ipython) ---
+# --- Train: terminal training sets (per-task Docker image in a prime sandbox, rlm ipython) ---
 
 [[orchestrator.train.env]]
-name = "scaleswe"
-taskset = { id = "scaleswe-v1" }
+name = "openthoughts-tblite"
+taskset = { id = "openthoughts-tblite-v1" } # terminal-bench-lite training corpus (Harbor; per-task images)
 harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
 
 [[orchestrator.train.env]]
-name = "r2e-gym"
-taskset = { id = "r2e-gym-v1" }
+name = "uuid-ctf"
+taskset = { id = "uuid-ctf-v1" } # synthetic forensic-CTF; `difficulty` defaults to easy
 harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
 
-# --- Eval: fixed SWE / terminal benchmarks, every 20 steps (incl. step 0) ---
+# --- Eval: fixed sandbox benchmarks every 20 steps (incl. step 0); terminal-bench-2 is primary ---
 
 [orchestrator.eval]
 interval = 20
 skip_first_step = false
+
+[[orchestrator.eval.env]]
+name = "terminal-bench-2"
+taskset = { id = "terminal-bench-2-v1" }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
+num_examples = 100
+group_size = 1
+timeout = { rollout = 3600 }
 
 [[orchestrator.eval.env]]
 name = "swebench-verified"
@@ -127,14 +138,6 @@ timeout = { rollout = 3600 }
 [[orchestrator.eval.env]]
 name = "swebench-pro"
 taskset = { id = "swebench-pro-v1" } # public Docker Hub images, no prime mirror needed
-harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
-num_examples = 100
-group_size = 1
-timeout = { rollout = 3600 }
-
-[[orchestrator.eval.env]]
-name = "terminal-bench-2"
-taskset = { id = "terminal-bench-2-v1" }
 harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
 num_examples = 100
 group_size = 1
