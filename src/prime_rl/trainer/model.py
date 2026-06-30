@@ -1021,7 +1021,10 @@ def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims)
         if block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
             if config.ep_comm_backend == "torch":
                 if mxfp8_a2a:
-                    parallelize_plan = MXFP8ExpertParallel(scaling_mode=config.quantization.scaling_mode)
+                    parallelize_plan = MXFP8ExpertParallel()
+                    # The dispatched input arrives as a permuted, 32-aligned MXTensor, so the
+                    # experts run their grouped GEMM directly on it instead of re-permuting.
+                    block_mlp.experts.mxfp8_ep_a2a = True
                 else:
                     parallelize_plan = ExpertParallel()
             else:
@@ -1125,7 +1128,7 @@ def setup_model(
     inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, fused_cross_entropy=fused_cross_entropy)
 
     if isinstance(config.quantization, FP8Config) and config.quantization.linear:
-        replace_linear_with_fp8_blockwise_linear(model)
+        replace_linear_with_fp8_blockwise_linear(model, ignore_modules=config.quantization.filter_fqns)
     elif isinstance(config.quantization, MXFP8Config) and config.quantization.linear:
         replace_linear_with_mxfp8_linear(
             model,

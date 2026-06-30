@@ -220,6 +220,9 @@ class GroupedExperts(nn.Module):
         self.use_grouped_mm = use_grouped_mm
         self.grouped_mm_quant = grouped_mm_quant
         self.ep_comm_backend: EPCommBackend = "torch"
+        # Set when MXFP8ExpertParallel is applied: the dispatched input arrives as a permuted,
+        # 32-aligned MXTensor, so the grouped GEMM runs directly on it (no @expert_parallel re-permute).
+        self.mxfp8_ep_a2a = False
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
@@ -234,11 +237,26 @@ class GroupedExperts(nn.Module):
             )
         return _run_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
 
+    def _forward_mxfp8_ep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        # ``x`` is the dispatched+permuted MXTensor from MXFP8ExpertParallel; consume it directly.
+        from torchao.prototype.moe_training.mxfp8_grouped_mm import _to_mxfp8_then_scaled_grouped_mm as gmm
+
+        w1, w2, w3 = self.w1.to_local(), self.w2.to_local(), self.w3.to_local()
+        offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
+        # wgrad_with_hp=True is required by torchao's MXFP8 EP prototype (keeps the weight
+        # gradient in high precision so the contracting token dim need not be 32-aligned).
+        h = F.silu(gmm(x, w1.transpose(-2, -1), offs=offsets, wgrad_with_hp=True))
+        h = h * gmm(x, w3.transpose(-2, -1), offs=offsets, wgrad_with_hp=True)
+        return gmm(h, w2.transpose(-2, -1), offs=offsets, wgrad_with_hp=True).to(torch.bfloat16)
+
     def forward(
         self,
         x: torch.Tensor,
         num_tokens_per_expert: torch.Tensor,
     ) -> torch.Tensor:
+        if self.mxfp8_ep_a2a:
+            return self._forward_mxfp8_ep(x, num_tokens_per_expert)
+
         if self.ep_comm_backend == "deepep":
             return self._forward_deepep(x, num_tokens_per_expert)
 

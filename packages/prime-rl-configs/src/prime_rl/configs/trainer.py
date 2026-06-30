@@ -130,42 +130,40 @@ DEFAULT_QUANT_FILTER_FQNS: list[str] = [
 ]
 
 
-class FP8Config(BaseConfig):
+class BaseQuantizationConfig(BaseConfig):
+    """Fields shared by every low-precision training backend."""
+
+    linear: bool = True
+    """Quantize ``nn.Linear`` layers."""
+
+    grouped_mm: bool = True
+    """Quantize the MoE expert grouped GEMM."""
+
+    filter_fqns: list[str] = Field(default_factory=lambda: list(DEFAULT_QUANT_FILTER_FQNS))
+    """Module-name patterns (regex/substring) to keep in bf16 and never quantize (routers, gates, lm_head, etc.)."""
+
+
+class FP8Config(BaseQuantizationConfig):
     """FP8 training via DeepGEMM blockwise (1x128) scaling. Requires SM90 (Hopper) and ``model.impl='custom'``."""
 
     type: Literal["fp8"] = "fp8"
 
-    linear: bool = True
-    """Replace ``nn.Linear`` with FP8 blockwise linear (DeepGEMM)."""
 
-    grouped_mm: bool = True
-    """Use FP8 blockwise grouped GEMM for MoE expert computation (DeepGEMM)."""
-
-
-class MXFP8Config(BaseConfig):
+class MXFP8Config(BaseQuantizationConfig):
     """MXFP8 (microscaling FP8, 1x32 e8m0-scaled) training via torchao. Requires SM100 (Blackwell) and
-    ``model.impl='custom'``. Mirrors torchtitan's integration across linears, MoE grouped GEMMs, and EP
-    all-to-all."""
+    ``model.impl='custom'``. Mirrors torchtitan's integration across linears, MoE grouped GEMMs, and the
+    expert-parallel all-to-all."""
 
     type: Literal["mxfp8"] = "mxfp8"
 
-    linear: bool = True
-    """Replace ``nn.Linear`` with MXFP8 linear (torchao ``mx_mm``)."""
-
-    grouped_mm: bool = True
-    """Use MXFP8 grouped GEMM for MoE expert computation (torchao ``_to_mxfp8_then_scaled_grouped_mm``)."""
-
     a2a: bool = False
-    """Quantize the MoE expert-parallel all-to-all dispatch to MXFP8 (torchao ``moe_training.ep``). Requires ``ep > 1`` and ``ep_comm_backend='torch'``."""
+    """Quantize the MoE expert-parallel all-to-all to MXFP8 via torchao's ``moe_training.ep`` pipeline (dispatch/permute/unpermute/combine). Requires ``ep > 1``, ``ep_comm_backend='torch'``, and at most 32 local experts per rank."""
 
     scaling_mode: Literal["rceil", "floor"] = "rceil"
     """Rounding mode for the e8m0 block scales."""
 
     kernel: Literal["auto", "emulated"] = "auto"
     """Kernel backend. ``auto`` uses the best SM100 kernels; ``emulated`` uses a hardware-agnostic reference path (debug only)."""
-
-    filter_fqns: list[str] = Field(default_factory=lambda: list(DEFAULT_QUANT_FILTER_FQNS))
-    """Module-name patterns (regex/substring) to keep in bf16 and never quantize (routers, gates, lm_head, etc.)."""
 
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
