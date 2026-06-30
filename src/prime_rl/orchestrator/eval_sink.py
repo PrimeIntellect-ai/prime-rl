@@ -117,4 +117,4 @@ class EvalSink:
         does no aggregation."""
         env_name, step = key
         rollouts = self.pending_batches.pop(key, [])
-        return EvalBatch(env_name=env_name, step=step, rollouts=EvalRollouts(rollouts, self.group_size_for(env_name)))
+        return EvalBatch(env_name=env_name, step=step, rollouts=EvalRollouts(rollouts))

@@ -23,7 +23,7 @@ Subset = Literal["all", "effective"]
 
 
 class Stat:
-    """A distribution of per-rollout values with mean/max/min accessors."""
+    """A distribution of per-rollout values with mean/max/min and p10/p90 accessors."""
 
     def __init__(self, values: list[float]) -> None:
         self.values = values
@@ -37,11 +37,33 @@ class Stat:
     def min(self) -> float:
         return float(min(self.values)) if self.values else 0.0
 
+    def percentile(self, q: float) -> float:
+        """Linear-interpolated ``q``-th percentile (numpy's default method); 0.0 if empty."""
+        if not self.values:
+            return 0.0
+        s = sorted(self.values)
+        rank = q / 100 * (len(s) - 1)
+        lo = int(rank)
+        hi = min(lo + 1, len(s) - 1)
+        return float(s[lo] + (s[hi] - s[lo]) * (rank - lo))
+
+    def p10(self) -> float:
+        return self.percentile(10)
+
+    def p90(self) -> float:
+        return self.percentile(90)
+
     def to_dict(self, prefix: str) -> dict[str, float]:
-        """``{prefix}/mean,max,min``; ``{}`` for an empty distribution."""
+        """``{prefix}/mean,max,min,p10,p90``; ``{}`` for an empty distribution."""
         if not self.values:
             return {}
-        return {f"{prefix}/mean": self.mean(), f"{prefix}/max": self.max(), f"{prefix}/min": self.min()}
+        return {
+            f"{prefix}/mean": self.mean(),
+            f"{prefix}/max": self.max(),
+            f"{prefix}/min": self.min(),
+            f"{prefix}/p10": self.p10(),
+            f"{prefix}/p90": self.p90(),
+        }
 
 
 class TimingMetrics:
@@ -53,34 +75,31 @@ class TimingMetrics:
     def __init__(self, rollouts: list["Rollout"]) -> None:
         self.rollouts = rollouts
 
-    def _phase(self, name: str) -> Stat:
-        return Stat([getattr(r.timing, name).duration for r in self.rollouts])
-
     @property
     def setup(self) -> Stat:
-        return self._phase("setup")
+        return Stat([r.timing.setup.duration for r in self.rollouts])
 
     @property
     def generation(self) -> Stat:
-        return self._phase("generation")
+        return Stat([r.timing.generation.duration for r in self.rollouts])
 
     @property
     def finalize(self) -> Stat:
-        return self._phase("finalize")
+        return Stat([r.timing.finalize.duration for r in self.rollouts])
 
     @property
     def scoring(self) -> Stat:
-        return self._phase("scoring")
+        return Stat([r.timing.scoring.duration for r in self.rollouts])
 
     @property
     def total(self) -> Stat:
         return Stat([sum(getattr(r.timing, p).duration for p in self.PHASES) for r in self.rollouts])
 
     def to_dict(self, prefix: str) -> dict[str, float]:
-        """``{prefix}/<phase>/{mean,max,min}`` for each phase, plus ``{prefix}/total/...``."""
+        """Each phase's ``{prefix}/<phase>/...`` distribution, plus ``{prefix}/total/...``."""
         out: dict[str, float] = {}
         for phase in self.PHASES:
-            out |= self._phase(phase).to_dict(f"{prefix}/{phase}")
+            out |= getattr(self, phase).to_dict(f"{prefix}/{phase}")
         out |= self.total.to_dict(f"{prefix}/total")
         return out
 
@@ -231,15 +250,20 @@ class TrainMetrics(RolloutMetrics):
 
 class EvalMetrics(RolloutMetrics):
     """Common metrics plus the ``avg@<group_size>`` score and (on the effective subset, for
-    binary-reward tasks) pass@k / pass^k."""
-
-    def __init__(self, rollouts: list["Rollout"], group_size: int) -> None:
-        super().__init__(rollouts)
-        self.group_size = group_size
+    binary-reward tasks) pass@k / pass^k. The ``avg@k`` group size is derived from the rollouts."""
 
     @property
     def reward(self) -> Stat:
         return Stat([float(r.reward) for r in self.rollouts])
+
+    @property
+    def group_size(self) -> int:
+        """Rollouts per example (the ``k`` in ``avg@k``) — the largest group, which equals the
+        configured group size whenever at least one example kept all its rollouts."""
+        counts: dict = {}
+        for r in self.rollouts:
+            counts[r.group_id] = counts.get(r.group_id, 0) + 1
+        return max(counts.values(), default=0)
 
     def pass_at_k(self) -> dict[str, float]:
         """pass@k / pass^k averaged over examples; ``{}`` for non-binary rewards."""
@@ -297,11 +321,10 @@ class TrainRollouts:
 
 class EvalRollouts:
     """A list of eval rollouts (errored included). ``effective`` is the non-errored subset (a view);
-    ``metrics`` builds ``EvalMetrics`` over them. ``group_size`` names the ``avg@<k>`` key."""
+    ``metrics`` builds ``EvalMetrics`` over them (which derives the ``avg@k`` group size)."""
 
-    def __init__(self, rollouts: list["Rollout"] | None = None, group_size: int = 1) -> None:
+    def __init__(self, rollouts: list["Rollout"] | None = None) -> None:
         self.rollouts = rollouts if rollouts is not None else []
-        self.group_size = group_size
 
     def append(self, rollout: "Rollout") -> None:
         self.rollouts.append(rollout)
@@ -314,8 +337,8 @@ class EvalRollouts:
 
     @property
     def effective(self) -> "EvalRollouts":
-        return EvalRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered], self.group_size)
+        return EvalRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered])
 
     @property
     def metrics(self) -> EvalMetrics:
-        return EvalMetrics(self.rollouts, self.group_size)
+        return EvalMetrics(self.rollouts)

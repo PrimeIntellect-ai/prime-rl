@@ -1,6 +1,8 @@
 import math
 from types import SimpleNamespace
 
+import pytest
+
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
@@ -62,8 +64,10 @@ def mk(
 def test_stat():
     s = Stat([1.0, 2.0, 3.0])
     assert (s.mean(), s.max(), s.min()) == (2.0, 3.0, 1.0)
-    assert s.to_dict("p") == {"p/mean": 2.0, "p/max": 3.0, "p/min": 1.0}
+    assert (s.p10(), s.p90()) == pytest.approx((1.2, 2.8))  # linear-interpolated percentiles
+    assert s.to_dict("p") == pytest.approx({"p/mean": 2.0, "p/max": 3.0, "p/min": 1.0, "p/p10": 1.2, "p/p90": 2.8})
     assert Stat([]).mean() == 0.0
+    assert Stat([]).p90() == 0.0
     assert Stat([]).to_dict("p") == {}
 
 
@@ -176,7 +180,7 @@ def test_is_trainable_is_train_only_rate():
     rollouts = [mk(is_trainable=True), mk(is_trainable=False), mk(is_trainable=True), mk(is_trainable=True)]
     train_out = TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset="all")
     assert train_out["train/agg/all/is_trainable/mean"] == 0.75
-    eval_out = EvalRollouts(rollouts, group_size=4).metrics.to_wandb(prefix="eval/x", subset="all")
+    eval_out = EvalRollouts(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
     assert not any("is_trainable" in k for k in eval_out)
 
 
@@ -185,12 +189,12 @@ def test_filters_are_train_only():
     train_out = TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset="all")
     assert train_out["train/agg/all/is_filtered/mean"] == 0.5
     assert train_out["train/agg/all/filters/gibberish/mean"] == 0.5
-    eval_out = EvalRollouts(rollouts, group_size=2).metrics.to_wandb(prefix="eval/x", subset="all")
+    eval_out = EvalRollouts(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
     assert not any("is_filtered" in k or "/filters/" in k for k in eval_out)
 
 
 def test_eval_avg_at_k_and_pass_k():
-    binary = EvalRollouts([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")], group_size=2)
+    binary = EvalRollouts([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")])
     eff = binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
     assert eff["eval/x/effective/avg@2"] == 0.5  # mean reward under the avg@k key (not reward/...)
     assert not any(k.startswith("eval/x/effective/reward") for k in eff)
@@ -201,7 +205,7 @@ def test_eval_avg_at_k_and_pass_k():
     assert all_out["eval/x/all/avg@2"] == 0.5
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
 
-    non_binary = EvalRollouts([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")], group_size=2)
+    non_binary = EvalRollouts([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
 
 
