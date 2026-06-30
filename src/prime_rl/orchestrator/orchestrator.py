@@ -685,11 +685,12 @@ class Orchestrator:
         the quality metrics are over the effective (clean, trained-on) subset; ``Trainable`` is
         relative to all generated rollouts."""
         rollouts = batch.rollouts
-        eff = rollouts.effective.metrics
+        effective = rollouts.effective
+        eff = effective.metrics
         n_generated = len(rollouts)
         n_trainable = sum(1 for r in rollouts if r.is_trainable)
         trainable_rate = (n_trainable / n_generated) if n_generated else 0.0
-        max_off_policy = max((r.off_policy_steps for r in rollouts.effective), default=0)
+        max_off_policy = max((r.off_policy_steps for r in effective), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "

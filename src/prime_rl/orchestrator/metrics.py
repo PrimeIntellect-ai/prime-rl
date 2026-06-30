@@ -202,6 +202,12 @@ class RolloutMetrics:
             out[condition] = conditions.count(condition) / len(conditions)
         return out
 
+    def error_types(self) -> dict[str, int]:
+        """Count of errored rollouts by error type (the rollout's last error — e.g. ``Cancelled``,
+        ``ProviderError``)."""
+        types = [r.error.type for r in self.rollouts if r.has_error]
+        return {t: types.count(t) for t in sorted(set(types))}
+
     def solve_rates(self) -> dict[str, float]:
         """Per-group solve rates, assuming binary 0/1 rewards (unspecified for other reward ranges):
         ``solved_none`` (the group earned no reward), ``solved_all`` (every rollout scored 1.0), and
@@ -234,9 +240,11 @@ class RolloutMetrics:
         out |= self.rewards.to_dict(f"{p}/rewards")
         out[f"{p}/is_truncated/mean"] = self.is_truncated.mean()
         out[f"{p}/is_completed/mean"] = self.is_completed.mean()
-        # has_error is structurally 0 on the effective subset, so log it on `all` only
+        # errors live only on the `all` subset (effective drops them), so emit the rate + the
+        # per-type counts there only
         if subset == "all":
             out[f"{p}/has_error/mean"] = self.has_error.mean()
+            out |= {f"{p}/error/{t}": float(count) for t, count in self.error_types().items()}
         out |= {f"{p}/stop_condition/{k}": v for k, v in self.stop_conditions().items()}
         out |= {f"{p}/{k}": v for k, v in self.solve_rates().items()}
         return out
@@ -278,20 +286,16 @@ class TrainMetrics(RolloutMetrics):
 
 class EvalMetrics(RolloutMetrics):
     """Common metrics plus the ``avg@<group_size>`` score and (on the effective subset, for
-    binary-reward tasks) pass@k / pass^k. The ``avg@k`` group size is derived from the rollouts."""
+    binary-reward tasks) pass@k / pass^k. ``group_size`` (the ``avg@k`` k) is supplied by the
+    container so the ``all`` and ``effective`` subsets share one stable key."""
+
+    def __init__(self, rollouts: list[Rollout], group_size: int) -> None:
+        super().__init__(rollouts)
+        self.group_size = group_size
 
     @property
     def reward(self) -> Stat:
         return Stat([float(r.reward) for r in self.rollouts])
-
-    @property
-    def group_size(self) -> int:
-        """Rollouts per example (the ``k`` in ``avg@k``) — the largest group, which equals the
-        configured group size whenever at least one example kept all its rollouts."""
-        counts: dict = {}
-        for r in self.rollouts:
-            counts[r.group_id] = counts.get(r.group_id, 0) + 1
-        return max(counts.values(), default=0)
 
     def pass_at_k(self) -> dict[str, float]:
         """pass@k / pass^k averaged over examples; ``{}`` for non-binary rewards."""
@@ -348,11 +352,13 @@ class TrainRollouts:
 
 
 class EvalRollouts:
-    """A list of eval rollouts (errored included). ``effective`` is the non-errored subset (a view);
-    ``metrics`` builds ``EvalMetrics`` over them (which derives the ``avg@k`` group size)."""
+    """A list of eval rollouts (errored included). ``effective`` is the non-errored subset (a view).
+    ``group_size`` (rollouts per example, the ``avg@k`` k) is derived from the full epoch and carried
+    onto ``effective`` so both subsets share one stable key; ``metrics`` builds ``EvalMetrics``."""
 
-    def __init__(self, rollouts: list[Rollout] | None = None) -> None:
+    def __init__(self, rollouts: list[Rollout] | None = None, group_size: int | None = None) -> None:
         self.rollouts = rollouts if rollouts is not None else []
+        self._group_size = group_size
 
     def __len__(self) -> int:
         return len(self.rollouts)
@@ -361,9 +367,20 @@ class EvalRollouts:
         return iter(self.rollouts)
 
     @property
+    def group_size(self) -> int:
+        """The largest group (equals the configured group size whenever one example kept all its
+        rollouts); a subview carries its parent's value so ``avg@k`` doesn't drift across subsets."""
+        if self._group_size is not None:
+            return self._group_size
+        counts: dict = {}
+        for r in self.rollouts:
+            counts[r.group_id] = counts.get(r.group_id, 0) + 1
+        return max(counts.values(), default=0)
+
+    @property
     def effective(self) -> EvalRollouts:
-        return EvalRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered])
+        return EvalRollouts([r for r in self.rollouts if not r.has_error], group_size=self.group_size)
 
     @property
     def metrics(self) -> EvalMetrics:
-        return EvalMetrics(self.rollouts)
+        return EvalMetrics(self.rollouts, self.group_size)

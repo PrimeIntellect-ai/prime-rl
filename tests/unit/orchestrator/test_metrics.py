@@ -18,6 +18,7 @@ def mk(
     is_truncated: bool = False,
     is_completed: bool = True,
     has_error: bool = False,
+    error_type: str = "error",
     stop_condition: str | None = None,
     metrics: dict | None = None,
     rewards: dict | None = None,
@@ -43,6 +44,7 @@ def mk(
         is_truncated=is_truncated,
         is_completed=is_completed,
         has_error=has_error,
+        error=SimpleNamespace(type=error_type) if has_error else None,
         stop_condition=stop_condition,
         metrics=metrics or {},
         env_name=env_name,
@@ -101,17 +103,17 @@ def test_to_wandb_distributions():
     assert out["train/agg/all/num_output_tokens/mean"] == 6.0
 
 
-def test_boolean_rates_and_has_error_all_only():
-    rc = TrainRollouts([mk(is_truncated=True), mk(has_error=True), mk(is_filtered=True)])
+def test_boolean_rates_and_error_breakdown_all_only():
+    rc = TrainRollouts([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_filtered=True)])
     out = rc.metrics.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/is_truncated/mean"] == 1 / 3
     assert out["train/agg/all/is_completed/mean"] == 1.0
     assert out["train/agg/all/has_error/mean"] == 1 / 3
+    assert out["train/agg/all/error/ProviderError"] == 1  # error-type breakdown by count
     assert not any("no_response" in k for k in out)  # removed metric
-    # has_error is structurally 0 on the effective subset, so it's emitted on `all` only
-    assert not any(
-        k.endswith("/has_error/mean") for k in rc.effective.metrics.to_wandb(prefix="train/agg", subset="effective")
-    )
+    # has_error + the error-type counts are structurally empty on effective, so emitted on `all` only
+    eff = rc.effective.metrics.to_wandb(prefix="train/agg", subset="effective")
+    assert not any(k.endswith("/has_error/mean") or "/error/" in k for k in eff)
 
 
 def test_solve_rates():
