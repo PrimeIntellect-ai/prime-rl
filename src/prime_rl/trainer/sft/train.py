@@ -233,6 +233,7 @@ def train(config: SFTConfig):
     cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     cp_size = parallel_dims.cp
+    vlm_cp_enabled = cp_enabled and config.model.vlm is not None
 
     ce_loss = None
     match config.loss_impl:
@@ -251,22 +252,33 @@ def train(config: SFTConfig):
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
+        mm_kwargs = micro_batch.get("mm_kwargs")
+        mm_type_ids = micro_batch.get("mm_token_type_ids")
+        seq_lens = micro_batch.get("seq_lens")
+
+        forward_cp_group = None
+        forward_cp_rank = None
+        forward_cp_world_size = None
+        forward_cp_style = None
 
         if cp_enabled:
-            input_ids, position_ids = setup_cp_params(
-                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
-            )
+            if vlm_cp_enabled:
+                forward_cp_group = cp_group
+                forward_cp_rank = cp_rank
+                forward_cp_world_size = cp_size
+                forward_cp_style = config.model.cp_style
+            else:
+                input_ids, position_ids = setup_cp_params(
+                    input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                )
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
         if config.model.lora is not None:
-            set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
+            num_local_tokens = input_ids.numel() // cp_size if vlm_cp_enabled else input_ids.numel()
+            set_lora_num_tokens(torch.full((1,), num_local_tokens, dtype=torch.int32, device="cuda"))
 
         token_count = loss_mask.sum(dtype=torch.int64)
-
-        mm_kwargs = micro_batch.get("mm_kwargs")
-        mm_type_ids = micro_batch.get("mm_token_type_ids")
-        seq_lens = micro_batch.get("seq_lens")
 
         with maybe_activation_offloading(config.model.ac_offloading):
             if config.loss_impl in ("liger_fused", "quack_fused"):
@@ -280,6 +292,10 @@ def train(config: SFTConfig):
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_type_ids,
                     seq_lens=seq_lens,
+                    cp_group=forward_cp_group,
+                    cp_rank=forward_cp_rank,
+                    cp_world_size=forward_cp_world_size,
+                    cp_style=forward_cp_style,
                 )
                 loss_sum = out["loss"] * token_count
             else:
@@ -290,6 +306,10 @@ def train(config: SFTConfig):
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_type_ids,
                     seq_lens=seq_lens,
+                    cp_group=forward_cp_group,
+                    cp_rank=forward_cp_rank,
+                    cp_world_size=forward_cp_world_size,
+                    cp_style=forward_cp_style,
                 )
                 logits = out["logits"]
                 B, L, V = logits.shape

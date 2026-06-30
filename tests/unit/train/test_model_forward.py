@@ -2,8 +2,10 @@ from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
+from transformers import PretrainedConfig
 
 from prime_rl.trainer.model import forward
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 
 
 class _CaptureModel(nn.Module):
@@ -11,6 +13,34 @@ class _CaptureModel(nn.Module):
         super().__init__()
         self.config = config
         self.kwargs = None
+
+    def forward(self, **kwargs):
+        self.kwargs = kwargs
+        if "input_ids" in kwargs:
+            shape = kwargs["input_ids"].shape
+        else:
+            shape = kwargs["inputs_embeds"].shape[:2]
+        return {"logits": torch.zeros(*shape, 4)}
+
+
+class _PrimeCaptureModel(PreTrainedModelPrimeRL):
+    config_class = PretrainedConfig
+
+    def __init__(self):
+        super().__init__(PretrainedConfig())
+        self.kwargs = None
+
+    def prime_forward_kwargs(
+        self,
+        *,
+        seq_lens: torch.Tensor | None = None,
+        seq_lens_are_global: bool = False,
+    ) -> dict[str, object]:
+        return {
+            "seq_lens": seq_lens,
+            "seq_lens_are_global": seq_lens_are_global,
+            "hook_marker": True,
+        }
 
     def forward(self, **kwargs):
         self.kwargs = kwargs
@@ -83,9 +113,35 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
 
 
-def test_forward_passes_explicit_seq_lens_for_mrope_images():
-    """Qwen-style image batches build MRoPE internally, but packed segment
-    lengths are carried explicitly from the data packer."""
+def test_forward_does_not_leak_seq_lens_to_generic_text_models():
+    model = _CaptureModel(SimpleNamespace(model_type="qwen3"))
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
+    seq_lens = torch.tensor([2, 2])
+
+    forward(model, input_ids, position_ids, seq_lens=seq_lens)
+
+    assert model.kwargs is not None
+    assert "seq_lens" not in model.kwargs
+    assert "seq_lens_are_global" not in model.kwargs
+
+
+def test_forward_merges_prime_forward_kwargs_for_custom_models():
+    model = _PrimeCaptureModel()
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
+    seq_lens = torch.tensor([2, 2])
+
+    forward(model, input_ids, position_ids, seq_lens=seq_lens, seq_lens_are_global=True)
+
+    assert model.kwargs is not None
+    torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
+    assert model.kwargs["seq_lens_are_global"] is True
+    assert model.kwargs["hook_marker"] is True
+
+
+def test_forward_strips_position_ids_without_leaking_seq_lens_for_mrope_vlm():
+    """Generic VLMs do not receive PrimeRL-only packed-boundary kwargs."""
     model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
     input_ids = torch.tensor([[1, 10, 10, 2, 20, 20]])
     position_ids = torch.tensor([[0, 1, 2, 0, 1, 2]])
@@ -101,4 +157,34 @@ def test_forward_passes_explicit_seq_lens_for_mrope_images():
 
     assert model.kwargs is not None
     assert "position_ids" not in model.kwargs
-    torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
+    assert "seq_lens" not in model.kwargs
+
+
+def test_forward_passes_raw_vlm_inputs_with_context_parallel_metadata():
+    model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
+    input_ids = torch.tensor([[1, 10, 10, 2]])
+    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
+    cp_group = object()
+
+    forward(
+        model,
+        input_ids,
+        position_ids,
+        mm_kwargs={"pixel_values": torch.ones(2, 3), "image_grid_thw": torch.tensor([[1, 1, 2]])},
+        mm_token_type_ids=torch.tensor([[0, 1, 1, 0]]),
+        seq_lens=torch.tensor([4]),
+        cp_group=cp_group,
+        cp_rank=1,
+        cp_world_size=2,
+        cp_style="ulysses",
+    )
+
+    assert model.kwargs is not None
+    torch.testing.assert_close(model.kwargs["input_ids"], input_ids)
+    assert "inputs_embeds" not in model.kwargs
+    assert "position_ids" not in model.kwargs
+    assert "seq_lens" not in model.kwargs
+    assert model.kwargs["cp_group"] is cp_group
+    assert model.kwargs["cp_rank"] == 1
+    assert model.kwargs["cp_world_size"] == 2
+    assert model.kwargs["cp_style"] == "ulysses"

@@ -19,6 +19,7 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
+from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
@@ -851,6 +852,7 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
+        seq_lens_are_global: bool = False,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -863,7 +865,9 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
 
         flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
         if flash_attn_enabled:
-            if position_ids.ndim == 3:
+            if seq_lens_are_global and seq_lens is not None:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens.to(device=inputs_embeds.device))
+            elif position_ids.ndim == 3:
                 if inputs_embeds.shape[0] != 1:
                     raise ValueError("3D Qwen3.5 MRoPE positions require batch size 1 for varlen attention")
                 seq_len = inputs_embeds.shape[1]
@@ -882,7 +886,10 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
             seq_lens = seq_lens.to(device=inputs_embeds.device)
             if seq_lens.numel() > 1 and "full_attention" in self.config.layer_types:
                 raise ValueError("Packed Qwen3.5 MRoPE batches with full_attention layers require flash attention")
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens, total_tokens=inputs_embeds.shape[1])
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                seq_lens,
+                total_tokens=None if seq_lens_are_global else inputs_embeds.shape[1],
+            )
         else:
             max_seqlen = None
             cu_seqlens = None
@@ -948,7 +955,7 @@ class Qwen3_5MoeVLMModel(nn.Module):
         grid_thw = torch.tensor([[1, m, m]], dtype=torch.long, device=device)
         return pixel_values, grid_thw
 
-    def forward(
+    def prepare_inputs_embeds_and_position_ids(
         self,
         input_ids: torch.LongTensor | None = None,
         position_ids: torch.LongTensor | None = None,
@@ -956,11 +963,11 @@ class Qwen3_5MoeVLMModel(nn.Module):
         pixel_values: torch.Tensor | None = None,
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
-        routed_experts: torch.LongTensor | None = None,
         seq_lens: torch.LongTensor | None = None,
-        **kwargs,
-    ) -> MoeModelOutputWithPast:
+    ) -> tuple[torch.FloatTensor, torch.LongTensor]:
         if inputs_embeds is None:
+            if input_ids is None:
+                raise ValueError("input_ids are required when inputs_embeds are not provided")
             inputs_embeds = self.language_model.embed_tokens(input_ids)
 
         if image_grid_thw is not None and input_ids is None:
@@ -1023,11 +1030,51 @@ class Qwen3_5MoeVLMModel(nn.Module):
             else:
                 position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
+        return inputs_embeds, position_ids
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.LongTensor | None = None,
+        mm_token_type_ids: torch.LongTensor | None = None,
+        routed_experts: torch.LongTensor | None = None,
+        seq_lens: torch.LongTensor | None = None,
+        seq_lens_are_global: bool = False,
+        cp_group: object | None = None,
+        cp_rank: int | None = None,
+        cp_world_size: int | None = None,
+        cp_style: str | None = None,
+        **kwargs,
+    ) -> MoeModelOutputWithPast:
+        cp_enabled = cp_group is not None or cp_rank is not None or cp_world_size is not None or cp_style is not None
+
+        inputs_embeds, position_ids = self.prepare_inputs_embeds_and_position_ids(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
+            seq_lens=seq_lens,
+        )
+
+        if cp_enabled:
+            setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style=cp_style, seq_lens=seq_lens)
+            inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            if routed_experts is not None:
+                routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            seq_lens_are_global = True
+
         return self.language_model(
             inputs_embeds=inputs_embeds,
             position_ids=position_ids,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
+            seq_lens_are_global=seq_lens_are_global,
         )
 
 
@@ -1160,6 +1207,16 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
     # Forward
     # ------------------------------------------------------------------
 
+    def prime_forward_kwargs(
+        self,
+        *,
+        seq_lens: Tensor | None = None,
+        seq_lens_are_global: bool = False,
+    ) -> dict[str, object]:
+        if seq_lens is None:
+            return {}
+        return {"seq_lens": seq_lens, "seq_lens_are_global": seq_lens_are_global}
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -1176,6 +1233,11 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         image_grid_thw: Optional[torch.LongTensor] = None,
         mm_token_type_ids: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
+        seq_lens_are_global: bool = False,
+        cp_group: object | None = None,
+        cp_rank: int | None = None,
+        cp_world_size: int | None = None,
+        cp_style: str | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5_moe for now"
@@ -1198,6 +1260,11 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
                 mm_token_type_ids=mm_token_type_ids,
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
+                seq_lens_are_global=seq_lens_are_global,
+                cp_group=cp_group,
+                cp_rank=cp_rank,
+                cp_world_size=cp_world_size,
+                cp_style=cp_style,
             )
         else:
             outputs = self.model(
@@ -1206,6 +1273,7 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
                 inputs_embeds=inputs_embeds,
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
+                seq_lens_are_global=seq_lens_are_global,
             )
 
         hidden_states = outputs.last_hidden_state

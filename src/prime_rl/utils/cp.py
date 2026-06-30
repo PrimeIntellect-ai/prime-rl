@@ -11,7 +11,7 @@ import torch.distributed.nn as dist_nn
 import torch.nn as nn
 from ring_flash_attn import update_ring_flash_attn_params
 
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 CPStyle = Literal["ring", "ulysses"]
 
@@ -125,7 +125,7 @@ def setup_sparse_mla_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: 
         get_logger().info(f"Configured sparse MLA CP on {count} DSA layers")
 
 
-def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Tensor:
+def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int, seq_dim: int = 1) -> torch.Tensor:
     """
     Shard a tensor for context parallelism.
     Args:
@@ -136,11 +136,21 @@ def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Ten
         The shard of the tensor for the current rank.
     """
 
-    assert t.shape[0] == 1, "For CP, tensor must have batch dimension of 1"
+    if t.shape[seq_dim] % cp_world_size != 0:
+        raise ValueError(
+            f"CP requires sequence dimension {seq_dim} to be divisible by cp size: "
+            f"shape={tuple(t.shape)}, cp_size={cp_world_size}"
+        )
 
-    chunked_t = torch.chunk(t, cp_world_size, dim=1)
+    chunked_t = torch.chunk(t, cp_world_size, dim=seq_dim)
 
     return chunked_t[cp_rank]
+
+
+def shard_position_ids_for_cp(position_ids: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Tensor:
+    if position_ids.ndim == 3:
+        return shard_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size, seq_dim=2)
+    return shard_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
 
 
 def gather_for_cp(t: torch.Tensor, cp_group: dist.ProcessGroup) -> torch.Tensor:
@@ -202,7 +212,31 @@ def setup_cp_params(
     Returns the sequence-sharded input_ids and position_ids — the rest of the
     model still runs sequence-sharded; only attention sees the full sequence.
     """
-    cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+    setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style=cp_style)
+
+    input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
+    position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
+    return input_ids, position_ids
+
+
+def setup_cp_attention_params(
+    position_ids: torch.Tensor,
+    cp_group: dist.ProcessGroup,
+    cp_style: CPStyle = "ring",
+    seq_lens: torch.Tensor | None = None,
+) -> None:
+    if position_ids.ndim == 3:
+        total_tokens = position_ids.shape[2]
+        if seq_lens is None:
+            cu_seqlens = torch.tensor([0, total_tokens], dtype=torch.int32, device=position_ids.device)
+            max_seqlen = total_tokens
+        else:
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                seq_lens.to(device=position_ids.device),
+                total_tokens=total_tokens,
+            )
+    else:
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
 
     if cp_style == "ring":
         update_ring_flash_attn_params(cu_seqlens, cp_group)
@@ -214,7 +248,3 @@ def setup_cp_params(
         update_ulysses_params(cu_seqlens, max_seqlen)
     else:
         raise ValueError(f"Unknown cp_style: {cp_style}")
-
-    input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
-    position_ids = shard_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
-    return input_ids, position_ids

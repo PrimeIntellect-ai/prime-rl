@@ -583,6 +583,12 @@ def get_model(
     else:
         impl_to_use = config.impl
 
+    if config.vlm is not None and config.cp > 1 and not (is_vlm_arch and impl_to_use == "custom" and custom_vlm_cls):
+        raise ValueError(
+            "VLM context parallelism requires a custom PrimeRL VLM implementation; "
+            f"{getattr(model_config, 'model_type', config.name)!r} is only supported with cp=1."
+        )
+
     with device:
         if impl_to_use == "custom" and custom_vlm_cls is not None:
             model_cls = custom_vlm_cls
@@ -1183,27 +1189,35 @@ def setup_model(
 
 def forward(
     model: nn.Module,
-    input_ids: Int[Tensor, "batch seq"],
-    position_ids: Int[Tensor, "batch seq"],
+    input_ids: Int[Tensor, "batch seq"] | None,
+    position_ids: Int[Tensor, "batch seq"] | None,
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
+    inputs_embeds: Tensor | None = None,
     # Generic multimodal kwargs (e.g. {"pixel_values": ...,
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
     # for Gemma3). Passed straight through to ``model(**kwargs)`` so
     # the model's HF forward signature is the schema. ``mm_token_type_ids``
-    # is split out because it's prime-rl-computed (from token ids),
-    # not a renderer/processor output.
+    # is split out because it's prime-rl-computed (from token ids).
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
-    seq_lens: Int[Tensor, "packed"] | None = None,
+    seq_lens: Int[Tensor, "segments"] | None = None,
+    seq_lens_are_global: bool = False,
+    cp_group: object | None = None,
+    cp_rank: int | None = None,
+    cp_world_size: int | None = None,
+    cp_style: str | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
     kwargs = {
-        "input_ids": input_ids,
         "labels": labels,
         "temperature": temperature,
     }
+    if inputs_embeds is None:
+        kwargs["input_ids"] = input_ids
+    else:
+        kwargs["inputs_embeds"] = inputs_embeds
 
     if mm_kwargs:
         # Forward the per-model multimodal tensors verbatim, plus the
@@ -1212,19 +1226,26 @@ def forward(
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        # ``position_ids`` for MRoPE families: Qwen3-VL's HF forward
-        # recomputes 3D positions from ``image_grid_thw`` and breaks if
-        # given the trainer's pre-computed 1D ``position_ids``. Detect
-        # via the mm_kwargs shape so we don't enumerate model_types.
         if "image_grid_thw" not in mm_kwargs:
             kwargs["position_ids"] = position_ids
-        elif seq_lens is not None:
-            kwargs["seq_lens"] = seq_lens
     else:
         kwargs["position_ids"] = position_ids
 
+    if isinstance(model, PreTrainedModelPrimeRL):
+        kwargs.update(model.prime_forward_kwargs(seq_lens=seq_lens, seq_lens_are_global=seq_lens_are_global))
+
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
+
+    if cp_group is not None:
+        kwargs.update(
+            {
+                "cp_group": cp_group,
+                "cp_rank": cp_rank,
+                "cp_world_size": cp_world_size,
+                "cp_style": cp_style,
+            }
+        )
 
     out = model(**kwargs)
 

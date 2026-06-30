@@ -383,7 +383,9 @@ class SFTDataset(StatefulIterableDataset):
 
         was_mm_truncated = False
         if mm is not None:
-            budget = self.seq_len
+            # The causal shift below drops one input token; keep one extra raw token
+            # so truncated multimodal samples can still fill the configured length.
+            budget = self.seq_len + 1
             if len(input_ids) > budget:
                 was_mm_truncated = True
                 cut = _find_image_safe_cut(budget, mm)

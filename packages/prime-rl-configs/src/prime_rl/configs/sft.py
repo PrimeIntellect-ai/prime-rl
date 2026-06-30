@@ -329,8 +329,6 @@ class SFTConfig(BaseConfig):
             raise ValueError(
                 "VLM SFT requires val.data.micro_batch_size = 1 (image samples can't be packed across samples)."
             )
-        if self.model.cp > 1:
-            raise ValueError("VLM SFT does not support CP > 1 (image placeholders straddle seq shards).")
         return self
 
     @model_validator(mode="after")
