@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import wandb
@@ -14,6 +15,18 @@ from prime_rl.utils.logger import get_logger
 POLL_INTERVAL = 5.0
 WINDOW_SIZE = 20
 PD_ROLES = {"prefill", "decode"}
+
+
+@dataclass(frozen=True)
+class ControlSignal:
+    """The inference-load signal the concurrency controller acts on, derived from
+    one metrics poll of the decode engines."""
+
+    kv_usage: float
+    """Max GPU KV cache utilization across the (decode) engines, in [0, 1]."""
+    preemption_rate: float
+    """Engine preemptions per second since the previous poll."""
+
 
 COUNTER_KEYS = {
     "vllm:prompt_tokens": "prompt_tokens_total",
@@ -320,6 +333,7 @@ def build_scope_metrics(
 
     counter_metrics = {
         "completed_requests": "request_success_total",
+        "preemptions_per_second": "num_preemptions_total",
         "nixl_transfers_per_second": "nixl_xfer_time_seconds_count",
         "nixl_bytes_per_second": "nixl_bytes_transferred_sum",
     }
@@ -386,22 +400,36 @@ def build_scope_metrics(
 
 
 class InferenceMetricsCollector:
-    """Polls vLLM Prometheus /metrics and logs smoothed role-aware values to W&B.
+    """Polls vLLM Prometheus /metrics on a fixed interval, the single source of
+    inference-load signals: it pushes a ``ControlSignal`` to ``on_sample`` (drives
+    the concurrency controller) and, when ``wandb_enabled``, logs smoothed
+    role-aware values to W&B. Polling runs regardless of W&B so control always has
+    a signal.
 
     The ``agg`` scope is always logged. The ``prefill`` and ``decode`` scopes are
     logged only when endpoints are explicitly or implicitly identified as a
     disaggregated P/D deployment.
     """
 
-    def __init__(self, admin_clients: list[AsyncClient], roles: list[str | None] | None = None):
+    def __init__(
+        self,
+        admin_clients: list[AsyncClient],
+        roles: list[str | None] | None = None,
+        *,
+        wandb_enabled: bool = False,
+        on_sample: Callable[[ControlSignal], None] | None = None,
+    ):
         self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
         self.metric_history: dict[str, deque[float]] = {}
         self.previous: dict[str, TimedRollup] = {}
         self.task: asyncio.Task | None = None
+        self.wandb_enabled = wandb_enabled
+        self.on_sample = on_sample
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
 
     async def start(self):
-        wandb.define_metric("inference/*", step_metric="_timestamp")
+        if self.wandb_enabled:
+            wandb.define_metric("inference/*", step_metric="_timestamp")
 
         async def poll_loop():
             while True:
@@ -441,13 +469,26 @@ class InferenceMetricsCollector:
                 if role_samples:
                     metrics.update(build_scope_metrics(role, role_samples, self.previous))
 
+        # Control signal from the decode engines (the KV bottleneck), computed
+        # against ``previous`` before it's advanced so the preemption rate is right.
+        signal_samples = [s for s in samples if s.endpoint.role == "decode"] if self.has_pd_roles else samples
+        kv_values = [value for sample in signal_samples for value in sample.rollup.values("kv_cache_usage_perc")]
+        signal = ControlSignal(
+            kv_usage=max(kv_values) if kv_values else 0.0,
+            preemption_rate=counter_rate(signal_samples, self.previous, "num_preemptions_total") or 0.0,
+        )
+
         for sample in samples:
             self.previous[sample.endpoint.key] = TimedRollup(timestamp=sample.timestamp, rollup=sample.rollup)
 
-        smoothed_metrics = self.smooth_metrics(metrics)
-        if smoothed_metrics:
-            smoothed_metrics["_timestamp"] = time.time()
-            wandb.log(smoothed_metrics)
+        if self.on_sample is not None:
+            self.on_sample(signal)
+
+        if self.wandb_enabled:
+            smoothed_metrics = self.smooth_metrics(metrics)
+            if smoothed_metrics:
+                smoothed_metrics["_timestamp"] = time.time()
+                wandb.log(smoothed_metrics)
 
     def smooth_metrics(self, metrics: dict[str, float]) -> dict[str, float]:
         """Add current values to the smoothing window and return W&B-ready metrics."""

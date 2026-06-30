@@ -48,7 +48,6 @@ freq = 1
 [orchestrator]
 batch_size = 256
 group_size = 8
-max_inflight_rollouts = 512
 max_off_policy_steps = 16
 
 # Thinking enabled for the Qwen3.5 renderer.
@@ -82,3 +81,6 @@ dp = 8
 # `language_model_only` is a vLLM MultiModalConfig arg (no prime-rl field) → pass via vllm_extra.
 [inference.vllm_extra]
 language_model_only = true
+
+[orchestrator.concurrency]
+max_inflight_rollouts = 512

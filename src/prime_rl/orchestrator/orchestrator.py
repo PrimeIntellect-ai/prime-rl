@@ -45,7 +45,7 @@ from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.filters import setup_filters
-from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
+from prime_rl.orchestrator.metrics.inference import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
@@ -283,13 +283,6 @@ class Orchestrator:
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
-        if config.wandb is not None and config.collect_inference_metrics:
-            self.inference_metrics = InferenceMetricsCollector(
-                self.policy_inference.admin_clients,
-                roles=config.inference_metrics_roles,
-            )
-            await self.inference_metrics.start()
-
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
@@ -333,11 +326,10 @@ class Orchestrator:
             else None
         )
 
-        assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
         log_interval = config.log.interval
         wandb_enabled = config.wandb is not None
         # The concurrency controller always ramps the in-flight limit from
-        # ``min_inflight`` toward the ``max_inflight_rollouts`` clamp.
+        # ``min_inflight_rollouts`` toward the (optional) ``max_inflight_rollouts`` clamp.
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
@@ -345,18 +337,26 @@ class Orchestrator:
             eval_source=self.eval_source,
             policy_pool=self.policy_inference,
             policy=self.policy,
-            max_inflight_rollouts=config.max_inflight_rollouts,
+            max_inflight_rollouts=config.concurrency.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
-            initial_inflight=config.concurrency.min_inflight,
+            initial_inflight=config.concurrency.min_inflight_rollouts,
         )
         self.concurrency_controller = ConcurrencyController(
             dispatcher=self.dispatcher,
-            admin_clients=self.policy_inference.admin_clients,
-            roles=config.inference_metrics_roles,
-            max_inflight=config.max_inflight_rollouts,
+            max_inflight=config.concurrency.max_inflight_rollouts,
             config=config.concurrency,
         )
+        # The metrics collector is the sole ``/metrics`` poller: it always runs
+        # (drives the controller via ``on_sample``) and additionally logs to W&B
+        # when enabled.
+        self.inference_metrics = InferenceMetricsCollector(
+            self.policy_inference.admin_clients,
+            roles=config.inference_metrics_roles,
+            wandb_enabled=wandb_enabled and config.collect_inference_metrics,
+            on_sample=self.concurrency_controller.update,
+        )
+        await self.inference_metrics.start()
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
@@ -384,7 +384,6 @@ class Orchestrator:
             collect=self.collect_pipeline_view,
             metric_keys=[
                 *list(self.dispatcher.gauges().keys()),
-                *(ConcurrencyController.gauge_keys() if self.concurrency_controller is not None else []),
                 *DispatcherMetrics.drain_keys(
                     train_envs={e.name for e in self.train_envs},
                     eval_envs={e.name for e in self.eval_envs} if self.eval_envs is not None else set(),
@@ -416,8 +415,6 @@ class Orchestrator:
         # monitor each ``log.interval`` seconds for the pipeline-view log
         self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
         await self.periodic_logger.start()
-        if self.concurrency_controller is not None:
-            await self.concurrency_controller.start()
         self.component_tasks = [
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
@@ -686,8 +683,6 @@ class Orchestrator:
         body = train_batch_part + eval_batch_part + "; " + inflight_part
 
         payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges}
-        if self.concurrency_controller is not None:
-            payload.update(self.concurrency_controller.gauges())
         if lag_stats.n > 0:
             payload["event_loop_lag/min"] = lag_stats.min
             payload["event_loop_lag/mean"] = lag_stats.mean
@@ -840,8 +835,6 @@ class Orchestrator:
         async def teardown() -> None:
             if self.sender is not None:
                 self.sender.close()
-            if self.concurrency_controller is not None:
-                await self.concurrency_controller.stop()
             if self.dispatcher is not None:
                 await self.dispatcher.stop()
             if self.watcher is not None:
