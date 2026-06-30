@@ -329,7 +329,8 @@ class Orchestrator:
         log_interval = config.log.interval
         wandb_enabled = config.wandb is not None
         # The concurrency controller always ramps the in-flight limit from
-        # ``min_inflight_rollouts`` toward the (optional) ``max_inflight_rollouts`` clamp.
+        # ``initial_inflight_rollouts`` (default ``group_size``) within the
+        # ``[group_size, max_inflight_rollouts]`` clamp.
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
@@ -340,10 +341,11 @@ class Orchestrator:
             max_inflight_rollouts=config.concurrency.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
-            initial_inflight=config.concurrency.min_inflight_rollouts,
+            initial_inflight=config.concurrency.initial_inflight_rollouts or config.group_size,
         )
         self.concurrency_controller = ConcurrencyController(
             dispatcher=self.dispatcher,
+            min_inflight=config.group_size,
             max_inflight=config.concurrency.max_inflight_rollouts,
             config=config.concurrency,
         )

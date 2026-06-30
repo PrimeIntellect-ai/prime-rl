@@ -37,14 +37,16 @@ def decide_limit(
     kv_usage: float,
     kv_delta: float,
     preemption_rate: float,
+    min_inflight: int,
     max_inflight: int | None,
     config: ConcurrencyConfig,
 ) -> tuple[int, str]:
     """Pure control law. Returns ``(new_limit, decision)`` where decision is one
     of ``"grow" | "backoff" | "hold"``. ``kv_delta`` is the per-tick change in the
-    smoothed KV utilization. ``max_inflight`` is the hard upper clamp, or None for
-    no clamp (bounded only by the KV target)."""
-    lo = config.min_inflight_rollouts
+    smoothed KV utilization. ``min_inflight`` is the lower clamp (``group_size``);
+    ``max_inflight`` is the hard upper clamp, or None for no clamp (bounded only by
+    the KV target)."""
+    lo = min_inflight
 
     def clamp(n: int) -> int:
         return max(lo, n if max_inflight is None else min(max_inflight, n))
@@ -73,9 +75,10 @@ class ConcurrencyController:
     """Drives ``dispatcher.set_limit`` from inference-load samples. Not a poller —
     ``update`` is called by ``InferenceMetricsCollector`` on each metrics poll."""
 
-    def __init__(self, *, dispatcher, max_inflight: int | None, config: ConcurrencyConfig) -> None:
+    def __init__(self, *, dispatcher, min_inflight: int, max_inflight: int | None, config: ConcurrencyConfig) -> None:
         self.dispatcher = dispatcher
         self.config = config
+        self.min_inflight = min_inflight
         self.max_inflight = max_inflight
         self.ewma_kv: float | None = None
         self.kv_delta = 0.0
@@ -94,6 +97,7 @@ class ConcurrencyController:
             kv_usage=ewma,
             kv_delta=self.kv_delta,
             preemption_rate=signal.preemption_rate,
+            min_inflight=self.min_inflight,
             max_inflight=self.max_inflight,
             config=self.config,
         )

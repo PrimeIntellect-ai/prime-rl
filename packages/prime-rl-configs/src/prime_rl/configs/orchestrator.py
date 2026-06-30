@@ -452,11 +452,11 @@ class ConcurrencyConfig(BaseConfig):
     high_water_kv_usage: float = Field(0.95, gt=0.0, le=1.0)
     """KV utilization above which the controller backs the limit off."""
 
-    min_inflight_rollouts: int = Field(8, ge=1)
-    """Lower clamp and ramp starting point for the effective limit. Raised to ``group_size`` when smaller, so a group-scoring group always fits."""
+    initial_inflight_rollouts: int | None = Field(None, ge=1)
+    """Ramp starting point for the effective limit. None starts at the lower clamp (``group_size``). Must be >= ``group_size`` and <= ``max_inflight_rollouts``."""
 
     max_inflight_rollouts: int | None = Field(None, ge=1)
-    """Hard upper clamp on rollouts kept in-flight. None means no hard ceiling — the limit is bounded only by the KV target. Not derived from ``batch_size``."""
+    """Hard upper clamp on rollouts kept in-flight. None means no hard ceiling — the limit is bounded only by the KV target. Not derived from ``batch_size``. The lower clamp is always ``group_size`` (a group-scoring group reserves that many permits at once)."""
 
     interval: float = Field(5.0, gt=0.0)
     """Seconds between control ticks (also the inference-metrics poll period)."""
@@ -742,14 +742,19 @@ class OrchestratorConfig(BaseConfig):
             if self.batch_size % self.group_size != 0:
                 raise ValueError("Batch size must be divisible by the number of samples per problem")
 
-        # The in-flight floor must fit a full group, since a group-scoring group reserves
-        # ``group_size`` permits at once (otherwise it could never be scheduled).
-        self.concurrency.min_inflight_rollouts = max(self.concurrency.min_inflight_rollouts, self.group_size)
-        if (
-            self.concurrency.max_inflight_rollouts is not None
-            and self.concurrency.max_inflight_rollouts < self.concurrency.min_inflight_rollouts
-        ):
-            raise ValueError("concurrency.max_inflight_rollouts must be >= min_inflight_rollouts (and group_size)")
+        # The in-flight limit's lower clamp is ``group_size``: a group-scoring group
+        # reserves that many permits at once, so anything smaller could never schedule.
+        concurrency = self.concurrency
+        if concurrency.max_inflight_rollouts is not None and concurrency.max_inflight_rollouts < self.group_size:
+            raise ValueError("concurrency.max_inflight_rollouts must be >= group_size")
+        if concurrency.initial_inflight_rollouts is not None:
+            if concurrency.initial_inflight_rollouts < self.group_size:
+                raise ValueError("concurrency.initial_inflight_rollouts must be >= group_size")
+            if (
+                concurrency.max_inflight_rollouts is not None
+                and concurrency.initial_inflight_rollouts > concurrency.max_inflight_rollouts
+            ):
+                raise ValueError("concurrency.initial_inflight_rollouts must be <= concurrency.max_inflight_rollouts")
 
         # Propagate the top-level ``group_size`` into each train env that didn't set its own.
         for env_cfg in self.train.env:
