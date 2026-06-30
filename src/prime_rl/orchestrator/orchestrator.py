@@ -770,23 +770,16 @@ class Orchestrator:
         metrics["step"] = float(batch.step)
         self.monitor.log(metrics, step=batch.step)
 
-        # Success line — reward / turns / truncation over the effective set, error rate over the
-        # full returned cohort.
-        n_total = len(rollouts)
-        n_errored = sum(1 for r in rollouts if r.has_error)
-        error_rate = n_errored / n_total if n_total else 0.0
-        reward_mean = sum(r.reward for r in effective) / len(effective) if effective else 0.0
-        num_turns_mean = sum(r.num_turns for r in effective) / len(effective) if effective else 0.0
-        truncation_rate = sum(1 for r in effective if r.is_truncated) / len(effective) if effective else 0.0
+        # Success line — reward / turns / truncation over the effective set, error rate + branches
+        # over the full returned cohort. ``Stat.mean()`` is 0.0 for an empty set.
+        eff, full = effective.metrics, rollouts.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
-        branches_mean = sum(r.num_branches for r in rollouts) / len(rollouts)
-
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
-            f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {reward_mean:.4f} | "
-            f"Turns {num_turns_mean:.1f} | Branches {branches_mean:.1f} | "
-            f"Error {error_rate:.1%} | Truncation {truncation_rate:.1%}"
+            f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
+            f"Turns {eff.num_turns.mean():.1f} | Branches {full.num_branches.mean():.1f} | "
+            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:
