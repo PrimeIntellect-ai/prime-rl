@@ -115,11 +115,32 @@ class DebugModelConfig(BaseConfig):
     force_balanced_routing: bool = False
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
 
-XFP8Recipe: TypeAlias = Literal[
+# MXFP8 grouped-GEMM / linear recipes. Names mirror torchao's
+# ``MXFP8TrainingRecipe`` enum (``torchao.prototype.moe_training.config``):
+# ``*_emulated_*`` runs the reference (non-tensorcore) path for correctness
+# checks on hardware without MXFP8 tensor cores; ``*_wgrad_with_hp`` keeps the
+# weight-gradient GEMM in high precision (bf16) while quantizing fwd/dgrad.
+MXFP8Recipe: TypeAlias = Literal[
     "mxfp8_rceil",
-    "mxfp8_emulated_rceil",
     "mxfp8_rceil_wgrad_with_hp",
+    "mxfp8_emulated_rceil",
 ]
+
+
+class FP8Config(BaseConfig):
+    type: Literal["fp8"] = "fp8"
+    enable_gemm: bool = True
+    enable_grouped_gemm: bool = True
+
+
+class MXFP8Config(BaseConfig):
+    type: Literal["mxfp8"] = "mxfp8"
+    recipe: MXFP8Recipe = "mxfp8_rceil"
+    enable_gemm: bool = True
+    enable_grouped_gemm: bool = True
+    enable_a2a: bool = True
+
+QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
 
 class ModelConfig(BaseModelConfig):
     seq_len: int = 2048
@@ -179,8 +200,8 @@ class ModelConfig(BaseModelConfig):
     moe_use_grouped_mm: bool = True
     """Use grouped mm for MoE layers. Requires compute capability ≥ 9.0."""
 
-    fp8: bool = False
-    """FP8 training via DeepGEMM. Replaces ``nn.Linear`` with FP8 blockwise linear and uses FP8 grouped GEMM for MoE experts. Requires SM90 (Hopper) GPUs and ``model.impl='custom'``."""
+    quantization: QuantizationConfig | None = None
+    """Low-precision training config. ``{type="fp8"}`` for DeepGEMM FP8 blockwise (SM90+), ``{type="mxfp8"}`` for torchao MXFP8 microscaling (SM100+). ``None`` keeps bf16. Each backend exposes ``enable_gemm`` (dense linear swap) and ``enable_grouped_gemm`` (MoE expert GEMM); MXFP8 adds ``enable_a2a`` (EP all-to-all) and ``recipe``."""
 
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
@@ -254,9 +275,11 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
-    def fp8_only_with_custom_impl(self):
-        if self.fp8 and self.impl not in ("custom", "auto"):
-            raise ValueError("FP8 training is only supported with model.impl='custom' or 'auto'.")
+    def quantization_only_with_custom_impl(self):
+        if self.quantization is not None and self.impl not in ("custom", "auto"):
+            raise ValueError(
+                f"{self.quantization.type} training is only supported with model.impl='custom' or 'auto'."
+            )
         return self
 
     @model_validator(mode="after")
@@ -506,7 +529,6 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
 ]
-
 
 class TrainerConfig(BaseConfig):
     model: ModelConfig = ModelConfig()

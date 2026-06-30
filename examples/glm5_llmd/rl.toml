@@ -62,7 +62,9 @@ fused_lm_head_token_chunk_size = 1024
 cp = 4 # context parallel for the 131K seq len
 ep = 8
 optim_cpu_offload = true
-fp8 = true
+
+[trainer.model.quantization]
+type = "fp8"
 
 [trainer.model.ac]
 freq = 1

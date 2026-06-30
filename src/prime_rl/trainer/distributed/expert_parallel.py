@@ -1,7 +1,41 @@
+import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch.distributed import ProcessGroup
 from torch.distributed.tensor import DeviceMesh, Shard, distribute_module, distribute_tensor
 from torch.distributed.tensor.parallel import ParallelStyle
+from torchtitan.distributed.expert_parallel import ExpertParallel
+
+
+class MXFP8ExpertParallel(ExpertParallel):
+    def _token_dispatch(self, mod, inputs, device_mesh):
+        from torchao.prototype.moe_training.ep import a2a_dispatch_mxfp8_fwd_hp_bwd
+        routed_input, num_tokens_per_expert = inputs
+        with torch.no_grad():
+            num_tokens_per_expert_group = num_tokens_per_expert.new_empty(num_tokens_per_expert.shape[0])
+            dist.all_to_all_single(
+                num_tokens_per_expert_group, num_tokens_per_expert, group=device_mesh.get_group()
+            )
+            self.input_splits = num_tokens_per_expert.view(device_mesh.shape[0], -1).sum(dim=1).tolist()
+            self.output_splits = num_tokens_per_expert_group.view(device_mesh.shape[0], -1).sum(dim=1).tolist()
+        mx_routed_input = a2a_dispatch_mxfp8_fwd_hp_bwd(
+            routed_input,
+            self.output_splits,
+            self.input_splits,
+            device_mesh.get_group().group_name,
+        )
+        routed_input = mx_routed_input.dequantize(routed_input.dtype)
+        return routed_input, num_tokens_per_expert_group
+
+    def _token_combine(self, mod, routed_output, device_mesh):
+        from torchao.prototype.moe_training.ep import a2a_combine_hp_fwd_mxfp8_bwd
+
+        return a2a_combine_hp_fwd_mxfp8_bwd(
+            routed_output,
+            self.input_splits,
+            self.output_splits,
+            device_mesh.get_group().group_name,
+        )
 
 
 class DeepEPExpertParallel(ParallelStyle):
