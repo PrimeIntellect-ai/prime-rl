@@ -593,6 +593,12 @@ def get_model(
     else:
         impl_to_use = config.impl
 
+    if config.vlm is not None and config.cp > 1 and not (is_vlm_arch and impl_to_use == "custom" and custom_vlm_cls):
+        raise ValueError(
+            "VLM context parallelism requires a custom PrimeRL VLM implementation; "
+            f"{getattr(model_config, 'model_type', config.name)!r} is only supported with cp=1."
+        )
+
     with device:
         if impl_to_use == "custom" and custom_vlm_cls is not None:
             model_cls = custom_vlm_cls
