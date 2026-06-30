@@ -80,7 +80,6 @@ weight_decay = 0.0
 [orchestrator]
 batch_size = 256
 rollouts_per_example = 16
-max_inflight_rollouts = 2048
 max_off_policy_steps = 8 # 16/32 can be better, 8 is more CPU stable
 
 [orchestrator.model]

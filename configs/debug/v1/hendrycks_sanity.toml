@@ -52,6 +52,3 @@ max_model_len = 8192
 [orchestrator.renderer]
 name = "default"
 reasoning_parser = "think"
-
-[orchestrator.concurrency]
-max_inflight_rollouts = 256

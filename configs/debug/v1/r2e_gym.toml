@@ -81,6 +81,3 @@ dp = 8
 # `language_model_only` is a vLLM MultiModalConfig arg (no prime-rl field) → pass via vllm_extra.
 [inference.vllm_extra]
 language_model_only = true
-
-[orchestrator.concurrency]
-max_inflight_rollouts = 512

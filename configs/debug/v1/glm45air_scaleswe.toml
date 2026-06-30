@@ -121,6 +121,3 @@ max_model_len = 65536
 
 [inference.parallel]
 tp = 8
-
-[orchestrator.concurrency]
-max_inflight_rollouts = 512
