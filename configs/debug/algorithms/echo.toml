@@ -38,10 +38,10 @@ type = "zero_advantage"
 enforce = false
 
 # Qwen3 finetune with the standard PI template patch; always re-emits prior
-# <think> blocks, matched by the qwen3 renderer's preserve_all_thinking.
+# <think> blocks, matched by renderer thinking_retention.
 [orchestrator.renderer]
 name = "qwen3"
-preserve_all_thinking = true
+thinking_retention = "all"
 
 [trainer.optim]
 lr = 1e-6

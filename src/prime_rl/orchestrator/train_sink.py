@@ -23,8 +23,9 @@ from collections import defaultdict
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
+from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout, TrainBatch, TrainBatchMetrics
+from prime_rl.orchestrator.types import Rollout, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -59,22 +60,18 @@ class TrainSink:
         # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
         # isn't unique — the same task can be re-sampled while an
         # earlier group is still in flight
+        self.pending_rollouts: TrainRollouts = TrainRollouts()
         self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
         self.pending_batch: list[Rollout] = []
         # Running token total of ``pending_batch`` (token-batched runs), kept in
         # sync on append/pop so the readiness check never re-walks the uncached
-        # ``Trace.total_tokens`` graph property per arrival.
+        # ``Trace.num_total_tokens`` graph property per arrival.
         self.pending_tokens: int = 0
 
         # Reset by the orchestrator after each ship via ``reset_pre_filter_stats``
         self.pre_filter_seen = 0
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name: dict[str, int] = {}
-
-        # Per-env arrival / error counters since the last ship; reset in
-        # ``process_batch``. Fuel for the per-env success log breakdown
-        self.arrivals_by_env: dict[str, int] = defaultdict(int)
-        self.errors_by_env: dict[str, int] = defaultdict(int)
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -123,9 +120,7 @@ class TrainSink:
         arrival; return a ``TrainBatch`` if the batch threshold is met."""
         await self.process_rollout(rollout)
         env_name = rollout.env_name
-        self.arrivals_by_env[env_name] += 1
-        if rollout.has_error:
-            self.errors_by_env[env_name] += 1
+        self.pending_rollouts.append(rollout)
         self.pending_groups[rollout.group_id].append(rollout)
         if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
             await self.process_group(rollout.group_id)
@@ -216,7 +211,7 @@ class TrainSink:
             r.is_filtered = False
             self.pending_batch.append(r)
             if self.token_batch_size is not None:
-                self.pending_tokens += r.total_tokens
+                self.pending_tokens += r.num_total_tokens
 
         # Per-group summary. One line per finalized group; per-filter
         # detection breakdown lives at debug level in ``apply_filters``
@@ -243,7 +238,7 @@ class TrainSink:
             cut = 0
             running = 0
             for i, r in enumerate(self.pending_batch):
-                running += r.total_tokens
+                running += r.num_total_tokens
                 cut = i + 1
                 if running >= self.token_batch_size:
                     break
@@ -254,46 +249,19 @@ class TrainSink:
         if self.post_filters:
             apply_filters(self.post_filters, cohort)
 
-        # Samples are pre-built by ``process_rollout``; ``process_group``
-        # already stamped the advantage stream and loss routing on each sample
-        samples: list[TrainingSample] = []
-        prefill_lens: list[int] = []
-        decode_lens: list[int] = []
-        samples_per_rollout: list[int] = []
-        num_prefill = 0
-        num_decode = 0
-        for r in cohort:
-            samples_per_rollout.append(len(r.samples))
-            prefill = 0
-            decode = 0
-            for sample in r.samples:
-                sample_decode = sum(sample.mask)
-                sample_prefill = len(sample.token_ids) - sample_decode
-                decode += sample_decode
-                prefill += sample_prefill
-                if not r.is_filtered:
-                    samples.append(sample)
-            prefill_lens.append(prefill)
-            decode_lens.append(decode)
-            num_prefill += prefill
-            num_decode += decode
+        # Samples are pre-built by ``process_rollout``; ``process_group`` already stamped the
+        # advantage stream and loss routing on each sample. Filtered rollouts don't ship.
+        samples: list[TrainingSample] = [sample for r in cohort if not r.is_filtered for sample in r.samples]
 
-        n_trainable = sum(1 for r in cohort if not r.is_filtered)
-
-        metrics = TrainBatchMetrics(
-            n_trainable=n_trainable,
-            num_prefill_tokens=num_prefill,
-            num_decode_tokens=num_decode,
-            rollout_prefill_lens=prefill_lens,
-            rollout_decode_lens=decode_lens,
-            samples_per_rollout=samples_per_rollout,
-            samples_shipped=len(samples),
-            arrivals_by_env=dict(self.arrivals_by_env),
-            errors_by_env=dict(self.errors_by_env),
-        )
-        self.arrivals_by_env.clear()
-        self.errors_by_env.clear()
-        return TrainBatch(rollouts=cohort, samples=samples, metrics=metrics)
+        # ``rollouts`` is the whole arrival window (errored + filtered + survivors); ``samples`` is
+        # the shipped cohort's trainable payload. ``rollouts.effective`` / ``rollouts.metrics`` derive
+        # the clean subset + metric views on demand. Reset the window only when the batch actually
+        # ships (non-empty samples) — an empty batch is dropped unlogged by the orchestrator, so keep
+        # accumulating its arrivals (and any overflow) into the next shipped batch's window.
+        rollouts = self.pending_rollouts
+        if samples:
+            self.pending_rollouts = TrainRollouts()
+        return TrainBatch(rollouts=rollouts, samples=samples)
 
     def reset_pre_filter_stats(self) -> None:
         self.pre_filter_seen = 0

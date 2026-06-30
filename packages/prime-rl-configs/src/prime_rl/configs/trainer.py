@@ -6,6 +6,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    EnvVars,
     FileSystemTransportConfig,
     HeartbeatConfig,
     MetricsServerConfig,
@@ -570,6 +571,8 @@ class TrainerConfig(BaseConfig):
 
     pack_multimodal: bool = True
     """Pack multimodal samples together when the active model path supports packed multimodal position boundaries."""
+    env_vars: EnvVars = {}
+    """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
