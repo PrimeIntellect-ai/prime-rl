@@ -22,10 +22,8 @@ from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
-    setup_cp_attention_params,
     setup_cp_params,
     shard_for_cp,
-    shard_position_ids_for_cp,
 )
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
@@ -40,7 +38,6 @@ from prime_rl.trainer.rl.loss import (
 from prime_rl.trainer.rl.token_export import setup_token_exporter
 from prime_rl.trainer.model import (
     forward,
-    prepare_vlm_inputs_for_context_parallel,
     setup_tokenizer,
     setup_model,
     is_tt_moe_model,
@@ -428,54 +425,28 @@ def train(config: TrainerConfig):
 
             labels = shift_tensor_left(input_ids)
 
-            forward_inputs_embeds = None
             forward_mm_kwargs = mm_kwargs
             forward_seq_lens = seq_lens
             forward_seq_lens_are_global = False
+            forward_cp_group = None
+            forward_cp_rank = None
+            forward_cp_world_size = None
+            forward_cp_style = None
+            vlm_cp_enabled = cp_enabled and config.model.vlm is not None
             if cp_enabled:
-                if config.model.vlm is not None:
-                    if config.model.cp_style != "ulysses":
-                        raise NotImplementedError(
-                            "Context parallelism with VLM training is only supported with cp_style='ulysses'"
-                        )
-                    if seq_lens is None:
-                        raise ValueError("VLM context parallelism requires seq_lens to preserve packed boundaries")
-
-                    full_inputs_embeds, full_position_ids = prepare_vlm_inputs_for_context_parallel(
-                        model,
-                        input_ids=input_ids,
-                        position_ids=None,
-                        mm_kwargs=mm_kwargs or {},
-                        mm_token_type_ids=mm_token_type_ids,
-                        seq_lens=seq_lens,
-                    )
-                    setup_cp_attention_params(
-                        full_position_ids,
-                        cp_group=cp_group,
-                        cp_style=config.model.cp_style,
-                        seq_lens=seq_lens,
-                    )
-                    input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_size)
-                    forward_inputs_embeds = shard_for_cp(
-                        full_inputs_embeds,
-                        cp_rank=cp_rank,
-                        cp_world_size=cp_size,
-                    )
-                    forward_position_ids = shard_position_ids_for_cp(
-                        full_position_ids,
-                        cp_rank=cp_rank,
-                        cp_world_size=cp_size,
-                    )
-                    # VLM tensors were already merged into inputs_embeds above.
-                    forward_mm_kwargs = None
-                    forward_seq_lens_are_global = True
+                if vlm_cp_enabled:
+                    forward_position_ids = position_ids
+                    forward_cp_group = cp_group
+                    forward_cp_rank = cp_rank
+                    forward_cp_world_size = cp_size
+                    forward_cp_style = config.model.cp_style
                 else:
                     input_ids, forward_position_ids = setup_cp_params(
                         input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
                     )
 
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
-                if routed_experts is not None:
+                if routed_experts is not None and not vlm_cp_enabled:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
                 forward_position_ids = position_ids
@@ -483,7 +454,10 @@ def train(config: TrainerConfig):
             if config.model.lora:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
                 if cp_enabled:
-                    chunk_size = input_ids.shape[1]
+                    if vlm_cp_enabled:
+                        chunk_size = input_ids.shape[1] // cp_size
+                    else:
+                        chunk_size = input_ids.shape[1]
                     # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
                     cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
                     adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
@@ -502,16 +476,19 @@ def train(config: TrainerConfig):
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 out = forward(
                     model,
-                    input_ids if forward_inputs_embeds is None else None,
+                    input_ids,
                     forward_position_ids,
                     labels=labels,
                     temperature=temperatures,
-                    inputs_embeds=forward_inputs_embeds,
                     mm_kwargs=forward_mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=forward_seq_lens,
                     seq_lens_are_global=forward_seq_lens_are_global,
                     routed_experts=routed_experts,
+                    cp_group=forward_cp_group,
+                    cp_rank=forward_cp_rank,
+                    cp_world_size=forward_cp_world_size,
+                    cp_style=forward_cp_style,
                 )
 
             if out.get("logprobs") is None:

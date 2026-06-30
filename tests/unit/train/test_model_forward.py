@@ -59,7 +59,7 @@ class _CaptureModel(nn.Module):
         return {"logits": torch.zeros(*shape, 4)}
 
 
-def test_setup_fsdp_vlm_context_parallel_shards_trainable_embeddings(monkeypatch):
+def test_setup_fsdp_vlm_context_parallel_ignores_frozen_vision_encoder(monkeypatch):
     model = _TinyVLM()
     for param in model.model.visual.parameters():
         param.requires_grad = False
@@ -83,12 +83,23 @@ def test_setup_fsdp_vlm_context_parallel_shards_trainable_embeddings(monkeypatch
     assert model.model.language_model.embed_tokens.weight not in ignored_params
 
 
-def test_setup_fsdp_vlm_context_parallel_requires_frozen_vision_encoder(monkeypatch):
+def test_setup_fsdp_vlm_context_parallel_shards_trainable_vision_encoder(monkeypatch):
     model = _TinyVLM()
-    monkeypatch.setattr(trainer_model, "fully_shard", lambda *args, **kwargs: None)
+    calls = []
 
-    with pytest.raises(ValueError, match="requires frozen vision encoder"):
-        trainer_model.setup_fsdp(model, _vlm_cp_config(), _FakeParallelDims())
+    def fake_fully_shard(module, **kwargs):
+        calls.append((module, kwargs))
+
+    monkeypatch.setattr(trainer_model, "fully_shard", fake_fully_shard)
+
+    trainer_model.setup_fsdp(model, _vlm_cp_config(), _FakeParallelDims())
+
+    sharded_modules = [module for module, _ in calls]
+    assert model.model.visual in sharded_modules
+    assert model.model.language_model.embed_tokens in sharded_modules
+
+    root_kwargs = calls[-1][1]
+    assert root_kwargs["ignored_params"] is None
 
 
 def test_forward_passes_renderer_mm_token_type_ids_through():
@@ -176,7 +187,7 @@ def test_forward_strips_position_ids_and_forwards_seq_lens_for_mrope_vlm():
     torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
 
 
-def test_forward_accepts_premerged_inputs_embeds_for_vlm_context_parallel():
+def test_forward_accepts_premerged_inputs_embeds_without_cp_metadata():
     model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
     inputs_embeds = torch.randn(1, 4, 8)
     position_ids = torch.arange(12).view(3, 1, 4)
@@ -197,3 +208,34 @@ def test_forward_accepts_premerged_inputs_embeds_for_vlm_context_parallel():
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
     torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
     assert model.kwargs["seq_lens_are_global"] is True
+
+
+def test_forward_passes_raw_vlm_inputs_with_context_parallel_metadata():
+    model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
+    input_ids = torch.tensor([[1, 10, 10, 2]])
+    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
+    seq_lens = torch.tensor([4])
+    cp_group = object()
+
+    forward(
+        model,
+        input_ids,
+        position_ids,
+        mm_kwargs={"pixel_values": torch.ones(2, 3), "image_grid_thw": torch.tensor([[1, 1, 2]])},
+        mm_token_type_ids=torch.tensor([[0, 1, 1, 0]]),
+        seq_lens=seq_lens,
+        cp_group=cp_group,
+        cp_rank=1,
+        cp_world_size=2,
+        cp_style="ulysses",
+    )
+
+    assert model.kwargs is not None
+    torch.testing.assert_close(model.kwargs["input_ids"], input_ids)
+    assert "inputs_embeds" not in model.kwargs
+    assert "position_ids" not in model.kwargs
+    torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
+    assert model.kwargs["cp_group"] is cp_group
+    assert model.kwargs["cp_rank"] == 1
+    assert model.kwargs["cp_world_size"] == 2
+    assert model.kwargs["cp_style"] == "ulysses"

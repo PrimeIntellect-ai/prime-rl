@@ -677,15 +677,14 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     # Params kept out of FSDP entirely (full/replicated on every rank).
     fsdp_ignored_params: set[nn.Parameter] = set()
 
-    def _ignore_frozen_params(module: nn.Module, name: str) -> None:
+    def _all_params_frozen(module: nn.Module) -> bool:
+        params = list(module.parameters())
+        return bool(params) and not any(p.requires_grad for p in params)
+
+    def _ignore_params(module: nn.Module, name: str) -> None:
         params = list(module.parameters())
         if not params:
             return
-        if any(p.requires_grad for p in params):
-            raise ValueError(
-                f"VLM context parallelism (cp={config.cp}) requires frozen {name}; it runs before "
-                "the FSDP root forward and is kept out of FSDP."
-            )
         fsdp_ignored_params.update(params)
         get_logger().info(f"CP+VLM: keeping frozen {name} out of FSDP (ignored_params).")
 
@@ -694,8 +693,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         if vision_encoder is None:
             raise ValueError(f"VLM model {config.name} has no recognized vision encoder")
 
-        if cp_vlm:
-            _ignore_frozen_params(vision_encoder, "vision encoder")
+        if cp_vlm and _all_params_frozen(vision_encoder):
+            _ignore_params(vision_encoder, "vision encoder")
         else:
             fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
             get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
@@ -1212,6 +1211,10 @@ def forward(
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     seq_lens: Int[Tensor, "segments"] | None = None,
     seq_lens_are_global: bool = False,
+    cp_group: object | None = None,
+    cp_rank: int | None = None,
+    cp_world_size: int | None = None,
+    cp_style: str | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
     kwargs = {
@@ -1244,6 +1247,16 @@ def forward(
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
 
+    if cp_group is not None:
+        kwargs.update(
+            {
+                "cp_group": cp_group,
+                "cp_rank": cp_rank,
+                "cp_world_size": cp_world_size,
+                "cp_style": cp_style,
+            }
+        )
+
     out = model(**kwargs)
 
     # PrimeLmOutput is a TypedDict (dict at runtime), HF outputs are dataclass-like objects
@@ -1251,29 +1264,3 @@ def forward(
         return cast_float_and_contiguous(out)
 
     return cast_float_and_contiguous(PrimeLmOutput(logits=out.logits))
-
-
-def prepare_vlm_inputs_for_context_parallel(
-    model: nn.Module,
-    *,
-    input_ids: Tensor,
-    position_ids: Tensor | None,
-    mm_kwargs: dict[str, Tensor],
-    mm_token_type_ids: Tensor | None,
-    seq_lens: Tensor | None,
-) -> tuple[Tensor, Tensor]:
-    method = getattr(model, "prepare_vlm_inputs_for_context_parallel", None)
-    # Generic HF VLMs may not implement the pre-shard merge hook.
-    if callable(method):
-        return method(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            mm_token_type_ids=mm_token_type_ids,
-            seq_lens=seq_lens,
-            **mm_kwargs,
-        )
-
-    raise NotImplementedError(
-        "This VLM model does not implement prepare_vlm_inputs_for_context_parallel; "
-        "context parallelism is only supported for models with an explicit pre-shard multimodal merge path."
-    )

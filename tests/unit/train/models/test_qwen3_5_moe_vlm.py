@@ -13,7 +13,6 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
 from prime_rl.trainer.model import can_reinit_empty_buffers
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
-from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -153,29 +152,17 @@ def _qwen35_vlm_ulysses_equivalence_worker(rank: int, port: int):
         cp_model.eval()
 
         substitute_ulysses_attn(dist.group.WORLD, attn_impl="flash_attention_2")
-        full_inputs_embeds, full_position_ids = cp_model.prepare_vlm_inputs_for_context_parallel(
-            input_ids=input_ids,
-            pixel_values=batch["pixel_values"],
-            image_grid_thw=batch["image_grid_thw"],
-            mm_token_type_ids=batch["mm_token_type_ids"],
-            seq_lens=batch["seq_lens"],
-        )
-        setup_cp_attention_params(
-            full_position_ids,
-            cp_group=dist.group.WORLD,
-            cp_style="ulysses",
-            seq_lens=batch["seq_lens"],
-        )
-
-        local_inputs_embeds = shard_for_cp(full_inputs_embeds, cp_rank=rank, cp_world_size=2)
-        local_position_ids = shard_position_ids_for_cp(full_position_ids, cp_rank=rank, cp_world_size=2)
-
         with torch.no_grad():
             local_logits = cp_model(
-                inputs_embeds=local_inputs_embeds,
-                position_ids=local_position_ids,
+                input_ids=input_ids,
+                pixel_values=batch["pixel_values"],
+                image_grid_thw=batch["image_grid_thw"],
+                mm_token_type_ids=batch["mm_token_type_ids"],
                 seq_lens=batch["seq_lens"],
-                seq_lens_are_global=True,
+                cp_group=dist.group.WORLD,
+                cp_rank=rank,
+                cp_world_size=2,
+                cp_style="ulysses",
             )["logits"].float()
 
         gathered = [torch.empty_like(local_logits) for _ in range(2)]
@@ -217,8 +204,8 @@ def test_vlm_forward():
     assert out_mm["logits"].shape == (1, input_ids_mm.shape[1], vocab)
 
 
-def test_vlm_context_parallel_text_only_prep_runs_dummy_vision(monkeypatch):
-    """Text-only VLM CP prep still enters the vision path with a zero-contribution dummy."""
+def test_vlm_text_only_forward_runs_dummy_vision(monkeypatch):
+    """Text-only VLM forward still enters the vision path with a zero-contribution dummy."""
     config = _tiny_vlm_config()
     with torch.device("cuda"), default_dtype(torch.float32):
         model = Qwen3_5MoeForCausalLM(config)
@@ -237,14 +224,10 @@ def test_vlm_context_parallel_text_only_prep_runs_dummy_vision(monkeypatch):
     input_ids = torch.randint(0, 200, (1, 20), device="cuda")
     seq_lens = torch.tensor([20], device="cuda")
 
-    inputs_embeds, position_ids = model.prepare_vlm_inputs_for_context_parallel(
-        input_ids=input_ids,
-        seq_lens=seq_lens,
-    )
+    out = model(input_ids=input_ids, seq_lens=seq_lens)
 
     assert calls == 1
-    torch.testing.assert_close(inputs_embeds, model.model.language_model.embed_tokens(input_ids))
-    torch.testing.assert_close(position_ids, torch.arange(20, device="cuda").unsqueeze(0))
+    assert out["logits"].shape == (1, 20, config.text_config.vocab_size)
 
 
 def test_vlm_backward():

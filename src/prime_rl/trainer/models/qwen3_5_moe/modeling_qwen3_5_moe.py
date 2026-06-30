@@ -19,6 +19,7 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
+from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
@@ -51,6 +52,11 @@ try:
     from causal_conv1d import causal_conv1d_fn
 except ImportError:
     causal_conv1d_fn = None  # type: ignore
+
+try:
+    from fla.modules.convolution import causal_conv1d as fla_causal_conv1d
+except ImportError:
+    fla_causal_conv1d = None  # type: ignore
 
 try:
     from fla.modules import FusedRMSNormGated
@@ -284,7 +290,16 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
 
         # Causal conv1d — must reset at sequence boundaries for packed batches,
         # otherwise the kernel-1 left pad leaks state across sequences.
-        if self._causal_conv1d_fn is not None:
+        if cp_context is not None:
+            mixed_qkv, _ = fla_causal_conv1d(
+                x=mixed_qkv.transpose(1, 2),
+                weight=self.conv1d.weight.squeeze(1),
+                bias=self.conv1d.bias,
+                activation=self.activation,
+                cp_context=cp_context,
+            )
+            mixed_qkv = mixed_qkv.transpose(1, 2)
+        elif self._causal_conv1d_fn is not None:
             seq_idx = None
             if cu_seqlens is not None:
                 seg_lens = cu_seqlens[1:] - cu_seqlens[:-1]
@@ -1048,8 +1063,14 @@ class Qwen3_5MoeVLMModel(nn.Module):
         routed_experts: torch.LongTensor | None = None,
         seq_lens: torch.LongTensor | None = None,
         seq_lens_are_global: bool = False,
+        cp_group: object | None = None,
+        cp_rank: int | None = None,
+        cp_world_size: int | None = None,
+        cp_style: str | None = None,
         **kwargs,
     ) -> MoeModelOutputWithPast:
+        cp_enabled = cp_group is not None or cp_rank is not None or cp_world_size is not None or cp_style is not None
+
         inputs_embeds, position_ids = self.prepare_inputs_embeds_and_position_ids(
             input_ids=input_ids,
             position_ids=position_ids,
@@ -1059,6 +1080,16 @@ class Qwen3_5MoeVLMModel(nn.Module):
             mm_token_type_ids=mm_token_type_ids,
             seq_lens=seq_lens,
         )
+
+        if cp_enabled:
+            # VLM CP prep stays in root forward so FSDP enters the root before
+            # embed/vision children; merge real or dummy vision before sharding.
+            setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style=cp_style, seq_lens=seq_lens)
+            inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            if routed_experts is not None:
+                routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            seq_lens_are_global = True
 
         return self.language_model(
             inputs_embeds=inputs_embeds,
@@ -1136,24 +1167,6 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
 
     def get_decoder(self):
         return self.model
-
-    def prepare_vlm_inputs_for_context_parallel(
-        self,
-        input_ids: torch.LongTensor,
-        position_ids: torch.LongTensor | None = None,
-        pixel_values: torch.Tensor | None = None,
-        image_grid_thw: torch.LongTensor | None = None,
-        mm_token_type_ids: torch.LongTensor | None = None,
-        seq_lens: torch.LongTensor | None = None,
-    ) -> tuple[torch.FloatTensor, torch.LongTensor]:
-        return self.model.prepare_inputs_embeds_and_position_ids(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            pixel_values=pixel_values,
-            image_grid_thw=image_grid_thw,
-            mm_token_type_ids=mm_token_type_ids,
-            seq_lens=seq_lens,
-        )
 
     # ------------------------------------------------------------------
     # State dict detection & conversion (handles both text-only and VLM)
@@ -1233,6 +1246,10 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         mm_token_type_ids: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
         seq_lens_are_global: bool = False,
+        cp_group: object | None = None,
+        cp_rank: int | None = None,
+        cp_world_size: int | None = None,
+        cp_style: str | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5_moe for now"
@@ -1256,6 +1273,10 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
                 seq_lens_are_global=seq_lens_are_global,
+                cp_group=cp_group,
+                cp_rank=cp_rank,
+                cp_world_size=cp_world_size,
+                cp_style=cp_style,
             )
         else:
             outputs = self.model(
