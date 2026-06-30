@@ -690,8 +690,15 @@ class Orchestrator:
         env. ``Error`` is the sink-level rate (errored arrivals / total arrivals); the quality
         metrics are over ``batch.effective`` (the clean, trained-on subset), while ``Trainable``
         is relative to all generated rollouts."""
-        n_arrivals_total = sum(batch.metrics.arrivals_by_env.values())
-        n_errors_total = sum(batch.metrics.errors_by_env.values())
+        # Arrival/error counts derive from the full window (``batch.rollouts``).
+        arrivals_by_env: dict[str, int] = {}
+        errors_by_env: dict[str, int] = {}
+        for r in batch.rollouts:
+            arrivals_by_env[r.env_name] = arrivals_by_env.get(r.env_name, 0) + 1
+            if r.has_error:
+                errors_by_env[r.env_name] = errors_by_env.get(r.env_name, 0) + 1
+        n_arrivals_total = len(batch.rollouts)
+        n_errors_total = sum(errors_by_env.values())
         effective = batch.effective
         n_generated = len(batch.rollouts)
         n_effective = max(len(effective), 1)
@@ -714,13 +721,13 @@ class Orchestrator:
             get_logger().success(head)
             return
 
-        env_names = sorted(set(batch.metrics.arrivals_by_env) | {r.env_name for r in effective})
+        env_names = sorted(set(arrivals_by_env) | {r.env_name for r in effective})
         name_width = max(len(n) for n in env_names) if env_names else 0
         lines = [head]
         for env_name in env_names:
             env_rollouts = [r for r in effective if r.env_name == env_name]
-            n_env_arrivals = batch.metrics.arrivals_by_env.get(env_name, 0)
-            n_env_errors = batch.metrics.errors_by_env.get(env_name, 0)
+            n_env_arrivals = arrivals_by_env.get(env_name, 0)
+            n_env_errors = errors_by_env.get(env_name, 0)
             ratio = (n_env_arrivals / n_arrivals_total) if n_arrivals_total else 0.0
             env_error_rate = (n_env_errors / n_env_arrivals) if n_env_arrivals else 0.0
             env_reward = (sum(r.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0

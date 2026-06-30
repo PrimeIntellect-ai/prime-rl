@@ -71,13 +71,10 @@ class TrainSink:
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name: dict[str, int] = {}
 
-        # Per-env arrival / error counters since the last ship; reset in
-        # ``process_batch``. Fuel for the per-env success log breakdown
-        self.arrivals_by_env: dict[str, int] = defaultdict(int)
-        self.errors_by_env: dict[str, int] = defaultdict(int)
         # Full arrival window since the last ship — every rollout that came back, errored and
-        # filtered included. This is the ``all`` set for the metric matrix (its non-errored,
-        # non-filtered subset is ``effective``); reset in ``process_batch``.
+        # filtered included. Becomes ``TrainBatch.rollouts`` (the ``all`` set; its non-errored,
+        # non-filtered subset is ``effective``). Per-env arrival/error counts derive from it, so
+        # they aren't tracked separately. Reset in ``process_batch``.
         self.arrivals_window: list[Rollout] = []
 
     def group_size_for(self, env_name: str) -> int:
@@ -127,10 +124,7 @@ class TrainSink:
         arrival; return a ``TrainBatch`` if the batch threshold is met."""
         await self.process_rollout(rollout)
         env_name = rollout.env_name
-        self.arrivals_by_env[env_name] += 1
         self.arrivals_window.append(rollout)
-        if rollout.has_error:
-            self.errors_by_env[env_name] += 1
         self.pending_groups[rollout.group_id].append(rollout)
         if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
             await self.process_group(rollout.group_id)
@@ -278,17 +272,12 @@ class TrainSink:
             n_trainable=n_trainable,
             num_prefill_tokens=num_prefill,
             num_decode_tokens=num_decode,
-            samples_shipped=len(samples),
-            arrivals_by_env=dict(self.arrivals_by_env),
-            errors_by_env=dict(self.errors_by_env),
         )
         # ``rollouts`` is the whole arrival window (errored + filtered + survivors); ``samples``
         # is the shipped cohort's trainable payload. ``TrainBatch.effective`` derives the clean
         # subset on demand. Hand off and reset the window.
         all_rollouts = self.arrivals_window
         self.arrivals_window = []
-        self.arrivals_by_env.clear()
-        self.errors_by_env.clear()
         return TrainBatch(rollouts=all_rollouts, samples=samples, metrics=metrics)
 
     def reset_pre_filter_stats(self) -> None:

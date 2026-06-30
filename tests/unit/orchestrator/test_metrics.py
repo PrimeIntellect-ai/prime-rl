@@ -61,7 +61,7 @@ def mk(
 
 def test_batch_effective_filters_errored_and_filtered():
     rollouts = [mk(), mk(has_error=True), mk(is_filtered=True), mk()]
-    tb = TrainBatch(rollouts=rollouts, samples=[], metrics=TrainBatchMetrics(0, 0, 0, 0))
+    tb = TrainBatch(rollouts=rollouts, samples=[], metrics=TrainBatchMetrics(0, 0, 0))
     assert len(tb.rollouts) == 4  # rollouts holds everything generated
     assert len(tb.effective) == 2  # the view drops errored + filtered
     assert all(not r.has_error and not r.is_filtered for r in tb.effective)

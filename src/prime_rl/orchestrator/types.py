@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Generic, Literal, Protocol
 
 import verifiers.v1 as vf
@@ -125,17 +125,16 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
 
 @dataclass
 class TrainBatchMetrics:
-    """Per-batch aggregates from ``TrainSink.process_batch``. ``arrivals_by_env`` /
-    ``errors_by_env`` count rollouts at the sink; token totals feed ``progress/*`` and the
-    usage reporter. Distributional rollout metrics are computed separately by
-    ``compute_train_metrics`` over ``TrainBatch.rollouts`` / ``.effective``."""
+    """Per-batch scalars from ``TrainSink.process_batch`` that aren't derivable from the batch's
+    rollouts/samples: ``n_trainable`` (shipped non-filtered rollout count, feeds the empty-batch
+    guard) and the cohort's prefill/decode token totals (which include filtered rollouts, so they
+    differ from a sum over ``samples``; feed ``progress/*`` + the usage reporter). The rest of the
+    rollout metrics come from ``compute_train_metrics`` over ``TrainBatch.rollouts`` / ``.effective``;
+    arrival/error counts derive from ``TrainBatch.rollouts`` directly."""
 
     n_trainable: int
     num_prefill_tokens: int
     num_decode_tokens: int
-    samples_shipped: int
-    arrivals_by_env: dict[str, int] = field(default_factory=dict)
-    errors_by_env: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
