@@ -144,9 +144,9 @@ Two accepted layouts:
 
 If both columns are present, `messages` takes precedence.
 
-**Tool definitions and template controls.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` ([`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the renderer.
+**Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` ([`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the renderer.
 
-SFT no longer forwards per-row `chat_template_kwargs`; renderer-backed SFT uses typed renderer config instead. Put template controls under `[renderer]` in the SFT TOML, for example:
+Renderer-backed SFT reads template controls from the typed `[renderer]` config in the SFT TOML. For example:
 
 ```toml
 [renderer]
@@ -154,7 +154,7 @@ name = "qwen3"
 enable_thinking = false
 ```
 
-If a model needs a template control that used to be passed via `chat_template_kwargs`, add it to that model's renderer config in `renderers` (for example a new field on the relevant `*RendererConfig`) and consume it in the renderer implementation.
+If a model needs another template control, add it to that model's renderer config in `renderers` (for example a new field on the relevant `*RendererConfig`) and consume it in the renderer implementation.
 
 **Renderer-backed tokenization.** SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5.
 
