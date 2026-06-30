@@ -1,185 +1,386 @@
-"""MetricsBuilder: assembles the per-step W&B dict. No I/O, no side effects."""
+"""Train and eval rollout metrics.
+
+A rollout container (``TrainRollouts`` / ``EvalRollouts``) owns the rollout list and exposes
+``.effective`` (the clean subset, as the same container type) and ``.metrics`` (``TrainMetrics`` /
+``EvalMetrics``). The metrics object exposes each distributional / rate metric as a ``Stat`` — so
+``rollouts.metrics.num_input_tokens.mean()`` works — and assembles the full
+``{prefix}/{subset}/<metric>/<stat>`` wandb dict via ``.to_wandb(...)``.
+
+No I/O, no pandas — plain Python over the ``vf.Trace`` properties each rollout exposes. Aggregation
+is flat over the rollout list except the solve rates, which group by ``group_id``.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Iterator, Literal
 
-import pandas as pd
+from prime_rl.orchestrator.utils import compute_pass_metrics
 
-from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.types import Progress, Rollout, TrainBatchMetrics
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import Rollout
+
+Subset = Literal["all", "effective"]
 
 
-class MetricsBuilder:
-    def __init__(self, config: OrchestratorConfig) -> None:
-        self.config = config
+class Stat:
+    """A distribution of per-rollout values with mean/max/min and p10/p90 accessors."""
 
-    def build(
-        self,
-        *,
-        step: int,
-        rollouts: list[Rollout],
-        metrics: TrainBatchMetrics,
-        progress: Progress,
-        step_time: float,
-        save_ckpt_time: float,
-        pre_filter_seen: int,
-        pre_filter_dropped: int,
-        pre_filter_dropped_by_name: dict[str, int],
-    ) -> dict[str, Any]:
-        """Builds the per-step W&B dict. Stable metric names so
-        existing dashboards / alerts keep working."""
-        num_rollouts = len(rollouts)
-        num_unique_examples = len({r.group_id for r in rollouts})
-        num_tokens = sum(r.num_total_tokens for r in rollouts)
+    def __init__(self, values: list[float]) -> None:
+        self.values = values
 
-        results_df = pd.DataFrame(
-            {
-                "group_id": [r.group_id for r in rollouts],
-                "task_idx": [r.task.idx for r in rollouts],
-                "env_name": [r.env_name for r in rollouts],
-                "reward": [r.reward for r in rollouts],
-                "is_truncated": [r.is_truncated for r in rollouts],
-                "is_filtered": [r.is_filtered for r in rollouts],
-                "stop_condition": [r.stop_condition for r in rollouts],
-                "seq_len": [r.num_total_tokens for r in rollouts],
-                "prefill_len": metrics.rollout_prefill_lens,
-                "decode_len": metrics.rollout_decode_lens,
-                "samples_per_rollout": metrics.samples_per_rollout,
-                "num_turns": [r.num_turns for r in rollouts],
-            }
-        )
-        metrics_df = pd.DataFrame([r.metrics for r in rollouts])
-        filter_df = pd.DataFrame([r.filter_results for r in rollouts])
-        timing_df = self.timing_df(rollouts)
+    def mean(self) -> float:
+        return sum(self.values) / len(self.values) if self.values else 0.0
 
-        # Each group's full-solve threshold is its own env's group_size (envs
-        # can override the top-level group_size).
-        env_group_size = {env.resolved_name: env.group_size for env in self.config.train.env}
+    def max(self) -> float:
+        return float(max(self.values)) if self.values else 0.0
 
-        def compute_solve_rates(df):
-            grouped = df.groupby("group_id")
-            reward_per_problem = grouped.reward.sum()
-            solve_none = (reward_per_problem == 0).mean()
-            expected = grouped.env_name.first().map(env_group_size)
-            solve_all = (reward_per_problem == expected).mean()
-            return solve_none, solve_all, 1 - solve_none - solve_all
+    def min(self) -> float:
+        return float(min(self.values)) if self.values else 0.0
 
-        by_example = results_df.groupby("group_id")
-        solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
+    def percentile(self, q: float) -> float:
+        """Linear-interpolated ``q``-th percentile (numpy's default method); 0.0 if empty."""
+        if not self.values:
+            return 0.0
+        s = sorted(self.values)
+        rank = q / 100 * (len(s) - 1)
+        lo = int(rank)
+        hi = min(lo + 1, len(s) - 1)
+        return float(s[lo] + (s[hi] - s[lo]) * (rank - lo))
 
-        to_log: dict[str, Any] = {
-            "progress/tokens": num_tokens,
-            "progress/prefill_tokens": metrics.num_prefill_tokens,
-            "progress/decode_tokens": metrics.num_decode_tokens,
-            "progress/samples": num_rollouts,
-            "progress/problems": num_unique_examples,
-            "progress/total_tokens": progress.total_tokens,
-            "progress/total_samples": progress.total_samples,
-            "progress/total_problems": progress.total_problems,
-            "seq_len/all/mean": by_example.seq_len.mean().mean(),
-            "seq_len/all/max": by_example.seq_len.mean().max(),
-            "seq_len/all/min": by_example.seq_len.mean().min(),
-            "prefill_len/all/mean": by_example.prefill_len.mean().mean(),
-            "prefill_len/all/max": by_example.prefill_len.mean().max(),
-            "prefill_len/all/min": by_example.prefill_len.mean().min(),
-            "decode_len/all/mean": by_example.decode_len.mean().mean(),
-            "decode_len/all/max": by_example.decode_len.mean().max(),
-            "decode_len/all/min": by_example.decode_len.mean().min(),
-            "is_truncated/all/mean": by_example.is_truncated.mean().mean(),
-            "is_truncated/all/max": by_example.is_truncated.mean().max(),
-            "stop_condition/all/generation_truncated": (
-                results_df.is_truncated & (results_df.stop_condition != "prompt_too_long")
-            ).mean(),
-            **{
-                f"stop_condition/all/{sc}": rate
-                for sc, rate in results_df.stop_condition.dropna().value_counts(normalize=True).items()
-            },
-            "samples_per_rollout/all/mean": by_example.samples_per_rollout.mean().mean(),
-            "samples_per_rollout/all/max": by_example.samples_per_rollout.mean().max(),
-            "samples_per_rollout/all/min": by_example.samples_per_rollout.mean().min(),
-            "num_turns/all/mean": by_example.num_turns.mean().mean(),
-            "num_turns/all/max": by_example.num_turns.mean().max(),
-            "num_turns/all/min": by_example.num_turns.mean().min(),
-            **{
-                f"timing/all/{key}/{stat}": getattr(
-                    timing_df[key].groupby(results_df.group_id).mean(),
-                    stat,
-                )()
-                for key in timing_df.columns
-                for stat in ("mean", "max", "min")
-            },
-            "reward/all/mean": by_example.reward.mean().mean(),
-            "reward/all/max": by_example.reward.mean().max(),
-            "reward/all/min": by_example.reward.mean().min(),
-            "solve_none/all": solve_none,
-            "solve_all/all": solve_all,
-            "effective_batch_size/all": effective_batch_size,
-            **{f"batch/{env}": r for env, r in results_df.env_name.value_counts(normalize=True).items()},
-            "time/step": step_time,
-            "time/save_ckpt": save_ckpt_time,
-            "filters/all/is_filtered": results_df.is_filtered.astype(float).mean(),
-            **{f"filters/all/{name}": filter_df[name].astype(float).mean() for name in filter_df.columns},
-            "step": step,
+    def p10(self) -> float:
+        return self.percentile(10)
+
+    def p90(self) -> float:
+        return self.percentile(90)
+
+    def to_dict(self, prefix: str) -> dict[str, float]:
+        """``{prefix}/mean,max,min,p10,p90``; ``{}`` for an empty distribution."""
+        if not self.values:
+            return {}
+        return {
+            f"{prefix}/mean": self.mean(),
+            f"{prefix}/max": self.max(),
+            f"{prefix}/min": self.min(),
+            f"{prefix}/p10": self.p10(),
+            f"{prefix}/p90": self.p90(),
         }
 
-        # Per-env metrics
-        per_env_columns = [
-            "seq_len",
-            "prefill_len",
-            "decode_len",
-            "is_truncated",
-            "samples_per_rollout",
-            "num_turns",
-        ]
-        for env, env_df in results_df.groupby("env_name"):
-            env_by_example = env_df.groupby("group_id")
-            for col in per_env_columns:
-                to_log[f"{col}/{env}/mean"] = env_by_example[col].mean().mean()
-                to_log[f"{col}/{env}/max"] = env_by_example[col].mean().max()
-                if col != "is_truncated":
-                    to_log[f"{col}/{env}/min"] = env_by_example[col].mean().min()
-            env_timing_df = timing_df.loc[env_df.index]
-            for key in timing_df.columns:
-                per_example = env_timing_df.groupby(env_df["group_id"])[key].mean()
-                to_log[f"timing/{env}/{key}/mean"] = per_example.mean()
-                to_log[f"timing/{env}/{key}/max"] = per_example.max()
-                to_log[f"timing/{env}/{key}/min"] = per_example.min()
-            to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
-            to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
-            to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
-            sn, sa, eb = compute_solve_rates(env_df)
-            to_log[f"solve_none/{env}"] = sn
-            to_log[f"solve_all/{env}"] = sa
-            to_log[f"effective_batch_size/{env}"] = eb
-            to_log[f"stop_condition/{env}/generation_truncated"] = (
-                env_df.is_truncated & (env_df.stop_condition != "prompt_too_long")
-            ).mean()
-            for sc, rate in env_df.stop_condition.dropna().value_counts(normalize=True).items():
-                to_log[f"stop_condition/{env}/{sc}"] = rate
-            env_metrics_df = metrics_df.loc[env_df.index] if not metrics_df.empty else metrics_df
-            for metric in metrics_df.columns:
-                to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["group_id"])[metric].mean().mean()
-            to_log[f"filters/{env}/is_filtered"] = env_df.is_filtered.astype(float).mean()
-            env_filter_df = filter_df.loc[env_df.index] if not filter_df.empty else filter_df
-            for name in filter_df.columns:
-                to_log[f"filters/{env}/{name}"] = env_filter_df[name].astype(float).mean()
 
-        # Dispatcher / watcher gauges live on the ``_timestamp`` axis via
-        # the periodic logger — keep this dict step-axis only
-        if pre_filter_seen > 0:
-            to_log["pre_filters/all/dropped_rate"] = pre_filter_dropped / pre_filter_seen
-            for name, count in pre_filter_dropped_by_name.items():
-                to_log[f"pre_filters/all/{name}/rate"] = count / pre_filter_seen
+class StatGroup:
+    """A nested group of named ``Stat``s. ``to_dict`` emits ``{prefix}/<name>/<stat>`` for each
+    distribution and ``group[name]`` returns one; subclasses supply the names via ``stats()``."""
 
-        return to_log
+    def __init__(self, rollouts: list[Rollout]) -> None:
+        self.rollouts = rollouts
 
-    @staticmethod
-    def timing_df(rollouts: list[Rollout]) -> pd.DataFrame:
-        """Per-rollout timing from the v1 Trace (`generation`/`scoring` spans)."""
-        rows = []
-        for r in rollouts:
-            timing = r.timing
-            generation, scoring = timing.generation.duration, timing.scoring.duration
-            rows.append({"total": generation + scoring, "generation": generation, "scoring": scoring})
-        return pd.DataFrame(rows)
+    def stats(self) -> dict[str, Stat]:
+        raise NotImplementedError
+
+    def __getitem__(self, name: str) -> Stat:
+        return self.stats()[name]
+
+    def to_dict(self, prefix: str) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for name, stat in self.stats().items():
+            out |= stat.to_dict(f"{prefix}/{name}")
+        return out
+
+
+class TimingMetrics(StatGroup):
+    """Per-phase rollout durations, nested so ``metrics.timing.setup.mean()`` reads naturally.
+    ``total`` is the per-rollout sum across all phases."""
+
+    PHASES = ("setup", "generation", "finalize", "scoring")
+
+    @property
+    def setup(self) -> Stat:
+        return Stat([r.timing.setup.duration for r in self.rollouts])
+
+    @property
+    def generation(self) -> Stat:
+        return Stat([r.timing.generation.duration for r in self.rollouts])
+
+    @property
+    def finalize(self) -> Stat:
+        return Stat([r.timing.finalize.duration for r in self.rollouts])
+
+    @property
+    def scoring(self) -> Stat:
+        return Stat([r.timing.scoring.duration for r in self.rollouts])
+
+    @property
+    def total(self) -> Stat:
+        return Stat([sum(getattr(r.timing, p).duration for p in self.PHASES) for r in self.rollouts])
+
+    def stats(self) -> dict[str, Stat]:
+        return {**{phase: getattr(self, phase) for phase in self.PHASES}, "total": self.total}
+
+
+class CustomMetrics(StatGroup):
+    """Per-key ``Stat``s over a dynamic per-rollout dict attribute (env ``@metric``s or reward
+    components), each averaged over the rollouts that report the key."""
+
+    def __init__(self, rollouts: list[Rollout], attr: str) -> None:
+        super().__init__(rollouts)
+        self.attr = attr
+
+    def stats(self) -> dict[str, Stat]:
+        names = sorted({name for r in self.rollouts for name in getattr(r, self.attr)})
+        return {
+            name: Stat([getattr(r, self.attr)[name] for r in self.rollouts if name in getattr(r, self.attr)])
+            for name in names
+        }
+
+
+class RolloutMetrics:
+    """Metrics shared by train and eval over a rollout list. Distributional metrics are ``Stat``s
+    (mean/max/min); boolean metrics are ``Stat``s of 0/1 (use ``.mean()`` for the rate). ``to_wandb``
+    assembles the full ``{prefix}/{subset}/...`` dict; ``TrainMetrics`` / ``EvalMetrics`` extend it."""
+
+    def __init__(self, rollouts: list[Rollout]) -> None:
+        self.rollouts = rollouts
+
+    # Distributional metrics
+    @property
+    def num_total_tokens(self) -> Stat:
+        return Stat([float(r.num_total_tokens) for r in self.rollouts])
+
+    @property
+    def num_input_tokens(self) -> Stat:
+        return Stat([float(r.num_input_tokens) for r in self.rollouts])
+
+    @property
+    def num_output_tokens(self) -> Stat:
+        return Stat([float(r.num_output_tokens) for r in self.rollouts])
+
+    @property
+    def num_turns(self) -> Stat:
+        return Stat([float(r.num_turns) for r in self.rollouts])
+
+    @property
+    def num_branches(self) -> Stat:
+        return Stat([float(r.num_branches) for r in self.rollouts])
+
+    @property
+    def timing(self) -> TimingMetrics:
+        return TimingMetrics(self.rollouts)
+
+    @property
+    def metrics(self) -> CustomMetrics:
+        """Env custom ``@metric`` outputs, keyed by name (``metrics.metrics["acc"].mean()``)."""
+        return CustomMetrics(self.rollouts, "metrics")
+
+    @property
+    def rewards(self) -> CustomMetrics:
+        """Per-component reward breakdown, keyed by name (summed into the scalar ``reward``)."""
+        return CustomMetrics(self.rollouts, "rewards")
+
+    # Boolean rate metrics (0/1 distributions — ``.mean()`` is the rate)
+    @property
+    def is_truncated(self) -> Stat:
+        return Stat([float(r.is_truncated) for r in self.rollouts])
+
+    @property
+    def is_completed(self) -> Stat:
+        return Stat([float(r.is_completed) for r in self.rollouts])
+
+    @property
+    def has_error(self) -> Stat:
+        return Stat([float(r.has_error) for r in self.rollouts])
+
+    def stop_conditions(self) -> dict[str, float]:
+        """``generation_truncated`` over all rollouts, then each recorded ``stop_condition``'s rate
+        over the rollouts that recorded one."""
+        out = {
+            "generation_truncated": sum(
+                1 for r in self.rollouts if r.is_truncated and r.stop_condition != "prompt_too_long"
+            )
+            / len(self.rollouts)
+        }
+        conditions = [r.stop_condition for r in self.rollouts if r.stop_condition is not None]
+        for condition in sorted(set(conditions)):
+            out[condition] = conditions.count(condition) / len(conditions)
+        return out
+
+    def error_types(self) -> dict[str, int]:
+        """Count of errored rollouts by error type (the rollout's last error — e.g. ``Cancelled``,
+        ``ProviderError``)."""
+        types = [r.error.type for r in self.rollouts if r.has_error]
+        return {t: types.count(t) for t in sorted(set(types))}
+
+    def solve_rates(self) -> dict[str, float]:
+        """Per-group solve rates, assuming binary 0/1 rewards (unspecified for other reward ranges):
+        ``solved_none`` (the group earned no reward), ``solved_all`` (every rollout scored 1.0), and
+        ``solved_some`` (the mixed remainder — the GRPO-signal groups)."""
+        groups: dict = {}
+        for r in self.rollouts:
+            groups.setdefault(r.group_id, []).append(r)
+        n_groups = len(groups)
+        solved_none = sum(1 for g in groups.values() if sum(r.reward for r in g) == 0)
+        solved_all = sum(1 for g in groups.values() if all(r.reward == 1.0 for r in g))
+        return {
+            "solved_none": solved_none / n_groups,
+            "solved_all": solved_all / n_groups,
+            "solved_some": 1 - (solved_none + solved_all) / n_groups,
+        }
+
+    def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
+        """The common metric dict for one ``{prefix}/{subset}`` slice. Empty input → ``{}``."""
+        if not self.rollouts:
+            return {}
+        p = f"{prefix}/{subset}"
+        out: dict[str, float] = {}
+        out |= self.num_total_tokens.to_dict(f"{p}/num_total_tokens")
+        out |= self.num_input_tokens.to_dict(f"{p}/num_input_tokens")
+        out |= self.num_output_tokens.to_dict(f"{p}/num_output_tokens")
+        out |= self.num_turns.to_dict(f"{p}/num_turns")
+        out |= self.num_branches.to_dict(f"{p}/num_branches")
+        out |= self.timing.to_dict(f"{p}/timing")
+        out |= self.metrics.to_dict(f"{p}/metrics")
+        out |= self.rewards.to_dict(f"{p}/rewards")
+        out[f"{p}/is_truncated/mean"] = self.is_truncated.mean()
+        out[f"{p}/is_completed/mean"] = self.is_completed.mean()
+        # errors live only on the `all` subset (effective drops them), so emit the rate + the
+        # per-type counts there only
+        if subset == "all":
+            out[f"{p}/has_error/mean"] = self.has_error.mean()
+            out |= {f"{p}/error/{t}": float(count) for t, count in self.error_types().items()}
+        out |= {f"{p}/stop_condition/{k}": v for k, v in self.stop_conditions().items()}
+        out |= {f"{p}/{k}": v for k, v in self.solve_rates().items()}
+        return out
+
+
+class TrainMetrics(RolloutMetrics):
+    """Common metrics plus the reward distribution and filter-pipeline rates."""
+
+    @property
+    def reward(self) -> Stat:
+        return Stat([float(r.reward) for r in self.rollouts])
+
+    @property
+    def is_trainable(self) -> Stat:
+        return Stat([float(r.is_trainable) for r in self.rollouts])
+
+    @property
+    def is_filtered(self) -> Stat:
+        return Stat([float(r.is_filtered) for r in self.rollouts])
+
+    def filter_rates(self) -> dict[str, float]:
+        """Per-filter detection rate over all rollouts."""
+        names = sorted({name for r in self.rollouts for name in r.filter_results})
+        return {
+            name: sum(1 for r in self.rollouts if r.filter_results.get(name)) / len(self.rollouts) for name in names
+        }
+
+    def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
+        out = super().to_wandb(prefix=prefix, subset=subset)
+        if not self.rollouts:
+            return out
+        p = f"{prefix}/{subset}"
+        out |= self.reward.to_dict(f"{p}/reward")
+        out[f"{p}/is_trainable/mean"] = self.is_trainable.mean()
+        out[f"{p}/is_filtered/mean"] = self.is_filtered.mean()
+        out |= {f"{p}/filters/{k}/mean": v for k, v in self.filter_rates().items()}
+        return out
+
+
+class EvalMetrics(RolloutMetrics):
+    """Common metrics plus the ``avg@<group_size>`` score and (on the effective subset, for
+    binary-reward tasks) pass@k / pass^k. ``group_size`` (the ``avg@k`` k) is supplied by the
+    container so the ``all`` and ``effective`` subsets share one stable key."""
+
+    def __init__(self, rollouts: list[Rollout], group_size: int) -> None:
+        super().__init__(rollouts)
+        self.group_size = group_size
+
+    @property
+    def reward(self) -> Stat:
+        return Stat([float(r.reward) for r in self.rollouts])
+
+    def pass_at_k(self) -> dict[str, float]:
+        """pass@k / pass^k averaged over examples; ``{}`` for non-binary rewards."""
+        rewards = [r.reward for r in self.rollouts]
+        if not set(rewards).issubset({0.0, 1.0}):
+            return {}
+        by_example: dict = {}
+        for r in self.rollouts:
+            by_example.setdefault(r.group_id, []).append(r.reward)
+        per_example = [compute_pass_metrics(rs) for rs in by_example.values()]
+        keys = sorted({k for d in per_example for k in d})
+        return {k: sum(d[k] for d in per_example if k in d) / sum(1 for d in per_example if k in d) for k in keys}
+
+    def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
+        out = super().to_wandb(prefix=prefix, subset=subset)
+        if not self.rollouts:
+            return out
+        p = f"{prefix}/{subset}"
+        out[f"{p}/avg@{self.group_size}"] = self.reward.mean()
+        if subset == "effective":
+            out |= {f"{p}/{k}": v for k, v in self.pass_at_k().items()}
+        return out
+
+
+class TrainRollouts:
+    """A list of train rollouts (everything that came back, errored + filtered included). ``effective``
+    is the clean subset (a view of the same traces); ``metrics`` builds ``TrainMetrics`` over them."""
+
+    def __init__(self, rollouts: list[Rollout] | None = None) -> None:
+        self.rollouts = rollouts if rollouts is not None else []
+
+    def append(self, rollout: Rollout) -> None:
+        self.rollouts.append(rollout)
+
+    def __len__(self) -> int:
+        return len(self.rollouts)
+
+    def __iter__(self) -> Iterator[Rollout]:
+        return iter(self.rollouts)
+
+    @property
+    def effective(self) -> TrainRollouts:
+        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered])
+
+    def by_env(self) -> dict[str, TrainRollouts]:
+        grouped: dict[str, list[Rollout]] = {}
+        for r in self.rollouts:
+            grouped.setdefault(r.env_name, []).append(r)
+        return {env: TrainRollouts(rs) for env, rs in grouped.items()}
+
+    @property
+    def metrics(self) -> TrainMetrics:
+        return TrainMetrics(self.rollouts)
+
+
+class EvalRollouts:
+    """A list of eval rollouts (errored included). ``effective`` is the non-errored subset (a view).
+    ``group_size`` (rollouts per example, the ``avg@k`` k) is derived from the full epoch and carried
+    onto ``effective`` so both subsets share one stable key; ``metrics`` builds ``EvalMetrics``."""
+
+    def __init__(self, rollouts: list[Rollout] | None = None, group_size: int | None = None) -> None:
+        self.rollouts = rollouts if rollouts is not None else []
+        self._group_size = group_size
+
+    def __len__(self) -> int:
+        return len(self.rollouts)
+
+    def __iter__(self) -> Iterator[Rollout]:
+        return iter(self.rollouts)
+
+    @property
+    def group_size(self) -> int:
+        """The largest group (equals the configured group size whenever one example kept all its
+        rollouts); a subview carries its parent's value so ``avg@k`` doesn't drift across subsets."""
+        if self._group_size is not None:
+            return self._group_size
+        counts: dict = {}
+        for r in self.rollouts:
+            counts[r.group_id] = counts.get(r.group_id, 0) + 1
+        return max(counts.values(), default=0)
+
+    @property
+    def effective(self) -> EvalRollouts:
+        return EvalRollouts([r for r in self.rollouts if not r.has_error], group_size=self.group_size)
+
+    @property
+    def metrics(self) -> EvalMetrics:
+        return EvalMetrics(self.rollouts, self.group_size)

@@ -215,11 +215,20 @@ class RolloutDispatcher:
         return len(self.eval_source) if self.eval_source is not None else 0
 
     @property
+    def eval_has_work(self) -> bool:
+        """Eval has work while its source queue is non-empty OR any opened eval group still has
+        rollouts to schedule. An example leaves ``eval_source`` when its group opens
+        (``next_fresh_group``), but its ``group_size`` rollouts dispatch one at a time across
+        ``fill_inflight`` passes — so the queue can be empty while a group is still mid-schedule."""
+        return bool(self.eval_source) or any(
+            g.kind == "eval" and g.rollouts_to_schedule > 0 for g in self.groups.values()
+        )
+
+    @property
     def is_idle(self) -> bool:
-        """True once nothing is in flight, no eval queued, and ``out_q`` is
-        empty — the pipeline has fully drained."""
-        eval_drained = self.eval_source is None or not self.eval_source
-        return not self.inflight and eval_drained and self.out_q.empty()
+        """True once nothing is in flight, no eval work remains (queued *or* a partly-scheduled eval
+        group), and ``out_q`` is empty — the pipeline has fully drained."""
+        return not self.inflight and not self.eval_has_work and self.out_q.empty()
 
     def disable_train_scheduling(self) -> None:
         """Stop scheduling new train rollouts; in-flight train + any
@@ -320,10 +329,7 @@ class RolloutDispatcher:
                 # PREFER_EVAL is only entered when the orchestrator triggers
                 # eval, which requires ``eval_source`` to be configured
                 assert self.eval_source is not None
-                eval_has_work = bool(self.eval_source) or any(
-                    g.kind == "eval" and g.rollouts_to_schedule > 0 for g in self.groups.values()
-                )
-                if not eval_has_work:
+                if not self.eval_has_work:
                     # Eval source + all eval groups fully dispatched. Flip
                     # to PREFER_TRAIN so any remaining permits go to train
                     # while the in-flight eval tail completes naturally
