@@ -134,8 +134,6 @@ skip_first_step = false
 name = "browsecomp"
 taskset = { id = "browsecomp-v1" }
 harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
-num_examples = 100
-group_size = 1
 timeout = { rollout = 3600 }
 
 # --- Inference ---

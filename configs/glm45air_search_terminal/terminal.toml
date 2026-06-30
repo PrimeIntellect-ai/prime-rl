@@ -3,9 +3,8 @@
 # (NEEDS_CONTAINER) injected into the sandbox; grading is host-side inside the container. GRPO +
 # linear length penalty. 2 train + 4 infer nodes. Single run label (glm45air-terminal) for all envs.
 #
-# Train = the terminal training sets (terminal-bench-lite + a synthetic forensic-CTF). Eval = the
-# fixed sandbox benchmarks, with terminal-bench-2 the primary terminal target (the SWE-Bench evals
-# are kept as cross-domain reference points).
+# Train = the terminal training sets (terminal-bench-lite + a synthetic forensic-CTF).
+# Eval = terminal-bench-2 (full, avg@1).
 #
 # NOTE: this is the TERMINAL domain — the SWE tasksets (scaleswe-v1, r2e-gym-v1) are a separate SWE
 # domain and are intentionally NOT trained here. terminal-bench-2-v1 rlm compatibility is inferred
@@ -112,7 +111,7 @@ name = "uuid-ctf"
 taskset = { id = "uuid-ctf-v1" } # synthetic forensic-CTF; `difficulty` defaults to easy
 harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
 
-# --- Eval: fixed sandbox benchmarks every 20 steps (incl. step 0); terminal-bench-2 is primary ---
+# --- Eval: terminal-bench-2 (full, avg@1) every 20 steps, incl. step 0 ---
 
 [orchestrator.eval]
 interval = 20
@@ -122,25 +121,6 @@ skip_first_step = false
 name = "terminal-bench-2"
 taskset = { id = "terminal-bench-2-v1" }
 harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
-num_examples = 100
-group_size = 1
-timeout = { rollout = 3600 }
-
-[[orchestrator.eval.env]]
-name = "swebench-verified"
-# Ships Dockerfiles, not pullable images → resolve via the prime-mirrored registry.
-taskset = { id = "swebench-verified-v1", use_prime_registry = true }
-harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
-num_examples = 100
-group_size = 1
-timeout = { rollout = 3600 }
-
-[[orchestrator.eval.env]]
-name = "swebench-pro"
-taskset = { id = "swebench-pro-v1" } # public Docker Hub images, no prime mirror needed
-harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
-num_examples = 100
-group_size = 1
 timeout = { rollout = 3600 }
 
 # --- Inference ---
