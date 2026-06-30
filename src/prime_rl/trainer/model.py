@@ -558,7 +558,7 @@ def get_model(
         _patch_qwen3_5_text_position_ids()
         _patch_qwen3_5_moe_conversion_mapping()
         _patch_qwen3_5_linear_attn_varlen()
-    if config.vlm is not None and config.cp > 1 and config.cp_style == "ulysses":
+    if is_vlm_arch and config.cp > 1 and config.cp_style == "ulysses":
         vision_config = getattr(model_config, "vision_config", None)
         if vision_config is not None:
             logger.info("Using SDPA for VLM vision encoder under CP")
