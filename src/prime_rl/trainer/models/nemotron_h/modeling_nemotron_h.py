@@ -258,7 +258,7 @@ class NemotronHMoELayer(GradientCheckpointingLayer):
             routed_scaling_factor=config.routed_scaling_factor,
             use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=config.load_balance_coeff,
-            fp8=getattr(config, "fp8", False),
+            grouped_mm_quant=getattr(config, "grouped_mm_quant", None),
         )
 
     def forward(

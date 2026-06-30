@@ -1,0 +1,10 @@
+# MXFP8 (linear + grouped GEMM + all-to-all), expert parallelism (EP=8)
+[model]
+ep = 8
+
+[model.quantization]
+type = "mxfp8"
+a2a = true
+
+[wandb]
+name = "ep-mxfp8"

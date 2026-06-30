@@ -36,7 +36,14 @@ impl = "custom"        # or "hf" to force the HF path
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
 | GPT-OSS (HF MoE) | `openai/gpt-oss-20b`, `openai/gpt-oss-120b` | ❌ | ✅ |
 
-The custom path enables you to set EP, CP, selective activation checkpointing, FP8 training (`model.fp8 = true`, requires SM90+), and faster MoE kernels (`moe_use_grouped_mm = true`, default). Forcing `impl = "hf"` is mostly useful when debugging — it's slower and disables most MoE-specific knobs.
+The custom path enables you to set EP, CP, selective activation checkpointing, low-precision training, and faster MoE kernels (`moe_use_grouped_mm = true`, default). Forcing `impl = "hf"` is mostly useful when debugging — it's slower and disables most MoE-specific knobs.
+
+Low-precision training is configured via `[model.quantization]`, a tagged union with two backends, each independently toggling which ops are quantized:
+
+- `type = "fp8"` — DeepGEMM blockwise (1x128) FP8 on SM90+ (Hopper). Fields: `linear`, `grouped_mm`.
+- `type = "mxfp8"` — torchao microscaling (1x32, e8m0-scaled) FP8 on SM100+ (Blackwell). Fields: `linear`, `grouped_mm`, `a2a` (quantize the EP all-to-all; requires `ep > 1` and `ep_comm_backend = "torch"`), plus `scaling_mode` and `kernel`.
+
+For example, `[model.quantization]` with `type = "mxfp8"` and `a2a = true` runs MXFP8 across the linear layers, the MoE expert grouped GEMMs, and the expert-parallel dispatch/combine.
 
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
 

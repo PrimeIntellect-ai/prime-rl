@@ -3804,6 +3804,7 @@ dependencies = [
     { name = "tenacity" },
     { name = "tilelang" },
     { name = "torch" },
+    { name = "torchao", marker = "platform_machine == 'x86_64'" },
     { name = "torchaudio" },
     { name = "torchdata" },
     { name = "torchtitan" },
@@ -4032,6 +4033,7 @@ requires-dist = [
     { name = "terminal-bench-2-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/terminal_bench_2_v1" },
     { name = "tilelang", specifier = ">=0.1.8" },
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torchao", marker = "platform_machine == 'x86_64'", specifier = "==0.18.0.dev20260407", index = "https://download.pytorch.org/whl/nightly/cu128" },
     { name = "torchaudio", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchdata", specifier = ">=0.11.0" },
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
@@ -5565,6 +5567,14 @@ sdist = { url = "https://files.pythonhosted.org/packages/37/de/921b6491efce5c389
 wheels = [
     { url = "https://files.pythonhosted.org/packages/87/06/8d760997307a5c3be4384424667bf31aae0a42060838c532c7d846516175/torch_c_dlpack_ext-0.1.5-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3562ee411258676f9c38b8ad39306d1c8d027b6a86f6a87c920d2d009a9d1510", size = 443069, upload-time = "2026-01-12T11:24:45.451Z" },
     { url = "https://files.pythonhosted.org/packages/e2/79/a914539b4785f3e44f891aa012a886edb8bc10fe081c440981c57543ce21/torch_c_dlpack_ext-0.1.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e6f9da4bb9af70e27facc777458be62e10dbbbddda7672d16138db0553c5a524", size = 897846, upload-time = "2026-01-12T11:24:48.168Z" },
+]
+
+[[package]]
+name = "torchao"
+version = "0.18.0.dev20260407+cu128"
+source = { registry = "https://download.pytorch.org/whl/nightly/cu128" }
+wheels = [
+    { url = "https://download.pytorch.org/whl/nightly/cu128/torchao-0.18.0.dev20260407%2Bcu128-cp310-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", upload-time = "2026-04-07T00:42:08Z" },
 ]
 
 [[package]]

@@ -1,0 +1,9 @@
+# MXFP8 (linear + grouped GEMM), no expert parallelism (pure FSDP)
+[model]
+ep = 1
+
+[model.quantization]
+type = "mxfp8"
+
+[wandb]
+name = "nonep-mxfp8"

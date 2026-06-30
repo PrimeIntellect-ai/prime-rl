@@ -615,7 +615,7 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=config.load_balance_coeff,
-            fp8=getattr(config, "fp8", False),
+            grouped_mm_quant=getattr(config, "grouped_mm_quant", None),
         )
         self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
 

@@ -1,0 +1,27 @@
+max_steps = 50
+
+[deployment]
+num_gpus = 8
+
+[model]
+name = "Qwen/Qwen3-30B-A3B"
+impl = "custom"
+moe_use_grouped_mm = true
+# Disabled so each convergence run starts quickly; loss-vs-step is compile-independent.
+# Re-enable (drop this line) for throughput/MFU measurements.
+compile = "None"
+# Keep the sharded optimizer state on-GPU (178 GiB/GPU is plenty for 30B/3B sharded
+# across 8 ranks) so steps aren't bottlenecked by per-step CPU<->GPU transfers.
+optim_cpu_offload = false
+
+[data]
+type = "sft"
+name = "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"
+seq_len = 4096
+batch_size = 32
+
+[optim]
+lr = 2e-5
+
+[wandb]
+project = "mxfp8-qwen3-30b-a3b-sft"

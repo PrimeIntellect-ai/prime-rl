@@ -1,0 +1,6 @@
+# bf16 baseline, expert parallelism (EP=8)
+[model]
+ep = 8
+
+[wandb]
+name = "ep-bf16"

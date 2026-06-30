@@ -1,0 +1,19 @@
+max_steps = 5
+
+[model]
+name = "PrimeIntellect/GLM-0.5B"
+moe_use_grouped_mm = true
+impl = "custom"
+attn = "sdpa"
+
+# MXFP8 (Blackwell/SM100): quantizes nn.Linear and the MoE expert grouped GEMM.
+# Add `a2a = true` (and run with ep > 1) to also quantize the expert-parallel all-to-all.
+[model.quantization]
+type = "mxfp8"
+
+[model.compile]
+
+[data]
+type = "fake"
+batch_size = 2
+seq_len = 1024

@@ -26,8 +26,15 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, Genera
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
-from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
-from prime_rl.trainer.distributed import DeepEPExpertParallel
+from prime_rl.configs.trainer import (
+    ActivationCheckpointConfig,
+    CompileConfig,
+    FP8Config,
+    ModelConfig,
+    MXFP8Config,
+    TokenizerConfig,
+)
+from prime_rl.trainer.distributed import DeepEPExpertParallel, MXFP8ExpertParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -46,6 +53,7 @@ from prime_rl.trainer.models.layers.checkpointing import (
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import LatentMoE, MoE
+from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -504,7 +512,18 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
-    model_config.fp8 = config.fp8
+    # Resolve the quantization config into the grouped-GEMM recipe consumed by the MoE
+    # layers. ``None`` keeps bf16; the MXFP8 path additionally requires 32-token group
+    # alignment for the (1x32) microscaling block size.
+    grouped_mm_quant: str | None = None
+    if isinstance(config.quantization, FP8Config) and config.quantization.grouped_mm:
+        grouped_mm_quant = "fp8"
+    elif isinstance(config.quantization, MXFP8Config) and config.quantization.grouped_mm:
+        grouped_mm_quant = "mxfp8"
+        from torchtitan.distributed.expert_parallel import set_token_group_alignment_size_m
+
+        set_token_group_alignment_size_m(32)
+    model_config.grouped_mm_quant = grouped_mm_quant
 
     if config.index_cache is not None:
         model_config.use_index_cache = True
@@ -996,11 +1015,15 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
 
 def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     language_model = get_language_model(model)
+    mxfp8_a2a = isinstance(config.quantization, MXFP8Config) and config.quantization.a2a
     for transformer_block in language_model.layers:
         block_mlp = getattr(transformer_block, "mlp", None)
         if block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
             if config.ep_comm_backend == "torch":
-                parallelize_plan = ExpertParallel()
+                if mxfp8_a2a:
+                    parallelize_plan = MXFP8ExpertParallel(scaling_mode=config.quantization.scaling_mode)
+                else:
+                    parallelize_plan = ExpertParallel()
             else:
                 parallelize_plan = DeepEPExpertParallel()
             parallelize_module(
@@ -1101,8 +1124,15 @@ def setup_model(
 
     inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, fused_cross_entropy=fused_cross_entropy)
 
-    if config.fp8:
+    if isinstance(config.quantization, FP8Config) and config.quantization.linear:
         replace_linear_with_fp8_blockwise_linear(model)
+    elif isinstance(config.quantization, MXFP8Config) and config.quantization.linear:
+        replace_linear_with_mxfp8_linear(
+            model,
+            ignore_modules=config.quantization.filter_fqns,
+            scaling_mode=config.quantization.scaling_mode,
+            kernel=config.quantization.kernel,
+        )
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:

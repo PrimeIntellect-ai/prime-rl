@@ -14,6 +14,10 @@ from torchtitan.distributed.expert_parallel import expert_parallel
 
 from prime_rl.configs.trainer import EPCommBackend
 
+# Which low-precision recipe to use for the MoE expert grouped GEMM. ``None`` keeps bf16,
+# ``"fp8"`` uses DeepGEMM blockwise FP8 (SM90), ``"mxfp8"`` uses torchao MXFP8 (SM100).
+GroupedMMQuant = Literal["fp8", "mxfp8"] | None
+
 
 @dataclass
 class MoEArgs:
@@ -30,7 +34,7 @@ class MoEArgs:
     top_k: int = 1
     use_grouped_mm: bool = True  # grouped mm or for-loop for the experts computation
     load_balance_coeff: float | None = 1e-3
-    fp8: bool = False  # use FP8 grouped GEMM via DeepGEMM (requires SM90)
+    grouped_mm_quant: GroupedMMQuant = None  # low-precision recipe for the expert grouped GEMM
 
 
 # can be used as dense FFN layer or shared experts in MoE layers
@@ -153,7 +157,18 @@ def _run_experts_fp8_grouped_mm(
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
 ) -> torch.Tensor:
-    return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert, fp8=True)
+    return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert, grouped_mm_quant="fp8")
+
+
+@expert_parallel
+def _run_experts_mxfp8_grouped_mm(
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+) -> torch.Tensor:
+    return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert, grouped_mm_quant="mxfp8")
 
 
 def _run_experts_grouped_mm_impl(
@@ -162,18 +177,24 @@ def _run_experts_grouped_mm_impl(
     w3: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
-    fp8: bool = False,
+    grouped_mm_quant: GroupedMMQuant = None,
 ) -> torch.Tensor:
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
     # grouped mm between a 2D tensor and a 3D tensor
     assert x.dim() == 2
 
-    if fp8:
+    if grouped_mm_quant == "fp8":
         from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
         h = F.silu(grouped_fp8_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
         h = h * grouped_fp8_gemm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offsets)
         out = grouped_fp8_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
+    elif grouped_mm_quant == "mxfp8":
+        from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import mxfp8_grouped_gemm
+
+        h = F.silu(mxfp8_grouped_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
+        h = h * mxfp8_grouped_gemm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offsets)
+        out = mxfp8_grouped_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
     else:
         h = F.silu(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
         h = h * torch._grouped_mm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offs=offsets)
@@ -189,7 +210,7 @@ class GroupedExperts(nn.Module):
         hidden_dim: int,
         num_experts: int,
         use_grouped_mm: bool,
-        fp8: bool = False,
+        grouped_mm_quant: GroupedMMQuant = None,
     ):
         super().__init__()
         self.num_experts = num_experts
@@ -197,7 +218,7 @@ class GroupedExperts(nn.Module):
         self.w2 = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
         self.w3 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
         self.use_grouped_mm = use_grouped_mm
-        self.fp8 = fp8
+        self.grouped_mm_quant = grouped_mm_quant
         self.ep_comm_backend: EPCommBackend = "torch"
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
@@ -208,7 +229,9 @@ class GroupedExperts(nn.Module):
         w2 = self.w2.to_local()
         w3 = self.w3.to_local()
         if self.use_grouped_mm:
-            return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert, fp8=self.fp8)
+            return _run_experts_grouped_mm_impl(
+                w1, w2, w3, x, num_tokens_per_expert, grouped_mm_quant=self.grouped_mm_quant
+            )
         return _run_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
 
     def forward(
@@ -220,8 +243,10 @@ class GroupedExperts(nn.Module):
             return self._forward_deepep(x, num_tokens_per_expert)
 
         if self.use_grouped_mm:
-            if self.fp8:
+            if self.grouped_mm_quant == "fp8":
                 return _run_experts_fp8_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
+            if self.grouped_mm_quant == "mxfp8":
+                return _run_experts_mxfp8_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
             return _run_experts_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
         else:
             return _run_experts_for_loop(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
@@ -572,7 +597,7 @@ class MoE(nn.Module):
             hidden_dim=hidden_dim,
             num_experts=num_experts,
             use_grouped_mm=moe_args.use_grouped_mm,
-            fp8=moe_args.fp8,
+            grouped_mm_quant=moe_args.grouped_mm_quant,
         )
         self.ep_comm_backend: EPCommBackend = "torch"
         self.experts.set_ep_comm_backend(self.ep_comm_backend)
@@ -842,16 +867,21 @@ def _run_nongated_experts_grouped_mm_impl(
     _w3: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
-    fp8: bool = False,
+    grouped_mm_quant: GroupedMMQuant = None,
 ) -> torch.Tensor:
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
     assert x.dim() == 2
 
-    if fp8:
+    if grouped_mm_quant == "fp8":
         from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
         h = relu2(grouped_fp8_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
         out = grouped_fp8_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
+    elif grouped_mm_quant == "mxfp8":
+        from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import mxfp8_grouped_gemm
+
+        h = relu2(mxfp8_grouped_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
+        out = mxfp8_grouped_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
     else:
         h = relu2(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
         out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
@@ -877,7 +907,18 @@ def _run_nongated_experts_fp8_grouped_mm(
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
 ) -> torch.Tensor:
-    return _run_nongated_experts_grouped_mm_impl(w1, w2, _w3, x, num_tokens_per_expert, fp8=True)
+    return _run_nongated_experts_grouped_mm_impl(w1, w2, _w3, x, num_tokens_per_expert, grouped_mm_quant="fp8")
+
+
+@expert_parallel
+def _run_nongated_experts_mxfp8_grouped_mm(
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    _w3: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+) -> torch.Tensor:
+    return _run_nongated_experts_grouped_mm_impl(w1, w2, _w3, x, num_tokens_per_expert, grouped_mm_quant="mxfp8")
 
 
 class NonGatedGroupedExperts(nn.Module):
@@ -887,7 +928,7 @@ class NonGatedGroupedExperts(nn.Module):
         intermediate_dim: int,
         num_experts: int,
         use_grouped_mm: bool,
-        fp8: bool = False,
+        grouped_mm_quant: GroupedMMQuant = None,
     ):
         super().__init__()
         self.num_experts = num_experts
@@ -896,7 +937,7 @@ class NonGatedGroupedExperts(nn.Module):
         # Dummy w3 for @expert_parallel decorator compatibility (expects w1, w2, w3 signature)
         self.w3 = nn.Parameter(torch.empty(0))
         self.use_grouped_mm = use_grouped_mm
-        self.fp8 = fp8
+        self.grouped_mm_quant = grouped_mm_quant
         self.ep_comm_backend: EPCommBackend = "torch"
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
@@ -907,7 +948,9 @@ class NonGatedGroupedExperts(nn.Module):
         w2 = self.w2.to_local()
         w3 = self.w3.to_local()
         if self.use_grouped_mm:
-            return _run_nongated_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert, fp8=self.fp8)
+            return _run_nongated_experts_grouped_mm_impl(
+                w1, w2, w3, x, num_tokens_per_expert, grouped_mm_quant=self.grouped_mm_quant
+            )
         return _run_nongated_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
 
     def forward(
@@ -918,8 +961,10 @@ class NonGatedGroupedExperts(nn.Module):
         if self.ep_comm_backend == "deepep":
             return self._forward_deepep(x, num_tokens_per_expert)
         if self.use_grouped_mm:
-            if self.fp8:
+            if self.grouped_mm_quant == "fp8":
                 return _run_nongated_experts_fp8_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
+            if self.grouped_mm_quant == "mxfp8":
+                return _run_nongated_experts_mxfp8_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
             return _run_nongated_experts_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
         else:
             return _run_nongated_experts_for_loop(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
@@ -1049,7 +1094,7 @@ class LatentMoE(nn.Module):
         routed_scaling_factor: float,
         use_grouped_mm: bool,
         load_balance_coeff: float | None,
-        fp8: bool = False,
+        grouped_mm_quant: GroupedMMQuant = None,
     ):
         super().__init__()
         effective_latent_dim = latent_dim if latent_dim is not None else dim
@@ -1067,7 +1112,7 @@ class LatentMoE(nn.Module):
             intermediate_dim=moe_intermediate_size,
             num_experts=num_experts,
             use_grouped_mm=use_grouped_mm,
-            fp8=fp8,
+            grouped_mm_quant=grouped_mm_quant,
         )
         self.ep_comm_backend: EPCommBackend = "torch"
         self.experts.set_ep_comm_backend(self.ep_comm_backend)

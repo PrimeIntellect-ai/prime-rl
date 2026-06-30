@@ -18,6 +18,7 @@ dependencies = [
     "torchvision",
     "torchaudio",
     "torchdata>=0.11.0",
+    "torchao==0.18.0.dev20260407 ; platform_machine == 'x86_64'",
     "transformers==5.6.2",
     "vllm>=0.23.0",
     "mooncake-transfer-engine>=0.3.10.post2",
@@ -304,6 +305,9 @@ wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
+# MXFP8 (Blackwell/SM100) training kernels: linear, grouped GEMM, and EP all-to-all.
+# Pinned to a nightly that ships torchao.prototype.moe_training.ep (mxfp8 a2a).
+torchao = { index = "pytorch-nightly-cu128" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
@@ -334,6 +338,11 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-cu128-test"
 url = "https://download.pytorch.org/whl/test/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-nightly-cu128"
+url = "https://download.pytorch.org/whl/nightly/cu128"
 explicit = true
 
 [tool.ruff.lint]

@@ -1,0 +1,6 @@
+# bf16 baseline, no expert parallelism (pure FSDP)
+[model]
+ep = 1
+
+[wandb]
+name = "nonep-bf16"
