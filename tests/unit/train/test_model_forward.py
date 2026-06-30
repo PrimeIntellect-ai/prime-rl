@@ -2,9 +2,11 @@ from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
+from transformers import PretrainedConfig
 
 import prime_rl.trainer.model as trainer_model
 from prime_rl.trainer.model import forward
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 
 
 class _TinyVLM(nn.Module):
@@ -55,6 +57,31 @@ class _CaptureModel(nn.Module):
             shape = kwargs["input_ids"].shape
         else:
             shape = kwargs["inputs_embeds"].shape[:2]
+        return {"logits": torch.zeros(*shape, 4)}
+
+
+class _PrimeCaptureModel(PreTrainedModelPrimeRL):
+    config_class = PretrainedConfig
+
+    def __init__(self):
+        super().__init__(PretrainedConfig())
+        self.kwargs = None
+
+    def prime_forward_kwargs(
+        self,
+        *,
+        seq_lens: torch.Tensor | None = None,
+        seq_lens_are_global: bool = False,
+    ) -> dict[str, object]:
+        return {
+            "seq_lens": seq_lens,
+            "seq_lens_are_global": seq_lens_are_global,
+            "hook_marker": True,
+        }
+
+    def forward(self, **kwargs):
+        self.kwargs = kwargs
+        shape = kwargs["input_ids"].shape
         return {"logits": torch.zeros(*shape, 4)}
 
 
@@ -179,8 +206,22 @@ def test_forward_does_not_leak_seq_lens_to_generic_text_models():
     assert "seq_lens_are_global" not in model.kwargs
 
 
-def test_forward_strips_position_ids_and_forwards_seq_lens_for_mrope_vlm():
-    """Qwen-style MRoPE VLMs build 3D positions internally from seq_lens."""
+def test_forward_merges_prime_forward_kwargs_for_custom_models():
+    model = _PrimeCaptureModel()
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
+    seq_lens = torch.tensor([2, 2])
+
+    forward(model, input_ids, position_ids, seq_lens=seq_lens, seq_lens_are_global=True)
+
+    assert model.kwargs is not None
+    torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
+    assert model.kwargs["seq_lens_are_global"] is True
+    assert model.kwargs["hook_marker"] is True
+
+
+def test_forward_strips_position_ids_without_leaking_seq_lens_for_mrope_vlm():
+    """Generic VLMs do not receive PrimeRL-only packed-boundary kwargs."""
     model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
     input_ids = torch.tensor([[1, 10, 10, 2, 20, 20]])
     position_ids = torch.tensor([[0, 1, 2, 0, 1, 2]])

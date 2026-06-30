@@ -1229,6 +1229,16 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
     # Forward
     # ------------------------------------------------------------------
 
+    def prime_forward_kwargs(
+        self,
+        *,
+        seq_lens: Tensor | None = None,
+        seq_lens_are_global: bool = False,
+    ) -> dict[str, object]:
+        if seq_lens is None:
+            return {}
+        return {"seq_lens": seq_lens, "seq_lens_are_global": seq_lens_are_global}
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,

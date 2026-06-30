@@ -229,8 +229,6 @@ class GptOssModel(GptOssPreTrainedModel):
         past_key_values: Cache | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         use_cache: bool | None = None,
-        seq_lens: Optional[torch.LongTensor] = None,
-        seq_lens_are_global: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -307,8 +305,6 @@ class GptOssForCausalLM(GptOssPreTrainedModel, GenerationMixin):
         use_cache: bool | None = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: torch.Tensor | None = None,
-        seq_lens: Optional[torch.LongTensor] = None,
-        seq_lens_are_global: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -324,8 +320,6 @@ class GptOssForCausalLM(GptOssPreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
-            seq_lens=seq_lens,
-            seq_lens_are_global=seq_lens_are_global,
             use_cache=use_cache,
             **kwargs,
         )

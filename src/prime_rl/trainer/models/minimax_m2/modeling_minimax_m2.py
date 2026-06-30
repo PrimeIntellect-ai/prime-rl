@@ -166,8 +166,6 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
-        seq_lens: Optional[torch.LongTensor] = None,
-        seq_lens_are_global: bool = False,
     ) -> BaseModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
@@ -232,8 +230,6 @@ class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Union[torch.Tensor, None] = None,
         routed_experts: Optional[torch.LongTensor] = None,
-        seq_lens: Optional[torch.LongTensor] = None,
-        seq_lens_are_global: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -261,8 +257,6 @@ class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel, GenerationMixin):
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            seq_lens=seq_lens,
-            seq_lens_are_global=seq_lens_are_global,
             routed_experts=routed_experts,
         )
 

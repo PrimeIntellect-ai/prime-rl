@@ -1222,8 +1222,6 @@ def forward(
     cp_world_size: int | None = None,
     cp_style: str | None = None,
 ) -> PrimeLmOutput:
-    forwards_seq_lens = seq_lens is not None and isinstance(model, PreTrainedModelPrimeRL)
-
     # Build kwargs for model forward
     kwargs = {
         "labels": labels,
@@ -1243,14 +1241,13 @@ def forward(
             kwargs["mm_token_type_ids"] = mm_token_type_ids
         if "image_grid_thw" not in mm_kwargs:
             kwargs["position_ids"] = position_ids
-        elif forwards_seq_lens:
-            kwargs["seq_lens"] = seq_lens
     else:
         kwargs["position_ids"] = position_ids
-        if forwards_seq_lens:
-            kwargs["seq_lens"] = seq_lens
-        if seq_lens_are_global and forwards_seq_lens:
-            kwargs["seq_lens_are_global"] = True
+
+    if isinstance(model, PreTrainedModelPrimeRL):
+        kwargs.update(
+            model.prime_forward_kwargs(seq_lens=seq_lens, seq_lens_are_global=seq_lens_are_global)
+        )
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts

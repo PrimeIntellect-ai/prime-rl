@@ -502,8 +502,6 @@ class NemotronHModel(NemotronHPreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
-        seq_lens: Optional[torch.LongTensor] = None,
-        seq_lens_are_global: bool = False,
     ) -> BaseModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
@@ -565,8 +563,6 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
         logits_to_keep: int = 0,
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
-        seq_lens: Optional[torch.LongTensor] = None,
-        seq_lens_are_global: bool = False,
         **kwargs,
     ) -> PrimeLmOutput:
         if position_ids is None:
@@ -579,8 +575,6 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            seq_lens=seq_lens,
-            seq_lens_are_global=seq_lens_are_global,
             routed_experts=routed_experts,
         )
 
