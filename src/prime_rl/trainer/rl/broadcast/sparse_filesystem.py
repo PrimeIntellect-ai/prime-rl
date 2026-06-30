@@ -45,6 +45,8 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
             lora_config,
         )
         self.kernel_format = config.kernel_format
+        self.gpu_diff = config.gpu_diff
+        self.compress = config.compress
         self._sparse_update_previous_state_dict: dict[str, Tensor] | None = None
         self._sparse_update_previous_step = 0
         self.last_metrics: dict[str, float | int] = {}
@@ -53,7 +55,10 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
             raise ValueError("Sparse filesystem broadcast is only supported for full-model weight broadcasts.")
         if self.multi_run_manager.max_runs > 1:
             raise ValueError("Sparse filesystem broadcast is not supported with multi-run training.")
-        self.logger.debug(f"Sparse filesystem broadcast initialized (kernel_format={self.kernel_format})")
+        self.logger.debug(
+            f"Sparse filesystem broadcast initialized "
+            f"(kernel_format={self.kernel_format}, gpu_diff={self.gpu_diff}, compress={self.compress})"
+        )
 
     def _collect_kernel_state_dict(self, model: nn.Module) -> dict[str, Tensor]:
         """Gather model weights and convert to vLLM kernel format per-layer.
@@ -98,14 +103,15 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
         # Lazily initialize the baseline on the first broadcast
         if self._sparse_update_previous_state_dict is None:
             if self.world.is_master:
+                # Baseline is always on CPU (pinned for fast H2D when gpu_diff is enabled)
                 self._sparse_update_previous_state_dict = {
-                    name: tensor.contiguous() for name, tensor in state_dict.items()
+                    name: tensor.to("cpu").contiguous() for name, tensor in state_dict.items()
                 }
                 self._sparse_update_previous_step = step
                 total_numel = sum(t.numel() for t in self._sparse_update_previous_state_dict.values())
                 self.logger.info(
                     f"Prepared sparse update baseline at step {step} "
-                    f"(kernel_format={self.kernel_format}, "
+                    f"(kernel_format={self.kernel_format}, gpu_diff={self.gpu_diff}, "
                     f"{len(self._sparse_update_previous_state_dict)} tensors, {total_numel:,} values)"
                 )
             return
@@ -137,6 +143,9 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
         else:
             current_state = {name: to_compute_tensor(tensor, torch.bfloat16) for name, tensor in state_dict.items()}
             compute_dtype = torch.bfloat16
+
+        diff_device = torch.device("cuda") if self.gpu_diff else "cpu"
+
         stats = save_sparse_update(
             self._sparse_update_previous_state_dict,
             current_state,
@@ -144,8 +153,13 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
             step=step,
             base_step=self._sparse_update_previous_step,
             compute_dtype=compute_dtype,
+            device=diff_device,
+            compress=self.compress,
         )
-        self._sparse_update_previous_state_dict = current_state
+        # With GPU diff, save_sparse_update refreshes the CPU baseline in-place.
+        # With CPU diff, replace the baseline as before.
+        if str(diff_device) == "cpu":
+            self._sparse_update_previous_state_dict = current_state
         self._sparse_update_previous_step = step
         self.last_metrics = {
             "sparse_update/total_numel": stats.total_numel,
@@ -153,10 +167,13 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
             "sparse_update/sparsity": stats.sparsity,
             "sparse_update/patch_bytes": stats.patch_bytes,
             "sparse_update/patched_tensors": stats.patched_tensors,
+            "sparse_update/diff_s": stats.diff_s,
+            "sparse_update/save_s": stats.save_s,
         }
         self.logger.info(
             f"Saved sparse update patch for step {step}: {stats.changed_numel:,}/{stats.total_numel:,} values changed "
-            f"(sparsity={stats.sparsity:.4%}, patch={stats.patch_bytes / 1024**2:.2f} MiB)"
+            f"(sparsity={stats.sparsity:.4%}, patch={stats.patch_bytes / 1024**2:.2f} MiB, "
+            f"diff={stats.diff_s:.2f}s, save={stats.save_s:.2f}s)"
         )
         return stats
 

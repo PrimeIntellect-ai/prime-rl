@@ -43,6 +43,7 @@ dependencies = [
     "orjson>=3.10",
     "pandas>=2.0",
     "msgspec>=0.18",
+    "pyzstd>=0.16",
 ]
 
 [project.scripts]

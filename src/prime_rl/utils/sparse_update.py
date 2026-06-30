@@ -1,10 +1,11 @@
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
 import torch
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load, load_file, save, save_file
 from torch import Tensor
 
 if TYPE_CHECKING:
@@ -15,6 +16,9 @@ SPARSE_UPDATE_VERSION = 1
 SPARSE_UPDATE_MANIFEST_NAME = "sparse_update_manifest.json"
 SPARSE_UPDATE_PATCH_NAME = "sparse_update_patch.safetensors"
 
+# zstd frame magic number (RFC 8478)
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
 
 @dataclass(frozen=True)
 class SparseUpdateStats:
@@ -23,6 +27,8 @@ class SparseUpdateStats:
     total_numel: int
     changed_numel: int
     patch_bytes: int
+    diff_s: float = 0.0
+    save_s: float = 0.0
 
     @property
     def sparsity(self) -> float:
@@ -35,11 +41,13 @@ def is_sparse_update_dir(path: Path) -> bool:
     return (path / SPARSE_UPDATE_MANIFEST_NAME).exists()
 
 
-def to_compute_tensor(tensor: Tensor, compute_dtype: torch.dtype = torch.bfloat16) -> Tensor:
+def to_compute_tensor(
+    tensor: Tensor, compute_dtype: torch.dtype = torch.bfloat16, *, device: str | torch.device = "cpu"
+) -> Tensor:
     tensor = tensor.detach()
     if tensor.is_floating_point():
         tensor = tensor.to(dtype=compute_dtype)
-    return tensor.to(device="cpu", copy=True).contiguous()
+    return tensor.to(device=device, copy=True).contiguous()
 
 
 def _dtype_name(dtype: torch.dtype) -> str:
@@ -53,14 +61,59 @@ def _dtype_from_name(name: str) -> torch.dtype:
     return dtype
 
 
+def _idx_dtype(numel: int) -> torch.dtype:
+    """Pick the narrowest integer dtype that can address ``numel`` elements."""
+    return torch.int32 if numel < 2**31 else torch.int64
+
+
+def _checksum(indices: Tensor, values: Tensor) -> int:
+    """Compute a XOR hash over indices and values for bit-corruption detection."""
+    return torch.hash_tensor(indices.contiguous()).item() ^ torch.hash_tensor(values.contiguous()).item()
+
+
+def _save_patch(patch_tensors: dict[str, Tensor], patch_path: Path, *, compress: bool) -> None:
+    """Write sparse patch tensors to disk, optionally zstd-compressed."""
+    if not patch_tensors:
+        return
+    if compress:
+        import pyzstd
+
+        blob = save(patch_tensors, metadata={"format": "pt"})
+        blob = pyzstd.compress(blob)
+        tmp_path = patch_path.with_suffix(".tmp")
+        with open(tmp_path, "wb") as f:
+            f.write(blob)
+        tmp_path.replace(patch_path)
+    else:
+        save_file(patch_tensors, patch_path, metadata={"format": "pt"})
+
+
+def _load_patch_tensors(patch_path: Path, *, device: str | torch.device = "cpu") -> dict[str, Tensor]:
+    """Load sparse patch tensors, transparently decompressing zstd if detected."""
+    with open(patch_path, "rb") as f:
+        magic = f.read(4)
+    if magic == ZSTD_MAGIC:
+        import pyzstd
+
+        with open(patch_path, "rb") as f:
+            blob = pyzstd.decompress(f.read())
+        tensors = load(blob)
+        if str(device) != "cpu":
+            tensors = {k: v.to(device) for k, v in tensors.items()}
+        return tensors
+    return load_file(patch_path, device=str(device))
+
+
 def save_sparse_update(
-    previous_state: Mapping[str, Tensor],
+    previous_state: dict[str, Tensor],
     current_state: Mapping[str, Tensor],
     save_dir: Path,
     *,
     step: int,
     base_step: int,
     compute_dtype: torch.dtype | None = torch.bfloat16,
+    device: str | torch.device = "cpu",
+    compress: bool = False,
 ) -> SparseUpdateStats:
     """Save changed values between two dense state dicts.
 
@@ -68,33 +121,63 @@ def save_sparse_update(
     (e.g. BF16 to skip changes invisible after quantization). When ``None``, the
     native dtype of each tensor is preserved — used for kernel-format patches
     where quantization has already been applied.
+
+    When ``device`` is not ``"cpu"``, each current tensor is moved to the GPU,
+    the diff and nonzero are performed there, and only the sparse indices and
+    values are brought back to CPU. The ``previous_state`` baseline stays on CPU
+    and is refreshed in-place after each tensor is processed.
     """
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    use_gpu = str(device) != "cpu"
     patch_tensors: dict[str, Tensor] = {}
     tensor_entries: list[dict] = []
     total_numel = 0
     changed_numel = 0
 
+    diff_start = time.perf_counter()
+
     for tensor_idx, (name, current) in enumerate(current_state.items()):
-        if compute_dtype is not None:
+        if use_gpu:
+            current_compute = current.detach().to(device=device)
+            if compute_dtype is not None and current_compute.is_floating_point():
+                current_compute = current_compute.to(dtype=compute_dtype)
+            current_compute = current_compute.contiguous()
+        elif compute_dtype is not None:
             current_compute = to_compute_tensor(current, compute_dtype)
         else:
             current_compute = current.detach().to(device="cpu", copy=True).contiguous()
+
         previous = previous_state.get(name)
-        total_numel += current_compute.numel()
+        numel = current_compute.numel()
+        total_numel += numel
+        idx_dtype = _idx_dtype(numel)
 
         if previous is None or tuple(previous.shape) != tuple(current_compute.shape):
-            indices = torch.arange(current_compute.numel(), dtype=torch.int64)
+            indices = torch.arange(numel, dtype=idx_dtype, device=current_compute.device)
+        elif use_gpu:
+            prev_gpu = previous.to(device=device, dtype=current_compute.dtype, non_blocking=True).contiguous()
+            changed = current_compute.reshape(-1).ne(prev_gpu.reshape(-1))
+            indices = changed.nonzero(as_tuple=False).reshape(-1).to(idx_dtype)
         else:
             previous_compute = previous.to(dtype=current_compute.dtype, device="cpu").contiguous()
             changed = current_compute.reshape(-1).ne(previous_compute.reshape(-1))
-            indices = torch.nonzero(changed, as_tuple=False).reshape(-1).to(torch.int64)
+            indices = torch.nonzero(changed, as_tuple=False).reshape(-1).to(idx_dtype)
 
         if indices.numel() == 0:
+            if use_gpu and previous is not None and tuple(previous.shape) == tuple(current_compute.shape):
+                previous.copy_(current_compute.cpu())
+            elif use_gpu:
+                previous_state[name] = current_compute.cpu()
             continue
 
-        values = current_compute.reshape(-1).index_select(0, indices).contiguous()
+        if use_gpu:
+            values = current_compute.reshape(-1).index_select(0, indices.to(torch.long)).contiguous()
+            indices = indices.cpu()
+            values = values.cpu()
+        else:
+            values = current_compute.reshape(-1).index_select(0, indices).contiguous()
+
         indices_key = f"tensor_{tensor_idx}.indices"
         values_key = f"tensor_{tensor_idx}.values"
         patch_tensors[indices_key] = indices
@@ -107,13 +190,25 @@ def save_sparse_update(
                 "dtype": _dtype_name(current_compute.dtype),
                 "indices": indices_key,
                 "values": values_key,
-                "numel": current_compute.numel(),
+                "numel": numel,
                 "changed_numel": indices.numel(),
+                "checksum": _checksum(indices, values),
             }
         )
 
-    if patch_tensors:
-        save_file(patch_tensors, save_dir / SPARSE_UPDATE_PATCH_NAME, metadata={"format": "pt"})
+        # Refresh the baseline so the next call diffs against this version.
+        if use_gpu:
+            current_cpu = current_compute.cpu()
+            if previous is not None and tuple(previous.shape) == tuple(current_cpu.shape):
+                previous.copy_(current_cpu)
+            else:
+                previous_state[name] = current_cpu
+
+    diff_s = time.perf_counter() - diff_start
+
+    save_start = time.perf_counter()
+    _save_patch(patch_tensors, save_dir / SPARSE_UPDATE_PATCH_NAME, compress=compress)
+    save_s = time.perf_counter() - save_start
 
     patch_file = save_dir / SPARSE_UPDATE_PATCH_NAME
     patch_bytes = patch_file.stat().st_size if patch_file.exists() else 0
@@ -123,6 +218,8 @@ def save_sparse_update(
         total_numel=total_numel,
         changed_numel=changed_numel,
         patch_bytes=patch_bytes,
+        diff_s=diff_s,
+        save_s=save_s,
     )
     manifest = {
         "format": SPARSE_UPDATE_FORMAT,
@@ -130,6 +227,7 @@ def save_sparse_update(
         "step": step,
         "base_step": base_step,
         "compute_dtype": _dtype_name(compute_dtype) if compute_dtype is not None else None,
+        "compressed": compress if patch_tensors else False,
         "patch_file": SPARSE_UPDATE_PATCH_NAME if patch_tensors else None,
         "tensors": tensor_entries,
         "stats": {
@@ -158,6 +256,16 @@ def load_sparse_update_manifest(patch_dir: Path) -> dict:
     return manifest
 
 
+def _verify_checksum(entry: dict, indices: Tensor, values: Tensor) -> None:
+    """Verify the per-tensor checksum if the manifest entry carries one."""
+    expected = entry.get("checksum")
+    if expected is None:
+        return
+    actual = _checksum(indices, values)
+    if actual != expected:
+        raise ValueError(f"Sparse update checksum mismatch for {entry['name']}: expected {expected}, got {actual}")
+
+
 def apply_sparse_update(
     state_dict: dict[str, Tensor], patch_dir: Path, *, expected_base_step: int | None = None
 ) -> dict:
@@ -167,7 +275,7 @@ def apply_sparse_update(
         raise ValueError(f"Sparse update base step mismatch: cache={expected_base_step} patch={manifest['base_step']}")
 
     patch_file = manifest.get("patch_file")
-    patch_tensors = load_file(patch_dir / patch_file, device="cpu") if patch_file else {}
+    patch_tensors = _load_patch_tensors(patch_dir / patch_file, device="cpu") if patch_file else {}
 
     for entry in manifest["tensors"]:
         name = entry["name"]
@@ -187,6 +295,8 @@ def apply_sparse_update(
 
         indices = patch_tensors[entry["indices"]].to(dtype=torch.long)
         values = patch_tensors[entry["values"]].to(dtype=dtype)
+        _verify_checksum(entry, indices, values)
+
         tensor.reshape(-1).index_copy_(0, indices, values)
         state_dict[name] = tensor.contiguous()
 
@@ -214,7 +324,7 @@ def apply_sparse_update_to_params(
         raise ValueError(f"Sparse update base step mismatch: cache={expected_base_step} patch={manifest['base_step']}")
 
     patch_file = manifest.get("patch_file")
-    patch_tensors = load_file(patch_dir / patch_file, device=str(device)) if patch_file else {}
+    patch_tensors = _load_patch_tensors(patch_dir / patch_file, device=str(device)) if patch_file else {}
 
     params = dict(model.named_parameters())
     for entry in manifest["tensors"]:
@@ -235,6 +345,8 @@ def apply_sparse_update_to_params(
 
         indices = patch_tensors[entry["indices"]].to(dtype=torch.long, device=device)
         values = patch_tensors[entry["values"]].to(dtype=dtype, device=device)
+
+        _verify_checksum(entry, indices, values)
 
         param.data.reshape(-1).index_copy_(0, indices, values)
 
