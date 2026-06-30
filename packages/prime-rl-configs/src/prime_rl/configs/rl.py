@@ -130,10 +130,10 @@ class SharedWeightBroadcastConfig(BaseConfig):
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
-    gpu_diff: bool = False
+    gpu_diff: bool = True
     """Run the sparse-update nonzero diff on GPU instead of CPU (sparse_filesystem only)."""
 
-    compress: bool = False
+    compress: bool = True
     """zstd-compress sparse filesystem patch files (sparse_filesystem only)."""
 
 

@@ -486,12 +486,12 @@ class SparseFileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     When enabled, the receiver applies patches directly to GPU parameters via index_copy_ without a CPU cache.
     Requires the model to implement ``convert_layer_to_vllm_kernel``."""
 
-    gpu_diff: bool = False
+    gpu_diff: bool = True
     """Run the nonzero diff on GPU instead of CPU. Moves the bottleneck from a serial
     CPU scan to a massively parallel GPU kernel (~10x faster on large models). The
     baseline stays on CPU; only sparse indices and values cross the PCIe bus."""
 
-    compress: bool = False
+    compress: bool = True
     """zstd-compress the safetensors patch blob before writing to the shared filesystem.
     Reduces disk I/O at the cost of CPU compression time. Only beneficial when the
     sender is FS-bandwidth-bound (check ``sparse_update/save_s`` vs ``sparse_update/diff_s``)."""
