@@ -20,6 +20,7 @@ def mk(
     metrics: dict | None = None,
     env_name: str = "env",
     group_id: str = "g0",
+    is_trainable: bool = True,
     is_filtered: bool = False,
     filter_results: dict | None = None,
     is_completed: bool = True,
@@ -46,6 +47,7 @@ def mk(
         metrics=metrics or {},
         env_name=env_name,
         group_id=group_id,
+        is_trainable=is_trainable,
         is_filtered=is_filtered,
         filter_results=filter_results or {},
         timing=SimpleNamespace(
@@ -167,6 +169,14 @@ def test_timing_total_sums_all_phases():
     assert out["train/agg/all/timing/setup/mean"] == 1.0
     assert out["train/agg/all/timing/finalize/mean"] == 0.5
     assert out["train/agg/all/timing/total/mean"] == 4.0
+
+
+def test_is_trainable_is_train_only_rate():
+    rollouts = [mk(is_trainable=True), mk(is_trainable=False), mk(is_trainable=True), mk(is_trainable=True)]
+    train_out = TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset="all")
+    assert train_out["train/agg/all/is_trainable/mean"] == 0.75
+    eval_out = EvalRollouts(rollouts, group_size=4).metrics.to_wandb(prefix="eval/x", subset="all")
+    assert not any("is_trainable" in k for k in eval_out)
 
 
 def test_filters_are_train_only():

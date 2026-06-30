@@ -493,23 +493,25 @@ class Orchestrator:
             )
             return
 
-        if batch.n_trainable == 0:
+        if not batch.samples:
             self.consecutive_empty_batches += 1
             get_logger().warning(
-                f"Step {step}: no trainable rollouts (0 of {len(batch.rollouts)} generated survived errors + filters) "
+                f"Step {step}: empty train batch (0 of {len(batch.rollouts)} generated rollouts shipped — "
+                f"all errored or filtered out) "
                 f"(consecutive empty batches: {self.consecutive_empty_batches}/{MAX_CONSECUTIVE_EMPTY_BATCHES})"
             )
             if self.consecutive_empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
                 raise RuntimeError(
-                    f"{self.consecutive_empty_batches} consecutive zero-trainable batches — "
+                    f"{self.consecutive_empty_batches} consecutive empty train batches — "
                     "check filter config (pre_batch_filters / post_batch_filters) or task difficulty."
                 )
             return
         self.consecutive_empty_batches = 0
-        if batch.n_trainable / len(batch.rollouts) <= 0.1:
+        n_trainable = sum(1 for r in batch.rollouts if r.is_trainable)
+        if n_trainable / len(batch.rollouts) <= 0.1:
             get_logger().warning(
-                f"Only {batch.n_trainable}/{len(batch.rollouts)} generated rollouts are trainable "
-                f"({batch.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
+                f"Only {n_trainable}/{len(batch.rollouts)} generated rollouts are trainable "
+                f"({n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
         # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables); to_record
@@ -535,12 +537,16 @@ class Orchestrator:
         # Progress / timing / env-share / pre-filter accounting (assembled here, not in the metrics
         # objects); over the full arrival window.
         num_tokens = sum(r.num_total_tokens for r in batch.rollouts)
+        num_decode = sum(sum(s.mask) for s in batch.samples)
+        num_prefill = sum(len(s.token_ids) for s in batch.samples) - num_decode
+        num_rollouts = len(batch.rollouts)
+        num_unique_examples = len({r.group_id for r in batch.rollouts})
         metrics |= {
             "progress/tokens": num_tokens,
-            "progress/prefill_tokens": batch.num_prefill_tokens,
-            "progress/decode_tokens": batch.num_decode_tokens,
-            "progress/rollouts": len(batch.rollouts),
-            "progress/tasks": len({r.group_id for r in batch.rollouts}),
+            "progress/prefill_tokens": num_prefill,
+            "progress/decode_tokens": num_decode,
+            "progress/rollouts": num_rollouts,
+            "progress/tasks": num_unique_examples,
             "progress/total_tokens": self.progress.total_tokens,
             "progress/total_rollouts": self.progress.total_samples,
             "progress/total_tasks": self.progress.total_problems,
@@ -575,14 +581,11 @@ class Orchestrator:
                 self.usage_reporter.report_training_usage(
                     run_id=run_id,
                     step=step,
-                    tokens=batch.num_prefill_tokens + batch.num_decode_tokens,
+                    tokens=num_prefill + num_decode,
                 )
         if self.heart is not None:
             self.heart.beat()
 
-        num_rollouts = len(batch.rollouts)
-        num_unique_examples = len({r.group_id for r in batch.rollouts})
-        num_tokens = sum(r.num_total_tokens for r in batch.rollouts)
         self.progress.total_tokens += num_tokens
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples
@@ -694,7 +697,7 @@ class Orchestrator:
         effective = batch.rollouts.effective
         n_generated = len(batch.rollouts)
         n_effective = max(len(effective), 1)
-        n_trainable = batch.n_trainable
+        n_trainable = sum(1 for r in batch.rollouts if r.is_trainable)
         error_rate = (n_errors_total / n_arrivals_total) if n_arrivals_total else 0.0
         trainable_rate = (n_trainable / n_generated) if n_generated else 0.0
         reward_mean = sum(r.reward for r in effective) / n_effective

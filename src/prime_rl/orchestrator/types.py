@@ -125,20 +125,23 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
         nonzero = [a for a in self.advantages if a != 0.0]
         return sum(nonzero) / len(nonzero) if nonzero else 0.0
 
+    @property
+    def is_trainable(self) -> bool:
+        """Whether the rollout carries a training signal — a nonzero advantage on some token. A
+        uniform-reward GRPO group (all-zero advantages) or an unscored rollout has no gradient."""
+        return bool(self.advantages) and any(a != 0.0 for a in self.advantages)
+
 
 @dataclass
 class TrainBatch:
     """``rollouts`` is the full arrival window since the last ship (errored + filtered included; its
     ``.effective`` / ``.metrics`` views drive logging). ``samples`` is the trainer-bound payload (the
-    shipped cohort's post-filter survivors). The scalars aren't derivable from the batch: ``n_trainable``
-    (shipped non-filtered count, feeds the empty-batch guard) and the cohort prefill/decode token totals
-    (include filtered rollouts, so not a sum over ``samples``; feed ``progress/*`` + the usage reporter)."""
+    shipped cohort's post-filter survivors) — an empty list means nothing ships, which would stall the
+    trainer. Trainable counts derive from ``rollouts`` (``r.is_trainable``) and token totals from
+    ``samples``, so neither is carried as a field."""
 
     rollouts: TrainRollouts
     samples: list[TrainingSample]
-    n_trainable: int
-    num_prefill_tokens: int
-    num_decode_tokens: int
 
 
 @dataclass

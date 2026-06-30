@@ -189,6 +189,10 @@ class TrainMetrics(RolloutMetrics):
         return Stat([float(r.reward) for r in self.rollouts])
 
     @property
+    def is_trainable(self) -> Stat:
+        return Stat([float(r.is_trainable) for r in self.rollouts])
+
+    @property
     def is_filtered(self) -> Stat:
         return Stat([float(r.is_filtered) for r in self.rollouts])
 
@@ -205,6 +209,7 @@ class TrainMetrics(RolloutMetrics):
             return out
         p = f"{prefix}/{subset}"
         out |= self.reward.to_dict(f"{p}/reward")
+        out[f"{p}/is_trainable/mean"] = self.is_trainable.mean()
         out[f"{p}/is_filtered/mean"] = self.is_filtered.mean()
         out |= {f"{p}/filters/{k}/mean": v for k, v in self.filter_rates().items()}
         return out

@@ -72,11 +72,11 @@ class TrainSink:
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name: dict[str, int] = {}
 
-        # Full arrival window since the last ship — every rollout that came back, errored and
-        # filtered included. Becomes ``TrainBatch.rollouts`` (the ``all`` set; its non-errored,
-        # non-filtered subset is ``effective``). Per-env arrival/error counts derive from it, so
-        # they aren't tracked separately. Reset in ``process_batch``.
-        self.arrivals_window: TrainRollouts = TrainRollouts()
+        # Every rollout that came back since the last ship — errored and filtered included. Becomes
+        # ``TrainBatch.rollouts`` (the ``all`` set; its non-errored, non-filtered subset is
+        # ``effective``). Per-env arrival/error counts derive from it, so they aren't tracked
+        # separately. Reset in ``process_batch``.
+        self.pending_rollouts: TrainRollouts = TrainRollouts()
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -125,7 +125,7 @@ class TrainSink:
         arrival; return a ``TrainBatch`` if the batch threshold is met."""
         await self.process_rollout(rollout)
         env_name = rollout.env_name
-        self.arrivals_window.append(rollout)
+        self.pending_rollouts.append(rollout)
         self.pending_groups[rollout.group_id].append(rollout)
         if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
             await self.process_group(rollout.group_id)
@@ -254,33 +254,16 @@ class TrainSink:
         if self.post_filters:
             apply_filters(self.post_filters, cohort)
 
-        # Samples are pre-built by ``process_rollout``; ``process_group``
-        # already stamped the advantage stream and loss routing on each sample
-        samples: list[TrainingSample] = []
-        num_prefill = 0
-        num_decode = 0
-        for r in cohort:
-            for sample in r.samples:
-                sample_decode = sum(sample.mask)
-                num_decode += sample_decode
-                num_prefill += len(sample.token_ids) - sample_decode
-                if not r.is_filtered:
-                    samples.append(sample)
-
-        n_trainable = sum(1 for r in cohort if not r.is_filtered)
+        # Samples are pre-built by ``process_rollout``; ``process_group`` already stamped the
+        # advantage stream and loss routing on each sample. Filtered rollouts don't ship.
+        samples: list[TrainingSample] = [sample for r in cohort if not r.is_filtered for sample in r.samples]
 
         # ``rollouts`` is the whole arrival window (errored + filtered + survivors); ``samples`` is
         # the shipped cohort's trainable payload. ``rollouts.effective`` / ``rollouts.metrics`` derive
         # the clean subset + metric views on demand. Hand off the window and reset.
-        rollouts = self.arrivals_window
-        self.arrivals_window = TrainRollouts()
-        return TrainBatch(
-            rollouts=rollouts,
-            samples=samples,
-            n_trainable=n_trainable,
-            num_prefill_tokens=num_prefill,
-            num_decode_tokens=num_decode,
-        )
+        rollouts = self.pending_rollouts
+        self.pending_rollouts = TrainRollouts()
+        return TrainBatch(rollouts=rollouts, samples=samples)
 
     def reset_pre_filter_stats(self) -> None:
         self.pre_filter_seen = 0
