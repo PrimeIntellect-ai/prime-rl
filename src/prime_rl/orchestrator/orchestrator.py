@@ -535,10 +535,11 @@ class Orchestrator:
                 metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
 
         # Progress / timing / env-share / pre-filter accounting (assembled here, not in the metrics
-        # objects); over the full arrival window.
+        # objects). Totals are over the full arrival window; the prefill/decode breakdown is over the
+        # effective (shipped) subset — its branches are exactly what ``samples`` concatenates.
         num_tokens = sum(r.num_total_tokens for r in batch.rollouts)
-        num_decode = sum(sum(s.mask) for s in batch.samples)
-        num_prefill = sum(len(s.token_ids) for s in batch.samples) - num_decode
+        num_prefill = sum(r.num_input_tokens for r in effective)
+        num_decode = sum(r.num_output_tokens for r in effective)
         num_rollouts = len(batch.rollouts)
         num_unique_examples = len({r.group_id for r in batch.rollouts})
         metrics |= {
