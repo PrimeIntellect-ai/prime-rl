@@ -1,8 +1,8 @@
 import math
 from types import SimpleNamespace
 
-from prime_rl.orchestrator.eval_utils import compute_pass_metrics
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
+from prime_rl.orchestrator.utils import compute_pass_metrics
 
 
 def mk(

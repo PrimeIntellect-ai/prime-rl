@@ -60,6 +60,7 @@ class TrainSink:
         # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
         # isn't unique — the same task can be re-sampled while an
         # earlier group is still in flight
+        self.pending_rollouts: TrainRollouts = TrainRollouts()
         self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
         self.pending_batch: list[Rollout] = []
         # Running token total of ``pending_batch`` (token-batched runs), kept in
@@ -71,12 +72,6 @@ class TrainSink:
         self.pre_filter_seen = 0
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name: dict[str, int] = {}
-
-        # Every rollout that came back since the last ship — errored and filtered included. Becomes
-        # ``TrainBatch.rollouts`` (the ``all`` set; its non-errored, non-filtered subset is
-        # ``effective``). Per-env arrival/error counts derive from it, so they aren't tracked
-        # separately. Reset in ``process_batch``.
-        self.pending_rollouts: TrainRollouts = TrainRollouts()
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Iterator, Literal
 
-from prime_rl.orchestrator.eval_utils import compute_pass_metrics
+from prime_rl.orchestrator.utils import compute_pass_metrics
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
