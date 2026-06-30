@@ -683,59 +683,41 @@ class Orchestrator:
         return body, payload
 
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
-        """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per
-        env. ``Error`` is the sink-level rate (errored arrivals / total arrivals); the quality
-        metrics are over ``batch.rollouts.effective`` (the clean, trained-on subset), while ``Trainable``
-        is relative to all generated rollouts."""
-        # Arrival/error counts derive from the full window (``batch.rollouts``).
-        arrivals_by_env: dict[str, int] = {}
-        errors_by_env: dict[str, int] = {}
-        for r in batch.rollouts:
-            arrivals_by_env[r.env_name] = arrivals_by_env.get(r.env_name, 0) + 1
-            if r.has_error:
-                errors_by_env[r.env_name] = errors_by_env.get(r.env_name, 0) + 1
-        n_arrivals_total = len(batch.rollouts)
-        n_errors_total = sum(errors_by_env.values())
-        effective = batch.rollouts.effective
-        n_generated = len(batch.rollouts)
-        n_effective = max(len(effective), 1)
-        n_trainable = sum(1 for r in batch.rollouts if r.is_trainable)
-        error_rate = (n_errors_total / n_arrivals_total) if n_arrivals_total else 0.0
+        """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
+        ``Error`` is the sink-level rate (errored arrivals / total arrivals, over the full window);
+        the quality metrics are over the effective (clean, trained-on) subset; ``Trainable`` is
+        relative to all generated rollouts."""
+        rollouts = batch.rollouts
+        eff = rollouts.effective.metrics
+        n_generated = len(rollouts)
+        n_trainable = sum(1 for r in rollouts if r.is_trainable)
         trainable_rate = (n_trainable / n_generated) if n_generated else 0.0
-        reward_mean = sum(r.reward for r in effective) / n_effective
-        max_off_policy = max((r.off_policy_steps for r in effective), default=0)
-        turns_mean = sum(r.num_turns for r in effective) / n_effective
-        branches_mean = sum(r.num_branches for r in effective) / n_effective
-        truncation_rate = sum(1 for r in effective if r.is_truncated) / n_effective
+        max_off_policy = max((r.off_policy_steps for r in rollouts.effective), default=0)
 
         head = (
-            f"Step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
+            f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
             f"Trainable {n_trainable}/{n_generated} ({trainable_rate:.1%}) | "
-            f"Turns {turns_mean:.1f} | Branches {branches_mean:.1f} | Max Off-Policy {max_off_policy} | "
-            f"Error {error_rate:.1%} | Truncation {truncation_rate:.1%}"
+            f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
+            f"Max Off-Policy {max_off_policy} | "
+            f"Error {rollouts.metrics.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
             get_logger().success(head)
             return
 
-        env_names = sorted(set(arrivals_by_env) | {r.env_name for r in effective})
-        name_width = max(len(n) for n in env_names) if env_names else 0
+        by_env = rollouts.by_env()
+        name_width = max((len(n) for n in by_env), default=0)
         lines = [head]
-        for env_name in env_names:
-            env_rollouts = [r for r in effective if r.env_name == env_name]
-            n_env_arrivals = arrivals_by_env.get(env_name, 0)
-            n_env_errors = errors_by_env.get(env_name, 0)
-            ratio = (n_env_arrivals / n_arrivals_total) if n_arrivals_total else 0.0
-            env_error_rate = (n_env_errors / n_env_arrivals) if n_env_arrivals else 0.0
-            env_reward = (sum(r.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
-            env_max_off_policy = max((r.off_policy_steps for r in env_rollouts), default=0)
-            env_turns = sum(r.num_turns for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
-            env_branches = sum(r.num_branches for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
-            env_truncation = sum(1 for r in env_rollouts if r.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
+        for env_name in sorted(by_env):
+            pool = by_env[env_name]
+            env_eff_pool = pool.effective
+            env_eff = env_eff_pool.metrics
+            ratio = (len(pool) / n_generated) if n_generated else 0.0
             lines.append(
-                f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "
-                f"Turns {env_turns:.1f} | Branches {env_branches:.1f} | Max Off-Policy {env_max_off_policy} | "
-                f"Error {env_error_rate:.1%} | Truncation {env_truncation:.1%}"
+                f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
+                f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
+                f"Max Off-Policy {max((r.off_policy_steps for r in env_eff_pool), default=0)} | "
+                f"Error {pool.metrics.has_error.mean():.1%} | Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
 
