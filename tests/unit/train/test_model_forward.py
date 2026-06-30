@@ -59,6 +59,8 @@ class _CaptureModel(nn.Module):
 
 
 class _CaptureSeqLensModel(_CaptureModel):
+    _prime_rl_supports_packed_boundaries = True
+
     def forward(self, seq_lens=None, seq_lens_are_global=False, **kwargs):
         if seq_lens is not None:
             kwargs["seq_lens"] = seq_lens

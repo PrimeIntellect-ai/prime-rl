@@ -1201,12 +1201,14 @@ def setup_model(
     return model
 
 
-def _model_accepts_seq_lens(model: nn.Module) -> bool:
-    accepts_seq_lens = getattr(model, "_prime_rl_accepts_seq_lens", None)
-    if accepts_seq_lens is None:
-        accepts_seq_lens = "seq_lens" in inspect.signature(model.forward).parameters
-        setattr(model, "_prime_rl_accepts_seq_lens", accepts_seq_lens)
-    return accepts_seq_lens
+def _supports_packed_boundaries(model: nn.Module) -> bool:
+    supports_packed_boundaries = getattr(model, "_prime_rl_supports_packed_boundaries", None)
+    if supports_packed_boundaries is None:
+        supports_packed_boundaries = isinstance(model, PreTrainedModelPrimeRL) and (
+            "seq_lens" in inspect.signature(model.forward).parameters
+        )
+        setattr(model, "_prime_rl_supports_packed_boundaries", supports_packed_boundaries)
+    return supports_packed_boundaries
 
 
 def forward(
@@ -1231,7 +1233,7 @@ def forward(
     cp_world_size: int | None = None,
     cp_style: str | None = None,
 ) -> PrimeLmOutput:
-    forwards_seq_lens = seq_lens is not None and _model_accepts_seq_lens(model)
+    forwards_seq_lens = seq_lens is not None and _supports_packed_boundaries(model)
 
     # Build kwargs for model forward
     kwargs = {
