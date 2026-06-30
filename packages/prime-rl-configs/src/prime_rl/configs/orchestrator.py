@@ -520,6 +520,9 @@ class OrchestratorConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to receive updated weights from the trainer."""
 
+    wait_for_trainer: bool = True
+    """Gate rollout dispatch on trainer weight updates. When True, the dispatcher pauses once the orchestrator runs more than ``TARGET_LAG`` batches ahead of the trainer's policy version and resumes on the next weight broadcast. Set to False to run the orchestrator standalone without a trainer (e.g. debug/validation runs), in which case it ships all ``max_steps`` batches and exits."""
+
     rollout_transport: TransportConfig = FileSystemTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 

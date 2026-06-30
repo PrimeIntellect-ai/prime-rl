@@ -789,7 +789,11 @@ class Orchestrator:
         """Pause/resume the dispatcher based on how far the orchestrator's
         next batch would run ahead of ``policy.version``. Called from two
         sites: after shipping a batch (step advances) and from
-        ``on_new_version`` (policy advances)."""
+        ``on_new_version`` (policy advances). No-op (gate stays open) when
+        ``wait_for_trainer=False``, i.e. running standalone without a trainer."""
+        if not self.config.wait_for_trainer:
+            self.dispatcher.dispatch_allowed.set()
+            return
         lead = (self.progress.step + 1) - self.policy.version
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()

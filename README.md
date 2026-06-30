@@ -158,8 +158,10 @@ uv run sft @ configs/debug/sft/train.toml
 4. Check that you can run the RL trainer (*this requires 1 GPU*)
 
 ```bash
-uv run trainer @ configs/debug/rl/train.toml
+uv run torchrun --nproc-per-node 1 -m prime_rl.entrypoints.trainer @ configs/debug/rl/train.toml
 ```
+
+*The `trainer` entrypoint expects to be launched under `torchrun` (normally handled automatically by the `rl` launcher), so it cannot be invoked directly.*
 
 5. Check that you can run the inference server (*this requires 1 GPU*)
 
@@ -178,7 +180,7 @@ uv run orchestrator @ configs/debug/orch.toml
 5.2. Check that you can run evals against the inference server
 
 ```bash
-uv run eval @ configs/debug/eval.toml
+uv run vf-eval reverse-text -m Qwen/Qwen3-0.6B -b http://localhost:8000/v1 -n 4 --max-tokens 64
 ```
 
 </details>
