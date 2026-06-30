@@ -7,7 +7,8 @@
 # offload, skip-gather/optimizer ckpt.
 #
 # CAVEATS (search-specific): every env is bring-your-own-search and scored by a host-side LLM judge.
-#   - The rlm `search` skill calls Serper, so SERPER_API_KEY must be reachable from the prime sandbox.
+#   - The rlm `search` skill calls Serper; SERPER_API_KEY is forwarded into the sandbox via the
+#     harness `forward_env`, so it must be set in the launch environment.
 #   - The judges (deepdive/papersearchqa gpt-5-mini, browsecomp gpt-4.1, wideseek gpt-4.1-mini,
 #     openseeker/redsearcher vf default) run host-side and need an OpenAI/PI key on the orchestrator.
 # Prime runtime is forced for all envs (these are normally subprocess) under one run label.
@@ -102,27 +103,27 @@ type = "linear"
 [[orchestrator.train.env]]
 name = "deepdive"
 taskset = { id = "deepdive-v1" } # default split qa_rl (the RL split; no held-out eval split exists)
-harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 [[orchestrator.train.env]]
 name = "papersearchqa"
 taskset = { id = "papersearchqa-v1", split = "train" }
-harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 [[orchestrator.train.env]]
 name = "wideseek"
 taskset = { id = "wideseek-v1", split = "hybrid" } # F1 reward; "hybrid" is the paper's train set
-harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 [[orchestrator.train.env]]
 name = "openseeker"
 taskset = { id = "openseeker-v1" }
-harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 [[orchestrator.train.env]]
 name = "redsearcher"
 taskset = { id = "redsearcher-v1" } # optional `difficulty` filter (easy/medium/hard)
-harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 # --- Eval: BrowseComp (held-out search benchmark), every 20 steps (incl. step 0) ---
 
@@ -133,7 +134,7 @@ skip_first_step = false
 [[orchestrator.eval.env]]
 name = "browsecomp"
 taskset = { id = "browsecomp-v1" }
-harness = { id = "rlm", skills = ["search"], runtime = { type = "prime", labels = ["glm45air-search"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 timeout = { rollout = 3600 }
 
 # --- Inference ---
