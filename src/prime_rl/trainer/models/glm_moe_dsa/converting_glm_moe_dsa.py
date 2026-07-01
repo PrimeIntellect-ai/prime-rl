@@ -2,10 +2,7 @@ import torch
 from torch import Tensor
 
 from prime_rl.trainer.models.fp8 import quantize_to_fp8_blockwise
-
-
-def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
-    return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
+from prime_rl.trainer.weights import get_max_layer_num
 
 
 def _is_moe_layer(state_dict: dict[str, Tensor], layer_idx: int) -> bool:
