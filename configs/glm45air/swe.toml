@@ -1,7 +1,11 @@
-# v1 RL ablation: GLM-4.5-Air (100B MoE) on the v1 `scaleswe-v1` SWE taskset, default (bash+edit) harness on
-# a prime sandbox runtime; eval on SWE-Bench Verified. Router replay is enabled
-# (trainer.enable_router_replay replays the routed-expert decisions returned by inference via
-# enable_return_routed_experts) — GLM-4.5-Air is a glm4_moe model, which supports routed_experts.
+# v1 RL: GLM-4.5-Air (100B MoE) on the v1 `scaleswe-v1` SWE taskset, rlm harness on a prime sandbox
+# runtime; eval on SWE-Bench Verified. Router replay is enabled (trainer.enable_router_replay replays
+# the routed-expert decisions returned by inference via enable_return_routed_experts) — GLM-4.5-Air is
+# a glm4_moe model, which supports routed_experts.
+#
+# GRPO uses the linear length penalty with the output-token, input-token, and turns coefficients all
+# set to 0.1. Each term is pass_rate-scaled and normalized by the group's own max before the GRPO
+# baseline subtraction.
 #
 # 2 train + 4 infer nodes. Trainer uses cp=8 (ulysses) plus
 # the memory improvements from the GLM-5.1 prod run (research-prod rlm5/prod.toml): LM-head token
@@ -82,6 +86,15 @@ group_size = 16
 max_off_policy_steps = 32
 max_inflight_rollouts = 512
 
+[orchestrator.algo]
+type = "grpo"
+
+# Linear length penalty at coef 0.1 on all three terms (output tokens, input tokens, turns).
+[orchestrator.algo.length_penalty]
+num_output_tokens_weight = 0.1
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
 [orchestrator.renderer]
 name = "glm-4.5"
 thinking_retention = "all"
@@ -89,11 +102,11 @@ thinking_retention = "all"
 [[orchestrator.train.env]]
 name = "scaleswe"
 taskset = { id = "scaleswe-v1" }
-harness = { id = "default", runtime = { type = "prime", labels = ["glm45air-swe"] } }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-swe"] } }
 
 [orchestrator.prime_monitor]
 
-# --- Eval: SWE-Bench Verified at step 0 + every 20 steps, default (bash+edit) harness on prime ---
+# --- Eval: SWE-Bench Verified at step 0 + every 20 steps, rlm harness on prime ---
 
 [orchestrator.eval]
 interval = 20
@@ -102,7 +115,7 @@ skip_first_step = false
 [[orchestrator.eval.env]]
 name = "swebench-verified"
 taskset = { id = "swebench-verified-v1", use_prime_registry = true }
-harness = { id = "default", runtime = { type = "prime", labels = ["glm45air-swe"] } }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-swe"] } }
 timeout = { rollout = 3600 }
 
 # --- Inference ---

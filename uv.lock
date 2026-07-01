@@ -2480,6 +2480,21 @@ requires-dist = [
 ]
 
 [[package]]
+name = "longpdfs-v1"
+version = "0.0.1"
+source = { editable = "deps/research-environments/environments/longpdfs_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets", specifier = ">=3.0" },
+    { name = "verifiers", specifier = ">=0.1.15.dev381" },
+]
+
+[[package]]
 name = "mamba-ssm"
 version = "2.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3993,6 +4008,7 @@ envs = [
     { name = "logic-env" },
     { name = "longcot-mini-v1" },
     { name = "longcot-v1" },
+    { name = "longpdfs-v1" },
     { name = "math-env" },
     { name = "math-env-v1" },
     { name = "math-python" },
@@ -4105,6 +4121,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "longcot-mini-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/longcot_mini_v1" },
     { name = "longcot-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/longcot_v1" },
+    { name = "longpdfs-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/longpdfs_v1" },
     { name = "math-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math_env" },
     { name = "math-env-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math_env_v1" },
     { name = "math-python", marker = "extra == 'envs'", editable = "deps/verifiers/environments/math_python" },
