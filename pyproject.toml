@@ -33,7 +33,7 @@ dependencies = [
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
     "torchtitan",
-    "verifiers>=0.1.15.dev405",
+    "verifiers[harbor]>=0.1.15.dev411",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
