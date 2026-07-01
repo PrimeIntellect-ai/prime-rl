@@ -4673,10 +4673,14 @@ requires-dist = [
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-harmony", specifier = ">=0.0.4" },
+    { name = "pillow", marker = "extra == 'vision'", specifier = ">=12.2.0" },
     { name = "prime-pydantic-config", specifier = ">=0.3.0.dev83" },
     { name = "tiktoken" },
+    { name = "torch", marker = "extra == 'vision'", specifier = ">=2.11.0" },
+    { name = "torchvision", marker = "extra == 'vision'", specifier = ">=0.26.0" },
     { name = "transformers", specifier = ">=4.50.0" },
 ]
+provides-extras = ["vision"]
 
 [package.metadata.requires-dev]
 dev = [
