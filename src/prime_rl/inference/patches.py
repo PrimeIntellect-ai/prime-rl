@@ -591,49 +591,15 @@ def monkey_patch_no_moe_lora():
     Otherwise, the oracle will always try to pick TritonExperts.
     For blackwells, we want TRTLLMFlashInfer.
     """
-    from vllm.model_executor.layers.fused_moe.config import FusedMoEConfig, logger
+    from vllm.model_executor.layers.fused_moe.config import FusedMoEConfig
+
+    original_post_init = FusedMoEConfig.__post_init__
 
     def _patched__post_init__(self: FusedMoEConfig):
-        # Mirror vLLM 0.24's FusedMoEConfig.__post_init__ verbatim, then flip
-        # is_lora_enabled off. 0.24 made intermediate_size the ctor field and
-        # intermediate_size_per_partition a -1 sentinel that __post_init__ MUST
-        # compute -- a verbatim-0.23 copy would leave it -1 and corrupt every
-        # downstream consumer. Keep this in sync with the upstream body.
-        from vllm._aiter_ops import rocm_aiter_ops
-        from vllm.platforms import current_platform
-
-        tp_size = self.moe_parallel_config.tp_size
-        assert self.intermediate_size % tp_size == 0
-        self.intermediate_size_per_partition = self.intermediate_size // tp_size
-
-        if self.dp_size > 1:
-            logger.debug_once("Using FusedMoEConfig::max_num_tokens=%d", self.max_num_tokens)
-
-        assert self.max_num_tokens > 0
-
-        if self.router_logits_dtype is None:
-            self.router_logits_dtype = self.in_dtype
-
-        if self.hidden_dim_unpadded is None:
-            self.hidden_dim_unpadded = self.hidden_dim
-        if self.intermediate_size_per_partition_unpadded is None:
-            self.intermediate_size_per_partition_unpadded = self.intermediate_size_per_partition
-
-        if self.is_act_and_mul:
-            self.rocm_aiter_fmoe_enabled = rocm_aiter_ops.is_fused_moe_enabled()
-            self.aiter_fmoe_shared_expert_enabled = rocm_aiter_ops.is_fusion_moe_shared_experts_enabled()
-
-        if self.use_mori_kernels:
-            assert self.rocm_aiter_fmoe_enabled, "Mori needs to be used with aiter fused_moe for now."
-            assert not self.aiter_fmoe_shared_expert_enabled, (
-                "Mori does not support fusion shared expert now. "
-                "Turn it off by setting VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS=0"
-            )
-
-        if not self.is_act_and_mul and not (current_platform.is_cuda_alike() or current_platform.is_xpu()):
-            raise NotImplementedError("is_act_and_mul=False is supported only for CUDA, XPU and ROCm for now")
-
-        # Disable LoRA for MoE layers
+        original_post_init(self)
+        # Disable LoRA for MoE layers. `is_lora_enabled` is only read later during
+        # kernel selection (modular_kernel / unquantized oracle), never inside
+        # `__post_init__`, so flipping it after the original runs is sufficient.
         self.is_lora_enabled = False
 
     FusedMoEConfig.__post_init__ = _patched__post_init__
