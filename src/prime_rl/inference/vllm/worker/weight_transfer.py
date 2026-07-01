@@ -47,20 +47,22 @@ def _invert_logical_to_physical_map(logical_to_physical_map: torch.Tensor, num_p
     return physical_to_logical
 
 
-def _build_expert_source_indices(module) -> torch.Tensor | None:
-    if module._expert_map is None:
+def _build_expert_source_indices(routed_experts, router) -> torch.Tensor | None:
+    if routed_experts._expert_map is None:
         return None
 
-    physical_indices = torch.where(module._expert_map >= 0)[0]
-    local_indices = module._expert_map[physical_indices]
+    physical_indices = torch.where(routed_experts._expert_map >= 0)[0]
+    local_indices = routed_experts._expert_map[physical_indices]
     physical_indices = physical_indices[local_indices.argsort()]
 
-    eplb_layer_state = getattr(module, "eplb_state", None)
+    eplb_layer_state = getattr(router, "eplb_state", None)
     logical_to_physical_map = getattr(eplb_layer_state, "logical_to_physical_map", None)
     if logical_to_physical_map is None:
         return physical_indices
 
-    physical_to_logical = _invert_logical_to_physical_map(logical_to_physical_map, module.global_num_experts)
+    physical_to_logical = _invert_logical_to_physical_map(
+        logical_to_physical_map, routed_experts.global_num_experts
+    )
     logical_indices = physical_to_logical[physical_indices.to(physical_to_logical.device)]
     if (logical_indices < 0).any():
         missing = physical_indices[(logical_indices < 0).to(physical_indices.device)].tolist()
@@ -70,14 +72,22 @@ def _build_expert_source_indices(module) -> torch.Tensor | None:
 
 
 def build_expert_map(model: Module) -> dict[str, torch.Tensor]:
-    """Map FusedMoE module names to source expert indices local to this worker."""
-    from vllm.model_executor.layers.fused_moe.layer import FusedMoE
+    """Map MoE module names to source expert indices local to this worker.
+
+    vLLM 0.24 turned ``FusedMoE`` into a factory returning a ``MoERunner`` and
+    split the state that used to live on the ``FusedMoE`` module: the expert map
+    (``_expert_map`` / ``global_num_experts``) now lives on
+    ``MoERunner.routed_experts`` (a ``RoutedExperts``), and the EPLB state on
+    ``MoERunner.router``. Keying by the ``MoERunner`` name still prefix-matches
+    the (now nested) ``routed_experts.*`` weight params in ``load_weights_kernel``.
+    """
+    from vllm.model_executor.layers.fused_moe import MoERunner
 
     source_indices_by_module: dict[str, torch.Tensor] = {}
     for module_name, module in model.named_modules():
-        if not isinstance(module, FusedMoE):
+        if not isinstance(module, MoERunner):
             continue
-        source_indices = _build_expert_source_indices(module)
+        source_indices = _build_expert_source_indices(module.routed_experts, module.router)
         if source_indices is None:
             continue
         source_indices_by_module[module_name] = source_indices

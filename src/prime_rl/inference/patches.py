@@ -185,7 +185,7 @@ def monkey_patch_strip_routed_experts_from_chat():
 def _patch_qwen35_moe_lora_format():
     """Force Qwen3.5-MoE onto vLLM's 2D per-expert LoRA format.
 
-    vLLM 0.23.0 defaults ``Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = True``,
+    vLLM 0.24.0 still defaults ``Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = True``,
     which makes the LoRA loader expect 3D stacked-expert adapters
     (``base_layer.lora_{A,B}.weight`` / ``lora_{A,B}.weight``, experts folded into the
     rank dim; see ``_stack_moe_lora_weights``). Our trainer instead emits the 2D
