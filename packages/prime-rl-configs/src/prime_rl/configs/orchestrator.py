@@ -416,7 +416,7 @@ FilterConfig: TypeAlias = Annotated[
 
 
 class FileSystemWeightBroadcastConfig(BaseConfig):
-    type: Literal["filesystem"] = "filesystem"
+    type: Literal["filesystem", "sparse_filesystem"] = "filesystem"
 
 
 class NCCLWeightBroadcastConfig(BaseConfig):

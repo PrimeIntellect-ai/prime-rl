@@ -16,6 +16,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
+from prime_rl.trainer.optim_hooks import setup_sparse_diff_hook
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -187,6 +188,9 @@ def train(config: TrainerConfig):
     else:
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
         weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast, config.model.lora)
+        if config.weight_broadcast.type == "sparse_filesystem":
+            setup_sparse_diff_hook(optimizer, model)
+            weight_broadcast.set_optimizer(optimizer)
 
     if parallel_dims.cp_enabled:
         cp_group = parallel_dims.world_mesh["cp"].get_group()
@@ -281,7 +285,7 @@ def train(config: TrainerConfig):
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
                 # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-                if config.weight_broadcast.type == "filesystem":
+                if config.weight_broadcast.type in ("filesystem", "sparse_filesystem"):
                     interval_to_keep = config.ckpt and config.ckpt.interval
                     weight_broadcast.maybe_clean(interval_to_keep)
             else:
@@ -692,6 +696,10 @@ def train(config: TrainerConfig):
             "step": progress.step,
         }
         monitor.log(time_metrics, step=progress.step)
+
+        broadcast_metrics = getattr(weight_broadcast, "last_metrics", None)
+        if broadcast_metrics:
+            monitor.log({**broadcast_metrics, "step": progress.step}, step=progress.step)
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.output_dir)

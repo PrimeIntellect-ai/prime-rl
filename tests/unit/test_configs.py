@@ -598,3 +598,20 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.model.tool_call_parser == "hermes"
+
+
+def test_sparse_filesystem_weight_broadcast_validates():
+    """sparse_filesystem weight broadcast config validates and propagates types."""
+    from prime_rl.configs.trainer import SparseFileSystemWeightBroadcastConfig
+
+    config = RLConfig.model_validate(
+        {
+            "weight_broadcast": {"type": "sparse_filesystem"},
+            "trainer": {"weight_broadcast": {"type": "sparse_filesystem", "kernel_format": True}},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    assert config.weight_broadcast.type == "sparse_filesystem"
+    assert isinstance(config.trainer.weight_broadcast, SparseFileSystemWeightBroadcastConfig)
+    assert config.trainer.weight_broadcast.kernel_format is True
+    assert config.orchestrator.weight_broadcast.type == "sparse_filesystem"

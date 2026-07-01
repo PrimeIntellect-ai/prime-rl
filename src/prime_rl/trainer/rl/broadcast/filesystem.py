@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 import torch.nn as nn
+from torch import Tensor
 from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, LoRAConfig
@@ -35,6 +36,16 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             f"Filesystem broadcast initialized (save_format={config.save_format}, save_sharded={self.save_sharded})"
         )
 
+    def _collect_model_state_dict(self, model: nn.Module) -> dict[str, Tensor]:
+        state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
+        if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
+            model.convert_to_hf(state_dict)
+        else:
+            from transformers.core_model_loading import revert_weight_conversion
+
+            state_dict = revert_weight_conversion(model, state_dict)
+        return state_dict
+
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
@@ -42,13 +53,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         adapter_only = self.lora_config is not None
 
         if not adapter_only:
-            state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
-            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
-                model.convert_to_hf(state_dict)
-            else:
-                from transformers.core_model_loading import revert_weight_conversion
-
-                state_dict = revert_weight_conversion(model, state_dict)
+            state_dict = self._collect_model_state_dict(model)
 
         for idx in self.multi_run_manager.ready_to_update_idxs:
             self.logger.debug(

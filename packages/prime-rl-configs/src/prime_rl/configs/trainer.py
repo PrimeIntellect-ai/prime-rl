@@ -478,6 +478,20 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Weight checkpoint serialization format."""
 
 
+class SparseFileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    type: Literal["sparse_filesystem"] = "sparse_filesystem"
+
+    kernel_format: bool = False
+    """Write sparse patches in vLLM kernel format (stacked param names) instead of HF format.
+    When enabled, the receiver applies patches directly to GPU parameters via index_copy_ without a CPU cache.
+    Requires the model to implement ``convert_layer_to_vllm_kernel``."""
+
+    compress: bool = True
+    """zstd-compress the safetensors patch blob before writing to the shared filesystem.
+    Reduces disk I/O at the cost of CPU compression time. Only beneficial when the
+    sender is FS-bandwidth-bound (check ``sparse_update/save_s`` vs ``sparse_update/diff_s``)."""
+
+
 class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["nccl"] = "nccl"
 
@@ -499,7 +513,8 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | SparseFileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 

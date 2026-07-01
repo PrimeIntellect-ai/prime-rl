@@ -115,6 +115,42 @@ save_adapter_separately = true
 
 LoRA pairs naturally with [multi-tenant training](#multi-tenant-training) — each tenant gets its own adapter and the backbone is shared across all of them in trainer memory.
 
+## Sparse Filesystem Weight Sync
+
+Filesystem weight broadcast defaults to writing a full HF-compatible checkpoint at each policy update. To send sparse value patches instead, use the `sparse_filesystem` transport type:
+
+```toml
+[trainer.weight_broadcast]
+type = "sparse_filesystem"
+```
+
+Sparse sync captures boolean weight diffs during `optimizer.step()` via pre/post-step hooks. Each broadcast writes `sparse_update_manifest.json` plus sparse changed values under `broadcasts/step_N/`; inference reconstructs the dense BF16 view locally and reloads it through the normal vLLM path.
+
+For models that implement kernel-format conversion (`convert_layer_to_vllm_kernel`), set `kernel_format = true` to write sparse patches in vLLM kernel format with stacked parameter names. The receiver applies patches directly to GPU parameters via `index_copy_` without maintaining a CPU weight cache:
+
+```toml
+[trainer.weight_broadcast]
+type = "sparse_filesystem"
+kernel_format = true
+```
+
+This mode is for full-model filesystem broadcast and is not supported with LoRA adapter broadcast or multi-run training.
+
+### Sparse sync tuning
+
+The sparse filesystem broadcast logs two timing splits per step: `sparse_update/diff_s` (sparsifying the boolean diff captured by the optimizer hook) and `sparse_update/save_s` (serializing + writing the patch to the shared filesystem). These tell you whether the sender is diff-bound or FS-bandwidth-bound:
+
+- **FS-bandwidth-bound** (`save_s` dominates): enable `compress = true` to zstd-compress the safetensors patch blob before writing.
+
+```toml
+[trainer.weight_broadcast]
+type = "sparse_filesystem"
+kernel_format = true
+compress = true       # zstd-compress the patch file
+```
+
+Each patch carries a per-tensor checksum (XOR of `torch.hash_tensor` over indices and values) that the receiver verifies on load, complementing the existing `base_step` ordering guard.
+
 ## Multi-Tenant Training
 
 Multi-tenant training lets a single trainer + inference deployment serve many concurrent LoRA "tenants" — each a fully isolated run with its own orchestrator, LoRA adapter, optimizer, scheduler, checkpoints, and progress tracking — sharing the same backbone weights and the same vLLM server. This is the topology behind hosted training on the [Prime Intellect platform (Lab)](https://app.primeintellect.ai). The trainer-side implementation is the `MultiRunManager` singleton, enabled by setting `trainer.max_concurrent_runs > 1`. For the full API surface, see [`src/prime_rl/trainer/runs.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/src/prime_rl/trainer/runs.py).

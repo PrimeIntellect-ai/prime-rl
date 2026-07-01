@@ -32,6 +32,9 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
+from prime_rl.configs.trainer import (
+    SparseFileSystemWeightBroadcastConfig as TrainerSparseFileSystemWeightBroadcastConfig,
+)
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
@@ -115,7 +118,7 @@ class SharedModelConfig(BaseConfig):
 
 
 class SharedWeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem"] = "filesystem"
+    type: Literal["nccl", "filesystem", "sparse_filesystem"] = "filesystem"
     """Weight broadcast transport."""
 
     port: int = 29501
@@ -126,6 +129,9 @@ class SharedWeightBroadcastConfig(BaseConfig):
 
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
+
+    compress: bool = True
+    """zstd-compress sparse filesystem patch files (sparse_filesystem only)."""
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -328,9 +334,17 @@ class RLConfig(BaseConfig):
                     inference_world_size=inference_world_size,
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
-            elif self.weight_broadcast.type == "filesystem":
-                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
-                self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
+            elif self.weight_broadcast.type in ("filesystem", "sparse_filesystem"):
+                if self.trainer.weight_broadcast.type != self.weight_broadcast.type:
+                    if self.weight_broadcast.type == "sparse_filesystem":
+                        self.trainer.weight_broadcast = TrainerSparseFileSystemWeightBroadcastConfig(
+                            compress=self.weight_broadcast.compress,
+                        )
+                    else:
+                        self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
+                self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
+                    type=self.weight_broadcast.type
+                )
             if self.inference is not None:
                 self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
