@@ -3,13 +3,13 @@ import torch
 from prime_rl.inference.vllm.padded_input_scrub import monkey_patch_vllm_padded_input_scrub
 
 
-def transformers_v5_compat():
+def apply_shared_vllm_patches():
     """vLLM general plugin: prime-rl patches that must run in every vLLM process.
 
     Registered as a ``vllm.general_plugins`` entry-point so it runs automatically
-    in every vLLM process, including spawned workers. (The transformers v5
-    ``tie_word_embeddings`` shim this was named for is obsolete on the pinned
-    transformers release; only the name survives in the entry-point.)
+    in every vLLM process, including spawned workers. Note vLLM swallows plugin
+    load failures (``load_plugins_by_group`` logs and continues), so a broken
+    entry-point target silently skips ALL of these patches.
     """
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()

@@ -54,7 +54,7 @@ orchestrator = "prime_rl.entrypoints.orchestrator:main"
 env-server = "prime_rl.orchestrator.env_server.env_server:main"
 
 [project.entry-points."vllm.general_plugins"]
-prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
+prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
 
 [project.optional-dependencies]
 flash-attn = [
