@@ -1068,7 +1068,7 @@ class Qwen3_5MoeVLMModel(nn.Module):
         cp_style: str | None = None,
         **kwargs,
     ) -> MoeModelOutputWithPast:
-        cp_enabled = cp_group is not None or cp_rank is not None or cp_world_size is not None or cp_style is not None
+        cp_enabled = cp_group is not None
 
         inputs_embeds, position_ids = self.prepare_inputs_embeds_and_position_ids(
             input_ids=input_ids,
