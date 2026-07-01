@@ -106,13 +106,18 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     every generation request; left ``True`` it would force a disk reload on each
     scheduler step. The orchestrator awaits this endpoint before dispatching
     rollouts for the new version, so the reset always lands before generation.
+    The reset runs regardless of success/error: vLLM only stores the adapter on
+    success today, but resetting whatever is stored keeps us correct even if a
+    future version were to leave a ``load_inplace=True`` request behind on error.
     """
     handler = models(raw_request)
     lora_request.load_inplace = True
     response = await handler.load_lora_adapter(lora_request)
+    stored = handler.lora_requests.get(lora_request.lora_name)
+    if stored is not None:
+        stored.load_inplace = False
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
-    handler.lora_requests[lora_request.lora_name].load_inplace = False
     return {"status": "ok"}
 
 
