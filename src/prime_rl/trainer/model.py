@@ -28,6 +28,7 @@ from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.distributed import DeepEPExpertParallel
+from prime_rl.trainer.hf_to_prime import materialize_hf_to_prime
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -791,7 +792,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
 
     # Dynamically convert between different weight formats if needed.
     # All ranks read just the key names (cheap) to determine the path independently.
-    # Only master loads the full state dict when conversion is actually needed.
+    # HF -> PrimeRL conversion streams each layer through the model's existing
+    # layer conversion code and materializes the result once for fast subsequent loads.
     if isinstance(model, PreTrainedModelPrimeRL):
         snapshot_keys = dict.fromkeys(load_state_dict_keys(snapshot_path))
         model_keys = dict.fromkeys(model.state_dict().keys())
@@ -802,13 +804,14 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
             )
             snapshot_path = snapshot_path / "prime"
             if not snapshot_path.exists() and get_world().is_master:
-                logger.debug(
+                logger.info(
                     f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
                 )
-                snapshot_state_dict = load_state_dict(snapshot_path.parent)
-                model.convert_to_prime(snapshot_state_dict)
-                save_state_dict(snapshot_state_dict, snapshot_path)
-                del snapshot_state_dict
+                materialize_hf_to_prime(
+                    path=snapshot_path.parent,
+                    output_path=snapshot_path,
+                    convert_layer_to_prime=model.convert_layer_to_prime,
+                )
 
         elif model.is_prime_state_dict(snapshot_keys) and model.is_hf_state_dict(model_keys):
             logger.warning(
@@ -824,18 +827,20 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
                 save_state_dict(snapshot_state_dict, snapshot_path)
                 del snapshot_state_dict
 
-    # All ranks wait for master rank to finish conversion
+    # All ranks wait for any master-written format conversion.
     torch.distributed.barrier()
 
-    logger.info(f"Loading weights using HF DCP from {snapshot_path}")
+    logger.info(f"Preparing to load weights using HF DCP from {snapshot_path}")
     load_dcp_start_time = time.perf_counter()
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
         del state_dict["lm_head.weight"]
+    storage_reader = HuggingFaceStorageReader(path=snapshot_path.as_posix())
+    logger.info(f"Loading weights using DCP from {snapshot_path}")
     dcp_load(
         state_dict,
-        storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
+        storage_reader=storage_reader,
     )
     # Restore weight tying broken by to_empty() for HF models
     if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
