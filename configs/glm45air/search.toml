@@ -105,27 +105,27 @@ num_turns_weight = 0.1
 
 [[orchestrator.train.env]]
 name = "deepdive"
-taskset = { id = "deepdive-v1" } # default split qa_rl (the RL split; no held-out eval split exists)
+taskset = { id = "deepdive-v1", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507", sampling = { temperature = 0.0 } } } # default split qa_rl (the RL split; no held-out eval split exists)
 harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 [[orchestrator.train.env]]
 name = "papersearchqa"
-taskset = { id = "papersearchqa-v1", split = "train" }
+taskset = { id = "papersearchqa-v1", split = "train", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507", sampling = { temperature = 0.0 } } }
 harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 [[orchestrator.train.env]]
 name = "wideseek"
-taskset = { id = "wideseek-v1", split = "hybrid" } # F1 reward; "hybrid" is the paper's train set
+taskset = { id = "wideseek-v1", split = "hybrid", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507", sampling = { temperature = 0.0 } } } # F1 reward; "hybrid" is the paper's train set
 harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 [[orchestrator.train.env]]
 name = "openseeker"
-taskset = { id = "openseeker-v1" }
+taskset = { id = "openseeker-v1", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507", sampling = { temperature = 0.0 } } }
 harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 [[orchestrator.train.env]]
 name = "redsearcher"
-taskset = { id = "redsearcher-v1" } # optional `difficulty` filter (easy/medium/hard)
+taskset = { id = "redsearcher-v1", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507", sampling = { temperature = 0.0 } } } # optional `difficulty` filter (easy/medium/hard)
 harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 # --- Eval: BrowseComp (held-out search benchmark), every 20 steps (incl. step 0) ---
@@ -135,7 +135,7 @@ interval = 20
 
 [[orchestrator.eval.env]]
 name = "browsecomp"
-taskset = { id = "browsecomp-v1" }
+taskset = { id = "browsecomp-v1", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507", sampling = { temperature = 0.0 } } }
 harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 timeout = { rollout = 3600 }
 

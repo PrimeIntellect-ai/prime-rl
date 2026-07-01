@@ -102,16 +102,11 @@ num_turns_weight = 0.1
 
 [orchestrator.prime_monitor]
 
-# --- Train: terminal training sets (per-task Docker image in a prime sandbox, rlm ipython) ---
+# --- Train: terminal-lego (per-task Docker image in a prime sandbox, rlm ipython) ---
 
 [[orchestrator.train.env]]
-name = "openthoughts-tblite"
-taskset = { id = "openthoughts-tblite-v1" } # terminal-bench-lite training corpus (Harbor; per-task images)
-harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
-
-[[orchestrator.train.env]]
-name = "uuid-ctf"
-taskset = { id = "uuid-ctf-v1" } # synthetic forensic-CTF; `difficulty` defaults to easy
+name = "terminal-lego"
+taskset = { id = "terminal-lego-v1" } # rlm-terminal taskset, harness-agnostic v1 port (Harbor; NEEDS_CONTAINER)
 harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
 
 # --- Eval: terminal-bench-2 (full, avg@1) every 20 steps, incl. step 0 ---
