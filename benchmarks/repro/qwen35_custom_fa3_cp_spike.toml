@@ -1,0 +1,37 @@
+max_steps = 10
+loss_impl = "torch"
+output_dir = "outputs/repro/qwen35_custom_fa3_cp_spike"
+
+[model]
+name = "Qwen/Qwen3.5-0.8B"
+impl = "custom"
+attn = "flash_attention_3"
+seq_len = 8192
+cp = 2
+cp_style = "ulysses"
+
+[model.lora]
+rank = 4
+alpha = 8.0
+
+[renderer]
+name = "auto"
+
+[data]
+type = "sft"
+name = "json"
+data_files = ["benchmarks/repro/intellect3_sft_10k_sample_256.jsonl"]
+pack_function = "cat"
+seq_len = 8192
+batch_size = 4
+micro_batch_size = 1
+
+[data.loss_mask]
+system = false
+user = false
+assistant = true
+tool = false
+
+[deployment]
+type = "single_node"
+num_gpus = 8

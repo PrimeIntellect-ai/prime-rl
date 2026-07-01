@@ -32,6 +32,7 @@ class Sample(TypedDict):
     position_ids: list[int]
     loss_mask: list[bool]
     target_ids: list[int]
+    seq_lens: list[int]
 
 
 class Batch(TypedDict):
@@ -39,6 +40,7 @@ class Batch(TypedDict):
     position_ids: Int[Tensor, "batch seq"]
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
+    seq_lens: Int[Tensor, "packed"] | None
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -108,6 +110,7 @@ class FakeDataset(StatefulIterableDataset):
                 "target_ids": input_ids[1:],
                 "position_ids": position_ids,
                 "loss_mask": loss_mask,
+                "seq_lens": [seq_len],
             }
             self.num_samples["fake"] += 1
             self.num_tokens["fake"] += len(input_ids)
@@ -294,6 +297,7 @@ class SFTDataset(StatefulIterableDataset):
             "target_ids": target_ids,
             "loss_mask": loss_mask,
             "position_ids": list(range(len(input_ids))),
+            "seq_lens": [len(input_ids)],
         }
 
     def __iter__(self):
@@ -370,11 +374,26 @@ class CatDataset(StatefulIterableDataset):
 
             # If batch is full, truncate and yield it
             if seq_len >= self.seq_len:
-                for key, value in packed_samples.items():
-                    assert isinstance(value, list), f"Value for key {key} must be a list"
-                    packed_samples[key] = value[: self.seq_len]
-                yield packed_samples
+                yield self._finalize_pack(packed_samples)
                 packed_samples, seq_len = defaultdict(list), 0
+
+    def _finalize_pack(self, packed_samples: dict) -> dict:
+        result = {}
+        for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
+            value = packed_samples[key]
+            assert isinstance(value, list), f"Value for key {key} must be a list"
+            result[key] = value[: self.seq_len]
+
+        result["seq_lens"] = []
+        remaining = self.seq_len
+        for sample_len in packed_samples["seq_lens"]:
+            if remaining <= 0:
+                break
+            kept = min(sample_len, remaining)
+            if kept > 0:
+                result["seq_lens"].append(kept)
+            remaining -= kept
+        return result
 
 
 class StackDataset(StatefulIterableDataset):
@@ -458,6 +477,7 @@ class StackDataset(StatefulIterableDataset):
                         dummy_sample = {}
                         for key, value in sample.items():
                             dummy_sample[key] = [0]
+                        dummy_sample["seq_lens"] = [1]
                         self.buckets[bucket_idx].append(dummy_sample)
 
                 packed_samples = defaultdict(list)
@@ -477,6 +497,7 @@ class StackDataset(StatefulIterableDataset):
                 self.logger.debug(
                     f"Yield bucket {bucket_idx} because {reason} with {num_samples=}, {num_tokens=}, {num_trainable_tokens=}, {num_pad_tokens=}"
                 )
+                packed_samples["seq_lens"] = None
                 yield packed_samples
                 self.step += 1
                 self.buckets[bucket_idx] = []
@@ -492,6 +513,7 @@ def stack_collate(samples: list[Sample]) -> Batch:
         "position_ids": torch.tensor(samples[0]["position_ids"], dtype=torch.long, device="cuda"),
         "loss_mask": torch.tensor(samples[0]["loss_mask"], dtype=torch.bool, device="cuda"),
         "target_ids": torch.tensor(samples[0]["target_ids"], dtype=torch.long, device="cuda"),
+        "seq_lens": None,
     }
 
 
@@ -503,6 +525,9 @@ def cat_collate(samples: list[Sample]) -> Batch:
         .to("cuda"),
         "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to("cuda"),
         "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to("cuda"),
+        "seq_lens": torch.tensor(samples[0]["seq_lens"], dtype=torch.long, device="cuda")
+        if len(samples) == 1
+        else None,
     }
 
 
@@ -512,12 +537,16 @@ def setup_and_interleave_datasets(
     probabilities: list[float] | None,
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
     seed: int = 0,
+    data_files: str | list[str] | None = None,
 ) -> Dataset:
     logger = get_logger()
     datasets = []
     for subset, split in subsets_and_splits:
-        logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split))
+        logger.debug(f"Loading dataset {dataset_name} with {subset=}, {split=}, {data_files=}")
+        if data_files is not None:
+            dataset = cast(Dataset, load_dataset(dataset_name, data_files=data_files, split=split))
+        else:
+            dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split))
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
@@ -546,6 +575,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(None, "train")],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            data_files=config.data_files,
         )
     elif config.subsets is not None and config.splits is None:
         logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
@@ -554,6 +584,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(subset, "train") for subset in config.subsets],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            data_files=config.data_files,
         )
     elif config.subsets is None and config.splits is not None:
         logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
@@ -562,6 +593,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(None, split) for split in config.splits],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            data_files=config.data_files,
         )
     else:
         assert config.subsets is not None and config.splits is not None
@@ -571,6 +603,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=list(zip(config.subsets, config.splits)),
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            data_files=config.data_files,
         )
 
 

@@ -78,6 +78,9 @@ class SFTDataConfig(BaseDataConfig):
     name: str = "PrimeIntellect/Reverse-Text-SFT"
     """HF dataset name or path."""
 
+    data_files: list[str] | None = None
+    """Optional local dataset files passed to ``load_dataset``."""
+
     subsets: list[str] | None = None
     """Subsets to load from the HF dataset."""
 
