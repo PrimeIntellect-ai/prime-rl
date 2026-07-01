@@ -14,11 +14,13 @@ import asyncio
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.run_assets import apply_run_asset_env
 
 
 def main():
     set_proc_title("Orchestrator")
     config = cli(OrchestratorConfig)
+    apply_run_asset_env(config.output_dir, config.multimodal)
     from prime_rl.orchestrator.orchestrator import run_orchestrator
 
     asyncio.run(run_orchestrator(config))

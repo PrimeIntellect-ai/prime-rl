@@ -17,6 +17,7 @@ from prime_rl.configs.shared import (
     FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
+    MultimodalConfig,
     PrimeMonitorConfig,
     TransportConfig,
     WandbWithExtrasConfig,
@@ -564,6 +565,9 @@ class OrchestratorConfig(BaseConfig):
     """BetterStack heartbeat configuration for monitoring training progress."""
 
     experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
+
+    multimodal: MultimodalConfig = MultimodalConfig()
+    """Raw multimodal image offload settings shared with trainer and inference."""
 
     @model_validator(mode="before")
     @classmethod

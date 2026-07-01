@@ -10,7 +10,13 @@ from prime_rl.utils.config import BaseConfig
 # and the single shared W&B run. The launcher always sets these last, so allowing them in
 # `env_vars` would be a silent no-op (or, on multi-node, a footgun) — reject them instead.
 PROTECTED_ENV_VARS = frozenset(
-    {"CUDA_VISIBLE_DEVICES", "WANDB_SHARED_MODE", "WANDB_SHARED_RUN_ID", "WANDB_SHARED_LABEL"}
+    {
+        "CUDA_VISIBLE_DEVICES",
+        "VF_RENDERER_IMAGE_OFFLOAD_DIR",
+        "WANDB_SHARED_MODE",
+        "WANDB_SHARED_RUN_ID",
+        "WANDB_SHARED_LABEL",
+    }
 )
 
 
@@ -80,6 +86,11 @@ class SlurmConfig(BaseConfig):
 
 
 ServerType = Literal["vllm", "openai"]
+
+
+class MultimodalConfig(BaseConfig):
+    offload_dir: Path | None = None
+    """Directory for offloaded image assets. Supports environment expansion such as ``/data/outputs/run_${RUN_ID}/assets/images``. When unset, prime-rl resolves a run-scoped default."""
 
 
 class VLMConfig(BaseConfig):

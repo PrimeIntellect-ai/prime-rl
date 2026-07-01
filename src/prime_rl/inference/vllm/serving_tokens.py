@@ -4,7 +4,8 @@ vLLM 0.22 ships a generic tokens-in / tokens-out handler at
 ``vllm.entrypoints.serve.disagg.serving.ServingTokens`` that already covers
 prefix-cache salting, lora dispatch, multimodal features, prompt logprobs,
 priority, ``data_parallel_rank`` header routing and server-side ``max_tokens``
-defaulting. We subclass it for the bits still missing from the upstream handler:
+defaulting. We subclass it for prime-RL behavior that is still missing or
+customized:
 
 1. ``data_parallel_rank`` routing — read from the ``X-data-parallel-rank``
    header and forwarded to ``engine_client.generate``. Upstream ``ServingTokens``
@@ -15,7 +16,12 @@ defaulting. We subclass it for the bits still missing from the upstream handler:
    decisions, surface them as base64 raw-byte payloads without requiring a vLLM
    source fork.
 
-3. Server-side ``max_tokens`` defaulting — upstream ``ServingTokens`` now applies
+3. Raw image refs for multimodal rollouts — renderers send a lightweight raw
+   descriptor ref at every image slot (current and prior turns alike). This
+   handler materializes every ref through multimodal adapters before vLLM sees
+   the request.
+
+4. Server-side ``max_tokens`` defaulting — upstream ``ServingTokens`` now applies
    this itself (via ``GenerateRequest.is_sampling_param_provided`` +
    ``get_max_tokens``); we keep an equivalent guard so callers that omit
    ``max_tokens`` don't truncate at vLLM's 16-token ``SamplingParams`` default.
@@ -26,8 +32,13 @@ delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 from collections.abc import AsyncGenerator, AsyncIterable
-from functools import cached_property
+from dataclasses import dataclass
+from functools import cached_property, lru_cache
+from http import HTTPStatus
+from io import BytesIO
 from typing import Any
 
 from fastapi import Request
@@ -48,6 +59,16 @@ from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
 from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
+from prime_rl.multimodal.registry import get_multimodal_adapter
+from prime_rl.multimodal.schema import RawMMItem
+from prime_rl.utils.mm import file_uri_to_path
+
+
+@dataclass
+class _MMImageRefError(Exception):
+    message: str
+    err_type: str = "invalid_mm_image_ref"
+    status_code: HTTPStatus = HTTPStatus.BAD_REQUEST
 
 
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
@@ -147,8 +168,137 @@ async def _client_set_max_tokens(raw_request: Request | None) -> bool:
     return isinstance(sp, dict) and "max_tokens" in sp
 
 
+@lru_cache(maxsize=8)
+def _load_image_processor(model_name: str, trust_remote_code: bool):
+    from transformers import AutoProcessor
+
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+    image_processor = getattr(processor, "image_processor", None)
+    if image_processor is None:
+        raise ValueError(f"{model_name!r} does not expose an image_processor")
+    return image_processor
+
+
+def _parse_raw_image_ref(raw_ref: str, *, feature_modality: str, mm_hash: str):
+    from renderers.mm_store import split_raw_mm_ref
+
+    try:
+        ref = split_raw_mm_ref(raw_ref)
+    except ValueError as exc:
+        raise _MMImageRefError(str(exc)) from exc
+
+    if ref.modality != feature_modality:
+        raise _MMImageRefError(f"Expected feature modality {feature_modality!r}, got {ref.modality!r}")
+    if ref.mm_hash != mm_hash:
+        raise _MMImageRefError(f"Expected image hash {mm_hash}, got {ref.mm_hash}")
+    return ref
+
+
+def _read_verified_raw_image(ref) -> bytes:
+    try:
+        raw = file_uri_to_path(ref.raw_image_uri).read_bytes()
+    except OSError as exc:
+        raise _MMImageRefError(f"Unable to read raw image asset {ref.raw_image_uri!r}: {exc}") from exc
+
+    actual_hash = hashlib.sha256(raw).hexdigest()[:32]
+    if actual_hash != ref.mm_hash:
+        raise _MMImageRefError(f"Raw image hash mismatch: expected {ref.mm_hash}, got {actual_hash}")
+    return raw
+
+
+def _decode_raw_image(raw: bytes, *, raw_image_uri: str):
+    from PIL import Image
+
+    try:
+        return Image.open(BytesIO(raw)).convert("RGB")
+    except OSError as exc:
+        raise _MMImageRefError(f"Unable to decode raw image asset {raw_image_uri!r}: {exc}") from exc
+
+
+def _materialize_raw_image_ref_sync(
+    raw_ref: str,
+    *,
+    feature_modality: str,
+    mm_hash: str,
+    expected_placeholder_length: int,
+    processor_model_name: str,
+    trust_remote_code: bool,
+):
+    ref = _parse_raw_image_ref(raw_ref, feature_modality=feature_modality, mm_hash=mm_hash)
+    raw = _read_verified_raw_image(ref)
+    image = _decode_raw_image(raw, raw_image_uri=ref.raw_image_uri)
+    image_processor = _load_image_processor(processor_model_name, trust_remote_code)
+    item = RawMMItem(
+        modality=ref.modality,
+        family=ref.family,
+        layout_fingerprint=ref.fingerprint,
+        raw_image_uri=ref.raw_image_uri,
+        payload=dict(ref.payload),
+        raw_ref=raw_ref,
+    )
+    adapter = get_multimodal_adapter(ref.family)
+    return adapter.materialize_for_vllm(
+        image_processor,
+        item,
+        image,
+        expected_placeholder_length,
+    )
+
+
+def _raw_ref_payloads_for_feature(
+    features: Any, feature_modality: str, hashes: list[str]
+) -> tuple[list[str], list[Any]]:
+    from renderers.mm_store import is_raw_mm_ref
+
+    kwargs_data = features.kwargs_data
+    if kwargs_data is None or feature_modality not in kwargs_data:
+        raise _MMImageRefError(f"v1 raw multimodal: modality {feature_modality!r} arrived with no raw refs")
+
+    raw_refs = kwargs_data[feature_modality]
+    placeholders = features.mm_placeholders.get(feature_modality)
+    if placeholders is None:
+        raise _MMImageRefError(f"v1 raw multimodal: modality {feature_modality!r} arrived with no placeholders")
+    if len(raw_refs) != len(hashes):
+        raise _MMImageRefError(
+            f"Multimodal kwargs/hash length mismatch for {feature_modality}: {len(raw_refs)} != {len(hashes)}"
+        )
+    if len(placeholders) != len(hashes):
+        raise _MMImageRefError(
+            f"Multimodal placeholder/hash length mismatch for {feature_modality}: {len(placeholders)} != {len(hashes)}"
+        )
+    if not all(is_raw_mm_ref(item) for item in raw_refs):
+        raise _MMImageRefError("v1 multimodal inference accepts raw descriptor refs only")
+    return raw_refs, placeholders
+
+
+async def _decode_raw_mm_kwargs(
+    features: Any,
+    *,
+    processor_model_name: str,
+    trust_remote_code: bool,
+) -> dict[str, list[Any]]:
+    mm_kwargs: dict[str, list[Any]] = {}
+    for feature_modality, hashes in features.mm_hashes.items():
+        raw_refs, placeholders = _raw_ref_payloads_for_feature(features, feature_modality, hashes)
+        decoded: list[Any] = []
+        for raw_ref, mm_hash, placeholder in zip(raw_refs, hashes, placeholders, strict=True):
+            decoded.append(
+                await asyncio.to_thread(
+                    _materialize_raw_image_ref_sync,
+                    raw_ref,
+                    feature_modality=feature_modality,
+                    mm_hash=mm_hash,
+                    expected_placeholder_length=placeholder.length,
+                    processor_model_name=processor_model_name,
+                    trust_remote_code=trust_remote_code,
+                )
+            )
+        mm_kwargs[feature_modality] = decoded
+    return mm_kwargs
+
+
 class PrimeRlServingTokens(ServingTokens):
-    """ServingTokens + DP-rank routing + compact routed experts + max_tokens defaulting."""
+    """ServingTokens + DP-rank routing + routed experts + raw image refs + max_tokens defaulting."""
 
     @cached_property
     def _max_tokens_defaults(self) -> tuple[dict, int | None]:
@@ -198,26 +348,28 @@ class PrimeRlServingTokens(ServingTokens):
             raw_request.state.request_metadata = request_metadata
 
         # Build the engine input — features-aware (MM) or text-only fallback.
-        # Identical to upstream so we keep tracking it.
         if features := request.features:
-            from vllm.entrypoints.serve.disagg.mm_serde import decode_mm_kwargs_item
             from vllm.inputs import mm_input
-            from vllm.multimodal.inputs import (
-                MultiModalKwargsItem,
-                PlaceholderRange,
-            )
+            from vllm.multimodal.inputs import PlaceholderRange
 
             mm_placeholders = {
                 modality: [PlaceholderRange(offset=p.offset, length=p.length) for p in ranges]
                 for modality, ranges in features.mm_placeholders.items()
             }
-            mm_kwargs: dict[str, list[MultiModalKwargsItem | None]] = {}
-            if features.kwargs_data is not None:
-                for modality, items in features.kwargs_data.items():
-                    mm_kwargs[modality] = [decode_mm_kwargs_item(item) if item is not None else None for item in items]
-            else:
-                for modality, hashes in features.mm_hashes.items():
-                    mm_kwargs[modality] = [None] * len(hashes)
+            processor_model_name = getattr(self.model_config, "model", None) or model_name
+            trust_remote_code = bool(getattr(self.model_config, "trust_remote_code", False))
+            try:
+                mm_kwargs = await _decode_raw_mm_kwargs(
+                    features,
+                    processor_model_name=processor_model_name,
+                    trust_remote_code=trust_remote_code,
+                )
+            except _MMImageRefError as exc:
+                return self.create_error_response(
+                    message=exc.message,
+                    err_type=exc.err_type,
+                    status_code=exc.status_code,
+                )
             engine_input = mm_input(
                 prompt_token_ids=request.token_ids,
                 mm_kwargs=mm_kwargs,  # type: ignore[arg-type]

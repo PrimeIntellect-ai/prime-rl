@@ -10,6 +10,7 @@ from prime_rl.configs.shared import (
     FileSystemTransportConfig,
     HeartbeatConfig,
     MetricsServerConfig,
+    MultimodalConfig,
     TrainerLogConfig,
     TransportConfig,
     WandbConfig,
@@ -20,6 +21,7 @@ from prime_rl.utils.config import BaseConfig
 
 AttnImplementation: TypeAlias = Literal["eager", "sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
 EPCommBackend: TypeAlias = Literal["torch", "deepep"]
+MissingMMImagePolicy: TypeAlias = Literal["error", "placeholder_zero_loss"]
 
 # User-facing name -> internal name. Users set `flash_attention_4` in configs,
 # which gets rewritten to `fa4` before pydantic validation.
@@ -565,6 +567,12 @@ class TrainerConfig(BaseConfig):
 
     max_concurrent_runs: int = Field(1, ge=1)
     """Maximum number of concurrent runs to allow. If 1, only one run may run at a time."""
+
+    missing_mm_image_policy: MissingMMImagePolicy = "placeholder_zero_loss"
+    """Policy when raw multimodal image files disappear before trainer materialization. ``placeholder_zero_loss`` warns, synthesizes zero-valued image tensors with the original descriptor geometry, and masks out the affected microbatch loss; ``error`` preserves fail-fast behavior."""
+
+    multimodal: MultimodalConfig = MultimodalConfig()
+    """Raw multimodal image offload settings shared with orchestrator and inference."""
 
     enable_token_export: bool = False
     """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""

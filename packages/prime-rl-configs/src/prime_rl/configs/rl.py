@@ -17,6 +17,7 @@ from prime_rl.configs.orchestrator import (
 )
 from prime_rl.configs.shared import (
     EnvVars,
+    MultimodalConfig,
     SlurmConfig,
     VLMConfig,
 )
@@ -222,6 +223,9 @@ class RLConfig(BaseConfig):
     """Shared sequence length. Propagates to ``trainer.model.seq_len`` and ``orchestrator.seq_len`` only when those values were not explicitly set; explicit per-component values always win."""
 
     weight_broadcast: SharedWeightBroadcastConfig | None = None
+
+    multimodal: MultimodalConfig = MultimodalConfig()
+    """Shared raw multimodal image offload settings. Propagated to trainer, orchestrator, and inference."""
 
     bench: bool = False
     """Benchmark mode. Sets trainer and orchestrator to benchmark mode and, when set, suffixes the W&B project with ``-bench``."""
