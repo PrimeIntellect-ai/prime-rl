@@ -218,14 +218,6 @@ class PerfCounter:
                 num_params -= model.lm_head.base_layer.weight.numel()
         return num_params
 
-    def _count_trainable_params(self) -> int:
-        """Count trainable parameters (LoRA adapters + modules_to_save)."""
-        trainable_params = 0
-        for param in self.model.parameters():
-            if param.requires_grad:
-                trainable_params += param.numel()
-        return trainable_params
-
     def _count_lora_adapter_params(self) -> int:
         """Count LoRA adapter parameters (sum of lora_A and lora_B across all MultiLoRAModules)."""
         params = 0
