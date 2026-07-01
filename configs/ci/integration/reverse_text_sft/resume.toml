@@ -6,6 +6,9 @@ resume_step = 5
 [model]
 name = "PrimeIntellect/Qwen3-0.6B"
 
+[renderer]
+name = "qwen3"
+
 [data]
 name = "PrimeIntellect/Reverse-Text-SFT"
 batch_size = 4

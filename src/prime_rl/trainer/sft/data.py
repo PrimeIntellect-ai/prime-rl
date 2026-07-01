@@ -543,10 +543,18 @@ class CatDataset(StatefulIterableDataset):
             if kept > 0:
                 result["seq_lens"].append(kept)
             remaining -= kept
+        pad_len = seq_len - len(result["input_ids"])
+        if pad_len > 0:
+            result["input_ids"].extend([0] * pad_len)
+            result["position_ids"].extend(range(pad_len))
+            result["loss_mask"].extend([False] * pad_len)
+            result["target_ids"].extend([0] * pad_len)
+            result["seq_lens"].append(pad_len)
         result["mm_kwargs"] = packed["mm_kwargs"]
-        result["mm_token_type_ids"] = (
-            packed["mm_token_type_ids"][:seq_len] if packed["mm_token_type_ids"] is not None else None
-        )
+        if packed["mm_token_type_ids"] is not None:
+            result["mm_token_type_ids"] = packed["mm_token_type_ids"][:seq_len] + [0] * pad_len
+        else:
+            result["mm_token_type_ids"] = None
         return result
 
 
