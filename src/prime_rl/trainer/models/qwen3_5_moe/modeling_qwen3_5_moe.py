@@ -1089,10 +1089,8 @@ class Qwen3_5MoeVLMModel(nn.Module):
 
         cp_group = getattr(self.language_model, "_cp_group", None)
         if image_grid_thw is not None and cp_group is not None:
-            cp_rank = getattr(self.language_model, "_cp_rank", None)
-            cp_world_size = getattr(self.language_model, "_cp_world_size", None)
-            if cp_rank is None or cp_world_size is None:
-                raise ValueError("Qwen3.5 MoE VLM CP requires rank and world size to be configured")
+            cp_rank = self.language_model._cp_rank
+            cp_world_size = self.language_model._cp_world_size
             setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style="ulysses", seq_lens=seq_lens)
             inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=cp_rank, cp_world_size=cp_world_size)
             position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
