@@ -245,6 +245,120 @@ def save_sparse_update(
     return stats
 
 
+def save_sparse_update_from_diff(
+    weights: Mapping[str, Tensor],
+    diffs: Mapping[str, Tensor],
+    save_dir: Path,
+    *,
+    step: int,
+    base_step: int,
+    compute_dtype: torch.dtype | None = None,
+    compress: bool = False,
+) -> SparseUpdateStats:
+    """Save a sparse patch from pre-computed weights and boolean diff tensors.
+
+    Both ``weights`` and ``diffs`` must share the same keys and have matching shapes.
+    The diff tensors are boolean (``True`` = changed). This function sparsifies
+    by finding nonzero elements in each diff, extracting the corresponding values
+    from the weights, and writing a sparse patch + manifest.
+
+    Both dicts are expected to be on the same device (typically GPU). Only the
+    sparse indices and values are moved to CPU for saving.
+
+    When ``compute_dtype`` is set, weight tensors are cast to that dtype before
+    extracting values (e.g. BF16 to match the receiver's expected format).
+    """
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    patch_tensors: dict[str, Tensor] = {}
+    tensor_entries: list[dict] = []
+    total_numel = 0
+    changed_numel = 0
+
+    diff_start = time.perf_counter()
+
+    for tensor_idx, (name, weight) in enumerate(weights.items()):
+        diff = diffs.get(name)
+        numel = weight.numel()
+        total_numel += numel
+        idx_dtype = _idx_dtype(numel)
+
+        if diff is None or tuple(diff.shape) != tuple(weight.shape):
+            indices = torch.arange(numel, dtype=idx_dtype, device=weight.device)
+        else:
+            flat_diff = diff.reshape(-1)
+            indices = flat_diff.nonzero(as_tuple=False).reshape(-1).to(idx_dtype)
+
+        if indices.numel() == 0:
+            continue
+
+        weight_compute = weight.detach()
+        if compute_dtype is not None and weight_compute.is_floating_point():
+            weight_compute = weight_compute.to(dtype=compute_dtype)
+
+        values = weight_compute.reshape(-1).index_select(0, indices.to(torch.long)).contiguous()
+        indices = indices.cpu()
+        values = values.cpu()
+
+        indices_key = f"tensor_{tensor_idx}.indices"
+        values_key = f"tensor_{tensor_idx}.values"
+        patch_tensors[indices_key] = indices
+        patch_tensors[values_key] = values
+        changed_numel += indices.numel()
+        tensor_entries.append(
+            {
+                "name": name,
+                "shape": list(weight_compute.shape),
+                "dtype": _dtype_name(weight_compute.dtype),
+                "indices": indices_key,
+                "values": values_key,
+                "numel": numel,
+                "changed_numel": indices.numel(),
+                "checksum": _checksum(indices, values),
+            }
+        )
+
+    diff_s = time.perf_counter() - diff_start
+
+    save_start = time.perf_counter()
+    _save_patch(patch_tensors, save_dir / SPARSE_UPDATE_PATCH_NAME, compress=compress)
+    save_s = time.perf_counter() - save_start
+
+    patch_file = save_dir / SPARSE_UPDATE_PATCH_NAME
+    patch_bytes = patch_file.stat().st_size if patch_file.exists() else 0
+    stats = SparseUpdateStats(
+        total_tensors=len(weights),
+        patched_tensors=len(tensor_entries),
+        total_numel=total_numel,
+        changed_numel=changed_numel,
+        patch_bytes=patch_bytes,
+        diff_s=diff_s,
+        save_s=save_s,
+    )
+    manifest = {
+        "format": SPARSE_UPDATE_FORMAT,
+        "version": SPARSE_UPDATE_VERSION,
+        "step": step,
+        "base_step": base_step,
+        "compute_dtype": _dtype_name(compute_dtype) if compute_dtype is not None else None,
+        "compressed": compress if patch_tensors else False,
+        "patch_file": SPARSE_UPDATE_PATCH_NAME if patch_tensors else None,
+        "tensors": tensor_entries,
+        "stats": {
+            "total_tensors": stats.total_tensors,
+            "patched_tensors": stats.patched_tensors,
+            "total_numel": stats.total_numel,
+            "changed_numel": stats.changed_numel,
+            "sparsity": stats.sparsity,
+            "patch_bytes": stats.patch_bytes,
+        },
+    }
+    with open(save_dir / SPARSE_UPDATE_MANIFEST_NAME, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, sort_keys=True)
+        f.write("\n")
+    return stats
+
+
 def load_sparse_update_manifest(patch_dir: Path) -> dict:
     with open(patch_dir / SPARSE_UPDATE_MANIFEST_NAME, "r", encoding="utf-8") as f:
         manifest = json.load(f)

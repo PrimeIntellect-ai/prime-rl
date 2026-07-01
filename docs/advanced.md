@@ -124,7 +124,7 @@ Filesystem weight broadcast defaults to writing a full HF-compatible checkpoint 
 type = "sparse_filesystem"
 ```
 
-Sparse sync captures the trainer's initial BF16 weight view after model load or checkpoint resume. Each later broadcast writes `sparse_update_manifest.json` plus sparse changed values under `broadcasts/step_N/`; inference reconstructs the dense BF16 view locally and reloads it through the normal vLLM path.
+Sparse sync captures boolean weight diffs during `optimizer.step()` via pre/post-step hooks. Each broadcast writes `sparse_update_manifest.json` plus sparse changed values under `broadcasts/step_N/`; inference reconstructs the dense BF16 view locally and reloads it through the normal vLLM path.
 
 For models that implement kernel-format conversion (`convert_layer_to_vllm_kernel`), set `kernel_format = true` to write sparse patches in vLLM kernel format with stacked parameter names. The receiver applies patches directly to GPU parameters via `index_copy_` without maintaining a CPU weight cache:
 
@@ -138,16 +138,14 @@ This mode is for full-model filesystem broadcast and is not supported with LoRA 
 
 ### Sparse sync tuning
 
-The sparse filesystem broadcast logs two timing splits per step: `sparse_update/diff_s` (the nonzero diff over the flattened model) and `sparse_update/save_s` (serializing + writing the patch to the shared filesystem). These tell you whether the sender is CPU-diff-bound or FS-bandwidth-bound:
+The sparse filesystem broadcast logs two timing splits per step: `sparse_update/diff_s` (sparsifying the boolean diff captured by the optimizer hook) and `sparse_update/save_s` (serializing + writing the patch to the shared filesystem). These tell you whether the sender is diff-bound or FS-bandwidth-bound:
 
-- **CPU-diff-bound** (`diff_s` dominates): enable `gpu_diff = true` to run the nonzero on GPU. The baseline stays on CPU; only sparse indices and values cross the PCIe bus.
 - **FS-bandwidth-bound** (`save_s` dominates): enable `compress = true` to zstd-compress the safetensors patch blob before writing.
 
 ```toml
 [trainer.weight_broadcast]
 type = "sparse_filesystem"
 kernel_format = true
-gpu_diff = true       # move the nonzero diff to GPU
 compress = true       # zstd-compress the patch file
 ```
 
