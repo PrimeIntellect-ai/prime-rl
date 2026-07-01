@@ -63,20 +63,6 @@ def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[T
     return entropy
 
 
-@jaxtyped(typechecker=typechecker)
-def shift_logits(
-    logits: Float[Tensor, "batch seq vocab"], left_pad_logit: Float[Tensor, "batch 1 vocab"] | None = None
-) -> Float[Tensor, "batch seq vocab"]:
-    """Removes final token logits and adds a left pad logit for the first token."""
-    # We drop the last logit because it corresponds to the next token that will be sampled but is not here yet
-    batch, seq, vocab = logits.shape
-    logits = logits[:, :-1, :]  # (batch, seq-1, vocab)
-    if left_pad_logit is None:
-        left_pad_logit = torch.zeros(batch, 1, vocab, device=logits.device, dtype=logits.dtype)  # (batch, 1, vocab)
-    logits = torch.cat([left_pad_logit, logits], dim=1)  # (batch, seq, vocab)
-    return logits
-
-
 def shift_tensor_left(t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch seq"]:
     """Shifts the tensor one token to the left.
 
