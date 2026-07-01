@@ -35,8 +35,8 @@ num_prefill_nodes = 8
 num_prefill_replicas = 4
 num_decode_nodes = 8
 num_decode_replicas = 1
-prefill_env_overrides = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="skip", "UCX_RCACHE_MAX_UNRELEASED"="1024"}
-decode_env_overrides = {"VLLM_DEEP_GEMM_WARMUP"="skip", "UCX_RCACHE_MAX_UNRELEASED"="1024"}
+prefill_env_vars = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="skip", "UCX_RCACHE_MAX_UNRELEASED"="1024"}
+decode_env_vars = {"VLLM_DEEP_GEMM_WARMUP"="skip", "UCX_RCACHE_MAX_UNRELEASED"="1024"}
 
 [deployment.router]
 type = "llm-d"
