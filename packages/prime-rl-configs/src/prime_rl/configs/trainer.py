@@ -542,6 +542,9 @@ class TrainerConfig(BaseConfig):
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
 
+    router_replay_score_threshold_ratio: float = Field(0.0, ge=0.0, le=1.0)
+    """When router replay is enabled, optionally accept a replayed expert only if its gate score is at least this fraction of the trainer router's weakest top-k gate score for that token. The default 0 disables plausibility filtering."""
+
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""
 

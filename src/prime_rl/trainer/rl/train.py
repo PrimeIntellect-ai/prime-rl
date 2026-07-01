@@ -42,6 +42,7 @@ from prime_rl.trainer.model import (
     setup_model,
     is_tt_moe_model,
     get_load_balance_stats,
+    configure_router_replay_filter,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -148,6 +149,8 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    if config.enable_router_replay:
+        configure_router_replay_filter(model, config.router_replay_score_threshold_ratio)
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
@@ -650,6 +653,8 @@ def train(config: TrainerConfig):
             step_message += f" | Max Vio {tensor_stats['max_vio/mean']:.4f}"
         if "routing_confidence/mean" in tensor_stats:
             step_message += f" | Routing Conf. {tensor_stats['routing_confidence/mean']:.4f}"
+        if "router_replay_replace_rate/mean" in tensor_stats:
+            step_message += f" | Replay Replace {tensor_stats['router_replay_replace_rate/mean']:.4f}"
         logger.success(step_message)
 
         # Log performance metrics
