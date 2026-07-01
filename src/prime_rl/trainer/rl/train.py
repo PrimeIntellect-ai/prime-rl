@@ -239,7 +239,6 @@ def train(config: TrainerConfig):
             parallel_dims.get_mesh("dp").size(),
             config.model.seq_len,
             config.model.cp,
-            tokenizer,
             build_bin_cost(model.config),
             config.rollout_transport,
         )

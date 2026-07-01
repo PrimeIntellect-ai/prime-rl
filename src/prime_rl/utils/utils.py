@@ -163,15 +163,6 @@ def get_free_port() -> int:
     return port
 
 
-def get_cuda_visible_devices() -> list[int]:
-    """Returns the list of availble CUDA devices, taking into account the CUDA_VISIBLE_DEVICES environment variable."""
-    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if cuda_visible is None:
-        # Default to all devices if the environment variable is not set
-        return list(range(torch.cuda.device_count()))
-    return list(sorted([int(device) for device in cuda_visible.split(",")]))
-
-
 def get_latest_ckpt_step(weights_dir: Path) -> int | None:
     step_dirs = list(weights_dir.glob("step_*"))
     if len(step_dirs) == 0:
@@ -181,11 +172,6 @@ def get_latest_ckpt_step(weights_dir: Path) -> int | None:
         if Path(weights_dir / f"step_{latest_step}" / "STABLE").exists():
             return latest_step
     return None
-
-
-def mean(values: list[float] | list[int]) -> float:
-    """Compute the mean of a list of values."""
-    return sum(values) / len(values) if values else 0.0
 
 
 @contextmanager
