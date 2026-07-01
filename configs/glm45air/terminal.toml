@@ -34,7 +34,7 @@ num_infer_nodes = 1
 num_infer_replicas = 4
 
 [wandb]
-project = "search-terminal-ablations"
+project = "terminal-ablations"
 name = "glm45air-terminal"
 
 [weight_broadcast]
@@ -89,7 +89,6 @@ max_inflight_rollouts = 512
 name = "glm-4.5"
 thinking_retention = "all"
 
-# GRPO + linear length penalty (pass-rate-scaled output/input-token + turns terms; default weights).
 [orchestrator.algo]
 type = "grpo"
 
