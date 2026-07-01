@@ -15,11 +15,11 @@
 # offload, skip-gather/optimizer ckpt.
 
 max_steps = 1000
-seq_len = 65536
+seq_len = 131072
 
 # Redirect compile/JIT caches to node-local /tmp (per user + job) to avoid contended shared-FS caches.
 [env_vars]
-TRITON_CACHE_DIR = "/tmp/triton-cache-$USER-$SLURM_JOB_ID"
+TRITON_CACHE_DIR = "/tmp/.triton-cache-$(whoami)"
 
 [slurm]
 job_name = "glm45air-terminal"
@@ -96,6 +96,9 @@ type = "grpo"
 
 [orchestrator.algo.length_penalty]
 type = "linear"
+num_output_tokens_weight = 0.1
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
 
 [orchestrator.prime_monitor]
 
@@ -115,7 +118,6 @@ harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal
 
 [orchestrator.eval]
 interval = 20
-skip_first_step = false
 
 [[orchestrator.eval.env]]
 name = "terminal-bench-2"
@@ -126,17 +128,15 @@ timeout = { rollout = 3600 }
 # --- Inference ---
 
 [inference]
-gpu_memory_utilization = 0.85
-enable_prefix_caching = true
 enable_return_routed_experts = true
 
 # vLLM + FlashInfer caches on node-local /tmp.
 [inference.env_vars]
-VLLM_CACHE_ROOT = "/tmp/.vllm_cache_$(whoami)"
-FLASHINFER_WORKSPACE_BASE = "/tmp/flashinfer-$(whoami)"
+VLLM_CACHE_ROOT = "/tmp/.vllm-cache-$(whoami)"
+FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache-$(whoami)"
 
 [inference.model]
-max_model_len = 65536
+max_model_len = 131072
 
 [inference.parallel]
 tp = 8
