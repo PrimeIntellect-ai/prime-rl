@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import wandb
@@ -256,6 +257,22 @@ def mean(values: list[float]) -> float | None:
     return sum(values) / len(values)
 
 
+def _scope_value(
+    scope: str,
+    prefill_value: float | None,
+    decode_value: float | None,
+    aggregate: Callable[[list[float]], float],
+) -> float | None:
+    """Pick a scope's metric value: prefill/decode use their own value; the
+    aggregate scope combines both non-None values via ``aggregate`` (None if neither)."""
+    if scope == "prefill":
+        return prefill_value
+    if scope == "decode":
+        return decode_value
+    values = [v for v in (prefill_value, decode_value) if v is not None]
+    return aggregate(values) if values else None
+
+
 def build_scope_metrics(
     scope: str,
     samples: list[EndpointSample],
@@ -304,16 +321,9 @@ def build_scope_metrics(
 
     prompt_token_rate = counter_rate(samples, previous, "prompt_tokens_total")
     generation_token_rate = counter_rate(samples, previous, "generation_tokens_total")
-    if scope == "prefill":
-        if prompt_token_rate is not None:
-            metrics[f"{prefix}/throughput"] = prompt_token_rate
-    elif scope == "decode":
-        if generation_token_rate is not None:
-            metrics[f"{prefix}/throughput"] = generation_token_rate
-    else:
-        token_rates = [rate for rate in (prompt_token_rate, generation_token_rate) if rate is not None]
-        if token_rates:
-            metrics[f"{prefix}/throughput"] = sum(token_rates)
+    throughput = _scope_value(scope, prompt_token_rate, generation_token_rate, sum)
+    if throughput is not None:
+        metrics[f"{prefix}/throughput"] = throughput
 
     counter_metrics = {
         "completed_requests": "request_success_total",
@@ -368,16 +378,9 @@ def build_scope_metrics(
         "request_decode_time_seconds_sum",
         "request_decode_time_seconds_count",
     )
-    if scope == "prefill":
-        if prefill_time is not None:
-            metrics[f"{prefix}/avg_time_seconds"] = prefill_time
-    elif scope == "decode":
-        if decode_time is not None:
-            metrics[f"{prefix}/avg_time_seconds"] = decode_time
-    else:
-        time_values = [value for value in (prefill_time, decode_time) if value is not None]
-        if time_values:
-            metrics[f"{prefix}/avg_time_seconds"] = sum(time_values) / len(time_values)
+    avg_time = _scope_value(scope, prefill_time, decode_time, lambda values: sum(values) / len(values))
+    if avg_time is not None:
+        metrics[f"{prefix}/avg_time_seconds"] = avg_time
 
     return metrics
 
