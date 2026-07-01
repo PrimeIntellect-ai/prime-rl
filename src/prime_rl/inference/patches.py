@@ -621,9 +621,7 @@ def monkey_patch_no_moe_lora():
 
         if self.is_act_and_mul:
             self.rocm_aiter_fmoe_enabled = rocm_aiter_ops.is_fused_moe_enabled()
-            self.aiter_fmoe_shared_expert_enabled = (
-                rocm_aiter_ops.is_fusion_moe_shared_experts_enabled()
-            )
+            self.aiter_fmoe_shared_expert_enabled = rocm_aiter_ops.is_fusion_moe_shared_experts_enabled()
 
         if self.use_mori_kernels:
             assert self.rocm_aiter_fmoe_enabled, "Mori needs to be used with aiter fused_moe for now."
@@ -633,9 +631,7 @@ def monkey_patch_no_moe_lora():
             )
 
         if not self.is_act_and_mul and not (current_platform.is_cuda_alike() or current_platform.is_xpu()):
-            raise NotImplementedError(
-                "is_act_and_mul=False is supported only for CUDA, XPU and ROCm for now"
-            )
+            raise NotImplementedError("is_act_and_mul=False is supported only for CUDA, XPU and ROCm for now")
 
         # Disable LoRA for MoE layers
         self.is_lora_enabled = False

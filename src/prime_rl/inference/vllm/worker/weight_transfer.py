@@ -60,9 +60,7 @@ def _build_expert_source_indices(routed_experts, router) -> torch.Tensor | None:
     if logical_to_physical_map is None:
         return physical_indices
 
-    physical_to_logical = _invert_logical_to_physical_map(
-        logical_to_physical_map, routed_experts.global_num_experts
-    )
+    physical_to_logical = _invert_logical_to_physical_map(logical_to_physical_map, routed_experts.global_num_experts)
     logical_indices = physical_to_logical[physical_indices.to(physical_to_logical.device)]
     if (logical_indices < 0).any():
         missing = physical_indices[(logical_indices < 0).to(physical_indices.device)].tolist()
