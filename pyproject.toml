@@ -93,6 +93,7 @@ envs = [
     "logic-env",
     "longcot-mini-v1",
     "longcot-v1",
+    "longpdfs-v1",
     "math-env",
     "math-env-v1",
     "math-python",
@@ -265,6 +266,7 @@ livecodebench-v1 = { path = "deps/research-environments/environments/livecodeben
 logic-env = { path = "deps/research-environments/environments/logic_env", editable = true }
 longcot-mini-v1 = { path = "deps/research-environments/environments/longcot_mini_v1", editable = true }
 longcot-v1 = { path = "deps/research-environments/environments/longcot_v1", editable = true }
+longpdfs-v1 = { path = "deps/research-environments/environments/longpdfs_v1", editable = true }
 math-env = { path = "deps/research-environments/environments/math_env", editable = true }
 math-env-v1 = { path = "deps/research-environments/environments/math_env_v1", editable = true }
 math-python = { path = "deps/verifiers/environments/math_python", editable = true }

@@ -554,7 +554,7 @@ class TrainerConfig(BaseConfig):
     trace_path: Path | None = None
     """Path to write the PyTorch profiler trace to."""
 
-    dist_timeout_seconds: int = 600
+    dist_timeout_seconds: int = 3600
     """Timeout in seconds for torch distributed ops."""
 
     heartbeat: HeartbeatConfig | None = None
