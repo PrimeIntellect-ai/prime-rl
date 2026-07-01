@@ -505,6 +505,12 @@ def get_load_balance_stats(
     }
 
 
+def _is_qwen3_5_config(model_config: PretrainedConfig) -> bool:
+    model_type = getattr(model_config, "model_type", "")
+    text_model_type = getattr(getattr(model_config, "text_config", None), "model_type", "")
+    return model_type.startswith("qwen3_5") or text_model_type.startswith("qwen3_5")
+
+
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
@@ -648,6 +654,13 @@ def get_model(
         logger.info(f"Auto-selected implementation: {impl_to_use}")
     else:
         impl_to_use = config.impl
+
+    if config.cp > 1 and _is_qwen3_5_config(model_config) and impl_to_use != "custom":
+        raise ValueError(
+            "Qwen3.5 context parallelism requires model.impl='custom' "
+            "(or model.impl='auto' selecting the custom PrimeRL implementation); "
+            "the HuggingFace implementation does not expose set_context_parallel_attributes."
+        )
 
     if config.vlm is not None and config.cp > 1 and not (is_vlm_arch and impl_to_use == "custom" and custom_vlm_cls):
         raise ValueError(

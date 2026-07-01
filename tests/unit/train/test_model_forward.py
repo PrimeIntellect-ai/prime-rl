@@ -164,7 +164,6 @@ def test_forward_passes_raw_vlm_inputs_with_context_parallel_metadata():
     model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
     input_ids = torch.tensor([[1, 10, 10, 2]])
     position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
-    cp_group = object()
 
     forward(
         model,
@@ -173,10 +172,6 @@ def test_forward_passes_raw_vlm_inputs_with_context_parallel_metadata():
         mm_kwargs={"pixel_values": torch.ones(2, 3), "image_grid_thw": torch.tensor([[1, 1, 2]])},
         mm_token_type_ids=torch.tensor([[0, 1, 1, 0]]),
         seq_lens=torch.tensor([4]),
-        cp_group=cp_group,
-        cp_rank=1,
-        cp_world_size=2,
-        cp_style="ulysses",
     )
 
     assert model.kwargs is not None
@@ -184,7 +179,7 @@ def test_forward_passes_raw_vlm_inputs_with_context_parallel_metadata():
     assert "inputs_embeds" not in model.kwargs
     assert "position_ids" not in model.kwargs
     assert "seq_lens" not in model.kwargs
-    assert model.kwargs["cp_group"] is cp_group
-    assert model.kwargs["cp_rank"] == 1
-    assert model.kwargs["cp_world_size"] == 2
-    assert model.kwargs["cp_style"] == "ulysses"
+    assert "cp_group" not in model.kwargs
+    assert "cp_rank" not in model.kwargs
+    assert "cp_world_size" not in model.kwargs
+    assert "cp_style" not in model.kwargs
