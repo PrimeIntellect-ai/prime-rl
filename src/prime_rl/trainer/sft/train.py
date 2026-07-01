@@ -260,6 +260,7 @@ def train(config: SFTConfig):
         forward_cp_rank = None
         forward_cp_world_size = None
         forward_cp_style = None
+        seq_lens_are_global = False
 
         if cp_enabled:
             if vlm_cp_enabled:
@@ -271,6 +272,7 @@ def train(config: SFTConfig):
                 input_ids, position_ids = setup_cp_params(
                     input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
                 )
+                seq_lens_are_global = seq_lens is not None
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
@@ -292,6 +294,7 @@ def train(config: SFTConfig):
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_type_ids,
                     seq_lens=seq_lens,
+                    seq_lens_are_global=seq_lens_are_global,
                     cp_group=forward_cp_group,
                     cp_rank=forward_cp_rank,
                     cp_world_size=forward_cp_world_size,
@@ -306,6 +309,7 @@ def train(config: SFTConfig):
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_type_ids,
                     seq_lens=seq_lens,
+                    seq_lens_are_global=seq_lens_are_global,
                     cp_group=forward_cp_group,
                     cp_rank=forward_cp_rank,
                     cp_world_size=forward_cp_world_size,
