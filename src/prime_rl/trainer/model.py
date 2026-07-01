@@ -470,6 +470,11 @@ def get_model(
     model_config.use_cache = False
     is_vlm_arch = is_vlm_architecture(model_config)
 
+    if is_vlm_arch and config.cp > 1 and config.cp_style == "ulysses" and hasattr(model_config, "vision_config"):
+        model_config.vision_config._attn_implementation = "sdpa"
+        if hasattr(model_config.vision_config, "attn_implementation"):
+            model_config.vision_config.attn_implementation = "sdpa"
+
     if is_vlm_training:
         logger.info(f"Detected vision-language model: {config.name}")
         if config.optimization_dtype != "bfloat16" or config.reduce_dtype != "bfloat16":

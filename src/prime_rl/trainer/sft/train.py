@@ -247,6 +247,17 @@ def train(config: SFTConfig):
         loss_mask = micro_batch["loss_mask"].to("cuda")
 
         if cp_enabled:
+            # CP shards the sequence into equal chunks and ulysses all-to-all requires
+            # identical shard sizes across CP ranks, so pad packs whose length is not
+            # a multiple of cp_size. Pad tokens form their own documents (position 0)
+            # and are excluded from the loss.
+            pad_len = -input_ids.shape[1] % cp_size
+            if pad_len:
+                pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+                input_ids = torch.cat([input_ids, input_ids.new_full((1, pad_len), pad_id)], dim=1)
+                position_ids = torch.cat([position_ids, position_ids.new_zeros((1, pad_len))], dim=1)
+                target_ids = torch.cat([target_ids, target_ids.new_full((1, pad_len), pad_id)], dim=1)
+                loss_mask = torch.cat([loss_mask, loss_mask.new_zeros((1, pad_len))], dim=1)
             input_ids, position_ids = setup_cp_params(
                 input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
             )

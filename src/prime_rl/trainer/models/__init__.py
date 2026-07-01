@@ -8,6 +8,7 @@ from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAuto
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
+from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 
 from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
@@ -20,6 +21,7 @@ from prime_rl.trainer.models.llama import LlamaForCausalLM
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config, MiniMaxM2ForCausalLM
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
+from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig, Qwen3_5MoeForCausalLM
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
@@ -31,6 +33,7 @@ AutoConfig.register("laguna", LagunaConfig, exist_ok=True)
 AutoConfig.register("minimax_m2", MiniMaxM2Config, exist_ok=True)
 AutoConfig.register("nemotron_h", NemotronHConfig, exist_ok=True)
 AutoConfig.register("qwen3_moe", Qwen3MoeConfig, exist_ok=True)
+AutoConfig.register("qwen3_5_text", Qwen3_5TextConfig, exist_ok=True)
 AutoConfig.register("qwen3_5_moe_text", Qwen3_5MoeConfig, exist_ok=True)
 # GptOssConfig is just HF's class - already registered by transformers, no override needed.
 
@@ -44,6 +47,7 @@ _CUSTOM_CAUSAL_LM_MAPPING.register(LagunaConfig, LagunaForCausalLM, exist_ok=Tru
 _CUSTOM_CAUSAL_LM_MAPPING.register(MiniMaxM2Config, MiniMaxM2ForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(NemotronHConfig, NemotronHForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3MoeConfig, Qwen3MoeForCausalLM, exist_ok=True)
+_CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3_5TextConfig, Qwen3_5ForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3_5MoeConfig, Qwen3_5MoeForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(GptOssConfig, GptOssForCausalLM, exist_ok=True)
 
@@ -71,6 +75,7 @@ def supports_custom_impl(model_config: PretrainedConfig) -> bool:
 # Used by get_model() to dispatch VLMs that have a custom text model implementation.
 # Points to the same unified class — the config drives text-only vs VLM behavior.
 _CUSTOM_VLM_MAPPING: dict[str, type] = {
+    "qwen3_5": Qwen3_5ForCausalLM,
     "qwen3_5_moe": Qwen3_5MoeForCausalLM,
 }
 
