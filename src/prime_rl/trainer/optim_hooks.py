@@ -78,7 +78,12 @@ def setup_sparse_diff_hook(optimizer, model: "Module") -> None:
 
     def post_step_hook(opt: Optimizer, args, kwargs):
         for param, snapshot in snapshots.items():
-            diff = param.data.ne(snapshot)
+            if isinstance(param.data, DTensor):
+                # DTensor doesn't support aten.ne — compute on local tensors
+                diff_local = param.data._local_tensor.ne(snapshot._local_tensor)
+                diff = DTensor.from_local(diff_local, param.data.device_mesh, param.data.placements)
+            else:
+                diff = param.data.ne(snapshot)
             state = opt.state.setdefault(param, {})
             state[SPARSE_DIFF_STATE_KEY] = diff
         snapshots.clear()
