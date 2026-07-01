@@ -393,6 +393,8 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
 class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
     config_class = AfmoeConfig
     base_model_prefix = "model"
+    # _get_afmoe_attention aliases eager to the SDPA implementation
+    supported_attn_impls = frozenset({"eager", "sdpa", "flash_attention_2", "flash_attention_3", "fa4"})
     _no_split_modules = ["AfmoeDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _keep_in_fp32_modules = [

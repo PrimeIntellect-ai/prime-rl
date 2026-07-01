@@ -69,6 +69,8 @@ Bringing up a new model family is three steps: implement the modeling code, regi
 
 Drop the modeling code under `src/prime_rl/trainer/models/<arch>/` (HF-compatible config, modeling, and weight conversion). Mirror the layout of an existing family — `glm4_moe/` or `qwen3_moe/` are good starting points.
 
+If your model doesn't support every attention implementation from the shared `layers.attn` classes (`sdpa`, `flash_attention_2`, `flash_attention_3`, `fa4`), declare the supported set on the model class via `supported_attn_impls`, or override `validate_attn_impl` for conditional constraints (e.g. GPT-OSS requires eager attention off-Hopper). `get_model` validates the requested `attn` against this declaration at load time.
+
 ### Register a Mini Preset
 
 Add an entry to [`scripts/mini_moe.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/mini_moe.py) so the smoke-test workflow can build a ~0.5B test model in your architecture. The preset names the config class, picks small dimensions, and wires up the HF + PrimeRL model classes plus a tokenizer source:
