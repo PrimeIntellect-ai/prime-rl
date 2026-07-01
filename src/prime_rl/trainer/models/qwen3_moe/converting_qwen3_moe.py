@@ -1,7 +1,7 @@
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.weights import get_max_layer_num
+from prime_rl.trainer.conversion_utils import get_max_layer_num
 
 
 def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):

@@ -1,8 +1,8 @@
 import torch
 from torch import Tensor
 
+from prime_rl.trainer.conversion_utils import get_max_layer_num
 from prime_rl.trainer.models.fp8 import quantize_to_fp8_blockwise
-from prime_rl.trainer.weights import get_max_layer_num
 
 
 def _is_moe_layer(state_dict: dict[str, Tensor], layer_idx: int) -> bool:

@@ -3,7 +3,7 @@ import re
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.weights import get_max_layer_num
+from prime_rl.trainer.conversion_utils import get_max_layer_num
 
 
 def get_num_experts_from_state_dict(state_dict: dict[str, Tensor], layer_idx: int) -> int:

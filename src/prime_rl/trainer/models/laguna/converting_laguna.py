@@ -1,7 +1,7 @@
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.weights import get_max_layer_num
+from prime_rl.trainer.conversion_utils import get_max_layer_num
 
 
 def _pop_first(state_dict: dict[str, Tensor], keys: tuple[str, ...]) -> Tensor | None:
