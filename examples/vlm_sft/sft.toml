@@ -1,0 +1,35 @@
+max_steps = 20
+
+[ckpt]
+[ckpt.weights]
+save_adapter_separately = true
+
+[model]
+name = "Qwen/Qwen3.5-0.8B"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[renderer]
+name = "auto"
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+freeze_vision_encoder = true
+
+[model.lora]
+rank = 16
+
+[model.ac]
+freq = 1
+
+[data]
+type = "sft"
+name = "json"
+data_files = ["/home/ubuntu/browser_agent_traces_sample.jsonl.zst"]
+batch_size = 1
+micro_batch_size = 1
+seq_len = 16384
+
+[optim]
+lr = 1e-5

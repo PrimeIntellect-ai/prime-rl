@@ -29,8 +29,9 @@ from prime_rl.trainer.model import (
     forward,
     get_load_balance_stats,
     is_tt_moe_model,
-    setup_tokenizer,
     setup_model,
+    setup_processor,
+    setup_tokenizer,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -161,19 +162,23 @@ def train(config: SFTConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
+    processor = setup_processor(config.tokenizer)
 
-    renderer = None
-    if config.renderer is not None:
-        renderer = create_renderer(tokenizer, config.renderer)
-        if isinstance(renderer, DefaultRenderer):
-            raise ValueError(
-                f"renderer set for {config.tokenizer.name!r} resolved to DefaultRenderer. "
-                "DefaultRenderer falls back to incremental apply_chat_template and does NOT "
-                "fix position-dependent chat templates — the bug the renderer client is meant to solve. "
-                "Either use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
-                "set [renderer] name=<hand-coded renderer> explicitly, or remove the [renderer] block."
-            )
-        logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
+    renderer = create_renderer(tokenizer, config.renderer)
+    if isinstance(renderer, DefaultRenderer):
+        raise ValueError(
+            f"SFT renderer for {config.tokenizer.name!r} resolved to DefaultRenderer. "
+            "SFT is renderer-only and requires a hand-coded renderer for stable "
+            "message-to-token attribution. Use a model with a hand-coded renderer "
+            "(see renderers.base.MODEL_RENDERER_MAP), or set [renderer] name=<hand-coded renderer> explicitly."
+        )
+
+    if processor is not None and hasattr(renderer, "_processor"):
+        renderer._processor = processor
+    logger.info(
+        f"Initialized {type(renderer).__name__} for {config.tokenizer.name} "
+        f"(multimodal_processor={processor is not None})"
+    )
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -193,14 +198,15 @@ def train(config: SFTConfig):
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer)
+    multimodal = config.model.vlm is not None
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer, multimodal=multimodal)
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
     val_raw_dataset = None
     if config.val is not None:
         logger.info(f"Loading validation dataset ({config.val.data.name})")
-        val_raw_dataset = load_sft_dataset(config.val.data)
+        val_raw_dataset = load_sft_dataset(config.val.data, multimodal=multimodal)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -245,16 +251,41 @@ def train(config: SFTConfig):
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
+        mm_kwargs = micro_batch.get("mm_kwargs")
+        mm_type_ids = micro_batch.get("mm_token_type_ids")
+        seq_lens = micro_batch.get("seq_lens")
+
+        seq_lens_are_global = False
 
         if cp_enabled:
-            input_ids, position_ids = setup_cp_params(
-                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+            # CP shards the sequence into equal chunks and ulysses all-to-all requires
+            # identical shard sizes across CP ranks, so pad packs whose length is not
+            # a multiple of cp_size. Pad tokens form their own documents (position 0)
+            # and are excluded from the loss.
+            pad_len = -input_ids.shape[1] % cp_size
+            if pad_len:
+                pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+                input_ids = torch.cat([input_ids, input_ids.new_full((1, pad_len), pad_id)], dim=1)
+                position_ids = torch.cat([position_ids, position_ids.new_zeros((1, pad_len))], dim=1)
+                target_ids = torch.cat([target_ids, target_ids.new_full((1, pad_len), pad_id)], dim=1)
+                loss_mask = torch.cat([loss_mask, loss_mask.new_zeros((1, pad_len))], dim=1)
+                if seq_lens is not None:
+                    seq_lens = torch.cat([seq_lens, seq_lens.new_full((1,), pad_len)])
+                if mm_type_ids is not None:
+                    mm_type_ids = torch.cat([mm_type_ids, mm_type_ids.new_zeros((1, pad_len))], dim=1)
+            defer_vlm_cp_to_model = (
+                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
             )
+            if not defer_vlm_cp_to_model:
+                input_ids, position_ids = setup_cp_params(
+                    input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                )
+            seq_lens_are_global = seq_lens is not None
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
         if config.model.lora is not None:
-            set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
+            set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
@@ -262,10 +293,27 @@ def train(config: SFTConfig):
             if config.loss_impl in ("liger_fused", "quack_fused"):
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
-                out = forward(model, input_ids, position_ids, labels=masked_target_ids)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    labels=masked_target_ids,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
+                    seq_lens=seq_lens,
+                    seq_lens_are_global=seq_lens_are_global,
+                )
                 loss_sum = out["loss"] * token_count
             else:
-                out = forward(model, input_ids, position_ids)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
+                    seq_lens=seq_lens,
+                    seq_lens_are_global=seq_lens_are_global,
+                )
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
@@ -318,6 +366,7 @@ def train(config: SFTConfig):
             max_epochs=1,
             raw_dataset=val_raw_dataset,
             renderer=renderer,
+            multimodal=multimodal,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 

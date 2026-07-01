@@ -54,7 +54,7 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
 
@@ -144,10 +144,32 @@ def _patch_qwen3_5_linear_attn_varlen():
         apply_mask_to_padding_states,
     )
 
+    try:
+        from fla.modules.convolution import causal_conv1d as fla_causal_conv1d
+        from fla.ops.cp import build_cp_context
+    except ImportError:
+        build_cp_context = None
+        fla_causal_conv1d = None
+
     if getattr(Qwen3_5GatedDeltaNet.forward, "_prl_varlen_patched", False):
         return
 
     _gdn_orig = Qwen3_5GatedDeltaNet.forward
+
+    def _build_cp_context(self, local_seq_len: int, device: torch.device, cu_seqlens=None):
+        cp_group = getattr(self, "cp_group", None)
+        if cp_group is None or build_cp_context is None:
+            return None
+        global_seq_len = local_seq_len * self.cp_world_size
+        if cu_seqlens is not None and int(cu_seqlens[-1].item()) == global_seq_len:
+            global_cu_seqlens = cu_seqlens.to(device=device, dtype=torch.int32)
+        else:
+            global_cu_seqlens = torch.tensor([0, global_seq_len], dtype=torch.int32, device=device)
+        return build_cp_context(
+            cu_seqlens=global_cu_seqlens,
+            group=cp_group,
+            conv1d_kernel_size=self.conv_kernel_size,
+        )
 
     def _gdn_forward(self, hidden_states, cache_params=None, attention_mask=None, cu_seqlens=None):
         if cu_seqlens is None or cache_params is not None:
@@ -161,7 +183,18 @@ def _patch_qwen3_5_linear_attn_varlen():
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
-        if self.causal_conv1d_fn is not None:
+        cp_context = _build_cp_context(self, seq_len, hidden_states.device, cu_seqlens)
+
+        if cp_context is not None and fla_causal_conv1d is not None:
+            mixed_qkv, _ = fla_causal_conv1d(
+                x=mixed_qkv.transpose(1, 2),
+                weight=self.conv1d.weight.squeeze(1),
+                bias=self.conv1d.bias,
+                activation=self.activation,
+                cp_context=cp_context,
+            )
+            mixed_qkv = mixed_qkv.transpose(1, 2)
+        elif self.causal_conv1d_fn is not None:
             seg_lens = cu_seqlens[1:] - cu_seqlens[:-1]
             seq_idx = torch.repeat_interleave(
                 torch.arange(seg_lens.numel(), dtype=torch.int32, device=hidden_states.device),
@@ -197,17 +230,29 @@ def _patch_qwen3_5_linear_attn_varlen():
             query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-        core_attn_out, _ = self.chunk_gated_delta_rule(
-            query,
-            key,
-            value,
-            g=g,
-            beta=beta,
-            initial_state=None,
-            output_final_state=False,
-            use_qk_l2norm_in_kernel=True,
-            cu_seqlens=cu_seqlens,
-        )
+        if cp_context is not None:
+            core_attn_out, _ = self.chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                use_qk_l2norm_in_kernel=True,
+                cu_seqlens=cp_context.cu_seqlens,
+                cp_context=cp_context,
+            )
+        else:
+            core_attn_out, _ = self.chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                initial_state=None,
+                output_final_state=False,
+                use_qk_l2norm_in_kernel=True,
+                cu_seqlens=cu_seqlens,
+            )
 
         core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
         z = z.reshape(-1, self.head_v_dim)
@@ -272,8 +317,22 @@ def _patch_qwen3_5_linear_attn_varlen():
         **kwargs,
     ):
         attn_impl = getattr(self.config, "_attn_implementation", None)
+        provided_seq_lens = kwargs.pop("seq_lens", None)
+        seq_lens_are_global = kwargs.pop("seq_lens_are_global", False)
         cu_seqlens = None
-        if attn_impl in ("flash_attention_2", "flash_attention_3", "fa4") and position_ids is not None:
+        if provided_seq_lens is not None and (
+            seq_lens_are_global or (position_ids is not None and position_ids.ndim == 3)
+        ):
+            device = inputs_embeds.device if inputs_embeds is not None else input_ids.device
+            cu_seqlens, _ = get_cu_seqlens_from_seq_lens(
+                provided_seq_lens.to(device=device),
+                total_tokens=None
+                if seq_lens_are_global
+                else position_ids.shape[-1]
+                if position_ids is not None
+                else None,
+            )
+        elif attn_impl in ("flash_attention_2", "flash_attention_3", "fa4") and position_ids is not None:
             pids = position_ids
             if pids.ndim == 3:
                 pids = pids[0]
@@ -446,6 +505,12 @@ def get_load_balance_stats(
     }
 
 
+def _is_qwen3_5_config(model_config: PretrainedConfig) -> bool:
+    model_type = getattr(model_config, "model_type", "")
+    text_model_type = getattr(getattr(model_config, "text_config", None), "model_type", "")
+    return model_type.startswith("qwen3_5") or text_model_type.startswith("qwen3_5")
+
+
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
@@ -499,6 +564,13 @@ def get_model(
         _patch_qwen3_5_text_position_ids()
         _patch_qwen3_5_moe_conversion_mapping()
         _patch_qwen3_5_linear_attn_varlen()
+    if is_vlm_arch and config.cp > 1 and config.cp_style == "ulysses":
+        vision_config = getattr(model_config, "vision_config", None)
+        if vision_config is not None:
+            logger.info("Using SDPA for VLM vision encoder under CP")
+            vision_config._attn_implementation = "sdpa"
+            if hasattr(vision_config, "_attn_implementation_internal"):
+                vision_config._attn_implementation_internal = "sdpa"
     for subconfig_key in getattr(model_config, "sub_configs", {}):
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
@@ -583,6 +655,19 @@ def get_model(
     else:
         impl_to_use = config.impl
 
+    if config.cp > 1 and _is_qwen3_5_config(model_config) and impl_to_use != "custom":
+        raise ValueError(
+            "Qwen3.5 context parallelism requires model.impl='custom' "
+            "(or model.impl='auto' selecting the custom PrimeRL implementation); "
+            "the HuggingFace implementation does not expose set_context_parallel_attributes."
+        )
+
+    if config.vlm is not None and config.cp > 1 and not (is_vlm_arch and impl_to_use == "custom" and custom_vlm_cls):
+        raise ValueError(
+            "VLM context parallelism requires a custom PrimeRL VLM implementation; "
+            f"{getattr(model_config, 'model_type', config.name)!r} is only supported with cp=1."
+        )
+
     with device:
         if impl_to_use == "custom" and custom_vlm_cls is not None:
             model_cls = custom_vlm_cls
@@ -639,6 +724,23 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
     return tokenizer
+
+
+def setup_processor(config: TokenizerConfig):
+    """Load an ``AutoProcessor`` for VLM models. Returns ``None`` for text-only models."""
+    from transformers import AutoProcessor
+
+    logger = get_logger()
+    try:
+        processor = AutoProcessor.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    except (ValueError, OSError, KeyError) as e:
+        logger.debug(f"No AutoProcessor available for {config.name} ({type(e).__name__}); treating as text-only.")
+        return None
+    if not (getattr(processor, "image_processor", None) or getattr(processor, "video_processor", None)):
+        logger.debug(f"AutoProcessor for {config.name} has no image/video processor; treating as text-only.")
+        return None
+    logger.info(f"Loaded multimodal processor: {type(processor).__name__}")
+    return processor
 
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
@@ -1166,26 +1268,31 @@ def setup_model(
 
 def forward(
     model: nn.Module,
-    input_ids: Int[Tensor, "batch seq"],
-    position_ids: Int[Tensor, "batch seq"],
+    input_ids: Int[Tensor, "batch seq"] | None,
+    position_ids: Int[Tensor, "batch seq"] | None,
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
+    inputs_embeds: Tensor | None = None,
     # Generic multimodal kwargs (e.g. {"pixel_values": ...,
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
     # for Gemma3). Passed straight through to ``model(**kwargs)`` so
     # the model's HF forward signature is the schema. ``mm_token_type_ids``
-    # is split out because it's prime-rl-computed (from token ids),
-    # not a renderer/processor output.
+    # is split out because it's prime-rl-computed (from token ids).
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
+    seq_lens: Int[Tensor, "segments"] | None = None,
+    seq_lens_are_global: bool = False,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
     kwargs = {
-        "input_ids": input_ids,
         "labels": labels,
         "temperature": temperature,
     }
+    if inputs_embeds is None:
+        kwargs["input_ids"] = input_ids
+    else:
+        kwargs["inputs_embeds"] = inputs_embeds
 
     if mm_kwargs:
         # Forward the per-model multimodal tensors verbatim, plus the
@@ -1194,14 +1301,13 @@ def forward(
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        # ``position_ids`` for MRoPE families: Qwen3-VL's HF forward
-        # recomputes 3D positions from ``image_grid_thw`` and breaks if
-        # given the trainer's pre-computed 1D ``position_ids``. Detect
-        # via the mm_kwargs shape so we don't enumerate model_types.
         if "image_grid_thw" not in mm_kwargs:
             kwargs["position_ids"] = position_ids
     else:
         kwargs["position_ids"] = position_ids
+
+    if isinstance(model, PreTrainedModelPrimeRL):
+        kwargs.update(model.prime_forward_kwargs(seq_lens=seq_lens, seq_lens_are_global=seq_lens_are_global))
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
