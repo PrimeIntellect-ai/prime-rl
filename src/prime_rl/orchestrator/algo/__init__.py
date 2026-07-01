@@ -14,10 +14,9 @@ turns the signal half into runtime objects (the sampling half is the env's
   and register it below.
 - ``base`` — the :class:`Algorithm` base class, whose non-virtual
   ``finalize_rollout`` / ``finalize_group`` methods the pipeline drives.
-- ``advantage`` — shared advantage math (``efficiency_shaping``). Advantages
-  are per-token everywhere they are stored or shipped — there is no scalar
-  advantage in the pipeline. An algorithm assigns credit in its scoring hook
-  via ``Rollout.assign_advantages``: a scalar that is *broadcast* over the
+  Advantages are per-token everywhere they are stored or shipped — there is no
+  scalar advantage in the pipeline. An algorithm assigns credit in its scoring
+  hook via ``Rollout.assign_advantages``: a scalar that is *broadcast* over the
   rollout's completion tokens (uniform credit, the common case), or an explicit
   full-length-N per-token list aligned to the concatenated sample token_ids
   (0.0 off-mask).
