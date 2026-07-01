@@ -1075,14 +1075,8 @@ class Qwen3_5MoeVLMModel(nn.Module):
         routed_experts: torch.LongTensor | None = None,
         seq_lens: torch.LongTensor | None = None,
         seq_lens_are_global: bool = False,
-        cp_group: object | None = None,
-        cp_rank: int | None = None,
-        cp_world_size: int | None = None,
-        cp_style: str | None = None,
         **kwargs,
     ) -> MoeModelOutputWithPast:
-        cp_enabled = cp_group is not None
-
         inputs_embeds, position_ids = self.prepare_inputs_embeds_and_position_ids(
             input_ids=input_ids,
             position_ids=position_ids,
@@ -1093,8 +1087,13 @@ class Qwen3_5MoeVLMModel(nn.Module):
             seq_lens=seq_lens,
         )
 
-        if cp_enabled:
-            setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style=cp_style, seq_lens=seq_lens)
+        cp_group = getattr(self.language_model, "_cp_group", None)
+        if image_grid_thw is not None and cp_group is not None:
+            cp_rank = getattr(self.language_model, "_cp_rank", None)
+            cp_world_size = getattr(self.language_model, "_cp_world_size", None)
+            if cp_rank is None or cp_world_size is None:
+                raise ValueError("Qwen3.5 MoE VLM CP requires rank and world size to be configured")
+            setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style="ulysses", seq_lens=seq_lens)
             inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=cp_rank, cp_world_size=cp_world_size)
             position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
             if routed_experts is not None:
@@ -1269,10 +1268,6 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         mm_token_type_ids: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
         seq_lens_are_global: bool = False,
-        cp_group: object | None = None,
-        cp_rank: int | None = None,
-        cp_world_size: int | None = None,
-        cp_style: str | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5_moe for now"
@@ -1296,10 +1291,6 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
                 seq_lens_are_global=seq_lens_are_global,
-                cp_group=cp_group,
-                cp_rank=cp_rank,
-                cp_world_size=cp_world_size,
-                cp_style=cp_style,
             )
         else:
             outputs = self.model(

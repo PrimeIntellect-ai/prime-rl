@@ -269,15 +269,23 @@ def train(config: SFTConfig):
                 position_ids = torch.cat([position_ids, position_ids.new_zeros((1, pad_len))], dim=1)
                 target_ids = torch.cat([target_ids, target_ids.new_full((1, pad_len), pad_id)], dim=1)
                 loss_mask = torch.cat([loss_mask, loss_mask.new_zeros((1, pad_len))], dim=1)
-            input_ids, position_ids = setup_cp_params(
-                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                if seq_lens is not None:
+                    seq_lens = torch.cat([seq_lens, seq_lens.new_full((1,), pad_len)])
+                if mm_type_ids is not None:
+                    mm_type_ids = torch.cat([mm_type_ids, mm_type_ids.new_zeros((1, pad_len))], dim=1)
+            defer_vlm_cp_to_model = (
+                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
             )
+            if not defer_vlm_cp_to_model:
+                input_ids, position_ids = setup_cp_params(
+                    input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                )
             seq_lens_are_global = seq_lens is not None
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
         if config.model.lora is not None:
-            set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
+            set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
         token_count = loss_mask.sum(dtype=torch.int64)
 

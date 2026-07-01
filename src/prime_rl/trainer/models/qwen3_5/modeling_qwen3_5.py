@@ -28,6 +28,7 @@ from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeRotaryEmbedding,
 )
 from prime_rl.trainer.models.qwen3_5_moe.mrope import build_qwen3_5_mrope_position_ids
+from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 
@@ -389,6 +390,17 @@ class Qwen3_5VLMModel(nn.Module):
             mm_token_type_ids=mm_token_type_ids,
             seq_lens=seq_lens,
         )
+
+        cp_group = getattr(self.language_model, "_cp_group", None)
+        if image_grid_thw is not None and cp_group is not None:
+            cp_rank = getattr(self.language_model, "_cp_rank", None)
+            cp_world_size = getattr(self.language_model, "_cp_world_size", None)
+            if cp_rank is None or cp_world_size is None:
+                raise ValueError("Qwen3.5 VLM CP requires rank and world size to be configured")
+            setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style="ulysses", seq_lens=seq_lens)
+            inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            seq_lens_are_global = True
 
         return self.language_model(
             inputs_embeds=inputs_embeds,
