@@ -5,6 +5,7 @@ from torch.nn import Module
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
+from vllm.model_executor.model_loader.weight_utils import remap_moe_expert_weights
 
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
 
@@ -76,8 +77,9 @@ def build_expert_map(model: Module) -> dict[str, torch.Tensor]:
     split the state that used to live on the ``FusedMoE`` module: the expert map
     (``_expert_map`` / ``global_num_experts``) now lives on
     ``MoERunner.routed_experts`` (a ``RoutedExperts``), and the EPLB state on
-    ``MoERunner.router``. Keying by the ``MoERunner`` name still prefix-matches
-    the (now nested) ``routed_experts.*`` weight params in ``load_weights_kernel``.
+    ``MoERunner.router``. Keying by the ``MoERunner`` name prefix-matches the
+    nested ``routed_experts.*`` weight params after ``load_weights_kernel``
+    remaps incoming flat names via ``remap_moe_expert_weights``.
     """
     from vllm.model_executor.layers.fused_moe import MoERunner
 
@@ -102,7 +104,10 @@ def load_weights_kernel(model: Module, state_iter: Generator[tuple[str, torch.Te
     skipped: list[str] = []
     shape_mismatches: list[str] = []
 
-    for name, tensor in state_iter:
+    # The trainer emits pre-0.24 flat kernel names (``...experts.w13_weight``); since
+    # vLLM 0.24 the expert params are nested (``...experts.routed_experts.w13_weight``).
+    # ``remap_moe_expert_weights`` is upstream's compat shim for exactly this transition.
+    for name, tensor in remap_moe_expert_weights(state_iter, params):
         if name not in params:
             skipped.append(name)
             continue
