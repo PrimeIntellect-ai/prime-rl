@@ -1422,7 +1422,7 @@ dependencies = [
 requires-dist = [
     { name = "filelock" },
     { name = "pydantic" },
-    { name = "verifiers", specifier = ">=0.1.15.dev381" },
+    { name = "verifiers", specifier = ">=0.1.15.dev411" },
 ]
 
 [[package]]
@@ -2300,7 +2300,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=2.0.0" },
-    { name = "verifiers", specifier = ">=0.1.15.dev402" },
+    { name = "verifiers", specifier = ">=0.1.15.dev411" },
 ]
 
 [[package]]
@@ -3453,7 +3453,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev397" },
+    { name = "verifiers", specifier = ">=0.1.15.dev411" },
 ]
 
 [[package]]
@@ -4260,7 +4260,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev402" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev411" }]
 
 [[package]]
 name = "prometheus-client"
@@ -4769,7 +4769,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev397" },
+    { name = "verifiers", specifier = ">=0.1.15.dev411" },
 ]
 
 [[package]]
@@ -5499,7 +5499,7 @@ dependencies = [
 requires-dist = [
     { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
     { name = "tau2", git = "https://github.com/sierra-research/tau2-bench.git?rev=337326e" },
-    { name = "verifiers", specifier = ">=0.1.15.dev381" },
+    { name = "verifiers", specifier = ">=0.1.15.dev411" },
 ]
 
 [[package]]
