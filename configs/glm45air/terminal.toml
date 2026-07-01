@@ -1,0 +1,135 @@
+# exp: GLM-4.5-Air (100B MoE) RL across our v1 TERMINAL-domain envs — agentic shell/sandbox tasks
+# run through the rlm harness (ipython-only) on a prime sandbox. Each task ships its own Docker image
+# (NEEDS_CONTAINER) injected into the sandbox; grading is host-side inside the container. GRPO +
+# linear length penalty. 2 train + 4 infer nodes. Single run label (glm45air-terminal) for all envs.
+#
+# Train = the terminal training sets (terminal-bench-lite + a synthetic forensic-CTF).
+# Eval = terminal-bench-2 (full, avg@1).
+#
+# NOTE: this is the TERMINAL domain — the SWE tasksets (scaleswe-v1, r2e-gym-v1) are a separate SWE
+# domain and are intentionally NOT trained here. terminal-bench-2-v1 rlm compatibility is inferred
+# from its Harbor base (harness-opaque reward), not config-proven — smoke-test it.
+#
+# Mirrors configs/debug/v1/glm45air_scaleswe.toml (model/trainer/parallelism/caches): glm4_moe
+# router replay, glm-4.5 renderer, cp=8 ulysses, muon, LM-head chunking, AC + activation/optimizer
+# offload, skip-gather/optimizer ckpt.
+
+max_steps = 1000
+seq_len = 131072
+
+# Redirect compile/JIT caches to node-local /tmp (per user + job) to avoid contended shared-FS caches.
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/.triton-cache"
+
+[slurm]
+job_name = "glm45air-terminal"
+partition = "all"
+# Clean up this run's orphaned prime sandboxes before launch (label == SLURM job name == run label).
+pre_run_command = 'timeout 120 prime sandbox delete --label "$SLURM_JOB_NAME" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 4
+
+[wandb]
+project = "terminal-ablations"
+name = "glm45air-terminal"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[ckpt]
+interval = 50
+keep_last = 1
+resume_step = -1
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+
+# --- Trainer ---
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 8
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.ckpt]
+skip_gather_master_weights = true
+skip_optimizer = true
+
+[trainer.optim]
+type = "muon"
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 256
+group_size = 16
+max_off_policy_steps = 32
+max_inflight_rollouts = 512
+
+[orchestrator.renderer]
+name = "glm-4.5"
+thinking_retention = "all"
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.1
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.prime_monitor]
+
+# --- Train: terminal-lego (per-task Docker image in a prime sandbox, rlm ipython) ---
+
+[[orchestrator.train.env]]
+name = "terminal-lego"
+taskset = { id = "terminal-lego-v1" } # rlm-terminal taskset, harness-agnostic v1 port (Harbor; NEEDS_CONTAINER)
+harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
+
+# --- Eval: terminal-bench-2 (full, avg@1) every 20 steps, incl. step 0 ---
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.env]]
+name = "terminal-bench-2"
+taskset = { id = "terminal-bench-2-v1" }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
+timeout = { rollout = 3600 }
+
+# --- Inference ---
+
+[inference]
+enable_return_routed_experts = true
+
+# vLLM + FlashInfer caches on node-local /tmp.
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
+
+[inference.model]
+max_model_len = 131072
+
+[inference.parallel]
+tp = 8

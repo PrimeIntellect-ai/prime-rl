@@ -121,6 +121,7 @@ envs = [
     "swelego-v1",
     "tau2-bench-v1",
     "terminal-bench-2-v1",
+    "terminal-lego-v1",
     "unscramble-v1",
     "uuid-ctf-v1",
     "verbatim-copy-v1",
@@ -294,6 +295,7 @@ swebench-verified-v1 = { path = "deps/research-environments/environments/swebenc
 swelego-v1 = { path = "deps/research-environments/environments/swelego_v1", editable = true }
 tau2-bench-v1 = { path = "deps/research-environments/environments/tau2_bench_v1", editable = true }
 terminal-bench-2-v1 = { path = "deps/research-environments/environments/terminal_bench_2_v1", editable = true }
+terminal-lego-v1 = { path = "deps/research-environments/environments/terminal_lego_v1", editable = true }
 unscramble-v1 = { path = "deps/research-environments/environments/unscramble_v1", editable = true }
 uuid-ctf-v1 = { path = "deps/research-environments/environments/uuid_ctf_v1", editable = true }
 verbatim-copy-v1 = { path = "deps/research-environments/environments/verbatim_copy_v1", editable = true }
