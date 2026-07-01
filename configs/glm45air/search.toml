@@ -18,7 +18,7 @@ seq_len = 131072
 
 # Redirect compile/JIT caches to node-local /tmp (per user + job) to avoid contended shared-FS caches.
 [env_vars]
-TRITON_CACHE_DIR = "/tmp/.triton-cache-$(whoami)"
+TRITON_CACHE_DIR = "/tmp/.triton-cache"
 
 [slurm]
 job_name = "glm45air-search"
@@ -152,8 +152,8 @@ enable_return_routed_experts = true
 
 # vLLM + FlashInfer caches on node-local /tmp.
 [inference.env_vars]
-VLLM_CACHE_ROOT = "/tmp/.vllm-cache-$(whoami)"
-FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache-$(whoami)"
+VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 
 [inference.model]
 max_model_len = 131072
