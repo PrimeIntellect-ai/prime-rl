@@ -94,7 +94,7 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
         all_weights: dict[str, Tensor] = {}
         all_diffs: dict[str, Tensor] = {}
 
-        for layer_idx, (layer_weights_sd, layer_diffs_sd) in self._iter_layer_weights_and_diffs(
+        for layer_idx, layer_weights_sd, layer_diffs_sd in self._iter_layer_weights_and_diffs(
             model, param_to_diff, param_to_name, num_layers, layer_prefix
         ):
             # Resolve DTensors to full tensors on GPU
