@@ -23,6 +23,8 @@ interval = 100
 [wandb]
 project = "qwen30b-swe"
 
+[trainer]
+
 [trainer.model]
 impl = "custom"
 attn = "flash_attention_3"

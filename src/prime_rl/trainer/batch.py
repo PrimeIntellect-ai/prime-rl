@@ -100,6 +100,24 @@ def _truncate_mm(
     return cut, sliced
 
 
+def _append_mm_kwargs(dst: dict[str, EncodedTensor], src: dict[str, EncodedTensor]) -> None:
+    for key in dst:
+        dst[key].data += src[key].data
+        dst[key].shape[0] += src[key].shape[0]
+
+
+def _can_pack_mm_kwargs(dst: dict[str, EncodedTensor] | None, src: dict[str, EncodedTensor] | None) -> bool:
+    if dst is None or src is None or set(dst) != set(src):
+        return False
+    return all(
+        dst[key].dtype == src[key].dtype
+        and len(dst[key].shape) > 0
+        and len(dst[key].shape) == len(src[key].shape)
+        and dst[key].shape[1:] == src[key].shape[1:]
+        for key in dst
+    )
+
+
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
@@ -196,6 +214,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         assert len(mm_token_type_ids) == len(input_ids), (
             f"mm_token_type_ids: {len(mm_token_type_ids)}, input_ids: {len(input_ids)}"
         )
+    if mm_kwargs is not None and "image_grid_thw" in mm_kwargs and mm_token_type_ids is None:
+        raise ValueError("image_grid_thw multimodal samples require mm_token_type_ids")
     assert len(env_names) == len(input_ids), f"env_names: {len(env_names)}, input_ids: {len(input_ids)}"
 
     return MicroBatch(
@@ -214,6 +234,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         rl_weights=rl_weights,
         ce_weights=ce_weights,
         ref_kl_weights=ref_kl_weights,
+        seq_lens=[len(input_ids)],
     )
 
 
@@ -235,17 +256,38 @@ class _MicroBatchBin:
     def first_sample(self) -> MicroBatch:
         return self.samples[0][1]
 
-    def can_add(self, sample: MicroBatch, max_seq_len: int) -> bool:
+    @property
+    def first_lora_idx(self) -> int:
+        return self.samples[0][0]
+
+    @property
+    def first_multimodal_sample(self) -> MicroBatch | None:
+        for _, sample in self.samples:
+            if _is_multimodal_sample(sample):
+                return sample
+        return None
+
+    def can_add(self, sample: MicroBatch, max_seq_len: int, lora_idx: int, pack_multimodal: bool) -> bool:
         # Loss routing is per token (component weight streams), so samples of
-        # different loss types pack together freely — only modality, length and
-        # routed-experts presence constrain packing.
+        # different loss types pack together freely. Multimodal packing is still
+        # constrained by modality sidecars, length, routed experts, and LoRA/run.
         first_sample = self.first_sample
-        return (
-            not _is_multimodal_sample(first_sample)
-            and not _is_multimodal_sample(sample)
-            and self.length + len(sample.input_ids) <= max_seq_len
-            and (first_sample.routed_experts is None) == (sample.routed_experts is None)
-        )
+        if self.length + len(sample.input_ids) > max_seq_len:
+            return False
+        if (first_sample.routed_experts is None) != (sample.routed_experts is None):
+            return False
+
+        sample_is_mm = _is_multimodal_sample(sample)
+        existing_mm_sample = self.first_multimodal_sample
+        if existing_mm_sample is None and not sample_is_mm:
+            return True
+        if not pack_multimodal:
+            return False
+        if self.first_lora_idx != lora_idx:
+            return False
+        if existing_mm_sample is not None and sample_is_mm:
+            return _can_pack_mm_kwargs(existing_mm_sample.mm_kwargs, sample.mm_kwargs)
+        return True
 
     def add(self, lora_idx: int, sample: MicroBatch) -> None:
         self.samples.append((lora_idx, sample))
@@ -290,6 +332,8 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     env_names: list[str] = []
     ref_logprobs: list[float] | None = [] if has_ref_logprobs else None
     mm_token_type_ids: list[int] | None = [] if has_mm_token_type_ids else None
+    mm_kwargs: dict[str, EncodedTensor] | None = None
+    seq_lens: list[int] = []
     streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
     routed_experts: RoutedExperts | None = None
     lora_num_tokens = [0] * num_loras
@@ -322,11 +366,17 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
                 assert routed_experts.shape[1:] == sample.routed_experts.shape[1:]
                 routed_experts.data += sample.routed_experts.data
                 routed_experts.shape[0] += sample.routed_experts.shape[0]
+        if sample.mm_kwargs is not None:
+            if mm_kwargs is None:
+                mm_kwargs = copy.deepcopy(sample.mm_kwargs)
+            else:
+                _append_mm_kwargs(mm_kwargs, sample.mm_kwargs)
+        seq_lens.extend(sample.seq_lens if sample.seq_lens is not None else [sample_len])
         lora_num_tokens[lora_idx] += sample_len
 
     sequence_lengths = [len(sample.input_ids) for _, sample in bin_content.samples]
     assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
-    first_sample = bin_content.first_sample
+    assert sum(seq_lens) == len(input_ids), (seq_lens, len(input_ids))
 
     return MicroBatch(
         input_ids=input_ids,
@@ -341,10 +391,11 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
-        mm_kwargs=first_sample.mm_kwargs if _is_multimodal_sample(first_sample) else None,
+        mm_kwargs=mm_kwargs,
         rl_weights=streams["rl_weights"],
         ce_weights=streams["ce_weights"],
         ref_kl_weights=streams["ref_kl_weights"],
+        seq_lens=seq_lens,
     )
 
 
@@ -371,14 +422,16 @@ def packed_samples_into_micro_bs(
     num_loras: int,
     num_train_workers: int,
     bin_cost: Callable[[Sequence[int]], int],
+    pack_multimodal: bool = False,
 ) -> list[MicroBatch]:
     """
     Pack samples into micro_batch efficiently.
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
-    NOTE: Multimodal samples (with mm_kwargs) are NOT packed together as they have variable-sized
-    vision data that doesn't pack well. Each multimodal sample becomes its own micro batch.
+    Multimodal samples are only packed when ``pack_multimodal`` is true. They
+    can pack with text spans from the same run/LoRA and with compatible eager
+    ``mm_kwargs`` samples. Packed batches preserve sample boundaries in ``seq_lens``.
     """
     # Sort by (lora_idx, -length) for packing efficiency
     samples.sort(key=lambda x: (x[0], -len(x[1].input_ids)))
@@ -386,9 +439,10 @@ def packed_samples_into_micro_bs(
     bins: list[_MicroBatchBin] = []
 
     for idx, sample in samples:
-        # Try to find a bin that can fit this sequence (only pack text-only samples)
+        # Try to find a bin that can fit this sequence. Multimodal samples only
+        # pack when explicitly enabled and their sidecar tensors are compatible.
         for bin_content in bins:
-            if bin_content.can_add(sample, max_seq_len):
+            if bin_content.can_add(sample, max_seq_len, idx, pack_multimodal):
                 bin_content.add(idx, sample)
                 break
         else:
@@ -464,6 +518,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         )
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
+    if micro_batch.seq_lens is not None:
+        micro_batch.seq_lens.append(padding_size)
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
     micro_batch.env_names.extend([""] * padding_size)
@@ -533,6 +589,7 @@ def prepare_batch(
     num_loras: int,
     bin_cost: Callable[[Sequence[int]], int],
     pad_to_multiple_of: int = 1,
+    pack_multimodal: bool = False,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -545,7 +602,14 @@ def prepare_batch(
     """
     all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
-    micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras, num_train_workers, bin_cost)
+    micro_batches = packed_samples_into_micro_bs(
+        all_samples,
+        seq_len,
+        num_loras,
+        num_train_workers,
+        bin_cost,
+        pack_multimodal=pack_multimodal,
+    )
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
     # Separate by modality so each step index has uniform modality across all ranks

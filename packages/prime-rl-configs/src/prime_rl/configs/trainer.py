@@ -569,6 +569,8 @@ class TrainerConfig(BaseConfig):
     enable_token_export: bool = False
     """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
 
+    pack_multimodal: bool = True
+    """Pack multimodal samples together when the active model path supports packed multimodal position boundaries."""
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
 
@@ -600,6 +602,12 @@ class TrainerConfig(BaseConfig):
                 "freeze_vision_encoder=false is incompatible with LoRA. "
                 "LoRA freezes all non-adapter parameters including the vision encoder."
             )
+        return self
+
+    @model_validator(mode="after")
+    def vlm_incompatible_with_cp(self):
+        if self.model.vlm is not None and self.model.cp > 1:
+            raise ValueError("VLM models are not supported with context parallelism")
         return self
 
     @model_validator(mode="after")
