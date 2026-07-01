@@ -36,7 +36,7 @@ num_infer_replicas = 4
 
 [wandb]
 project = "swe-ablations"
-name = "glm45air-scaleswe-lp"
+name = "glm45air-scaleswe"
 
 [weight_broadcast]
 type = "nccl"
