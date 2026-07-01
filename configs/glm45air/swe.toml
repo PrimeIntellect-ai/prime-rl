@@ -23,7 +23,6 @@ TRITON_CACHE_DIR = "/tmp/.triton-cache-$(whoami)"
 
 [slurm]
 job_name = "glm45air-swe"
-project_dir = "."
 partition = "all"
 # Clean up this run's orphaned prime sandboxes before launch (label == SLURM job name).
 pre_run_command = 'timeout 120 prime sandbox delete --label "$SLURM_JOB_NAME" -y || true'

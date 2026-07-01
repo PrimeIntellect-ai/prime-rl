@@ -22,7 +22,6 @@ TRITON_CACHE_DIR = "/tmp/.triton-cache-$(whoami)"
 
 [slurm]
 job_name = "glm45air-search"
-project_dir = "."
 partition = "all"
 # Clean up this run's orphaned prime sandboxes before launch (label == SLURM job name == run label).
 pre_run_command = 'timeout 120 prime sandbox delete --label "$SLURM_JOB_NAME" -y || true'
@@ -128,14 +127,22 @@ name = "redsearcher"
 taskset = { id = "redsearcher-v1", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507", sampling = { temperature = 0.0 } } } # optional `difficulty` filter (easy/medium/hard)
 harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
-# --- Eval: BrowseComp (held-out search benchmark), every 20 steps (incl. step 0) ---
+# --- Eval: BrowseComp + PaperSearchQA held-out test, every 20 steps (incl. step 0) ---
 
 [orchestrator.eval]
 interval = 20
 
 [[orchestrator.eval.env]]
 name = "browsecomp"
+num_examples = 500 # full set is 1266; cap eval at 500
 taskset = { id = "browsecomp-v1", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507", sampling = { temperature = 0.0 } } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
+timeout = { rollout = 3600 }
+
+[[orchestrator.eval.env]]
+name = "papersearchqa-test"
+num_examples = 500 # full test split is 5000; cap eval at 500
+taskset = { id = "papersearchqa-v1", split = "test", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507", sampling = { temperature = 0.0 } } }
 harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
 timeout = { rollout = 3600 }
 
