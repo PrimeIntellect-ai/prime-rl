@@ -29,7 +29,7 @@ _RELOAD_CORRUPTED_SUFFIXES = (".mixer.D",)
 
 
 def _restore_reload_corrupted_params(model: Module, received: dict[str, torch.Tensor]) -> None:
-    """Work around a vLLM layerwise-reload bug for NemotronH (present through vLLM 0.23.0).
+    """Work around a vLLM layerwise-reload bug for NemotronH (present through vLLM 0.24.0).
 
     The online reload drops the weight load for every Mamba layer's ``mixer.D`` (the SSD skip
     connection), leaving it as uninitialized ``empty_strided`` memory -- it reads back as garbage
@@ -38,8 +38,10 @@ def _restore_reload_corrupted_params(model: Module, received: dict[str, torch.Te
     double-counts ``A`` and finalizes the layer before ``D`` (loaded last) is loaded. The received
     broadcast value is correct, so restore D from it via the param's own ``weight_loader``.
 
-    Fixed upstream by vllm-project/vllm#44814 (merged 2026-06-10) but NOT in the pinned 0.23.0
-    release; remove this shim once we bump to a vLLM release that includes it.
+    Fixed upstream by vllm-project/vllm#44814 (merged 2026-06-10), but the layerwise-reload
+    counting path (mamba_mixer2.py + model_loader/reload/layerwise.py) is byte-identical in
+    the pinned 0.24.0 release, so the bug persists; remove this shim once a release actually
+    includes the fix.
     """
 
     def _layer_key(name: str) -> str:
