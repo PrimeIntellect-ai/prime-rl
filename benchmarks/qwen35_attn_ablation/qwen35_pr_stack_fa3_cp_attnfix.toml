@@ -1,0 +1,46 @@
+max_steps = 10
+loss_impl = "torch"
+output_dir = "/home/research/prime-runs/qwen35-pr-stack-rendererfix-attnfix-fa3-cp"
+clean_output_dir = true
+dist_timeout_seconds = 1200
+
+[deployment]
+type = "single_node"
+num_gpus = 2
+
+[wandb]
+project = "prime-rl"
+entity = "primeintellect"
+name = "qwen35-pr-stack-rendererfix-attnfix-fa3-cp"
+group = "qwen35-pr-stack-rendererfix-attnfix-ablation"
+tags = ["qwen3.5", "sft-pr-stack", "rendererfix", "attnfix", "custom", "fa3", "cp2", "ulysses", "h100", "sft-ablation"]
+
+[model]
+name = "Qwen/Qwen3.5-0.8B"
+impl = "custom"
+attn = "flash_attention_3"
+cp = 2
+cp_style = "ulysses"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+freeze_vision_encoder = true
+
+[model.lora]
+rank = 4
+alpha = 8.0
+
+[renderer]
+name = "qwen3.5"
+
+[data]
+type = "sft"
+name = "json"
+data_files = ["/home/research/sft-dataset/intellect3_sft_10k/intellect3_sft_10k.jsonl"]
+batch_size = 4
+micro_batch_size = 1
+seq_len = 8192
+pack_function = "cat"

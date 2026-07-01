@@ -190,8 +190,23 @@ def substitute_ulysses_attn(
     Qwen3_5MoeGatedFlashAttention._compute_attention = _ulysses_compute_attention
 
 
-def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
-    """Patch HF's `_flash_attention_forward` to use Ulysses all-to-all + local FA2.
+def _resolve_flash_attn_kernel(attn_impl: str):
+    if attn_impl == "fa4":
+        from flash_attn.cute import flash_attn_varlen_func as flash_fn
+
+        return torch._dynamo.disable(flash_fn), 4
+    if attn_impl == "flash_attention_3":
+        from flash_attn_interface import flash_attn_varlen_func as flash_fn
+
+        return flash_fn, 3
+
+    from flash_attn import flash_attn_varlen_func as flash_fn
+
+    return flash_fn, 2
+
+
+def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup, attn_impl: str = "flash_attention_2") -> None:
+    """Patch HF flash attention to use Ulysses all-to-all + the configured FA kernel.
 
     Used for HF (non-custom) model paths, e.g. qwen2/qwen3 dense models. Mirrors
     ring_flash_attn's `substitute_hf_flash_attn` but with all-to-all instead of
@@ -199,9 +214,9 @@ def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
     """
     import transformers
     import transformers.modeling_flash_attention_utils
-    from flash_attn import flash_attn_varlen_func
 
     cp_size = dist.get_world_size(group=process_group)
+    flash_fn, flash_attn_version = _resolve_flash_attn_kernel(attn_impl)
 
     def _ulysses_flash_attention_forward(
         query_states: torch.Tensor,
@@ -231,7 +246,7 @@ def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
             window_size = (sliding_window, sliding_window)
 
         out = ulysses_flash_attn_varlen_func(
-            flash_attn_varlen_func,
+            flash_fn,
             query_states.squeeze(0),
             key_states.squeeze(0),
             value_states.squeeze(0),
@@ -242,7 +257,7 @@ def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
             causal=True,
             cp_group=process_group,
             cp_size=cp_size,
-            flash_attn_version=2,
+            flash_attn_version=flash_attn_version,
             window_size=window_size,
             softmax_scale=softmax_scale,
             dropout_p=dropout,
@@ -252,7 +267,7 @@ def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
 
     transformers.modeling_flash_attention_utils._flash_attention_forward = _ulysses_flash_attention_forward
 
-    # Newer transformers route attention through ALL_ATTENTION_FUNCTIONS["flash_attention_2"].
+    # Newer transformers route attention through ALL_ATTENTION_FUNCTIONS[attn_impl].
     try:
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
     except ImportError:
@@ -293,4 +308,4 @@ def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
             )
             return attn_out, None
 
-        ALL_ATTENTION_FUNCTIONS["flash_attention_2"] = _ulysses_flash_attention_forward_v2
+        ALL_ATTENTION_FUNCTIONS[attn_impl] = _ulysses_flash_attention_forward_v2

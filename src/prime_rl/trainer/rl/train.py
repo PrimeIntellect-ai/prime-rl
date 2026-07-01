@@ -200,7 +200,7 @@ def train(config: TrainerConfig):
                 substitute_ulysses_attn,
             )
 
-            substitute_hf_ulysses_attn(cp_group)
+            substitute_hf_ulysses_attn(cp_group, attn_impl=config.model.attn)
             substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
         from prime_rl.utils.cp import (
             assert_cp_style_supports_model,

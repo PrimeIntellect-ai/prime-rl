@@ -122,7 +122,7 @@ def train(config: SFTConfig):
                 substitute_ulysses_attn,
             )
 
-            substitute_hf_ulysses_attn(cp_group)
+            substitute_hf_ulysses_attn(cp_group, attn_impl=config.model.attn)
             substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
         from prime_rl.utils.cp import setup_hybrid_cp, setup_nemotron_h_cp, setup_sparse_mla_cp
 
