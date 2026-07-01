@@ -119,10 +119,13 @@ def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int, seq_dim: int
         The shard of the tensor for the current rank.
     """
 
+    if seq_dim == 1 and t.shape[0] != 1:
+        raise ValueError(f"For CP, tensor must have batch dimension 1, got shape={tuple(t.shape)}")
     if t.shape[seq_dim] % cp_world_size != 0:
         raise ValueError(
             f"CP requires sequence dimension {seq_dim} to be divisible by cp size: "
-            f"shape={tuple(t.shape)}, cp_size={cp_world_size}"
+            f"shape={tuple(t.shape)}, cp_size={cp_world_size}; "
+            "uneven shards deadlock CP collectives (e.g. ulysses all-to-all)"
         )
 
     chunked_t = torch.chunk(t, cp_world_size, dim=seq_dim)
