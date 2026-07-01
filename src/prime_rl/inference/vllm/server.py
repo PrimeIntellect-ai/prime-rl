@@ -150,7 +150,6 @@ async def custom_init_app_state(
     """
     await init_app_state(engine_client, state, args, supported_tasks)
 
-    state.reset_prefix_cache_after_update = getattr(args, "reset_prefix_cache_after_update", True)
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
 
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
