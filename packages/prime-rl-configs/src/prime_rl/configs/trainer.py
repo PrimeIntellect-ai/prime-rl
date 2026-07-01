@@ -1,3 +1,4 @@
+import os
 import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -213,6 +214,12 @@ class ModelConfig(BaseModelConfig):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "fa4"]:
             raise ValueError("CP is only supported with flash attention 2, flash attention 3, or fa4")
         if self.cp > 1 and self.attn in ("flash_attention_3", "fa4") and self.impl != "custom":
+            if (
+                self.attn == "flash_attention_3"
+                and self.impl == "hf"
+                and os.environ.get("ABLATION_ALLOW_HF_FA3_CP") == "1"
+            ):
+                return self
             # Both ring and ulysses route FA3/FA4 through our custom FlashAttention class:
             # ring patches `_compute_attention` with the ring kernel, ulysses patches it with
             # the all-to-all wrapper around the FA3/FA4 kernel. The HF path patches
