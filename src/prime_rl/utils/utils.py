@@ -39,11 +39,6 @@ def import_object(dotted_path: str) -> Any:
     return getattr(module, name)
 
 
-def capitalize(s: str) -> str:
-    """Capitalize the first letter of a string."""
-    return s[0].upper() + s[1:]
-
-
 def clean_exit(func: Callable) -> Callable:
     """
     A decorator that ensures the a torch.distributed process group is properly
@@ -111,26 +106,6 @@ def to_col_format(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[Any]]:
         for key, value in row.items():
             dict_of_lists[key].append(value)
     return dict(dict_of_lists)
-
-
-def to_row_format(dict_of_lists: dict[str, list[Any]]) -> list[dict[str, Any]]:
-    """
-    Turns a dict of lists to a list of dicts.
-
-    Example:
-
-    ```python
-    dict_of_lists = {"a": [1, 3], "b": [2, 4]} # Column format
-    to_row_format(dict_of_lists)
-    ```
-
-    Returns:
-
-    ```python
-    [{"a": 1, "b": 2}, {"a": 3, "b": 4}] # Row format
-    ```
-    """
-    return [dict(zip(dict_of_lists.keys(), values)) for values in zip(*dict_of_lists.values())]
 
 
 def format_time(time_s: float) -> str:
@@ -211,12 +186,6 @@ def get_latest_ckpt_step(weights_dir: Path) -> int | None:
 def mean(values: list[float] | list[int]) -> float:
     """Compute the mean of a list of values."""
     return sum(values) / len(values) if values else 0.0
-
-
-def mean_normalize(values: list[float] | list[int]) -> list[float]:
-    """Mean-Normalize a list of values to 0-1."""
-    sum_values = sum(values)
-    return [value / sum_values if sum_values > 0 else 0.0 for value in values]
 
 
 @contextmanager

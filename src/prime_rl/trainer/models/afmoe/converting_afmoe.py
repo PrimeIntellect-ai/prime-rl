@@ -3,6 +3,8 @@ import re
 import torch
 from torch import Tensor
 
+from prime_rl.trainer.conversion_utils import get_max_layer_num
+
 
 def get_num_experts_from_state_dict(state_dict: dict[str, Tensor], layer_idx: int) -> int:
     """Get the number of experts from the HF state dict for a given layer."""
@@ -122,26 +124,15 @@ def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_idx: int) -> Non
             del state_dict[key]
 
 
-def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
-    """Get the maximum layer number from the state dict."""
-    max_layer = -1
-    for key in state_dict.keys():
-        match = re.search(r"model\.layers\.(\d+)\.", key)
-        if match:
-            layer_idx = int(match.group(1))
-            max_layer = max(max_layer, layer_idx)
-    return max_layer
-
-
 def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]) -> None:
     """Convert all MoE layers from HF format to TT format in-place."""
-    max_layer = get_max_layer_num(state_dict)
-    for layer_idx in range(max_layer + 1):
+    num_layers = get_max_layer_num(state_dict)
+    for layer_idx in range(num_layers):
         convert_hf_layer_to_tt(state_dict, layer_idx)
 
 
 def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]) -> None:
     """Convert all MoE layers from TT format to HF format in-place."""
-    max_layer = get_max_layer_num(state_dict)
-    for layer_idx in range(max_layer + 1):
+    num_layers = get_max_layer_num(state_dict)
+    for layer_idx in range(num_layers):
         convert_tt_layer_to_hf(state_dict, layer_idx)
