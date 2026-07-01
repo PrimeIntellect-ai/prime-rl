@@ -1,11 +1,12 @@
 import torch
 from safetensors.torch import save_file
+from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
 from transformers import Qwen3_5MoeForCausalLM as HFQwen3_5MoeForCausalLM
 from transformers import Qwen3MoeForCausalLM as HFQwen3MoeForCausalLM
 
-from prime_rl.trainer.hf_to_prime import HFToPrimeStorageReader
+from prime_rl.trainer.hf_to_prime import HFToPrimeStorageReader, materialize_hf_to_prime
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig
@@ -120,6 +121,37 @@ def test_hf_to_prime_reader_qwen3_moe(tmp_path):
         HFQwen3MoeForCausalLM,
         PrimeRLQwen3MoeForCausalLM,
     )
+
+
+def test_materialize_hf_to_prime_qwen3_moe(tmp_path):
+    config = _qwen3_moe_config()
+    config._attn_implementation = "sdpa"
+    with torch.device("cpu"):
+        hf_model = HFQwen3MoeForCausalLM._from_config(config)
+        prime_model = PrimeRLQwen3MoeForCausalLM._from_config(config)
+
+    hf_model.save_pretrained(tmp_path, safe_serialization=True)
+
+    expected = hf_model.state_dict()
+    PrimeRLQwen3MoeForCausalLM.convert_to_prime(expected)
+
+    materialize_hf_to_prime(
+        path=tmp_path,
+        output_path=tmp_path / "prime",
+        convert_layer_to_prime=PrimeRLQwen3MoeForCausalLM.convert_layer_to_prime,
+    )
+
+    loaded = prime_model.state_dict()
+    dcp_load(
+        loaded,
+        storage_reader=HuggingFaceStorageReader((tmp_path / "prime").as_posix()),
+        no_dist=True,
+    )
+
+    assert (tmp_path / "prime").exists()
+    assert expected.keys() <= loaded.keys()
+    for key, expected_tensor in expected.items():
+        assert torch.equal(expected_tensor.detach().cpu(), loaded[key].detach().cpu()), key
 
 
 def test_hf_to_prime_reader_qwen3_5_moe(tmp_path):

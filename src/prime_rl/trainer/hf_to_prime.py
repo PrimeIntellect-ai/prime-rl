@@ -1,6 +1,10 @@
+import json
 import re
-from collections.abc import Callable
+import shutil
+import tempfile
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
 
 import torch
@@ -97,6 +101,14 @@ class HFToPrimeStorageReader(HuggingFaceStorageReader):
         fut.set_result(None)
         return fut
 
+    def converted_state_dicts(self) -> Iterator[tuple[int, dict[str, Tensor]]]:
+        if self.source_metadata is None:
+            self.read_metadata()
+
+        for group_idx in sorted(self.source_groups):
+            state_dict = self._load_source_group(group_idx)
+            yield group_idx, self.convert_layer_to_prime(state_dict, group_idx)
+
     def _group_source_keys(self, metadata: Metadata) -> dict[int, list[str]]:
         groups: dict[int, list[str]] = {}
         for key, tensor_metadata in metadata.state_dict_metadata.items():
@@ -174,4 +186,53 @@ class HFToPrimeStorageReader(HuggingFaceStorageReader):
         return int(match.group("layer"))
 
 
-__all__ = ["HFToPrimeStorageReader"]
+def materialize_hf_to_prime(
+    path: Path,
+    output_path: Path,
+    convert_layer_to_prime: Callable[[dict[str, Tensor], int], dict[str, Tensor]],
+) -> None:
+    from safetensors.torch import save_file
+
+    if output_path.exists():
+        return
+
+    reader = HFToPrimeStorageReader(path=path.as_posix(), convert_layer_to_prime=convert_layer_to_prime)
+    reader.read_metadata()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = Path(tempfile.mkdtemp(prefix=f".{output_path.name}.tmp-", dir=output_path.parent))
+
+    try:
+        group_indices = sorted(reader.source_groups)
+        num_shards = len(group_indices)
+        total_size = 0
+        weight_map: dict[str, str] = {}
+        for shard_idx, (_group_idx, state_dict) in enumerate(reader.converted_state_dicts(), start=1):
+            tensors = {
+                key: tensor.detach().cpu().contiguous()
+                for key, tensor in state_dict.items()
+                if isinstance(tensor, Tensor)
+            }
+            if not tensors:
+                continue
+            shard_name = f"model-{shard_idx:05d}-of-{num_shards:05d}.safetensors"
+            save_file(tensors, tmp_path / shard_name, metadata={"format": "pt"})
+            for key, tensor in tensors.items():
+                weight_map[key] = shard_name
+                total_size += tensor.numel() * tensor.element_size()
+            del tensors
+            del state_dict
+        index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
+        with open(tmp_path / "model.safetensors.index.json", "w", encoding="utf-8") as f:
+            f.write(json.dumps(index, indent=2, sort_keys=True) + "\n")
+        tmp_path.rename(output_path)
+    except FileExistsError:
+        shutil.rmtree(tmp_path)
+        if not output_path.exists():
+            raise
+    except Exception:
+        shutil.rmtree(tmp_path)
+        raise
+
+
+__all__ = ["HFToPrimeStorageReader", "materialize_hf_to_prime"]
