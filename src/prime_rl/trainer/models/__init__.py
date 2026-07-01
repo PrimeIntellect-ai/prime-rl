@@ -33,6 +33,7 @@ AutoConfig.register("laguna", LagunaConfig, exist_ok=True)
 AutoConfig.register("minimax_m2", MiniMaxM2Config, exist_ok=True)
 AutoConfig.register("nemotron_h", NemotronHConfig, exist_ok=True)
 AutoConfig.register("qwen3_moe", Qwen3MoeConfig, exist_ok=True)
+AutoConfig.register("qwen3_5_text", Qwen3_5TextConfig, exist_ok=True)
 AutoConfig.register("qwen3_5_moe_text", Qwen3_5MoeConfig, exist_ok=True)
 # GptOssConfig is just HF's class - already registered by transformers, no override needed.
 
@@ -47,6 +48,7 @@ _CUSTOM_CAUSAL_LM_MAPPING.register(LagunaConfig, LagunaForCausalLM, exist_ok=Tru
 _CUSTOM_CAUSAL_LM_MAPPING.register(MiniMaxM2Config, MiniMaxM2ForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(NemotronHConfig, NemotronHForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3MoeConfig, Qwen3MoeForCausalLM, exist_ok=True)
+_CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3_5TextConfig, Qwen3_5ForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3_5MoeConfig, Qwen3_5MoeForCausalLM, exist_ok=True)
 _CUSTOM_CAUSAL_LM_MAPPING.register(GptOssConfig, GptOssForCausalLM, exist_ok=True)
 

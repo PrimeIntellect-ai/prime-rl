@@ -1270,10 +1270,6 @@ def forward(
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     seq_lens: Int[Tensor, "segments"] | None = None,
     seq_lens_are_global: bool = False,
-    cp_group: object | None = None,
-    cp_rank: int | None = None,
-    cp_world_size: int | None = None,
-    cp_style: str | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
     kwargs = {
@@ -1302,16 +1298,6 @@ def forward(
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
-
-    if cp_group is not None:
-        kwargs.update(
-            {
-                "cp_group": cp_group,
-                "cp_rank": cp_rank,
-                "cp_world_size": cp_world_size,
-                "cp_style": cp_style,
-            }
-        )
 
     out = model(**kwargs)
 

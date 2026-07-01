@@ -1,35 +1,34 @@
+import functools
 from typing import Optional, Union
 
 import torch
-import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, nn
 from transformers.cache_utils import Cache
 from transformers.configuration_utils import PretrainedConfig
 from transformers.generation import GenerationMixin
+from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import (
     Qwen3_5PreTrainedModel as HFQwen3_5PreTrainedModel,
 )
-from transformers.models.qwen3_5.modeling_qwen3_5 import (
-    Qwen3_5TextModel,
-    Qwen3_5VisionModel,
-)
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.qwen3_5_moe.mrope import build_qwen3_5_mrope_position_ids
-from prime_rl.utils.cp import (
-    setup_cp_attention_params,
-    shard_for_cp,
-    shard_position_ids_for_cp,
+from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
+from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import (
+    Qwen3_5MoeGatedAttentionConfig,
+    Qwen3_5MoeGatedDeltaNet,
+    Qwen3_5MoeGatedFlashAttention,
+    Qwen3_5MoeGatedSDPAAttention,
+    Qwen3_5MoeRMSNorm,
+    Qwen3_5MoeRotaryEmbedding,
 )
-
-# ---------------------------------------------------------------------------
-# VLM composite model body
-# ---------------------------------------------------------------------------
+from prime_rl.trainer.models.qwen3_5_moe.mrope import build_qwen3_5_mrope_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 
 def _build_text_config(composite_config: PretrainedConfig) -> Qwen3_5TextConfig:
@@ -46,14 +45,236 @@ def _build_text_config(composite_config: PretrainedConfig) -> Qwen3_5TextConfig:
     return text_config
 
 
+class Qwen3_5GatedSDPAAttention(Qwen3_5MoeGatedSDPAAttention):
+    pass
+
+
+class Qwen3_5GatedFlashAttention(Qwen3_5MoeGatedFlashAttention):
+    pass
+
+
+QWEN35_ATTN_IMPL2CLASS = {
+    "sdpa": Qwen3_5GatedSDPAAttention,
+    "flash_attention_2": functools.partial(Qwen3_5GatedFlashAttention, flash_attn_version=2),
+    "flash_attention_3": functools.partial(Qwen3_5GatedFlashAttention, flash_attn_version=3),
+    "fa4": functools.partial(Qwen3_5GatedFlashAttention, flash_attn_version=4),
+}
+
+
+def _get_gated_attention(config: Qwen3_5TextConfig) -> nn.Module:
+    attn_config = Qwen3_5MoeGatedAttentionConfig(
+        hidden_size=config.hidden_size,
+        head_dim=config.head_dim,
+        num_attention_heads=config.num_attention_heads,
+        num_key_value_heads=config.num_key_value_heads,
+        rms_norm_eps=config.rms_norm_eps,
+        attention_bias=config.attention_bias,
+        attention_dropout=config.attention_dropout,
+    )
+
+    attn_impl = config._attn_implementation
+    if attn_impl == "eager":
+        attn_impl = "sdpa"
+
+    if attn_impl not in QWEN35_ATTN_IMPL2CLASS:
+        supported = list(QWEN35_ATTN_IMPL2CLASS.keys())
+        raise ValueError(
+            f"Qwen3.5 attention does not support '{config._attn_implementation}'. "
+            f"Supported implementations: {supported}."
+        )
+
+    return QWEN35_ATTN_IMPL2CLASS[attn_impl](attn_config)
+
+
+def _create_rotary_emb(config: Qwen3_5TextConfig) -> Qwen3_5MoeRotaryEmbedding:
+    return Qwen3_5MoeRotaryEmbedding(config)
+
+
+class Qwen3_5DecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config: Qwen3_5TextConfig, layer_idx: int):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.layer_type = config.layer_types[layer_idx]
+
+        if self.layer_type == "linear_attention":
+            self.linear_attn = Qwen3_5MoeGatedDeltaNet(config)
+        elif self.layer_type == "full_attention":
+            self.self_attn = _get_gated_attention(config)
+        else:
+            raise ValueError(f"Unsupported Qwen3.5 layer type: {self.layer_type}")
+
+        mlp_config = MLPConfig(
+            hidden_size=config.hidden_size,
+            intermediate_size=config.intermediate_size,
+            gate_act=config.hidden_act,
+            bias=False,
+        )
+        self.mlp = MLP(mlp_config)
+        self.input_layernorm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> torch.FloatTensor:
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+
+        if self.layer_type == "linear_attention":
+            hidden_states = self.linear_attn(hidden_states, cu_seqlens=cu_seqlens)
+        else:
+            hidden_states, _ = self.self_attn(
+                hidden_states=hidden_states,
+                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
+            )
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        return residual + hidden_states
+
+
+class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
+    config_class = Qwen3_5TextConfig
+    base_model_prefix = "model"
+    supports_gradient_checkpointing = True
+    _no_split_modules = ["Qwen3_5DecoderLayer"]
+    _skip_keys_device_placement = ["past_key_values"]
+    _supports_flash_attn = True
+    _supports_sdpa = True
+    _supports_flex_attn = False
+    _supports_attention_backend = True
+    _can_compile_fullgraph = False
+    _can_record_outputs = {
+        "hidden_states": Qwen3_5DecoderLayer,
+    }
+
+    @classmethod
+    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        return True
+
+    @classmethod
+    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        return True
+
+    @classmethod
+    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        return state_dict
+
+    @classmethod
+    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        return state_dict
+
+    @classmethod
+    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        return state_dict
+
+    @classmethod
+    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        return state_dict
+
+
+class Qwen3_5Model(Qwen3_5PreTrainedModel):
+    def __init__(self, config: Qwen3_5TextConfig):
+        super().__init__(config)
+        self.padding_idx = config.pad_token_id
+        self.vocab_size = config.vocab_size
+
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.layers = nn.ModuleList([Qwen3_5DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
+        self.norm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.rotary_emb = _create_rotary_emb(config)
+        self.gradient_checkpointing = False
+
+        self.post_init()
+
+    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
+        self._cp_group = cp_group
+        self._cp_rank = cp_rank
+        self._cp_world_size = cp_world_size
+        for layer in self.layers:
+            if getattr(layer, "layer_type", None) == "linear_attention":
+                layer.linear_attn.cp_group = cp_group
+                layer.linear_attn.cp_rank = cp_rank
+                layer.linear_attn.cp_world_size = cp_world_size
+
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        seq_lens: Optional[torch.LongTensor] = None,
+        seq_lens_are_global: bool = False,
+    ) -> BaseModelOutputWithPast:
+        if (input_ids is None) ^ (inputs_embeds is not None):
+            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
+        if position_ids is None:
+            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
+
+        flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
+        if flash_attn_enabled:
+            if seq_lens_are_global and seq_lens is not None:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens.to(device=inputs_embeds.device))
+            elif position_ids.ndim == 3:
+                if inputs_embeds.shape[0] != 1:
+                    raise ValueError("3D Qwen3.5 MRoPE positions require batch size 1 for varlen attention")
+                seq_len = inputs_embeds.shape[1]
+                if seq_lens is None:
+                    cu_seqlens = torch.tensor([0, seq_len], dtype=torch.int32, device=inputs_embeds.device)
+                    max_seqlen = seq_len
+                else:
+                    cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                        seq_lens.to(device=inputs_embeds.device),
+                        total_tokens=seq_len,
+                    )
+            else:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+            torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        elif position_ids.ndim == 3 and seq_lens is not None:
+            seq_lens = seq_lens.to(device=inputs_embeds.device)
+            if seq_lens.numel() > 1 and "full_attention" in self.config.layer_types:
+                raise ValueError("Packed Qwen3.5 MRoPE batches with full_attention layers require flash attention")
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                seq_lens,
+                total_tokens=None if seq_lens_are_global else inputs_embeds.shape[1],
+            )
+        else:
+            cu_seqlens = None
+            max_seqlen = None
+
+        hidden_states = inputs_embeds
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+
+        for decoder_layer in self.layers:
+            hidden_states = decoder_layer(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
+            )
+
+        hidden_states = self.norm(hidden_states)
+        return BaseModelOutputWithPast(last_hidden_state=hidden_states)
+
+
 class Qwen3_5VLMModel(nn.Module):
-    """Composite VLM body: HF vision encoder + HF dense text model."""
+    """Composite VLM body: HF vision encoder + custom PrimeRL dense text model."""
 
     def __init__(self, config: PretrainedConfig):
         super().__init__()
         self.config = config
         self.visual = Qwen3_5VisionModel._from_config(config.vision_config)
-        self.language_model = Qwen3_5TextModel(_build_text_config(config))
+        self.language_model = Qwen3_5Model(_build_text_config(config))
 
     def get_input_embeddings(self):
         return self.language_model.embed_tokens
@@ -61,8 +282,10 @@ class Qwen3_5VLMModel(nn.Module):
     def set_input_embeddings(self, value):
         self.language_model.embed_tokens = value
 
+    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
+        self.language_model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+
     def _dummy_vision_inputs(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-        """Smallest valid vision input: a single merged token (grid [1, m, m])."""
         vcfg = self.config.vision_config
         m = vcfg.spatial_merge_size
         num_patches = m * m
@@ -97,7 +320,6 @@ class Qwen3_5VLMModel(nn.Module):
                 f"Qwen3.5 multimodal forward requires 3D MRoPE position_ids; got shape={tuple(position_ids.shape)}"
             )
 
-        # Keep vision collectives symmetric across ranks, matching the MoE VLM path.
         has_images = pixel_values is not None
         vision_grid_thw = image_grid_thw
         if has_images:
@@ -154,14 +376,8 @@ class Qwen3_5VLMModel(nn.Module):
         mm_token_type_ids: torch.LongTensor | None = None,
         seq_lens: torch.LongTensor | None = None,
         seq_lens_are_global: bool = False,
-        cp_group: object | None = None,
-        cp_rank: int | None = None,
-        cp_world_size: int | None = None,
-        cp_style: str | None = None,
         **kwargs,
     ) -> BaseModelOutputWithPast:
-        cp_enabled = cp_group is not None
-
         inputs_embeds, position_ids = self.prepare_inputs_embeds_and_position_ids(
             input_ids=input_ids,
             position_ids=position_ids,
@@ -172,52 +388,23 @@ class Qwen3_5VLMModel(nn.Module):
             seq_lens=seq_lens,
         )
 
-        if cp_enabled:
-            setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style=cp_style, seq_lens=seq_lens)
-            inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=cp_rank, cp_world_size=cp_world_size)
-            position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
-            seq_lens_are_global = True
-
         return self.language_model(
             inputs_embeds=inputs_embeds,
             position_ids=position_ids,
-            use_cache=None,
             seq_lens=seq_lens,
             seq_lens_are_global=seq_lens_are_global,
         )
 
 
-# ---------------------------------------------------------------------------
-# Unified CausalLM / VLM class
-# ---------------------------------------------------------------------------
+def _has_vlm_keys(state_dict: dict[str, Tensor]) -> bool:
+    return any(k.startswith("model.language_model.") for k in state_dict)
 
 
-class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
-    config_class = Qwen3_5TextConfig
-
-    @classmethod
-    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return True
-
-    @classmethod
-    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return True
-
-    @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        return state_dict
+def _remap_lm_keys(state_dict: dict[str, Tensor], to_flat: bool = True) -> None:
+    src = "model.language_model." if to_flat else "model."
+    dst = "model." if to_flat else "model.language_model."
+    for k in [k for k in list(state_dict.keys()) if k.startswith(src) and not k.startswith("model.visual.")]:
+        state_dict[dst + k[len(src) :]] = state_dict.pop(k)
 
 
 class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
@@ -237,7 +424,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
             text_config = config.text_config
             self._tied_weights_keys = {"lm_head.weight": "model.language_model.embed_tokens.weight"}
         else:
-            self.model = Qwen3_5TextModel(config)
+            self.model = Qwen3_5Model(config)
             text_config = config
 
         self.vocab_size = text_config.vocab_size
@@ -260,6 +447,31 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
 
     def get_decoder(self):
         return self.model
+
+    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
+        self.model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+
+    @classmethod
+    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        if _has_vlm_keys(state_dict):
+            _remap_lm_keys(state_dict, to_flat=True)
+            _remap_lm_keys(state_dict, to_flat=False)
+        return state_dict
+
+    @classmethod
+    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        if _has_vlm_keys(state_dict):
+            _remap_lm_keys(state_dict, to_flat=True)
+            _remap_lm_keys(state_dict, to_flat=False)
+        return state_dict
+
+    @classmethod
+    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        return cls.convert_to_hf(state_dict)
+
+    @classmethod
+    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        return cls.convert_to_prime(state_dict)
 
     def prime_forward_kwargs(
         self,
@@ -287,10 +499,6 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         mm_token_type_ids: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
         seq_lens_are_global: bool = False,
-        cp_group: object | None = None,
-        cp_rank: int | None = None,
-        cp_world_size: int | None = None,
-        cp_style: str | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5 for now"
@@ -313,19 +521,12 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
                 mm_token_type_ids=mm_token_type_ids,
                 seq_lens=seq_lens,
                 seq_lens_are_global=seq_lens_are_global,
-                cp_group=cp_group,
-                cp_rank=cp_rank,
-                cp_world_size=cp_world_size,
-                cp_style=cp_style,
             )
         else:
             outputs = self.model(
                 input_ids=input_ids,
-                attention_mask=attention_mask,
                 position_ids=position_ids,
-                past_key_values=None,
                 inputs_embeds=inputs_embeds,
-                use_cache=None,
                 seq_lens=seq_lens,
                 seq_lens_are_global=seq_lens_are_global,
             )
@@ -347,13 +548,6 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         if hasattr(lm_rope, "rope_init_fn"):
             inv_freq, lm_rope.attention_scaling = lm_rope.rope_init_fn(lm_rope.config, lm_rope.inv_freq.device)
             lm_rope.inv_freq.copy_(inv_freq)
-        elif hasattr(lm_rope, "compute_default_rope_parameters"):
-            inv_freq, lm_rope.attention_scaling = lm_rope.compute_default_rope_parameters(
-                lm_rope.config, lm_rope.inv_freq.device
-            )
-            lm_rope.inv_freq.copy_(inv_freq)
-            if hasattr(lm_rope, "original_inv_freq"):
-                lm_rope.original_inv_freq.copy_(inv_freq)
 
         if self._is_vlm:
             vis_rope = self.model.visual.rotary_pos_emb
@@ -368,5 +562,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
 
 __all__ = [
     "Qwen3_5ForCausalLM",
+    "Qwen3_5GatedFlashAttention",
+    "Qwen3_5Model",
     "Qwen3_5PreTrainedModel",
 ]

@@ -864,6 +864,16 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
 
         self.post_init()
 
+    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
+        self._cp_group = cp_group
+        self._cp_rank = cp_rank
+        self._cp_world_size = cp_world_size
+        for layer in self.layers:
+            if getattr(layer, "layer_type", None) == "linear_attention":
+                layer.linear_attn.cp_group = cp_group
+                layer.linear_attn.cp_rank = cp_rank
+                layer.linear_attn.cp_world_size = cp_world_size
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -963,6 +973,9 @@ class Qwen3_5MoeVLMModel(nn.Module):
 
     def set_input_embeddings(self, value):
         self.language_model.embed_tokens = value
+
+    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
+        self.language_model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
 
     def _dummy_vision_inputs(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         """Smallest valid vision input: a single merged token (grid [1, m, m])."""
@@ -1164,6 +1177,9 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
 
     def get_decoder(self):
         return self.model
+
+    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
+        self.model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
 
     # ------------------------------------------------------------------
     # State dict detection & conversion (handles both text-only and VLM)

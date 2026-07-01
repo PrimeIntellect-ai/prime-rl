@@ -54,31 +54,14 @@ def assert_cp_style_supports_model(cp_style: CPStyle, model: nn.Module) -> None:
 
 def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
     """Configure DeltaNet modules in Qwen3.5 hybrid models for ulysses-style CP."""
-    layers = None
-    if hasattr(model, "model"):
-        inner = model.model
-        if hasattr(inner, "language_model"):
-            inner = inner.language_model
-        if hasattr(inner, "layers"):
-            layers = inner.layers
-
-    if layers is None:
-        return
-
-    count = 0
-    for layer in layers:
-        if getattr(layer, "layer_type", None) == "linear_attention":
-            attn = getattr(layer, "linear_attn", None)
-            if attn is not None:
-                attn.cp_group = cp_group
-                attn.cp_rank = cp_rank
-                attn.cp_world_size = cp_world_size
-                count += 1
-
-    if count > 0:
+    if hasattr(model, "set_context_parallel_attributes"):
+        model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
         from prime_rl.utils.logger import get_logger
 
-        get_logger().info(f"Configured hybrid CP on {count} DeltaNet modules (fla native state passing)")
+        get_logger().info("Configured hybrid CP via model context-parallel setup")
+        return
+
+    raise ValueError("Hybrid CP requires the model to implement set_context_parallel_attributes")
 
 
 def setup_nemotron_h_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:

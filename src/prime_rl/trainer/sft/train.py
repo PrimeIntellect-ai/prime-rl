@@ -233,7 +233,6 @@ def train(config: SFTConfig):
     cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     cp_size = parallel_dims.cp
-    vlm_cp_enabled = cp_enabled and config.model.vlm is not None
 
     ce_loss = None
     match config.loss_impl:
@@ -256,29 +255,29 @@ def train(config: SFTConfig):
         mm_type_ids = micro_batch.get("mm_token_type_ids")
         seq_lens = micro_batch.get("seq_lens")
 
-        forward_cp_group = None
-        forward_cp_rank = None
-        forward_cp_world_size = None
-        forward_cp_style = None
         seq_lens_are_global = False
 
         if cp_enabled:
-            if vlm_cp_enabled:
-                forward_cp_group = cp_group
-                forward_cp_rank = cp_rank
-                forward_cp_world_size = cp_size
-                forward_cp_style = config.model.cp_style
-            else:
-                input_ids, position_ids = setup_cp_params(
-                    input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
-                )
-                seq_lens_are_global = seq_lens is not None
+            # CP shards the sequence into equal chunks and ulysses all-to-all requires
+            # identical shard sizes across CP ranks, so pad packs whose length is not
+            # a multiple of cp_size. Pad tokens form their own documents (position 0)
+            # and are excluded from the loss.
+            pad_len = -input_ids.shape[1] % cp_size
+            if pad_len:
+                pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+                input_ids = torch.cat([input_ids, input_ids.new_full((1, pad_len), pad_id)], dim=1)
+                position_ids = torch.cat([position_ids, position_ids.new_zeros((1, pad_len))], dim=1)
+                target_ids = torch.cat([target_ids, target_ids.new_full((1, pad_len), pad_id)], dim=1)
+                loss_mask = torch.cat([loss_mask, loss_mask.new_zeros((1, pad_len))], dim=1)
+            input_ids, position_ids = setup_cp_params(
+                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+            )
+            seq_lens_are_global = seq_lens is not None
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
         if config.model.lora is not None:
-            num_local_tokens = input_ids.numel() // cp_size if vlm_cp_enabled else input_ids.numel()
-            set_lora_num_tokens(torch.full((1,), num_local_tokens, dtype=torch.int32, device="cuda"))
+            set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
@@ -295,10 +294,6 @@ def train(config: SFTConfig):
                     mm_token_type_ids=mm_type_ids,
                     seq_lens=seq_lens,
                     seq_lens_are_global=seq_lens_are_global,
-                    cp_group=forward_cp_group,
-                    cp_rank=forward_cp_rank,
-                    cp_world_size=forward_cp_world_size,
-                    cp_style=forward_cp_style,
                 )
                 loss_sum = out["loss"] * token_count
             else:
@@ -310,10 +305,6 @@ def train(config: SFTConfig):
                     mm_token_type_ids=mm_type_ids,
                     seq_lens=seq_lens,
                     seq_lens_are_global=seq_lens_are_global,
-                    cp_group=forward_cp_group,
-                    cp_rank=forward_cp_rank,
-                    cp_world_size=forward_cp_world_size,
-                    cp_style=forward_cp_style,
                 )
                 logits = out["logits"]
                 B, L, V = logits.shape
