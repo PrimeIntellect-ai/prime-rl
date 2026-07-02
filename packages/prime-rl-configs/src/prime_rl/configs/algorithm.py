@@ -274,6 +274,15 @@ class OPSDAlgoConfig(BaseAlgoConfig):
     Receives ``{demonstration}``; the original question stays in the (verbatim)
     user turn, so it isn't templated here."""
 
+    max_score_tokens: int | None = None
+    """Scoring context window — set to the inference server's ``max_model_len``.
+    Generation reserves no headroom for the hint block, so a near-max-context
+    trajectory + hint can exceed the server window. When set, over-budget
+    samples are scored on their first ``max_score_tokens − len(hint)`` tokens
+    and the unscored tail is masked out of the loss, keeping the (expensive)
+    rollout instead of dropping it and paying a serial backfill. When unset,
+    over-budget rollouts are dropped via the pre-filter path."""
+
     renderer: RendererConfig = AutoRendererConfig()
     """Renderer family for the hint block. The tokenizer is always the live
     policy's (self-distillation has no separate model — not configurable).

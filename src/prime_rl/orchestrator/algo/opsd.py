@@ -72,25 +72,50 @@ class OPSDAlgorithm(Algorithm):
         hint_block = renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)
 
         async def score_sample(sample: TrainingSample) -> None:
+            token_ids = list(sample.token_ids)
+            n_scored = len(token_ids)
+            if self.max_score_tokens is not None:
+                budget = self.max_score_tokens - len(hint_block)
+                if budget <= 0:
+                    raise ValueError(
+                        f"opsd hint block ({len(hint_block)} tok) alone exceeds "
+                        f"max_score_tokens={self.max_score_tokens} — shorten the demonstration or template."
+                    )
+                if n_scored > budget:
+                    # Generation reserves no context headroom for the hint, so a
+                    # near-max-context trajectory + hint can exceed the scoring
+                    # window. Score the head and mask the unscored tail out of
+                    # the loss — dropping the (expensive) rollout would also pay
+                    # a serial backfill rollout on top.
+                    n_scored = budget
+                    for i in range(n_scored, len(token_ids)):
+                        sample.mask[i] = False
+                    get_logger().warning(
+                        f"OPSD hint overflow: hint ({len(hint_block)} tok) + trajectory "
+                        f"({len(token_ids)} tok) exceeds max_score_tokens={self.max_score_tokens}; "
+                        f"scoring first {n_scored} tokens, masking the tail "
+                        f"(env {rollout.env_name!r}, task {rollout.task.idx})."
+                    )
             try:
-                full_logprobs = await pool.score(hint_block + list(sample.token_ids))
+                full_logprobs = await pool.score(hint_block + token_ids[:n_scored])
             except openai.BadRequestError as e:
                 if "longer than the maximum model length" not in str(e):
                     raise
-                # Generation reserves no context headroom for the hint, so a
-                # near-max-context trajectory + hint_block can exceed
-                # max_model_len. Rare tail case: drop the rollout via the
-                # pre-filter path instead of crashing the run.
+                # Backstop for max_score_tokens unset (or set above the server's
+                # true window): drop via the pre-filter path instead of crashing.
                 rollout.is_filtered = True
                 rollout.filter_results["opsd_hint_overflow"] = True
                 get_logger().warning(
                     f"OPSD hint overflow: hint ({len(hint_block)} tok) + trajectory "
-                    f"({len(sample.token_ids)} tok) exceeds max_model_len; dropping rollout "
+                    f"({n_scored} tok) rejected by the inference server; dropping rollout "
                     f"(env {rollout.env_name!r}, task {rollout.task.idx})."
                 )
                 return
             # Drop the hint's own logprobs; the tail aligns full-length to
             # sample.token_ids (demo-conditioned, the trainer's ref_kl target).
-            sample.ref_logprobs = full_logprobs[len(hint_block) :]
+            # A truncated sample pads 0.0 over the masked-out unscored tail to
+            # keep the per-token alignment invariant.
+            ref_logprobs = full_logprobs[len(hint_block) :]
+            sample.ref_logprobs = ref_logprobs + [0.0] * (len(token_ids) - n_scored)
 
         await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))
