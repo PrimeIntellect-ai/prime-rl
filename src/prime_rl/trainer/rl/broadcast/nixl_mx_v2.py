@@ -121,36 +121,39 @@ class NIXLMxV2WeightBroadcast(WeightBroadcast):
         self._hf_config = AutoConfig.from_pretrained(self.config.inference_model_name)
         self._conversion = select_default_conversion(self.config.inference_model_name)
 
-        # Pull-mode (this broadcast type) + same-rank routing means each
-        # inference rank only contacts ONE trainer rank, so the trainer must
-        # have the FULL tensor on each rank — ShardedSlot's 1/N FSDP-shard
-        # would deliver only 1/N to each receiver and vLLM's load_weights
-        # would refuse the shape mismatch. Force every non-expert slot
-        # into GatheredSlot (DTensor.full_tensor() allgather + full tensor
-        # held per rank) by raising the threshold beyond any realistic
-        # weight size. Expert slots remain ExpertSlot (each rank owns its
-        # EP shard, which is exactly what same-rank pull mode wants).
+        # Rank-to-rank pull for non-expert weights (no trainer allgather).
         #
-        # In push-mode (PR #2389's `nixl_mx`) ShardedSlot is correct
-        # because each trainer rank writes its FSDP shard directly into
-        # the inference's pre-allocated buffer at its rank-specific
-        # offset — there each receiver assembles N shards from N senders.
-        # Pull-mode receivers can't do that without Phase-4 multi-source
-        # slicing in the engine adapter; until that lands, gather first.
+        # Non-expert slots stay as ``ShardedSlot`` — each trainer rank holds
+        # only its FSDP row-shard. The publisher tags each shard with an
+        # explicit ``NonExpertShardSpec`` (global shape + this rank's row
+        # range) so receivers can discover every rank's shard and reassemble
+        # the full tensor locally via the MX multi-source planner. No
+        # ``DTensor.full_tensor()`` allgather runs on the trainer, and each
+        # trainer rank stays an independent publisher (spreads receiver pull
+        # load instead of collapsing to one "master rank").
+        #
+        # Expert slots remain ``ExpertSlot`` (each rank owns its EP subset —
+        # already the right shape for per-rank pull).
+        #
+        # Set ``mx_v2_gather_non_expert = True`` on the config to fall back
+        # to the legacy gather-first behavior (forces every non-expert into
+        # GatheredSlot via the DTensor allgather). Kept as an escape hatch
+        # for debugging / cross-checking against the pre-rank-to-rank path.
+        gather_non_expert = bool(getattr(self.config, "mx_v2_gather_non_expert", False))
         from prime_rl.trainer.models import slots as _slots_mod
-        if getattr(self, "_orig_small_non_expert_bytes", None) is None:
-            self._orig_small_non_expert_bytes = _slots_mod.SMALL_NON_EXPERT_BYTES
-        _slots_mod.SMALL_NON_EXPERT_BYTES = 1 << 60
-
+        if gather_non_expert:
+            if getattr(self, "_orig_small_non_expert_bytes", None) is None:
+                self._orig_small_non_expert_bytes = _slots_mod.SMALL_NON_EXPERT_BYTES
+            _slots_mod.SMALL_NON_EXPERT_BYTES = 1 << 60
         try:
             with classic_cuda_alloc():
                 self._model_slots = model.build_slots(
                     self.parallel_dims, self._conversion, self._hf_config.torch_dtype
                 )
         finally:
-            # Restore the threshold so we don't perturb other code paths
-            # (e.g. nixl_mx broadcast running in the same process).
-            _slots_mod.SMALL_NON_EXPERT_BYTES = self._orig_small_non_expert_bytes
+            if gather_non_expert:
+                _slots_mod.SMALL_NON_EXPERT_BYTES = self._orig_small_non_expert_bytes
+        self._gather_non_expert = gather_non_expert
 
         # The v2 publisher owns the NIXL agent + MX client + heartbeat.
         # We pass our rank as ``worker_rank``; receivers with
@@ -245,11 +248,28 @@ class NIXLMxV2WeightBroadcast(WeightBroadcast):
             compile_metadata = None
 
         n_tensors = 0
+        n_sharded = 0
         for slot in self._model_slots:
             slot_is_expert = bool(getattr(slot, "is_expert", False))
             slot_expert_axis = int(getattr(slot, "expert_axis", 0))
             slot_owned_experts = tuple(getattr(slot, "owned_expert_ids", ()))
+            # ShardedSlot publishes each rank's FSDP row-shard with explicit
+            # shard metadata so receivers can reassemble without a trainer
+            # allgather. Identified structurally (has row-shard bookkeeping)
+            # rather than by isinstance to avoid importing the slot class.
+            is_sharded = (
+                not slot_is_expert
+                and hasattr(slot, "my_rank")
+                and hasattr(slot, "trainer_ws")
+                and hasattr(slot, "rows")
+                and int(getattr(slot, "trainer_ws", 1)) > 1
+            )
             for buf_key, tensor, _ in slot.buffers:
+                shard_spec = None
+                if is_sharded:
+                    shard_spec = self._build_shard_spec(slot, buf_key, tensor)
+                    if shard_spec is not None:
+                        n_sharded += 1
                 self._publisher.add_tensor(
                     name=buf_key,
                     tensor=tensor,
@@ -258,6 +278,7 @@ class NIXLMxV2WeightBroadcast(WeightBroadcast):
                     owned_expert_ids=slot_owned_experts,
                     compile_target=compile_target,
                     compile_metadata=compile_metadata,
+                    shard_spec=shard_spec,
                 )
                 n_tensors += 1
 
@@ -268,11 +289,57 @@ class NIXLMxV2WeightBroadcast(WeightBroadcast):
         elapsed = time.perf_counter() - start
         self.logger.info(
             f"[mx_v2] publish step={step} tensors={n_tensors} "
+            f"sharded_non_expert={n_sharded} "
+            f"gather_non_expert={getattr(self, '_gather_non_expert', False)} "
             f"compile_target={compile_target} mx_source_id={mx_source_id} "
             f"elapsed={elapsed:.3f}s"
         )
 
         dist.barrier()
+
+    def _build_shard_spec(self, slot: Any, buf_key: str, tensor: torch.Tensor):
+        """Build a NonExpertShardSpec for one ShardedSlot buffer.
+
+        Each ShardedSlot holds this rank's FSDP row-shard on dim 0. The
+        full logical tensor has ``slot.rows`` rows (weight) or
+        ``slot.scale_rows`` rows (scale), split evenly across
+        ``slot.trainer_ws`` ranks. Returns ``None`` when the buffer isn't
+        a recognized weight/scale shard or the split isn't even (falls
+        back to REPLICATE publish, which the receiver treats as a full
+        tensor from that rank).
+        """
+        from modelexpress import NonExpertShardSpec
+
+        trainer_ws = int(slot.trainer_ws)
+        my_rank = int(slot.my_rank)
+        rows_per_shard = int(tensor.shape[0])
+
+        # Resolve the global row count for this specific buffer.
+        if buf_key == getattr(slot, "slot_key", None):
+            global_rows = int(getattr(slot, "rows", 0))
+        elif buf_key == getattr(slot, "scale_key", None):
+            global_rows = int(getattr(slot, "scale_rows", 0) or 0)
+        else:
+            return None
+
+        if global_rows <= 0 or rows_per_shard <= 0:
+            return None
+        # Even-split requirement (v0 planner assumes uniform shard extents).
+        if rows_per_shard * trainer_ws != global_rows:
+            self.logger.warning(
+                f"[mx_v2] {buf_key}: uneven shard "
+                f"(rows_per_shard={rows_per_shard} × ws={trainer_ws} "
+                f"!= global_rows={global_rows}); publishing as REPLICATE"
+            )
+            return None
+
+        lo = my_rank * rows_per_shard
+        hi = lo + rows_per_shard
+        return NonExpertShardSpec(
+            global_shape=(global_rows,) + tuple(int(s) for s in tensor.shape[1:]),
+            shard_axis=0,
+            local_shard_range=(lo, hi),
+        )
 
     # ------------------------------------------------------------------
     # Teardown
