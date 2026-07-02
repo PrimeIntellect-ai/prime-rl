@@ -92,7 +92,6 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
         dp_world_size=1,
         seq_len=4,
         pad_to_multiple_of=1,
-        tokenizer=None,
         config=FileSystemTransportConfig(),
         bin_cost=build_bin_cost(None),
         start_step=0,

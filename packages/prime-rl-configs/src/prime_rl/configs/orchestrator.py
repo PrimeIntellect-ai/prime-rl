@@ -13,6 +13,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
+    EnvVars,
     FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
@@ -159,9 +160,6 @@ class EnvConfig(vf.EnvServerConfig):
     ratio: float | None = Field(None, gt=0)
     """Sampling weight for this environment in the buffer. When None for all envs, samples uniformly across all available problems. When set, must be set on all envs — values are relative weights normalized to probabilities (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
 
-    max_retries: int = Field(3, ge=0)
-    """Times the env server retries a failed rollout before returning an error."""
-
     @model_validator(mode="before")
     @classmethod
     def _migrate_num_workers(cls, data):
@@ -192,9 +190,9 @@ class EnvConfig(vf.EnvServerConfig):
     def validate_env(self):
         if not self.taskset.id and not self.id:
             raise ValueError('no env configured — set taskset = { id = "<id>" } (v1) or id = "<id>" (v0/legacy)')
-        if self.resolved_name == "all":
+        if self.resolved_name == "agg":
             raise ValueError(
-                'Environment name "all" is reserved for global metric aggregation. Use a different name or id.'
+                'Environment name "agg" is reserved for cross-env metric aggregation. Use a different name or id.'
             )
         return self
 
@@ -247,13 +245,10 @@ class TrainConfig(BaseConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
 
-    max_retries: int = Field(3, ge=0)
-    """Default retries for failed rollouts. Can be overridden per env."""
-
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling and max_retries (the
-        worker ``pool`` is configured per env, defaulting to elastic)."""
+        """Resolve per-env overrides: inherit group-level sampling (the worker ``pool``
+        is configured per env, defaulting to elastic)."""
         group_sampling = self.sampling.model_dump()
         for env in self.env:
             if "sampling" not in env.model_fields_set:
@@ -261,8 +256,6 @@ class TrainConfig(BaseConfig):
             else:
                 merged = group_sampling | env.sampling.model_dump(exclude_unset=True)
                 env.sampling = TrainSamplingConfig(**merged)
-            if "max_retries" not in env.model_fields_set:
-                env.max_retries = self.max_retries
         return self
 
     @model_validator(mode="after")
@@ -298,9 +291,6 @@ class EvalConfig(BaseConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Default rollouts per example. Can be overridden per env."""
 
-    max_retries: int = Field(3, ge=0)
-    """Default retries for failed rollouts. Can be overridden per env."""
-
     interval: int = Field(100, ge=1)
     """Step interval at which to evaluate the model."""
 
@@ -310,7 +300,7 @@ class EvalConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, max_retries, num_examples,
+        """Resolve per-env overrides: inherit group-level sampling, num_examples,
         group_size, and interval (the worker ``pool`` is configured per env, default elastic)."""
         group_sampling = self.sampling.model_dump()
         for env in self.env:
@@ -325,8 +315,6 @@ class EvalConfig(BaseConfig):
                 env.group_size = self.group_size
             if "interval" not in env.model_fields_set:
                 env.interval = self.interval
-            if "max_retries" not in env.model_fields_set:
-                env.max_retries = self.max_retries
         return self
 
     @model_validator(mode="after")
@@ -442,10 +430,6 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
-class OrchestratorExperimentalConfig(BaseConfig):
-    pass
-
-
 class OrchestratorConfig(BaseConfig):
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm: sampling plus the per-token training signal (credit
@@ -499,6 +483,9 @@ class OrchestratorConfig(BaseConfig):
     rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer."""
 
     log: LogConfig = LogConfig()
+
+    env_vars: EnvVars = {}
+    """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
 
     wandb: WandbWithExtrasConfig | None = None
 
@@ -558,8 +545,6 @@ class OrchestratorConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
-
-    experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
 
     @model_validator(mode="before")
     @classmethod

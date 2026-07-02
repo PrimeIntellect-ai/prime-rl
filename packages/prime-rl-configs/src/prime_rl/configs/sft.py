@@ -6,6 +6,7 @@ from pydantic import Field, model_validator
 from renderers import RendererConfig
 
 from prime_rl.configs.shared import (
+    EnvVars,
     HeartbeatConfig,
     SlurmConfig,
     TrainerLogConfig,
@@ -166,12 +167,11 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class SFTExperimentalConfig(BaseConfig):
-    pass
-
-
 class SFTConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
+
+    env_vars: EnvVars = {}
+    """Extra environment variables for the SFT trainer process(es). Merged on top of the launcher defaults."""
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
@@ -222,7 +222,7 @@ class SFTConfig(BaseConfig):
     trace_path: Path | None = None
     """Path to write the PyTorch profiler trace to."""
 
-    dist_timeout_seconds: int = 600
+    dist_timeout_seconds: int = 3600
     """Timeout in seconds for torch distributed ops."""
 
     loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "torch"
@@ -238,8 +238,6 @@ class SFTConfig(BaseConfig):
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
-
-    experimental: SFTExperimentalConfig = SFTExperimentalConfig()
 
     ### Pre-validation normalization
 

@@ -33,7 +33,7 @@ dependencies = [
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
     "torchtitan",
-    "verifiers>=0.1.15.dev400",
+    "verifiers[harbor]>=0.1.15.dev411",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
@@ -66,47 +66,70 @@ flash-attn-cute = [
     "flash-attn-4",
 ]
 envs = [
-    "alphabet-sort",
-    "general-agent",
-    "logic-env",
-    "math-env",
-    "math-python",
-    "reverse-text",
-    "rlm-swe",
-    "rlm-search",
-    "uuid-ctf-v1",
-    "wiki-search",
-    "wordle",
-    "reverse-text-v1",
-    "gsm8k-v1",
-    "math-env-v1",
     "aime24-v1",
     "aime25-v1",
     "aime26-v1",
+    "alphabet-sort",
     "alphabet-sort-v1",
-    "scaleswe-v1",
+    "apex-shortlist-v1",
+    "browsecomp-v1",
+    "code-golf-v1",
     "color-codeword-v1",
     "deepdive-v1",
-    "gpqa-v1",
-    "livecodebench-v1",
-    "r2e-gym-v1",
-    "terminal-bench-2-v1",
-    "code-golf-v1",
     "deepwiki-v1",
-    "glossary-v1",
-    "swelego-v1",
-    "wiki-search-v1",
-    "wikispeedia-v1",
-    "wordle-v1",
+    "forth-lang-v1",
+    "general-agent",
     "general-agent-v1",
-    "swebench-verified-v1",
-    "tau2-bench-v1",
-    "math500-v1",
-    "mmlu-pro-v1",
-    "ifeval-v1",
-    "simpleqa-verified-v1",
+    "glossary-v1",
+    "gpqa-v1",
+    "graphwalks-v1",
+    "gsm8k-v1",
     "i3-code-v1",
     "i3-science-v1",
+    "ifbench-v1",
+    "ifeval-v1",
+    "lean-v1",
+    "livecodebench-v1",
+    "logic-env",
+    "longcot-mini-v1",
+    "longcot-v1",
+    "longpdfs-v1",
+    "math-env",
+    "math-env-v1",
+    "math-python",
+    "math500-v1",
+    "mmlu-pro-v1",
+    "mrcr-v2-v1",
+    "oolong-pairs-v1",
+    "oolong-real-v1",
+    "oolong-synth-v1",
+    "openseeker-v1",
+    "openthoughts-tblite-v1",
+    "papersearchqa-v1",
+    "patterned-needle-in-haystack-v1",
+    "prolog-v1",
+    "r2e-gym-v1",
+    "redsearcher-v1",
+    "reverse-text",
+    "reverse-text-v1",
+    "rlm-search",
+    "scaleswe-v1",
+    "simpleqa-v1",
+    "simpleqa-verified-v1",
+    "swebench-pro-v1",
+    "swebench-verified-v1",
+    "swelego-v1",
+    "tau2-bench-v1",
+    "terminal-bench-2-v1",
+    "unscramble-v1",
+    "uuid-ctf-v1",
+    "verbatim-copy-v1",
+    "wideseek-v1",
+    "wiki-search",
+    "wiki-search-v1",
+    "wikispeedia-v1",
+    "wordle",
+    "wordle-v1",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -152,7 +175,6 @@ dev = [
 # *without* the cooldown — bypassing this security policy.
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
-preview = true
 no-build-isolation-package = ["flash-attn"]
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -166,7 +188,6 @@ override-dependencies = [
     "transformers==5.6.2",
     "torch>=2.9.0",
     "openenv-core",
-    "verifiers>=0.1.15.dev400",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
@@ -218,47 +239,70 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
-alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
-general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
-logic-env = { path = "deps/research-environments/environments/logic_env", editable = true }
-math-env = { path = "deps/research-environments/environments/math_env", editable = true }
-math-python = { path = "deps/verifiers/environments/math_python", editable = true }
-reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
-rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable = true }
-rlm-search = { path = "deps/research-environments/environments/rlm_search", editable = true }
-uuid-ctf-v1 = { path = "deps/research-environments/environments/uuid_ctf_v1", editable = true }
-wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
-wordle = { path = "deps/verifiers/environments/wordle", editable = true }
-reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editable = true }
-gsm8k-v1 = { path = "deps/verifiers/environments/gsm8k_v1", editable = true }
-math-env-v1 = { path = "deps/research-environments/environments/math_env_v1", editable = true }
 aime24-v1 = { path = "deps/research-environments/environments/aime24_v1", editable = true }
 aime25-v1 = { path = "deps/research-environments/environments/aime25_v1", editable = true }
 aime26-v1 = { path = "deps/research-environments/environments/aime26_v1", editable = true }
+alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
 alphabet-sort-v1 = { path = "deps/verifiers/environments/alphabet_sort_v1", editable = true }
-scaleswe-v1 = { path = "deps/research-environments/environments/scaleswe_v1", editable = true }
+apex-shortlist-v1 = { path = "deps/research-environments/environments/apex_shortlist_v1", editable = true }
+browsecomp-v1 = { path = "deps/research-environments/environments/browsecomp_v1", editable = true }
+code-golf-v1 = { path = "deps/verifiers/environments/code_golf_v1", editable = true }
 color-codeword-v1 = { path = "deps/verifiers/environments/color_codeword_v1", editable = true }
 deepdive-v1 = { path = "deps/research-environments/environments/deepdive_v1", editable = true }
-gpqa-v1 = { path = "deps/research-environments/environments/gpqa_v1", editable = true }
-livecodebench-v1 = { path = "deps/research-environments/environments/livecodebench_v1", editable = true }
-r2e-gym-v1 = { path = "deps/research-environments/environments/r2e_gym_v1", editable = true }
-terminal-bench-2-v1 = { path = "deps/research-environments/environments/terminal_bench_2_v1", editable = true }
-code-golf-v1 = { path = "deps/verifiers/environments/code_golf_v1", editable = true }
 deepwiki-v1 = { path = "deps/verifiers/environments/deepwiki_v1", editable = true }
-glossary-v1 = { path = "deps/verifiers/environments/glossary_v1", editable = true }
-swelego-v1 = { path = "deps/research-environments/environments/swelego_v1", editable = true }
-wiki-search-v1 = { path = "deps/verifiers/environments/wiki_search_v1", editable = true }
-wikispeedia-v1 = { path = "deps/research-environments/environments/wikispeedia_v1", editable = true }
-wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
+forth-lang-v1 = { path = "deps/research-environments/environments/forth_lang_v1", editable = true }
+general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
 general-agent-v1 = { path = "deps/research-environments/environments/general_agent_v1", editable = true }
-swebench-verified-v1 = { path = "deps/research-environments/environments/swebench_verified_v1", editable = true }
-tau2-bench-v1 = { path = "deps/research-environments/environments/tau2_bench_v1", editable = true }
-math500-v1 = { path = "deps/research-environments/environments/math500_v1", editable = true }
-mmlu-pro-v1 = { path = "deps/research-environments/environments/mmlu_pro_v1", editable = true }
-ifeval-v1 = { path = "deps/research-environments/environments/ifeval_v1", editable = true }
-simpleqa-verified-v1 = { path = "deps/research-environments/environments/simpleqa_verified_v1", editable = true }
+glossary-v1 = { path = "deps/verifiers/environments/glossary_v1", editable = true }
+gpqa-v1 = { path = "deps/research-environments/environments/gpqa_v1", editable = true }
+graphwalks-v1 = { path = "deps/research-environments/environments/graphwalks_v1", editable = true }
+gsm8k-v1 = { path = "deps/verifiers/environments/gsm8k_v1", editable = true }
 i3-code-v1 = { path = "deps/research-environments/environments/i3_code_v1", editable = true }
 i3-science-v1 = { path = "deps/research-environments/environments/i3_science_v1", editable = true }
+ifbench-v1 = { path = "deps/research-environments/environments/ifbench_v1", editable = true }
+ifeval-v1 = { path = "deps/research-environments/environments/ifeval_v1", editable = true }
+lean-v1 = { path = "deps/research-environments/environments/lean_v1", editable = true }
+livecodebench-v1 = { path = "deps/research-environments/environments/livecodebench_v1", editable = true }
+logic-env = { path = "deps/research-environments/environments/logic_env", editable = true }
+longcot-mini-v1 = { path = "deps/research-environments/environments/longcot_mini_v1", editable = true }
+longcot-v1 = { path = "deps/research-environments/environments/longcot_v1", editable = true }
+longpdfs-v1 = { path = "deps/research-environments/environments/longpdfs_v1", editable = true }
+math-env = { path = "deps/research-environments/environments/math_env", editable = true }
+math-env-v1 = { path = "deps/research-environments/environments/math_env_v1", editable = true }
+math-python = { path = "deps/verifiers/environments/math_python", editable = true }
+math500-v1 = { path = "deps/research-environments/environments/math500_v1", editable = true }
+mmlu-pro-v1 = { path = "deps/research-environments/environments/mmlu_pro_v1", editable = true }
+mrcr-v2-v1 = { path = "deps/research-environments/environments/mrcr_v2_v1", editable = true }
+oolong-pairs-v1 = { path = "deps/research-environments/environments/oolong_pairs_v1", editable = true }
+oolong-real-v1 = { path = "deps/research-environments/environments/oolong_real_v1", editable = true }
+oolong-synth-v1 = { path = "deps/research-environments/environments/oolong_synth_v1", editable = true }
+openseeker-v1 = { path = "deps/research-environments/environments/openseeker_v1", editable = true }
+openthoughts-tblite-v1 = { path = "deps/research-environments/environments/openthoughts_tblite_v1", editable = true }
+papersearchqa-v1 = { path = "deps/research-environments/environments/papersearchqa_v1", editable = true }
+patterned-needle-in-haystack-v1 = { path = "deps/research-environments/environments/patterned_needle_in_haystack_v1", editable = true }
+prolog-v1 = { path = "deps/research-environments/environments/prolog_v1", editable = true }
+r2e-gym-v1 = { path = "deps/research-environments/environments/r2e_gym_v1", editable = true }
+redsearcher-v1 = { path = "deps/research-environments/environments/redsearcher_v1", editable = true }
+reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
+reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editable = true }
+rlm-search = { path = "deps/research-environments/environments/rlm_search", editable = true }
+scaleswe-v1 = { path = "deps/research-environments/environments/scaleswe_v1", editable = true }
+simpleqa-v1 = { path = "deps/research-environments/environments/simpleqa_v1", editable = true }
+simpleqa-verified-v1 = { path = "deps/research-environments/environments/simpleqa_verified_v1", editable = true }
+swebench-pro-v1 = { path = "deps/research-environments/environments/swebench_pro_v1", editable = true }
+swebench-verified-v1 = { path = "deps/research-environments/environments/swebench_verified_v1", editable = true }
+swelego-v1 = { path = "deps/research-environments/environments/swelego_v1", editable = true }
+tau2-bench-v1 = { path = "deps/research-environments/environments/tau2_bench_v1", editable = true }
+terminal-bench-2-v1 = { path = "deps/research-environments/environments/terminal_bench_2_v1", editable = true }
+unscramble-v1 = { path = "deps/research-environments/environments/unscramble_v1", editable = true }
+uuid-ctf-v1 = { path = "deps/research-environments/environments/uuid_ctf_v1", editable = true }
+verbatim-copy-v1 = { path = "deps/research-environments/environments/verbatim_copy_v1", editable = true }
+wideseek-v1 = { path = "deps/research-environments/environments/wideseek_v1", editable = true }
+wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
+wiki-search-v1 = { path = "deps/verifiers/environments/wiki_search_v1", editable = true }
+wikispeedia-v1 = { path = "deps/research-environments/environments/wikispeedia_v1", editable = true }
+wordle = { path = "deps/verifiers/environments/wordle", editable = true }
+wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }

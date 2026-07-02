@@ -185,7 +185,6 @@ def fp8_indexer(q, k, w, ks, ke, topk, weight_scale=1.0):
     """
     # NOTE: We don't use weight scale in this kernel as it produces higher KL mismatch for some reason
     # This is not a problem result-wise, as it is a constant multiplier
-    _weight_scale = weight_scale
     S_q, H, D = q.shape
     S_k = k.shape[0]
     device = q.device
