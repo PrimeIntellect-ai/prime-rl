@@ -371,11 +371,18 @@ class SFTDataset(StatefulIterableDataset):
             )
             self._warned_chat_template_kwargs = True
 
+        # Non-assistant roles are opted into the loss via the renderer's
+        # body-only path: the message content is trained, not the role
+        # scaffolding (e.g. <tool_response> tags) the harness emits.
+        content_sft_roles = {
+            role for role in ("user", "system", "tool") if getattr(self.loss_mask_config, role)
+        }
         sample = build_training_sample(
             self.renderer,
             messages,
             role_to_mask=should_mask,
             tools=tools,
+            content_sft_roles=content_sft_roles or None,
         )
         input_ids = list(sample.token_ids)
         loss_mask = list(sample.loss_mask)
