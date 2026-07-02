@@ -34,7 +34,7 @@ def _x_for(metric: str) -> str:
 
 
 # Per-rollout metrics (under "<scope>/all/") shown for the train aggregate and per env.
-_TRAIN_METRICS = [
+TRAIN_METRICS = [
     "reward/mean",
     "has_error/mean",
     "is_truncated/mean",
@@ -43,9 +43,9 @@ _TRAIN_METRICS = [
     "num_branches/mean",
 ]
 
-_STABILITY = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"]
+STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"]
 
-_PERFORMANCE = [
+PERFORMANCE_METRICS = [
     "perf/throughput",
     "perf/throughput_per_gpu",
     "perf/mfu",
@@ -60,8 +60,8 @@ _PERFORMANCE = [
 ]
 
 # Dense grid: more, smaller panels per row and enough rows that sections don't paginate.
-_COLUMNS = 4
-_ROWS = 6
+COLUMNS = 4
+ROWS = 6
 
 
 def _line_panels(metrics: Sequence[str], regexes: Sequence[str]) -> list[wr.LinePlot]:
@@ -73,12 +73,12 @@ def _section(name: str, metrics: Sequence[str] = (), regexes: Sequence[str] = ()
         name=name,
         is_open=True,
         panels=_line_panels(metrics, regexes),
-        layout_settings=ws.SectionLayoutSettings(columns=_COLUMNS, rows=_ROWS),
+        layout_settings=ws.SectionLayoutSettings(columns=COLUMNS, rows=ROWS),
     )
 
 
 def _train_section(name: str, scope: str) -> ws.Section:
-    return _section(name, metrics=[f"{scope}/all/{m}" for m in _TRAIN_METRICS])
+    return _section(name, metrics=[f"{scope}/all/{m}" for m in TRAIN_METRICS])
 
 
 def _eval_section(name: str, env_pattern: str) -> ws.Section:
@@ -111,8 +111,8 @@ def _build_sections(train_envs: Sequence[str] = (), eval_envs: Sequence[str] = (
     else:
         # Env names unknown (e.g. SFT): one regex section matching any eval env.
         sections.append(_eval_section("eval", ".*"))
-    sections.append(_section("stability", metrics=_STABILITY))
-    sections.append(_section("performance", metrics=_PERFORMANCE))
+    sections.append(_section("stability", metrics=STABILITY_METRICS))
+    sections.append(_section("performance", metrics=PERFORMANCE_METRICS))
     return sections
 
 
