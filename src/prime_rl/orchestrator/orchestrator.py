@@ -165,9 +165,6 @@ class Orchestrator:
         # Trigger timestamps so eval success logs can report epoch duration
         self.eval_triggered_at = {}
         self.consecutive_empty_batches = 0
-        # Wall-clock the dispatcher spends paused at the dispatch gate waiting for
-        # the trainer to ship a new policy. Accumulated across pause/resume cycles,
-        # then logged as ``time/wait_for_policy`` and reset every shipped batch.
         self.gate_closed_at = None
         self.wait_for_policy_time = 0.0
         self.component_tasks = []
