@@ -2,7 +2,6 @@ import logging.config
 import os
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.utils.config import cli
 
 
 def setup_vllm_env(config: InferenceConfig):
@@ -41,17 +40,3 @@ def setup_vllm_env(config: InferenceConfig):
         os.environ["VLLM_CONFIGURE_LOGGING"] = "1"
         os.environ["VLLM_LOGGING_CONFIG_PATH"] = str(config_path)
         logging.config.dictConfig(build_dict_config(config.log.level))
-
-
-def main():
-    config = cli(InferenceConfig)
-    setup_vllm_env(config)
-
-    # We import here to be able to set environment variables before importing vLLM
-    from prime_rl.inference.vllm.server import server  # pyright: ignore
-
-    server(config, vllm_extra=config.vllm_extra)
-
-
-if __name__ == "__main__":
-    main()

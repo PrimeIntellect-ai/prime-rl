@@ -10,14 +10,6 @@ class IncrementalTokenizationError(ValueError):
     pass
 
 
-def common_prefix_len(a: list[int], b: list[int]) -> int:
-    max_len = min(len(a), len(b))
-    for idx in range(max_len):
-        if a[idx] != b[idx]:
-            return idx
-    return max_len
-
-
 def normalize_messages(messages: Any, default_role: str) -> list[dict[str, Any]]:
     if messages is None:
         return []
