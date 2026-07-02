@@ -165,6 +165,8 @@ class Orchestrator:
         # Trigger timestamps so eval success logs can report epoch duration
         self.eval_triggered_at = {}
         self.consecutive_empty_batches = 0
+        self.gate_closed_at = None
+        self.wait_for_policy_time = 0.0
         self.component_tasks = []
 
         # Optional attributes — ``setup()`` populates them when the relevant
@@ -557,6 +559,7 @@ class Orchestrator:
             "progress/total_tasks": self.progress.total_problems,
             "time/step": step_time,
             "time/save_ckpt": save_ckpt_time,
+            "time/wait_for_policy": self.wait_for_policy_time,
             "step": step,
         }
         for env_name, env_pool in batch.rollouts.by_env().items():
@@ -568,6 +571,7 @@ class Orchestrator:
             for name, count in self.train_sink.pre_filter_dropped_by_name.items():
                 metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
         self.monitor.log(metrics, step=step)
+        self.wait_for_policy_time = 0.0
         self.monitor.log_samples(effective.rollouts, step=step)
         self.monitor.log_distributions(
             distributions={
@@ -800,10 +804,14 @@ class Orchestrator:
                 get_logger().info(
                     "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."
                 )
+                self.gate_closed_at = time.perf_counter()
             gate.clear()
         else:
             if not was_set:
                 get_logger().info("Resuming dispatcher")
+                if self.gate_closed_at is not None:
+                    self.wait_for_policy_time += time.perf_counter() - self.gate_closed_at
+                    self.gate_closed_at = None
             gate.set()
 
     async def on_version_pending(self, step: int) -> None:

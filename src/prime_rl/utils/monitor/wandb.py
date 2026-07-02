@@ -313,6 +313,7 @@ PERFORMANCE_METRICS = [
     "perf/mfu",
     "time/step",
     "time/wait_for_batch",
+    "time/wait_for_policy",
     "inference/agg/throughput",
     "inference/agg/running_requests",
     "inference/agg/waiting_requests",
