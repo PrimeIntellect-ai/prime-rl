@@ -19,9 +19,10 @@ dependencies = [
     "torchaudio",
     "torchdata>=0.11.0",
     "transformers==5.6.2",
-    "vllm>=0.23.0",
+    "vllm>=0.24.0",
     "mooncake-transfer-engine>=0.3.10.post2",
     "wandb>=0.26.1",
+    "wandb-workspaces>=0.4.3",
     "ring-flash-attn>=0.1.8",
     "prime>=0.6.4",
     "pyzmq>=27.1.0",
@@ -54,7 +55,7 @@ orchestrator = "prime_rl.entrypoints.orchestrator:main"
 env-server = "prime_rl.orchestrator.env_server.env_server:main"
 
 [project.entry-points."vllm.general_plugins"]
-prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
+prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
 
 [project.optional-dependencies]
 flash-attn = [
@@ -72,6 +73,7 @@ envs = [
     "alphabet-sort",
     "alphabet-sort-v1",
     "apex-shortlist-v1",
+    "arxivmath-v1",
     "browsecomp-v1",
     "code-golf-v1",
     "color-codeword-v1",
@@ -113,6 +115,7 @@ envs = [
     "reverse-text",
     "reverse-text-v1",
     "rlm-search",
+    "s1-deepresearch-v1",
     "scaleswe-v1",
     "simpleqa-v1",
     "simpleqa-verified-v1",
@@ -245,6 +248,7 @@ aime26-v1 = { path = "deps/research-environments/environments/aime26_v1", editab
 alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
 alphabet-sort-v1 = { path = "deps/verifiers/environments/alphabet_sort_v1", editable = true }
 apex-shortlist-v1 = { path = "deps/research-environments/environments/apex_shortlist_v1", editable = true }
+arxivmath-v1 = { path = "deps/research-environments/environments/arxivmath_v1", editable = true }
 browsecomp-v1 = { path = "deps/research-environments/environments/browsecomp_v1", editable = true }
 code-golf-v1 = { path = "deps/verifiers/environments/code_golf_v1", editable = true }
 color-codeword-v1 = { path = "deps/verifiers/environments/color_codeword_v1", editable = true }
@@ -286,6 +290,7 @@ redsearcher-v1 = { path = "deps/research-environments/environments/redsearcher_v
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
 reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editable = true }
 rlm-search = { path = "deps/research-environments/environments/rlm_search", editable = true }
+s1-deepresearch-v1 = { path = "deps/research-environments/environments/s1_deepresearch_v1", editable = true }
 scaleswe-v1 = { path = "deps/research-environments/environments/scaleswe_v1", editable = true }
 simpleqa-v1 = { path = "deps/research-environments/environments/simpleqa_v1", editable = true }
 simpleqa-verified-v1 = { path = "deps/research-environments/environments/simpleqa_verified_v1", editable = true }
@@ -311,8 +316,8 @@ dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
 vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }
 vllm = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
 deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }

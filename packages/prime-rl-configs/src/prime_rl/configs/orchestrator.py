@@ -50,7 +50,7 @@ class ModelConfig(BaseModelConfig):
 
 
 class TrainSamplingConfig(BaseConfig):
-    temperature: float = Field(1.0, ge=0)
+    temperature: float = Field(1.0, ge=0, le=2.0)
     """Sampling temperature."""
 
     max_completion_tokens: int | None = Field(
@@ -92,7 +92,7 @@ class TrainSamplingConfig(BaseConfig):
 
 
 class EvalSamplingConfig(BaseConfig):
-    temperature: float | None = Field(None, ge=0)
+    temperature: float | None = Field(None, ge=0, le=2.0)
     """Sampling temperature. None defers to the inference server default."""
 
     top_p: float | None = None
@@ -157,8 +157,8 @@ class EnvConfig(vf.EnvServerConfig):
     address: str | None = None
     """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically. The ``pool`` sizes the spawned server."""
 
-    ratio: float | None = Field(None, gt=0)
-    """Sampling weight for this environment in the buffer. When None for all envs, samples uniformly across all available problems. When set, must be set on all envs — values are relative weights normalized to probabilities (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
+    ratio: float = Field(1.0, gt=0)
+    """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
 
     @model_validator(mode="before")
     @classmethod
@@ -266,15 +266,6 @@ class TrainConfig(BaseConfig):
             raise ValueError(
                 f"Duplicate training environment names: {set(duplicates)}. Each env must have a unique name."
             )
-        return self
-
-    @model_validator(mode="after")
-    def validate_env_ratios(self):
-        ratios = [env.ratio for env in self.env]
-        if all(r is None for r in ratios):
-            return self
-        if any(r is None for r in ratios):
-            raise ValueError("Either all envs must have a ratio or none of them. Got a mix of set and unset ratios.")
         return self
 
 
