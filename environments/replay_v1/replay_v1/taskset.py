@@ -33,7 +33,14 @@ from verifiers.v1.loaders import narrow_plugin_field, taskset_class, taskset_con
 from verifiers.v1.state import State, state_cls
 
 from replay_v1.buffer import ReplayBuffer
-from replay_v1.surgery import build_children, continue_seed, main_tree, recheck_seed, render_transcript
+from replay_v1.surgery import (
+    build_children,
+    continue_seed,
+    main_tree,
+    recheck_seed,
+    render_transcript,
+    unwrap_source_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +112,13 @@ class ReplayTasksetConfig(TasksetConfig):
     """Only replay rollouts with these stop conditions (None = any non-error rollout).
     E.g. `["agent_completed"]` restricts recheck to conversations that actually finished."""
 
-    env_name: str | None = None
-    """Only replay rollouts stamped with this env name (`info.prime_rl.env_name`) — for
-    buffers written by multi-env runs. Records without the stamp never match."""
+    source_envs: list[str] | None = None
+    """Which envs' rollouts to replay, by their stamped name (`info.prime_rl.env_name`).
+    None (the default) replays every env except replay envs — deriving from a replay
+    env's own outputs is a feedback loop unless chosen deliberately. Listing env names
+    replays exactly those, and naming a replay env is that deliberate choice: chained
+    derivations (recheck a recheck) are expressed as one replay env sourcing another.
+    With an explicit list, records without the stamp never match."""
 
     allow_container: bool = False
     """Allow continue/recheck over rollouts whose task ran in a container image. The
@@ -205,7 +216,7 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
             mode=config.mode,
             online=config.online,
             stop_conditions=config.stop_conditions,
-            env_name=config.env_name,
+            source_envs=config.source_envs,
             allow_container=config.allow_container,
             success_threshold=config.success_threshold,
             balance_labels=config.balance_labels,
@@ -264,7 +275,9 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
                 nodes, children, tree, self.config.max_message_chars, self.config.max_transcript_chars
             )
             prompt = self.config.judge_instruction.format(transcript=transcript)
-        source_task = record["task"]
+        # A chained source (a replay env sourcing another replay env) nests its lineage;
+        # scoring, tools, and provisioning are always keyed on the innermost original.
+        source_task = unwrap_source_task(record["task"])
         if self.inner is not None:
             # Rebuild the typed original task now, so inner-taskset schema drift fails
             # loudly here — before any generation is spent on the rollout.

@@ -48,9 +48,9 @@ id = "replay-v1"
 mode = "judge"
 buffer_dir = "self"
 online = true
-# Judge only the fresh env's rollouts (replay-derived records are always skipped;
-# this additionally pins the source env when several are mixed).
-env_name = "reverse-text"
+# Judge only the fresh env's rollouts. (Unset, source_envs replays every env except
+# replay envs; listing a replay env by name opts into chained derivations.)
+source_envs = ["reverse-text"]
 # Recency window doubles as the online eviction policy: judge the last 4 steps.
 max_steps_back = 4
 # Keep rendered transcripts comfortably within the debug seq_len.

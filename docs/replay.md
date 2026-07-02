@@ -35,7 +35,7 @@ For `continue` and `recheck`, the rollout is scored by the original taskset: `in
 - **Barrier semantics.** The jsonl is written non-atomically, so an online buffer only reads steps whose sibling `train_rollouts.bin` exists — the orchestrator writes and closes the jsonl strictly before the atomic rename that creates the `.bin`, so the barrier file marks the jsonl complete. This means online replay requires the filesystem rollout transport (a run with a non-filesystem transport never writes the `.bin`). Offline buffers skip the barrier: finished runs' files are complete by definition.
 - **Group dispatch.** Every request samples a fresh source rollout, so the whole GRPO group must share one draw — the taskset forces whole-group dispatch (`REQUIRES_GROUP_ROLLOUTS`), and all group members arrive at the env server as a single request.
 - **Startup.** Until the run has produced its first replayable step, replay requests wait briefly, then fail (with a logged warning) so their dispatch permits free up for the source envs — the orchestrator retries replay groups naturally, and they start succeeding once the first step's barrier appears. The buffer rescans for new steps during training; `max_steps_back` doubles as the eviction policy, keeping the buffer on recent policy behavior.
-- **No self-replay.** A `"self"` buffer sees every train env's saved rollouts — including the replay env's own. Replay-derived records are always skipped (a judge judging its own judge rollouts is a feedback loop, not a task), and for multi-env runs `env_name` pins the buffer to one source env.
+- **Choose your sources.** A `"self"` buffer sees every train env's saved rollouts — including the replay envs' own. By default (`source_envs` unset) replay-derived records are skipped: a judge judging its own judge rollouts is a feedback loop, not a task. Listing env names replays exactly those — and naming a replay env is the deliberate opt-in for chained derivations (a recheck env sourcing another recheck env is depth-2 self-correction; the env topology *is* the depth control, and scoring/tools/provisioning always resolve to the innermost original task).
 
 ## Configuration
 
@@ -47,9 +47,9 @@ id = "replay-v1"
 mode = "judge"
 buffer_dir = "self"
 online = true
-# Judge only the fresh env's rollouts (replay-derived records are always skipped;
-# this additionally pins the source env when several are mixed).
-env_name = "reverse-text"
+# Judge only the fresh env's rollouts. (Unset, source_envs replays every env except
+# replay envs; listing a replay env by name opts into chained derivations.)
+source_envs = ["reverse-text"]
 ```
 
 ### Field Reference
@@ -66,7 +66,7 @@ env_name = "reverse-text"
 | `max_candidates` | `4096` | Cap on indexed candidates. Steps are scanned newest-first, so the cap keeps the most recent rollouts (and bounds startup scan time on large buffers). |
 | `max_steps_back` | `None` | Recency window: only replay rollouts from the last N steps (None = no window). For online buffers this is also the eviction policy. |
 | `stop_conditions` | `None` | Only replay rollouts with these stop conditions (None = any non-error rollout). E.g. `["agent_completed"]` restricts recheck to conversations that actually finished. |
-| `env_name` | `None` | Only replay rollouts stamped with this env name (`info.prime_rl.env_name`) — for buffers written by multi-env runs. Records without the stamp never match. |
+| `source_envs` | `None` | Which envs' rollouts to replay, by their stamped name (`info.prime_rl.env_name`). Unset: every env except replay envs. An explicit list replays exactly those — naming a replay env opts into chained derivations (recheck a recheck). With a list set, records without the stamp never match. |
 | `allow_container` | `false` | Allow continue/recheck over rollouts whose task ran in a container image. The container state the transcript references is gone — a fresh container is provisioned from the same image, so the model resumes in a reset world. Off by default; judge never provisions a container. |
 | `success_threshold` | `0.5` | Judge: the source rollout counts as correct when its reward exceeds this. |
 | `balance_labels` | `true` | Judge: interleave correct/incorrect source rollouts 1:1 (truncating to the smaller label) so a constant verdict can't score above chance. |
@@ -106,9 +106,9 @@ id = "replay-v1"
 mode = "judge"
 buffer_dir = "self"
 online = true
-# Judge only the fresh env's rollouts (replay-derived records are always skipped;
-# this additionally pins the source env when several are mixed).
-env_name = "reverse-text"
+# Judge only the fresh env's rollouts. (Unset, source_envs replays every env except
+# replay envs; listing a replay env by name opts into chained derivations.)
+source_envs = ["reverse-text"]
 max_steps_back = 4        # judge only the last 4 steps (and evict older ones)
 max_transcript_chars = 4000
 ```
@@ -137,7 +137,7 @@ Every replay rollout logs `replay/source_reward` (the reward the source rollout 
 - **Harness: use `null`.** All three modes seed the model with message prompts and (for continue/recheck) the inner taskset's tools — the built-in `null` chat-loop harness supports both and is the recommended harness for replay envs.
 - **Set explicit token budgets on continue/recheck envs.** Continue seeds carry a compaction summary and recheck seeds carry the whole source conversation, so replay prompts are far longer than a fresh task's. Set `max_input_tokens` / `max_total_tokens` on the replay env entry so seeds fit `seq_len` instead of truncating mid-rollout.
 - **Long continue tasks age off-policy.** A continue task resumes deep into a long trajectory and keeps going, so its rollout can span many trainer steps and be discarded by `orchestrator.max_off_policy_steps` (default 8). If a continue env shows sustained `errored_rollouts`, raise `max_off_policy_steps` or shorten the tasks.
-- **`env_name` needs the stamp.** The filter matches `info.prime_rl.env_name`, which prime-rl's rollout writer stamps into every saved record. Records without the stamp (rollout files from other producers) never match — leave `env_name` unset to replay them.
+- **`source_envs` needs the stamp.** The filter matches `info.prime_rl.env_name`, which prime-rl's rollout writer stamps into every saved record. Records without the stamp (rollout files from other producers) never match an explicit list — leave `source_envs` unset to replay them.
 - **`allow_container` is off for a reason.** The trace records the conversation, not the container: for a containerized source task, continue/recheck provisions a fresh container from the same image, so any filesystem state the transcript references is gone and the model resumes in a reset world. Enable it only when the task's image is self-contained enough for that to be fair — and give the replay env's harness a container runtime (docker/prime): with a subprocess runtime every imaged request fails at episode construction.
 - **Uniform-verdict judge groups train nothing.** When every rollout in a judge group gives the same verdict, the group's rewards are uniform, group-relative advantages are zero, and the default `zero_advantage` filter drops the group — expected GRPO behavior, and `balance_labels` keeps a constant-verdict policy at chance so the surviving groups carry signal. A high filtered fraction on the judge env means verdicts have collapsed, not that the env is broken.
 - **Inner-taskset limits.** Replay delegates scoring to `inner` but cannot delegate group scoring (`@group_reward` tasksets), custom `State` classes, or user simulators — those are rejected loudly at env construction. Shared-placement inner toolsets are also unsupported, but fail per-rollout (the serving layer inspects toolsets on a stub task and never starts them).

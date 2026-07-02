@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from replay_v1.surgery import build_children, compaction_forks, main_tree, usable
+from replay_v1.surgery import build_children, compaction_forks, is_replay_derived, main_tree, unwrap_source_task, usable
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ class ReplayBuffer:
         mode: str,
         online: bool,
         stop_conditions: list[str] | None,
-        env_name: str | None,
+        source_envs: list[str] | None,
         allow_container: bool,
         success_threshold: float,
         balance_labels: bool,
@@ -99,7 +99,7 @@ class ReplayBuffer:
         self.mode = mode
         self.online = online
         self.stop_conditions = set(stop_conditions) if stop_conditions else None
-        self.env_name = env_name
+        self.source_envs = set(source_envs) if source_envs else None
         self.allow_container = allow_container
         self.success_threshold = success_threshold
         self.balance_labels = balance_labels
@@ -167,17 +167,21 @@ class ReplayBuffer:
         if not usable(record):
             return []
         task = record.get("task") or {}
-        # Never replay a replay: online "self" buffers see the replay env's own saved
-        # rollouts (judge-of-judge, recheck-of-recheck) — a compounding feedback loop.
-        if "kind" in task and "source_task" in task:
-            return []
+        if self.source_envs is None:
+            # Default: replay any env EXCEPT replay envs — online "self" buffers see the
+            # replay envs' own saved rollouts (judge-of-judge), a compounding feedback
+            # loop unless chosen deliberately by listing the replay env in source_envs.
+            if is_replay_derived(task):
+                return []
+        else:
+            stamped = (record.get("info") or {}).get("prime_rl", {}).get("env_name")
+            if stamped not in self.source_envs:
+                return []
         if self.stop_conditions is not None and record.get("stop_condition") not in self.stop_conditions:
             return []
-        if self.env_name is not None:
-            stamped = (record.get("info") or {}).get("prime_rl", {}).get("env_name")
-            if stamped != self.env_name:
-                return []
-        if self.mode != "judge" and not self.allow_container and task.get("image"):
+        # Container provisioning is keyed on the innermost original task, however deep
+        # the derivation chain.
+        if self.mode != "judge" and not self.allow_container and unwrap_source_task(task).get("image"):
             return []
         reward = sum((record.get("rewards") or {}).values())
         base = dict(

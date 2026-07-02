@@ -17,6 +17,7 @@ from replay_v1.surgery import (
     main_tree,
     recheck_seed,
     render_transcript,
+    unwrap_source_task,
     usable,
 )
 from replay_v1.taskset import ReplayTasksetConfig, parse_verdict
@@ -247,7 +248,7 @@ def _make_buffer(path: Path, mode: str, online: bool = False, **overrides) -> Re
         mode=mode,
         online=online,
         stop_conditions=None,
-        env_name=None,
+        source_envs=None,
         allow_container=False,
         success_threshold=0.5,
         balance_labels=True,
@@ -310,14 +311,25 @@ def test_balance_is_a_view_not_attrition(buffer_dir):
     assert [c.original_reward for c in rebalanced] == [1.0, 0.0, 1.0, 0.0]
 
 
-def test_replay_derived_records_are_never_candidates(buffer_dir):
-    """A "self" buffer sees the replay env's own saved rollouts; replaying a replay is a
-    feedback loop and must be screened out structurally."""
+def test_replay_derived_records_skipped_by_default_but_listable(buffer_dir):
+    """A "self" buffer sees the replay envs' own saved rollouts. By default replaying a
+    replay is a feedback loop and is screened out; explicitly listing the replay env in
+    source_envs is the deliberate opt-in for chained derivations."""
     path, _ = buffer_dir
     nested = _record("zzz", 1.0)
-    nested["task"] = {"kind": "judge", "source_task": {}, "prompt": "was this correct?"}
+    nested["task"] = {"kind": "recheck", "source_task": {"prompt": "original"}, "prompt": None}
+    nested["info"] = {"prime_rl": {"env_name": "replay-recheck"}}
     step_1 = path / "step_1"
     with open(step_1 / "train_rollouts.jsonl", "a") as f:
         f.write(json.dumps(nested) + "\n")
-    candidates = _make_buffer(path, "judge", balance_labels=False).scan()
-    assert "zzz" not in {c.source_id for c in candidates}
+    by_default = _make_buffer(path, "judge", balance_labels=False).scan()
+    assert "zzz" not in {c.source_id for c in by_default}
+    opted_in = _make_buffer(path, "judge", balance_labels=False, source_envs=["replay-recheck"]).scan()
+    assert {c.source_id for c in opted_in} == {"zzz"}
+
+
+def test_unwrap_source_task_resolves_chains():
+    original = {"prompt": "sort the list", "image": "sandbox:1"}
+    depth_2 = {"kind": "recheck", "source_task": {"kind": "recheck", "source_task": original}}
+    assert unwrap_source_task(depth_2) == original
+    assert unwrap_source_task(original) == original  # non-derived tasks pass through

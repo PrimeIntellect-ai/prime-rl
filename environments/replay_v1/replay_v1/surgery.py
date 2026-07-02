@@ -21,6 +21,19 @@ def usable(record: dict) -> bool:
     return bool(record.get("nodes")) and not record.get("errors") and any(n["sampled"] for n in record["nodes"])
 
 
+def is_replay_derived(task: dict) -> bool:
+    """Whether a saved task dict came from a replay env (it carries the replay lineage keys)."""
+    return "kind" in task and "source_task" in task
+
+
+def unwrap_source_task(task: dict) -> dict:
+    """The innermost original task under any chain of replay derivations — what inner-taskset
+    scoring, tools, and container provisioning must be keyed on, however deep the chain."""
+    while is_replay_derived(task) and task["source_task"]:
+        task = task["source_task"]
+    return task
+
+
 def build_children(nodes: list[Node]) -> tuple[dict[int, list[int]], list[int]]:
     """Child lists (in node-index order, i.e. creation order) and roots of the forest."""
     children: dict[int, list[int]] = defaultdict(list)
