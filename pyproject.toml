@@ -22,6 +22,7 @@ dependencies = [
     "vllm>=0.23.0",
     "mooncake-transfer-engine>=0.3.10.post2",
     "wandb>=0.26.1",
+    "wandb-workspaces>=0.4.3",
     "ring-flash-attn>=0.1.8",
     "prime>=0.6.4",
     "pyzmq>=27.1.0",

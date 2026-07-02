@@ -3959,6 +3959,7 @@ dependencies = [
     { name = "vllm", version = "0.23.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
     { name = "vllm", version = "0.23.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "wandb" },
+    { name = "wandb-workspaces" },
 ]
 
 [package.optional-dependencies]
@@ -4194,6 +4195,7 @@ requires-dist = [
     { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
+    { name = "wandb-workspaces", specifier = ">=0.4.3" },
     { name = "wideseek-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/wideseek_v1" },
     { name = "wiki-search", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wiki_search" },
     { name = "wiki-search-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wiki_search_v1" },
@@ -6660,6 +6662,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/5f/6a/8721fcdf71d42639191040a77a585d2982402b1754700cb2ecfc2ca1470a/wandb-0.27.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:f772da7005cc26a2a32b729a16982a583dc68b3d493df6a09d0aa5c5ca5a2060", size = 27256204, upload-time = "2026-05-14T03:43:39.765Z" },
     { url = "https://files.pythonhosted.org/packages/00/5e/279d167ba79fb7a8a43401c9f25efd0f6663ee9bd1eaf5a8578530198888/wandb-0.27.0-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:63acfc5b994e4a90e4a2fbdee6d45e664da3dd865bb1419942c8995c06c41cf1", size = 25647469, upload-time = "2026-05-14T03:43:44.817Z" },
     { url = "https://files.pythonhosted.org/packages/94/51/a69ac59300e3c813939d0764348959ed2a21e14c668cb1cebcb04010da6a/wandb-0.27.0-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:17aae6e4a88cd05c00ea8f546220918e3ebb6f8c1c36b70ef04a5ac75f0d7160", size = 27599005, upload-time = "2026-05-14T03:43:50.926Z" },
+]
+
+[[package]]
+name = "wandb-workspaces"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "wandb" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/44/90/749e3af75f1bc2685711176f8f0fe6dae38d5b979e4dc160c30cd4373597/wandb_workspaces-0.4.3.tar.gz", hash = "sha256:2c551bc35cadda14ff0c7c3ac1d7bbbb1c95b8f0dbc662ec2c58f3d3d832f854", size = 234226, upload-time = "2026-06-10T22:27:17.22Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c0/8f/0c1bc0b48733935031ef8956a1efb1436e3f4e1a3a402eece169a952672b/wandb_workspaces-0.4.3-py3-none-any.whl", hash = "sha256:4536dbc9d57d3aa59318e770b5c526c087f52b6b9488634b1d393163b9f6da2f", size = 109269, upload-time = "2026-06-10T22:27:15.509Z" },
 ]
 
 [[package]]
