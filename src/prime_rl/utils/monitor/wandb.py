@@ -310,10 +310,7 @@ COMMON_METRICS = [
 STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"]
 
 PERFORMANCE_METRICS = [
-    "perf/throughput",
-    "perf/throughput_per_gpu",
     "perf/mfu",
-    "perf/peak_memory",
     "time/step",
     "time/wait_for_batch",
     "inference/agg/throughput",
