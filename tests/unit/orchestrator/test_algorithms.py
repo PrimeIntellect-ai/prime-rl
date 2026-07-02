@@ -84,7 +84,7 @@ def test_sft_requires_teacher():
 
 
 def test_rl_loss_type_incompatible_with_frozen_sampling():
-    with pytest.raises(ValueError, match="sampling.source is a frozen model"):
+    with pytest.raises(ValueError, match="sampling.source is not the policy"):
         _build(type="grpo", sampling={"source": FROZEN})
 
 

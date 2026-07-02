@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, Literal, Protocol
 
 import verifiers.v1 as vf
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, PrivateAttr
 from verifiers.v1.task import TaskT
 
 from prime_rl.transport import TrainingSample
@@ -125,11 +125,27 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
         nonzero = [a for a in self.advantages if a != 0.0]
         return sum(nonzero) / len(nonzero) if nonzero else 0.0
 
+    _is_trainable: bool | None = PrivateAttr(default=None)
+
+    def invalidate_is_trainable(self) -> None:
+        """Drop the cached :attr:`is_trainable` — called when stamping rewrites
+        the advantage/weight streams the property is derived from."""
+        self._is_trainable = None
+
     @property
     def is_trainable(self) -> bool:
-        """Whether the rollout carries a training signal — a nonzero advantage on some token. A
-        uniform-reward GRPO group (all-zero advantages) or an unscored rollout has no gradient."""
-        return bool(self.advantages) and any(a != 0.0 for a in self.advantages)
+        """Whether the rollout carries a training signal — a nonzero advantage on some token (the
+        rl loss), or a stamped nonzero ce/ref_kl weight stream (the loss types that carry no
+        credit: sft, opd, opsd). A uniform-reward GRPO group (all-zero advantages, no other
+        stream) has no gradient. Cached: streams are frozen once the group is stamped, and the
+        scan crosses every token of every sample."""
+        if self._is_trainable is None:
+            self._is_trainable = (bool(self.advantages) and any(a != 0.0 for a in self.advantages)) or any(
+                (sample.ce_weights and any(w != 0.0 for w in sample.ce_weights))
+                or (sample.ref_kl_weights and any(w != 0.0 for w in sample.ref_kl_weights))
+                for sample in self.samples
+            )
+        return self._is_trainable
 
 
 @dataclass

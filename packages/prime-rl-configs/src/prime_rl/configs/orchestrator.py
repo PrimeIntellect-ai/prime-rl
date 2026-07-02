@@ -9,6 +9,7 @@ from renderers import AutoRendererConfig, RendererConfig
 from prime_rl.configs.algorithm import (
     AlgoConfig,
     GRPOAlgoConfig,
+    StaticDatasetConfig,
 )
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -706,10 +707,16 @@ class OrchestratorConfig(BaseConfig):
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.group_size:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
 
-        # Propagate the top-level ``group_size`` into each train env that didn't set its own.
+        # Propagate the top-level ``group_size`` into each train env that didn't set its
+        # own. Dataset-sourced envs replay fixed targets, so they default to 1 instead of
+        # inheriting; only an explicitly conflicting value is an error.
         for env_cfg in self.train.env:
+            assert env_cfg.algo is not None
+            is_dataset_sourced = isinstance(env_cfg.algo.sampling.source, StaticDatasetConfig)
             if "group_size" not in env_cfg.model_fields_set:
-                env_cfg.group_size = self.group_size
+                env_cfg.group_size = 1 if is_dataset_sourced else self.group_size
+            elif is_dataset_sourced and env_cfg.group_size != 1:
+                raise ValueError("dataset-sourced sft requires group_size=1 because dataset rows are fixed targets")
 
         return self
 
