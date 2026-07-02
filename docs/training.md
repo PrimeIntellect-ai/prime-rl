@@ -226,7 +226,7 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus perma
 Re-run the same launch command and pass `--ckpt.resume-step <N>` (or `-1` for "latest"). Make sure `--max-steps` is at least the target final step, not the remaining delta:
 
 ```bash
-# First run: steps 0–10
+# First run: steps 1–10
 uv run rl @ rl.toml --max-steps 10 --ckpt
 
 # Resume: continue to step 20

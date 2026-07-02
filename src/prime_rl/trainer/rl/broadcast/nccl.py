@@ -224,9 +224,11 @@ class NCCLWeightBroadcast(WeightBroadcast):
             if not self.multi_run_manager.ready_to_update[idx]:
                 continue
             try:
+                # pack() already advanced progress to the next step, so the model we just
+                # trained — policy v(step-1) — broadcasts to broadcasts/step_{step-1}.
                 save_dir = get_step_path(
                     get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
-                    self.multi_run_manager.progress[idx].step,
+                    self.multi_run_manager.progress[idx].step - 1,
                 )
                 notified_runs.append((idx, save_dir))
             except FileNotFoundError:
