@@ -163,3 +163,7 @@ class Algorithm:
             stamp_advantages(rollout)
             for sample in rollout.samples:
                 stamp_loss_routing(sample, self.action_loss_type)
+            # A batch window that shipped no samples carries its rollouts into
+            # the next one, so an is_trainable read from before stamping may be
+            # cached — the streams just changed; drop it.
+            rollout.invalidate_is_trainable()

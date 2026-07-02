@@ -127,6 +127,11 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
 
     _is_trainable: bool | None = PrivateAttr(default=None)
 
+    def invalidate_is_trainable(self) -> None:
+        """Drop the cached :attr:`is_trainable` — called when stamping rewrites
+        the advantage/weight streams the property is derived from."""
+        self._is_trainable = None
+
     @property
     def is_trainable(self) -> bool:
         """Whether the rollout carries a training signal — a nonzero advantage on some token (the
