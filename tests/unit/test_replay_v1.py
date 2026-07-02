@@ -168,6 +168,14 @@ def test_parse_verdict():
     assert parse_verdict("the answer looks right to me") is None
 
 
+def test_parse_verdict_skips_instruction_echo():
+    echo = "answer with exactly `VERDICT: CORRECT` or `VERDICT: INCORRECT`."
+    # A line quoting both options is an echo, not an answer: fall through to the real verdict...
+    assert parse_verdict(f"VERDICT: CORRECT\n{echo}") is True
+    # ...and an echo with no verdict anywhere else is unparseable.
+    assert parse_verdict(echo) is None
+
+
 # ------------------------------------------------------------------ config validation
 
 
@@ -283,3 +291,33 @@ def test_read_record_round_trips(buffer_dir):
     buffer = _make_buffer(path, "recheck")
     for candidate in buffer.scan():
         assert asyncio.run(buffer.read_record(candidate)) == records[candidate.source_id]
+
+
+def test_balance_is_a_view_not_attrition(buffer_dir):
+    """Majority-label candidates dropped from one balanced view must pair up in a later
+    one — rescans may not permanently destroy them."""
+    path, _ = buffer_dir
+    buffer = _make_buffer(path, "judge", online=True)
+    assert [c.original_reward for c in buffer.scan()] == [1.0, 0.0]  # step_1 only: 2 pos, 1 neg
+    step_3 = path / "step_3"
+    step_3.mkdir()
+    step_3.joinpath("train_rollouts.jsonl").write_text(
+        "".join(json.dumps(_record(i, 0.0)) + "\n" for i in ("fff", "ggg"))
+    )
+    step_3.joinpath("train_rollouts.bin").touch()
+    rebalanced = buffer.scan()
+    # 2 pos + 3 neg total: both step_1 positives pair with negatives now.
+    assert [c.original_reward for c in rebalanced] == [1.0, 0.0, 1.0, 0.0]
+
+
+def test_replay_derived_records_are_never_candidates(buffer_dir):
+    """A "self" buffer sees the replay env's own saved rollouts; replaying a replay is a
+    feedback loop and must be screened out structurally."""
+    path, _ = buffer_dir
+    nested = _record("zzz", 1.0)
+    nested["task"] = {"kind": "judge", "source_task": {}, "prompt": "was this correct?"}
+    step_1 = path / "step_1"
+    with open(step_1 / "train_rollouts.jsonl", "a") as f:
+        f.write(json.dumps(nested) + "\n")
+    candidates = _make_buffer(path, "judge", balance_labels=False).scan()
+    assert "zzz" not in {c.source_id for c in candidates}

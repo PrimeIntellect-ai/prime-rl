@@ -21,6 +21,7 @@ Pair with a harness that supports message prompts and taskset tools — the buil
 ``null`` chat-loop harness fits all three kinds.
 """
 
+import logging
 import re
 from collections.abc import Mapping
 from typing import ClassVar, Literal
@@ -33,6 +34,8 @@ from verifiers.v1.state import State, state_cls
 
 from replay_v1.buffer import ReplayBuffer
 from replay_v1.surgery import build_children, continue_seed, main_tree, recheck_seed, render_transcript
+
+logger = logging.getLogger(__name__)
 
 ReplayKind = Literal["continue", "recheck", "judge"]
 
@@ -52,11 +55,14 @@ _VERDICT_RE = re.compile(r"VERDICT:\s*(CORRECT|INCORRECT)", re.IGNORECASE)
 
 
 def parse_verdict(reply: str) -> bool | None:
-    """The model's verdict, from the last `VERDICT:` line; None when unparseable."""
-    matches = _VERDICT_RE.findall(reply)
-    if not matches:
-        return None
-    return matches[-1].upper() == "CORRECT"
+    """The model's verdict: the last line carrying exactly one verdict token. Lines
+    quoting both options (an echo of the instruction) are not answers and are skipped;
+    no unambiguous verdict line means unparseable (None)."""
+    for line in reversed(reply.splitlines()):
+        verdicts = {match.upper() for match in _VERDICT_RE.findall(line)}
+        if len(verdicts) == 1:
+            return verdicts.pop() == "CORRECT"
+    return None
 
 
 class ReplayTasksetConfig(TasksetConfig):
@@ -211,6 +217,11 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
     # ------------------------------------------------------------------ tasks
 
     def load_tasks(self) -> list[ReplayTask]:
+        if self.config.buffer_dir == "self":
+            raise ValueError(
+                'buffer_dir = "self" is resolved by the prime-rl orchestrator before env servers '
+                "spawn; when serving this taskset standalone, pass an explicit rollouts dir"
+            )
         candidates = self.buffer.scan()
         if self.config.online:
             num_tasks = self.config.num_slots
@@ -223,9 +234,21 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
         return [ReplayTask(idx=i, kind=self.config.mode, prompt=None) for i in range(num_tasks)]
 
     async def resolve_task(self, idx: int, tasks: list[ReplayTask]) -> ReplayTask:
-        candidate = await self.buffer.sample() if self.config.online else self.buffer.pick(idx)
-        record = await self.buffer.read_record(candidate)
-        return self._materialize(idx, candidate, record)
+        if not self.config.online:
+            candidate = self.buffer.pick(idx)
+            return self._materialize(idx, candidate, await self.buffer.read_record(candidate))
+        # An online source line can vanish under us (its run resumed and cleaned future
+        # steps): drop the dangling candidate and draw again instead of failing forever.
+        for _ in range(8):
+            candidate = await self.buffer.sample()
+            try:
+                record = await self.buffer.read_record(candidate)
+            except FileNotFoundError:
+                logger.warning("replay source %s vanished; discarding candidate", candidate.path)
+                self.buffer.discard(candidate)
+                continue
+            return self._materialize(idx, candidate, record)
+        raise RuntimeError(f"replay buffer at {self.buffer.rollout_dir} keeps serving vanished source files")
 
     def _materialize(self, idx: int, candidate, record: dict) -> ReplayTask:
         nodes = record["nodes"]

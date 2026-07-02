@@ -30,11 +30,12 @@ For `continue` and `recheck`, the rollout is scored by the original taskset: `in
 
 **Offline** (`online = false`, the default): point `buffer_dir` at a finished run's rollouts. The buffer is indexed once at env-server startup — steps are scanned newest-first under `max_candidates` and `max_steps_back` — and each task index maps deterministically to one candidate. GRPO group members dispatched as independent rollouts therefore still bind the same source rollout.
 
-**Online** (`online = true`, typically with `buffer_dir = "self"`): the buffer is the run's own growing rollout dir. The orchestrator resolves the `"self"` sentinel to `<output_dir>/rollouts` before the env servers spawn. Three consequences:
+**Online** (`online = true`, typically with `buffer_dir = "self"`): the buffer is the run's own growing rollout dir. The orchestrator resolves the `"self"` sentinel to `<output_dir>/rollouts` before the env servers spawn. Four consequences:
 
 - **Barrier semantics.** The jsonl is written non-atomically, so an online buffer only reads steps whose sibling `train_rollouts.bin` exists — the orchestrator writes and closes the jsonl strictly before the atomic rename that creates the `.bin`, so the barrier file marks the jsonl complete. This means online replay requires the filesystem rollout transport (a run with a non-filesystem transport never writes the `.bin`). Offline buffers skip the barrier: finished runs' files are complete by definition.
 - **Group dispatch.** Every request samples a fresh source rollout, so the whole GRPO group must share one draw — the taskset forces whole-group dispatch (`REQUIRES_GROUP_ROLLOUTS`), and all group members arrive at the env server as a single request.
-- **Startup.** Until the run has produced its first replayable step, replay rollouts block and wait (with a logged warning). The buffer rescans for new steps during training; `max_steps_back` doubles as the eviction policy, keeping the buffer on recent policy behavior.
+- **Startup.** Until the run has produced its first replayable step, replay requests wait briefly, then fail (with a logged warning) so their dispatch permits free up for the source envs — the orchestrator retries replay groups naturally, and they start succeeding once the first step's barrier appears. The buffer rescans for new steps during training; `max_steps_back` doubles as the eviction policy, keeping the buffer on recent policy behavior.
+- **No self-replay.** A `"self"` buffer sees every train env's saved rollouts — including the replay env's own. Replay-derived records are always skipped (a judge judging its own judge rollouts is a feedback loop, not a task), and for multi-env runs `env_name` pins the buffer to one source env.
 
 ## Configuration
 
@@ -46,6 +47,9 @@ id = "replay-v1"
 mode = "judge"
 buffer_dir = "self"
 online = true
+# Judge only the fresh env's rollouts (replay-derived records are always skipped;
+# this additionally pins the source env when several are mixed).
+env_name = "reverse-text"
 ```
 
 ### Field Reference
@@ -102,6 +106,9 @@ id = "replay-v1"
 mode = "judge"
 buffer_dir = "self"
 online = true
+# Judge only the fresh env's rollouts (replay-derived records are always skipped;
+# this additionally pins the source env when several are mixed).
+env_name = "reverse-text"
 max_steps_back = 4        # judge only the last 4 steps (and evict older ones)
 max_transcript_chars = 4000
 ```
@@ -131,6 +138,6 @@ Every replay rollout logs `replay/source_reward` (the reward the source rollout 
 - **Set explicit token budgets on continue/recheck envs.** Continue seeds carry a compaction summary and recheck seeds carry the whole source conversation, so replay prompts are far longer than a fresh task's. Set `max_input_tokens` / `max_total_tokens` on the replay env entry so seeds fit `seq_len` instead of truncating mid-rollout.
 - **Long continue tasks age off-policy.** A continue task resumes deep into a long trajectory and keeps going, so its rollout can span many trainer steps and be discarded by `orchestrator.max_off_policy_steps` (default 8). If a continue env shows sustained `errored_rollouts`, raise `max_off_policy_steps` or shorten the tasks.
 - **`env_name` needs the stamp.** The filter matches `info.prime_rl.env_name`, which prime-rl's rollout writer stamps into every saved record. Records without the stamp (rollout files from other producers) never match — leave `env_name` unset to replay them.
-- **`allow_container` is off for a reason.** The trace records the conversation, not the container: for a containerized source task, continue/recheck provisions a fresh container from the same image, so any filesystem state the transcript references is gone and the model resumes in a reset world. Enable it only when the task's image is self-contained enough for that to be fair.
+- **`allow_container` is off for a reason.** The trace records the conversation, not the container: for a containerized source task, continue/recheck provisions a fresh container from the same image, so any filesystem state the transcript references is gone and the model resumes in a reset world. Enable it only when the task's image is self-contained enough for that to be fair — and give the replay env's harness a container runtime (docker/prime): with a subprocess runtime every imaged request fails at episode construction.
 - **Uniform-verdict judge groups train nothing.** When every rollout in a judge group gives the same verdict, the group's rewards are uniform, group-relative advantages are zero, and the default `zero_advantage` filter drops the group — expected GRPO behavior, and `balance_labels` keeps a constant-verdict policy at chance so the surviving groups carry signal. A high filtered fraction on the judge env means verdicts have collapsed, not that the env is broken.
-- **Inner-taskset limits.** Replay delegates scoring to `inner` but cannot delegate group scoring (`@group_reward` tasksets are rejected), custom `State` classes, user simulators, or shared-placement toolsets. These fail loudly at env construction.
+- **Inner-taskset limits.** Replay delegates scoring to `inner` but cannot delegate group scoring (`@group_reward` tasksets), custom `State` classes, or user simulators — those are rejected loudly at env construction. Shared-placement inner toolsets are also unsupported, but fail per-rollout (the serving layer inspects toolsets on a stub task and never starts them).
