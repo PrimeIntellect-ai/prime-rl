@@ -1,0 +1,60 @@
+# Debug run where the model judges its own rollouts as it trains. The judge env
+# replays this run's freshly written rollouts (buffer_dir = "self" resolves to
+# <output_dir>/rollouts before the env servers spawn): each task renders a source
+# transcript and asks for a `VERDICT: CORRECT|INCORRECT`; the reward is whether
+# the verdict matches how the source rollout actually scored. Judge scoring is
+# self-contained (no `inner`), and the online buffer samples a fresh source per
+# request — forcing whole-group dispatch so GRPO groups share one source.
+#   uv run rl @ configs/debug/replay/online_judge.toml
+
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "replay-debug"
+name = "debug-online-judge"
+
+[orchestrator]
+batch_size = 128
+group_size = 16
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+# Fresh reverse-text rollouts (3/4 of the batch) — also what fills the buffer.
+[[orchestrator.train.env]]
+name = "reverse-text"
+ratio = 3.0
+taskset = { id = "reverse-text-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
+
+# Judge tasks over this run's own rollouts (1/4). Ratios are all-or-none.
+[[orchestrator.train.env]]
+name = "replay-judge"
+ratio = 1.0
+harness = { id = "null", runtime = { type = "subprocess" } }
+# Judge prompts embed a rendered transcript, so give the env input headroom.
+max_input_tokens = 1536
+max_total_tokens = 2048
+
+[orchestrator.train.env.taskset]
+id = "replay-v1"
+mode = "judge"
+buffer_dir = "self"
+online = true
+# Recency window doubles as the online eviction policy: judge the last 4 steps.
+max_steps_back = 4
+# Keep rendered transcripts comfortably within the debug seq_len.
+max_transcript_chars = 4000
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+gpu_memory_utilization = 0.5

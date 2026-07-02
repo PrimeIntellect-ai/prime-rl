@@ -1,0 +1,61 @@
+# Debug run mixing fresh reverse-text rollouts with replayed "recheck" tasks. The
+# replay env re-serves finished conversations from a prior run's saved rollouts
+# (<run>/rollouts/step_*/train_rollouts.jsonl) with an appended check-your-work
+# turn, scored by the original (inner) taskset. Edit `buffer_dir` below to point
+# at a real prior run before launching (CLI can't index into env lists; TOML
+# overlays replace the env list wholesale):
+#   uv run rl @ configs/debug/replay/offline_recheck.toml
+
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "replay-debug"
+name = "debug-offline-recheck"
+
+[orchestrator]
+batch_size = 128
+group_size = 16
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+# Fresh reverse-text rollouts (3/4 of the batch).
+[[orchestrator.train.env]]
+name = "reverse-text"
+ratio = 3.0
+taskset = { id = "reverse-text-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
+
+# Replayed recheck tasks (1/4). Ratios are all-or-none: every train env sets one.
+[[orchestrator.train.env]]
+name = "replay-recheck"
+ratio = 1.0
+harness = { id = "null", runtime = { type = "subprocess" } }
+# Recheck seeds carry the whole source conversation, so the replay env gets more
+# input headroom than a fresh rollout needs (capped to fit seq_len).
+max_input_tokens = 1536
+max_total_tokens = 2048
+
+[orchestrator.train.env.taskset]
+id = "replay-v1"
+mode = "recheck"
+# Placeholder: a prior run's saved-rollout dir (or the run dir containing it).
+buffer_dir = "outputs/prior_run/rollouts"
+
+# Continue/recheck rollouts are scored by the original taskset, so `inner` must
+# reproduce the source run's taskset config (here the base env's defaults).
+[orchestrator.train.env.taskset.inner]
+id = "reverse-text-v1"
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+gpu_memory_utilization = 0.5

@@ -151,10 +151,11 @@ Training environments are an array of tables — set one per env, optionally wit
 id = "math-env"
 name = "gsm8k"
 args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
+ratio = 0.75  # 75% of the batch
 
 [[orchestrator.train.env]]
 id = "reverse-text"
-ratio = 0.25  # 25% of batches; remaining 75% goes to math-env
+ratio = 0.25  # ratios are relative weights; setting one means setting all
 
 [[orchestrator.eval.env]]
 id = "math-env"
@@ -165,6 +166,10 @@ args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
 `args` is forwarded verbatim to the environment's `load_environment(**args)`.
 
 The same `id` can appear multiple times across train and eval (or with different `args`) — useful for evaluating on a held-out split of the env you're training on, or comparing two configurations of the same env side by side. When `id` is reused, set a distinct `name` on each entry; `name` defaults to `id` and must be unique across all envs in the same group.
+
+`ratio` is all-or-none: once any train env sets one, every train env must.
+
+One special environment ships with `prime-rl` itself: the `replay-v1` taskset replays a run's saved rollouts (its own or a prior run's) as derived training tasks — see [Replay](replay.md).
 
 ### Environment Variables
 

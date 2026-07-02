@@ -141,7 +141,10 @@ curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
 wc -l {output_dir}/rollouts/step_42/train_rollouts.jsonl
 head -1 {output_dir}/rollouts/step_42/train_rollouts.jsonl | python -m json.tool
 jq '.reward' {output_dir}/rollouts/step_42/train_rollouts.jsonl
+jq '.info.prime_rl' {output_dir}/rollouts/step_42/train_rollouts.jsonl   # attribution stamp
 ```
+
+Each jsonl line carries an `info.prime_rl` stamp (`kind`, `env_name`, `group_id`, `policy_version`, `is_filtered`) attributing the record to its env, GRPO group, and producing policy version — consumed by e.g. the `replay-v1` env (`docs/replay.md`). The `.bin` is renamed into place only after the jsonl is complete, so it doubles as a completeness barrier for readers of a live run.
 
 ### Common failure modes
 
