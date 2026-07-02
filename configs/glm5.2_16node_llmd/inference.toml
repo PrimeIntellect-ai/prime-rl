@@ -1,4 +1,4 @@
-# GLM-5.2-FP8 16-node P/D, FULL STACK: mooncake + llm-d router, vLLM 0.23.
+# GLM-5.2-FP8 16-node P/D, FULL STACK: mooncake + llm-d router, vLLM 0.24.
 # Step 3 / goal target. Topology mirrors the proven original glm5.1_llmd_inference
 # (job 348 succeeded): 8 prefill nodes (4 replicas x 2) + 8 decode nodes (1 replica).
 #
