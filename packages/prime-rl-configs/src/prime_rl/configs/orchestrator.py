@@ -50,7 +50,7 @@ class ModelConfig(BaseModelConfig):
 
 
 class TrainSamplingConfig(BaseConfig):
-    temperature: float = Field(1.0, ge=0)
+    temperature: float = Field(1.0, ge=0, le=2.0)
     """Sampling temperature."""
 
     max_completion_tokens: int | None = Field(
@@ -92,7 +92,7 @@ class TrainSamplingConfig(BaseConfig):
 
 
 class EvalSamplingConfig(BaseConfig):
-    temperature: float | None = Field(None, ge=0)
+    temperature: float | None = Field(None, ge=0, le=2.0)
     """Sampling temperature. None defers to the inference server default."""
 
     top_p: float | None = None

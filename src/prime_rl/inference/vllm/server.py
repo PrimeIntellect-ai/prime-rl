@@ -22,7 +22,6 @@ logger = get_logger()
 from prime_rl.inference.patches import (
     monkey_patch_dp_coordinator_startup_timeout,
     monkey_patch_harmony_stop_token_propagation,
-    monkey_patch_load_lora_adapter,
     monkey_patch_nano_v3_reasoning_parser,
     monkey_patch_strip_routed_experts_from_chat,
     monkey_patch_tokenize_params_validation,
@@ -32,9 +31,6 @@ from prime_rl.inference.patches import (
 # NOTE: Fix harmony stop token propagation for GPT-OSS models
 # Upstream issue still open: https://github.com/vllm-project/vllm/issues/22519
 monkey_patch_harmony_stop_token_propagation()
-# NOTE: Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
-# May be removable if we pass load_inplace=True (supported since vLLM 0.18, PR #31326)
-monkey_patch_load_lora_adapter()
 # NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
 # Still needed in vLLM 0.20 — upstream rejects prompt_len > max_model_len - max_tokens
 monkey_patch_tokenize_params_validation()
@@ -50,7 +46,7 @@ monkey_patch_vllm_padded_input_scrub()
 # routed_experts from chat responses since the server-wide enable flag has no
 # per-request toggle.
 monkey_patch_strip_routed_experts_from_chat()
-# NOTE: vLLM hard-codes a 30s DP coordinator startup timeout, which the rank-0
+# NOTE: vLLM hard-codes a 120s DP coordinator startup timeout, which the rank-0
 # API server blows through when all engine-core ranks on the node are loading
 # weights concurrently (multi-node disaggregated deployments).
 monkey_patch_dp_coordinator_startup_timeout()
@@ -97,9 +93,29 @@ async def update_weights(request: Request):
 
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
-    """Wrapper around vLLM's /v1/load_lora_adapter."""
+    """Wrapper around vLLM's /v1/load_lora_adapter.
+
+    prime-rl reloads a fixed-name adapter with fresh weights every step (the path
+    changes per policy version; the name is constant, see orchestrator.lora_name).
+    vLLM's native loader rejects a same-name reload unless ``load_inplace=True``,
+    so we force it here — that makes the worker re-read the new weights during
+    ``add_lora``, reusing the existing ``lora_int_id``.
+
+    We then reset the stored request's flag back to ``False``. ``load_inplace`` is
+    a sticky field on the ``LoRARequest`` that ``_maybe_get_adapters`` hands to
+    every generation request; left ``True`` it would force a disk reload on each
+    scheduler step. The orchestrator awaits this endpoint before dispatching
+    rollouts for the new version, so the reset always lands before generation.
+    The reset runs regardless of success/error: vLLM only stores the adapter on
+    success today, but resetting whatever is stored keeps us correct even if a
+    future version were to leave a ``load_inplace=True`` request behind on error.
+    """
     handler = models(raw_request)
+    lora_request.load_inplace = True
     response = await handler.load_lora_adapter(lora_request)
+    stored = handler.lora_requests.get(lora_request.lora_name)
+    if stored is not None:
+        stored.load_inplace = False
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     return {"status": "ok"}
