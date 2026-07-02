@@ -443,10 +443,6 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
-class OrchestratorExperimentalConfig(BaseConfig):
-    pass
-
-
 class OrchestratorConfig(BaseConfig):
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm: sampling plus the per-token training signal (credit
@@ -562,8 +558,6 @@ class OrchestratorConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
-
-    experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
 
     @model_validator(mode="before")
     @classmethod
