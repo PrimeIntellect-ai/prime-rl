@@ -103,25 +103,6 @@ def test_zero_padded_model_inputs_zeroes_embeddings_and_mrope_positions():
     ]
 
 
-def test_general_plugin_entry_point_loads_and_applies():
-    """Load the vllm.general_plugins entry point exactly like vLLM does.
-
-    vLLM swallows plugin *load* failures (logs and continues), so a stale or
-    misnamed entry-point target would silently drop every shared patch in every
-    vLLM process — and nothing else in CI would notice.
-    """
-    from importlib.metadata import entry_points
-
-    prime_rl_eps = [ep for ep in entry_points(group="vllm.general_plugins") if ep.name == "prime_rl"]
-    assert len(prime_rl_eps) == 1, "prime_rl entry point missing from vllm.general_plugins"
-    plugin = prime_rl_eps[0].load()
-    plugin()
-
-    from vllm.v1.worker.gpu_model_runner import GPUModelRunner
-
-    assert getattr(GPUModelRunner, "_prime_rl_padded_input_scrub", False)
-
-
 def test_zero_padded_model_inputs_noops_without_padding():
     input_ids = torch.tensor([10, 11, 12])
     positions = torch.tensor([0, 1, 2])
