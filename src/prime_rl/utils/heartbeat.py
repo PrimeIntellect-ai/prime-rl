@@ -43,7 +43,7 @@ class Heartbeat:
 
         Non-blocking guarantee: This method never blocks the training loop. The HTTP
         request runs in a daemon thread, so even if the server is slow/unresponsive
-        (up to the 2s timeout), training continues uninterrupted. The lock is held only
+        (up to the 1s timeout), training continues uninterrupted. The lock is held only
         briefly (microseconds) to check/set flags atomically.
         """
         with self._lock:
