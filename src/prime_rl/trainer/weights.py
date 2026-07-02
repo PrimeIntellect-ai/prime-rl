@@ -24,14 +24,6 @@ from prime_rl.trainer.lora import (
 )
 from prime_rl.utils.logger import get_logger
 
-PYTORCH_WRAPPER_PREFIXES = ["_fsdp_wrapped_module.", "_orig_module.", "_checkpoint_wrapped_module."]
-
-
-def _strip_pytorch_wrapper_prefix(key: str) -> str:
-    for prefix in PYTORCH_WRAPPER_PREFIXES:
-        key = key.replace(prefix, "")
-    return key
-
 
 def load_state_dict_keys(save_dir: Path) -> list[str]:
     """Load only the key names from safetensor files without reading tensor data."""
@@ -140,35 +132,3 @@ def gather_weights_on_master(
         cpu_state = clean_lora_state_dict(cpu_state)
 
     return cpu_state
-
-
-def get_adapter_state_dict(model: nn.Module, is_master: bool) -> dict[str, Tensor]:
-    """Get adapter weights with clean keys for PEFT compatibility."""
-    lora_state = {}
-
-    named_params = {_strip_pytorch_wrapper_prefix(key): value for key, value in model.named_parameters()}
-    for key, value in model.state_dict().items():
-        param = named_params.get(key)
-        if param is None or not param.requires_grad:
-            continue
-
-        if isinstance(value, DTensor):
-            value = value.full_tensor()
-
-        if is_master:
-            clean_key = next(iter(get_fqns(model, key)))
-            clean_key = clean_key.replace(".base_layer.", ".")
-
-            # Add PEFT-expected prefix
-            peft_key = f"base_model.model.{clean_key}"
-
-            # Add .weight suffix for LoRA parameters if missing
-            if ("lora_A" in peft_key or "lora_B" in peft_key) and not peft_key.endswith(".weight"):
-                peft_key = f"{peft_key}.weight"
-
-            lora_state[peft_key] = value.to("cpu", non_blocking=False)
-
-    torch.distributed.barrier()
-    if is_master and len(lora_state) == 0:
-        raise ValueError("The LoRA state dict is empty. Something went wrong.")
-    return lora_state
