@@ -75,18 +75,7 @@ type = "grpo"  # the default
 
 ### SFT Sources
 
-`sft` always trains cross-entropy on non-policy target tokens. A frozen teacher source samples those targets from an externally hosted model:
-
-```toml
-[orchestrator.algo]
-type = "sft"
-
-[orchestrator.algo.sampling.source]  # sft's teacher: the frozen model it imitates
-name = "teacher-model"
-base_url = ["http://teacher:8000/v1"]
-```
-
-A static dataset source replays stored targets locally. Set `type = "dataset"` explicitly so the source table is read as a dataset, not a model reference:
+`sft` always trains cross-entropy on non-policy target tokens: a frozen teacher model samples them fresh (an inline hosted `sampling.source`, as above), or a static dataset replays stored targets locally. Set `type = "dataset"` explicitly so the source table is read as a dataset, not a model reference:
 
 ```toml
 [orchestrator.algo]
