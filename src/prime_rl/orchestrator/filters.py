@@ -31,6 +31,14 @@ class RolloutFilter(Protocol):
     def check(self, rollout: Rollout) -> FilterResult: ...
 
 
+def _has_sampling_logprobs(rollout: Rollout) -> bool:
+    """Frozen-teacher and static-dataset rollouts carry no sampling logprobs —
+    their nodes' ``logprobs`` are empty and the branch view zero-fills them —
+    so a logprob-based filter would misread every token as prob-1.0
+    confidence. Such rollouts are exempt."""
+    return any(node.logprobs for node in rollout.nodes)
+
+
 @dataclass
 class GibberishFilter:
     """Flags rollouts containing rare tokens generated at high entropy.
@@ -49,6 +57,8 @@ class GibberishFilter:
     enforce: bool = False
 
     def check(self, rollout: Rollout) -> FilterResult:
+        if not _has_sampling_logprobs(rollout):
+            return FilterResult(detected=False)
         for branch in rollout.branches:
             # branch.{token_ids,logprobs,sampled_mask} are flat and mutually aligned; the raw
             # node arrays are not (node.logprobs covers only the sampled suffix, not the
@@ -79,6 +89,8 @@ class RepetitionFilter:
     enforce: bool = False
 
     def check(self, rollout: Rollout) -> FilterResult:
+        if not _has_sampling_logprobs(rollout):
+            return FilterResult(detected=False)
         for branch in rollout.branches:
             # Aligned branch streams (see GibberishFilter), and reset the streak per branch:
             # flat rollout.nodes interleaves distinct root->leaf paths (compaction/subagents),

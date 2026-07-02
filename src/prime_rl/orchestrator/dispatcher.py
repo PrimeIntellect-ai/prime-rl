@@ -410,10 +410,11 @@ class RolloutDispatcher:
         return await self._schedule_model_sampled_rollout(group_id, group, env)
 
     async def _schedule_static_replay_rollout(self, group_id: uuid.UUID, group: GroupState, env: TrainEnv) -> bool:
-        """Replay one train rollout locally from a static dataset row — no
-        client or permit gating beyond the inflight count."""
+        """Replay one train rollout locally from a static dataset row. Takes an
+        inflight permit but no rate-limiter slot — ``tasks_per_minute`` paces
+        outbound inference requests, and replay makes none."""
         group.rollouts_to_schedule -= 1
-        await self.acquire(1)
+        self.inflight_permits += 1
         task = asyncio.create_task(env.run_static_rollout(group.task_idx))
         self.inflight[task] = InflightRollout(
             kind=group.kind,

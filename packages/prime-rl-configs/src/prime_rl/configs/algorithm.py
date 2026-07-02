@@ -74,7 +74,10 @@ externally-hosted frozen model."""
 class StaticDatasetConfig(BaseConfig):
     """A Hugging Face dataset used as precomputed supervised trajectories."""
 
-    type: Literal["dataset"] = "dataset"
+    type: Literal["dataset"]
+    """Required (no default): the ``SamplingSource`` union is undiscriminated, so
+    without an explicit tag a frozen-model table that merely forgot ``base_url``
+    would silently validate as a dataset instead of raising the endpoint error."""
 
     name: str
     """Dataset path accepted by ``datasets.load_dataset``."""
@@ -224,9 +227,9 @@ class BaseAlgoConfig(BaseConfig):
         if self.action_loss_type in ("rl", "ref_kl") and self.sampling.source != "policy":
             raise ValueError(
                 f"algorithm '{self.type}' trains with the "
-                f"{self.action_loss_type} loss type but sampling.source is a frozen model — "
+                f"{self.action_loss_type} loss type but sampling.source is not the policy — "
                 "the importance ratio and trust region need the live policy's own sampling logprobs. "
-                "Use the 'sft' algorithm to distill frozen-model tokens."
+                "Use the 'sft' algorithm to train on a frozen model's or dataset's tokens."
             )
         return self
 

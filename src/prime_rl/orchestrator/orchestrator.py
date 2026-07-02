@@ -238,7 +238,10 @@ class Orchestrator:
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
-            config.train.env, policy_pool=self.policy_inference, renderer_config=config.renderer
+            config.train.env,
+            policy_pool=self.policy_inference,
+            renderer_config=config.renderer,
+            tokenizer=self.tokenizer,
         )
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"

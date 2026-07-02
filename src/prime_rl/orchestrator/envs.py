@@ -33,7 +33,7 @@ from prime_rl.configs.algorithm import StaticDatasetConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.sampler import Sampler
-from prime_rl.orchestrator.static_sft import load_static_sft_rows, row_to_rollout
+from prime_rl.orchestrator.static_sft import load_static_sft_dataset, row_to_rollout
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
 
@@ -208,13 +208,17 @@ class Env:
 class TrainEnv(Env):
     config: TrainEnvConfig
 
-    def __init__(self, config: TrainEnvConfig, sampler: Sampler, algorithm: Algorithm):
+    def __init__(self, config: TrainEnvConfig, sampler: Sampler, algorithm: Algorithm, tokenizer=None):
         super().__init__(config)
         self.sampler = sampler
         self.algorithm = algorithm
         self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
-        self._static_rows: list[dict] | None = None
+        self._tokenizer = tokenizer
+        self._static_dataset = None
         self._static_renderer: Renderer | None = None
+        # HF fast tokenizers are not safe for concurrent use of one instance;
+        # replay renders run in threads, so serialize them.
+        self._static_render_lock = asyncio.Lock()
 
     async def start(
         self,
@@ -223,31 +227,39 @@ class TrainEnv(Env):
         json_logging: bool = False,
     ) -> None:
         """A dataset-sourced env replays rows locally — no env server to spawn.
-        It builds its own renderer from the policy tokenizer (the same pattern
-        as opsd's hint renderer) to tokenize the stored messages."""
+        It builds its own renderer around the orchestrator's tokenizer (which
+        honors the ``[orchestrator.tokenizer]`` override — the replayed token
+        ids must match the policy's vocab) to tokenize the stored messages."""
         source = self.sampler.config.source
         if not isinstance(source, StaticDatasetConfig):
             await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
             return
         from renderers.base import create_renderer, load_tokenizer
 
-        self._static_rows = await asyncio.to_thread(load_static_sft_rows, source)
-        self._static_renderer = await asyncio.to_thread(
-            lambda: create_renderer(load_tokenizer(self.sampler.pool.model_name), self.sampler.renderer_config)
-        )
-        self.num_tasks = len(self._static_rows)
+        self._static_dataset = await asyncio.to_thread(load_static_sft_dataset, source)
+        tokenizer = self._tokenizer
+        if tokenizer is None:
+            tokenizer = await asyncio.to_thread(load_tokenizer, self.sampler.pool.model_name)
+        self._static_renderer = create_renderer(tokenizer, self.sampler.renderer_config)
+        if not self._static_renderer.render([{"role": "assistant", "content": "probe"}]).sampled_mask:
+            raise ValueError(
+                f"{type(self._static_renderer).__name__} does not attribute sampled tokens — static "
+                'sft needs a hand-coded [renderer] config (e.g. name = "qwen3").'
+            )
+        self.num_tasks = len(self._static_dataset)
         get_logger().info(f"Env {self.name} ready: static dataset {source.name} num_tasks={self.num_tasks}")
 
     async def run_static_rollout(self, task_idx: int) -> Rollout:
         """Replay one dataset row as a completed, tokenized rollout."""
         source = self.sampler.config.source
         assert isinstance(source, StaticDatasetConfig)
-        assert self._static_rows is not None and self._static_renderer is not None, (
+        assert self._static_dataset is not None and self._static_renderer is not None, (
             f"Env {self.name} not started — call start() first."
         )
-        return await asyncio.to_thread(
-            row_to_rollout, self._static_rows[task_idx], task_idx, source, self._static_renderer
-        )
+        async with self._static_render_lock:
+            return await asyncio.to_thread(
+                row_to_rollout, dict(self._static_dataset[task_idx]), task_idx, source, self._static_renderer
+            )
 
 
 class EvalEnv(Env):
@@ -320,7 +332,7 @@ class TrainEnvs(Envs[TrainEnv]):
     :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
     resolved algorithm config."""
 
-    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer_config=None):
+    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer_config=None, tokenizer=None):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
@@ -328,6 +340,7 @@ class TrainEnvs(Envs[TrainEnv]):
                 config,
                 Sampler(config.algo.sampling, policy_pool, renderer_config),
                 build_algorithm(config.algo, policy_pool),
+                tokenizer=tokenizer,
             )
             self._envs[env.name] = env
 
