@@ -888,7 +888,9 @@ def _resolve_local_data_files(data_files: list[str] | None, multimodal: bool = F
                     get_logger().info(f"Decompressing + normalizing {p} → {tmp}")
                     decompressed = Path(tempfile.gettempdir()) / f"{p.stem}.{digest}.prime_rl_raw"
                     if not decompressed.exists() or decompressed.stat().st_size == 0:
-                        subprocess.run(["zstd", "-d", "-f", "-o", str(decompressed), str(p)], check=True)
+                        part = decompressed.with_name(decompressed.name + ".part")
+                        subprocess.run(["zstd", "-d", "-f", "-o", str(part), str(p)], check=True)
+                        part.replace(decompressed)
                     _normalize_jsonl(decompressed, tmp, multimodal=multimodal)
                 else:
                     get_logger().info(f"Normalizing {p} → {tmp}")
@@ -902,14 +904,21 @@ def _resolve_local_data_files(data_files: list[str] | None, multimodal: bool = F
 
 
 def _normalize_jsonl(src: Path, dst: Path, multimodal: bool = False) -> None:
-    """Stream-rewrite ``src`` JSONL to ``dst`` with uniform OAI message shape."""
-    with src.open("r") as f_in, dst.open("w") as f_out:
+    """Stream-rewrite ``src`` JSONL to ``dst`` with uniform OAI message shape.
+
+    Writes to a sidecar path and atomically renames into place, so an
+    interrupted run never leaves a truncated file that a later run would
+    mistake for a valid cache.
+    """
+    part = dst.with_name(dst.name + ".part")
+    with src.open("r") as f_in, part.open("w") as f_out:
         for line in f_in:
             if not line.strip():
                 continue
             record = _normalize_oai_record(json.loads(line), multimodal=multimodal)
             f_out.write(json.dumps(record))
             f_out.write("\n")
+    part.replace(dst)
 
 
 def load_sft_dataset(config: SFTDataConfig, multimodal: bool = False) -> Dataset:
