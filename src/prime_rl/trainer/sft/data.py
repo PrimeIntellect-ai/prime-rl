@@ -316,9 +316,10 @@ class SFTDataset(StatefulIterableDataset):
                     "or both 'prompt' and 'completion' columns for SFT"
                 )
 
-            # Deserialize tool call arguments from message list, if present - assumes OAI format
-            messages = deserialize_tool_calls(messages)
-            return [_drop_null_fields(m) for m in messages]
+            # Strip nulls before deserializing so genuine nulls inside tool-call
+            # argument strings survive.
+            messages = [_drop_null_fields(m) for m in messages]
+            return deserialize_tool_calls(messages)
 
         messages = resolve_messages(example)
 
