@@ -57,6 +57,7 @@ WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
     "nixl_mx": "prime_rl.inference.vllm.worker.nixl_mx.NIXLMxWeightUpdateWorker",
+    "mx_v2": "prime_rl.inference.vllm.worker.nixl_mx_v2.NIXLMxV2WeightUpdateWorker",
 }
 
 
@@ -126,6 +127,56 @@ async def init_nixl_mx(request: Request):
         args=(data["host"], data["port"], data["rank_offset"]),
     )
     return {"status": "ok"}
+
+
+@router.post("/init_nixl_mx_v2")
+async def init_nixl_mx_v2(request: Request):
+    """Boot-time init for the ``mx_v2`` worker extension.
+
+    Mirrors ``/init_nixl_mx`` but targets
+    :meth:`NIXLMxV2WeightUpdateWorker.init_nixl_mx_v2`. Accepts optional
+    ``publish_self_as_replica`` (tree fan-out; default True) and
+    ``listen_port`` (NIXL listen port; default None = auto-pick).
+    """
+    data = await request.json()
+    await engine_client(request).collective_rpc(
+        "init_nixl_mx_v2",
+        args=(data["host"], data["port"], data["rank_offset"]),
+        kwargs={
+            "publish_self_as_replica": data.get("publish_self_as_replica", True),
+            "listen_port": data.get("listen_port"),
+        },
+    )
+    return {"status": "ok"}
+
+
+@router.post("/update_weights_v2")
+async def update_weights_v2(request: Request):
+    """Per-cycle refit RPC for the ``mx_v2`` worker extension.
+
+    Body fields:
+        step (int, required): trainer version to pull (engine accepts
+            sources with ``version >= step``).
+        compile_target_filter (list[str], optional): Phase 3b filter.
+            ``None`` = accept anything (back-compat).
+        timeout_seconds (float, optional): per-receive RDMA wait cap.
+        same_rank_only (bool, optional): default True (Phase 2).
+
+    Returns the per-worker metrics dict aggregated across collective_rpc
+    fan-out so the orchestrator can emit them to dashboards without log
+    parsing.
+    """
+    data = await request.json()
+    metrics = await engine_client(request).collective_rpc(
+        "update_weights_via_mx_v2",
+        args=(int(data["step"]),),
+        kwargs={
+            "compile_target_filter": data.get("compile_target_filter"),
+            "timeout_seconds": float(data.get("timeout_seconds", 300.0)),
+            "same_rank_only": bool(data.get("same_rank_only", True)),
+        },
+    )
+    return {"status": "ok", "metrics": metrics}
 
 
 async def custom_init_app_state(

@@ -14,7 +14,7 @@ from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.vf_utils import get_seq_len
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
-from prime_rl.utils.client import InferencePool
+from prime_rl.utils.client import InferencePool, update_weights_v2
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.utils import (
     get_broadcast_dir,
@@ -304,7 +304,15 @@ class Scheduler:
             )
             self.checkpoint_ready.clear()
             wait_for_ckpt_start_time = time.perf_counter()
-            if self.mx_rendezvous is not None:
+            if self.config.weight_broadcast.type == "mx_v2":
+                # mx_v2 pull-mode: trainer publishes asynchronously via
+                # NIXLMxV2WeightBroadcast.broadcast_weights and marks the
+                # source READY when version N is available. The engine
+                # adapter's discovery + retry-until-deadline handles the
+                # gap. No orchestrator-side wait needed — we just go
+                # straight into the per-cycle refit below.
+                pass
+            elif self.mx_rendezvous is not None:
                 await asyncio.to_thread(
                     self.mx_rendezvous.wait_for_all_peers_ready,
                     role="trainer",
@@ -322,17 +330,37 @@ class Scheduler:
         )
 
         update_weights_start_time = time.perf_counter()
-        if self.mx_rendezvous is not None:
-            weights_path = None
-            signal_trainer = lambda: self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
+        if self.config.weight_broadcast.type == "mx_v2":
+            # mx_v2 pull-mode path: orchestrator pokes inference workers via
+            # /update_weights_v2 with the trainer's step; each worker calls
+            # MxWeightTransferEngine.receive_weights which discovers the
+            # source via the MX catalog and pulls. The trainer publishes
+            # version=N from its own loop (NIXLMxV2WeightBroadcast.broadcast_weights)
+            # — no orchestrator-side mx_rendezvous needed.
+            metrics = await update_weights_v2(
+                self.student_inference.admin_clients,
+                step=next_ckpt_step,
+                compile_target_filter=getattr(
+                    self.config.weight_broadcast, "compile_target_filter", None
+                ),
+                timeout_seconds=float(self.config.weight_broadcast.timeout),
+                same_rank_only=getattr(
+                    self.config.weight_broadcast, "same_rank_only", True
+                ),
+            )
+            self.logger.debug(f"[mx_v2] refit step={next_ckpt_step} metrics={metrics}")
         else:
-            weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-            signal_trainer = None
-        await self.student_inference.update_weights(
-            weights_path, lora_name=self.lora_name, step=next_ckpt_step, on_engines_paused=signal_trainer
-        )
-        if self.mx_rendezvous is not None:
-            self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            if self.mx_rendezvous is not None:
+                weights_path = None
+                signal_trainer = lambda: self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
+            else:
+                weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
+                signal_trainer = None
+            await self.student_inference.update_weights(
+                weights_path, lora_name=self.lora_name, step=next_ckpt_step, on_engines_paused=signal_trainer
+            )
+            if self.mx_rendezvous is not None:
+                self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 

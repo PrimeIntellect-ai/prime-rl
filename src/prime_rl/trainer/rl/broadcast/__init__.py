@@ -23,5 +23,10 @@ def setup_weight_broadcast(
 
         assert parallel_dims is not None, "nixl_mx requires parallel_dims"
         return NIXLMxWeightBroadcast(output_dir, config, parallel_dims)
+    elif config.type == "mx_v2":
+        from prime_rl.trainer.rl.broadcast.nixl_mx_v2 import NIXLMxV2WeightBroadcast
+
+        assert parallel_dims is not None, "mx_v2 requires parallel_dims"
+        return NIXLMxV2WeightBroadcast(output_dir, config, parallel_dims)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")
