@@ -51,6 +51,7 @@ _PERFORMANCE = [
     "perf/mfu",
     "perf/peak_memory",
     "time/step",
+    "time/wait_for_batch",
     "inference/agg/throughput",
     "inference/agg/running_requests",
     "inference/agg/waiting_requests",
