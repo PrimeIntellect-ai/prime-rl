@@ -80,10 +80,10 @@ type = "muon"
 # --- Orchestrator ---
 
 [orchestrator]
-batch_size = 256
+batch_size = 512
 group_size = 16
 max_off_policy_steps = 32
-max_inflight_rollouts = 512
+max_inflight_rollouts = 768
 
 [orchestrator.renderer]
 name = "glm-4.5"
