@@ -14,6 +14,8 @@ def apply_shared_vllm_patches():
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
+    monkey_patch_qwen3_coder_param_newline_trim()
+    monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
@@ -95,6 +97,91 @@ def monkey_patch_nano_v3_reasoning_parser():
             return reasoning_content, final_content
 
     ReasoningParserManager.register_module("nano_v3", module=NanoV3ReasoningParser)
+
+
+def monkey_patch_qwen3_coder_param_newline_trim():
+    """Restore vLLM 0.23's single-newline trim for qwen3_coder tool parameters.
+
+    vLLM 0.24's parser engine applies a full ``.strip()`` to every parameter
+    value in ``_qwen3_arg_converter``; 0.23's ``Qwen3CoderToolParser`` trimmed
+    exactly one leading and one trailing newline. A full strip corrupts
+    whitespace-significant string parameters (str_replace-style
+    ``old_str``/``new_str``, file content with an indented first line, values
+    with intentional trailing newlines), silently changing tool execution and
+    rewards for agentic runs. Copy of ``_qwen3_arg_converter`` with only the
+    trim changed. Also covers ``nemotron_v3``, which reuses ``qwen3_config``.
+    """
+    import json
+
+    from vllm.parser import qwen3
+
+    def _trim_one_newline(value: str) -> str:
+        if value.startswith("\n"):
+            value = value[1:]
+        if value.endswith("\n"):
+            value = value[:-1]
+        return value
+
+    def _patched_arg_converter(raw_args: str, partial: bool) -> str:
+        params: dict[str, object] = {}
+
+        for match in qwen3._PARAM_RE.finditer(raw_args):
+            name = match.group(1)
+            value = match.group(2)
+            ## START PATCHED CODE (upstream: value.strip())
+            params[name] = _trim_one_newline(value)
+            ## END PATCHED CODE
+
+        if partial:
+            remaining = qwen3._PARAM_RE.sub("", raw_args)
+            m = qwen3._PARTIAL_PARAM_RE.search(remaining)
+            if m:
+                name = m.group(1)
+                value = m.group(2)
+                if name:
+                    ## START PATCHED CODE (upstream: value.strip())
+                    params[name] = _trim_one_newline(value)
+                    ## END PATCHED CODE
+
+        return json.dumps(params, ensure_ascii=False)
+
+    qwen3._qwen3_arg_converter = _patched_arg_converter
+    # qwen3_config captures the converter when first built; drop any cached configs.
+    qwen3.qwen3_config.cache_clear()
+
+
+def monkey_patch_minimax_m2_think_end_passthrough():
+    """Keep the literal ``</think>`` in MiniMax-M2 content on tool-calling turns.
+
+    prime-rl serves MiniMax-M2 with ``reasoning=minimax_m2_append_think``, which
+    returns content as ``<think>`` + the full completion so think tags round-trip
+    through multi-turn re-serialization. vLLM 0.24's minimax_m2 parser engine
+    added a ``(CONTENT, THINK_END) -> no-events`` transition that silently
+    swallows the ``</think>`` (0.23's regex tool parser passed it through
+    untouched), and it also ``.strip()``s content whenever tool calls are
+    present. Drop the transition — the engine emits unmatched terminals as plain
+    state content — and disable the content strip.
+    """
+    import dataclasses
+    import functools
+
+    from vllm.parser import minimax_m2
+    from vllm.parser.engine.parser_engine_config import ParserState
+
+    original_config = minimax_m2.minimax_m2_config
+
+    @functools.cache
+    def _patched_config():
+        config = original_config()
+        transitions = dict(config.transitions)
+        del transitions[(ParserState.CONTENT, "THINK_END")]
+        return dataclasses.replace(
+            config,
+            transitions=transitions,
+            strip_content_whitespace_with_tools=False,
+        )
+
+    minimax_m2.minimax_m2_config = _patched_config
 
 
 def monkey_patch_return_routed_experts_with_nixl_connector():

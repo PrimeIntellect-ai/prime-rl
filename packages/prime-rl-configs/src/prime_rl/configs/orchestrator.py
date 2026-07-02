@@ -50,8 +50,8 @@ class ModelConfig(BaseModelConfig):
 
 
 class TrainSamplingConfig(BaseConfig):
-    temperature: float = Field(1.0, ge=0)
-    """Sampling temperature."""
+    temperature: float = Field(1.0, ge=0, le=2.0)
+    """Sampling temperature. vLLM 0.24 rejects requests with temperature above 2.0."""
 
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
@@ -92,8 +92,9 @@ class TrainSamplingConfig(BaseConfig):
 
 
 class EvalSamplingConfig(BaseConfig):
-    temperature: float | None = Field(None, ge=0)
-    """Sampling temperature. None defers to the inference server default."""
+    temperature: float | None = Field(None, ge=0, le=2.0)
+    """Sampling temperature. None defers to the inference server default. vLLM 0.24
+    rejects requests with temperature above 2.0."""
 
     top_p: float | None = None
     """Nucleus sampling threshold. None defers to the inference server default."""

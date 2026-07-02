@@ -46,7 +46,7 @@ monkey_patch_vllm_padded_input_scrub()
 # routed_experts from chat responses since the server-wide enable flag has no
 # per-request toggle.
 monkey_patch_strip_routed_experts_from_chat()
-# NOTE: vLLM hard-codes a 30s DP coordinator startup timeout, which the rank-0
+# NOTE: vLLM hard-codes a 120s DP coordinator startup timeout, which the rank-0
 # API server blows through when all engine-core ranks on the node are loading
 # weights concurrently (multi-node disaggregated deployments).
 monkey_patch_dp_coordinator_startup_timeout()
