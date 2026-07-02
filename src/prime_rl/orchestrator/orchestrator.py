@@ -222,6 +222,8 @@ class Orchestrator:
             tokenizer=self.tokenizer,
             run_config=config,
             keep_full_history=config.bench,
+            train_env_names=[env.resolved_name for env in config.train.env],
+            eval_env_names=[env.resolved_name for env in config.eval.env] if config.eval is not None else [],
         )
 
         if config.heartbeat is not None:

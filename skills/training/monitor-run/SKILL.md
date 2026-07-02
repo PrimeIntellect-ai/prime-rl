@@ -34,6 +34,8 @@ Default cadence: **1 hour** (researcher can override). At each check-in:
 **Notes**: anything unusual (errors, restarts, hangs). Omit if nothing notable.
 ```
 
+In W&B, each project auto-gets an **"overview" saved view** (train / eval / stability / performance sections) on its first run — use it for a quick check instead of the auto-generated default workspace.
+
 ### Restarting a run
 
 **Never restart unless the researcher explicitly asked.** Confirm the exact restart command and the conditions that warrant one.
