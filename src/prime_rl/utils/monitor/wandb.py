@@ -133,10 +133,10 @@ class WandbMonitor(Monitor):
 
         wandb.define_metric("*", step_metric="step")
 
-        # Provision the curated "Overview" saved view once per project (the run's primary process
+        # Provision the curated "overview" saved view once per project (the run's primary process
         # in shared mode, else the single master). Best-effort: a workspaces/API failure must never
         # take down training.
-        if config.create_overview and is_online and (primary if shared_mode else True):
+        if is_online and (primary if shared_mode else True):
             try:
                 from prime_rl.utils.monitor.workspace import ensure_overview_view
 
