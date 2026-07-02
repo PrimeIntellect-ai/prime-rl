@@ -522,7 +522,7 @@ class Orchestrator:
         await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
-        self.update_dispatch_gate()
+        self.update_dispatch_gate(next_step=step + 1)
         trim_process_memory()
 
         # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``batch.rollouts`` is the
@@ -785,12 +785,12 @@ class Orchestrator:
         await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
         return time.perf_counter() - t
 
-    def update_dispatch_gate(self) -> None:
+    def update_dispatch_gate(self, *, next_step: int | None = None) -> None:
         """Pause/resume the dispatcher based on how far the orchestrator's
         next batch would run ahead of ``policy.version``. Called from two
         sites: after shipping a batch (step advances) and from
         ``on_new_version`` (policy advances)."""
-        lead = (self.progress.step + 1) - self.policy.version
+        lead = (self.progress.step if next_step is None else next_step) - self.policy.version
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
         if lead > TARGET_LAG:
