@@ -1,7 +1,6 @@
 """Unit tests for the replay-v1 environment's pure logic: message-graph surgery,
 verdict parsing, config validation, and the buffer's scan/pick/read plumbing."""
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -291,7 +290,7 @@ def test_read_record_round_trips(buffer_dir):
     path, records = buffer_dir
     buffer = _make_buffer(path, "recheck")
     for candidate in buffer.scan():
-        assert asyncio.run(buffer.read_record(candidate)) == records[candidate.source_id]
+        assert buffer.read_record(candidate) == records[candidate.source_id]
 
 
 def test_balance_is_a_view_not_attrition(buffer_dir):

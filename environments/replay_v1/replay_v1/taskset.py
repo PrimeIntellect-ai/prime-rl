@@ -21,12 +21,13 @@ Pair with a harness that supports message prompts and taskset tools — the buil
 ``null`` chat-loop harness fits all three kinds.
 """
 
+import asyncio
 import logging
 import re
 from collections.abc import Mapping
-from typing import ClassVar, Literal
+from typing import Literal
 
-from pydantic import SerializeAsAny, model_validator
+from pydantic import PrivateAttr, SerializeAsAny, model_validator
 from verifiers.v1 import Runtime, Task, Taskset, TasksetConfig, Toolset, Trace, metric, reward, task_type
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.loaders import narrow_plugin_field, taskset_class, taskset_config_type
@@ -183,10 +184,13 @@ class ReplayTask(Task):
     source_id: str = ""
     source_step: int = -1
 
+    # The rebuilt typed original task, cached at materialization so the per-rollout
+    # hooks (tools/setup/finalize/score) don't re-validate the dict. Private attrs
+    # bypass frozen and never serialize.
+    _inner: Task | None = PrivateAttr(default=None)
+
 
 class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
-    NEEDS_CONTAINER: ClassVar[bool] = False
-
     def __init__(self, config: ReplayTasksetConfig) -> None:
         super().__init__(config)
         self.inner: Taskset | None = None
@@ -206,8 +210,7 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
             if type(self.inner).user is not Taskset.user:
                 raise ValueError(f"taskset {config.inner.id!r} defines a user simulator; replay does not support one")
             self.inner_task_type = task_type(config.inner.id)
-            # The Environment reads both flags off the instance, so shadowing works.
-            self.NEEDS_CONTAINER = type(self.inner).NEEDS_CONTAINER
+            self.NEEDS_CONTAINER = self.inner.NEEDS_CONTAINER
         # Online buffers sample a fresh source per request; the whole GRPO group must
         # share that draw, so all its rollouts must arrive as one run_group request.
         self.REQUIRES_GROUP_ROLLOUTS = config.online
@@ -244,50 +247,48 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
             num_tasks = len(candidates)
         return [ReplayTask(idx=i, kind=self.config.mode, prompt=None) for i in range(num_tasks)]
 
-    async def resolve_task(self, idx: int, tasks: list[ReplayTask]) -> ReplayTask:
+    async def resolve_task(self, task: ReplayTask) -> ReplayTask:
+        # The read (~1MB line), graph walk, and prompt build all run off the event loop.
         if not self.config.online:
-            candidate = self.buffer.pick(idx)
-            return self._materialize(idx, candidate, await self.buffer.read_record(candidate))
+            candidate = self.buffer.pick(task.idx)
+            return await asyncio.to_thread(self._materialize, task.idx, candidate)
         # An online source line can vanish under us (its run resumed and cleaned future
         # steps): drop the dangling candidate and draw again instead of failing forever.
         for _ in range(8):
             candidate = await self.buffer.sample()
             try:
-                record = await self.buffer.read_record(candidate)
+                return await asyncio.to_thread(self._materialize, task.idx, candidate)
             except FileNotFoundError:
                 logger.warning("replay source %s vanished; discarding candidate", candidate.path)
                 self.buffer.discard(candidate)
-                continue
-            return self._materialize(idx, candidate, record)
         raise RuntimeError(f"replay buffer at {self.buffer.rollout_dir} keeps serving vanished source files")
 
-    def _materialize(self, idx: int, candidate, record: dict) -> ReplayTask:
+    def _materialize(self, idx: int, candidate) -> ReplayTask:
+        config = self.config
+        record = self.buffer.read_record(candidate)
         nodes = record["nodes"]
-        children, _ = build_children(nodes)
-        tree = main_tree(children)
-        mode = self.config.mode
+        mode = config.mode
         if mode == "continue":
             prompt = continue_seed(nodes, candidate.fork_node)
-        elif mode == "recheck":
-            prompt = recheck_seed(nodes, children, tree, self.config.recheck_instruction)
         else:
-            transcript = render_transcript(
-                nodes, children, tree, self.config.max_message_chars, self.config.max_transcript_chars
-            )
-            prompt = self.config.judge_instruction.format(transcript=transcript)
+            children, _ = build_children(nodes)
+            tree = main_tree(children)
+            if mode == "recheck":
+                prompt = recheck_seed(nodes, children, tree, config.recheck_instruction)
+            else:
+                transcript = render_transcript(
+                    nodes, children, tree, config.max_message_chars, config.max_transcript_chars
+                )
+                prompt = config.judge_instruction.format(transcript=transcript)
         # A chained source (a replay env sourcing another replay env) nests its lineage;
         # scoring, tools, and provisioning are always keyed on the innermost original.
         source_task = unwrap_source_task(record["task"])
-        if self.inner is not None:
-            # Rebuild the typed original task now, so inner-taskset schema drift fails
-            # loudly here — before any generation is spent on the rollout.
-            self.inner_task_type.model_validate(source_task)
         provision = (
-            {key: source_task.get(key) for key in ("image", "workdir", "timeout", "resources")}
+            {key: value for key in ("image", "workdir", "timeout", "resources") if (value := source_task.get(key))}
             if mode != "judge"
             else {}
         )
-        return ReplayTask(
+        task = ReplayTask(
             idx=idx,
             name=f"{mode}:{candidate.source_id[:8]}",
             prompt=prompt,
@@ -296,27 +297,38 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
             original_reward=candidate.original_reward,
             source_id=candidate.source_id,
             source_step=candidate.step,
-            **{key: value for key, value in provision.items() if value is not None},
+            **provision,
         )
+        if self.inner is not None:
+            # Rebuild the typed original task now — inner-taskset schema drift fails
+            # loudly here, before any generation is spent — and cache it for the
+            # per-rollout hooks.
+            task._inner = self.inner_task_type.model_validate(source_task)
+        return task
 
     def _inner_task(self, task: ReplayTask) -> Task:
-        return self.inner_task_type.model_validate(task.source_task)
+        if task._inner is None:
+            task._inner = self.inner_task_type.model_validate(task.source_task)
+        return task._inner
 
     # ---------------------------------------------------- original-world hooks
+
+    # Config validation ties `inner` to the mode (judge forbids it, continue/recheck
+    # require it), so `self.inner is not None` alone selects the delegating modes.
 
     def tools(self, task: ReplayTask) -> list[Toolset]:
         # Stubs (env serving inspects tools(tasks[0]) for shared placement) get none;
         # inner tasksets with shared-placement toolsets are therefore unsupported.
-        if task.kind == "judge" or self.inner is None or not task.source_task:
+        if self.inner is None or not task.source_task:
             return []
         return self.inner.tools(self._inner_task(task))
 
     async def setup(self, task: ReplayTask, runtime: Runtime) -> None:
-        if task.kind != "judge" and self.inner is not None:
+        if self.inner is not None:
             await self.inner.setup(self._inner_task(task), runtime)
 
     async def finalize(self, task: ReplayTask, trace: Trace, runtime: Runtime) -> None:
-        if task.kind == "judge" or self.inner is None:
+        if self.inner is None:
             return
         inner_task = self._inner_task(task)
         # The shallow copy shares nodes/info/state with the real trace, so anything the
@@ -326,13 +338,12 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
     # ------------------------------------------------------------------ scoring
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
-        task = trace.task
-        if task.kind != "judge" and self.inner is not None:
+        if self.inner is not None:
             # Score with the original taskset, seen through a view whose `task` is the
             # rebuilt original: the shallow copy shares the rewards/metrics/info dicts,
             # so the inner rewards land on the real trace with their original names and
             # weights, while `trace.task` stays the ReplayTask for everything else.
-            inner_task = self._inner_task(task)
+            inner_task = self._inner_task(trace.task)
             await self.inner.score(trace.model_copy(update={"task": inner_task}), runtime)
         await super().score(trace, runtime)
 

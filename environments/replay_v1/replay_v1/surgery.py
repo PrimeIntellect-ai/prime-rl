@@ -22,8 +22,10 @@ def usable(record: dict) -> bool:
 
 
 def is_replay_derived(task: dict) -> bool:
-    """Whether a saved task dict came from a replay env (it carries the replay lineage keys)."""
-    return "kind" in task and "source_task" in task
+    """Whether a saved task dict came from a replay env (it carries the replay lineage
+    keys — kept tight so an unrelated taskset with a `kind` field isn't silently
+    excluded from default replay). Values mirror taskset.ReplayKind."""
+    return task.get("kind") in ("continue", "recheck", "judge") and isinstance(task.get("source_task"), dict)
 
 
 def unwrap_source_task(task: dict) -> dict:

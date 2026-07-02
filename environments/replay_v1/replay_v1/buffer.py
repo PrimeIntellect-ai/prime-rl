@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 ROLLOUT_FILE = "train_rollouts.jsonl"
 BARRIER_FILE = "train_rollouts.bin"
+RESCAN_SECONDS = 10.0
+EMPTY_POLL_SECONDS = 5.0
+EMPTY_WAIT_SECONDS = 60.0
 _STEP_RE = re.compile(r"^step_(\d+)$")
 
 
@@ -47,22 +50,37 @@ def resolve_rollout_dir(buffer_dir: str) -> Path:
     return path
 
 
-def complete_steps(rollout_dir: Path, require_barrier: bool) -> list[tuple[int, Path]]:
+def complete_steps(
+    rollout_dir: Path,
+    require_barrier: bool,
+    skip: set[int] = frozenset(),
+    max_steps_back: int | None = None,
+) -> list[tuple[int, Path]]:
     """(step, jsonl path) for every step whose rollout file is safe to read, newest first.
+    Steps in `skip` (already scanned) and outside the recency window are pruned by dirname
+    alone, before any file stat — rescans run every few seconds over runs with thousands
+    of steps, all but a handful already scanned.
 
     The jsonl itself is written non-atomically, but the orchestrator writes and closes it
     strictly before the atomic rename that creates the sibling ``train_rollouts.bin`` —
     so for online buffers the barrier file marks the jsonl complete. Offline buffers
     (finished runs) skip the barrier: their files are complete by definition, and a run
     with a non-filesystem rollout transport never writes the .bin at all."""
-    steps = []
+    numbered = []
     for step_dir in rollout_dir.glob("step_*"):
         match = _STEP_RE.match(step_dir.name)
-        if match is None or not (step_dir / ROLLOUT_FILE).is_file():
+        if match is not None:
+            numbered.append((int(match.group(1)), step_dir))
+    if numbered and max_steps_back is not None:
+        newest = max(step for step, _ in numbered)
+        numbered = [(step, path) for step, path in numbered if step > newest - max_steps_back]
+    steps = []
+    for step, step_dir in numbered:
+        if step in skip or not (step_dir / ROLLOUT_FILE).is_file():
             continue
         if require_barrier and not (step_dir / BARRIER_FILE).is_file():
             continue
-        steps.append((int(match.group(1)), step_dir / ROLLOUT_FILE))
+        steps.append((step, step_dir / ROLLOUT_FILE))
     return sorted(steps, reverse=True)
 
 
@@ -92,8 +110,6 @@ class ReplayBuffer:
         max_candidates: int,
         max_steps_back: int | None,
         seed: int,
-        rescan_seconds: float = 10.0,
-        empty_wait_seconds: float = 60.0,
     ) -> None:
         self.rollout_dir = resolve_rollout_dir(buffer_dir)
         self.mode = mode
@@ -105,8 +121,6 @@ class ReplayBuffer:
         self.balance_labels = balance_labels
         self.max_candidates = max_candidates
         self.max_steps_back = max_steps_back
-        self.rescan_seconds = rescan_seconds
-        self.empty_wait_seconds = empty_wait_seconds
         # Pool workers each hold their own buffer instance; mix the pid in so online
         # sampling isn't replicated across worker processes.
         self._rng = random.Random(seed ^ os.getpid())
@@ -114,7 +128,7 @@ class ReplayBuffer:
         self._view: list[Candidate] = []  # what pick/sample draw from (label-balanced for judge)
         self._scanned_steps: set[int] = set()
         self._last_scan = 0.0
-        self._rescan_lock: asyncio.Lock | None = None
+        self._rescan_lock = asyncio.Lock()
         self._warned_empty = False
 
     # ------------------------------------------------------------------ scanning
@@ -124,48 +138,56 @@ class ReplayBuffer:
         file IO — called directly at server startup, via a thread during rollouts. The
         retained index keeps every candidate under the caps; label balancing is a derived
         view, so candidates dropped from one balanced view can pair up in a later one."""
-        steps = complete_steps(self.rollout_dir, require_barrier=self.online)
-        if steps and self.max_steps_back is not None:
-            newest = steps[0][0]
-            steps = [(step, path) for step, path in steps if step > newest - self.max_steps_back]
+        steps = complete_steps(
+            self.rollout_dir,
+            require_barrier=self.online,
+            skip=self._scanned_steps,
+            max_steps_back=self.max_steps_back,
+        )
         retained = list(self._all)
-        for step, path in steps:
-            if step in self._scanned_steps:
-                continue
-            if len(retained) >= self.max_candidates and not self.online:
-                break
-            retained.extend(self._scan_file(step, path))
+        fresh = 0
+        for i, (step, path) in enumerate(steps):
+            candidates = self._scan_file(step, path)
+            retained.extend(candidates)
+            fresh += len(candidates)
             self._scanned_steps.add(step)
-        # Newest steps win the cap; within the window this evicts the oldest candidates.
-        retained.sort(key=lambda c: c.step, reverse=True)
-        del retained[self.max_candidates :]
-        if self.max_steps_back is not None and self._scanned_steps:
-            newest = max(self._scanned_steps)
-            retained = [c for c in retained if c.step > newest - self.max_steps_back]
-        self._all = retained
-        self._view = self._balanced(retained) if self.balance_labels and self.mode == "judge" else retained
+            if fresh >= self.max_candidates:
+                # Steps iterate newest-first, so everything older is evictable now and
+                # forever (candidates only get newer) — never worth scanning.
+                self._scanned_steps.update(step for step, _ in steps[i + 1 :])
+                break
+        if fresh:
+            # Newest steps win the cap; within the window this evicts the oldest candidates.
+            retained.sort(key=lambda c: c.step, reverse=True)
+            del retained[self.max_candidates :]
+            if self.max_steps_back is not None and self._scanned_steps:
+                newest = max(self._scanned_steps)
+                retained = [c for c in retained if c.step > newest - self.max_steps_back]
+            self._set_index(retained)
         self._last_scan = time.monotonic()
         return self._view
+
+    def _set_index(self, retained: list[Candidate]) -> None:
+        """Atomically swap in the retained index and the view pick/sample draw from."""
+        view = self._balanced(retained) if self.balance_labels and self.mode == "judge" else retained
+        self._all = retained
+        self._view = view
 
     def _scan_file(self, step: int, path: Path) -> list[Candidate]:
         candidates: list[Candidate] = []
         offset = 0
         with open(path, "rb") as f:
             for raw in f:
-                length = len(raw)
                 try:
                     record = json.loads(raw)
                 except json.JSONDecodeError:
                     logger.warning("skipping malformed line at %s:%d", path, offset)
-                    offset += length
-                    continue
-                candidates.extend(self._candidates_from(record, str(path), offset, length, step))
-                offset += length
+                else:
+                    candidates.extend(self._candidates_from(record, str(path), offset, len(raw), step))
+                offset += len(raw)
         return candidates
 
     def _candidates_from(self, record: dict, path: str, offset: int, length: int, step: int) -> list[Candidate]:
-        if not usable(record):
-            return []
         task = record.get("task") or {}
         if self.source_envs is None:
             # Default: replay any env EXCEPT replay envs — online "self" buffers see the
@@ -178,6 +200,8 @@ class ReplayBuffer:
             if stamped not in self.source_envs:
                 return []
         if self.stop_conditions is not None and record.get("stop_condition") not in self.stop_conditions:
+            return []
+        if not usable(record):
             return []
         # Container provisioning is keyed on the innermost original task, however deep
         # the derivation chain.
@@ -227,9 +251,7 @@ class ReplayBuffer:
 
     def discard(self, candidate: Candidate) -> None:
         """Drop a candidate whose source line is gone (its run was resumed or cleaned)."""
-        retained = [c for c in self._all if c != candidate]
-        self._all = retained
-        self._view = self._balanced(retained) if self.balance_labels and self.mode == "judge" else retained
+        self._set_index([c for c in self._all if c != candidate])
 
     async def sample(self) -> Candidate:
         """A fresh draw for online buffers: rescan when stale, then sample uniformly
@@ -237,18 +259,16 @@ class ReplayBuffer:
         produced any replayable rollouts yet (early steps), wait briefly, then fail the
         request — the errored group releases its dispatch permits and is retried later,
         instead of hoarding capacity the run needs to produce the first rollouts."""
-        if self._rescan_lock is None:
-            self._rescan_lock = asyncio.Lock()
         waited = 0.0
         while True:
-            if time.monotonic() - self._last_scan > self.rescan_seconds or not self._view:
+            if time.monotonic() - self._last_scan > RESCAN_SECONDS or not self._view:
                 async with self._rescan_lock:
-                    if time.monotonic() - self._last_scan > self.rescan_seconds or not self._view:
+                    if time.monotonic() - self._last_scan > RESCAN_SECONDS or not self._view:
                         await asyncio.to_thread(self.scan)
             view = self._view
             if view:
                 return self._rng.choice(view)
-            if waited >= self.empty_wait_seconds:
+            if waited >= EMPTY_WAIT_SECONDS:
                 raise RuntimeError(
                     f"replay buffer at {self.rollout_dir} has no replayable {self.mode!r} "
                     f"candidates after {waited:.0f}s; failing this request so its permits free up"
@@ -261,15 +281,12 @@ class ReplayBuffer:
                     self.mode,
                 )
                 self._warned_empty = True
-            await asyncio.sleep(5.0)
-            waited += 5.0
+            await asyncio.sleep(EMPTY_POLL_SECONDS)
+            waited += EMPTY_POLL_SECONDS
 
-    async def read_record(self, candidate: Candidate) -> dict:
-        """Load the candidate's saved rollout line (~1MB) off the event loop."""
-
-        def _read() -> dict:
-            with open(candidate.path, "rb") as f:
-                f.seek(candidate.offset)
-                return json.loads(f.read(candidate.length))
-
-        return await asyncio.to_thread(_read)
+    def read_record(self, candidate: Candidate) -> dict:
+        """Load the candidate's saved rollout line (~1MB). Synchronous — callers on the
+        event loop run it (with materialization) in a thread."""
+        with open(candidate.path, "rb") as f:
+            f.seek(candidate.offset)
+            return json.loads(f.read(candidate.length))

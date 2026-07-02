@@ -237,8 +237,10 @@ class Orchestrator:
         post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
 
         # Resolve the replay taskset's "self" buffer sentinel to this run's rollout dir.
-        # Env-server children never learn the orchestrator's output_dir, so the resolved
-        # path must be written into the taskset config before the servers spawn.
+        # Env-server children never learn the orchestrator's output_dir, and the configs
+        # package doesn't know the rollouts-dir layout — so the resolved path is written
+        # into the taskset config here, just before the servers spawn (the config
+        # persisted to control/orch.toml above keeps the relocatable sentinel).
         eval_envs = config.eval.env if config.eval is not None else []
         for env_config in [*config.train.env, *eval_envs]:
             if getattr(env_config.taskset, "buffer_dir", None) == "self":
