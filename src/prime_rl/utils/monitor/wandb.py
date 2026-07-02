@@ -426,8 +426,14 @@ def ensure_overview_view(
     overviews = [(dn, iname) for dn, iname in list_views(entity, project) if dn == name or dn.startswith(f"{name}-v")]
     for _, internal_name in overviews:
         slug = internal_name.removeprefix("nw-").removesuffix("-v")
-        existing = ws.Workspace.from_url(f"https://wandb.ai/{entity}/{project}?nw={slug}")
-        if view_env_signature(existing.sections) == target:
+        try:
+            existing = ws.Workspace.from_url(f"https://wandb.ai/{entity}/{project}?nw={slug}")
+            matches = view_env_signature(existing.sections) == target
+        except Exception as e:
+            # A single unreadable view must not abort reuse detection / versioning for the rest.
+            get_logger().warning(f"Could not inspect overview view {internal_name} - {e}")
+            continue
+        if matches:
             return None
     workspace = ws.Workspace(
         entity=entity,
