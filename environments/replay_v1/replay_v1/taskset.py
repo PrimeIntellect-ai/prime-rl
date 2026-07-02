@@ -45,6 +45,15 @@ from replay_v1.surgery import (
 
 logger = logging.getLogger(__name__)
 
+NUM_SLOTS = 1024
+"""An online buffer's advertised task count. The orchestrator fixes an env's task count
+at startup, so online buffers serve a fixed virtual index space; sampling ignores the
+index, so the size is arbitrary."""
+
+MAX_MESSAGE_CHARS = 2000
+"""Judge transcripts: per-message truncation (single tool results in real buffers reach
+150K chars); the user-facing budget is the total, `max_transcript_chars`."""
+
 ReplayKind = Literal["continue", "recheck", "judge"]
 
 RECHECK_INSTRUCTION = (
@@ -97,14 +106,6 @@ class ReplayTasksetConfig(TasksetConfig):
     source rollout (which forces whole-group dispatch so GRPO groups share one source).
     Offline buffers are indexed once, deterministically per task index."""
 
-    num_slots: int = 1024
-    """Online only: the advertised task count. The orchestrator fixes an env's task count
-    at startup, so an online buffer serves a virtual index space of this size."""
-
-    max_candidates: int = 4096
-    """Cap on indexed candidates. Steps are scanned newest-first, so the cap keeps the
-    most recent rollouts (and bounds startup scan time on large buffers)."""
-
     max_steps_back: int | None = None
     """Recency window: only replay rollouts from the last N steps (None = no window).
     For online buffers this is also the eviction policy."""
@@ -130,26 +131,15 @@ class ReplayTasksetConfig(TasksetConfig):
     success_threshold: float = 0.5
     """Judge: the source rollout counts as correct when its reward exceeds this."""
 
-    balance_labels: bool = True
-    """Judge: interleave correct/incorrect source rollouts 1:1 (truncating to the smaller
-    label) so a constant verdict can't score above chance."""
-
     recheck_instruction: str = RECHECK_INSTRUCTION
     """Recheck: the user turn appended to the finished conversation."""
 
     judge_instruction: str = JUDGE_INSTRUCTION
     """Judge: the prompt template; `{transcript}` is replaced with the rendered rollout."""
 
-    max_message_chars: int = 2000
-    """Judge: per-message truncation for the rendered transcript (single tool results in
-    real buffers reach 150K chars)."""
-
     max_transcript_chars: int = 60000
     """Judge: total transcript budget; over it, middle messages are elided (the task
     statement and the trailing conversation are kept)."""
-
-    seed: int = 0
-    """Seed for online buffer sampling."""
 
     @model_validator(mode="before")
     @classmethod
@@ -222,10 +212,7 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
             source_envs=config.source_envs,
             allow_container=config.allow_container,
             success_threshold=config.success_threshold,
-            balance_labels=config.balance_labels,
-            max_candidates=config.max_candidates,
             max_steps_back=config.max_steps_back,
-            seed=config.seed,
         )
 
     # ------------------------------------------------------------------ tasks
@@ -238,7 +225,7 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
             )
         candidates = self.buffer.scan()
         if self.config.online:
-            num_tasks = self.config.num_slots
+            num_tasks = NUM_SLOTS
         else:
             if not candidates:
                 raise ValueError(

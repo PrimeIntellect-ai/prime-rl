@@ -250,10 +250,7 @@ def _make_buffer(path: Path, mode: str, online: bool = False, **overrides) -> Re
         source_envs=None,
         allow_container=False,
         success_threshold=0.5,
-        balance_labels=True,
-        max_candidates=4096,
         max_steps_back=None,
-        seed=0,
     )
     kwargs.update(overrides)
     return ReplayBuffer(**kwargs)
@@ -321,9 +318,9 @@ def test_replay_derived_records_skipped_by_default_but_listable(buffer_dir):
     step_1 = path / "step_1"
     with open(step_1 / "train_rollouts.jsonl", "a") as f:
         f.write(json.dumps(nested) + "\n")
-    by_default = _make_buffer(path, "judge", balance_labels=False).scan()
+    by_default = _make_buffer(path, "judge").scan()
     assert "zzz" not in {c.source_id for c in by_default}
-    opted_in = _make_buffer(path, "judge", balance_labels=False, source_envs=["replay-recheck"]).scan()
+    opted_in = _make_buffer(path, "judge", source_envs=["replay-recheck"]).scan()
     assert {c.source_id for c in opted_in} == {"zzz"}
 
 

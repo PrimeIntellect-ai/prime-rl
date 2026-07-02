@@ -28,7 +28,7 @@ For `continue` and `recheck`, the rollout is scored by the original taskset: `in
 
 ## Offline vs Online Buffers
 
-**Offline** (`online = false`, the default): point `buffer_dir` at a finished run's rollouts. The buffer is indexed once at env-server startup — steps are scanned newest-first under `max_candidates` and `max_steps_back` — and each task index maps deterministically to one candidate. GRPO group members dispatched as independent rollouts therefore still bind the same source rollout.
+**Offline** (`online = false`, the default): point `buffer_dir` at a finished run's rollouts. The buffer is indexed once at env-server startup — steps are scanned newest-first under the recency window (`max_steps_back`) and an internal candidate cap — and each task index maps deterministically to one candidate. GRPO group members dispatched as independent rollouts therefore still bind the same source rollout.
 
 **Online** (`online = true`, typically with `buffer_dir = "self"`): the buffer is the run's own growing rollout dir. The orchestrator resolves the `"self"` sentinel to `<output_dir>/rollouts` before the env servers spawn. Four consequences:
 
@@ -62,19 +62,14 @@ source_envs = ["reverse-text"]
 | `mode` | `"judge"` | Which derived task this env serves (`continue`, `recheck`, `judge`). One mode per env entry — mix modes (and set their ratios) with multiple `[[orchestrator.train.env]]` entries. |
 | `inner` | `None` | The original taskset's config — continue/recheck rollouts are scored by it, so it must reproduce the source run's taskset config. Judge scoring is self-contained and forbids this field. |
 | `online` | `false` | Treat the buffer as growing (this run's own rollouts): steps are rescanned during training, only barrier-complete steps are read, and every request samples a fresh source rollout (which forces whole-group dispatch so GRPO groups share one source). Offline buffers are indexed once, deterministically per task index. |
-| `num_slots` | `1024` | Online only: the advertised task count. The orchestrator fixes an env's task count at startup, so an online buffer serves a virtual index space of this size. |
-| `max_candidates` | `4096` | Cap on indexed candidates. Steps are scanned newest-first, so the cap keeps the most recent rollouts (and bounds startup scan time on large buffers). |
 | `max_steps_back` | `None` | Recency window: only replay rollouts from the last N steps (None = no window). For online buffers this is also the eviction policy. |
 | `stop_conditions` | `None` | Only replay rollouts with these stop conditions (None = any non-error rollout). E.g. `["agent_completed"]` restricts recheck to conversations that actually finished. |
 | `source_envs` | `None` | Which envs' rollouts to replay, by their stamped name (`info.prime_rl.env_name`). Unset: every env except replay envs. An explicit list replays exactly those — naming a replay env opts into chained derivations (recheck a recheck). With a list set, records without the stamp never match. |
 | `allow_container` | `false` | Allow continue/recheck over rollouts whose task ran in a container image. The container state the transcript references is gone — a fresh container is provisioned from the same image, so the model resumes in a reset world. Off by default; judge never provisions a container. |
 | `success_threshold` | `0.5` | Judge: the source rollout counts as correct when its reward exceeds this. |
-| `balance_labels` | `true` | Judge: interleave correct/incorrect source rollouts 1:1 (truncating to the smaller label) so a constant verdict can't score above chance. |
 | `recheck_instruction` | *(built-in prompt)* | Recheck: the user turn appended to the finished conversation. |
 | `judge_instruction` | *(built-in prompt)* | Judge: the prompt template; `{transcript}` is replaced with the rendered rollout. |
-| `max_message_chars` | `2000` | Judge: per-message truncation for the rendered transcript (single tool results in real buffers reach 150K chars). |
 | `max_transcript_chars` | `60000` | Judge: total transcript budget; over it, middle messages are elided (the task statement and the trailing conversation are kept). |
-| `seed` | `0` | Seed for online buffer sampling. |
 
 ### Example
 
@@ -139,5 +134,5 @@ Every replay rollout logs `replay/source_reward` (the reward the source rollout 
 - **Long continue tasks age off-policy.** A continue task resumes deep into a long trajectory and keeps going, so its rollout can span many trainer steps and be discarded by `orchestrator.max_off_policy_steps` (default 8). If a continue env shows sustained `errored_rollouts`, raise `max_off_policy_steps` or shorten the tasks.
 - **`source_envs` needs the stamp.** The filter matches `info.prime_rl.env_name`, which prime-rl's rollout writer stamps into every saved record. Records without the stamp (rollout files from other producers) never match an explicit list — leave `source_envs` unset to replay them.
 - **`allow_container` is off for a reason.** The trace records the conversation, not the container: for a containerized source task, continue/recheck provisions a fresh container from the same image, so any filesystem state the transcript references is gone and the model resumes in a reset world. Enable it only when the task's image is self-contained enough for that to be fair — and give the replay env's harness a container runtime (docker/prime): with a subprocess runtime every imaged request fails at episode construction.
-- **Uniform-verdict judge groups train nothing.** When every rollout in a judge group gives the same verdict, the group's rewards are uniform, group-relative advantages are zero, and the default `zero_advantage` filter drops the group — expected GRPO behavior, and `balance_labels` keeps a constant-verdict policy at chance so the surviving groups carry signal. A high filtered fraction on the judge env means verdicts have collapsed, not that the env is broken.
+- **Uniform-verdict judge groups train nothing.** When every rollout in a judge group gives the same verdict, the group's rewards are uniform, group-relative advantages are zero, and the default `zero_advantage` filter drops the group — expected GRPO behavior, and the built-in 1:1 label balancing keeps a constant-verdict policy at chance so the surviving groups carry signal. A high filtered fraction on the judge env means verdicts have collapsed, not that the env is broken.
 - **Inner-taskset limits.** Replay delegates scoring to `inner` but cannot delegate group scoring (`@group_reward` tasksets), custom `State` classes, or user simulators — those are rejected loudly at env construction. Shared-placement inner toolsets are also unsupported, but fail per-rollout (the serving layer inspects toolsets on a stub task and never starts them).

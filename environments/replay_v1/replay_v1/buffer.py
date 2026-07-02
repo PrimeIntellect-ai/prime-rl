@@ -9,7 +9,6 @@ and candidate cap, which doubles as eviction for online buffers.
 import asyncio
 import json
 import logging
-import os
 import random
 import re
 import time
@@ -22,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 ROLLOUT_FILE = "train_rollouts.jsonl"
 BARRIER_FILE = "train_rollouts.bin"
+MAX_CANDIDATES = 4096
 RESCAN_SECONDS = 10.0
 EMPTY_POLL_SECONDS = 5.0
 EMPTY_WAIT_SECONDS = 60.0
@@ -106,10 +106,7 @@ class ReplayBuffer:
         source_envs: list[str] | None,
         allow_container: bool,
         success_threshold: float,
-        balance_labels: bool,
-        max_candidates: int,
         max_steps_back: int | None,
-        seed: int,
     ) -> None:
         self.rollout_dir = resolve_rollout_dir(buffer_dir)
         self.mode = mode
@@ -118,12 +115,10 @@ class ReplayBuffer:
         self.source_envs = set(source_envs) if source_envs else None
         self.allow_container = allow_container
         self.success_threshold = success_threshold
-        self.balance_labels = balance_labels
-        self.max_candidates = max_candidates
         self.max_steps_back = max_steps_back
-        # Pool workers each hold their own buffer instance; mix the pid in so online
-        # sampling isn't replicated across worker processes.
-        self._rng = random.Random(seed ^ os.getpid())
+        # Pool workers each hold their own buffer instance; a fresh OS-entropy rng per
+        # instance keeps online sampling uncorrelated across worker processes.
+        self._rng = random.Random()
         self._all: list[Candidate] = []  # retained candidates, newest step first
         self._view: list[Candidate] = []  # what pick/sample draw from (label-balanced for judge)
         self._scanned_steps: set[int] = set()
@@ -151,7 +146,7 @@ class ReplayBuffer:
             retained.extend(candidates)
             fresh += len(candidates)
             self._scanned_steps.add(step)
-            if fresh >= self.max_candidates:
+            if fresh >= MAX_CANDIDATES:
                 # Steps iterate newest-first, so everything older is evictable now and
                 # forever (candidates only get newer) — never worth scanning.
                 self._scanned_steps.update(step for step, _ in steps[i + 1 :])
@@ -159,7 +154,7 @@ class ReplayBuffer:
         if fresh:
             # Newest steps win the cap; within the window this evicts the oldest candidates.
             retained.sort(key=lambda c: c.step, reverse=True)
-            del retained[self.max_candidates :]
+            del retained[MAX_CANDIDATES:]
             if self.max_steps_back is not None and self._scanned_steps:
                 newest = max(self._scanned_steps)
                 retained = [c for c in retained if c.step > newest - self.max_steps_back]
@@ -169,7 +164,7 @@ class ReplayBuffer:
 
     def _set_index(self, retained: list[Candidate]) -> None:
         """Atomically swap in the retained index and the view pick/sample draw from."""
-        view = self._balanced(retained) if self.balance_labels and self.mode == "judge" else retained
+        view = self._balanced(retained) if self.mode == "judge" else retained
         self._all = retained
         self._view = view
 
