@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import openai
+
 from prime_rl.configs.algorithm import OPSDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -69,7 +72,23 @@ class OPSDAlgorithm(Algorithm):
         hint_block = renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)
 
         async def score_sample(sample: TrainingSample) -> None:
-            full_logprobs = await pool.score(hint_block + list(sample.token_ids))
+            try:
+                full_logprobs = await pool.score(hint_block + list(sample.token_ids))
+            except openai.BadRequestError as e:
+                if "longer than the maximum model length" not in str(e):
+                    raise
+                # Generation reserves no context headroom for the hint, so a
+                # near-max-context trajectory + hint_block can exceed
+                # max_model_len. Rare tail case: drop the rollout via the
+                # pre-filter path instead of crashing the run.
+                rollout.is_filtered = True
+                rollout.filter_results["opsd_hint_overflow"] = True
+                get_logger().warning(
+                    f"OPSD hint overflow: hint ({len(hint_block)} tok) + trajectory "
+                    f"({len(sample.token_ids)} tok) exceeds max_model_len; dropping rollout "
+                    f"(env {rollout.env_name!r}, task {rollout.task.idx})."
+                )
+                return
             # Drop the hint's own logprobs; the tail aligns full-length to
             # sample.token_ids (demo-conditioned, the trainer's ref_kl target).
             sample.ref_logprobs = full_logprobs[len(hint_block) :]

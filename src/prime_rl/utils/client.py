@@ -590,7 +590,16 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
             "sampling_params": {"max_tokens": 1, "temperature": 1.0, "top_p": 1.0, "prompt_logprobs": 1},
         },
     )
-    response = GenerateResponse.model_validate_json(http_response.content)
+    import json as _json
+
+    payload = _json.loads(http_response.content)
+    # With enable_return_routed_experts, /generate attaches routed_experts in the
+    # {data, shape, start} object form (the PD-router merge format), which fails the
+    # stock GenerateResponse validation (routed_experts: str). Teacher scoring only
+    # needs prompt_logprobs and never replays routing on this pass: drop the field.
+    for _choice in payload.get("choices", []):
+        _choice.pop("routed_experts", None)
+    response = GenerateResponse.model_validate(payload)
     # `prompt_logprobs[i]` is a `{token_id: Logprob}` dict, or `None` for the
     # leading token (no preceding context). Flatten to `list[float]`.
     flat: list[float] = []

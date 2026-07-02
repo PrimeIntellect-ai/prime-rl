@@ -202,6 +202,7 @@ def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
     from flash_attn import flash_attn_varlen_func
 
     cp_size = dist.get_world_size(group=process_group)
+    _original_fa_forward = transformers.modeling_flash_attention_utils._flash_attention_forward
 
     def _ulysses_flash_attention_forward(
         query_states: torch.Tensor,
@@ -219,7 +220,26 @@ def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
         deterministic=None,
         **kwargs,
     ):
-        assert is_causal, "ulysses CP only supports causal attention"
+        if not is_causal:
+            # Non-causal callers (the VLM vision tower, incl. its dummy
+            # FSDP-symmetry pass on text-only batches) are not part of the
+            # CP-sharded text sequence: run the original local FA path.
+            return _original_fa_forward(
+                query_states,
+                key_states,
+                value_states,
+                attention_mask,
+                query_length,
+                is_causal=is_causal,
+                dropout=dropout,
+                position_ids=position_ids,
+                softmax_scale=softmax_scale,
+                sliding_window=sliding_window,
+                use_top_left_mask=use_top_left_mask,
+                softcap=softcap,
+                deterministic=deterministic,
+                **kwargs,
+            )
         assert softcap is None, "ulysses CP path does not support softcap"
         assert query_states.size(0) == 1, "varlen data should be processed with batch=1"
 
@@ -259,6 +279,7 @@ def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
         ALL_ATTENTION_FUNCTIONS = None
 
     if ALL_ATTENTION_FUNCTIONS is not None:
+        _original_fa2_v2 = ALL_ATTENTION_FUNCTIONS.get("flash_attention_2")
 
         def _ulysses_flash_attention_forward_v2(
             module,
@@ -272,6 +293,20 @@ def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
             softcap=None,
             **kw,
         ):
+            if not getattr(module, "is_causal", True) and _original_fa2_v2 is not None:
+                # Non-causal (vision) modules bypass Ulysses: local FA per rank.
+                return _original_fa2_v2(
+                    module,
+                    query,
+                    key,
+                    value,
+                    attention_mask,
+                    dropout=dropout,
+                    scaling=scaling,
+                    sliding_window=sliding_window,
+                    softcap=softcap,
+                    **kw,
+                )
             # Match HF v2 entrypoint: query/key/value arrive as [B, H, S, D].
             seq_len = query.shape[2]
             query = query.transpose(1, 2)
