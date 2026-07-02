@@ -38,8 +38,8 @@ def setup_monitor(
     *,
     prime_config: PrimeMonitorConfig | None = None,
     keep_full_history: bool = True,
-    overview_train_envs: list[str] = [],
-    overview_eval_envs: list[str] = [],
+    train_env_names: list[str] = [],
+    eval_env_names: list[str] = [],
     # Backward compatibility: support old 'config' keyword argument
     config: WandbWithExtrasConfig | None = None,
 ) -> Monitor:
@@ -67,8 +67,8 @@ def setup_monitor(
                 tokenizer=tokenizer,
                 run_config=run_config,
                 keep_full_history=keep_full_history,
-                overview_train_envs=overview_train_envs,
-                overview_eval_envs=overview_eval_envs,
+                train_env_names=train_env_names,
+                eval_env_names=eval_env_names,
             )
         )
 

@@ -48,8 +48,8 @@ class WandbMonitor(Monitor):
         tokenizer: PreTrainedTokenizer | None = None,
         run_config: BaseConfig | None = None,
         keep_full_history: bool = True,
-        overview_train_envs: list[str] = [],
-        overview_eval_envs: list[str] = [],
+        train_env_names: list[str] = [],
+        eval_env_names: list[str] = [],
     ):
         self.config = config
         self.logger = get_logger()
@@ -143,8 +143,8 @@ class WandbMonitor(Monitor):
                 url = ensure_overview_view(
                     self.wandb.entity,
                     self.wandb.project,
-                    train_envs=overview_train_envs,
-                    eval_envs=overview_eval_envs,
+                    train_envs=train_env_names,
+                    eval_envs=eval_env_names,
                 )
                 if url:
                     self.logger.info(f"Created W&B overview view - {url}")
