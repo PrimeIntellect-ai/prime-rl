@@ -297,9 +297,9 @@ class WandbMonitor(Monitor):
 
 OVERVIEW_NAME = "overview"
 
-# Per-rollout metrics (under "<scope>/all/") shown for the train aggregate and per env.
-TRAIN_METRICS = [
-    "reward/mean",
+# Per-rollout metrics (under "<scope>/all/") shown for BOTH train and eval. Only the reward metric
+# differs — train uses "reward/mean", eval uses "avg@k" — and each section builder prepends its own.
+COMMON_METRICS = [
     "has_error/mean",
     "is_truncated/mean",
     "num_total_tokens/mean",
@@ -347,20 +347,15 @@ def section(name: str, metrics: Sequence[str] = (), regexes: Sequence[str] = ())
 
 
 def train_section(name: str, scope: str) -> ws.Section:
-    return section(name, metrics=[f"{scope}/all/{m}" for m in TRAIN_METRICS])
+    return section(name, metrics=[f"{scope}/all/reward/mean"] + [f"{scope}/all/{m}" for m in COMMON_METRICS])
 
 
 def eval_section(name: str, env_pattern: str) -> ws.Section:
-    # Eval has no aggregate, so it's always per-env. avg@k has a dynamic k, so match it by regex; the
-    # regex form also lets one section serve any env (env_pattern=".*").
+    # Same metrics as train, but eval's reward is "avg@k" (dynamic k → regex). Everything is a regex so
+    # one section can also serve any env (env_pattern=".*"). Only the "all" subset, like train.
     return section(
         name,
-        regexes=[
-            f"eval/{env_pattern}/all/avg@.*",
-            f"eval/{env_pattern}/effective/avg@.*",
-            f"eval/{env_pattern}/all/has_error/mean",
-            f"eval/{env_pattern}/all/is_truncated/mean",
-        ],
+        regexes=[f"eval/{env_pattern}/all/avg@.*"] + [f"eval/{env_pattern}/all/{m}" for m in COMMON_METRICS],
     )
 
 
