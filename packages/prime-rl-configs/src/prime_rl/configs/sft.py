@@ -167,10 +167,6 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class SFTExperimentalConfig(BaseConfig):
-    pass
-
-
 class SFTConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
 
@@ -242,8 +238,6 @@ class SFTConfig(BaseConfig):
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
-
-    experimental: SFTExperimentalConfig = SFTExperimentalConfig()
 
     ### Pre-validation normalization
 

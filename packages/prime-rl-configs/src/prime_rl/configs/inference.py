@@ -337,10 +337,6 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class InferenceExperimentalConfig(BaseConfig):
-    pass
-
-
 class InferenceConfig(BaseConfig):
     server: ServerConfig = ServerConfig()
 
@@ -435,8 +431,6 @@ class InferenceConfig(BaseConfig):
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
-
-    experimental: InferenceExperimentalConfig = InferenceExperimentalConfig()
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
