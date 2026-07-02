@@ -211,6 +211,9 @@ class WandbConfig(BaseConfig):
     offline: bool = False
     """Run W&B in offline mode."""
 
+    create_overview: bool = True
+    """Create a curated "Overview" saved view in the project on the first run (no-op if it already exists)."""
+
 
 class WandbWithExtrasConfig(WandbConfig):
     log_extras: LogExtrasConfig | None = LogExtrasConfig()

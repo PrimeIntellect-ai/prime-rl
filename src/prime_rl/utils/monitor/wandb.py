@@ -48,6 +48,8 @@ class WandbMonitor(Monitor):
         tokenizer: PreTrainedTokenizer | None = None,
         run_config: BaseConfig | None = None,
         keep_full_history: bool = True,
+        overview_train_envs: list[str] = [],
+        overview_eval_envs: list[str] = [],
     ):
         self.config = config
         self.logger = get_logger()
@@ -82,11 +84,13 @@ class WandbMonitor(Monitor):
                 x_update_finish_state=primary,
             )
             self.logger.info(f"Using shared W&B mode ({label=}, {primary=})")
+            is_online = True
         else:
             run_id = None
             primary = False
             mode = os.environ.get("WANDB_MODE", "offline" if config.offline else "online")
             settings = wandb.Settings(mode=mode)
+            is_online = mode == "online"
 
         retryable_errors = (CommError, ServerResponseError) if shared_mode else (CommError,)
 
@@ -128,6 +132,24 @@ class WandbMonitor(Monitor):
         self.wandb = init_wandb(max_retries)
 
         wandb.define_metric("*", step_metric="step")
+
+        # Provision the curated "Overview" saved view once per project (the run's primary process
+        # in shared mode, else the single master). Best-effort: a workspaces/API failure must never
+        # take down training.
+        if config.create_overview and is_online and (primary if shared_mode else True):
+            try:
+                from prime_rl.utils.monitor.workspace import ensure_overview_view
+
+                url = ensure_overview_view(
+                    self.wandb.entity,
+                    self.wandb.project,
+                    train_envs=overview_train_envs,
+                    eval_envs=overview_eval_envs,
+                )
+                if url:
+                    self.logger.info(f"Created W&B overview view - {url}")
+            except Exception as e:
+                self.logger.warning(f"Failed to create W&B overview view - {e}")
 
         # Optionally, initialize sample logging attributes
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
