@@ -56,7 +56,11 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 from prime_rl.utils.utils import format_time
-from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
+from prime_rl.utils.vlm import (
+    get_language_model,
+    get_vision_encoder,
+    is_vlm_architecture,
+)
 
 
 def pre_download_model(model_name: str) -> None:
@@ -476,6 +480,12 @@ def get_model(
             raise ValueError(
                 "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
+        # Context parallelism patches the global flash-attention dispatch to do the
+        # Ulysses all-to-all, which is causal- and sharded-sequence-only.
+        vision_config = getattr(model_config, "vision_config", None)
+        if config.cp > 1 and vision_config is not None:
+            vision_config._attn_implementation = "sdpa"
+            logger.info("CP enabled for VLM: pinning vision encoder attention to 'sdpa' (excluded from Ulysses CP).")
 
     # GPT-OSS only supports FlashAttention via kernels-community/vllm-flash-attn3, which requires Hopper (SM 90).
     # On other architectures (e.g. Blackwell), users must fall back to eager attention.
@@ -583,6 +593,12 @@ def get_model(
     else:
         impl_to_use = config.impl
 
+    if config.vlm is not None and config.cp > 1 and not (is_vlm_arch and impl_to_use == "custom" and custom_vlm_cls):
+        raise ValueError(
+            "VLM context parallelism requires a custom PrimeRL VLM implementation; "
+            f"{getattr(model_config, 'model_type', config.name)!r} is only supported with cp=1."
+        )
+
     with device:
         if impl_to_use == "custom" and custom_vlm_cls is not None:
             model_cls = custom_vlm_cls
@@ -663,13 +679,31 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         dp_mod_ep_mesh = parallel_dims.world_mesh[tuple(dp_mod_ep_mesh_dim_names)]
 
     is_vlm_training = config.vlm is not None
+    cp_vlm = is_vlm_training and config.cp > 1
+    # Params kept out of FSDP entirely (full/replicated on every rank).
+    fsdp_ignored_params: set[nn.Parameter] = set()
+
+    def _all_params_frozen(module: nn.Module) -> bool:
+        params = list(module.parameters())
+        return bool(params) and not any(p.requires_grad for p in params)
+
+    def _ignore_params(module: nn.Module, name: str) -> None:
+        params = list(module.parameters())
+        if not params:
+            return
+        fsdp_ignored_params.update(params)
+        get_logger().info(f"CP+VLM: keeping frozen {name} out of FSDP (ignored_params).")
+
     if is_vlm_training:
         vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
         if vision_encoder is None:
             raise ValueError(f"VLM model {config.name} has no recognized vision encoder")
 
-        fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
-        get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
+        if cp_vlm and _all_params_frozen(vision_encoder):
+            _ignore_params(vision_encoder, "vision encoder")
+        else:
+            fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
+            get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
 
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
@@ -692,11 +726,12 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     if shard_norm_and_lm_head:
         # This optimization breaks weight tying
         embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
-        fully_shard(
-            embed_module,
-            mesh=hsdp_mesh,
-            **fsdp_config,
-        )
+        if embed_module is not None:
+            fully_shard(
+                embed_module,
+                mesh=hsdp_mesh,
+                **fsdp_config,
+            )
         norm_module = getattr(language_model, "norm", None) or language_model.norm_f
         fully_shard(
             [model.lm_head, norm_module],
@@ -714,6 +749,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         mp_policy=mp_policy,
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
+        ignored_params=fsdp_ignored_params or None,
     )
 
     if not parallel_dims.ep_enabled:
@@ -1166,26 +1202,35 @@ def setup_model(
 
 def forward(
     model: nn.Module,
-    input_ids: Int[Tensor, "batch seq"],
-    position_ids: Int[Tensor, "batch seq"],
+    input_ids: Int[Tensor, "batch seq"] | None,
+    position_ids: Int[Tensor, "batch seq"] | None,
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
+    inputs_embeds: Tensor | None = None,
     # Generic multimodal kwargs (e.g. {"pixel_values": ...,
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
     # for Gemma3). Passed straight through to ``model(**kwargs)`` so
     # the model's HF forward signature is the schema. ``mm_token_type_ids``
-    # is split out because it's prime-rl-computed (from token ids),
-    # not a renderer/processor output.
+    # is split out because it's prime-rl-computed (from token ids).
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
+    seq_lens: Int[Tensor, "segments"] | None = None,
+    seq_lens_are_global: bool = False,
+    cp_group: object | None = None,
+    cp_rank: int | None = None,
+    cp_world_size: int | None = None,
+    cp_style: str | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
     kwargs = {
-        "input_ids": input_ids,
         "labels": labels,
         "temperature": temperature,
     }
+    if inputs_embeds is None:
+        kwargs["input_ids"] = input_ids
+    else:
+        kwargs["inputs_embeds"] = inputs_embeds
 
     if mm_kwargs:
         # Forward the per-model multimodal tensors verbatim, plus the
@@ -1194,17 +1239,26 @@ def forward(
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        # ``position_ids`` for MRoPE families: Qwen3-VL's HF forward
-        # recomputes 3D positions from ``image_grid_thw`` and breaks if
-        # given the trainer's pre-computed 1D ``position_ids``. Detect
-        # via the mm_kwargs shape so we don't enumerate model_types.
         if "image_grid_thw" not in mm_kwargs:
             kwargs["position_ids"] = position_ids
     else:
         kwargs["position_ids"] = position_ids
 
+    if isinstance(model, PreTrainedModelPrimeRL):
+        kwargs.update(model.prime_forward_kwargs(seq_lens=seq_lens, seq_lens_are_global=seq_lens_are_global))
+
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
+
+    if cp_group is not None:
+        kwargs.update(
+            {
+                "cp_group": cp_group,
+                "cp_rank": cp_rank,
+                "cp_world_size": cp_world_size,
+                "cp_style": cp_style,
+            }
+        )
 
     out = model(**kwargs)
 

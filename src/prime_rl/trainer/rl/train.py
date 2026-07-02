@@ -209,7 +209,7 @@ def train(config: TrainerConfig):
             setup_sparse_mla_cp,
         )
 
-        assert_cp_style_supports_model(config.model.cp_style, model)
+        assert_cp_style_supports_model(config.model.cp_style, model, cp_world_size=parallel_dims.cp)
         # sparse MLA is softmax (works with both ring and ulysses).
         setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
         # Linear-attn / Mamba layers are only configured under ulysses; with ring
@@ -421,19 +421,32 @@ def train(config: TrainerConfig):
                 if micro_batch.get("mm_token_type_ids") is not None
                 else None
             )
+            seq_lens = micro_batch["seq_lens"].to("cuda") if micro_batch.get("seq_lens") is not None else None
 
             labels = shift_tensor_left(input_ids)
 
-            # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
-            if cp_enabled and mm_kwargs is not None:
-                raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
-
+            forward_mm_kwargs = mm_kwargs
+            forward_seq_lens = seq_lens
+            forward_seq_lens_are_global = False
+            forward_cp_group = None
+            forward_cp_rank = None
+            forward_cp_world_size = None
+            forward_cp_style = None
+            vlm_cp_enabled = cp_enabled and config.model.vlm is not None
             if cp_enabled:
-                input_ids, forward_position_ids = setup_cp_params(
-                    input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
-                )
+                if vlm_cp_enabled:
+                    forward_position_ids = position_ids
+                    forward_cp_group = cp_group
+                    forward_cp_rank = cp_rank
+                    forward_cp_world_size = cp_size
+                    forward_cp_style = config.model.cp_style
+                else:
+                    input_ids, forward_position_ids = setup_cp_params(
+                        input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                    )
+
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
-                if routed_experts is not None:
+                if routed_experts is not None and not vlm_cp_enabled:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
                 forward_position_ids = position_ids
@@ -441,7 +454,10 @@ def train(config: TrainerConfig):
             if config.model.lora:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
                 if cp_enabled:
-                    chunk_size = input_ids.shape[1]
+                    if vlm_cp_enabled:
+                        chunk_size = input_ids.shape[1] // cp_size
+                    else:
+                        chunk_size = input_ids.shape[1]
                     # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
                     cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
                     adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
@@ -464,9 +480,15 @@ def train(config: TrainerConfig):
                     forward_position_ids,
                     labels=labels,
                     temperature=temperatures,
-                    mm_kwargs=mm_kwargs,
+                    mm_kwargs=forward_mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
+                    seq_lens=forward_seq_lens,
+                    seq_lens_are_global=forward_seq_lens_are_global,
                     routed_experts=routed_experts,
+                    cp_group=forward_cp_group,
+                    cp_rank=forward_cp_rank,
+                    cp_world_size=forward_cp_world_size,
+                    cp_style=forward_cp_style,
                 )
 
             if out.get("logprobs") is None:

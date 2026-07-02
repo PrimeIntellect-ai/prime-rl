@@ -90,7 +90,15 @@ class SinglePacker(BasePacker):
         bin_cost: Callable[[Sequence[int]], int],
         start_step: int = 0,
     ):
-        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, bin_cost, start_step)
+        super().__init__(
+            dp_world_size,
+            seq_len,
+            pad_to_multiple_of,
+            tokenizer,
+            config,
+            bin_cost,
+            start_step,
+        )
         assert self.multi_run_manager.max_runs == 1, "SinglePacker only supports one run"
 
     def pack(self):
@@ -137,7 +145,15 @@ class MultiPacker(BasePacker):
         bin_cost: Callable[[Sequence[int]], int],
         start_step: int = 0,
     ):
-        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, bin_cost, start_step)
+        super().__init__(
+            dp_world_size,
+            seq_len,
+            pad_to_multiple_of,
+            tokenizer,
+            config,
+            bin_cost,
+            start_step,
+        )
         # Per-run buffer: stores (TrainingSample, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
@@ -359,9 +375,21 @@ def setup_packer(
     multi_run_manager = get_multi_run_manager()
     if multi_run_manager.max_runs == 1:
         return SinglePacker(
-            dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, bin_cost, start_step
+            dp_world_size,
+            seq_len,
+            pad_to_multiple_of,
+            tokenizer,
+            transport_config,
+            bin_cost,
+            start_step,
         )
     else:
         return MultiPacker(
-            dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, bin_cost, start_step
+            dp_world_size,
+            seq_len,
+            pad_to_multiple_of,
+            tokenizer,
+            transport_config,
+            bin_cost,
+            start_step,
         )
