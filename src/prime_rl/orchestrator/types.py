@@ -73,8 +73,9 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     """A completed rollout: the env's typed ``vf.Trace`` *is* the rollout — prime-rl's
     orchestration metadata lives on it directly (set by the dispatcher once the rollout
     returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
-    fields are ``exclude=True``, so dumping a Rollout yields a plain trace — the on-disk
-    ``results.jsonl`` is unchanged.
+    fields are ``exclude=True``, so dumping a Rollout yields a plain trace; :meth:`to_record`
+    additionally stamps the metadata into ``info["prime_rl"]`` so saved rollouts stay
+    attributable (e.g. to their env) after the plain-trace round trip.
 
     It is also the single currency the scoring hooks receive: a hook reads the trace
     directly (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``) and writes
@@ -97,6 +98,22 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     is_filtered: bool = Field(default=False, exclude=True)
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
     eval_step: int | None = Field(default=None, exclude=True)
+
+    def to_record(self) -> dict:
+        """The plain-trace dump, with the orchestration metadata stamped into
+        ``info["prime_rl"]`` — ``info`` round-trips through ``vf.WireTrace.model_validate``,
+        so consumers of saved rollouts (e.g. replay buffers) can attribute each record to
+        its env, GRPO group, and producing policy version (== the trainer step whose
+        weights generated it). The step itself is encoded in the ``step_N`` dirname."""
+        record = super().to_record()
+        record.setdefault("info", {})["prime_rl"] = {
+            "kind": self.kind,
+            "env_name": self.env_name,
+            "group_id": str(self.group_id),
+            "policy_version": self.policy_version,
+            "is_filtered": self.is_filtered,
+        }
+        return record
 
     def assign_advantages(self, values: float | list[float]) -> None:
         """Write the rl advantage stream: a scalar broadcast over the

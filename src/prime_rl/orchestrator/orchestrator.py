@@ -236,6 +236,13 @@ class Orchestrator:
         pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="pre-batch")
         post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
 
+        # Resolve the replay taskset's "self" buffer sentinel to this run's rollout dir.
+        # Env-server children never learn the orchestrator's output_dir, so the resolved
+        # path must be written into the taskset config before the servers spawn.
+        for env_config in config.train.env:
+            if getattr(env_config.taskset, "buffer_dir", None) == "self":
+                env_config.taskset.buffer_dir = str(get_rollout_dir(config.output_dir))
+
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
             config.train.env, policy_pool=self.policy_inference, renderer_config=config.renderer
