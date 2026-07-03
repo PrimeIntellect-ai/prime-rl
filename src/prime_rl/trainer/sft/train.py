@@ -163,6 +163,10 @@ def train(config: SFTConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
     processor = setup_processor(config.tokenizer)
+    if config.model.vlm is not None and processor is None:
+        raise ValueError(
+            f"[model.vlm] is set but no multimodal processor could be loaded for {config.tokenizer.name!r}"
+        )
 
     renderer = create_renderer(tokenizer, config.renderer)
     if isinstance(renderer, DefaultRenderer):
