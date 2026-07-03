@@ -3,7 +3,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from prime_rl.trainer.utils import balanced_partition
-from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transport.types import MicroBatch, MMRefs, RoutedExperts, TrainingSample
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
     "uint8": 1,
@@ -46,6 +46,25 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts.shape[0] += padding_size
 
 
+def _truncate_mm_refs(mm_refs: MMRefs, seq_len: int) -> tuple[int, MMRefs | None]:
+    """Return a token cut that never splits an image placeholder, plus the surviving refs."""
+    cut, kept = seq_len, 0
+    for image in mm_refs.images:  # token order, non-overlapping — enforced by build_mm_refs
+        if image.offset + image.length <= seq_len:
+            kept += 1
+            continue
+        if image.offset < seq_len:
+            cut = image.offset
+        break
+    if cut == 0:
+        raise ValueError(f"Cannot truncate multimodal sample: leading image does not fit in seq_len={seq_len}")
+    if kept == len(mm_refs.images):
+        return seq_len, mm_refs
+    if kept == 0:
+        return cut, None
+    return cut, MMRefs(images=mm_refs.images[:kept])
+
+
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
@@ -74,7 +93,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     mm_token_type_ids = training_example.mm_token_type_ids
     if training_example.mm_kwargs is not None:
         raise ValueError("Processed multimodal mm_kwargs are unsupported in v1; use raw mm_refs")
-    mm_refs = copy.deepcopy(training_example.mm_refs)
+    mm_refs = training_example.mm_refs
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
 
@@ -89,12 +108,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     )
 
     if len(input_ids) > seq_len:
-        if mm_refs is not None:
-            raise ValueError(
-                "Multimodal samples cannot be truncated after raw image offload. "
-                f"Got {len(input_ids)} tokens with seq_len={seq_len}."
-            )
         cut = seq_len
+        if mm_refs is not None:
+            cut, mm_refs = _truncate_mm_refs(mm_refs, seq_len)
         input_ids = input_ids[:cut]
         loss_mask = loss_mask[:cut]
         inference_logprobs = inference_logprobs[:cut]

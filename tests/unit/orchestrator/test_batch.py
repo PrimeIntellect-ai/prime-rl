@@ -5,7 +5,7 @@ import pytest
 
 from prime_rl.trainer.batch import pad_micro_batch, prepare_batch, prepare_sample
 from prime_rl.trainer.utils import build_bin_cost
-from prime_rl.transport.types import MicroBatch, MMRefs, RoutedExperts, TrainingSample
+from prime_rl.transport.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
 
 
 def _routed_experts(data, dtype=np.uint8):
@@ -408,41 +408,48 @@ def test_prepare_sample_truncates_routed_experts():
     assert micro_batch.env_names == ["test-env"] * 3
 
 
-def _mm_refs() -> MMRefs:
-    return MMRefs(
-        descriptor={
-            "mm_items": {
-                "image": [
-                    {
-                        "kind": "prime_raw_mm_item",
-                        "modality": "image",
-                        "family": "qwen_vl",
-                        "layout_fingerprint": "f" * 32,
-                        "raw_image_uri": "file:///tmp/image.png",
-                        "payload": {"image_grid_thw": [[1, 1, 1]]},
-                    }
-                ]
-            },
-            "mm_hashes": {"image": ["a" * 32]},
+def _image_ref(uri: str, offset: int, length: int) -> MMImageRef:
+    return MMImageRef(
+        item={
+            "kind": "prime_raw_mm_item",
+            "modality": "image",
+            "family": "qwen_vl",
+            "layout_fingerprint": "f" * 32,
+            "raw_image_uri": uri,
+            "payload": {"image_grid_thw": [[1, 1, 1]]},
         },
-        uris=["file:///tmp/image.png"],
+        hash="a" * 32,
+        uri=uri,
+        offset=offset,
+        length=length,
     )
 
 
-def test_prepare_sample_rejects_overlong_raw_mm_refs():
+def test_prepare_sample_truncates_raw_mm_refs_at_image_boundary():
+    first_image = _image_ref("file:///tmp/image-0.png", offset=1, length=2)
+    second_image = _image_ref("file:///tmp/image-1.png", offset=4, length=2)
     sample = TrainingSample(
-        token_ids=[10, 11, 12, 13],
-        mask=[False, False, True, True],
-        logprobs=[0.0] * 4,
-        temperatures=[1.0] * 4,
-        advantages=[0.0, 0.0, 1.0, 1.0],
+        token_ids=[10, 11, 12, 13, 14, 15, 16],
+        mask=[False, False, True, True, False, True, True],
+        logprobs=[0.0] * 7,
+        temperatures=[1.0] * 7,
+        advantages=[0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0],
         env_name="test-env",
-        mm_token_type_ids=[0, 1, 1, 0],
-        mm_refs=_mm_refs(),
+        mm_token_type_ids=[0, 1, 1, 0, 1, 1, 0],
+        mm_refs=MMRefs(images=[first_image, second_image]),
     )
 
-    with pytest.raises(ValueError, match="Multimodal samples cannot be truncated"):
-        prepare_sample(sample, seq_len=3)
+    # seq_len=5 splits the second image: cut at its start, keep refs for the first.
+    micro_batch = prepare_sample(sample, seq_len=5)
+    assert micro_batch.input_ids == [10, 11, 12, 13]
+    assert micro_batch.mm_token_type_ids == [0, 1, 1, 0]
+    assert micro_batch.mm_refs == MMRefs(images=[first_image])
+
+    # seq_len=2 splits the first image: no image survives.
+    micro_batch = prepare_sample(sample, seq_len=2)
+    assert micro_batch.input_ids == [10]
+    assert micro_batch.mm_token_type_ids == [0]
+    assert micro_batch.mm_refs is None
 
 
 def test_prepare_sample_none_routed_experts():

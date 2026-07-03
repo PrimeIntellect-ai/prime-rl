@@ -18,17 +18,34 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
     dtype: str
 
 
-class MMRefs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    """Raw multimodal sidecar references for one sample.
+class MMImageRef(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    """One raw image reference for trainer-side materialization.
 
-    ``descriptor`` carries JSON-safe renderer metadata (hashes and adapter
-    payloads). ``uris`` carries the raw image files that the trainer materializes
-    with its own processor. Processed tensors are intentionally not part of this
-    transport.
+    ``item`` is the JSON-safe renderer descriptor (adapter family + payload,
+    parseable via ``parse_raw_mm_item``), ``hash``/``uri`` identify the raw image
+    file, and ``offset``/``length`` are the image's placeholder range in token
+    space (needed to truncate at image boundaries).
     """
 
-    descriptor: dict
-    uris: list[str]
+    item: dict
+    hash: str
+    uri: str
+    offset: int
+    length: int
+
+
+class MMRefs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    """Raw multimodal sidecar references for one sample, in token order.
+
+    The trainer materializes the referenced image files with its own processor.
+    Processed tensors are intentionally not part of this transport.
+    """
+
+    images: list[MMImageRef]
+
+    @property
+    def uris(self) -> list[str]:
+        return [image.uri for image in self.images]
 
 
 # Orchestrator -> Packer

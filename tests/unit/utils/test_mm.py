@@ -5,7 +5,7 @@ import torch
 from prime_rl.multimodal.adapters.base import ForwardPolicy, MaterializedMM
 from prime_rl.multimodal.schema import RAW_MM_ITEM_KIND
 from prime_rl.trainer.rl.data import DataLoader
-from prime_rl.transport.types import MicroBatch, MMRefs
+from prime_rl.transport.types import MicroBatch, MMImageRef, MMRefs
 from prime_rl.utils.mm import build_mm_refs
 
 
@@ -36,11 +36,7 @@ def _qwen_item(grid, uri: str = "file:///tmp/missing-image.png"):
 
 def _refs(uri: str = "file:///tmp/missing-image.png") -> MMRefs:
     return MMRefs(
-        descriptor={
-            "mm_items": {"image": [_qwen_item([[1, 1, 1]], uri)]},
-            "mm_hashes": {"image": ["a" * 32]},
-        },
-        uris=[uri],
+        images=[MMImageRef(item=_qwen_item([[1, 1, 1]], uri), hash="a" * 32, uri=uri, offset=1, length=1)],
     )
 
 
@@ -77,12 +73,12 @@ def test_build_mm_refs_accepts_offloaded_file_uri(tmp_path):
     multi_modal_data = SimpleNamespace(
         mm_items={"image": [_qwen_item([[1, 1, 1]], image_path.as_uri())]},
         mm_hashes={"image": ["a" * 32]},
+        mm_placeholders={"image": [SimpleNamespace(offset=1, length=1)]},
     )
 
     refs = build_mm_refs(multi_modal_data)
 
-    assert refs is not None
-    assert refs.uris == [image_path.as_uri()]
+    assert refs == _refs(image_path.as_uri())
 
 
 def test_dataloader_uses_zero_loss_placeholder_for_missing_raw_image():

@@ -10,7 +10,7 @@ from urllib.parse import unquote, urlparse
 from prime_rl.multimodal.adapters.base import MaterializedMM, MultimodalAdapter
 from prime_rl.multimodal.registry import get_multimodal_adapter
 from prime_rl.multimodal.schema import RawMMItem, parse_raw_mm_item
-from prime_rl.transport.types import MMRefs
+from prime_rl.transport.types import MMImageRef, MMRefs
 
 IMAGE_MODALITY = "image"
 SUPPORTED_MODALITIES = {IMAGE_MODALITY}
@@ -65,6 +65,16 @@ def _raw_item_dicts(items: Iterable[Mapping[str, Any]]) -> tuple[list[dict[str, 
     return item_dicts, uris
 
 
+def _placeholder_bounds(placeholder: Any) -> tuple[int, int]:
+    offset = _field(placeholder, "offset")
+    length = _field(placeholder, "length")
+    if not isinstance(offset, int) or not isinstance(length, int):
+        raise ValueError(f"Raw image placeholder must have integer offset/length, got {placeholder!r}")
+    if offset < 0 or length <= 0:
+        raise ValueError(f"Raw image placeholder must have offset >= 0 and length > 0, got {placeholder!r}")
+    return offset, length
+
+
 def build_mm_refs(multi_modal_data: Any) -> MMRefs | None:
     mm_items = _field(multi_modal_data, "mm_items", None)
     if not mm_items:
@@ -77,36 +87,33 @@ def build_mm_refs(multi_modal_data: Any) -> MMRefs | None:
 
     mm_hashes = _field(multi_modal_data, "mm_hashes", {}) or {}
     image_hashes = list(mm_hashes.get(IMAGE_MODALITY, []))
-    if len(image_hashes) != len(image_items):
+    mm_placeholders = _field(multi_modal_data, "mm_placeholders", {}) or {}
+    image_placeholders = list(mm_placeholders.get(IMAGE_MODALITY, []))
+    if len(image_hashes) != len(image_items) or len(image_placeholders) != len(image_items):
         raise ValueError(
-            "Raw image descriptor/hash mismatch: "
-            f"{len(image_items)} image descriptors but {len(image_hashes)} image hashes"
+            "Raw image descriptor/hash/placeholder mismatch: "
+            f"descriptors={len(image_items)}, hashes={len(image_hashes)}, placeholders={len(image_placeholders)}"
         )
 
-    return MMRefs(
-        descriptor={
-            "mm_items": {IMAGE_MODALITY: image_items},
-            "mm_hashes": {IMAGE_MODALITY: image_hashes},
-        },
-        uris=uris,
-    )
+    images: list[MMImageRef] = []
+    prev_end = 0
+    for item, uri, image_hash, placeholder in zip(image_items, uris, image_hashes, image_placeholders, strict=True):
+        offset, length = _placeholder_bounds(placeholder)
+        # Truncation cuts at a prefix of ``images``, which is only sound if
+        # placeholders arrive in token order without overlap.
+        if offset < prev_end:
+            raise ValueError(f"Raw image placeholders must be sorted and non-overlapping, got {image_placeholders!r}")
+        prev_end = offset + length
+        images.append(MMImageRef(item=item, hash=image_hash, uri=uri, offset=offset, length=length))
+    return MMRefs(images=images)
 
 
 def sha256_32(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:32]
 
 
-def _parse_image_refs(refs: MMRefs) -> tuple[list[RawMMItem], list[str]]:
-    image_item_dicts = refs.descriptor.get("mm_items", {}).get(IMAGE_MODALITY, [])
-    image_hashes = list(refs.descriptor.get("mm_hashes", {}).get(IMAGE_MODALITY, []))
-    if not image_item_dicts:
-        return [], []
-    if len(refs.uris) != len(image_item_dicts) or len(image_hashes) != len(image_item_dicts):
-        raise ValueError(
-            "Raw image refs must have matching URI, descriptor, and hash counts "
-            f"(uris={len(refs.uris)}, descriptors={len(image_item_dicts)}, hashes={len(image_hashes)})"
-        )
-    return [parse_raw_mm_item(item) for item in image_item_dicts], image_hashes
+def _parse_image_refs(refs: MMRefs) -> list[RawMMItem]:
+    return [parse_raw_mm_item(image.item) for image in refs.images]
 
 
 def _single_family_adapter(items: list[RawMMItem]) -> MultimodalAdapter:
@@ -125,15 +132,15 @@ def _validate_processor_layout(adapter: MultimodalAdapter, image_processor: Any,
             )
 
 
-def _load_verified_images(uris: list[str], expected_hashes: list[str]) -> list[Any]:
+def _load_verified_images(image_refs: list[MMImageRef]) -> list[Any]:
     from PIL import Image
 
     images = []
-    for uri, expected_hash in zip(uris, expected_hashes, strict=True):
-        raw = file_uri_to_path(uri).read_bytes()
+    for ref in image_refs:
+        raw = file_uri_to_path(ref.uri).read_bytes()
         actual_hash = sha256_32(raw)
-        if actual_hash != expected_hash:
-            raise ValueError(f"Raw image hash mismatch for {uri}: expected {expected_hash}, got {actual_hash}")
+        if actual_hash != ref.hash:
+            raise ValueError(f"Raw image hash mismatch for {ref.uri}: expected {ref.hash}, got {actual_hash}")
         with Image.open(BytesIO(raw)) as image:
             images.append(image.convert("RGB"))
     return images
@@ -160,19 +167,19 @@ class RawImageMaterializer:
         return self._image_processor
 
     def materialize(self, refs: MMRefs) -> MaterializedMM | None:
-        image_items, image_hashes = _parse_image_refs(refs)
+        image_items = _parse_image_refs(refs)
         if not image_items:
             return None
 
         image_processor = self.image_processor
         adapter = _single_family_adapter(image_items)
         _validate_processor_layout(adapter, image_processor, image_items)
-        images = _load_verified_images(refs.uris, image_hashes)
+        images = _load_verified_images(refs.images)
         return adapter.materialize_for_trainer(image_processor, image_items, images)
 
     def synthesize_placeholder(self, refs: MMRefs) -> MaterializedMM | None:
         """Build zero-valued multimodal tensors via the owning adapter."""
-        image_items, _ = _parse_image_refs(refs)
+        image_items = _parse_image_refs(refs)
         if not image_items:
             return None
         image_processor = self.image_processor
