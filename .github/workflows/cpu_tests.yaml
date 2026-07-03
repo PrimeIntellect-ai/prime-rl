@@ -25,16 +25,6 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install dependencies
-        # CPU unit tests need base + dev + two extras:
-        #   - flash-attn: `ring_flash_attn` (a base dep) hard-imports `flash_attn`
-        #     at module load; it ships only via this extra (prebuilt wheel on
-        #     x86_64, no build).
-        #   - envs: `test_load_configs` loads every config TOML, and configs that
-        #     reference a v1 taskset make `verifiers.v1.loaders` import that
-        #     taskset package by name at runtime (e.g. `scaleswe_v1`, `math500_v1`).
-        # We deliberately skip the GPU-only extras (flash-attn-3, disagg, quack,
-        # gpt-oss, modelexpress, flash-attn-cute) — ~several GB no unit test uses,
-        # which was overflowing the runner's root disk.
         run: uv sync --extra flash-attn --extra envs --locked
       - name: Run tests
         env:
