@@ -204,8 +204,7 @@ def train(config: TrainerConfig):
             substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
         from prime_rl.utils.cp import (
             assert_cp_style_supports_model,
-            setup_hybrid_cp,
-            setup_nemotron_h_cp,
+            setup_model_cp,
             setup_sparse_mla_cp,
         )
 
@@ -215,8 +214,7 @@ def train(config: TrainerConfig):
         # Linear-attn / Mamba layers are only configured under ulysses; with ring
         # we'd have already raised above.
         if config.model.cp_style == "ulysses":
-            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
-            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()

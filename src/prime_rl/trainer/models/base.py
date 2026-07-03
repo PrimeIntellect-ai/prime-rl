@@ -25,6 +25,7 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         self,
         *,
         seq_lens: Tensor | None = None,
+        seq_lens_are_global: bool = False,
     ) -> dict[str, object]:
         """Return PrimeRL-only kwargs needed by this model's forward path."""
         return {}

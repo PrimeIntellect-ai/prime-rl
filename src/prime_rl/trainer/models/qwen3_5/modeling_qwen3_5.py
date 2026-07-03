@@ -29,6 +29,7 @@ from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     normalize_qwen3_5_attn_implementation,
 )
 from prime_rl.trainer.models.qwen3_5_moe.mrope import build_qwen3_5_mrope_position_ids
+from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 
@@ -119,12 +120,15 @@ class Qwen3_5DecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        cu_seqlens_are_global: bool = False,
     ) -> torch.FloatTensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(hidden_states, cu_seqlens=cu_seqlens)
+            hidden_states = self.linear_attn(
+                hidden_states, cu_seqlens=cu_seqlens, cu_seqlens_are_global=cu_seqlens_are_global
+            )
         else:
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,
@@ -208,12 +212,23 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
 
         self.post_init()
 
+    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
+        self._cp_group = cp_group
+        self._cp_rank = cp_rank
+        self._cp_world_size = cp_world_size
+        for layer in self.layers:
+            if getattr(layer, "layer_type", None) == "linear_attention":
+                layer.linear_attn.cp_group = cp_group
+                layer.linear_attn.cp_rank = cp_rank
+                layer.linear_attn.cp_world_size = cp_world_size
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
+        seq_lens_are_global: bool = False,
     ) -> BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -226,7 +241,9 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
 
         flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
         if flash_attn_enabled:
-            if position_ids.ndim == 3:
+            if seq_lens_are_global and seq_lens is not None:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens.to(device=inputs_embeds.device))
+            elif position_ids.ndim == 3:
                 if inputs_embeds.shape[0] != 1:
                     raise ValueError("3D Qwen3.5 MRoPE positions require batch size 1 for varlen attention")
                 seq_len = inputs_embeds.shape[1]
@@ -247,7 +264,10 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
             seq_lens = seq_lens.to(device=inputs_embeds.device)
             if seq_lens.numel() > 1 and "full_attention" in self.config.layer_types:
                 raise ValueError("Packed Qwen3.5 batches with full_attention layers require flash attention")
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens, total_tokens=inputs_embeds.shape[1])
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                seq_lens,
+                total_tokens=None if seq_lens_are_global else inputs_embeds.shape[1],
+            )
         else:
             cu_seqlens = None
             max_seqlen = None
@@ -255,12 +275,15 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
+        cu_seqlens_are_global = seq_lens_are_global and seq_lens is not None
+
         for decoder_layer in self.layers:
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                cu_seqlens_are_global=cu_seqlens_are_global,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -281,6 +304,9 @@ class Qwen3_5VLMModel(nn.Module):
 
     def set_input_embeddings(self, value):
         self.language_model.embed_tokens = value
+
+    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
+        self.language_model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
 
     def _dummy_vision_inputs(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         vcfg = self.config.vision_config
@@ -372,6 +398,7 @@ class Qwen3_5VLMModel(nn.Module):
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
         seq_lens: torch.LongTensor | None = None,
+        seq_lens_are_global: bool = False,
         **kwargs,
     ) -> BaseModelOutputWithPast:
         inputs_embeds, position_ids = self.prepare_inputs_embeds_and_position_ids(
@@ -384,10 +411,20 @@ class Qwen3_5VLMModel(nn.Module):
             seq_lens=seq_lens,
         )
 
+        cp_group = getattr(self.language_model, "_cp_group", None)
+        if image_grid_thw is not None and cp_group is not None:
+            cp_rank = self.language_model._cp_rank
+            cp_world_size = self.language_model._cp_world_size
+            setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style="ulysses", seq_lens=seq_lens)
+            inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            seq_lens_are_global = True
+
         return self.language_model(
             inputs_embeds=inputs_embeds,
             position_ids=position_ids,
             seq_lens=seq_lens,
+            seq_lens_are_global=seq_lens_are_global,
         )
 
 
@@ -443,6 +480,9 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
     def get_decoder(self):
         return self.model
 
+    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
+        self.model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+
     @classmethod
     def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         if _has_vlm_keys(state_dict):
@@ -469,10 +509,11 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         self,
         *,
         seq_lens: Tensor | None = None,
+        seq_lens_are_global: bool = False,
     ) -> dict[str, object]:
         if seq_lens is None:
             return {}
-        return {"seq_lens": seq_lens}
+        return {"seq_lens": seq_lens, "seq_lens_are_global": seq_lens_are_global}
 
     def forward(
         self,
@@ -489,6 +530,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         image_grid_thw: Optional[torch.LongTensor] = None,
         mm_token_type_ids: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
+        seq_lens_are_global: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5 for now"
@@ -510,6 +552,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
                 image_grid_thw=image_grid_thw,
                 mm_token_type_ids=mm_token_type_ids,
                 seq_lens=seq_lens,
+                seq_lens_are_global=seq_lens_are_global,
             )
         else:
             outputs = self.model(
@@ -517,6 +560,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
                 position_ids=position_ids,
                 inputs_embeds=inputs_embeds,
                 seq_lens=seq_lens,
+                seq_lens_are_global=seq_lens_are_global,
             )
 
         hidden_states = outputs.last_hidden_state

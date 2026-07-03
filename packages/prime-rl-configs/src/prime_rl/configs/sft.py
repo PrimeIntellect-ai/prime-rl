@@ -331,8 +331,8 @@ class SFTConfig(BaseConfig):
     def validate_vlm_constraints(self):
         if self.model.vlm is None:
             return self
-        if self.model.cp > 1:
-            raise ValueError("VLM SFT does not support context parallelism yet.")
+        if self.model.cp > 1 and self.model.cp_style != "ulysses":
+            raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
         if self.data.micro_batch_size != 1:
             raise ValueError(
                 "VLM SFT requires data.micro_batch_size = 1 (image samples can't be packed across samples)."
