@@ -1,3 +1,4 @@
+import glob
 import hashlib
 import json
 import subprocess
@@ -862,7 +863,8 @@ def _stringify_tool_call_args(tool_call: Any) -> Any:
 def _resolve_local_data_files(data_files: list[str] | None, multimodal: bool = False) -> list[str] | None:
     """Materialize local files HF datasets can ingest.
 
-    Two transforms applied side-by-side under ``$TMPDIR``:
+    Glob patterns are expanded first (each match is materialized separately),
+    then two transforms are applied side-by-side under ``$TMPDIR``:
     - ``.zst`` files are decompressed (HF handles gz/bz2/xz transparently
       but not zstd).
     - JSONL files are normalized via :func:`_normalize_oai_record` so the
@@ -885,9 +887,18 @@ def _resolve_local_data_files(data_files: list[str] | None, multimodal: bool = F
     """
     if not data_files:
         return data_files
+    expanded: list[str] = []
+    for path in data_files:
+        if any(char in path for char in "*?["):
+            matches = sorted(glob.glob(path))
+            if not matches:
+                raise FileNotFoundError(f"No files match data_files pattern {path!r}")
+            expanded.extend(matches)
+        else:
+            expanded.append(path)
     is_writer = not torch.distributed.is_initialized() or get_world().local_rank == 0
     resolved: list[str] = []
-    for path in data_files:
+    for path in expanded:
         p = Path(path)
         if p.suffix in (".zst", ".jsonl"):
             stat = p.stat()
