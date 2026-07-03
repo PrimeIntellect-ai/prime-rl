@@ -812,11 +812,11 @@ def _normalize_oai_record(record: dict, multimodal: bool = False) -> dict:
       column unifies with image-block content. Text-only data keeps string
       content untouched, so the legacy tokenizer / chat-template path (which
       expects strings) is unaffected.
-    - ``messages[].tool_calls[].function.arguments`` and the ``tools`` array
-      both carry per-row schemas (action params, tool-specific JSON schemas,
-      etc.) that Arrow can't represent → stringify to canonical OAI JSON form
-      (``deserialize_tool_calls`` reverses this downstream). Renderers accept
-      either.
+    - ``messages[].tool_calls[].function.arguments`` and the ``tools`` /
+      ``tool_defs`` arrays carry per-row schemas (action params, tool-specific
+      JSON schemas, etc.) that Arrow can't represent → stringify to canonical
+      OAI JSON form (``deserialize_tool_calls`` reverses this downstream).
+      Renderers accept either.
     """
     new_record = dict(record)
 
@@ -837,9 +837,10 @@ def _normalize_oai_record(record: dict, multimodal: bool = False) -> dict:
             new_messages.append(m)
         new_record["messages"] = new_messages
 
-    tools = new_record.get("tools")
-    if isinstance(tools, (list, dict)):
-        new_record["tools"] = json.dumps(tools)
+    for key in ("tools", "tool_defs"):
+        tools = new_record.get(key)
+        if isinstance(tools, (list, dict)):
+            new_record[key] = json.dumps(tools)
 
     return new_record
 
