@@ -662,10 +662,10 @@ def get_model(
             "the HuggingFace implementation does not expose set_context_parallel_attributes."
         )
 
-    if config.vlm is not None and config.cp > 1 and not (is_vlm_arch and impl_to_use == "custom" and custom_vlm_cls):
+    if config.vlm is not None and not (is_vlm_arch and impl_to_use == "custom" and custom_vlm_cls):
         raise ValueError(
-            "VLM context parallelism requires a custom PrimeRL VLM implementation; "
-            f"{getattr(model_config, 'model_type', config.name)!r} is only supported with cp=1."
+            "VLM training requires a custom PrimeRL VLM implementation; "
+            f"{getattr(model_config, 'model_type', config.name)!r} has none."
         )
 
     with device:
