@@ -109,24 +109,7 @@ class Float8BlockwiseLinear(nn.Linear):
         return new_mod
 
 
-DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
-    "lm_head",
-    "router",
-    # Use escaped dots — re.search treats `.` as any-char, so the previous
-    # "mlp.gate." pattern was also matching dense MLP `mlp.gate_proj` (the
-    # trailing `.` was matching `_`). That left the dense MLP gate projection
-    # in BF16 on the trainer while inference quantized it to FP8, causing
-    # hidden-state drift before the MoE router.
-    r"mlp\.gate\.",
-    "shared_expert_gate",  # Qwen3.5 MoE: nn.Linear(hidden, 1, bias=False)
-    "eh_proj",
-    "weights_proj",
-    "in_proj_a",
-    "in_proj_b",
-]
-
-
-def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: list[str] | None = None) -> None:
+def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: list[str]) -> None:
     """Replace nn.Linear in `model` with Float8BlockwiseLinear, skipping any
     module whose qualified name matches an ignore pattern (substring or regex).
 
@@ -146,8 +129,6 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
     Conv1d, layer norms, and embedding tables are not nn.Linear and are
     skipped automatically by the type check; we don't need to list them.
     """
-    if ignore_modules is None:
-        ignore_modules = list(DEFAULT_FP8_IGNORE_PATTERNS)
     logger = get_logger()
     logger.info(f"Replacing linear layers with FP8 blockwise linear layers (ignore={ignore_modules})")
     replaced_modules = []

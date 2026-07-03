@@ -52,8 +52,6 @@ recipe = "mxfp8_rceil"
 enable_a2a = true
 ```
 
-The deprecated `model.fp8 = true` boolean is still accepted and maps to `quantization = {type = "fp8"}`.
-
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
 
 ### Expert Parallelism Backends

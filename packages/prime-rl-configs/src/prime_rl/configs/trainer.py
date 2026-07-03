@@ -122,15 +122,30 @@ class DebugModelConfig(BaseConfig):
 # weight-gradient GEMM in high precision (bf16) while quantizing fwd/dgrad.
 MXFP8Recipe: TypeAlias = Literal[
     "mxfp8_rceil",
-    "mxfp8_rceil_wgrad_with_hp",
-    "mxfp8_emulated_rceil",
+    "mxfp8_rceil_wgrad_with_hp"
 ]
 
+DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
+    "lm_head",
+    "router",
+    # Use escaped dots — re.search treats `.` as any-char, so the previous
+    # "mlp.gate." pattern was also matching dense MLP `mlp.gate_proj` (the
+    # trailing `.` was matching `_`). That left the dense MLP gate projection
+    # in BF16 on the trainer while inference quantized it to FP8, causing
+    # hidden-state drift before the MoE router.
+    r"mlp\.gate\.",
+    "shared_expert_gate",  # Qwen3.5 MoE: nn.Linear(hidden, 1, bias=False)
+    "eh_proj",
+    "weights_proj",
+    "in_proj_a",
+    "in_proj_b",
+]
 
 class FP8Config(BaseConfig):
     type: Literal["fp8"] = "fp8"
     enable_gemm: bool = True
     enable_grouped_gemm: bool = True
+    ignore_patterns: list[str] = DEFAULT_FP8_IGNORE_PATTERNS
 
 
 class MXFP8Config(BaseConfig):
@@ -139,6 +154,8 @@ class MXFP8Config(BaseConfig):
     enable_gemm: bool = True
     enable_grouped_gemm: bool = True
     enable_a2a: bool = True
+    ignore_patterns: list[str] = DEFAULT_FP8_IGNORE_PATTERNS
+
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
 
@@ -201,7 +218,6 @@ class ModelConfig(BaseModelConfig):
     """Use grouped mm for MoE layers. Requires compute capability ≥ 9.0."""
 
     quantization: QuantizationConfig | None = None
-    """Low-precision training config. ``{type="fp8"}`` for DeepGEMM FP8 blockwise (SM90+), ``{type="mxfp8"}`` for torchao MXFP8 microscaling (SM100+). ``None`` keeps bf16. Each backend exposes ``enable_gemm`` (dense linear swap) and ``enable_grouped_gemm`` (MoE expert GEMM); MXFP8 adds ``enable_a2a`` (EP all-to-all) and ``recipe``."""
 
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
