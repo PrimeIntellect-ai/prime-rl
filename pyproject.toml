@@ -311,7 +311,7 @@ wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
-torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
+torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "23e4dfc" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
 vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }
