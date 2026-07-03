@@ -1,7 +1,12 @@
+import glob
+import hashlib
 import json
+import subprocess
+import tempfile
 import uuid
 from collections import defaultdict
-from typing import Literal, TypedDict, cast
+from pathlib import Path
+from typing import Any, Literal, TypedDict, cast
 
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
@@ -15,13 +20,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.chat_template import (
-    IncrementalTokenizationError,
-    build_incremental_token_mask,
-    deserialize_tool_calls,
-    normalize_messages,
-    strip_message_content,
-)
+from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
 
 STACKING_DATASET_BUCKET_TIMEOUT = 10
@@ -114,6 +113,23 @@ class FakeDataset(StatefulIterableDataset):
             yield fake_sample
 
 
+def _drop_null_fields(value: Any) -> Any:
+    """Recursively strip ``None``-valued keys from dict structures.
+
+    PyArrow's JSON loader unifies schemas across rows, so heterogeneous
+    OAI content blocks (text vs image_url) end up with all union keys
+    filled with ``None`` where absent. That confuses permissive
+    content-type predicates inside renderers (e.g. ``"image_url" in item``
+    returns ``True`` even when the value is null). Strip the noise before
+    handing messages off to the renderer.
+    """
+    if isinstance(value, dict):
+        return {k: _drop_null_fields(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_drop_null_fields(v) for v in value]
+    return value
+
+
 class SFTDataset(StatefulIterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt/completion or raw messages format."""
 
@@ -121,6 +137,7 @@ class SFTDataset(StatefulIterableDataset):
         self,
         dataset: Dataset,
         tokenizer: PreTrainedTokenizer | None,
+        renderer: Renderer | None = None,
         shuffle: bool = True,
         seed: int = 0,
         seq_len: int = 128,
@@ -128,7 +145,6 @@ class SFTDataset(StatefulIterableDataset):
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
-        renderer: Renderer | None = None,
     ):
         super().__init__()
         self.logger = get_logger()
@@ -143,9 +159,6 @@ class SFTDataset(StatefulIterableDataset):
         self.max_epochs = max_epochs
         self.renderer = renderer
         self._warned_chat_template_kwargs = False
-
-        if self.tokenizer is None:
-            self.logger.warning("No tokenizer provided, will not process examples")
 
         # If specified, select a subset of the dataset
         if self.max_examples is not None:
@@ -163,16 +176,19 @@ class SFTDataset(StatefulIterableDataset):
         self.data_world_size = get_world().world_size // non_dp_size * num_workers
 
     def _process(self, example: dict) -> dict | None:
-        # Skip processing if no tokenizer was provided
         if self.tokenizer is None:
             return example
+        if self.renderer is None:
+            raise ValueError("SFT processing requires a renderer.")
 
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
-            # as a whole-chat training sample with an empty prompt.
-            if "messages" in example:
+            # as a whole-chat training sample with an empty prompt. Null-check rather
+            # than key-check: Arrow schema union adds `messages: null` to
+            # prompt/completion rows whenever other rows have a `messages` column.
+            if example.get("messages") is not None:
                 messages = normalize_messages(example["messages"], default_role="assistant")
-            elif "prompt" in example and "completion" in example:
+            elif example.get("prompt") is not None and example.get("completion") is not None:
                 messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
                     example["completion"], default_role="assistant"
                 )
@@ -182,22 +198,17 @@ class SFTDataset(StatefulIterableDataset):
                     "or both 'prompt' and 'completion' columns for SFT"
                 )
 
-            # Deserialize tool call arguments from message list, if present - assumes OAI format
-            # Reference: https://platform.openai.com/docs/guides/function-calling#handling-function-calls
-            messages = deserialize_tool_calls(messages)
-
-            # Strip content from all messages so that incremental tokenization works
-            # NOTE: This has the side effect that we do never train on leading or trailing whitespace
-            return strip_message_content(messages)
+            # Strip nulls before deserializing so genuine nulls inside tool-call
+            # argument strings survive.
+            messages = [_drop_null_fields(m) for m in messages]
+            return deserialize_tool_calls(messages)
 
         messages = resolve_messages(example)
 
-        # Parse available tools, if present - assumes OAI format
-        # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
-        # Accepts either `tools` or `tool_defs` (the verifiers rollout format),
-        # as either a JSON-encoded string of a list or a list of dicts. Tools
-        # arriving in the verifiers shape are converted to OAI form so any
-        # downstream chat template can consume them.
+        # Parse available tools, if present - assumes OAI format. Accepts either
+        # `tools` or `tool_defs` (the verifiers rollout format), as either a
+        # JSON-encoded string of a list or a list of dicts; verifiers-shaped
+        # tools are converted to OAI form for the chat template.
         raw_tools = example.get("tools", example.get("tool_defs"))
         if not raw_tools:
             tools = []
@@ -223,45 +234,36 @@ class SFTDataset(StatefulIterableDataset):
             assert "role" in message, "Message must have a role"
             match message["role"]:
                 case "user":
-                    return True if self.loss_mask_config.user else False
+                    return self.loss_mask_config.user
                 case "assistant":
-                    return True if self.loss_mask_config.assistant else False
+                    return self.loss_mask_config.assistant
                 case "system":
-                    return True if self.loss_mask_config.system else False
+                    return self.loss_mask_config.system
                 case "tool":
-                    return True if self.loss_mask_config.tool else False
+                    return self.loss_mask_config.tool
                 case _:
                     raise ValueError(f"Invalid message role: {message['role']}")
 
-        if self.renderer is not None:
-            if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
-                self.logger.warning(
-                    "Example carries chat_template_kwargs but a renderer is configured; "
-                    "renderers don't forward chat_template_kwargs (model-specific "
-                    "renderers bake their template behavior in). These kwargs will "
-                    "be ignored. Further warnings suppressed for this dataset."
-                )
-                self._warned_chat_template_kwargs = True
-
-            input_ids, loss_mask = build_training_sample(
-                self.renderer,
-                messages,
-                role_to_mask=should_mask,
-                tools=tools,
+        if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
+            self.logger.warning(
+                "Ignoring per-example chat_template_kwargs; renderers only take "
+                "template kwargs run-wide via the [renderer] config."
             )
-        else:
-            try:
-                input_ids, loss_mask = build_incremental_token_mask(
-                    self.tokenizer,
-                    messages,
-                    role_to_mask=should_mask,
-                    tools=tools,
-                    chat_template_kwargs=example.get("chat_template_kwargs", {}),
-                    collapse_consecutive_tool_messages=True,
-                )
-            except IncrementalTokenizationError as e:
-                self.logger.warning(f"Skipping example {example.get('__index', '')}: {e}")
-                return None
+            self._warned_chat_template_kwargs = True
+
+        # Non-assistant roles are opted into the loss via the renderer's
+        # body-only path: the message content is trained, not the role
+        # scaffolding (e.g. <tool_response> tags) the harness emits.
+        content_sft_roles = {role for role in ("user", "system", "tool") if getattr(self.loss_mask_config, role)}
+        sample = build_training_sample(
+            self.renderer,
+            messages,
+            role_to_mask=should_mask,
+            tools=tools,
+            content_sft_roles=content_sft_roles or None,
+        )
+        input_ids = list(sample.token_ids)
+        loss_mask = list(sample.loss_mask)
 
         # If EOS token is not found, manually append it
         if not self.tokenizer.eos_token_id in input_ids:
@@ -271,7 +273,7 @@ class SFTDataset(StatefulIterableDataset):
             input_ids.append(cast(int, self.tokenizer.eos_token_id))
             loss_mask.append(True)
 
-        # Prepare inputs
+        # Causal shift: model predicts next token from current.
         target_ids = input_ids.copy()[1:]
         loss_mask = loss_mask[1:]
         input_ids = input_ids[:-1]
@@ -280,7 +282,7 @@ class SFTDataset(StatefulIterableDataset):
             self.logger.warning(
                 f"Skipping example {example.get('__index', '')} because no trainable tokens were found within the context window ({self.seq_len}). This is to prevent NaN loss."
             )
-            return
+            return None
 
         assert len(input_ids) == len(loss_mask) == len(target_ids), (
             f"input_ids, loss_mask and target_ids must have the same length, but got {len(input_ids)=}, {len(loss_mask)=}, {len(target_ids)=}"
@@ -288,7 +290,6 @@ class SFTDataset(StatefulIterableDataset):
         assert sum(loss_mask) > 0, "There are no tokens in this sample that contribute to the loss"
         assert self.tokenizer.eos_token_id in target_ids, "EOS token ID must be present in target_ids"
 
-        # Create sample (with one fake target for the last token)
         return {
             "input_ids": input_ids,
             "target_ids": target_ids,
@@ -297,9 +298,6 @@ class SFTDataset(StatefulIterableDataset):
         }
 
     def __iter__(self):
-        """
-        Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
-        """
         dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
         while True:
             self.step += 1
@@ -326,7 +324,6 @@ class SFTDataset(StatefulIterableDataset):
             # Process example
             processed_example = self._process(cast(dict, example))
 
-            # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
             if processed_example is None:
                 continue
 
@@ -512,12 +509,16 @@ def setup_and_interleave_datasets(
     probabilities: list[float] | None,
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
     seed: int = 0,
+    data_files: str | list[str] | None = None,
 ) -> Dataset:
     logger = get_logger()
     datasets = []
     for subset, split in subsets_and_splits:
-        logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split))
+        logger.debug(f"Loading dataset {dataset_name} with {subset=}, {split=}, {data_files=}")
+        if data_files is not None:
+            dataset = cast(Dataset, load_dataset(dataset_name, data_files=data_files, split=split))
+        else:
+            dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split))
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
@@ -537,15 +538,141 @@ def setup_and_interleave_datasets(
     return dataset
 
 
+def _normalize_oai_record(record: dict) -> dict:
+    """Coerce variable JSON shapes to forms PyArrow's JSON loader can handle.
+
+    PyArrow infers schemas across rows and crashes on shape drift:
+    ``tool_calls`` (via ``function.arguments`` and heterogeneous per-tool
+    metadata) and the ``tools`` / ``tool_defs`` arrays carry per-row schemas
+    that Arrow can't represent, and even shape-stable tool_calls crash when
+    early batches are all-null (Arrow infers ``null`` and can't cast later
+    ``list<struct>`` batches to it). Stringify each to a JSON string — a
+    string column always unifies — with null/empty ``tool_calls`` coerced to
+    ``""``. ``deserialize_tool_calls`` reverses this downstream.
+
+    Both the ``messages`` layout and the TRL ``prompt``/``completion`` layout
+    (where each column is itself a message list) are normalized.
+    """
+    new_record = dict(record)
+
+    for key in ("messages", "prompt", "completion"):
+        messages = new_record.get(key)
+        if isinstance(messages, list):
+            new_record[key] = [_normalize_oai_message(m) for m in messages]
+
+    for key in ("tools", "tool_defs"):
+        tools = new_record.get(key)
+        if isinstance(tools, (list, dict)):
+            new_record[key] = json.dumps(tools)
+
+    return new_record
+
+
+def _normalize_oai_message(message: Any) -> Any:
+    if not isinstance(message, dict) or "tool_calls" not in message:
+        return message
+    message = dict(message)
+    tool_calls = message["tool_calls"]
+    if not isinstance(tool_calls, str):
+        # "" (not None) for no-tool messages: an all-null column chunk infers
+        # Arrow type null, which can't unify with string chunks
+        message["tool_calls"] = json.dumps(tool_calls) if tool_calls else ""
+    return message
+
+
+def _resolve_local_data_files(data_files: list[str] | None) -> list[str] | None:
+    """Materialize local files HF datasets can ingest.
+
+    Glob patterns are expanded first (each match is materialized separately),
+    then two transforms are applied side-by-side under ``$TMPDIR``:
+    - ``.zst`` files are decompressed (HF handles gz/bz2/xz transparently
+      but not zstd).
+    - JSONL files are normalized via :func:`_normalize_oai_record` so the
+      Arrow JSON loader can infer a stable schema across rows.
+
+    Both steps stream line-by-line — no full-file load into memory — so large
+    full datasets go through the same path as smaller samples.
+
+    The temp filename embeds a digest of the source's absolute path, mtime,
+    and size, so same-basename files from different directories (or a
+    changed/stale source) never collide on or silently reuse a previous run's
+    materialized output.
+
+    Each node materializes into its own (node-local) ``$TMPDIR``, so only the
+    local-rank-0 process on each node performs the work; a global barrier then
+    syncs all ranks. Gating per-node (not on global rank 0 alone) means ranks
+    on other nodes find their files instead of waiting on a path that was only
+    written on node 0. The gate also avoids parallel ranks racing to write the
+    same path (byte-interleaved output PyArrow rejects).
+    """
+    if not data_files:
+        return data_files
+    expanded: list[str] = []
+    for path in data_files:
+        if any(char in path for char in "*?["):
+            matches = sorted(glob.glob(path))
+            if not matches:
+                raise FileNotFoundError(f"No files match data_files pattern {path!r}")
+            expanded.extend(matches)
+        else:
+            expanded.append(path)
+    is_writer = not torch.distributed.is_initialized() or get_world().local_rank == 0
+    resolved: list[str] = []
+    for path in expanded:
+        p = Path(path)
+        if p.suffix in (".zst", ".jsonl"):
+            stat = p.stat()
+            digest = hashlib.sha1(f"{p.resolve()}:{stat.st_mtime_ns}:{stat.st_size}".encode()).hexdigest()[:12]
+            tmp = Path(tempfile.gettempdir()) / f"{p.stem}.{digest}.prime_rl_normalized.jsonl"
+            if is_writer and (not tmp.exists() or tmp.stat().st_size == 0):
+                if p.suffix == ".zst":
+                    get_logger().info(f"Decompressing + normalizing {p} → {tmp}")
+                    decompressed = Path(tempfile.gettempdir()) / f"{p.stem}.{digest}.prime_rl_raw"
+                    if not decompressed.exists() or decompressed.stat().st_size == 0:
+                        part = decompressed.with_name(decompressed.name + ".part")
+                        subprocess.run(["zstd", "-d", "-f", "-o", str(part), str(p)], check=True)
+                        part.replace(decompressed)
+                    _normalize_jsonl(decompressed, tmp)
+                else:
+                    get_logger().info(f"Normalizing {p} → {tmp}")
+                    _normalize_jsonl(p, tmp)
+            resolved.append(str(tmp))
+        else:
+            resolved.append(str(p))
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
+    return resolved
+
+
+def _normalize_jsonl(src: Path, dst: Path) -> None:
+    """Stream-rewrite ``src`` JSONL to ``dst`` with uniform OAI message shape.
+
+    Writes to a sidecar path and atomically renames into place, so an
+    interrupted run never leaves a truncated file that a later run would
+    mistake for a valid cache.
+    """
+    part = dst.with_name(dst.name + ".part")
+    with src.open("r") as f_in, part.open("w") as f_out:
+        for line in f_in:
+            if not line.strip():
+                continue
+            record = _normalize_oai_record(json.loads(line))
+            f_out.write(json.dumps(record))
+            f_out.write("\n")
+    part.replace(dst)
+
+
 def load_sft_dataset(config: SFTDataConfig) -> Dataset:
     """Load and interleave the raw HF dataset. This is the expensive I/O step."""
     logger = get_logger()
+    data_files = _resolve_local_data_files(config.data_files)
     if config.subsets is None and config.splits is None:
         return setup_and_interleave_datasets(
             dataset_name=config.name,
             subsets_and_splits=[(None, "train")],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            data_files=data_files,
         )
     elif config.subsets is not None and config.splits is None:
         logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
@@ -554,6 +681,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(subset, "train") for subset in config.subsets],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            data_files=data_files,
         )
     elif config.subsets is None and config.splits is not None:
         logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
@@ -562,6 +690,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(None, split) for split in config.splits],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            data_files=data_files,
         )
     else:
         assert config.subsets is not None and config.splits is not None
@@ -571,6 +700,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=list(zip(config.subsets, config.splits)),
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            data_files=data_files,
         )
 
 
@@ -585,9 +715,14 @@ def setup_dataset(
 ) -> StatefulIterableDataset:
     if config.type == "fake":
         return FakeDataset(
-            vocab_size=tokenizer.vocab_size, seq_len=config.seq_len, length=config.length, input_ids=config.input_ids
+            vocab_size=tokenizer.vocab_size,
+            seq_len=config.seq_len,
+            length=config.length,
+            input_ids=config.input_ids,
         )
     elif config.type == "sft":
+        if renderer is None:
+            raise ValueError("SFT data requires a renderer.")
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
         return SFTDataset(

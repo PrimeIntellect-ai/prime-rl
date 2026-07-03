@@ -29,8 +29,8 @@ from prime_rl.trainer.model import (
     forward,
     get_load_balance_stats,
     is_tt_moe_model,
-    setup_tokenizer,
     setup_model,
+    setup_tokenizer,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -56,6 +56,19 @@ from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from prime_rl.trainer.models.layers.lm_head import FUSED_CE_IGNORE_INDEX
 
 from torchtitan.distributed.utils import clip_grad_norm_
+
+
+def setup_renderer(tokenizer, config):
+    """Create the SFT renderer, rejecting the DefaultRenderer fallback."""
+    renderer = create_renderer(tokenizer, config)
+    if isinstance(renderer, DefaultRenderer):
+        raise ValueError(
+            f"SFT renderer for {tokenizer.name_or_path!r} resolved to DefaultRenderer. "
+            "SFT is renderer-only and requires a hand-coded renderer for stable "
+            "message-to-token attribution. Use a model with a hand-coded renderer "
+            "(see renderers.base.MODEL_RENDERER_MAP), or set [renderer] name=<hand-coded renderer> explicitly."
+        )
+    return renderer
 
 
 @clean_exit
@@ -162,17 +175,12 @@ def train(config: SFTConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
+    # Fake data never renders messages, so a model without a hand-coded renderer
+    # can still be used to benchmark step time / memory. Validation data is
+    # always real, so it needs the renderer even when training data is fake.
     renderer = None
-    if config.renderer is not None:
-        renderer = create_renderer(tokenizer, config.renderer)
-        if isinstance(renderer, DefaultRenderer):
-            raise ValueError(
-                f"renderer set for {config.tokenizer.name!r} resolved to DefaultRenderer. "
-                "DefaultRenderer falls back to incremental apply_chat_template and does NOT "
-                "fix position-dependent chat templates — the bug the renderer client is meant to solve. "
-                "Either use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
-                "set [renderer] name=<hand-coded renderer> explicitly, or remove the [renderer] block."
-            )
+    if config.data.type != "fake" or config.val is not None:
+        renderer = setup_renderer(tokenizer, config.renderer)
         logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
 
     # Set up the optimizer
