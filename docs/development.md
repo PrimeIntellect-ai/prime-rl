@@ -14,6 +14,7 @@ This page covers workflows for developing on `prime-rl` itself — running the t
   - [Implement the Modeling Code](#implement-the-modeling-code)
   - [Register a Mini Preset](#register-a-mini-preset)
   - [Run the Smoke Test](#run-the-smoke-test)
+- [Adding a Custom VLM Implementation](#adding-a-custom-vlm-implementation)
 
 ## Test Suite
 
@@ -138,3 +139,15 @@ Before merging a new model, you need to ensure the following:
 - The small smoke test passes.
 
 In the PR that adds the new model, you also need to provide a table covering the KL mismatch across 20 steps on `math` environment with `batch_size=64`. All the entries in the table must lower than 0.015. If this is not met, the PR will not be merged (unless reasonable justification is provided). This is to ensure all our models are consistent and their implementations match the implementations in the inference framework.
+
+## Adding a Custom VLM Implementation
+
+VLM training (any run with `[model.vlm]` set, SFT or RL) is custom-implementation-only: `get_model` rejects models without a custom PrimeRL VLM class at load time. To make a new VLM family trainable, extend a custom text model with a composite VLM body — the Qwen3.5 dense (`models/qwen3_5/`) and MoE (`models/qwen3_5_moe/`) implementations are the reference. The pieces, in dependency order:
+
+1. **Custom text model first.** The VLM body wraps a custom `*ForCausalLM` (see [Adding a New Model](#adding-a-new-model)), so the text side — including its state-dict conversion and KL-mismatch table — comes first.
+2. **Composite VLM body.** A `*VLMModel` that holds the HF vision encoder and the custom text model, with a `prepare_inputs_embeds_and_position_ids` step: embed tokens, run the vision encoder, scatter image embeddings over placeholder tokens, and build MRoPE 3D positions from `mm_token_type_ids` (the renderer owns the token→modality mapping). The unified `*ForCausalLM` dispatches on the config: composite config → VLM path, text config → text path.
+3. **Always run the vision encoder.** Text-only micro-batches must feed the encoder dummy pixels and graft the result into the graph with zero contribution (`inputs_embeds + image_embeds.sum() * 0.0`) so FSDP/EP collectives stay symmetric across ranks when the encoder is trainable.
+4. **Packed-boundary consumption.** Samples pack into shared rows with per-document boundaries in `seq_lens`; every custom model's `forward()` declares the typed `seq_lens`/`seq_lens_are_global` parameters (the trainer passes them unconditionally) and must honor the boundaries — varlen flash `cu_seqlens`, linear-attention state resets per document, and a loud rejection on attention paths that can't (see the packed-batch guard in any modeling file). Set `self.supports_packed_multimodal_training` on VLM configs once packed rows are handled — RL fails loudly at startup for VLM models without it.
+5. **Registration.** Register the composite `model_type` in `_CUSTOM_VLM_MAPPING` (`models/__init__.py`) so `get_model` dispatches to the custom class, and describe the family in `VLM_REGISTRY` (`utils/vlm.py`).
+6. **Context parallelism (optional).** Implement `set_context_parallel_attributes` and shard embeds/positions inside the model after the vision merge (the trainers defer CP sharding to the model for MRoPE batches under ulysses). Without this, CP configs are rejected for the family.
+7. **Validation.** Same bar as text models: the KL-mismatch table for the text path, plus an SFT run and an RL run on a real multimodal dataset (the `color-codeword` environment is the reference task).
