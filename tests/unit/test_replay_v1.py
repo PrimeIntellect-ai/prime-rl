@@ -256,7 +256,6 @@ def _make_buffer(path: Path, mode: str, online: bool = False, **overrides) -> Re
         buffer_dir=str(path),
         mode=mode,
         online=online,
-        stop_conditions=None,
         source_envs=None,
         allow_container=False,
         success_threshold=0.5,

@@ -62,7 +62,6 @@ Core fields (every replay env):
 | `buffer_dir` | *(required)* | The saved-rollout dir to replay: a run's `rollouts` dir (or the run dir containing it). Under prime-rl the literal `"self"` resolves to this run's own rollout dir (an online buffer over the run's freshly written rollouts). |
 | `derivation` | *(required)* | The derived task this env serves: `{ type = "continue" \| "recheck" \| "judge", ... }` with the per-derivation fields below. One derivation per env entry. |
 | `source_envs` | `None` | Which envs' rollouts to replay, by their stamped name (`info.prime_rl.env_name`). Unset: every env except replay envs. An explicit list replays exactly those — naming a replay env opts into chained derivations (recheck a recheck). With a list set, records without the stamp never match. |
-| `filters` | `[]` | Optional source filters, applied at index time — add entries only when you want them. Currently: `{ type = "stop-condition", allow = ["agent_completed", ...] }` (only replay sources that stopped one of these ways). |
 | `online` | *(inferred)* | Set automatically for `buffer_dir = "self"`. Set it yourself only to treat another still-running run's dir as a growing buffer. |
 
 Per-derivation fields:

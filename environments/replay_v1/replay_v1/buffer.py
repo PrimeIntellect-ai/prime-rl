@@ -96,7 +96,6 @@ class ReplayBuffer:
         buffer_dir: str,
         mode: str,
         online: bool,
-        stop_conditions: list[str] | None,
         source_envs: list[str] | None,
         allow_container: bool,
         success_threshold: float,
@@ -104,7 +103,6 @@ class ReplayBuffer:
         self.rollout_dir = resolve_rollout_dir(buffer_dir)
         self.mode = mode
         self.online = online
-        self.stop_conditions = set(stop_conditions) if stop_conditions else None
         self.source_envs = set(source_envs) if source_envs else None
         self.allow_container = allow_container
         self.success_threshold = success_threshold
@@ -179,8 +177,6 @@ class ReplayBuffer:
             stamped = (record.get("info") or {}).get("prime_rl", {}).get("env_name")
             if stamped not in self.source_envs:
                 return []
-        if self.stop_conditions is not None and record.get("stop_condition") not in self.stop_conditions:
-            return []
         if not usable(record):
             return []
         # Container provisioning is keyed on the innermost original task, however deep

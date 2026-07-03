@@ -135,14 +135,6 @@ class JudgeConfig(BaseConfig):
 DerivationConfig = Annotated[ContinueConfig | RecheckConfig | JudgeConfig, Field(discriminator="type")]
 
 
-class StopConditionFilter(BaseConfig):
-    """Only replay sources with one of these stop conditions — e.g. `["agent_completed"]`
-    restricts recheck to conversations that actually finished."""
-
-    type: Literal["stop-condition"] = "stop-condition"
-    allow: list[str]
-
-
 # ------------------------------------------------------------------ config
 
 
@@ -167,10 +159,6 @@ class ReplayTasksetConfig(TasksetConfig):
     replays exactly those, and naming a replay env is that deliberate choice: chained
     derivations (recheck a recheck) are expressed as one replay env sourcing another.
     With an explicit list, records without the stamp never match."""
-
-    filters: list[StopConditionFilter] = []
-    """Optional source filters, applied at index time. Empty by default — add entries
-    only when you want them."""
 
     online: bool = False
     """Treat the buffer as growing: rescan for new steps during training, read only
@@ -236,12 +224,10 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
         # Online buffers sample a fresh source per request; the whole GRPO group must
         # share that draw, so all its rollouts must arrive as one run_group request.
         self.REQUIRES_GROUP_ROLLOUTS = config.online
-        stop_conditions = next((f.allow for f in config.filters if f.type == "stop-condition"), None)
         self.buffer = ReplayBuffer(
             buffer_dir=config.buffer_dir,
             mode=self.derivation.type,
             online=config.online,
-            stop_conditions=stop_conditions,
             source_envs=config.source_envs,
             allow_container=getattr(self.derivation, "allow_container", False),
             success_threshold=getattr(self.derivation, "success_threshold", 0.5),
