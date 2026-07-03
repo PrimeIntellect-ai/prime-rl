@@ -16,6 +16,12 @@ from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attemp
 from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.shared import ClientConfig
+from prime_rl.inference.dynamo_admin import (
+    DynamoAdminAPI,
+    discover_worker_urls,
+    discovery_urls,
+    validate_worker_membership,
+)
 from prime_rl.utils.logger import get_logger
 
 # Identity tuple used by ``select_train_client`` to key load counts. ``base_url``
@@ -71,6 +77,17 @@ class InferencePool(Protocol):
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         """Update weights on all inference servers."""
+        ...
+
+    async def init_nccl_broadcast(
+        self,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int | None = None,
+        quantize_in_weight_transfer: bool = False,
+    ) -> None:
+        """Initialize weight broadcast on all inference servers."""
         ...
 
     async def score(self, token_ids: list[int]) -> list[float]:
@@ -136,7 +153,14 @@ class StaticInferencePool:
             pool_size=pool_size,
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
-        self._admin_clients = setup_admin_clients(client_config)
+        self._client_config = client_config
+        self._frontend_admin_clients = setup_admin_clients(client_config, urls=client_config.base_url)
+        self._dynamo_admin = DynamoAdminAPI() if client_config.admin_api == "dynamo" else None
+        self._discovery_clients = (
+            setup_admin_clients(client_config, urls=discovery_urls(client_config)) if self._dynamo_admin else []
+        )
+        self._dynamo_worker_urls: tuple[str, ...] = ()
+        self._admin_clients = [] if self._dynamo_admin else setup_admin_clients(client_config)
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
@@ -167,13 +191,64 @@ class StaticInferencePool:
         return min(self.train_clients, key=lambda c: load[client_identity(c)])
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
+        ready_timeout = timeout if timeout is not None else self._wait_for_ready_timeout
         await check_health(
-            self._admin_clients, timeout=timeout if timeout is not None else self._wait_for_ready_timeout
+            self._frontend_admin_clients,
+            timeout=ready_timeout,
         )
-        await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
+        await maybe_check_has_model(
+            self._frontend_admin_clients,
+            model_name,
+            skip_model_check=self._skip_model_check,
+        )
+        if self._dynamo_admin is not None:
+            worker_urls = await discover_worker_urls(self._discovery_clients, ready_timeout, model_name=model_name)
+            self._dynamo_worker_urls = tuple(worker_urls)
+            self._admin_clients = setup_admin_clients(self._client_config, urls=worker_urls)
+            await check_health(self._admin_clients, timeout=ready_timeout, strict=True)
+
+    async def _validate_dynamo_membership(self) -> None:
+        if self._dynamo_admin is None:
+            return
+        discovered = await discover_worker_urls(self._discovery_clients, 30, model_name=self.model_name)
+        validate_worker_membership(self._dynamo_worker_urls, discovered)
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+        if self._dynamo_admin is not None:
+            if lora_name is not None:
+                raise ValueError("Dynamo backend does not yet support Prime LoRA weight updates")
+            await self._validate_dynamo_membership()
+            await self._dynamo_admin.update_weights(self._admin_clients, weight_dir, step)
+            return
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+
+    async def init_nccl_broadcast(
+        self,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int | None = None,
+        quantize_in_weight_transfer: bool = False,
+    ) -> None:
+        if self._dynamo_admin is not None:
+            await self._validate_dynamo_membership()
+            await self._dynamo_admin.initialize_nccl(
+                self._admin_clients,
+                host=host,
+                port=port,
+                timeout=timeout,
+                inference_world_size=inference_world_size,
+                quantize_in_weight_transfer=quantize_in_weight_transfer,
+            )
+            return
+        await init_nccl_broadcast(
+            self._admin_clients,
+            host,
+            port,
+            timeout,
+            inference_world_size=inference_world_size,
+            quantize_in_weight_transfer=quantize_in_weight_transfer,
+        )
 
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this pool's model (one logprob per
@@ -182,6 +257,8 @@ class StaticInferencePool:
 
     async def stop(self) -> None:
         await self._scorer.aclose()
+        clients = {*self._frontend_admin_clients, *self._discovery_clients, *self._admin_clients}
+        await asyncio.gather(*(client.aclose() for client in clients))
 
 
 async def setup_inference_pool(
@@ -250,14 +327,14 @@ def setup_clients(
     return clients
 
 
-def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
+def setup_admin_clients(client_config: ClientConfig, urls: list[str] | None = None) -> list[AsyncClient]:
     """Create dedicated admin clients for weight update operations.
 
     Uses a separate connection pool to avoid queueing behind streaming requests.
     When admin_base_url is set, uses those URLs instead of base_url, allowing
     weight updates to bypass routers in disaggregated P/D deployments.
     """
-    urls = client_config.admin_base_url if client_config.admin_base_url else client_config.base_url
+    urls = urls or (client_config.admin_base_url if client_config.admin_base_url else client_config.base_url)
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
         env_headers = {
@@ -297,7 +374,11 @@ async def maybe_check_has_model(
 
 
 async def check_health(
-    admin_clients: list[AsyncClient], interval: int = 1, log_interval: int = 10, timeout: int = 1800
+    admin_clients: list[AsyncClient],
+    interval: int = 1,
+    log_interval: int = 10,
+    timeout: int = 1800,
+    strict: bool = False,
 ) -> None:
     logger = get_logger()
 
@@ -306,7 +387,9 @@ async def check_health(
         logger.debug("Starting pinging /health to check health")
         while wait_time < timeout:
             try:
-                await admin_client.get("/health")
+                response = await admin_client.get("/health")
+                if strict:
+                    response.raise_for_status()
                 logger.debug(f"Inference pool is ready after {wait_time} seconds")
                 return
             except NotFoundError:
