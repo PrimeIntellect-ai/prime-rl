@@ -226,7 +226,7 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus perma
 Re-run the same launch command and pass `--ckpt.resume-step <N>` (or `-1` for "latest"). Make sure `--max-steps` is at least the target final step, not the remaining delta:
 
 ```bash
-# First run: steps 0–10
+# First run: steps 1–10
 uv run rl @ rl.toml --max-steps 10 --ckpt
 
 # Resume: continue to step 20
@@ -306,6 +306,8 @@ uv run rl @ rl.toml --wandb \
   --orchestrator.wandb.log-extras.interval 50 \
   --no-trainer.wandb.log-extras.distributions
 ```
+
+prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, W&B mode **auto-creates an `overview` saved view** on the first run into a project — curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first.
 
 ### Platform Monitoring
 

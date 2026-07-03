@@ -317,14 +317,11 @@ def validate_shared_weight_broadcast(
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
-    if (
-        inference
-        and trainer.weight_broadcast.type != orchestrator.weight_broadcast.type != inference.weight_broadcast.type
-    ):
-        raise ValueError(
-            f"Inference weight broadcast type ({inference.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
-        )
-    elif trainer.weight_broadcast.type != orchestrator.weight_broadcast.type:
+    if trainer.weight_broadcast.type != orchestrator.weight_broadcast.type:
         raise ValueError(
             f"Trainer weight broadcast type ({trainer.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
+        )
+    if inference is not None and inference.weight_broadcast.type != trainer.weight_broadcast.type:
+        raise ValueError(
+            f"Inference weight broadcast type ({inference.weight_broadcast.type}) and trainer/orchestrator weight broadcast type ({trainer.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for all components."
         )

@@ -16,6 +16,11 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, logging
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers.attn import (
+    flash_attn_3_varlen_func,
+    flash_attn_4_varlen_func,
+    flash_attn_varlen_func,
+)
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
@@ -29,22 +34,6 @@ from .converting_qwen3_5_moe import (
     convert_tt_to_hf_moe,
 )
 from .mrope import build_qwen3_5_mrope_position_ids
-
-# Flash attention imports
-try:
-    from flash_attn import flash_attn_varlen_func
-except ImportError:
-    flash_attn_varlen_func = None  # type: ignore
-
-try:
-    from flash_attn_interface import flash_attn_varlen_func as flash_attn_3_varlen_func
-except ImportError:
-    flash_attn_3_varlen_func = None  # type: ignore
-
-try:
-    from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen_func
-except ImportError:
-    flash_attn_4_varlen_func = None  # type: ignore
 
 # Flash linear attention imports (for GatedDeltaNet fast path)
 try:
