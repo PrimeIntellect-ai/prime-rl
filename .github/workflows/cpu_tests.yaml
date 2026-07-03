@@ -25,10 +25,6 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install dependencies
-        # CPU unit tests only need base + dev deps. --all-extras additionally
-        # pulls the envs/flash-attn-3/disagg/quack/etc. extras (~2-3GB of GPU
-        # kernels and env deps that no `tests/unit` test imports), which
-        # overflows the runner's root disk. See ENG: no space left on device.
         run: uv sync --locked
       - name: Run tests
         env:
