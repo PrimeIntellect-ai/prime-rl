@@ -27,9 +27,9 @@ class Policy:
 
 @dataclass
 class Progress:
-    """Persistent counters; ``step`` is the trainer-aligned step."""
+    """Persistent counters; ``step`` is the trainer-aligned step (1-indexed)."""
 
-    step: int = 0
+    step: int = 1
     total_tokens: int = 0
     total_samples: int = 0
     total_problems: int = 0

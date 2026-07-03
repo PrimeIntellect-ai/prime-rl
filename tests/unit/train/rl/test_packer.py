@@ -97,19 +97,20 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
         start_step=0,
     )
 
-    packer.buffers[run_idx].append((make_training_sample(), 0))
-    packer.buffers[run_idx].append((make_training_sample(), 0))
+    # Steps are 1-indexed: a fresh run starts at step 1, so the first batch's samples carry step 1.
+    packer.buffers[run_idx].append((make_training_sample(), 1))
+    packer.buffers[run_idx].append((make_training_sample(), 1))
 
     packer.pack()
 
     progress = manager.progress[run_idx]
     assert progress.total_samples == 2
     assert progress.total_tokens == 4
-    assert progress.step == 1
+    assert progress.step == 2
 
     sender = sender_holder["sender"]
     assert len(sender.sent) == 1
     assert len(sender.sent[0][0]) == 1
     micro_batch = sender.sent[0][0][0]
     assert micro_batch.run_id == "run_test123"
-    assert micro_batch.run_step == 0
+    assert micro_batch.run_step == 1

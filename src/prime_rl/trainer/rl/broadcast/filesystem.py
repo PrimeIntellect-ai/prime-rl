@@ -68,9 +68,11 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             # TODO: Broadcast ready to update in sync, then we dont need to gather on not ready
             if self.world.is_master:
                 try:
+                    # pack() already advanced progress to the next step, so the model we just
+                    # trained — policy v(step-1) — broadcasts to broadcasts/step_{step-1}.
                     save_dir = get_step_path(
                         get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
-                        self.multi_run_manager.progress[idx].step,
+                        self.multi_run_manager.progress[idx].step - 1,
                     )
                     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -112,6 +114,6 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         for idx in self.multi_run_manager.used_idxs:
             maybe_clean(
                 get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
-                self.multi_run_manager.progress[idx].step,
+                self.multi_run_manager.progress[idx].step - 1,
                 interval_to_keep,
             )
