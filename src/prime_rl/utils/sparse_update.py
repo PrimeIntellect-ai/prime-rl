@@ -245,39 +245,32 @@ def save_sparse_update(
     return stats
 
 
-def save_sparse_update_from_diff(
+def sparsify_tensors_into(
     weights: Mapping[str, Tensor],
     diffs: Mapping[str, Tensor],
-    save_dir: Path,
     *,
-    step: int,
-    base_step: int,
+    patch_tensors: dict[str, Tensor],
+    tensor_entries: list[dict],
+    tensor_idx_offset: int,
     compute_dtype: torch.dtype | None = None,
-    compress: bool = False,
-) -> SparseUpdateStats:
-    """Save a sparse patch from pre-computed weights and boolean diff tensors.
+) -> tuple[int, int, int]:
+    """Sparsify tensors on their current device, appending the sparse result.
 
-    Both ``weights`` and ``diffs`` must share the same keys and have matching shapes.
-    The diff tensors are boolean (``True`` = changed). This function sparsifies
-    by finding nonzero elements in each diff, extracting the corresponding values
-    from the weights, and writing a sparse patch + manifest.
+    For each tensor, finds the nonzero elements of its boolean diff, extracts the
+    corresponding weight values, and appends ``(indices, values)`` to ``patch_tensors``
+    plus a manifest row to ``tensor_entries``. Only the sparse indices/values are
+    moved to CPU — the dense weights stay wherever they are (e.g. the freshly-gathered
+    GPU tensors), so this can run per-layer before those tensors are freed instead of
+    accumulating the whole model.
 
-    Both dicts are expected to be on the same device (typically GPU). Only the
-    sparse indices and values are moved to CPU for saving.
-
-    When ``compute_dtype`` is set, weight tensors are cast to that dtype before
-    extracting values (e.g. BF16 to match the receiver's expected format).
+    ``tensor_idx_offset`` keeps patch keys unique across calls; add the returned slot
+    count to it before the next call. Returns ``(num_slots, total_numel, changed_numel)``.
     """
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    patch_tensors: dict[str, Tensor] = {}
-    tensor_entries: list[dict] = []
     total_numel = 0
     changed_numel = 0
 
-    diff_start = time.perf_counter()
-
-    for tensor_idx, (name, weight) in enumerate(weights.items()):
+    for local_idx, (name, weight) in enumerate(weights.items()):
+        tensor_idx = tensor_idx_offset + local_idx
         diff = diffs.get(name)
         numel = weight.numel()
         total_numel += numel
@@ -318,7 +311,25 @@ def save_sparse_update_from_diff(
             }
         )
 
-    diff_s = time.perf_counter() - diff_start
+    return len(weights), total_numel, changed_numel
+
+
+def write_sparse_patch(
+    patch_tensors: dict[str, Tensor],
+    tensor_entries: list[dict],
+    save_dir: Path,
+    *,
+    step: int,
+    base_step: int,
+    total_tensors: int,
+    total_numel: int,
+    changed_numel: int,
+    compute_dtype: torch.dtype | None = None,
+    compress: bool = False,
+    diff_s: float = 0.0,
+) -> SparseUpdateStats:
+    """Write an already-sparsified patch (indices/values on CPU) plus its manifest."""
+    save_dir.mkdir(parents=True, exist_ok=True)
 
     save_start = time.perf_counter()
     _save_patch(patch_tensors, save_dir / SPARSE_UPDATE_PATCH_NAME, compress=compress)
@@ -327,7 +338,7 @@ def save_sparse_update_from_diff(
     patch_file = save_dir / SPARSE_UPDATE_PATCH_NAME
     patch_bytes = patch_file.stat().st_size if patch_file.exists() else 0
     stats = SparseUpdateStats(
-        total_tensors=len(weights),
+        total_tensors=total_tensors,
         patched_tensors=len(tensor_entries),
         total_numel=total_numel,
         changed_numel=changed_numel,
@@ -357,6 +368,52 @@ def save_sparse_update_from_diff(
         json.dump(manifest, f, indent=2, sort_keys=True)
         f.write("\n")
     return stats
+
+
+def save_sparse_update_from_diff(
+    weights: Mapping[str, Tensor],
+    diffs: Mapping[str, Tensor],
+    save_dir: Path,
+    *,
+    step: int,
+    base_step: int,
+    compute_dtype: torch.dtype | None = None,
+    compress: bool = False,
+) -> SparseUpdateStats:
+    """Save a sparse patch from pre-computed weights and boolean diff tensors.
+
+    Both ``weights`` and ``diffs`` must share the same keys and have matching shapes.
+    Sparsifies on whatever device the tensors are on (typically GPU); only the sparse
+    indices and values are moved to CPU. Thin wrapper over ``sparsify_tensors_into`` +
+    ``write_sparse_patch`` for the single-shot case.
+    """
+    patch_tensors: dict[str, Tensor] = {}
+    tensor_entries: list[dict] = []
+
+    diff_start = time.perf_counter()
+    _, total_numel, changed_numel = sparsify_tensors_into(
+        weights,
+        diffs,
+        patch_tensors=patch_tensors,
+        tensor_entries=tensor_entries,
+        tensor_idx_offset=0,
+        compute_dtype=compute_dtype,
+    )
+    diff_s = time.perf_counter() - diff_start
+
+    return write_sparse_patch(
+        patch_tensors,
+        tensor_entries,
+        save_dir,
+        step=step,
+        base_step=base_step,
+        total_tensors=len(weights),
+        total_numel=total_numel,
+        changed_numel=changed_numel,
+        compute_dtype=compute_dtype,
+        compress=compress,
+        diff_s=diff_s,
+    )
 
 
 def load_sparse_update_manifest(patch_dir: Path) -> dict:

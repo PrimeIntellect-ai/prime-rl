@@ -11,12 +11,12 @@ from prime_rl.configs.trainer import LoRAConfig, SparseFileSystemWeightBroadcast
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.optim_hooks import (
     clear_sparse_diffs,
-    ensure_diffs_on_device,
     get_sparse_diffs,
+    move_diff_to_device,
 )
 from prime_rl.trainer.rl.broadcast.filesystem import FileSystemWeightBroadcast
-from prime_rl.trainer.weights import get_max_layer_num
-from prime_rl.utils.sparse_update import SparseUpdateStats, save_sparse_update_from_diff
+from prime_rl.trainer.weights import get_fqns, get_max_layer_num
+from prime_rl.utils.sparse_update import SparseUpdateStats, sparsify_tensors_into, write_sparse_patch
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 from prime_rl.utils.vlm import get_layer_prefix
 
@@ -68,22 +68,28 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
         """Store the optimizer reference for reading sparse diffs."""
         self._optimizer = optimizer
 
-    def _collect_layer_weights_and_diffs(
-        self, model: nn.Module, param_to_diff: dict
-    ) -> tuple[dict[str, Tensor], dict[str, Tensor]] | None:
-        """Gather model weights and their diffs per-layer on master rank.
+    def _collect_sparse_patch(self, model: nn.Module, param_to_diff: dict):
+        """Gather weights + diffs per layer and sparsify each layer on GPU.
 
-        Returns (weights_dict, diffs_dict) in PrimeRL training format on GPU,
-        or None on non-master ranks.
+        ``full_tensor()`` is a collective all-gather across the trainer mesh: every
+        rank holding a shard must call it, so all ranks run the gather loop. Only
+        master sparsifies and accumulates the (tiny) sparse patch; the full gathered
+        layer is freed before the next one, so the whole unsharded model never piles
+        onto one GPU and the diff runs on GPU (fast). Returns the accumulated patch
+        ``(patch_tensors, tensor_entries, total_tensors, total_numel, changed_numel,
+        diff_s)`` on master, or ``None`` on non-master ranks.
         """
-        if not self.world.is_master:
-            return None
+        compute_dtype = None if self.kernel_format else torch.bfloat16
 
-        # Build param→name mapping for trainable params that have diffs
+        # Build param→name mapping for trainable params that have diffs. Canonicalize via
+        # get_fqns: named_parameters() keys carry wrapper prefixes (e.g. `_checkpoint_wrapped_module.`,
+        # `_orig_module.`) but state_dict() keys are already stripped clean, so raw names would never
+        # match the weights and every wrapped (layer) param would be silently dropped from the patch.
         param_to_name: dict = {}
         for name, param in model.named_parameters():
             if param in param_to_diff:
-                param_to_name.setdefault(param, []).append(name)
+                for fqn in get_fqns(model, name):
+                    param_to_name.setdefault(param, []).append(fqn)
 
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(
@@ -91,13 +97,17 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
             layer_prefix,
         )
 
-        all_weights: dict[str, Tensor] = {}
-        all_diffs: dict[str, Tensor] = {}
+        patch_tensors: dict[str, Tensor] = {}
+        tensor_entries: list[dict] = []
+        total_tensors = 0
+        total_numel = 0
+        changed_numel = 0
+        diff_s = 0.0
 
         for layer_idx, layer_weights_sd, layer_diffs_sd in self._iter_layer_weights_and_diffs(
             model, param_to_diff, param_to_name, num_layers, layer_prefix
         ):
-            # Resolve DTensors to full tensors on GPU
+            # Resolve DTensors to full tensors on GPU (all_gather — every rank participates).
             for key in list(layer_weights_sd):
                 val = layer_weights_sd[key]
                 if isinstance(val, _DTensor):
@@ -106,7 +116,16 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
             for key in list(layer_diffs_sd):
                 val = layer_diffs_sd[key]
                 if isinstance(val, _DTensor):
+                    # Diffs live on CPU (optimizer offload); move each shard to GPU only for its
+                    # all_gather rather than moving every diff up front (that spike OOMs the gather).
+                    val = move_diff_to_device(val, "cuda")
                     layer_diffs_sd[key] = val.to(torch.bool).full_tensor()
+
+            # Collectives done; non-master ranks drop their gathered copies immediately.
+            if not self.world.is_master:
+                layer_weights_sd.clear()
+                layer_diffs_sd.clear()
+                continue
 
             if self.kernel_format and layer_idx >= 0 and isinstance(model, PreTrainedModelPrimeRL):
                 converted_weights = model.convert_layer_to_vllm_kernel(layer_weights_sd, layer_idx, quantize_fp8=False)
@@ -123,10 +142,31 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
                 converted_weights = revert_weight_conversion(model, layer_weights_sd)
                 converted_diffs = revert_weight_conversion(model, layer_diffs_sd)
 
-            all_weights.update(converted_weights)
-            all_diffs.update(converted_diffs)
+            # Sparsify this layer on GPU; only the sparse indices/values are copied to CPU. The
+            # full gathered layer is dropped right after, so GPU holds one layer at a time.
+            diff_start = time.perf_counter()
+            n_slots, layer_numel, layer_changed = sparsify_tensors_into(
+                converted_weights,
+                converted_diffs,
+                patch_tensors=patch_tensors,
+                tensor_entries=tensor_entries,
+                tensor_idx_offset=total_tensors,
+                compute_dtype=compute_dtype,
+            )
+            diff_s += time.perf_counter() - diff_start
+            total_tensors += n_slots
+            total_numel += layer_numel
+            changed_numel += layer_changed
 
-        return all_weights, all_diffs
+            converted_weights.clear()
+            converted_diffs.clear()
+            layer_weights_sd.clear()
+            layer_diffs_sd.clear()
+
+        if not self.world.is_master:
+            return None
+
+        return patch_tensors, tensor_entries, total_tensors, total_numel, changed_numel, diff_s
 
     def _iter_layer_weights_and_diffs(
         self, model: nn.Module, param_to_diff: dict, param_to_name: dict, num_layers: int, layer_prefix: str
@@ -175,23 +215,22 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
         if self._optimizer is None:
             raise RuntimeError("Optimizer not set on sparse broadcast; call set_optimizer() after init.")
 
-        # Move diffs to GPU for DTensor all-gather
-        ensure_diffs_on_device(self._optimizer, "cuda")
+        # Diffs are moved to GPU lazily, one layer at a time, inside the gather loop below
+        # (moving them all up front spikes memory and OOMs the all_gather).
         param_to_diff = get_sparse_diffs(self._optimizer)
 
-        # Gather weights + diffs on master, apply format conversion to both
-        result = self._collect_layer_weights_and_diffs(model, param_to_diff)
-        if result is not None:
-            weights, diffs = result
+        # Gather + sparsify per layer on GPU; only the sparse patch is returned (on master).
+        result = self._collect_sparse_patch(model, param_to_diff)
 
         for idx in self.multi_run_manager.ready_to_update_idxs:
             if self.world.is_master:
+                assert result is not None
                 save_dir = get_step_path(
                     get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
                     self.multi_run_manager.progress[idx].step,
                 )
                 save_dir.mkdir(parents=True, exist_ok=True)
-                self._save_sparse_update_patch(weights, diffs, save_dir, step)
+                self._write_sparse_patch(result, save_dir, step)
                 self._notify_orchestrator(save_dir)
 
                 if self.multi_run_manager.get_orchestrator_config(self.multi_run_manager.idx_2_id[idx]) is None:
@@ -204,19 +243,22 @@ class SparseFileSystemWeightBroadcast(FileSystemWeightBroadcast):
         if self.world.is_master:
             self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
-    def _save_sparse_update_patch(
-        self, weights: dict[str, Tensor], diffs: dict[str, Tensor], save_dir: Path, step: int
-    ) -> SparseUpdateStats:
+    def _write_sparse_patch(self, patch, save_dir: Path, step: int) -> SparseUpdateStats:
         compute_dtype = None if self.kernel_format else torch.bfloat16
+        patch_tensors, tensor_entries, total_tensors, total_numel, changed_numel, diff_s = patch
 
-        stats = save_sparse_update_from_diff(
-            weights,
-            diffs,
+        stats = write_sparse_patch(
+            patch_tensors,
+            tensor_entries,
             save_dir,
             step=step,
             base_step=self._sparse_update_base_step,
+            total_tensors=total_tensors,
+            total_numel=total_numel,
+            changed_numel=changed_numel,
             compute_dtype=compute_dtype,
             compress=self.compress,
+            diff_s=diff_s,
         )
         self._sparse_update_base_step = step
         self.last_metrics = {

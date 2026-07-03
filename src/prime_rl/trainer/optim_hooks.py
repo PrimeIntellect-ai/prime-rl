@@ -115,26 +115,33 @@ def clear_sparse_diffs(optimizer) -> None:
         s.pop(SPARSE_DIFF_STATE_KEY, None)
 
 
+def move_diff_to_device(diff: torch.Tensor, device: str | torch.device) -> torch.Tensor:
+    """Return a sparse diff on ``device``, preserving DTensor mesh/spec.
+
+    For a DTensor, only the local shard is moved (via ``copy.copy`` + ``_local_tensor``
+    swap) so the DTensor keeps its original device mesh — plain ``DTensor.to(device)``
+    does not, which makes ``full_tensor()`` dispatch its all-gather on a CPU backend.
+    """
+    target = torch.device(device)
+    if isinstance(diff, DTensor):
+        if diff._local_tensor.device.type == target.type:
+            return diff
+        new_dtensor = copy.copy(diff)
+        new_dtensor._local_tensor = diff._local_tensor.to(target, non_blocking=True)
+        return new_dtensor
+    if diff.device.type != target.type:
+        return diff.to(target, non_blocking=True)
+    return diff
+
+
 def ensure_diffs_on_device(optimizer, device: str | torch.device) -> None:
     """Move sparse diff tensors to the target device if they are on CPU.
 
-    Used by the broadcast path to ensure diffs are on GPU for DTensor all-gather.
     Handles both DTensor and regular tensor states.
     """
     state = _get_state_dict(optimizer)
-    target = torch.device(device)
     for param, s in state.items():
         diff = s.get(SPARSE_DIFF_STATE_KEY)
         if diff is None:
             continue
-        if isinstance(diff, DTensor):
-            if diff._local_tensor.device.type == target.type:
-                continue
-            new_local = diff._local_tensor.to(target, non_blocking=True)
-            new_dtensor = copy.copy(diff)
-            new_dtensor._local_tensor = new_local
-            s[SPARSE_DIFF_STATE_KEY] = new_dtensor
-        elif isinstance(diff, torch.Tensor):
-            if diff.device.type == target.type:
-                continue
-            s[SPARSE_DIFF_STATE_KEY] = diff.to(target, non_blocking=True)
+        s[SPARSE_DIFF_STATE_KEY] = move_diff_to_device(diff, device)
