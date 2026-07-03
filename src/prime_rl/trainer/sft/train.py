@@ -167,21 +167,25 @@ def train(config: SFTConfig):
             f"[model.vlm] is set but no multimodal processor could be loaded for {config.tokenizer.name!r}"
         )
 
-    renderer = create_renderer(tokenizer, config.renderer)
-    if isinstance(renderer, DefaultRenderer):
-        raise ValueError(
-            f"SFT renderer for {config.tokenizer.name!r} resolved to DefaultRenderer. "
-            "SFT is renderer-only and requires a hand-coded renderer for stable "
-            "message-to-token attribution. Use a model with a hand-coded renderer "
-            "(see renderers.base.MODEL_RENDERER_MAP), or set [renderer] name=<hand-coded renderer> explicitly."
-        )
+    # Fake data never renders messages, so a model without a hand-coded renderer
+    # can still be used to benchmark step time / memory.
+    renderer = None
+    if config.data.type != "fake":
+        renderer = create_renderer(tokenizer, config.renderer)
+        if isinstance(renderer, DefaultRenderer):
+            raise ValueError(
+                f"SFT renderer for {config.tokenizer.name!r} resolved to DefaultRenderer. "
+                "SFT is renderer-only and requires a hand-coded renderer for stable "
+                "message-to-token attribution. Use a model with a hand-coded renderer "
+                "(see renderers.base.MODEL_RENDERER_MAP), or set [renderer] name=<hand-coded renderer> explicitly."
+            )
 
-    if processor is not None and hasattr(renderer, "_processor"):
-        renderer._processor = processor
-    logger.info(
-        f"Initialized {type(renderer).__name__} for {config.tokenizer.name} "
-        f"(multimodal_processor={processor is not None})"
-    )
+        if processor is not None and hasattr(renderer, "_processor"):
+            renderer._processor = processor
+        logger.info(
+            f"Initialized {type(renderer).__name__} for {config.tokenizer.name} "
+            f"(multimodal_processor={processor is not None})"
+        )
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
