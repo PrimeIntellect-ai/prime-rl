@@ -12,7 +12,7 @@ from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_
 from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5Model
 from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedFlashAttention
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig
-from prime_rl.utils.cp import setup_hybrid_cp
+from prime_rl.utils.cp import setup_model_cp
 
 
 def _tiny_text_config(attn_impl: str = "sdpa") -> Qwen3_5TextConfig:
@@ -133,7 +133,7 @@ def test_qwen3_5_context_parallel_setup_chain_text_and_vlm():
     cp_group = MagicMock()
 
     text_model = Qwen3_5ForCausalLM(_tiny_text_config())
-    setup_hybrid_cp(text_model, cp_group, cp_rank=1, cp_world_size=2)
+    setup_model_cp(text_model, cp_group, cp_rank=1, cp_world_size=2)
     assert text_model.model._cp_group is cp_group
     assert text_model.model._cp_rank == 1
     assert text_model.model._cp_world_size == 2
@@ -141,17 +141,28 @@ def test_qwen3_5_context_parallel_setup_chain_text_and_vlm():
 
     with torch.device("meta"):
         vlm_model = Qwen3_5ForCausalLM(_tiny_vlm_config())
-    setup_hybrid_cp(vlm_model, cp_group, cp_rank=0, cp_world_size=2)
+    setup_model_cp(vlm_model, cp_group, cp_rank=0, cp_world_size=2)
     assert vlm_model.model.language_model._cp_group is cp_group
     assert vlm_model.model.language_model.layers[0].linear_attn.cp_world_size == 2
 
 
-def test_qwen3_5_context_parallel_requires_public_hook():
-    class NoHookModel:
-        pass
+def test_setup_model_cp_requires_hook_only_for_hybrid_models():
+    class HybridLayer:
+        layer_type = "linear_attention"
+
+    class Inner:
+        layers = [HybridLayer()]
+
+    class HybridNoHookModel:
+        model = Inner()
 
     with pytest.raises(ValueError, match="set_context_parallel_attributes"):
-        setup_hybrid_cp(NoHookModel(), MagicMock(), cp_rank=0, cp_world_size=2)
+        setup_model_cp(HybridNoHookModel(), MagicMock(), cp_rank=0, cp_world_size=2)
+
+    class SoftmaxOnlyModel:
+        pass
+
+    setup_model_cp(SoftmaxOnlyModel(), MagicMock(), cp_rank=0, cp_world_size=2)
 
 
 def test_qwen3_5_ring_patches_dense_flash_attention():

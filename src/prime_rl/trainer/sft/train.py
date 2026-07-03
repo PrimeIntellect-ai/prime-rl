@@ -124,7 +124,7 @@ def train(config: SFTConfig):
 
             substitute_hf_ulysses_attn(cp_group)
             substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_hybrid_cp, setup_nemotron_h_cp, setup_sparse_mla_cp
+        from prime_rl.utils.cp import setup_model_cp, setup_sparse_mla_cp
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
@@ -152,8 +152,7 @@ def train(config: SFTConfig):
         # Linear-attn / Mamba layers are only configured under ulysses; with ring
         # we'd have already raised above.
         if config.model.cp_style == "ulysses":
-            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
-            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     if config.model.lora is not None:
         multi_run_manager = get_multi_run_manager()

@@ -5,7 +5,7 @@ from transformers import Qwen3_5MoeForCausalLM as HFQwen3_5MoeForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeForCausalLM
-from prime_rl.utils.cp import setup_hybrid_cp
+from prime_rl.utils.cp import setup_model_cp
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -165,7 +165,7 @@ def test_qwen3_5_moe_context_parallel_setup_hook():
         model = PrimeRLQwen3_5MoeForCausalLM(config)
 
     cp_group = MagicMock()
-    setup_hybrid_cp(model, cp_group, cp_rank=1, cp_world_size=2)
+    setup_model_cp(model, cp_group, cp_rank=1, cp_world_size=2)
 
     assert model.model._cp_group is cp_group
     assert model.model._cp_rank == 1

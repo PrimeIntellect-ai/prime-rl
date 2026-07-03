@@ -52,37 +52,22 @@ def assert_cp_style_supports_model(cp_style: CPStyle, model: nn.Module) -> None:
         )
 
 
-def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-    """Configure DeltaNet modules in Qwen3.5 hybrid models for ulysses-style CP."""
+def setup_model_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+    """Hand the CP topology to models whose layers need it (DeltaNet, Mamba).
+
+    Such models expose ``set_context_parallel_attributes`` at the top level and
+    own their layer wiring; softmax-only models don't and need nothing.
+    """
     if hasattr(model, "set_context_parallel_attributes"):
         model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
         from prime_rl.utils.logger import get_logger
 
-        get_logger().info("Configured hybrid CP via model context-parallel setup")
-        return
-
-    raise ValueError("Hybrid CP requires the model to implement set_context_parallel_attributes")
-
-
-def setup_nemotron_h_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-    """Configure NemotronH Mamba layers for ulysses-style all-to-all head partitioning."""
-    layers = None
-    if hasattr(model, "model") and hasattr(model.model, "layers"):
-        layers = model.model.layers
-
-    if layers is None:
-        return
-
-    count = 0
-    for layer in layers:
-        if hasattr(layer, "mamba") and hasattr(layer, "set_context_parallel_attributes"):
-            layer.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
-            count += 1
-
-    if count > 0:
-        from prime_rl.utils.logger import get_logger
-
-        get_logger().info(f"Configured NemotronH CP on {count} Mamba layers (all-to-all head partitioning)")
+        get_logger().info("Configured model CP attributes")
+    elif _has_linear_attn_layer(model):
+        raise ValueError(
+            "Model has linear-attention/Mamba layers but does not implement "
+            "set_context_parallel_attributes; CP would silently misconfigure them"
+        )
 
 
 def setup_sparse_mla_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
