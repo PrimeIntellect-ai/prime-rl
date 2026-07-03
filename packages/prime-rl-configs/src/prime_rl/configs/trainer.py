@@ -115,15 +115,13 @@ class DebugModelConfig(BaseConfig):
     force_balanced_routing: bool = False
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
 
+
 # MXFP8 grouped-GEMM / linear recipes. Names mirror torchao's
 # ``MXFP8TrainingRecipe`` enum (``torchao.prototype.moe_training.config``):
 # ``*_emulated_*`` runs the reference (non-tensorcore) path for correctness
 # checks on hardware without MXFP8 tensor cores; ``*_wgrad_with_hp`` keeps the
 # weight-gradient GEMM in high precision (bf16) while quantizing fwd/dgrad.
-MXFP8Recipe: TypeAlias = Literal[
-    "mxfp8_rceil",
-    "mxfp8_rceil_wgrad_with_hp"
-]
+MXFP8Recipe: TypeAlias = Literal["mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp"]
 
 DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "lm_head",
@@ -140,6 +138,7 @@ DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "in_proj_a",
     "in_proj_b",
 ]
+
 
 class FP8Config(BaseConfig):
     type: Literal["fp8"] = "fp8"
@@ -158,6 +157,7 @@ class MXFP8Config(BaseConfig):
 
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
+
 
 class ModelConfig(BaseModelConfig):
     seq_len: int = 2048
@@ -293,9 +293,7 @@ class ModelConfig(BaseModelConfig):
     @model_validator(mode="after")
     def quantization_only_with_custom_impl(self):
         if self.quantization is not None and self.impl not in ("custom", "auto"):
-            raise ValueError(
-                f"{self.quantization.type} training is only supported with model.impl='custom' or 'auto'."
-            )
+            raise ValueError(f"{self.quantization.type} training is only supported with model.impl='custom' or 'auto'.")
         return self
 
     @model_validator(mode="after")
@@ -545,6 +543,7 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
 ]
+
 
 class TrainerConfig(BaseConfig):
     model: ModelConfig = ModelConfig()

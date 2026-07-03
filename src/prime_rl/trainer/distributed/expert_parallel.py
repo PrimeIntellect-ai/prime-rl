@@ -11,12 +11,11 @@ from torchao.prototype.moe_training.ep import a2a_combine_hp_fwd_mxfp8_bwd
 class MXFP8ExpertParallel(ExpertParallel):
     def _token_dispatch(self, mod, inputs, device_mesh):
         from torchao.prototype.moe_training.ep import a2a_dispatch_mxfp8_fwd_hp_bwd
+
         routed_input, num_tokens_per_expert = inputs
         with torch.no_grad():
             num_tokens_per_expert_group = num_tokens_per_expert.new_empty(num_tokens_per_expert.shape[0])
-            dist.all_to_all_single(
-                num_tokens_per_expert_group, num_tokens_per_expert, group=device_mesh.get_group()
-            )
+            dist.all_to_all_single(num_tokens_per_expert_group, num_tokens_per_expert, group=device_mesh.get_group())
             self.input_splits = num_tokens_per_expert.view(device_mesh.shape[0], -1).sum(dim=1).tolist()
             self.output_splits = num_tokens_per_expert_group.view(device_mesh.shape[0], -1).sum(dim=1).tolist()
         mx_routed_input = a2a_dispatch_mxfp8_fwd_hp_bwd(
