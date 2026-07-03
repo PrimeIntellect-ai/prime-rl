@@ -9,6 +9,15 @@ class EncodedTensor(msgspec.Struct, array_like=True, gc=False):
     shape: list[int]
     data: bytes
 
+    @classmethod
+    def from_numpy(cls, arr) -> "EncodedTensor":
+        """Canonical array -> wire encoding, so writers don't hand-roll the
+        dtype/shape/bytes triple."""
+        import numpy as np
+
+        arr = np.ascontiguousarray(arr)
+        return cls(dtype=str(arr.dtype), shape=list(arr.shape), data=arr.tobytes())
+
 
 # Routed experts are large per-token arrays. tolist() is too expensive, so we
 # send raw bytes through msgpack and carry the shape/dtype needed to rebuild.
@@ -68,6 +77,12 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: list[float] | None = None
 
+    # Teacher top-k distribution per position (ref_logprob_granularity="top_k"):
+    # [seq, k] int32 token ids and [seq, k] float32 logprobs, rows padded with
+    # (id 0, logprob -1e9). Appended last — array_like structs are positional.
+    ref_topk_token_ids: EncodedTensor | None = None
+    ref_topk_logprobs: EncodedTensor | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
@@ -108,3 +123,9 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # Packer-derived metadata used for run-local token exports.
     run_id: str | None = None
     run_step: int | None = None
+
+    # Teacher top-k distribution per position (see TrainingSample): [seq, k]
+    # int32 ids / float32 logprobs, pad rows (id 0, logprob -1e9). Appended
+    # last — array_like structs are positional.
+    ref_topk_token_ids: EncodedTensor | None = None
+    ref_topk_logprobs: EncodedTensor | None = None

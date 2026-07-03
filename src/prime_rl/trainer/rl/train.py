@@ -397,6 +397,12 @@ def train(config: TrainerConfig):
             ref_kl_weights = (
                 micro_batch["ref_kl_weights"].to("cuda") if micro_batch["ref_kl_weights"] is not None else None
             )
+            ref_topk_token_ids = (
+                micro_batch["ref_topk_token_ids"].to("cuda") if micro_batch["ref_topk_token_ids"] is not None else None
+            )
+            ref_topk_logprobs = (
+                micro_batch["ref_topk_logprobs"].to("cuda") if micro_batch["ref_topk_logprobs"] is not None else None
+            )
             routed_experts = (
                 micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
             )
@@ -424,6 +430,16 @@ def train(config: TrainerConfig):
 
             labels = shift_tensor_left(input_ids)
 
+            # Teacher top-k rows are aligned to input positions (row i is the
+            # distribution that produced token i); the model at position j
+            # predicts input_ids[j+1], so gather at the next position's ids —
+            # shift left like labels ([batch, seq, k], so shift manually).
+            extra_gather_ids = None
+            if ref_topk_token_ids is not None:
+                extra_gather_ids = torch.cat(
+                    [ref_topk_token_ids[:, 1:], torch.zeros_like(ref_topk_token_ids[:, :1])], dim=1
+                )
+
             # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
             if cp_enabled and mm_kwargs is not None:
                 raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
@@ -435,6 +451,8 @@ def train(config: TrainerConfig):
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
+                if extra_gather_ids is not None:
+                    extra_gather_ids = shard_for_cp(extra_gather_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
                 forward_position_ids = position_ids
 
@@ -467,6 +485,7 @@ def train(config: TrainerConfig):
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
                     routed_experts=routed_experts,
+                    extra_gather_ids=extra_gather_ids,
                 )
 
             if out.get("logprobs") is None:
@@ -477,11 +496,15 @@ def train(config: TrainerConfig):
                 scaled_logits = logits / temperatures.unsqueeze(-1)
                 out["logprobs"] = selective_log_softmax(scaled_logits, labels)
                 out["entropy"] = compute_entropy(scaled_logits)
+                if extra_gather_ids is not None:
+                    out["topk_logprobs"] = torch.gather(torch.log_softmax(scaled_logits, dim=-1), -1, extra_gather_ids)
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
                 out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
+                if out.get("topk_logprobs") is not None:
+                    out["topk_logprobs"] = gather_for_cp(out["topk_logprobs"], cp_group)
 
             vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
@@ -491,6 +514,23 @@ def train(config: TrainerConfig):
             out["entropy"] = shift_tensor_right(
                 out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
             )
+
+            student_topk_logprobs = out.get("topk_logprobs")
+            if extra_gather_ids is not None:
+                assert student_topk_logprobs is not None, (
+                    "extra_gather_ids was passed but the lm head returned no topk_logprobs — "
+                    "the configured lm head does not support top-k distillation"
+                )
+                # Re-align to input positions like out["logprobs"] ([batch,
+                # seq, k], so shift right manually with the uniform pad).
+                uniform_logprob = torch.log(torch.tensor(1.0 / vocab_size)).item()
+                student_topk_logprobs = torch.cat(
+                    [
+                        torch.full_like(student_topk_logprobs[:, :1], uniform_logprob),
+                        student_topk_logprobs[:, :-1],
+                    ],
+                    dim=1,
+                )
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
@@ -507,6 +547,14 @@ def train(config: TrainerConfig):
                 rl_scale=rl_scale,
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
+                # squeeze(0), not squeeze(): the streams are [1, seq, k] and k
+                # may be 1; split along the packed sequence dim.
+                ref_topk_logprobs=ref_topk_logprobs.squeeze(0).split(sequence_lengths)
+                if ref_topk_logprobs is not None
+                else None,
+                student_topk_logprobs=student_topk_logprobs.squeeze(0).split(sequence_lengths)
+                if student_topk_logprobs is not None
+                else None,
             )
 
             # Backward pass

@@ -48,6 +48,11 @@ class ModelConfig(BaseModelConfig):
     max_model_len: int | None = None
     """Maximum model context length. If None, uses the model config's value. Forwarded as ``--max-model-len``."""
 
+    max_logprobs: int = 20
+    """Max logprobs returnable per position (20 = vLLM's own default; vLLM
+    rejects None). Raise for top-k distillation with ref_top_k > 20.
+    Forwarded as ``--max-logprobs``."""
+
     enforce_eager: bool = False
     """Enforce eager mode. When False, PyTorch eager and cuda graphs run hybrid for maximum performance. Forwarded as ``--enforce-eager``."""
 
@@ -571,6 +576,7 @@ class InferenceConfig(BaseConfig):
             "model.tool_call_parser": "tool_call_parser",
             "model.reasoning_parser": "reasoning_parser",
             "model.rope_scaling": "rope_scaling",
+            "model.max_logprobs": "max_logprobs",
             "parallel.tp": "tensor_parallel_size",
             "parallel.dp": "data_parallel_size",
             "data_parallel_size_local": "data_parallel_size_local",

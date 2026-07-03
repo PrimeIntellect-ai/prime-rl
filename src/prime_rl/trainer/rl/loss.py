@@ -26,6 +26,11 @@ class LossInputs:
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
     loss_weights: Float[Tensor, " seq"] | None = field(default=None)
+    # Top-k distillation streams (ref_logprob_granularity="top_k"): the
+    # teacher's top-k logprobs and the student's logprobs at the teacher's
+    # top-k token ids, both aligned to input positions.
+    ref_topk_logprobs: Float[Tensor, "seq k"] | None = field(default=None)
+    student_topk_logprobs: Float[Tensor, "seq k"] | None = field(default=None)
 
 
 @dataclass
@@ -204,6 +209,11 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     region drops tokens whose trainer probability fell more than 0.2 below the
     inference probability; a squared-log-ratio term regularizes drift. Scalar
     advantages are not read — ref_kl algorithms ship none.
+
+    With the top-k streams present (``ref_logprob_granularity="top_k"``), the
+    single-token pg signal is replaced by a directly-differentiable
+    cross-entropy to the teacher's top-k distribution (GKD-style dense
+    distillation); trust region and drift regularizer are unchanged.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
@@ -224,13 +234,7 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
 
     ref_kl = ref_logprobs - trainer_logprobs
 
-    pg_loss = keep_mask * ref_kl.detach() * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
-    per_token_loss = -pg_loss + 1e-3 * kl_loss
-    if inputs.loss_weights is not None:
-        per_token_loss = per_token_loss * inputs.loss_weights
-    loss = per_token_loss.sum()
-
     # Namespaced: the rl loss fn emits same-named trust-region metrics with a
     # different definition, and mixed batches run both fns in one step.
     metrics = {
@@ -239,6 +243,22 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
         "ref_kl/is_masked": _safe_mean(is_masked, loss_mask),
         "ref_kl": _safe_mean(ref_kl, loss_mask),
     }
+
+    if inputs.ref_topk_logprobs is not None and inputs.student_topk_logprobs is not None:
+        # Cross-entropy to the teacher's top-k, a loss to *minimize* (unlike
+        # the reward-style ref_kl signal, which is negated below). The tail
+        # mass beyond the top-k is simply missing; pad rows carry exp(-1e9)=0.
+        teacher_w = torch.exp(inputs.ref_topk_logprobs)
+        distill_ce = -(teacher_w * inputs.student_topk_logprobs).sum(-1)
+        per_token_loss = keep_mask * distill_ce + 1e-3 * kl_loss
+        metrics["ref_kl/topk_ce"] = _safe_mean(distill_ce, loss_mask)
+        metrics["ref_kl/topk_teacher_mass"] = _safe_mean(teacher_w.sum(-1), loss_mask)
+    else:
+        pg_loss = keep_mask * ref_kl.detach() * importance_ratio
+        per_token_loss = -pg_loss + 1e-3 * kl_loss
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+    loss = per_token_loss.sum()
 
     return LossOutputs(loss=loss, metrics=metrics)
 
@@ -295,6 +315,8 @@ def compute_loss(
     rl_scale: int,
     ce_scale: int,
     ref_kl_scale: int,
+    ref_topk_logprobs: list[Float[Tensor, "seq_i k"]] | None = None,
+    student_topk_logprobs: list[Float[Tensor, "seq_i k"]] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -326,6 +348,8 @@ def compute_loss(
         rl_scale: Global rl-token count normalizing the rl component
         ce_scale: Global ce-token count normalizing the ce component
         ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
+        ref_topk_logprobs: Teacher top-k logprobs per sequence, or None (single-token ref_kl)
+        student_topk_logprobs: Student logprobs at the teacher's top-k ids per sequence, or None
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
@@ -341,6 +365,10 @@ def compute_loss(
         ce_weights = [None] * n
     if ref_kl_weights is None:
         ref_kl_weights = [None] * n
+    if ref_topk_logprobs is None:
+        ref_topk_logprobs = [None] * n
+    if student_topk_logprobs is None:
+        student_topk_logprobs = [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
@@ -355,7 +383,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, ref_tk, stu_tk in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -364,6 +392,8 @@ def compute_loss(
         rl_weights,
         ce_weights,
         ref_kl_weights,
+        ref_topk_logprobs,
+        student_topk_logprobs,
     ):
 
         def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
@@ -374,6 +404,8 @@ def compute_loss(
                 advantages=adv,
                 loss_mask=component_mask,
                 loss_weights=weights,
+                ref_topk_logprobs=ref_tk,
+                student_topk_logprobs=stu_tk,
             )
 
         if rl_w is None:

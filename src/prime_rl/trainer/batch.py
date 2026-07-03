@@ -19,6 +19,14 @@ ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
 STREAM_FILL = {"rl_weights": 1.0, "ce_weights": 0.0, "ref_kl_weights": 0.0}
 
 
+def _topk_pad_rows(n_rows: int, k: int) -> tuple[bytes, bytes]:
+    """Teacher top-k pad rows for positions without a top-k distribution:
+    id 0 with logprob -1e9 (exp(-1e9) = 0, so no teacher mass)."""
+    ids = np.zeros((n_rows, k), dtype=np.int32)
+    logprobs = np.full((n_rows, k), -1e9, dtype=np.float32)
+    return ids.tobytes(), logprobs.tobytes()
+
+
 def _copy_routed_experts(routed_experts: RoutedExperts) -> RoutedExperts:
     return RoutedExperts(
         data=routed_experts.data,
@@ -136,6 +144,11 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # Ref logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when the algorithm scores against a reference
     ref_logprobs = training_example.ref_logprobs
+    ref_topk_token_ids = training_example.ref_topk_token_ids
+    ref_topk_logprobs = training_example.ref_topk_logprobs
+    assert (ref_topk_token_ids is None) == (ref_topk_logprobs is None), (
+        "ref_topk_token_ids and ref_topk_logprobs must be shipped together"
+    )
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )
@@ -154,6 +167,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures = temperatures[:cut]
         if ref_logprobs is not None:
             ref_logprobs = ref_logprobs[:cut]
+        if ref_topk_token_ids is not None:
+            ref_topk_token_ids = _slice_encoded(ref_topk_token_ids, cut)
+            ref_topk_logprobs = _slice_encoded(ref_topk_logprobs, cut)
         if rl_weights is not None:
             rl_weights = rl_weights[:cut]
         if ce_weights is not None:
@@ -178,6 +194,11 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     )
     if ref_logprobs is not None:
         assert len(ref_logprobs) == len(input_ids), f"ref_logprobs: {len(ref_logprobs)}"
+    if ref_topk_token_ids is not None:
+        assert ref_topk_token_ids.shape[0] == len(input_ids), f"ref_topk_token_ids: {ref_topk_token_ids.shape}"
+        assert ref_topk_logprobs.shape == ref_topk_token_ids.shape, (
+            f"ref_topk_logprobs: {ref_topk_logprobs.shape}, ref_topk_token_ids: {ref_topk_token_ids.shape}"
+        )
     for stream_name, stream in (
         ("rl_weights", rl_weights),
         ("ce_weights", ce_weights),
@@ -214,6 +235,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         rl_weights=rl_weights,
         ce_weights=ce_weights,
         ref_kl_weights=ref_kl_weights,
+        ref_topk_token_ids=ref_topk_token_ids,
+        ref_topk_logprobs=ref_topk_logprobs,
     )
 
 
@@ -280,6 +303,10 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     # A weight stream materializes as soon as one packed sample carries it; the
     # samples that lack it get the stream's identity fill (STREAM_FILL).
     has_stream = {name: any(getattr(s, name) is not None for _, s in bin_content.samples) for name in STREAM_FILL}
+    # Same rule for the teacher top-k stream; samples without it get pad rows.
+    topk_k = next(
+        (s.ref_topk_token_ids.shape[1] for _, s in bin_content.samples if s.ref_topk_token_ids is not None), None
+    )
 
     input_ids: list[int] = []
     loss_mask: list[bool] = []
@@ -289,6 +316,8 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     temperatures: list[float] = []
     env_names: list[str] = []
     ref_logprobs: list[float] | None = [] if has_ref_logprobs else None
+    ref_topk_ids_parts: list[bytes] = []
+    ref_topk_logprobs_parts: list[bytes] = []
     mm_token_type_ids: list[int] | None = [] if has_mm_token_type_ids else None
     streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
     routed_experts: RoutedExperts | None = None
@@ -305,6 +334,15 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         env_names.extend(sample.env_names)
         if ref_logprobs is not None:
             ref_logprobs.extend(sample.ref_logprobs if sample.ref_logprobs is not None else [0.0] * sample_len)
+        if topk_k is not None:
+            if sample.ref_topk_token_ids is not None:
+                assert sample.ref_topk_token_ids.shape[1] == topk_k
+                ref_topk_ids_parts.append(sample.ref_topk_token_ids.data)
+                ref_topk_logprobs_parts.append(sample.ref_topk_logprobs.data)
+            else:
+                pad_ids, pad_logprobs = _topk_pad_rows(sample_len, topk_k)
+                ref_topk_ids_parts.append(pad_ids)
+                ref_topk_logprobs_parts.append(pad_logprobs)
         for name, fill in STREAM_FILL.items():
             stream = streams[name]
             if stream is not None:
@@ -345,6 +383,16 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         rl_weights=streams["rl_weights"],
         ce_weights=streams["ce_weights"],
         ref_kl_weights=streams["ref_kl_weights"],
+        ref_topk_token_ids=EncodedTensor(
+            dtype="int32", shape=[len(input_ids), topk_k], data=b"".join(ref_topk_ids_parts)
+        )
+        if topk_k is not None
+        else None,
+        ref_topk_logprobs=EncodedTensor(
+            dtype="float32", shape=[len(input_ids), topk_k], data=b"".join(ref_topk_logprobs_parts)
+        )
+        if topk_k is not None
+        else None,
     )
 
 
@@ -451,6 +499,12 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.temperatures.extend([1.0] * padding_size)
     if micro_batch.ref_logprobs is not None:
         micro_batch.ref_logprobs.extend([0.0] * padding_size)
+    if micro_batch.ref_topk_token_ids is not None:
+        pad_ids, pad_logprobs = _topk_pad_rows(padding_size, micro_batch.ref_topk_token_ids.shape[1])
+        micro_batch.ref_topk_token_ids.data += pad_ids
+        micro_batch.ref_topk_token_ids.shape[0] += padding_size
+        micro_batch.ref_topk_logprobs.data += pad_logprobs
+        micro_batch.ref_topk_logprobs.shape[0] += padding_size
     # Padding is loss-masked, so no component trains it; fill every stream
     # with 0.0 (not the pack-boundary defaults) so a padded pure-ce batch
     # still reads as rl-empty in token export, which keys off nonzero weights.
@@ -500,6 +554,11 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
     if micro_batch.routed_experts is not None:
         assert micro_batch.routed_experts.shape[0] == num_tokens, (
             f"routed_experts misaligned after packing: {micro_batch.routed_experts.shape[0]} != {num_tokens} tokens"
+        )
+    for name in ("ref_topk_token_ids", "ref_topk_logprobs"):
+        tensor = getattr(micro_batch, name)
+        assert tensor is None or tensor.shape[0] == num_tokens, (
+            f"{name} misaligned after packing: {tensor.shape[0]} != {num_tokens} tokens"
         )
 
 

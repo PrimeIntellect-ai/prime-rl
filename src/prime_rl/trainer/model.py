@@ -1179,6 +1179,9 @@ def forward(
     # not a renderer/processor output.
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
+    # Extra vocab ids to gather (temperature-scaled) logprobs at, per position
+    # — the student side of top-k distillation. Shifted like labels.
+    extra_gather_ids: Int[Tensor, "batch seq k"] | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
     kwargs = {
@@ -1186,6 +1189,8 @@ def forward(
         "labels": labels,
         "temperature": temperature,
     }
+    if extra_gather_ids is not None:
+        kwargs["extra_gather_ids"] = extra_gather_ids
 
     if mm_kwargs:
         # Forward the per-model multimodal tensors verbatim, plus the

@@ -54,6 +54,11 @@ class TensorMicroBatch(TypedDict):
     ce_weights: Float[Tensor, "batch seq"] | None
     ref_kl_weights: Float[Tensor, "batch seq"] | None
 
+    # Teacher top-k distribution per position (ref_logprob_granularity="top_k"):
+    # padded rows carry id 0 with logprob -1e9 (zero teacher mass).
+    ref_topk_token_ids: Int[Tensor, "batch seq k"] | None
+    ref_topk_logprobs: Float[Tensor, "batch seq k"] | None
+
     # Packer-derived metadata used for run-local debug exports.
     run_id: str | None
     run_step: int | None
@@ -136,6 +141,8 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "ref_topk_token_ids": None,
+            "ref_topk_logprobs": None,
             "run_id": None,
             "run_step": None,
         }
@@ -168,6 +175,8 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "ref_topk_token_ids": None,
+            "ref_topk_logprobs": None,
             "run_id": None,
             "run_step": None,
         }
@@ -246,6 +255,17 @@ class DataLoader:
                 .to(torch.int32)
                 .unsqueeze(0)
             )
+
+        def _decode_topk(payload, dtype: torch.dtype) -> Tensor | None:
+            if payload is None:
+                return None
+            return (
+                torch.frombuffer(bytearray(payload.data), dtype=_torch_dtype(payload.dtype))
+                .reshape(payload.shape)
+                .to(dtype)
+                .unsqueeze(0)
+            )
+
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
@@ -273,6 +293,9 @@ class DataLoader:
             ref_kl_weights=torch.tensor(micro_batch.ref_kl_weights, dtype=torch.float).unsqueeze(0)
             if micro_batch.ref_kl_weights is not None
             else None,
+            # int64 ids: torch.gather requires int64 indices on the trainer side.
+            ref_topk_token_ids=_decode_topk(micro_batch.ref_topk_token_ids, torch.long),
+            ref_topk_logprobs=_decode_topk(micro_batch.ref_topk_logprobs, torch.float),
             run_id=micro_batch.run_id,
             run_step=micro_batch.run_step,
         )

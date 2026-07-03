@@ -57,8 +57,23 @@ def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = 
     """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
     config_dict = config.model_dump(exclude=exclude, exclude_none=True, mode="json")
+    _strip_unroundtrippable(config_dict)
     with open(output_dir / RL_TOML, "wb") as f:
         tomli_w.dump(config_dict, f)
+
+
+def _strip_unroundtrippable(d: dict) -> None:
+    """Renderer configs dump fields their union variants reject on re-parse
+    (preserve_* on qwen3.6/auto) — the slurm path re-parses the dump, so drop them."""
+    for k in ("preserve_all_thinking", "preserve_thinking_between_tool_calls"):
+        d.pop(k, None)
+    for v in d.values():
+        if isinstance(v, dict):
+            _strip_unroundtrippable(v)
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, dict):
+                    _strip_unroundtrippable(item)
 
 
 def write_subconfigs(config: RLConfig, output_dir: Path) -> None:

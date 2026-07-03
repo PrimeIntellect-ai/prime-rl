@@ -156,8 +156,12 @@ def apply_filters(filters: list[RolloutFilter], rollouts: list[Rollout]) -> None
     calculations and metric aggregation.
     """
     for rollout in rollouts:
-        rollout.filter_results = {f.name: False for f in filters}
-        rollout.is_filtered = False
+        # Preserve arrival-phase flags (e.g. opsd's ``opsd_hint_overflow``):
+        # rollout-local scoring can filter a rollout before this batch-level
+        # pass runs, and resetting would un-drop it.
+        preset = {name: hit for name, hit in rollout.filter_results.items() if hit}
+        rollout.filter_results = {f.name: False for f in filters} | preset
+        rollout.is_filtered = bool(preset)
 
     if not filters:
         return

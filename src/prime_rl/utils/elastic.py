@@ -25,6 +25,7 @@ from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.client import (
     ClientIdentity,
     PrefillScorer,
+    PrefillScores,
     client_identity,
     load_lora_adapter,
     setup_admin_clients,
@@ -242,8 +243,8 @@ class ElasticInferencePool:
             await asyncio.sleep(self.sync_interval)
         return min(self.train_clients, key=lambda c: load[client_identity(c)])
 
-    async def score(self, token_ids: list[int]) -> list[float]:
-        return await self._scorer.score(self.train_clients, self.model_name, token_ids)
+    async def score(self, token_ids: list[int], top_k: int | None = None) -> list[float] | PrefillScores:
+        return await self._scorer.score(self.train_clients, self.model_name, token_ids, top_k=top_k)
 
     @property
     def admin_clients(self) -> list[AsyncClient]:

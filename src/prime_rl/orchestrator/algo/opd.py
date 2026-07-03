@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from prime_rl.configs.algorithm import OPDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.transport.types import EncodedTensor
 from prime_rl.utils.client import StaticInferencePool
 
 if TYPE_CHECKING:
@@ -29,6 +32,8 @@ class OPDAlgorithm(Algorithm):
     def __init__(self, config: OPDAlgoConfig, policy_pool: InferencePool):
         super().__init__(config, policy_pool)
         self.teacher = config.teacher
+        self.granularity = config.ref_logprob_granularity
+        self.ref_top_k = config.ref_top_k
         self.teacher_pool: StaticInferencePool | None = None  # static teacher endpoint, connected in setup()
 
     async def setup(self) -> None:
@@ -42,6 +47,14 @@ class OPDAlgorithm(Algorithm):
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
 
         async def score_sample(sample: TrainingSample) -> None:
-            sample.ref_logprobs = await pool.score(list(sample.token_ids))
+            if self.granularity == "top_k":
+                scores = await pool.score(list(sample.token_ids), top_k=self.ref_top_k)
+                sample.ref_logprobs = scores.logprobs
+                sample.ref_topk_token_ids = EncodedTensor.from_numpy(np.asarray(scores.topk_ids, dtype=np.int32))
+                sample.ref_topk_logprobs = EncodedTensor.from_numpy(
+                    np.asarray(scores.topk_logprobs, dtype=np.float32)
+                )
+            else:
+                sample.ref_logprobs = await pool.score(list(sample.token_ids))
 
         await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))

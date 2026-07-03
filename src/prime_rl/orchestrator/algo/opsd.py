@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import numpy as np
 import openai
 
 from prime_rl.configs.algorithm import OPSDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.transport.types import EncodedTensor
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -37,6 +39,9 @@ class OPSDAlgorithm(Algorithm):
         super().__init__(config, policy_pool)
         self.demo_key = config.demo_key
         self.template = config.template
+        self.max_score_tokens = config.max_score_tokens
+        self.granularity = config.ref_logprob_granularity
+        self.ref_top_k = config.ref_top_k
         self.renderer_config = config.renderer
         self.renderer: Renderer | None = None  # opsd builds its own in setup()
         # Self-distillation: the teacher *is* the live policy. Scoring against
@@ -75,7 +80,9 @@ class OPSDAlgorithm(Algorithm):
             token_ids = list(sample.token_ids)
             n_scored = len(token_ids)
             if self.max_score_tokens is not None:
-                budget = self.max_score_tokens - len(hint_block)
+                # -1: the scoring request generates one token (max_tokens=1), so
+                # the server needs prompt + 1 <= max_model_len.
+                budget = self.max_score_tokens - len(hint_block) - 1
                 if budget <= 0:
                     raise ValueError(
                         f"opsd hint block ({len(hint_block)} tok) alone exceeds "
@@ -97,7 +104,12 @@ class OPSDAlgorithm(Algorithm):
                         f"(env {rollout.env_name!r}, task {rollout.task.idx})."
                     )
             try:
-                full_logprobs = await pool.score(hint_block + token_ids[:n_scored])
+                if self.granularity == "top_k":
+                    scores = await pool.score(hint_block + token_ids[:n_scored], top_k=self.ref_top_k)
+                    full_logprobs = scores.logprobs
+                else:
+                    scores = None
+                    full_logprobs = await pool.score(hint_block + token_ids[:n_scored])
             except openai.BadRequestError as e:
                 if "longer than the maximum model length" not in str(e):
                     raise
@@ -117,5 +129,18 @@ class OPSDAlgorithm(Algorithm):
             # keep the per-token alignment invariant.
             ref_logprobs = full_logprobs[len(hint_block) :]
             sample.ref_logprobs = ref_logprobs + [0.0] * (len(token_ids) - n_scored)
+            if scores is not None:
+                # Same hint slice; truncated tail rows pad with (id 0, logprob
+                # -1e9) — exp(-1e9) = 0, so they carry no teacher mass.
+                topk_ids = np.asarray(scores.topk_ids[len(hint_block) :], dtype=np.int32)
+                topk_logprobs = np.asarray(scores.topk_logprobs[len(hint_block) :], dtype=np.float32)
+                n_pad = len(token_ids) - n_scored
+                if n_pad > 0:
+                    topk_ids = np.concatenate([topk_ids, np.zeros((n_pad, self.ref_top_k), dtype=np.int32)])
+                    topk_logprobs = np.concatenate(
+                        [topk_logprobs, np.full((n_pad, self.ref_top_k), -1e9, dtype=np.float32)]
+                    )
+                sample.ref_topk_token_ids = EncodedTensor.from_numpy(topk_ids)
+                sample.ref_topk_logprobs = EncodedTensor.from_numpy(topk_logprobs)
 
         await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))

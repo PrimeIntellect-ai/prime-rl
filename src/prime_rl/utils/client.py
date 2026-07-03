@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from itertools import cycle
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -73,8 +74,9 @@ class InferencePool(Protocol):
         """Update weights on all inference servers."""
         ...
 
-    async def score(self, token_ids: list[int]) -> list[float]:
-        """Prefill-score ``token_ids`` under the pool's model — one logprob per token."""
+    async def score(self, token_ids: list[int], top_k: int | None = None) -> list[float] | PrefillScores:
+        """Prefill-score ``token_ids`` under the pool's model — one logprob per
+        token, plus the top-k distribution per position when ``top_k`` is set."""
         ...
 
     async def stop(self) -> None:
@@ -93,7 +95,9 @@ class PrefillScorer:
         self._clients: dict = {}  # client_identity -> AsyncOpenAI, one per endpoint
         self._rr = 0
 
-    async def score(self, configs: list[vf.ClientConfig], model: str, token_ids: list[int]) -> list[float]:
+    async def score(
+        self, configs: list[vf.ClientConfig], model: str, token_ids: list[int], top_k: int | None = None
+    ) -> list[float] | PrefillScores:
         if not configs:
             raise RuntimeError("no inference endpoints available to prefill-score")
         cfg = configs[self._rr % len(configs)]
@@ -109,7 +113,7 @@ class PrefillScorer:
                 api_key=os.environ.get(cfg.api_key_var) or "EMPTY",
                 default_headers=cfg.headers or None,
             )
-        return await prefill_logprobs(openai, model, token_ids)
+        return await prefill_logprobs(openai, model, token_ids, top_k=top_k)
 
     async def aclose(self) -> None:
         await asyncio.gather(*(c.close() for c in self._clients.values()))
@@ -175,10 +179,10 @@ class StaticInferencePool:
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
 
-    async def score(self, token_ids: list[int]) -> list[float]:
+    async def score(self, token_ids: list[int], top_k: int | None = None) -> list[float] | PrefillScores:
         """Prefill-score ``token_ids`` under this pool's model (one logprob per
         token, 0.0 for the leading token). Delegates to the shared scorer."""
-        return await self._scorer.score(self.train_clients, self.model_name, token_ids)
+        return await self._scorer.score(self.train_clients, self.model_name, token_ids, top_k=top_k)
 
     async def stop(self) -> None:
         await self._scorer.aclose()
@@ -568,11 +572,33 @@ async def init_nccl_broadcast(
     )
 
 
-async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:
+@dataclass
+class PrefillScores:
+    """Prefill scores with the teacher's top-k distribution per position.
+
+    ``logprobs`` matches the plain ``list[float]`` return (logprob of the actual
+    token); ``topk_ids`` / ``topk_logprobs`` are rectangular ``[seq, k]`` rows of
+    the k highest-logprob entries, padded with (id 0, logprob -1e9)."""
+
+    logprobs: list[float]
+    topk_ids: list[list[int]]
+    topk_logprobs: list[list[float]]
+
+
+# Pad logprob for missing top-k entries: exp(-1e9) = 0, so padded rows carry no
+# teacher probability mass in the trainer's cross-entropy.
+TOPK_PAD_LOGPROB = -1e9
+
+
+async def prefill_logprobs(
+    openai: AsyncOpenAI, model: str, token_ids: list[int], top_k: int | None = None
+) -> list[float] | PrefillScores:
     """Prefill-score ``token_ids`` under ``model`` via ``/inference/v1/generate``
     + ``prompt_logprobs`` (the prime-rl server-side extension in
     ``inference/vllm/serving_tokens.py``). Returns one logprob per token (0.0 for
-    the leading token, which has no preceding context)."""
+    the leading token, which has no preceding context). With ``top_k`` set, the
+    server returns the top-k entries per position (plus the actual token's) and
+    the result is a ``PrefillScores`` carrying the top-k distribution too."""
     from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 
     # `/inference/v1/generate` is mounted at server root, not under `/v1`: pass an
@@ -587,7 +613,12 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
         body={
             "model": model,
             "token_ids": token_ids,
-            "sampling_params": {"max_tokens": 1, "temperature": 1.0, "top_p": 1.0, "prompt_logprobs": 1},
+            "sampling_params": {
+                "max_tokens": 1,
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "prompt_logprobs": top_k if top_k is not None else 1,
+            },
         },
     )
     import json as _json
@@ -600,14 +631,33 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
     for _choice in payload.get("choices", []):
         _choice.pop("routed_experts", None)
     response = GenerateResponse.model_validate(payload)
+
+    def _logprob(value) -> float | None:
+        return value.logprob if hasattr(value, "logprob") else value.get("logprob")
+
     # `prompt_logprobs[i]` is a `{token_id: Logprob}` dict, or `None` for the
-    # leading token (no preceding context). Flatten to `list[float]`.
+    # leading token (no preceding context). Flatten to `list[float]` — dict
+    # ordering puts the actual prompt token's entry first.
     flat: list[float] = []
+    topk_ids: list[list[int]] = []
+    topk_logprobs: list[list[float]] = []
     for entry in response.prompt_logprobs or []:
         if not entry:
             flat.append(0.0)
+            if top_k is not None:
+                topk_ids.append([0] * top_k)
+                topk_logprobs.append([TOPK_PAD_LOGPROB] * top_k)
             continue
         first = next(iter(entry.values()))
-        lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
+        lp = _logprob(first)
         flat.append(float(lp) if lp is not None else 0.0)
-    return flat
+        if top_k is not None:
+            ranked = sorted(entry.items(), key=lambda item: _logprob(item[1]), reverse=True)[:top_k]
+            ids = [int(token_id) for token_id, _ in ranked]
+            lps = [float(_logprob(value)) for _, value in ranked]
+            pad = top_k - len(ranked)
+            topk_ids.append(ids + [0] * pad)
+            topk_logprobs.append(lps + [TOPK_PAD_LOGPROB] * pad)
+    if top_k is None:
+        return flat
+    return PrefillScores(logprobs=flat, topk_ids=topk_ids, topk_logprobs=topk_logprobs)

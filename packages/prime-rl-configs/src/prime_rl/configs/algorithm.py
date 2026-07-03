@@ -232,7 +232,25 @@ class MaxRLAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
 
-class OPDAlgoConfig(BaseAlgoConfig):
+class DistillationAlgoConfig(BaseAlgoConfig):
+    """Shared base for the teacher-scored distillation algorithms (opd/opsd):
+    both prefill-score each sample under a teacher and train with the
+    ``ref_kl`` loss component; the scoring granularity is common vocabulary."""
+
+    action_loss_type: ClassVar[ActionLossType] = "ref_kl"
+
+    ref_logprob_granularity: Literal["single_token", "top_k"] = "single_token"
+    """Granularity of teacher scoring: ``"single_token"`` ships only the
+    teacher logprob of each sampled token; ``"top_k"`` additionally ships the
+    teacher's top-k (token id, logprob) pairs per position, and the trainer
+    minimizes a dense cross-entropy to the teacher over those k tokens."""
+
+    ref_top_k: int = 64
+    """k for the ``"top_k"`` granularity. Values above the inference server's
+    ``max_logprobs`` cap (vLLM default: 20) are rejected at scoring time."""
+
+
+class OPDAlgoConfig(DistillationAlgoConfig):
     type: Literal["opd"] = "opd"
     """On-policy distillation: the per-token signal is the reverse KL to
     a reference model, evaluated in the trainer from reference prefill
@@ -240,8 +258,6 @@ class OPDAlgoConfig(BaseAlgoConfig):
     wire, ``ref_kl`` loss component). No scalar advantage is assigned —
     rollouts keep ``advantages=None`` (advantage-based filters never fire) and
     samples ship no advantage stream. ``group_size`` only fans out sampling."""
-
-    action_loss_type: ClassVar[ActionLossType] = "ref_kl"
 
     teacher: FrozenModelConfig
     """The teacher — an inline frozen hosted model (``name`` + ``base_url``)
@@ -251,7 +267,7 @@ class OPDAlgoConfig(BaseAlgoConfig):
     demo-conditioned self-teaching)."""
 
 
-class OPSDAlgoConfig(BaseAlgoConfig):
+class OPSDAlgoConfig(DistillationAlgoConfig):
     type: Literal["opsd"] = "opsd"
     """On-policy self-distillation (SDFT, https://arxiv.org/abs/2601.19897):
     the per-token signal is the reverse KL against the live policy conditioned
