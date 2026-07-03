@@ -502,11 +502,14 @@ class NemotronHModel(NemotronHPreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        seq_lens: Optional[torch.LongTensor] = None,
     ) -> BaseModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token, indexed by global layer index. Only used for router replay; slots
             for non-MoE (Mamba/attention) layers are ignored.
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`, *optional*):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -515,7 +518,12 @@ class NemotronHModel(NemotronHPreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         # Compute cu_seqlens and max_seqlen for flash attention
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
+        flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
+        if seq_lens is not None and seq_lens.numel() > 1 and not flash_attn_enabled:
+            # SDPA/eager attention has no varlen support and would attend across
+            # packed document boundaries.
+            raise ValueError("Packed NemotronH batches require flash attention")
+        if flash_attn_enabled:
             cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
@@ -563,6 +571,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
         logits_to_keep: int = 0,
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        seq_lens: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> PrimeLmOutput:
         if position_ids is None:
@@ -576,6 +585,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
+            seq_lens=seq_lens,
         )
 
         hidden_states = outputs.last_hidden_state

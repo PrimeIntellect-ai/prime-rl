@@ -893,10 +893,12 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
             else:
                 cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        elif position_ids.ndim == 3 and seq_lens is not None:
+        elif seq_lens is not None:
+            # seq_lens is only populated for batch size 1 (see cat_collate), so this
+            # covers both 2D text-only packs and 3D MRoPE packs identically.
             seq_lens = seq_lens.to(device=inputs_embeds.device)
             if seq_lens.numel() > 1 and "full_attention" in self.config.layer_types:
-                raise ValueError("Packed Qwen3.5 MRoPE batches with full_attention layers require flash attention")
+                raise ValueError("Packed Qwen3.5 batches with full_attention layers require flash attention")
             cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens, total_tokens=inputs_embeds.shape[1])
         else:
             max_seqlen = None

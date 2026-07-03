@@ -31,6 +31,7 @@ class Sample(TypedDict):
     position_ids: list[int]
     loss_mask: list[bool]
     target_ids: list[int]
+    seq_lens: list[int]
 
 
 class Batch(TypedDict):
@@ -38,6 +39,7 @@ class Batch(TypedDict):
     position_ids: Int[Tensor, "batch seq"]
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
+    seq_lens: Int[Tensor, "packed"] | None
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -107,10 +109,31 @@ class FakeDataset(StatefulIterableDataset):
                 "target_ids": input_ids[1:],
                 "position_ids": position_ids,
                 "loss_mask": loss_mask,
+                "seq_lens": [seq_len],
             }
             self.num_samples["fake"] += 1
             self.num_tokens["fake"] += len(input_ids)
             yield fake_sample
+
+
+def _new_pack() -> dict[str, Any]:
+    return {
+        "input_ids": [],
+        "position_ids": [],
+        "loss_mask": [],
+        "target_ids": [],
+        "seq_lens": [],
+    }
+
+
+def _append_sample_to_pack(pack: dict[str, Any], sample: dict[str, Any]) -> None:
+    sample_len = len(sample["input_ids"])
+
+    for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
+        value = sample[key]
+        assert isinstance(value, list)
+        pack[key].extend(value)
+    pack["seq_lens"].append(sample_len)
 
 
 def _drop_null_fields(value: Any) -> Any:
@@ -295,6 +318,7 @@ class SFTDataset(StatefulIterableDataset):
             "target_ids": target_ids,
             "loss_mask": loss_mask,
             "position_ids": list(range(len(input_ids))),
+            "seq_lens": [len(input_ids)],
         }
 
     def __iter__(self):
@@ -349,29 +373,57 @@ class CatDataset(StatefulIterableDataset):
         self.seq_len = seq_len
 
     def state_dict(self) -> dict:
+        # Known limitation: the overflow sample pending at a yield boundary is
+        # not persisted, so a checkpoint resume drops at most one sample per
+        # dataloader worker.
         return {"dataset": self.dataset.state_dict()}
 
     def load_state_dict(self, state_dict: dict):
         self.dataset.load_state_dict(state_dict["dataset"])
 
     def __iter__(self):
-        packed_samples, seq_len = defaultdict(list), 0
+        packed_samples = _new_pack()
+        seq_len = 0
         for sample in self.dataset:
-            # Add sample to packed samples
-            for key, value in sample.items():
-                assert isinstance(value, list), f"Value for key {key} must be a list"
-                packed_samples[key].extend(value)
+            sample_len = len(sample["input_ids"])
+            would_overflow = seq_len + sample_len > self.seq_len
+            if seq_len > 0 and would_overflow:
+                yield self._finalize_pack(packed_samples, self.seq_len)
+                packed_samples = _new_pack()
+                seq_len = 0
 
-            # Update sequence length
-            seq_len += len(sample["input_ids"])
+            _append_sample_to_pack(packed_samples, sample)
+            seq_len += sample_len
 
-            # If batch is full, truncate and yield it
             if seq_len >= self.seq_len:
-                for key, value in packed_samples.items():
-                    assert isinstance(value, list), f"Value for key {key} must be a list"
-                    packed_samples[key] = value[: self.seq_len]
-                yield packed_samples
-                packed_samples, seq_len = defaultdict(list), 0
+                yield self._finalize_pack(packed_samples, self.seq_len)
+                packed_samples = _new_pack()
+                seq_len = 0
+
+        if seq_len > 0:
+            yield self._finalize_pack(packed_samples, self.seq_len)
+
+    def _finalize_pack(self, packed: dict[str, Any], seq_len: int) -> dict:
+        result: dict[str, Any] = {
+            k: packed[k][:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
+        }
+        result["seq_lens"] = []
+        remaining = len(result["input_ids"])
+        for sample_len in packed["seq_lens"]:
+            if remaining <= 0:
+                break
+            kept = min(sample_len, remaining)
+            if kept > 0:
+                result["seq_lens"].append(kept)
+            remaining -= kept
+        pad_len = seq_len - len(result["input_ids"])
+        if pad_len > 0:
+            result["input_ids"].extend([0] * pad_len)
+            result["position_ids"].extend(range(pad_len))
+            result["loss_mask"].extend([False] * pad_len)
+            result["target_ids"].extend([0] * pad_len)
+            result["seq_lens"].append(pad_len)
+        return result
 
 
 class StackDataset(StatefulIterableDataset):
@@ -411,9 +463,10 @@ class StackDataset(StatefulIterableDataset):
             # Truncate sample if it's longer than max area
             len_sample = len(sample["input_ids"])
             if len_sample > self.max_area:
-                for key, value in sample.items():
+                for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
+                    value = sample[key]
                     assert isinstance(value, list)
-                    sample[key] = sample[key][: self.max_area]
+                    sample[key] = value[: self.max_area]
                 len_sample = self.max_area
 
             # Add sample to bucket
@@ -453,15 +506,17 @@ class StackDataset(StatefulIterableDataset):
 
                     while self.bucket_sizes[bucket_idx] * len(self.buckets[bucket_idx]) < self.max_area:
                         dummy_sample = {}
-                        for key, value in sample.items():
+                        for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
                             dummy_sample[key] = [0]
+                        dummy_sample["seq_lens"] = [1]
                         self.buckets[bucket_idx].append(dummy_sample)
 
                 packed_samples = defaultdict(list)
                 num_samples, num_tokens, num_trainable_tokens, num_pad_tokens = 0, 0, 0, 0
                 for bucket_item in self.buckets[bucket_idx]:
                     num_samples += 1
-                    for key, value in bucket_item.items():
+                    for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
+                        value = bucket_item[key]
                         pad_tokens = [0] * (self.bucket_sizes[bucket_idx] - len(value))
                         if key == "loss_mask":
                             num_tokens += len(value)
@@ -474,6 +529,7 @@ class StackDataset(StatefulIterableDataset):
                 self.logger.debug(
                     f"Yield bucket {bucket_idx} because {reason} with {num_samples=}, {num_tokens=}, {num_trainable_tokens=}, {num_pad_tokens=}"
                 )
+                packed_samples["seq_lens"] = None
                 yield packed_samples
                 self.step += 1
                 self.buckets[bucket_idx] = []
@@ -489,6 +545,7 @@ def stack_collate(samples: list[Sample]) -> Batch:
         "position_ids": torch.tensor(samples[0]["position_ids"], dtype=torch.long, device="cuda"),
         "loss_mask": torch.tensor(samples[0]["loss_mask"], dtype=torch.bool, device="cuda"),
         "target_ids": torch.tensor(samples[0]["target_ids"], dtype=torch.long, device="cuda"),
+        "seq_lens": None,
     }
 
 
@@ -500,6 +557,10 @@ def cat_collate(samples: list[Sample]) -> Batch:
         .to("cuda"),
         "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to("cuda"),
         "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to("cuda"),
+        # CatDataset emits exactly one packed sample per dataloader item.
+        "seq_lens": torch.tensor(samples[0]["seq_lens"], dtype=torch.long, device="cuda")
+        if len(samples) == 1
+        else None,
     }
 
 
