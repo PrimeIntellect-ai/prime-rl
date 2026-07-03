@@ -1282,6 +1282,8 @@ def forward(
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     seq_lens: Int[Tensor, "segments"] | None = None,
+    # True when seq_lens holds the full pre-CP-shard document boundaries
+    # (kept global because documents can straddle the shard cut).
     seq_lens_are_global: bool = False,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
