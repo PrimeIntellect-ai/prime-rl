@@ -154,13 +154,16 @@ class StaticInferencePool:
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
         self._client_config = client_config
-        self._frontend_admin_clients = setup_admin_clients(client_config, urls=client_config.base_url)
         self._dynamo_admin = DynamoAdminAPI() if client_config.admin_api == "dynamo" else None
-        self._discovery_clients = (
-            setup_admin_clients(client_config, urls=discovery_urls(client_config)) if self._dynamo_admin else []
-        )
         self._dynamo_worker_urls: tuple[str, ...] = ()
-        self._admin_clients = [] if self._dynamo_admin else setup_admin_clients(client_config)
+        if self._dynamo_admin is None:
+            self._admin_clients = setup_admin_clients(client_config)
+            self._frontend_admin_clients = self._admin_clients
+            self._discovery_clients = []
+        else:
+            self._frontend_admin_clients = setup_admin_clients(client_config, urls=client_config.base_url)
+            self._discovery_clients = setup_admin_clients(client_config, urls=discovery_urls(client_config))
+            self._admin_clients = []
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
@@ -334,7 +337,8 @@ def setup_admin_clients(client_config: ClientConfig, urls: list[str] | None = No
     When admin_base_url is set, uses those URLs instead of base_url, allowing
     weight updates to bypass routers in disaggregated P/D deployments.
     """
-    urls = urls or (client_config.admin_base_url if client_config.admin_base_url else client_config.base_url)
+    if urls is None:
+        urls = client_config.admin_base_url if client_config.admin_base_url else client_config.base_url
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
         env_headers = {
