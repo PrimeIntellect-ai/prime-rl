@@ -639,6 +639,21 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def vlm_incompatible_with_cp(self):
+        if self.model.vlm is not None and self.model.cp > 1:
+            raise ValueError("VLM models are not supported with context parallelism")
+        return self
+
+    @model_validator(mode="after")
+    def vlm_requires_varlen_flash_attn(self):
+        # Multimodal samples pack into shared rows, which needs varlen flash attention.
+        if self.model.vlm is not None and self.model.attn not in ("flash_attention_2", "flash_attention_3", "fa4"):
+            raise ValueError(
+                f"VLM training packs multimodal samples and requires a varlen flash attention implementation, got {self.model.attn!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench is not None:
             self.max_steps = 4  # 1 Warmup + 3 Benchmark

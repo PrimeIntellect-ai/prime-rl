@@ -66,6 +66,7 @@ from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
+from prime_rl.utils.vlm import validate_multi_modal_pack
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
@@ -151,6 +152,9 @@ def train(config: TrainerConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
+
+    if config.model.vlm is not None:
+        validate_multi_modal_pack(model, attn_impl=config.model.attn)
 
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Setting up loss function ({config.loss})")
