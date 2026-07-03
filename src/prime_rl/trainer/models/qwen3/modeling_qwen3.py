@@ -156,10 +156,13 @@ class Qwen3Model(Qwen3PreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         *,
         seq_lens: torch.LongTensor,
+        seq_lens_are_global: bool = False,
     ) -> BaseModelOutputWithPast:
         r"""
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
+        seq_lens_are_global (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -225,11 +228,14 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         temperature: Optional[torch.Tensor] = None,
         *,
         seq_lens: torch.LongTensor,
+        seq_lens_are_global: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
+        seq_lens_are_global (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
             Indices of input tokens in the KV cache. Accepted only for HuggingFace API
             compatibility; prime-rl asserts `use_cache is None` since training does not
@@ -248,6 +254,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             seq_lens=seq_lens,
+            seq_lens_are_global=seq_lens_are_global,
         )
         hidden_states = outputs.last_hidden_state
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep

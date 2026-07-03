@@ -318,8 +318,8 @@ class SFTConfig(BaseConfig):
             raise ValueError(
                 "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
-        if self.model.cp > 1:
-            raise ValueError("VLM SFT does not support context parallelism yet.")
+        if self.model.cp > 1 and self.model.cp_style != "ulysses":
+            raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
         if self.data.micro_batch_size != 1:
             raise ValueError("VLM SFT requires data.micro_batch_size = 1.")
         if self.val is not None and self.val.data.micro_batch_size != 1:
