@@ -1,0 +1,24 @@
+max_steps = 10
+seq_len = 1024
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[orchestrator]
+batch_size = 8
+# Content filters judge model output; a curated SFT dataset is not that
+# (reversed text trips the gibberish filter), so don't drop on them here.
+post_batch_filters = []
+
+[[orchestrator.train.env]]
+name = "reverse-text-sft"
+
+[orchestrator.train.env.dataset]
+name = "PrimeIntellect/Reverse-Text-SFT"
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"
+
+[trainer.optim]
+lr = 1e-5

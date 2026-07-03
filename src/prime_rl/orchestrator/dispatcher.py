@@ -127,7 +127,7 @@ class RolloutDispatcher:
         eval_envs: EvalEnvs | None,
         train_source: TrainSource,
         eval_source: EvalSource | None,
-        policy_pool: InferencePool,
+        policy_pool: InferencePool | None,
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
@@ -170,10 +170,13 @@ class RolloutDispatcher:
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
 
-    def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
+    def _train_pool_for(self, env_name: str) -> tuple[InferencePool | None, str, bool]:
         """``(pool, model_name, is_live)`` for *train* rollouts of this env —
-        the env sampler's pool. (Eval always uses the policy.)"""
+        the env sampler's pool. (Eval always uses the policy.) A static env
+        samples nothing: no pool, no model."""
         sampler = self.train_envs.get(env_name).sampler
+        if sampler.pool is None:
+            return None, "", False
         if sampler.samples_from_live_policy:
             return sampler.pool, self.policy.model_name, True
         return sampler.pool, sampler.pool.model_name, False
@@ -409,8 +412,11 @@ class RolloutDispatcher:
         else:
             pool, model_name, live_sourced = self._train_pool_for(group.env_name)
 
-        # Pin a single client per group to keep prefix-cache hits
-        if group.pinned_client is None:
+        # Pin a single client per group to keep prefix-cache hits. A static
+        # env has no pool — its rollouts read a dataset, no client involved.
+        if pool is None:
+            client = None
+        elif group.pinned_client is None:
             if group.kind == "eval":
                 client = await pool.get_eval_client()
             else:

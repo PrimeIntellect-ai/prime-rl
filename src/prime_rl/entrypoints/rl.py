@@ -191,14 +191,16 @@ def rl_local(config: RLConfig):
             )
             monitor_thread.start()
             monitor_threads.append(monitor_thread)
-        else:
+        elif config.orchestrator.needs_inference:
             logger.warning(
                 "No [inference] block configured - the policy inference server will not be started here. "
-                "Every algorithm requires a policy inference pool for evals + weight sync; "
+                "Every rollout-generating algorithm requires a policy inference pool for evals + weight sync; "
                 "make sure one is running at orchestrator.model.client.base_url "
                 f"({', '.join(config.orchestrator.model.client.base_url)}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
+        else:
+            logger.info("Pure static-SFT run — no policy inference pool needed.")
 
         frozen_endpoints: list[str] = []
         for env in config.orchestrator.train.env:

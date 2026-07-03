@@ -304,8 +304,35 @@ class SFTAlgoConfig(BaseAlgoConfig):
         return self
 
 
+class StaticSFTAlgoConfig(BaseAlgoConfig):
+    type: Literal["static-sft"] = "static-sft"
+    """Static SFT: cross-entropy on tokens that come from a dataset instead of
+    a model — nothing is sampled, so there is no sampling source. Selected
+    automatically for train envs configured with a ``dataset``; not meaningful
+    for envs that generate rollouts."""
+
+    action_loss_type: ClassVar[ActionLossType] = "ce"
+
+    @model_validator(mode="after")
+    def forbid_sampling_source(self):
+        """Static SFT has no rollout generation — a sampling source is a
+        config error, not a knob."""
+        if "sampling" in self.model_fields_set:
+            raise ValueError(
+                "algorithm 'static-sft' trains on dataset tokens — nothing is sampled, "
+                "so sampling.source must not be set."
+            )
+        return self
+
+
 AlgoConfig: TypeAlias = Annotated[
-    GRPOAlgoConfig | EchoAlgoConfig | MaxRLAlgoConfig | OPDAlgoConfig | OPSDAlgoConfig | SFTAlgoConfig,
+    GRPOAlgoConfig
+    | EchoAlgoConfig
+    | MaxRLAlgoConfig
+    | OPDAlgoConfig
+    | OPSDAlgoConfig
+    | SFTAlgoConfig
+    | StaticSFTAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -317,6 +344,7 @@ its class defaults are the vetted setting.
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
+- ``static-sft`` — no sampling at all: the tokens come from a dataset (train envs with a ``dataset``), CE on the assistant tokens.
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
 
 A new credit-assignment scheme is a new named algorithm in code (subclass
