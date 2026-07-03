@@ -3,10 +3,11 @@ import uuid
 from collections import defaultdict
 from typing import Any, Literal, TypedDict, cast
 
+import numpy as np
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
 from jaxtyping import Bool, Int
-from renderers.base import Renderer, build_training_sample
+from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.utils.data import IterableDataset, get_worker_info
@@ -26,6 +27,8 @@ class Sample(TypedDict):
     target_ids: list[int]
     seq_lens: list[int]
     padding_len: int
+    mm_kwargs: dict[str, Tensor] | None
+    mm_token_type_ids: list[int] | None
 
 
 class Batch(TypedDict):
@@ -35,6 +38,8 @@ class Batch(TypedDict):
     loss_mask: Bool[Tensor, "batch seq"]
     seq_lens: Int[Tensor, "packed"]
     padding_len: int
+    mm_kwargs: dict[str, Tensor] | None
+    mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -106,10 +111,25 @@ class FakeDataset(StatefulIterableDataset):
                 "loss_mask": loss_mask,
                 "seq_lens": [seq_len],
                 "padding_len": 0,
+                "mm_kwargs": None,
+                "mm_token_type_ids": None,
             }
             self.num_samples["fake"] += 1
             self.num_tokens["fake"] += len(input_ids)
             yield fake_sample
+
+
+def _flatten_mm_items(mm_items: dict[str, list[dict[str, Any]]]) -> dict[str, Tensor]:
+    """Fold per-item renderer outputs into model-forward tensors."""
+    out: dict[str, Tensor] = {}
+    for items in mm_items.values():
+        for item in items:
+            for key, value in item.items():
+                if not isinstance(value, (np.ndarray, Tensor)):
+                    continue
+                tensor = torch.as_tensor(value)
+                out[key] = torch.cat([out[key], tensor], dim=0) if key in out else tensor
+    return out
 
 
 def _drop_null_fields(value: Any, path: tuple[str, ...] = ()) -> Any:
@@ -130,6 +150,34 @@ def _drop_null_fields(value: Any, path: tuple[str, ...] = ()) -> Any:
     if isinstance(value, list):
         return [_drop_null_fields(v, path) for v in value]
     return value
+
+
+def _find_image_safe_cut(budget: int, mm: MultiModalData | None) -> int:
+    """Return the largest cut at most ``budget`` outside placeholder runs."""
+    if mm is None or not mm.mm_placeholders:
+        return budget
+    cut = budget
+    for ranges in mm.mm_placeholders.values():
+        for placeholder in ranges:
+            if placeholder.offset < cut < placeholder.offset + placeholder.length:
+                cut = placeholder.offset
+    return cut
+
+
+def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
+    """Drop multimodal items whose placeholder ranges extend past ``cut``."""
+    new_placeholders: dict[str, list[PlaceholderRange]] = {}
+    new_items: dict[str, list[dict[str, Any]]] = {}
+    new_hashes: dict[str, list[str]] = {}
+    for content_type, ranges in mm.mm_placeholders.items():
+        keep = [index for index, placeholder in enumerate(ranges) if placeholder.offset + placeholder.length <= cut]
+        if not keep:
+            continue
+        new_placeholders[content_type] = [ranges[index] for index in keep]
+        new_items[content_type] = [mm.mm_items[content_type][index] for index in keep]
+        if content_type in mm.mm_hashes:
+            new_hashes[content_type] = [mm.mm_hashes[content_type][index] for index in keep]
+    return MultiModalData(mm_hashes=new_hashes, mm_placeholders=new_placeholders, mm_items=new_items)
 
 
 class SFTDataset(StatefulIterableDataset):
@@ -257,11 +305,35 @@ class SFTDataset(StatefulIterableDataset):
         )
         input_ids = list(sample.token_ids)
         loss_mask = list(sample.loss_mask)
+        mm = sample.multi_modal_data
+        mm_token_type_ids = list(sample.mm_token_type_ids) if sample.mm_token_type_ids is not None else None
+
+        was_mm_truncated = False
+        if mm is not None:
+            budget = self.seq_len + 1
+            if len(input_ids) > budget:
+                was_mm_truncated = True
+                cut = _find_image_safe_cut(budget, mm)
+                self.logger.debug(
+                    f"Truncating example {example.get('__index', '')} from "
+                    f"{len(input_ids)} → {cut} tokens (budget={budget})"
+                )
+                input_ids = input_ids[:cut]
+                loss_mask = loss_mask[:cut]
+                if mm_token_type_ids is not None:
+                    mm_token_type_ids = mm_token_type_ids[:cut]
+                if mm.mm_items:
+                    mm = _truncate_mm_data(mm, cut)
+
+        if was_mm_truncated and not set(self.renderer.get_stop_token_ids()) & set(input_ids):
+            return None
 
         # Causal shift: model predicts next token from current.
         target_ids = input_ids.copy()[1:]
         loss_mask = loss_mask[1:]
         input_ids = input_ids[:-1]
+        if mm_token_type_ids is not None:
+            mm_token_type_ids = mm_token_type_ids[:-1]
 
         if sum(loss_mask[: self.seq_len]) == 0:
             self.logger.warning(
@@ -277,6 +349,14 @@ class SFTDataset(StatefulIterableDataset):
             "A renderer stop token must be present in target_ids"
         )
 
+        mm_kwargs: dict[str, Tensor] | None = None
+        if mm is not None and mm.mm_items:
+            mm_kwargs = _flatten_mm_items(mm.mm_items)
+            if any("video" in key for key in mm_kwargs):
+                raise ValueError("Video SFT is not supported; sample contains video inputs")
+        if mm_token_type_ids is not None:
+            assert len(mm_token_type_ids) == len(input_ids)
+
         return {
             "input_ids": input_ids,
             "target_ids": target_ids,
@@ -284,6 +364,8 @@ class SFTDataset(StatefulIterableDataset):
             "position_ids": list(range(len(input_ids))),
             "seq_lens": [len(input_ids)],
             "padding_len": 0,
+            "mm_kwargs": mm_kwargs,
+            "mm_token_type_ids": mm_token_type_ids,
         }
 
     def __iter__(self):
@@ -331,7 +413,7 @@ class SFTDataset(StatefulIterableDataset):
 
 
 class CatDataset(StatefulIterableDataset):
-    """A dataset that concatenates samples into a single sequence with a fixed length."""
+    """Concatenate text and multimodal samples into one fixed-length row."""
 
     def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
         self.logger = get_logger()
@@ -351,6 +433,8 @@ class CatDataset(StatefulIterableDataset):
 
     def __iter__(self):
         packed_samples = defaultdict(list)
+        packed_samples["mm_kwargs"] = None
+        packed_samples["mm_token_type_ids"] = None
         seq_len = 0
 
         pending_sample = self.pending_sample
@@ -369,18 +453,50 @@ class CatDataset(StatefulIterableDataset):
                 yield self._finalize_pack(packed_samples, self.seq_len)
                 self.pending_sample = None
                 packed_samples = defaultdict(list)
+                packed_samples["mm_kwargs"] = None
+                packed_samples["mm_token_type_ids"] = None
                 seq_len = 0
 
+            existing_len = len(packed_samples["input_ids"])
             for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
                 value = sample[key]
                 assert isinstance(value, list)
                 packed_samples[key].extend(value)
             packed_samples["seq_lens"].append(sample_len)
+
+            sample_mm_kwargs = sample.get("mm_kwargs")
+            sample_mm_type_ids = sample.get("mm_token_type_ids")
+            if sample_mm_kwargs is None:
+                if packed_samples["mm_token_type_ids"] is not None:
+                    packed_samples["mm_token_type_ids"].extend([0] * sample_len)
+            else:
+                if sample_mm_type_ids is not None and len(sample_mm_type_ids) != sample_len:
+                    raise ValueError("mm_token_type_ids length must match input_ids length")
+                if packed_samples["mm_kwargs"] is not None and (
+                    (packed_samples["mm_token_type_ids"] is None) != (sample_mm_type_ids is None)
+                ):
+                    raise ValueError("Cannot pack multimodal samples with mixed mm_token_type_ids")
+
+                if packed_samples["mm_kwargs"] is None:
+                    packed_samples["mm_kwargs"] = dict(sample_mm_kwargs)
+                else:
+                    if packed_samples["mm_kwargs"].keys() != sample_mm_kwargs.keys():
+                        raise ValueError("Cannot pack multimodal samples with different mm_kwargs keys")
+                    for key, value in sample_mm_kwargs.items():
+                        packed_samples["mm_kwargs"][key] = torch.cat([packed_samples["mm_kwargs"][key], value], dim=0)
+
+                if packed_samples["mm_token_type_ids"] is None and sample_mm_type_ids is not None:
+                    packed_samples["mm_token_type_ids"] = [0] * existing_len
+                if packed_samples["mm_token_type_ids"] is not None:
+                    packed_samples["mm_token_type_ids"].extend(sample_mm_type_ids or [0] * sample_len)
+
             seq_len += sample_len
 
             if seq_len >= self.seq_len:
                 yield self._finalize_pack(packed_samples, self.seq_len)
                 packed_samples = defaultdict(list)
+                packed_samples["mm_kwargs"] = None
+                packed_samples["mm_token_type_ids"] = None
                 seq_len = 0
 
         if seq_len > 0:
@@ -408,12 +524,19 @@ class CatDataset(StatefulIterableDataset):
             result["target_ids"].extend([0] * pad_len)
             result["seq_lens"][-1] += pad_len
             result["padding_len"] = pad_len
+        result["mm_kwargs"] = packed["mm_kwargs"]
+        if packed["mm_token_type_ids"] is not None:
+            result["mm_token_type_ids"] = packed["mm_token_type_ids"][:seq_len] + [0] * pad_len
+        else:
+            result["mm_token_type_ids"] = None
         return result
 
 
 def cat_collate(samples: list[Sample]) -> Batch:
     if len(samples) != 1:
         raise ValueError(f"CatDataset collate expects exactly one packed row, got {len(samples)}")
+    sample = samples[0]
+    mm_token_type_ids = sample.get("mm_token_type_ids")
     return {
         "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long().to("cuda"),
         "position_ids": torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0)
@@ -421,9 +544,21 @@ def cat_collate(samples: list[Sample]) -> Batch:
         .to("cuda"),
         "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to("cuda"),
         "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to("cuda"),
-        "seq_lens": torch.tensor(samples[0]["seq_lens"], dtype=torch.long, device="cuda"),
-        "padding_len": samples[0]["padding_len"],
+        "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long, device="cuda"),
+        "padding_len": sample["padding_len"],
+        "mm_kwargs": _move_mm_kwargs_to_cuda(sample.get("mm_kwargs")),
+        "mm_token_type_ids": (
+            torch.tensor(mm_token_type_ids, dtype=torch.long, device="cuda").unsqueeze(0)
+            if mm_token_type_ids is not None
+            else None
+        ),
     }
+
+
+def _move_mm_kwargs_to_cuda(mm_kwargs: dict[str, Tensor] | None) -> dict[str, Tensor] | None:
+    if mm_kwargs is None:
+        return None
+    return {key: value.to("cuda") for key, value in mm_kwargs.items()}
 
 
 def setup_and_interleave_datasets(
@@ -502,6 +637,7 @@ def setup_dataset(
     max_epochs: int | None = None,
     raw_dataset: Dataset | None = None,
     renderer: Renderer | None = None,
+    multimodal: bool = False,
 ) -> StatefulIterableDataset:
     if config.type == "fake":
         return FakeDataset(

@@ -960,7 +960,7 @@ class Qwen3_5MoeVLMModel(nn.Module):
         grid_thw = torch.tensor([[1, m, m]], dtype=torch.long, device=device)
         return pixel_values, grid_thw
 
-    def forward(
+    def prepare_inputs_embeds_and_position_ids(
         self,
         input_ids: torch.LongTensor | None = None,
         position_ids: torch.LongTensor | None = None,
@@ -968,12 +968,12 @@ class Qwen3_5MoeVLMModel(nn.Module):
         pixel_values: torch.Tensor | None = None,
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
-        routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
-        **kwargs,
-    ) -> MoeModelOutputWithPast:
+    ) -> tuple[torch.FloatTensor, torch.LongTensor]:
         if inputs_embeds is None:
+            if input_ids is None:
+                raise ValueError("input_ids are required when inputs_embeds are not provided")
             inputs_embeds = self.language_model.embed_tokens(input_ids)
 
         if image_grid_thw is not None and input_ids is None:
@@ -987,8 +987,11 @@ class Qwen3_5MoeVLMModel(nn.Module):
                 f"Qwen3.5 multimodal forward requires 3D MRoPE position_ids; got shape={tuple(position_ids.shape)}"
             )
 
-        # Keep distributed collectives in the same order when a batch mixes text-only
-        # and image samples across ranks. The frozen dummy pass is discarded below.
+        # Always run the vision encoder for collective symmetry: under FSDP + EP
+        # all ranks share one process group, so every rank must issue the vision
+        # encoder's collectives in the same order each step. Text-only microbatches
+        # keep the dummy embeds in the graph with zero contribution so trainable
+        # vision modules also participate in backward collectives.
         has_images = pixel_values is not None
         vision_grid_thw = image_grid_thw
         if has_images:
@@ -1018,6 +1021,8 @@ class Qwen3_5MoeVLMModel(nn.Module):
                 )
             image_mask = image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+        else:
+            inputs_embeds = inputs_embeds + image_embeds.sum() * 0.0
 
         if position_ids is None:
             if image_grid_thw is not None:
@@ -1030,6 +1035,31 @@ class Qwen3_5MoeVLMModel(nn.Module):
                 )
             else:
                 position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
+
+        return inputs_embeds, position_ids
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.LongTensor | None = None,
+        mm_token_type_ids: torch.LongTensor | None = None,
+        routed_experts: torch.LongTensor | None = None,
+        *,
+        seq_lens: torch.LongTensor,
+        **kwargs,
+    ) -> MoeModelOutputWithPast:
+        inputs_embeds, position_ids = self.prepare_inputs_embeds_and_position_ids(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
+            seq_lens=seq_lens,
+        )
 
         return self.language_model(
             inputs_embeds=inputs_embeds,

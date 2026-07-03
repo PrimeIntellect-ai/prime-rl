@@ -606,6 +606,12 @@ def get_model(
     else:
         impl_to_use = config.impl
 
+    if config.vlm is not None and not (is_vlm_arch and impl_to_use == "custom" and custom_vlm_cls):
+        raise ValueError(
+            "VLM training requires a custom PrimeRL VLM implementation; "
+            f"{getattr(model_config, 'model_type', config.name)!r} has none."
+        )
+
     with device:
         if impl_to_use == "custom" and custom_vlm_cls is not None:
             model_cls = custom_vlm_cls
@@ -662,6 +668,23 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
     return tokenizer
+
+
+def setup_processor(config: TokenizerConfig):
+    """Load an ``AutoProcessor`` for VLM models. Returns ``None`` for text-only models."""
+    from transformers import AutoProcessor
+
+    logger = get_logger()
+    try:
+        processor = AutoProcessor.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    except (ValueError, OSError, KeyError) as e:
+        logger.debug(f"No AutoProcessor available for {config.name} ({type(e).__name__}); treating as text-only.")
+        return None
+    if not (getattr(processor, "image_processor", None) or getattr(processor, "video_processor", None)):
+        logger.debug(f"AutoProcessor for {config.name} has no image/video processor; treating as text-only.")
+        return None
+    logger.info(f"Loaded multimodal processor: {type(processor).__name__}")
+    return processor
 
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
@@ -1212,28 +1235,31 @@ def setup_model(
 
 def forward(
     model: nn.Module,
-    input_ids: Int[Tensor, "batch seq"],
-    position_ids: Int[Tensor, "batch seq"],
+    input_ids: Int[Tensor, "batch seq"] | None,
+    position_ids: Int[Tensor, "batch seq"] | None,
     *,
     seq_lens: Int[Tensor, "segments"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
+    inputs_embeds: Tensor | None = None,
     # Generic multimodal kwargs (e.g. {"pixel_values": ...,
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
     # for Gemma3). Passed straight through to ``model(**kwargs)`` so
     # the model's HF forward signature is the schema. ``mm_token_type_ids``
-    # is split out because it's prime-rl-computed (from token ids),
-    # not a renderer/processor output.
+    # is split out because it's prime-rl-computed (from token ids).
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
     kwargs = {
-        "input_ids": input_ids,
         "labels": labels,
         "temperature": temperature,
     }
+    if inputs_embeds is None:
+        kwargs["input_ids"] = input_ids
+    else:
+        kwargs["inputs_embeds"] = inputs_embeds
 
     if mm_kwargs:
         # Forward the per-model multimodal tensors verbatim, plus the
@@ -1242,10 +1268,6 @@ def forward(
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        # ``position_ids`` for MRoPE families: Qwen3-VL's HF forward
-        # recomputes 3D positions from ``image_grid_thw`` and breaks if
-        # given the trainer's pre-computed 1D ``position_ids``. Detect
-        # via the mm_kwargs shape so we don't enumerate model_types.
         if "image_grid_thw" not in mm_kwargs:
             kwargs["position_ids"] = position_ids
     else:

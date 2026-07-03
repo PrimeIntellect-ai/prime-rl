@@ -28,6 +28,7 @@ from prime_rl.trainer.model import (
     forward,
     get_load_balance_stats,
     is_tt_moe_model,
+    setup_processor,
     setup_tokenizer,
     setup_model,
 )
@@ -161,6 +162,11 @@ def train(config: SFTConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
+    processor = setup_processor(config.tokenizer)
+    if config.model.vlm is not None and processor is None:
+        raise ValueError(
+            f"[model.vlm] is set but no multimodal processor could be loaded for {config.tokenizer.name!r}"
+        )
 
     # Fake data never renders messages, so a model without a hand-coded renderer
     # can still be used to benchmark step time / memory. Validation data is
@@ -168,7 +174,12 @@ def train(config: SFTConfig):
     renderer = None
     if config.data.type != "fake" or config.val is not None:
         renderer = create_renderer(tokenizer, config.renderer)
-        logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
+        if processor is not None and hasattr(renderer, "_processor"):
+            renderer._processor = processor
+        logger.info(
+            f"Initialized {type(renderer).__name__} for {config.tokenizer.name} "
+            f"(multimodal_processor={processor is not None})"
+        )
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -188,7 +199,8 @@ def train(config: SFTConfig):
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer)
+    multimodal = config.model.vlm is not None
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer, multimodal=multimodal)
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
@@ -244,6 +256,8 @@ def train(config: SFTConfig):
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
         seq_lens = micro_batch["seq_lens"].to("cuda")
+        mm_kwargs = micro_batch.get("mm_kwargs")
+        mm_type_ids = micro_batch.get("mm_token_type_ids")
 
         if cp_enabled:
             total_tokens = input_ids.shape[1]
@@ -275,10 +289,19 @@ def train(config: SFTConfig):
                     position_ids,
                     seq_lens=seq_lens,
                     labels=masked_target_ids,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
                 )
                 loss_sum = out["loss"] * token_count
             else:
-                out = forward(model, input_ids, position_ids, seq_lens=seq_lens)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
+                    seq_lens=seq_lens,
+                )
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
@@ -331,6 +354,7 @@ def train(config: SFTConfig):
             max_epochs=1,
             raw_dataset=val_raw_dataset,
             renderer=renderer,
+            multimodal=multimodal,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
@@ -487,7 +511,7 @@ def train(config: SFTConfig):
             if weight_ckpt_manager is not None:
                 logger.info(f"Saving weight checkpoint at step {progress.step}")
                 save_ckpt_start_time = time.perf_counter()
-                weight_ckpt_manager.save(progress.step, model, tokenizer)
+                weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
                 save_ckpt_time += time.perf_counter() - save_ckpt_start_time
                 weight_ckpt_manager.maybe_clean()
         else:
@@ -623,7 +647,7 @@ def train(config: SFTConfig):
     # Write final weight checkpoint
     if weight_ckpt_manager is not None:
         logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(progress.step, model, tokenizer)
+        weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
         weight_ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
