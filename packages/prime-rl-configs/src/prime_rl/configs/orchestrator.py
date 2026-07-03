@@ -728,7 +728,6 @@ class OrchestratorConfig(BaseConfig):
             if env.algo.sampling.source == "policy":
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
-                env.sampling.extra_body.setdefault("return_token_ids", True)
             if env.is_legacy:
                 # v0 env: cap per-turn response tokens to the training budget (the legacy
                 # bridge applies extra_env_kwargs via env.set_kwargs).

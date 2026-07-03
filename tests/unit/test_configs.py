@@ -186,6 +186,12 @@ def test_env_algo_overrides_top_level():
     assert reloaded.train.env[0].algo is not None and reloaded.train.env[0].algo.type == "grpo"
 
 
+def test_policy_sampling_does_not_add_response_format_flags():
+    config = OrchestratorConfig.model_validate({"train": {"env": [{"id": "math-env"}]}})
+
+    assert config.train.env[0].sampling.extra_body == {"top_k": -1, "min_p": 0.0}
+
+
 def test_trainer_enable_token_export_cli_flag():
     assert not cli(TrainerConfig, args=[]).enable_token_export
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
