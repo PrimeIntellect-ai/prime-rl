@@ -59,6 +59,19 @@ from prime_rl.trainer.models.layers.lm_head import FUSED_CE_IGNORE_INDEX
 from torchtitan.distributed.utils import clip_grad_norm_
 
 
+def setup_renderer(tokenizer, config):
+    """Create the SFT renderer, rejecting the DefaultRenderer fallback."""
+    renderer = create_renderer(tokenizer, config)
+    if isinstance(renderer, DefaultRenderer):
+        raise ValueError(
+            f"SFT renderer for {tokenizer.name_or_path!r} resolved to DefaultRenderer. "
+            "SFT is renderer-only and requires a hand-coded renderer for stable "
+            "message-to-token attribution. Use a model with a hand-coded renderer "
+            "(see renderers.base.MODEL_RENDERER_MAP), or set [renderer] name=<hand-coded renderer> explicitly."
+        )
+    return renderer
+
+
 @clean_exit
 def train(config: SFTConfig):
     # Setup world and logger
@@ -171,14 +184,7 @@ def train(config: SFTConfig):
     # can still be used to benchmark step time / memory.
     renderer = None
     if config.data.type != "fake":
-        renderer = create_renderer(tokenizer, config.renderer)
-        if isinstance(renderer, DefaultRenderer):
-            raise ValueError(
-                f"SFT renderer for {config.tokenizer.name!r} resolved to DefaultRenderer. "
-                "SFT is renderer-only and requires a hand-coded renderer for stable "
-                "message-to-token attribution. Use a model with a hand-coded renderer "
-                "(see renderers.base.MODEL_RENDERER_MAP), or set [renderer] name=<hand-coded renderer> explicitly."
-            )
+        renderer = setup_renderer(tokenizer, config.renderer)
 
         if processor is not None and hasattr(renderer, "_processor"):
             renderer._processor = processor
