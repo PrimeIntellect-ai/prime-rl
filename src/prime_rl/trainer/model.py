@@ -11,6 +11,7 @@ os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
 import torch
 import torch._dynamo
+import torch.distributed as dist
 import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
@@ -446,6 +447,47 @@ def get_load_balance_stats(
     }
 
 
+def set_block_dropout(model: nn.Module, dropout_p: float) -> None:
+    """Set the pre-residual block-output dropout probability on every supported block (attention,
+    dense MLP, MoE, LatentMoE). Dropout is applied to each block's output before the residual add.
+    ``dropout_p == 0.0`` is a no-op at runtime."""
+    for module in model.modules():
+        if hasattr(module, "dropout_p"):
+            module.dropout_p = dropout_p
+
+
+def set_moe_load_balance_active(model: nn.Module, active: bool) -> None:
+    """Enable/disable the loss-free bias-update usage accumulator on every MoE layer. Called once at
+    setup so ``expert_load_acc`` only grows when ``update_expert_bias`` is actually being run."""
+    for module in model.modules():
+        if hasattr(module, "moe_lb_active"):
+            module.moe_lb_active = active
+
+
+@torch.no_grad()
+def update_expert_bias(model: nn.Module, update_rate: float, dp_group=None) -> None:
+    """Auxiliary-loss-free load balancing (DeepSeek, https://arxiv.org/abs/2408.15664).
+
+    Nudges each MoE layer's router ``expert_bias`` toward balanced usage by ``update_rate`` in the
+    direction of the sign of the load error, using the usage accumulated since the last call
+    (``expert_load_acc``) summed across ``dp_group`` for the global batch. Call once per optimizer
+    step. The bias affects routing selection only, not gating.
+    """
+    language_model = get_language_model(model)
+    for transformer_block in language_model.layers:
+        block_mlp = getattr(transformer_block, "mlp", None)
+        if block_mlp is None or getattr(block_mlp, "expert_bias", None) is None:
+            continue
+        counts = block_mlp.expert_load_acc
+        if dp_group is not None:
+            counts = counts.clone()
+            dist.all_reduce(counts, op=dist.ReduceOp.SUM, group=dp_group)
+        delta = update_rate * torch.sign(counts.mean() - counts)  # positive where under-loaded
+        delta = delta - delta.mean()  # zero-mean so the bias vector doesn't drift a global offset
+        block_mlp.expert_bias.add_(delta)
+        block_mlp.expert_load_acc.zero_()
+
+
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
@@ -505,6 +547,11 @@ def get_model(
             subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
     model_config.fp8 = config.fp8
+
+    # Loss-free load balancing updates the router expert_bias buffer, which several models gate
+    # behind load_balance_coeff (defaults to None). Force it on so the buffer is constructed.
+    if config.moe_load_balance.mode == "loss_free" and getattr(model_config, "load_balance_coeff", None) is None:
+        model_config.load_balance_coeff = config.moe_load_balance.coeff
 
     if config.index_cache is not None:
         model_config.use_index_cache = True
@@ -621,6 +668,18 @@ def get_model(
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
     )
+
+    # Fail loudly rather than silently no-op if loss-free balancing was requested but the model has
+    # no router expert_bias (e.g. MiniMax with use_routing_bias=False, which ignores load_balance_coeff).
+    if config.moe_load_balance.mode == "loss_free":
+        language_model = get_language_model(model)
+        if not any(
+            getattr(getattr(block, "mlp", None), "expert_bias", None) is not None for block in language_model.layers
+        ):
+            raise ValueError(
+                "moe_load_balance.mode='loss_free' requires the model's MoE routers to have an expert_bias "
+                "buffer, but this model was built without one. Loss-free balancing cannot run for it."
+            )
     return model
 
 

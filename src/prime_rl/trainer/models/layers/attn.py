@@ -72,6 +72,8 @@ class FlashAttention(nn.Module):
             config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
         )
         self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.output_bias)
+        # Pre-residual block-output dropout. Set via set_block_dropout(); 0.0 is a no-op.
+        self.dropout_p = 0.0
         self.use_qk_norm = config.use_qk_norm
         self.qk_norm_type = config.qk_norm_type
         if self.use_qk_norm:
@@ -180,6 +182,7 @@ class FlashAttention(nn.Module):
             max_seqlen=max_seqlen,
         )
         attn_output = self.output_proj(attn_output)
+        attn_output = F.dropout(attn_output, p=self.dropout_p, training=self.training)
         return attn_output, None
 
 
@@ -203,6 +206,8 @@ class SDPAAttention(nn.Module):
             config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
         )
         self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.output_bias)
+        # Pre-residual block-output dropout. Set via set_block_dropout(); 0.0 is a no-op.
+        self.dropout_p = 0.0
         self.use_qk_norm = config.use_qk_norm
         self.qk_norm_type = config.qk_norm_type
         if self.use_qk_norm:
@@ -277,6 +282,7 @@ class SDPAAttention(nn.Module):
 
         attn_output = self._attention_core(query_states, key_states, value_states)
         attn_output = self.output_proj(attn_output)
+        attn_output = F.dropout(attn_output, p=self.dropout_p, training=self.training)
         return attn_output, None
 
 

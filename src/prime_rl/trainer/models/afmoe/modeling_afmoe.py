@@ -84,6 +84,8 @@ class AfmoeAttentionBase(nn.Module):
         self.k_proj = nn.Linear(config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, config.hidden_size, bias=False)
+        # Pre-residual block-output dropout. Set via set_block_dropout(); 0.0 is a no-op.
+        self.dropout_p = 0.0
 
         # Output gating
         self.gate_proj = nn.Linear(config.hidden_size, self.num_heads * self.head_dim, bias=False)
@@ -102,7 +104,7 @@ class AfmoeAttentionBase(nn.Module):
             attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.contiguous().view(*input_shape, -1)
         attn_output = attn_output * torch.sigmoid(gate_states)
-        return self.o_proj(attn_output)
+        return F.dropout(self.o_proj(attn_output), p=self.dropout_p, training=self.training)
 
 
 class AfmoeSDPAAttention(AfmoeAttentionBase):

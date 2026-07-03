@@ -494,7 +494,6 @@ class TokenChoiceTopKRouter(nn.Module):
             min=0,
             max=self.num_experts,
         )
-
         return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
 
     def init_weights(self, init_std: float):
@@ -592,6 +591,8 @@ class MoE(nn.Module):
         )
         self.score_before_experts = moe_args.score_before_experts
         self.deepep_token_chunk_size: int | None = None
+        # Pre-residual block-output dropout. Set via set_block_dropout(); 0.0 is a no-op.
+        self.dropout_p = 0.0
 
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert is accumulated in the model forward pass.
@@ -614,6 +615,16 @@ class MoE(nn.Module):
             persistent=False,
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
+        # Separate usage accumulator for the loss-free bias update (consumed once per optimizer step by
+        # update_expert_bias), kept distinct from tokens_per_expert which logging resets every micro-step.
+        self.register_buffer(
+            "expert_load_acc",
+            torch.zeros(num_experts, dtype=torch.float32),
+            persistent=False,
+        )
+        # Set True by the trainer only when loss-free balancing is active (set_moe_load_balance_active),
+        # so expert_load_acc isn't accumulated pointlessly when balancing is off.
+        self.moe_lb_active = False
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
@@ -743,9 +754,15 @@ class MoE(nn.Module):
         with torch.no_grad():
             self.tokens_per_expert.add_(num_tokens_per_expert)
             self.routing_confidence_sum.add_(routing_confidence_sum)
+            # Loss-free bias-update usage: training forwards only, so validation traffic (which runs
+            # before update_expert_bias in the SFT loop) is excluded. Full-block AC reruns this in
+            # backward, doubling counts uniformly per layer, which the sign-based update is invariant to.
+            if self.expert_bias is not None and self.moe_lb_active and self.training:
+                self.expert_load_acc.add_(num_tokens_per_expert)
 
         if self.ep_comm_backend == "deepep":
             routed_output = self._run_deepep_routed_experts(x, selected_experts_indices, top_scores)
+            routed_output = F.dropout(routed_output, p=self.dropout_p, training=self.training)
             return routed_output.reshape(bs, slen, dim)
 
         # top_scores and token_indices_experts_sorted shape (bs*slen*top_k,)
@@ -775,6 +792,7 @@ class MoE(nn.Module):
 
         routed_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
         out = out.scatter_add(dim=0, index=routed_indices, src=routed_output)
+        out = F.dropout(out, p=self.dropout_p, training=self.training)
         out = out.reshape(bs, slen, dim)
         return out
 
@@ -791,6 +809,7 @@ class MoE(nn.Module):
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
+            self.expert_load_acc = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             if self.load_balance_coeff is not None:
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
 
@@ -1005,7 +1024,6 @@ class NemotronHRouter(nn.Module):
             min=0,
             max=self.num_experts,
         )
-
         return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
 
     def init_weights(self, init_std: float):
@@ -1073,6 +1091,8 @@ class LatentMoE(nn.Module):
         self.reorderer = TokenReorderer(num_experts=num_experts, top_k=top_k)
         self.shared_expert = BCNonGatedFeedForward(dim=dim, hidden_dim=shared_expert_intermediate_size)
         self.deepep_token_chunk_size: int | None = None
+        # Pre-residual block-output dropout. Set via set_block_dropout(); 0.0 is a no-op.
+        self.dropout_p = 0.0
 
         if latent_dim is not None:
             self.fc1_latent_proj = nn.Linear(dim, latent_dim, bias=False)
@@ -1098,6 +1118,16 @@ class LatentMoE(nn.Module):
             persistent=False,
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
+        # Separate usage accumulator for the loss-free bias update (consumed once per optimizer step by
+        # update_expert_bias), kept distinct from tokens_per_expert which logging resets every micro-step.
+        self.register_buffer(
+            "expert_load_acc",
+            torch.zeros(num_experts, dtype=torch.float32),
+            persistent=False,
+        )
+        # Set True by the trainer only when loss-free balancing is active (set_moe_load_balance_active),
+        # so expert_load_acc isn't accumulated pointlessly when balancing is off.
+        self.moe_lb_active = False
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
@@ -1204,9 +1234,15 @@ class LatentMoE(nn.Module):
         with torch.no_grad():
             self.tokens_per_expert.add_(num_tokens_per_expert)
             self.routing_confidence_sum.add_(routing_confidence_sum)
+            # Loss-free bias-update usage: training forwards only, so validation traffic (which runs
+            # before update_expert_bias in the SFT loop) is excluded. Full-block AC reruns this in
+            # backward, doubling counts uniformly per layer, which the sign-based update is invariant to.
+            if self.expert_bias is not None and self.moe_lb_active and self.training:
+                self.expert_load_acc.add_(num_tokens_per_expert)
 
         if self.ep_comm_backend == "deepep":
             routed_output = self._run_deepep_routed_experts(x_flat, selected_experts_indices, top_scores)
+            routed_output = F.dropout(routed_output, p=self.dropout_p, training=self.training)
             return routed_output.reshape(bs, slen, dim)
 
         (
@@ -1226,6 +1262,7 @@ class LatentMoE(nn.Module):
 
         token_indices_full = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
         out = out.scatter_add(dim=0, index=token_indices_full, src=routed_output)
+        out = F.dropout(out, p=self.dropout_p, training=self.training)
         out = out.reshape(bs, slen, dim)
         return out
 
@@ -1236,5 +1273,6 @@ class LatentMoE(nn.Module):
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
+            self.expert_load_acc = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             if self.load_balance_coeff is not None:
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)

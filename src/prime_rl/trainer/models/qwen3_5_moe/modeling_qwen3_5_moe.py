@@ -586,6 +586,10 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.layer_type = config.layer_types[layer_idx]
+        # Pre-residual token-mixer dropout, applied in forward since both the gated attention and the
+        # GatedDeltaNet linear-attn mixers are bespoke (not the shared attention layers). Set via
+        # set_block_dropout(); 0.0 is a no-op.
+        self.dropout_p = 0.0
 
         # Token mixer: either GatedDeltaNet or gated softmax attention
         if self.layer_type == "linear_attention":
@@ -638,6 +642,7 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
                 max_seqlen=max_seqlen,
             )
 
+        hidden_states = F.dropout(hidden_states, p=self.dropout_p, training=self.training)
         hidden_states = residual + hidden_states
 
         # MLP: routed experts + gated shared expert
@@ -653,6 +658,8 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         shared_output = self.shared_expert(hidden_flat)
         shared_output = F.sigmoid(self.shared_expert_gate(hidden_flat)) * shared_output
         shared_output = shared_output.view(bs, slen, dim)
+        # Match the routed-path block-output dropout (applied inside MoE) on the shared-expert path.
+        shared_output = F.dropout(shared_output, p=self.mlp.dropout_p, training=self.training)
 
         hidden_states = residual + routed_output + shared_output
         return hidden_states

@@ -116,9 +116,30 @@ class DebugModelConfig(BaseConfig):
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
 
 
+class MoELoadBalanceConfig(BaseConfig):
+    """Training-time MoE load balancing (only affects the custom MoE implementation).
+
+    Auxiliary-loss-free bias balancing (DeepSeek, https://arxiv.org/abs/2408.15664). Expert usage
+    is aggregated across the data-parallel group so balancing targets the whole global batch rather
+    than each rank's local shard.
+    """
+
+    mode: Literal["off", "loss_free"] = "off"
+    """``off`` disables training-time balancing (a pretrained ``expert_bias`` is still used for routing if present). ``loss_free`` updates the router ``expert_bias`` each optimizer step from expert usage."""
+
+    coeff: float = Field(1e-3, gt=0)
+    """Bias update step size for ``loss_free`` (``expert_bias += coeff * sign(load_error)``)."""
+
+
 class ModelConfig(BaseModelConfig):
     seq_len: int = 2048
     """Sequence length the model is trained on."""
+
+    dropout: float = Field(0.0, ge=0, le=1)
+    """Dropout applied at each block's output before the residual add (attention block and FFN/MoE block). Intended for SFT/self-distillation (e.g. 0.15); leave at 0 for RL. Requires the custom model implementation."""
+
+    moe_load_balance: MoELoadBalanceConfig = MoELoadBalanceConfig()
+    """Training-time MoE load-balancing configuration."""
 
     attn: AttnImplementation = "flash_attention_2"
     """Attention implementation. With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""

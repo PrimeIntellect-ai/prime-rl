@@ -201,6 +201,8 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.layer_norm_epsilon))
         self.mamba = NemotronHMamba2Mixer(config, layer_idx=layer_idx)
         self.mlp = None  # No MoE in this layer type
+        # Pre-residual block-output dropout. Set via set_block_dropout(); 0.0 is a no-op.
+        self.dropout_p = 0.0
 
     def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
         assert self.mamba.num_heads % cp_world_size == 0, (
@@ -236,6 +238,7 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
         else:
             hidden_states = self.mamba(hidden_states, cu_seqlens=cu_seqlens)
 
+        hidden_states = nn.functional.dropout(hidden_states, p=self.dropout_p, training=self.training)
         return residual + hidden_states
 
 

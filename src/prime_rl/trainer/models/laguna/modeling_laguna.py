@@ -135,7 +135,10 @@ class LagunaFlashAttention(FlashAttention):
         attn_output = attn_output.view(*input_shape, self.num_heads, self.head_dim)
         gate = F.softplus(self.g_proj(hidden_states).float()).to(attn_output.dtype)
         attn_output = (attn_output * gate.unsqueeze(-1)).view(*input_shape, -1)
-        return self.o_proj(attn_output), None
+        # Pre-residual block-output dropout (see base FlashAttention/SDPAAttention); dropout_p is set
+        # by set_block_dropout and is 0.0 (no-op) unless model.dropout is enabled.
+        attn_output = F.dropout(self.o_proj(attn_output), p=self.dropout_p, training=self.training)
+        return attn_output, None
 
 
 class LagunaSDPAAttention(SDPAAttention):
@@ -185,7 +188,10 @@ class LagunaSDPAAttention(SDPAAttention):
         attn_output = attn_output.view(*input_shape, self.num_heads, self.head_dim)
         gate = F.softplus(self.g_proj(hidden_states).float()).to(attn_output.dtype)
         attn_output = (attn_output * gate.unsqueeze(-1)).view(*input_shape, -1)
-        return self.o_proj(attn_output), None
+        # Pre-residual block-output dropout (see base FlashAttention/SDPAAttention); dropout_p is set
+        # by set_block_dropout and is 0.0 (no-op) unless model.dropout is enabled.
+        attn_output = F.dropout(self.o_proj(attn_output), p=self.dropout_p, training=self.training)
+        return attn_output, None
 
 
 def _get_laguna_attention(config: LagunaConfig, layer_idx: int):
@@ -273,6 +279,8 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
         if self.shared_expert is not None:
             bs, slen, dim = hidden_states.shape
             shared_output = self.shared_expert(mlp_input.view(-1, dim)).view(bs, slen, dim)
+            # Match the routed-path block-output dropout (applied inside MoE) on the shared-expert path.
+            shared_output = F.dropout(shared_output, p=self.mlp.dropout_p, training=self.training)
             hidden_states = hidden_states + shared_output
         hidden_states = residual + hidden_states
         return hidden_states

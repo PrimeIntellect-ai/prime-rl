@@ -42,6 +42,8 @@ from prime_rl.trainer.model import (
     setup_model,
     is_tt_moe_model,
     get_load_balance_stats,
+    set_moe_load_balance_active,
+    update_expert_bias,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -148,6 +150,9 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+
+    if config.model.moe_load_balance.mode == "loss_free":
+        set_moe_load_balance_active(model, True)
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
@@ -543,6 +548,9 @@ def train(config: TrainerConfig):
 
         # Update the model parameters
         optimizer.step()
+        if config.model.moe_load_balance.mode == "loss_free":
+            lb = config.model.moe_load_balance
+            update_expert_bias(model, lb.coeff, dp_cp_group)
         optimizer.zero_grad()
 
         # Update learning rate scheduler

@@ -29,8 +29,11 @@ from prime_rl.trainer.model import (
     forward,
     get_load_balance_stats,
     is_tt_moe_model,
+    set_block_dropout,
+    set_moe_load_balance_active,
     setup_tokenizer,
     setup_model,
+    update_expert_bias,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -141,6 +144,13 @@ def train(config: SFTConfig):
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
     fused_cross_entropy: bool | str = {"liger_fused": "liger", "quack_fused": "quack"}.get(config.loss_impl, False)
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, fused_cross_entropy=fused_cross_entropy)
+
+    if config.model.dropout > 0:
+        logger.info(f"Enabling per-block pre-residual dropout {config.model.dropout}")
+        set_block_dropout(model, config.model.dropout)
+
+    if config.model.moe_load_balance.mode == "loss_free":
+        set_moe_load_balance_active(model, True)
 
     if parallel_dims.cp_enabled:
         from prime_rl.utils.cp import assert_cp_style_supports_model
@@ -324,8 +334,19 @@ def train(config: SFTConfig):
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
-        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
+        # Toggling train/eval can trigger torch.compile recompilation, so only switch when it
+        # matters: block dropout must be disabled for a deterministic val metric, and loss-free load
+        # balancing accumulates expert usage in training mode only (so validation, which runs before
+        # update_expert_bias, doesn't skew the balance). With both off (the default) there is nothing
+        # to disable, so we keep the model in train mode.
+        toggle_eval = config.model.dropout > 0 or config.model.moe_load_balance.mode != "off"
+        if toggle_eval:
+            model.eval()
+        try:
+            mean_loss, nan_count = run_eval_loop(val_dataloader)
+        finally:
+            if toggle_eval:
+                model.train()
         if nan_count > 0:
             logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
         if mean_loss != mean_loss:
@@ -448,6 +469,9 @@ def train(config: SFTConfig):
 
         logger.debug("Optimizer step")
         optimizer.step()
+        if config.model.moe_load_balance.mode == "loss_free":
+            lb = config.model.moe_load_balance
+            update_expert_bias(model, lb.coeff, dp_cp_group)
         optimizer.zero_grad()
 
         # Update learning rate scheduler

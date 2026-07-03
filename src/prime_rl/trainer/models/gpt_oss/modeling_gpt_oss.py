@@ -135,6 +135,9 @@ class GptOssDecoderLayer(GradientCheckpointingLayer):
         self.hidden_size = config.hidden_size
         self.self_attn = GptOssAttention(config=config, layer_idx=layer_idx)
         self.mlp = GptOssMoE(config)
+        # Pre-residual block-output dropout (attention and MoE are bespoke, not the shared layers).
+        # Set via set_block_dropout(); 0.0 is a no-op.
+        self.dropout_p = 0.0
         self.input_layernorm = GptOssRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = GptOssRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -159,11 +162,13 @@ class GptOssDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             **kwargs,
         )
+        hidden_states = F.dropout(hidden_states, p=self.dropout_p, training=self.training)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states, _ = self.mlp(hidden_states)
+        hidden_states = F.dropout(hidden_states, p=self.dropout_p, training=self.training)
         hidden_states = residual + hidden_states
         return hidden_states
 
