@@ -111,6 +111,8 @@ class SFTDataConfig(BaseDataConfig):
 
     @model_validator(mode="after")
     def validate_subsets_and_splits(self):
+        if self.data_files is not None and (self.subsets is not None or self.splits is not None):
+            raise ValueError("data_files cannot be combined with subsets/splits")
         if self.subsets is not None or self.splits is not None:
             if self.subsets is not None and self.splits is not None:
                 if len(self.subsets) != len(self.splits):
