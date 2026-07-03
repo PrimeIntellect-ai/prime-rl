@@ -51,7 +51,6 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.sequence import get_cp_local_seq_lens
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
 
@@ -126,7 +125,7 @@ def train(config: SFTConfig):
 
             substitute_hf_ulysses_attn(cp_group)
             substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_hybrid_cp, setup_nemotron_h_cp, setup_sparse_mla_cp
+        from prime_rl.utils.cp import setup_model_cp, setup_sparse_mla_cp
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
@@ -153,8 +152,7 @@ def train(config: SFTConfig):
         # Linear-attn / Mamba layers are only configured under ulysses; with ring
         # we'd have already raised above.
         if config.model.cp_style == "ulysses":
-            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
-            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     if config.model.lora is not None:
         multi_run_manager = get_multi_run_manager()
@@ -244,23 +242,30 @@ def train(config: SFTConfig):
         mm_kwargs = micro_batch.get("mm_kwargs")
         mm_type_ids = micro_batch.get("mm_token_type_ids")
 
+        seq_lens_are_global = False
+
         if cp_enabled:
-            total_tokens = input_ids.shape[1]
-            input_ids, position_ids = setup_cp_params(
-                input_ids,
-                position_ids,
-                cp_rank,
-                cp_size,
-                cp_group,
-                seq_lens=seq_lens,
-                cp_style=config.model.cp_style,
+            # CP requires the sequence length to be divisible by cp_size. CatDataset
+            # pads every pack to seq_len; shard_for_cp raises on violations.
+            defer_vlm_cp_to_model = (
+                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
             )
-            seq_lens = get_cp_local_seq_lens(seq_lens, total_tokens, cp_rank, cp_size)
+            if not defer_vlm_cp_to_model:
+                input_ids, position_ids = setup_cp_params(
+                    input_ids,
+                    position_ids,
+                    cp_rank,
+                    cp_size,
+                    cp_group,
+                    seq_lens=seq_lens,
+                    cp_style=config.model.cp_style,
+                )
+            seq_lens_are_global = True
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
         if config.model.lora is not None:
-            set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
+            set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
@@ -279,6 +284,7 @@ def train(config: SFTConfig):
                     temperature=temperature,
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_type_ids,
+                    seq_lens_are_global=seq_lens_are_global,
                 )
                 loss_sum = -out["logprobs"][loss_mask].sum()
             else:
@@ -289,6 +295,7 @@ def train(config: SFTConfig):
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_type_ids,
                     seq_lens=seq_lens,
+                    seq_lens_are_global=seq_lens_are_global,
                 )
                 logits = out["logits"]
                 B, L, V = logits.shape
