@@ -25,7 +25,13 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install dependencies
-        run: uv sync --locked
+        # CPU unit tests need base + dev + the flash-attn extra: `ring_flash_attn`
+        # (a base dep) hard-imports `flash_attn` at module load, and `flash_attn`
+        # ships only via the flash-attn extra (a prebuilt wheel on x86_64, no
+        # build). We deliberately skip the rest of --all-extras (envs,
+        # flash-attn-3, disagg, quack, ...) — ~2-3GB no unit test uses, which was
+        # overflowing the runner's root disk.
+        run: uv sync --extra flash-attn --locked
       - name: Run tests
         env:
           USERNAME_CI: CI_RUNNER
