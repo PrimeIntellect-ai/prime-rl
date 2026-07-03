@@ -130,3 +130,22 @@ async def test_engine_status_error_is_not_accepted():
     finally:
         await client.aclose()
     assert paths == ["/engine/pause_generation", "/engine/resume_generation"]
+
+
+@pytest.mark.asyncio
+async def test_resume_error_does_not_hide_primary_update_error(monkeypatch: pytest.MonkeyPatch):
+    admin = DynamoAdminAPI()
+
+    async def post(_client, method, *_args, **_kwargs):
+        if method == "pause_generation":
+            raise RuntimeError("pause failed")
+        if method == "resume_generation":
+            raise RuntimeError("resume failed")
+        raise AssertionError(method)
+
+    monkeypatch.setattr(admin, "_post", post)
+
+    with pytest.raises(RuntimeError, match="pause failed") as exc:
+        await admin.update_weights([object()], Path("weights"), step=1)
+
+    assert exc.value.__notes__ == ["Dynamo resume_generation cleanup also failed: RuntimeError('resume failed')"]

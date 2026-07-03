@@ -187,6 +187,7 @@ class DynamoAdminAPI:
         self._distributed_updates = True
 
     async def update_weights(self, clients: list[AsyncClient], weight_dir: Path | None, step: int) -> None:
+        primary_error: BaseException | None = None
         try:
             await asyncio.gather(
                 *(self._post(client, "pause_generation", {"mode": "keep", "clear_cache": False}) for client in clients)
@@ -216,5 +217,13 @@ class DynamoAdminAPI:
             await asyncio.gather(
                 *(self._post(client, method, body, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S) for client in clients)
             )
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            await asyncio.gather(*(self._post(client, "resume_generation") for client in clients))
+            try:
+                await asyncio.gather(*(self._post(client, "resume_generation") for client in clients))
+            except BaseException as exc:
+                if primary_error is None:
+                    raise
+                primary_error.add_note(f"Dynamo resume_generation cleanup also failed: {exc!r}")
