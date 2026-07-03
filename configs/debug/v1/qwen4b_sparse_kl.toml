@@ -1,0 +1,51 @@
+# Fast repro to check whether sparse_filesystem weight sync makes trainer<->inference Mismatch KL
+# drift upward over training (observed on glm45air-scaleswe: 0.0002 -> 0.0022 over ~180 steps,
+# while the nccl baseline stayed flat). Qwen3-4B (dense — removes the MoE/router variable) on
+# gsm8k, single node, tiny steps, so we can watch Mismatch KL over hundreds of steps in minutes.
+# Pair with qwen4b_nccl_kl.toml (identical but nccl broadcast) as the control.
+
+max_steps = 300
+seq_len = 4096
+output_dir = "outputs-qwen4b-sparse"
+
+[slurm]
+job_name = "qwen4b-sparse-kl"
+project_dir = "."
+partition = "all"
+
+[deployment]
+type = "single_node"
+num_train_gpus = 4
+num_infer_gpus = 4
+
+[wandb]
+project = "swe-ablations"
+name = "qwen4b-sparse-kl"
+
+[weight_broadcast]
+type = "sparse_filesystem"
+
+[model]
+name = "Qwen/Qwen3-4B"
+
+[trainer]
+
+[trainer.model]
+impl = "custom"
+
+[trainer.optim]
+type = "muon"
+
+[orchestrator]
+batch_size = 128
+group_size = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.train.env]]
+taskset = { id = "gsm8k-v1", split = "train" }
+harness = { id = "default", runtime = { type = "subprocess" } }
+
+[inference.parallel]
+tp = 4
