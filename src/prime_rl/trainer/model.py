@@ -1225,6 +1225,7 @@ def forward(
     # not a renderer/processor output.
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
+    seq_lens: Int[Tensor, "segments"] | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
     kwargs = {
@@ -1248,6 +1249,10 @@ def forward(
             kwargs["position_ids"] = position_ids
     else:
         kwargs["position_ids"] = position_ids
+
+    if isinstance(model, PreTrainedModelPrimeRL):
+        # Universal contract: every custom model declares the typed seq_lens param.
+        kwargs["seq_lens"] = seq_lens
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts

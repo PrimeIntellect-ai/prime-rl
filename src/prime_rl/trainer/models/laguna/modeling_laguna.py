@@ -345,6 +345,7 @@ class LagunaModel(LagunaPreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
+        seq_lens: torch.LongTensor | None = None,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -354,7 +355,12 @@ class LagunaModel(LagunaPreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
+        flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
+        if seq_lens is not None and seq_lens.numel() > 1 and not flash_attn_enabled:
+            # SDPA/eager attention has no varlen support and would attend across
+            # packed document boundaries.
+            raise ValueError("Packed Laguna batches require flash attention")
+        if flash_attn_enabled:
             cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
             causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)
@@ -433,6 +439,7 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
+        seq_lens: torch.LongTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom Laguna"
@@ -444,6 +451,7 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
+            seq_lens=seq_lens,
         )
         hidden_states = outputs.last_hidden_state
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep

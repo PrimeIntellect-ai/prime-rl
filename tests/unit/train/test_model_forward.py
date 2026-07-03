@@ -2,8 +2,10 @@ from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
+from transformers import PretrainedConfig
 
 from prime_rl.trainer.model import forward
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 
 
 class _CaptureModel(nn.Module):
@@ -14,6 +16,19 @@ class _CaptureModel(nn.Module):
 
     def forward(self, **kwargs):
         self.kwargs = kwargs
+        input_ids = kwargs["input_ids"]
+        return {"logits": torch.zeros(*input_ids.shape, 4)}
+
+
+class _PrimeCaptureModel(PreTrainedModelPrimeRL):
+    config_class = PretrainedConfig
+
+    def __init__(self):
+        super().__init__(PretrainedConfig())
+        self.kwargs = None
+
+    def forward(self, seq_lens: torch.Tensor | None = None, **kwargs):
+        self.kwargs = {**kwargs, "seq_lens": seq_lens}
         input_ids = kwargs["input_ids"]
         return {"logits": torch.zeros(*input_ids.shape, 4)}
 
@@ -81,3 +96,27 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
 
     assert model.kwargs is not None
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
+
+
+def test_forward_does_not_leak_seq_lens_to_generic_text_models():
+    model = _CaptureModel(SimpleNamespace(model_type="qwen3"))
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
+    seq_lens = torch.tensor([2, 2])
+
+    forward(model, input_ids, position_ids, seq_lens=seq_lens)
+
+    assert model.kwargs is not None
+    assert "seq_lens" not in model.kwargs
+
+
+def test_forward_passes_typed_seq_lens_to_custom_models():
+    model = _PrimeCaptureModel()
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
+    seq_lens = torch.tensor([2, 2])
+
+    forward(model, input_ids, position_ids, seq_lens=seq_lens)
+
+    assert model.kwargs is not None
+    torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
