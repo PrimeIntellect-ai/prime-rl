@@ -26,7 +26,7 @@ from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeRotaryEmbedding,
     normalize_qwen3_5_attn_implementation,
 )
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 
 class Qwen3_5GatedSDPAAttention(Qwen3_5MoeGatedSDPAAttention):
@@ -196,6 +196,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        seq_lens: Optional[torch.LongTensor] = None,
     ) -> BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -210,6 +211,13 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         if flash_attn_enabled:
             cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        elif seq_lens is not None:
+            # seq_lens is only populated for batch size 1 (see cat_collate), so a
+            # single boundary list covers the whole packed row.
+            seq_lens = seq_lens.to(device=inputs_embeds.device)
+            if seq_lens.numel() > 1 and "full_attention" in self.config.layer_types:
+                raise ValueError("Packed Qwen3.5 batches with full_attention layers require flash attention")
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens, total_tokens=inputs_embeds.shape[1])
         else:
             cu_seqlens = None
             max_seqlen = None
@@ -254,6 +262,15 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
     def get_decoder(self):
         return self.model
 
+    def prime_forward_kwargs(
+        self,
+        *,
+        seq_lens: Tensor | None = None,
+    ) -> dict[str, object]:
+        if seq_lens is None:
+            return {}
+        return {"seq_lens": seq_lens}
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -265,6 +282,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Union[torch.Tensor, None] = None,
+        seq_lens: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5 for now"
@@ -280,6 +298,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
+            seq_lens=seq_lens,
         )
 
         hidden_states = outputs.last_hidden_state
