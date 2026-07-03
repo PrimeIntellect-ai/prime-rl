@@ -287,6 +287,19 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_qwen3_5_stack_flash(self):
+        is_qwen3_5 = "Qwen3.5" in self.model.name or "qwen3_5" in self.model.name.lower()
+        is_flash = self.model.attn in ("flash_attention_2", "flash_attention_3", "fa4")
+        if is_qwen3_5 and self.model.impl != "hf" and is_flash:
+            if self.data.pack_function == "stack":
+                raise ValueError("Qwen3.5 custom flash attention does not support pack_function='stack'; use 'cat'")
+            if self.val is not None and self.val.data.pack_function == "stack":
+                raise ValueError(
+                    "Qwen3.5 custom flash attention does not support pack_function='stack' for validation data; use 'cat'"
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_cp_seq_len(self):
         if self.model.cp > 1:
             if self.data.seq_len % self.model.cp != 0:
