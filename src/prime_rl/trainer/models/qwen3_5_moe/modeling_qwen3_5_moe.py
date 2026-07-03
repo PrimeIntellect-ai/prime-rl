@@ -241,15 +241,17 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         local_seq_len: int,
         device: torch.device,
         cu_seqlens: torch.LongTensor | None = None,
+        cu_seqlens_are_global: bool = False,
     ) -> "FLACPContext | None":
         """Build fla CP context from the local (sharded) sequence length."""
         cp_group = getattr(self, "cp_group", None)
         if cp_group is None or build_cp_context is None:
             return None
-        global_seq_len = local_seq_len * self.cp_world_size
-        if cu_seqlens is not None and int(cu_seqlens[-1].item()) == global_seq_len:
+        # Provenance flag rather than reading cu_seqlens back (per-layer CPU-GPU sync).
+        if cu_seqlens is not None and cu_seqlens_are_global:
             global_cu_seqlens = cu_seqlens.to(device=device, dtype=torch.int32)
         else:
+            global_seq_len = local_seq_len * self.cp_world_size
             global_cu_seqlens = torch.tensor([0, global_seq_len], dtype=torch.int32, device=device)
         return build_cp_context(
             cu_seqlens=global_cu_seqlens,
@@ -261,6 +263,7 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.LongTensor | None = None,
+        cu_seqlens_are_global: bool = False,
     ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -269,7 +272,7 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
-        cp_context = self._build_cp_context(seq_len, hidden_states.device, cu_seqlens)
+        cp_context = self._build_cp_context(seq_len, hidden_states.device, cu_seqlens, cu_seqlens_are_global)
 
         # Causal conv1d — must reset at sequence boundaries for packed batches,
         # otherwise the kernel-1 left pad leaks state across sequences.
@@ -650,13 +653,16 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        cu_seqlens_are_global: bool = False,
     ) -> torch.FloatTensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 
         # Token mixer
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(hidden_states, cu_seqlens=cu_seqlens)
+            hidden_states = self.linear_attn(
+                hidden_states, cu_seqlens=cu_seqlens, cu_seqlens_are_global=cu_seqlens_are_global
+            )
         elif self.layer_type == "full_attention":
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,
@@ -936,6 +942,8 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
+        cu_seqlens_are_global = seq_lens_are_global and seq_lens is not None
+
         for layer_idx, decoder_layer in enumerate(self.layers):
             routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
             hidden_states = decoder_layer(
@@ -944,6 +952,7 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
                 routed_experts=routed_experts_layer,
+                cu_seqlens_are_global=cu_seqlens_are_global,
             )
 
         hidden_states = self.norm(hidden_states)

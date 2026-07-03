@@ -120,12 +120,15 @@ class Qwen3_5DecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        cu_seqlens_are_global: bool = False,
     ) -> torch.FloatTensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(hidden_states, cu_seqlens=cu_seqlens)
+            hidden_states = self.linear_attn(
+                hidden_states, cu_seqlens=cu_seqlens, cu_seqlens_are_global=cu_seqlens_are_global
+            )
         else:
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,
@@ -272,12 +275,15 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
+        cu_seqlens_are_global = seq_lens_are_global and seq_lens is not None
+
         for decoder_layer in self.layers:
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                cu_seqlens_are_global=cu_seqlens_are_global,
             )
 
         hidden_states = self.norm(hidden_states)
