@@ -211,6 +211,80 @@ def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
     assert config.orchestrator.model.client.dp_rank_count == 2
 
 
+def test_inference_backend_defaults_to_vllm():
+    assert InferenceConfig().backend.type == "vllm"
+
+
+def test_dynamo_disaggregated_config_is_local_and_enables_prefix_caching():
+    config = InferenceConfig.model_validate(
+        {
+            "backend": {"type": "dynamo"},
+            "deployment": {
+                "type": "disaggregated",
+                "gpus_per_node": 1,
+                "num_prefill_nodes": 2,
+                "num_decode_nodes": 2,
+                "num_prefill_replicas": 2,
+                "num_decode_replicas": 2,
+            },
+        }
+    )
+
+    assert config.enable_prefix_caching is True
+    assert config.use_pd_kv_transfer is True
+
+
+def test_dynamo_disaggregated_config_rejects_disabled_prefix_caching():
+    with pytest.raises(ValidationError, match="requires prefix caching"):
+        InferenceConfig.model_validate(
+            {
+                "backend": {"type": "dynamo"},
+                "enable_prefix_caching": False,
+                "deployment": {"type": "disaggregated"},
+            }
+        )
+
+
+def test_native_disaggregated_config_still_requires_slurm():
+    with pytest.raises(ValidationError, match="Must use SLURM"):
+        InferenceConfig.model_validate({"deployment": {"type": "disaggregated"}})
+
+
+def test_single_node_dynamo_disaggregated_keeps_per_worker_dp_and_sets_nccl_world_size():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {
+                "backend": {"type": "dynamo"},
+                "parallel": {"tp": 1},
+                "deployment": {
+                    "type": "disaggregated",
+                    "gpus_per_node": 1,
+                    "num_prefill_nodes": 2,
+                    "num_decode_nodes": 2,
+                    "num_prefill_replicas": 2,
+                    "num_decode_replicas": 2,
+                },
+            },
+            "weight_broadcast": {"type": "nccl"},
+            "deployment": {
+                "type": "single_node",
+                "gpus_per_node": 8,
+                "num_train_gpus": 4,
+                "num_infer_gpus": 4,
+            },
+        }
+    )
+
+    assert config.inference is not None
+    assert config.inference.parallel.dp == 1
+    assert config.orchestrator.model.client.admin_api == "dynamo"
+    assert config.orchestrator.model.client.dp_rank_count == 1
+    assert config.trainer.weight_broadcast.inference_world_size == 4
+    assert config.orchestrator.weight_broadcast.inference_world_size == 4
+
+
 def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
     config = RLConfig.model_validate(
         {

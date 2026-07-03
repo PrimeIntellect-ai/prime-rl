@@ -304,10 +304,10 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     """Extra environment variables exported only on decode nodes."""
 
     prefill_vllm_overrides: dict[str, Any] = {}
-    """Extra vLLM config options merged into --vllm-extra only for prefill ranks (SLURM only)."""
+    """Extra vLLM config options merged into the resolved config only for prefill workers."""
 
     decode_vllm_overrides: dict[str, Any] = {}
-    """Extra vLLM config options merged into --vllm-extra only for decode ranks (SLURM only)."""
+    """Extra vLLM config options merged into the resolved config only for decode workers."""
 
     @property
     def num_prefill_nodes(self) -> int:
@@ -328,7 +328,24 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
+class VllmInferenceBackendConfig(BaseConfig):
+    type: Literal["vllm"] = "vllm"
+
+
+class DynamoInferenceBackendConfig(BaseConfig):
+    type: Literal["dynamo"] = "dynamo"
+
+
+InferenceBackendConfig: TypeAlias = Annotated[
+    VllmInferenceBackendConfig | DynamoInferenceBackendConfig,
+    Field(discriminator="type"),
+]
+
+
 class InferenceConfig(BaseConfig):
+    backend: InferenceBackendConfig = VllmInferenceBackendConfig()
+    """Serving backend. Existing configs default to Prime's native vLLM launcher."""
+
     server: ServerConfig = ServerConfig()
 
     model: ModelConfig = Field(default_factory=ModelConfig)
@@ -428,8 +445,29 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
-        if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
+        if self.deployment.type == "multi_node" and self.slurm is None:
+            raise ValueError("Must use SLURM for multi-node deployment.")
+        if self.deployment.type == "disaggregated" and self.slurm is None and self.backend.type != "dynamo":
             raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_dynamo_backend(self):
+        if self.backend.type != "dynamo":
+            return self
+        if self.slurm is not None:
+            raise ValueError(
+                "Dynamo is launched locally or through a DynamoGraphDeployment, not Prime's SLURM template."
+            )
+        if self.deployment.type == "multi_node":
+            raise ValueError("Dynamo multi-node inference must use a DynamoGraphDeployment.")
+        router = getattr(self.deployment, "router", None)
+        if router is not None and router.type == "llm-d":
+            raise ValueError("The Dynamo backend owns request routing and cannot use the llm-d router.")
+        if self.deployment.type == "disaggregated":
+            if self.enable_prefix_caching is False:
+                raise ValueError("Dynamo disaggregated inference requires prefix caching for exact KV-aware routing.")
+            self.enable_prefix_caching = True
         return self
 
     @model_validator(mode="after")

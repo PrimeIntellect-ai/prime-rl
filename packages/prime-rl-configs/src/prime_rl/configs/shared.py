@@ -147,6 +147,12 @@ class ClientConfig(BaseConfig):
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in disaggregated P/D deployments where the router must not handle admin traffic."""
 
+    admin_api: Literal["vllm", "dynamo"] = "vllm"
+    """Admin protocol used for health and weight updates. Auto-derived from the local inference backend."""
+
+    rl_base_url: list[str] | None = None
+    """Dynamo RL worker-discovery URLs. When omitted, they are derived from the frontend URL or ``DYN_RL_DISCOVERY_URL``."""
+
     elastic: ElasticConfig | None = None
     """Elastic inference pool config for DNS-based service discovery. When set, ``base_url`` is ignored and inference servers are discovered dynamically via DNS."""
 

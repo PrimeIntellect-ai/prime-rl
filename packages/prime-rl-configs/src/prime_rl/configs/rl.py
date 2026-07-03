@@ -534,7 +534,23 @@ class RLConfig(BaseConfig):
             # fill up inference capacity with dp ranks
             if self.inference is not None:
                 num_infer_gpus = self.deployment.num_infer_gpus
-                if num_infer_gpus != self.inference.parallel.dp * self.inference.parallel.tp:
+                is_dynamo_disaggregated = (
+                    self.inference.backend.type == "dynamo" and self.inference.deployment.type == "disaggregated"
+                )
+                if is_dynamo_disaggregated:
+                    infer_deploy = self.inference.deployment
+                    expected_infer_gpus = infer_deploy.num_nodes * infer_deploy.gpus_per_node
+                    if num_infer_gpus != expected_infer_gpus:
+                        raise ValueError(
+                            "deployment.num_infer_gpus must equal the Dynamo prefill/decode topology GPU count "
+                            f"({expected_infer_gpus}), got {num_infer_gpus}."
+                        )
+                    if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
+                        assert self.trainer.weight_broadcast.type == "nccl"
+                        self.trainer.weight_broadcast.inference_world_size = expected_infer_gpus
+                        assert self.orchestrator.weight_broadcast.type == "nccl"
+                        self.orchestrator.weight_broadcast.inference_world_size = expected_infer_gpus
+                elif num_infer_gpus != self.inference.parallel.dp * self.inference.parallel.tp:
                     assert num_infer_gpus % self.inference.parallel.tp == 0, (
                         "Number of inference GPUs must be divisible by the tensor parallel size"
                     )
@@ -675,8 +691,14 @@ class RLConfig(BaseConfig):
         if self.inference is None:
             return self
         client = self.orchestrator.model.client
+        if "admin_api" in client.model_fields_set and client.admin_api != self.inference.backend.type:
+            raise ValueError(
+                "orchestrator.model.client.admin_api conflicts with inference.backend.type; "
+                "configure the backend only under inference."
+            )
+        client.admin_api = self.inference.backend.type
         if "dp_rank_count" not in client.model_fields_set:
-            if self.deployment.type == "multi_node":
+            if self.inference.backend.type == "dynamo" or self.deployment.type == "multi_node":
                 client.dp_rank_count = 1
             else:
                 client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
