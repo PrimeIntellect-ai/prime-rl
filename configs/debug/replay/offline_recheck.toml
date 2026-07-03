@@ -38,11 +38,6 @@ harness = { id = "null", runtime = { type = "subprocess" } }
 name = "replay-recheck"
 ratio = 1.0
 harness = { id = "null", runtime = { type = "subprocess" } }
-# Recheck seeds carry the whole source conversation, so the replay env gets more
-# input headroom than a fresh rollout needs (capped to fit seq_len).
-max_input_tokens = 1536
-max_total_tokens = 2048
-
 [orchestrator.train.env.taskset]
 id = "replay-recheck-v1"
 # Placeholder: a prior run's saved-rollout dir (or the run dir containing it).

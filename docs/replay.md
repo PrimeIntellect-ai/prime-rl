@@ -51,9 +51,6 @@ harness = { id = "null", runtime = { type = "subprocess" } }
 name = "replay-recheck"
 ratio = 1.0
 harness = { id = "null", runtime = { type = "subprocess" } }
-# Recheck seeds carry the whole source conversation, so give the env input headroom.
-max_input_tokens = 1536
-max_total_tokens = 2048
 
 [orchestrator.train.env.taskset]
 id = "replay-recheck-v1"
@@ -91,7 +88,7 @@ A derivation is a thin package over the base, exactly like `swebench-pro-v1` ove
 - **One derivation per env entry.** Env-level settings (harness runtime, token budgets, `ratio`) are per-env — mix derivations with multiple env entries.
 - **Harness: match the source.** Replay resumes conversations — run the replay env under the same harness the source env used, so the resumed rollout has the same scaffold and harness-side tools as the original. The harness must support message-prompt seeding (`SUPPORTS_MESSAGE_PROMPT`; the built-in `default` and `null` harnesses do — string-prompt CLI harnesses can't be seeded with a prior conversation).
 - **Replay envs need explicit ratios.** Without ratios, envs are weighted by task count — an online replay env advertises a single virtual task and would effectively never be drawn. Setting `ratio` on the replay env forces ratios on every train env (the all-or-none rule), which is the intended, explicit state.
-- **Set explicit token budgets.** Replay seeds carry compaction summaries, tool-call prefixes, or whole source conversations, so replay prompts are far longer than a fresh task's. Set `max_input_tokens` / `max_total_tokens` on the replay env entry so seeds fit `seq_len` instead of truncating mid-rollout.
+- **Token budgets default from `seq_len`.** Every v1 train env's `max_total_tokens` defaults to the run's `seq_len` at config-resolve time, so replayed seeds stop instead of producing samples that can't fit training. Override `max_total_tokens` (or set it to `"None"`) per env entry to opt out.
 - **Long continue tasks age off-policy.** A continue task resumes deep into a long trajectory and keeps going, so its rollout can span many trainer steps and be discarded by `orchestrator.max_off_policy_steps` (default 8). If a continue env shows sustained `errored_rollouts`, raise `max_off_policy_steps` or shorten the tasks.
 - **`source_envs` needs the stamp.** The filter matches `info.prime_rl.env_name`, which prime-rl's rollout writer stamps into every saved record. Records without the stamp (rollout files from other producers) never match an explicit list — leave `source_envs` unset to replay them.
 - **`allow_container` is off for a reason.** The trace records the conversation, not the container: for a containerized source task, replay provisions a fresh container from the same image, so any filesystem state the transcript references is gone and the model resumes in a reset world — especially acute for `anchor = "tool-call"`, which resumes mid-trajectory. Enable it only when the task's image is self-contained enough for that to be fair — and give the replay env's harness a container runtime (docker/prime): with a subprocess runtime every imaged request fails at episode construction.

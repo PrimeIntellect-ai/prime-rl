@@ -748,7 +748,7 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_config(self):
-        """Set vLLM sampling defaults + legacy env kwargs on each train env from top-level fields."""
+        """Set vLLM sampling defaults + token budgets on each train env from top-level fields."""
         for env in self.train.env:
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
@@ -761,4 +761,10 @@ class OrchestratorConfig(BaseConfig):
                 # v0 env: cap per-turn response tokens to the training budget (the legacy
                 # bridge applies extra_env_kwargs via env.set_kwargs).
                 env.extra_env_kwargs["max_seq_len"] = self.seq_len
+            elif "max_total_tokens" not in env.model_fields_set:
+                # v1 env: cap each rollout's total (prompt + completion) tokens to the
+                # training budget, so long-prompt tasks (e.g. replayed conversations)
+                # stop instead of producing samples that can't fit seq_len. Explicit
+                # values (including "None" = unlimited) are respected.
+                env.max_total_tokens = self.seq_len
         return self
