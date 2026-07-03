@@ -285,6 +285,46 @@ def test_trainer_rejects_declared_vlm_cp():
         TrainerConfig.model_validate(config)
 
 
+def test_trainer_allows_vlm_cp_with_ulysses_custom_impl():
+    config = TrainerConfig.model_validate(
+        {
+            "model": {
+                "cp": 2,
+                "cp_style": "ulysses",
+                "impl": "custom",
+                "optimization_dtype": "bfloat16",
+                "reduce_dtype": "bfloat16",
+                "vlm": {
+                    "vision_encoder_attr": "model.visual",
+                    "language_model_attr": "model.language_model",
+                },
+            },
+        }
+    )
+
+    assert config.model.vlm is not None
+    assert config.model.cp == 2
+
+
+def test_trainer_rejects_vlm_cp_with_hf_impl():
+    with pytest.raises(ValidationError, match="custom model implementation"):
+        TrainerConfig.model_validate(
+            {
+                "model": {
+                    "cp": 2,
+                    "cp_style": "ulysses",
+                    "impl": "hf",
+                    "optimization_dtype": "bfloat16",
+                    "reduce_dtype": "bfloat16",
+                    "vlm": {
+                        "vision_encoder_attr": "model.visual",
+                        "language_model_attr": "model.language_model",
+                    },
+                },
+            }
+        )
+
+
 def test_trainer_allows_text_only_cp():
     config = TrainerConfig.model_validate({"model": {"cp": 2}})
 

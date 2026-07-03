@@ -380,22 +380,34 @@ def train(config: TrainerConfig):
 
             labels = shift_tensor_left(input_ids)
 
-            # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
-            if cp_enabled and mm_kwargs is not None:
-                raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
+            seq_lens_are_pre_shard = False
+            # MRoPE MM batches keep global input_ids/position_ids: the vision
+            # encoder and image-embed merge need the full sequence, so the model
+            # shards after merge (as in SFT).
+            defer_vlm_cp_to_model = (
+                cp_enabled
+                and mm_kwargs is not None
+                and "image_grid_thw" in mm_kwargs
+                and config.model.cp_style == "ulysses"
+            )
 
             if cp_enabled:
-                input_ids, forward_position_ids = setup_cp_params(
-                    input_ids,
-                    position_ids,
-                    cp_rank,
-                    cp_size,
-                    cp_group,
-                    seq_lens=seq_lens,
-                    cp_style=config.model.cp_style,
-                )
+                if not defer_vlm_cp_to_model:
+                    input_ids, forward_position_ids = setup_cp_params(
+                        input_ids,
+                        position_ids,
+                        cp_rank,
+                        cp_size,
+                        cp_group,
+                        seq_lens=seq_lens,
+                        cp_style=config.model.cp_style,
+                    )
+                else:
+                    forward_position_ids = position_ids
+                seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
-                if routed_experts is not None:
+                if routed_experts is not None and not defer_vlm_cp_to_model:
+                    # The model shards routed_experts itself when CP is deferred.
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
                 forward_position_ids = position_ids
@@ -403,7 +415,8 @@ def train(config: TrainerConfig):
             if config.model.lora:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
                 if cp_enabled:
-                    chunk_size = input_ids.shape[1]
+                    # input_ids stays global when VLM CP defers sharding to the model.
+                    chunk_size = input_ids.shape[1] // cp_size if defer_vlm_cp_to_model else input_ids.shape[1]
                     # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
                     cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
                     adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
@@ -429,7 +442,7 @@ def train(config: TrainerConfig):
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
-                    seq_lens_are_pre_shard=cp_enabled,
+                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                     routed_experts=routed_experts,
                 )
 
