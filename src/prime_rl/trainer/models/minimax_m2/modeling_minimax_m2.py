@@ -167,12 +167,15 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
+        seq_lens_are_global: bool = False,
     ) -> BaseModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`, *optional*):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
+        seq_lens_are_global (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -239,11 +242,14 @@ class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel, GenerationMixin):
         temperature: Union[torch.Tensor, None] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
+        seq_lens_are_global: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`, *optional*):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
+        seq_lens_are_global (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
             Indices of input tokens in the KV cache. Accepted only for HuggingFace API
             compatibility — prime-rl asserts `use_cache is None` since training does not
@@ -270,6 +276,7 @@ class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
+            seq_lens_are_global=seq_lens_are_global,
         )
 
         hidden_states = outputs.last_hidden_state

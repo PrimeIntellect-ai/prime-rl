@@ -346,6 +346,7 @@ class LagunaModel(LagunaPreTrainedModel):
         inputs_embeds: torch.FloatTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         seq_lens: torch.LongTensor | None = None,
+        seq_lens_are_global: bool = False,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -440,6 +441,7 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
         temperature: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         seq_lens: torch.LongTensor | None = None,
+        seq_lens_are_global: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom Laguna"
@@ -452,6 +454,7 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
+            seq_lens_are_global=seq_lens_are_global,
         )
         hidden_states = outputs.last_hidden_state
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
