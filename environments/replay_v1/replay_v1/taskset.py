@@ -4,82 +4,51 @@ Reads a run's saved rollout files (``<output>/rollouts/step_*/train_rollouts.jso
 plain WireTrace lines) and materializes one derived task kind per env entry, chosen by
 ``derivation.type``:
 
-- ``continue``: resume from a context-compaction point — the seed is the post-compaction
-  prompt (system + summary user message) recovered from the trace's message graph; scored
-  by the original taskset.
-- ``recheck``: the finished conversation plus an appended check-your-work turn; scored by
-  the original taskset.
-- ``judge``: a rendered transcript and the question "was this correct?"; the reward is
-  whether the verdict matches the reward the rollout actually received. Self-contained —
-  no original taskset needed.
+- ``continue``: resume a source rollout mid-way — from a context-compaction point (the
+  seed is the post-compaction prompt recovered from the trace's message graph) or right
+  after a tool result (``anchor = "tool-call"``).
+- ``recheck``: the finished conversation plus an appended check-your-work turn.
+
+Both are scored by the original (``inner``) taskset, which also provides their tools,
+setup, and finalize — so run replay envs under the source env's harness (it must
+support message prompts).
 
 Tasks bind lazily: ``load_tasks`` returns stubs fixing the index range and
 ``resolve_task`` reads one saved line per request. Online buffers (``buffer_dir =
 "self"`` under prime-rl) sample a fresh source rollout per request and therefore force
 group dispatch, so all GRPO group members share one source.
-
-Run continue/recheck under the source env's harness (it must support message prompts);
-judge under the tool-less ``null`` chat-loop harness.
 """
 
 import asyncio
 import logging
-import re
 from collections.abc import Mapping
 from typing import Annotated, Literal
 
 from pydantic import Field, PrivateAttr, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
-from verifiers.v1 import Runtime, Task, Taskset, TasksetConfig, Toolset, Trace, metric, reward, task_type
+from verifiers.v1 import Runtime, Task, Taskset, TasksetConfig, Toolset, Trace, metric, task_type
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.loaders import narrow_plugin_field, taskset_class, taskset_config_type
 from verifiers.v1.state import State, state_cls
 
 from replay_v1.buffer import ReplayBuffer
-from replay_v1.surgery import (
-    build_children,
-    continue_seed,
-    main_tree,
-    recheck_seed,
-    render_transcript,
-    unwrap_source_task,
-)
+from replay_v1.surgery import build_children, continue_seed, main_tree, recheck_seed, unwrap_source_task
 
 logger = logging.getLogger(__name__)
 
-ReplayKind = Literal["continue", "recheck", "judge"]
+ReplayKind = Literal["continue", "recheck"]
 
 RECHECK_INSTRUCTION = (
     "Carefully check your work above. Re-verify the reasoning and the final answer, and "
     "fix any mistakes you find. Then state your final answer."
 )
 
-JUDGE_INSTRUCTION = (
-    "Below is the transcript of an AI assistant attempting a task.\n\n"
-    "{transcript}\n\n"
-    "Did the assistant solve the task correctly? Analyze the transcript, then answer on "
-    "the final line with exactly `VERDICT: CORRECT` or `VERDICT: INCORRECT`."
-)
-
-_VERDICT_RE = re.compile(r"VERDICT:\s*(CORRECT|INCORRECT)", re.IGNORECASE)
-
-
-def parse_verdict(reply: str) -> bool | None:
-    """The model's verdict: the last line carrying exactly one verdict token. Lines
-    quoting both options (an echo of the instruction) are not answers and are skipped;
-    no unambiguous verdict line means unparseable (None)."""
-    for line in reversed(reply.splitlines()):
-        verdicts = {match.upper() for match in _VERDICT_RE.findall(line)}
-        if len(verdicts) == 1:
-            return verdicts.pop() == "CORRECT"
-    return None
-
 
 # ------------------------------------------------------------------ derivations
 
 
-class _DelegatingDerivationConfig(BaseConfig):
-    """Shared shape of the derivations scored by the original taskset."""
+class _DerivationConfig(BaseConfig):
+    """Shared shape of the derivations — all scored by the original taskset."""
 
     inner: SerializeAsAny[TasksetConfig]
     """The original taskset's config — it scores the derived rollouts and provides
@@ -99,13 +68,19 @@ class _DelegatingDerivationConfig(BaseConfig):
         return data
 
 
-class ContinueConfig(_DelegatingDerivationConfig):
-    """Resume sources from their context-compaction points (one task per compaction)."""
+class ContinueConfig(_DerivationConfig):
+    """Resume sources mid-way and let the model finish the task from there."""
 
     type: Literal["continue"] = "continue"
 
+    anchor: Literal["compaction", "tool-call"] = "compaction"
+    """Where to resume: `"compaction"` seeds the post-compaction prompt of each
+    compaction point (one task per compaction; only compacted rollouts are sources).
+    `"tool-call"` seeds the conversation up to a tool result and resumes right after it
+    (one deterministically sampled resume point per source rollout)."""
 
-class RecheckConfig(_DelegatingDerivationConfig):
+
+class RecheckConfig(_DerivationConfig):
     """Append a check-your-work turn to finished sources and re-roll."""
 
     type: Literal["recheck"] = "recheck"
@@ -114,25 +89,7 @@ class RecheckConfig(_DelegatingDerivationConfig):
     """The user turn appended to the finished conversation."""
 
 
-class JudgeConfig(BaseConfig):
-    """Ask the model whether a source rollout was correct; reward = the verdict matches
-    the reward that rollout actually received. Self-contained — no original taskset."""
-
-    type: Literal["judge"] = "judge"
-
-    instruction: str = JUDGE_INSTRUCTION
-    """The prompt template; `{transcript}` is replaced with the rendered rollout."""
-
-    success_threshold: float = 0.5
-    """The source rollout counts as correct when its reward exceeds this."""
-
-    max_transcript_chars: int = 60000
-    """Total transcript budget, sized to the model's context; over it, middle messages
-    are elided (the task statement and the trailing conversation are kept). Single
-    messages are capped at 1/20 of it, so one huge tool result can't eat the budget."""
-
-
-DerivationConfig = Annotated[ContinueConfig | RecheckConfig | JudgeConfig, Field(discriminator="type")]
+DerivationConfig = Annotated[ContinueConfig | RecheckConfig, Field(discriminator="type")]
 
 
 # ------------------------------------------------------------------ config
@@ -148,7 +105,7 @@ class ReplayTasksetConfig(TasksetConfig):
     online buffer over the run's freshly written rollouts)."""
 
     derivation: DerivationConfig
-    """The derived task this env serves: `{ type = "continue" | "recheck" | "judge", ... }`.
+    """The derived task this env serves: `{ type = "continue" | "recheck", ... }`.
     One derivation per env entry — mix them (and set their ratios) with multiple
     `[[orchestrator.train.env]]` entries."""
 
@@ -183,7 +140,7 @@ class ReplayTask(Task):
     `load_tasks`) carry `prompt=None` and an empty `source_task`; `resolve_task`
     materializes the real thing."""
 
-    kind: ReplayKind = "judge"
+    kind: ReplayKind = "recheck"
     source_task: dict = {}
     """The source rollout's saved task dict, verbatim — rebuilt into the original typed
     task for scoring/tool delegation."""
@@ -202,35 +159,31 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
     def __init__(self, config: ReplayTasksetConfig) -> None:
         super().__init__(config)
         self.derivation = config.derivation
-        self.inner: Taskset | None = None
-        self.inner_task_type: type[Task] = Task
-        inner_config = getattr(self.derivation, "inner", None)
-        if inner_config is not None:
-            self.inner = taskset_class(inner_config.id)(inner_config)
-            if discover_decorated(self.inner, "group_reward"):
-                raise ValueError(
-                    f"taskset {inner_config.id!r} defines @group_reward(s); replay cannot delegate group "
-                    "scoring (the group would score against the replay task, not the original)"
-                )
-            if state_cls(type(self.inner)) is not State:
-                raise ValueError(
-                    f"taskset {inner_config.id!r} uses a custom State; replay rollouts build the base "
-                    "State, so its typed state would never be populated"
-                )
-            if type(self.inner).user is not Taskset.user:
-                raise ValueError(f"taskset {inner_config.id!r} defines a user simulator; replay does not support one")
-            self.inner_task_type = task_type(inner_config.id)
-            self.NEEDS_CONTAINER = self.inner.NEEDS_CONTAINER
+        inner_config = self.derivation.inner
+        self.inner: Taskset = taskset_class(inner_config.id)(inner_config)
+        if discover_decorated(self.inner, "group_reward"):
+            raise ValueError(
+                f"taskset {inner_config.id!r} defines @group_reward(s); replay cannot delegate group "
+                "scoring (the group would score against the replay task, not the original)"
+            )
+        if state_cls(type(self.inner)) is not State:
+            raise ValueError(
+                f"taskset {inner_config.id!r} uses a custom State; replay rollouts build the base "
+                "State, so its typed state would never be populated"
+            )
+        if type(self.inner).user is not Taskset.user:
+            raise ValueError(f"taskset {inner_config.id!r} defines a user simulator; replay does not support one")
+        self.inner_task_type = task_type(inner_config.id)
+        self.NEEDS_CONTAINER = self.inner.NEEDS_CONTAINER
         # Online buffers sample a fresh source per request; the whole GRPO group must
         # share that draw, so all its rollouts must arrive as one run_group request.
         self.REQUIRES_GROUP_ROLLOUTS = config.online
         self.buffer = ReplayBuffer(
             buffer_dir=config.buffer_dir,
-            mode=self.derivation.type,
+            anchor=getattr(self.derivation, "anchor", None),
             online=config.online,
             source_envs=config.source_envs,
-            allow_container=getattr(self.derivation, "allow_container", False),
-            success_threshold=getattr(self.derivation, "success_threshold", 0.5),
+            allow_container=self.derivation.allow_container,
         )
 
     # ------------------------------------------------------------------ tasks
@@ -276,24 +229,16 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
         record = self.buffer.read_record(candidate)
         nodes = record["nodes"]
         if derivation.type == "continue":
-            prompt = continue_seed(nodes, candidate.fork_node)
+            prompt = continue_seed(nodes, candidate.anchor_node)
         else:
             children, _ = build_children(nodes)
-            tree = main_tree(children)
-            if derivation.type == "recheck":
-                prompt = recheck_seed(nodes, children, tree, derivation.instruction)
-            else:
-                total = derivation.max_transcript_chars
-                transcript = render_transcript(nodes, children, tree, total // 20, total)
-                prompt = derivation.instruction.format(transcript=transcript)
+            prompt = recheck_seed(nodes, children, main_tree(children), derivation.instruction)
         # A chained source (a replay env sourcing another replay env) nests its lineage;
         # scoring, tools, and provisioning are always keyed on the innermost original.
         source_task = unwrap_source_task(record["task"])
-        provision = (
-            {key: value for key in ("image", "workdir", "timeout", "resources") if (value := source_task.get(key))}
-            if derivation.type != "judge"
-            else {}
-        )
+        provision = {
+            key: value for key in ("image", "workdir", "timeout", "resources") if (value := source_task.get(key))
+        }
         task = ReplayTask(
             idx=idx,
             name=f"{derivation.type}:{candidate.source_id[:8]}",
@@ -305,11 +250,9 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
             source_step=candidate.step,
             **provision,
         )
-        if self.inner is not None:
-            # Rebuild the typed original task now — inner-taskset schema drift fails
-            # loudly here, before any generation is spent — and cache it for the
-            # per-rollout hooks.
-            task._inner = self.inner_task_type.model_validate(source_task)
+        # Rebuild the typed original task now — inner-taskset schema drift fails loudly
+        # here, before any generation is spent — and cache it for the per-rollout hooks.
+        task._inner = self.inner_task_type.model_validate(source_task)
         return task
 
     def _inner_task(self, task: ReplayTask) -> Task:
@@ -319,23 +262,17 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
 
     # ---------------------------------------------------- original-world hooks
 
-    # `inner` exists exactly on the derivations the original taskset scores, so
-    # `self.inner is not None` alone selects the delegating derivations.
-
     def tools(self, task: ReplayTask) -> list[Toolset]:
         # Stubs (env serving inspects tools(tasks[0]) for shared placement) get none;
         # inner tasksets with shared-placement toolsets are therefore unsupported.
-        if self.inner is None or not task.source_task:
+        if not task.source_task:
             return []
         return self.inner.tools(self._inner_task(task))
 
     async def setup(self, task: ReplayTask, runtime: Runtime) -> None:
-        if self.inner is not None:
-            await self.inner.setup(self._inner_task(task), runtime)
+        await self.inner.setup(self._inner_task(task), runtime)
 
     async def finalize(self, task: ReplayTask, trace: Trace, runtime: Runtime) -> None:
-        if self.inner is None:
-            return
         inner_task = self._inner_task(task)
         # The shallow copy shares nodes/info/state with the real trace, so anything the
         # inner taskset scrapes for its rewards lands where scoring will read it.
@@ -344,26 +281,14 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
     # ------------------------------------------------------------------ scoring
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
-        if self.inner is not None:
-            # Score with the original taskset, seen through a view whose `task` is the
-            # rebuilt original: the shallow copy shares the rewards/metrics/info dicts,
-            # so the inner rewards land on the real trace with their original names and
-            # weights, while `trace.task` stays the ReplayTask for everything else.
-            inner_task = self._inner_task(trace.task)
-            await self.inner.score(trace.model_copy(update={"task": inner_task}), runtime)
+        # Score with the original taskset, seen through a view whose `task` is the
+        # rebuilt original: the shallow copy shares the rewards/metrics/info dicts,
+        # so the inner rewards land on the real trace with their original names and
+        # weights, while `trace.task` stays the ReplayTask for everything else.
+        inner_task = self._inner_task(trace.task)
+        await self.inner.score(trace.model_copy(update={"task": inner_task}), runtime)
         await super().score(trace, runtime)
-
-    @reward
-    async def judge_correct(self, task: ReplayTask, trace: Trace) -> Mapping[str, float]:
-        if task.kind != "judge":
-            return {}
-        verdict = parse_verdict(trace.last_reply or "")
-        was_correct = task.original_reward > self.derivation.success_threshold
-        return {"judge_correct": float(verdict is not None and verdict == was_correct)}
 
     @metric
     async def replay_stats(self, task: ReplayTask, trace: Trace) -> Mapping[str, float]:
-        stats = {"replay/source_reward": task.original_reward, "replay/source_step": float(task.source_step)}
-        if task.kind == "judge":
-            stats["replay/judge_parseable"] = float(parse_verdict(trace.last_reply or "") is not None)
-        return stats
+        return {"replay/source_reward": task.original_reward, "replay/source_step": float(task.source_step)}

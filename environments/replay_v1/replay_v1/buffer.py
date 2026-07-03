@@ -15,7 +15,15 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from replay_v1.surgery import build_children, compaction_forks, is_replay_derived, main_tree, unwrap_source_task, usable
+from replay_v1.surgery import (
+    build_children,
+    compaction_forks,
+    is_replay_derived,
+    main_tree,
+    tool_call_anchors,
+    unwrap_source_task,
+    usable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +39,7 @@ _STEP_RE = re.compile(r"^step_(\d+)$")
 @dataclass(frozen=True)
 class Candidate:
     """One replayable task: a lazy handle onto a saved rollout line (plus, for continue
-    mode, which compaction fork of it)."""
+    derivations, which anchor node of it to resume from)."""
 
     path: str
     offset: int
@@ -39,7 +47,7 @@ class Candidate:
     step: int
     original_reward: float
     source_id: str
-    fork_node: int | None = None
+    anchor_node: int | None = None
 
 
 def resolve_rollout_dir(buffer_dir: str) -> Path:
@@ -94,23 +102,20 @@ class ReplayBuffer:
     def __init__(
         self,
         buffer_dir: str,
-        mode: str,
+        anchor: str | None,
         online: bool,
         source_envs: list[str] | None,
         allow_container: bool,
-        success_threshold: float,
     ) -> None:
         self.rollout_dir = resolve_rollout_dir(buffer_dir)
-        self.mode = mode
+        self.anchor = anchor  # continue: "compaction" | "tool-call"; recheck: None (final state)
         self.online = online
         self.source_envs = set(source_envs) if source_envs else None
         self.allow_container = allow_container
-        self.success_threshold = success_threshold
         # Pool workers each hold their own buffer instance; a fresh OS-entropy rng per
         # instance keeps online sampling uncorrelated across worker processes.
         self._rng = random.Random()
         self._all: list[Candidate] = []  # retained candidates, newest step first
-        self._view: list[Candidate] = []  # what pick/sample draw from (label-balanced for judge)
         self._scanned_steps: set[int] = set()
         self._last_scan = 0.0
         self._rescan_lock = asyncio.Lock()
@@ -122,8 +127,7 @@ class ReplayBuffer:
         """Index all unscanned complete steps, newest first, under the capacity cap
         (which doubles as recency eviction: newest candidates win). Synchronous file
         IO — called directly at server startup, via a thread during rollouts. The
-        retained index keeps every candidate under the cap; label balancing is a derived
-        view, so candidates dropped from one balanced view can pair up in a later one."""
+        retained index keeps every candidate under the cap."""
         steps = complete_steps(self.rollout_dir, require_barrier=self.online, skip=self._scanned_steps)
         retained = list(self._all)
         fresh = 0
@@ -138,18 +142,14 @@ class ReplayBuffer:
                 self._scanned_steps.update(step for step, _ in steps[i + 1 :])
                 break
         if fresh:
-            # Newest steps win the cap; this evicts the oldest candidates.
+            # Newest steps win the cap; this evicts the oldest candidates. The sorted
+            # fresh list is swapped in atomically (rescans run in a thread while the
+            # event loop keeps sampling).
             retained.sort(key=lambda c: c.step, reverse=True)
             del retained[MAX_CANDIDATES:]
-            self._set_index(retained)
+            self._all = retained
         self._last_scan = time.monotonic()
-        return self._view
-
-    def _set_index(self, retained: list[Candidate]) -> None:
-        """Atomically swap in the retained index and the view pick/sample draw from."""
-        view = self._balanced(retained) if self.mode == "judge" else retained
-        self._all = retained
-        self._view = view
+        return self._all
 
     def _scan_file(self, step: int, path: Path) -> list[Candidate]:
         candidates: list[Candidate] = []
@@ -181,7 +181,7 @@ class ReplayBuffer:
             return []
         # Container provisioning is keyed on the innermost original task, however deep
         # the derivation chain.
-        if self.mode != "judge" and not self.allow_container and unwrap_source_task(task).get("image"):
+        if not self.allow_container and unwrap_source_task(task).get("image"):
             return []
         reward = sum((record.get("rewards") or {}).values())
         base = dict(
@@ -192,69 +192,61 @@ class ReplayBuffer:
             original_reward=reward,
             source_id=record.get("id", ""),
         )
-        if self.mode == "continue":
-            children, _ = build_children(record["nodes"])
-            tree = main_tree(children)
-            return [Candidate(**base, fork_node=fork) for fork in compaction_forks(record["nodes"], children, tree)]
-        return [Candidate(**base)]
-
-    def _balanced(self, candidates: list[Candidate]) -> list[Candidate]:
-        """Interleave successes and failures 1:1 so judge rewards aren't gameable by a
-        constant verdict (observed buffers skew 98:1). Truncates to the smaller label."""
-        positive = [c for c in candidates if c.original_reward > self.success_threshold]
-        negative = [c for c in candidates if c.original_reward <= self.success_threshold]
-        if not positive or not negative:
-            logger.warning(
-                "judge buffer has one-sided labels (%d correct / %d incorrect); serving unbalanced",
-                len(positive),
-                len(negative),
-            )
-            return candidates
-        interleaved = []
-        for pair in zip(positive, negative):
-            interleaved.extend(pair)
-        return interleaved
+        if self.anchor is None:  # recheck: one task per rollout, seeded from its final state
+            return [Candidate(**base)]
+        children, _ = build_children(record["nodes"])
+        tree = main_tree(children)
+        if self.anchor == "compaction":
+            # One task per compaction point.
+            anchors = compaction_forks(record["nodes"], children, tree)
+        else:
+            # Tool calls are numerous (~dozens per rollout); one deterministically
+            # sampled resume point per source keeps the index one-candidate-per-rollout
+            # and identical across pool workers.
+            anchors = tool_call_anchors(record["nodes"], children, tree)
+            if anchors:
+                anchors = [random.Random(base["source_id"]).choice(anchors)]
+        return [Candidate(**base, anchor_node=anchor) for anchor in anchors]
 
     # ------------------------------------------------------------------ picking
 
     def __len__(self) -> int:
-        return len(self._view)
+        return len(self._all)
 
     def pick(self, idx: int) -> Candidate:
         """Deterministic candidate for a task index (offline buffers)."""
-        view = self._view
-        return view[idx % len(view)]
+        candidates = self._all
+        return candidates[idx % len(candidates)]
 
     def discard(self, candidate: Candidate) -> None:
         """Drop a candidate whose source line is gone (its run was resumed or cleaned)."""
-        self._set_index([c for c in self._all if c != candidate])
+        self._all = [c for c in self._all if c != candidate]
 
     async def sample(self) -> Candidate:
-        """A fresh draw for online buffers: rescan when stale, then sample uniformly
-        (label-balance for judge comes from the interleaved view). While the run has not
+        """A fresh draw for online buffers: rescan when stale, then sample uniformly.
+        While the run has not
         produced any replayable rollouts yet (early steps), wait briefly, then fail the
         request — the errored group releases its dispatch permits and is retried later,
         instead of hoarding capacity the run needs to produce the first rollouts."""
         waited = 0.0
         while True:
-            if time.monotonic() - self._last_scan > RESCAN_SECONDS or not self._view:
+            if time.monotonic() - self._last_scan > RESCAN_SECONDS or not self._all:
                 async with self._rescan_lock:
-                    if time.monotonic() - self._last_scan > RESCAN_SECONDS or not self._view:
+                    if time.monotonic() - self._last_scan > RESCAN_SECONDS or not self._all:
                         await asyncio.to_thread(self.scan)
-            view = self._view
-            if view:
-                return self._rng.choice(view)
+            candidates = self._all
+            if candidates:
+                return self._rng.choice(candidates)
             if waited >= EMPTY_WAIT_SECONDS:
                 raise RuntimeError(
-                    f"replay buffer at {self.rollout_dir} has no replayable {self.mode!r} "
-                    f"candidates after {waited:.0f}s; failing this request so its permits free up"
+                    f"replay buffer at {self.rollout_dir} has no replayable candidates "
+                    f"after {waited:.0f}s; failing this request so its permits free up"
                 )
             if not self._warned_empty:
                 logger.warning(
-                    "replay buffer at %s is empty (no replayable %s candidates yet); replay requests "
+                    "replay buffer at %s is empty (no replayable candidates yet); replay requests "
                     "will fail and retry until the run writes its first rollouts",
                     self.rollout_dir,
-                    self.mode,
                 )
                 self._warned_empty = True
             await asyncio.sleep(EMPTY_POLL_SECONDS)

@@ -93,6 +93,28 @@ def compaction_forks(nodes: list[Node], children: dict[int, list[int]], tree: se
     return sorted(forks)
 
 
+def tool_call_anchors(nodes: list[Node], children: dict[int, list[int]], tree: set[int]) -> list[int]:
+    """Resumable tool-result nodes in the main tree: points where the conversation up to
+    and including the node is a well-formed prefix (every tool call issued so far has its
+    result), so the model can continue right after the tool output. A result whose
+    issuing assistant still has sibling calls pending is not resumable — the seed would
+    carry a dangling call."""
+    anchors: list[int] = []
+    for i in sorted(tree):
+        if nodes[i]["message"]["role"] != "tool":
+            continue
+        pending: set[str] = set()
+        for j in path_to_root(nodes, i):
+            message = nodes[j]["message"]
+            if message["role"] == "assistant":
+                pending.update(call["id"] for call in message.get("tool_calls") or [])
+            elif message["role"] == "tool":
+                pending.discard(message.get("tool_call_id"))
+        if not pending:
+            anchors.append(i)
+    return anchors
+
+
 def path_to_root(nodes: list[Node], leaf: int) -> list[int]:
     path = []
     i: int | None = leaf
@@ -112,10 +134,11 @@ def path_messages(nodes: list[Node], path: list[int]) -> list[dict]:
     return [nodes[i]["message"] for i in path]
 
 
-def continue_seed(nodes: list[Node], fork_child: int) -> list[dict]:
-    """CONTINUE seed: messages from the root down to (and including) the post-compaction
-    user message — the exact prompt the original harness restarted from."""
-    return path_messages(nodes, path_to_root(nodes, fork_child))
+def continue_seed(nodes: list[Node], anchor: int) -> list[dict]:
+    """CONTINUE seed: messages from the root down to (and including) the anchor node —
+    the post-compaction user message (the exact prompt the original harness restarted
+    from), or a tool result (the model resumes right after seeing it)."""
+    return path_messages(nodes, path_to_root(nodes, anchor))
 
 
 def recheck_seed(nodes: list[Node], children: dict[int, list[int]], tree: set[int], instruction: str) -> list[dict]:
@@ -132,64 +155,3 @@ def recheck_seed(nodes: list[Node], children: dict[int, list[int]], tree: set[in
             messages.pop()
     messages.append({"role": "user", "content": instruction})
     return messages
-
-
-def content_text(content: Any) -> str:
-    """Flatten message content (a string, or a list of content parts) to plain text."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            if part.get("type") == "text":
-                parts.append(part.get("text", ""))
-            else:
-                parts.append(f"[{part.get('type', 'attachment')}]")
-        return "\n".join(parts)
-    return ""
-
-
-def _render_message(message: dict, max_message_chars: int) -> str:
-    text = content_text(message.get("content"))
-    if len(text) > max_message_chars:
-        text = f"{text[:max_message_chars]}\n[... truncated, {len(text)} chars total]"
-    lines = [f"[{message['role'].upper()}]"]
-    if text:
-        lines.append(text)
-    for call in message.get("tool_calls") or []:
-        # Saved tool calls are flat {id, name, arguments} dicts, not OpenAI-nested.
-        arguments = call.get("arguments") or ""
-        if len(arguments) > 500:
-            arguments = f"{arguments[:500]}...[truncated]"
-        lines.append(f"[TOOL CALL] {call.get('name')}({arguments})")
-    return "\n".join(lines)
-
-
-def render_transcript(
-    nodes: list[Node],
-    children: dict[int, list[int]],
-    tree: set[int],
-    max_message_chars: int,
-    max_total_chars: int,
-) -> str:
-    """JUDGE transcript: the final branch rendered as role-labeled text. Per-message
-    truncation bounds pathological single messages (tool results reach 150K chars);
-    a total budget with middle elision (keep the head, then as many trailing messages
-    as fit) bounds the whole transcript."""
-    path = path_to_root(nodes, final_leaf(children, tree))
-    blocks = [_render_message(m, max_message_chars) for m in path_messages(nodes, path)]
-    total = sum(len(b) + 2 for b in blocks)
-    if total <= max_total_chars:
-        return "\n\n".join(blocks)
-
-    head = blocks[:2]  # system + opening user message: the task statement
-    budget = max_total_chars - sum(len(b) + 2 for b in head)
-    tail: list[str] = []
-    for block in reversed(blocks[2:]):
-        if budget - (len(block) + 2) < 0:
-            break
-        budget -= len(block) + 2
-        tail.append(block)
-    tail.reverse()
-    elided = len(blocks) - len(head) - len(tail)
-    return "\n\n".join([*head, f"[... {elided} messages elided ...]", *tail])

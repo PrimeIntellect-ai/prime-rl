@@ -1,11 +1,10 @@
-# Debug run where the model judges its own rollouts as it trains. The judge env
+# Debug run where the model re-checks its own rollouts as it trains. The recheck env
 # replays this run's freshly written rollouts (buffer_dir = "self" resolves to
-# <output_dir>/rollouts before the env servers spawn): each task renders a source
-# transcript and asks for a `VERDICT: CORRECT|INCORRECT`; the reward is whether
-# the verdict matches how the source rollout actually scored. Judge scoring is
-# self-contained (no `inner`), and the online buffer samples a fresh source per
-# request — forcing whole-group dispatch so GRPO groups share one source.
-#   uv run rl @ configs/debug/replay/online_judge.toml
+# <output_dir>/rollouts before the env servers spawn): each task re-serves a finished
+# conversation with an appended check-your-work turn, scored by the original (inner)
+# taskset. The online buffer samples a fresh source per request — forcing whole-group
+# dispatch so GRPO groups share one source.
+#   uv run rl @ configs/debug/replay/online_recheck.toml
 
 max_steps = 20
 seq_len = 2048
@@ -15,7 +14,7 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [wandb]
 project = "replay-debug"
-name = "debug-online-judge"
+name = "debug-online-recheck"
 
 [orchestrator]
 batch_size = 128
@@ -34,26 +33,29 @@ ratio = 3.0
 taskset = { id = "reverse-text-v1" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
-# Judge tasks over this run's own rollouts (1/4). Ratios are all-or-none.
+# Recheck tasks over this run's own rollouts (1/4). Ratios are all-or-none.
 [[orchestrator.train.env]]
-name = "replay-judge"
+name = "replay-recheck"
 ratio = 1.0
 harness = { id = "null", runtime = { type = "subprocess" } }
-# Judge prompts embed a rendered transcript, so give the env input headroom.
+# Recheck seeds carry the whole source conversation, so give the env input headroom.
 max_input_tokens = 1536
 max_total_tokens = 2048
 
 [orchestrator.train.env.taskset]
 id = "replay-v1"
 buffer_dir = "self"        # implies online
-# Judge only the fresh env's rollouts. (Unset, source_envs replays every env except
+# Recheck only the fresh env's rollouts. (Unset, source_envs replays every env except
 # replay envs; listing a replay env by name opts into chained derivations.)
 source_envs = ["reverse-text"]
 
 [orchestrator.train.env.taskset.derivation]
-type = "judge"
-# Keep rendered transcripts comfortably within the debug seq_len.
-max_transcript_chars = 4000
+type = "recheck"
+
+# Rechecks are scored by the original taskset, so `inner` must reproduce the source
+# run's taskset config (here the base env's defaults).
+[orchestrator.train.env.taskset.derivation.inner]
+id = "reverse-text-v1"
 
 [trainer.optim]
 lr = 3e-6

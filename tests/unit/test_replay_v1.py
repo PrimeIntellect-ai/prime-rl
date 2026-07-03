@@ -1,5 +1,5 @@
 """Unit tests for the replay-v1 environment's pure logic: message-graph surgery,
-verdict parsing, config validation, and the buffer's scan/pick/read plumbing."""
+config validation, and the buffer's scan/pick/read plumbing."""
 
 import json
 from pathlib import Path
@@ -8,18 +8,17 @@ import pytest
 from pydantic import ValidationError
 from replay_v1.buffer import ReplayBuffer
 from replay_v1.surgery import (
-    _render_message,
     build_children,
     compaction_forks,
     continue_seed,
     final_leaf,
     main_tree,
     recheck_seed,
-    render_transcript,
+    tool_call_anchors,
     unwrap_source_task,
     usable,
 )
-from replay_v1.taskset import ReplayTasksetConfig, parse_verdict
+from replay_v1.taskset import ReplayTasksetConfig
 from reverse_text_v1.taskset import ReverseTextConfig
 
 # ------------------------------------------------------------------ surgery
@@ -55,7 +54,7 @@ def forest() -> list[dict]:
                 "tool_calls": [{"id": "c1", "name": "search", "arguments": '{"q": "sort"}'}],
             },
         ),  # 7
-        _node(7, False, {"role": "tool", "content": "x" * 300}),  # 8
+        _node(7, False, {"role": "tool", "tool_call_id": "c1", "content": "x" * 300}),  # 8
         _node(
             8,
             True,
@@ -92,8 +91,33 @@ def test_final_leaf_stays_in_the_main_tree(forest):
     assert final_leaf(children, tree) == 9  # not 13, the subagent's higher-index leaf
 
 
-def test_continue_seed_is_root_to_fork_child(forest):
+def test_continue_seed_is_root_to_anchor(forest):
     assert continue_seed(forest, 6) == [forest[0]["message"], forest[6]["message"]]
+    # A tool-call anchor seeds down to (and including) the tool result.
+    assert [m["role"] for m in continue_seed(forest, 8)] == ["system", "user", "assistant", "tool"]
+
+
+def test_tool_call_anchors_require_resolved_calls():
+    call = {"name": "t", "arguments": "{}"}
+    nodes = [
+        _node(None, False, {"role": "system", "content": "s"}),  # 0
+        _node(0, False, {"role": "user", "content": "task"}),  # 1
+        _node(
+            1, True, {"role": "assistant", "content": "", "tool_calls": [call | {"id": "a"}, call | {"id": "b"}]}
+        ),  # 2
+        _node(2, False, {"role": "tool", "tool_call_id": "a", "content": "ra"}),  # 3: "b" still pending
+        _node(3, False, {"role": "tool", "tool_call_id": "b", "content": "rb"}),  # 4: all resolved -> anchor
+        _node(4, True, {"role": "assistant", "content": "", "tool_calls": [call | {"id": "c"}]}),  # 5
+        _node(5, False, {"role": "tool", "tool_call_id": "c", "content": "rc"}),  # 6: anchor
+        _node(None, False, {"role": "user", "content": "subagent"}),  # 7: subagent root
+        _node(7, True, {"role": "assistant", "content": "", "tool_calls": [call | {"id": "z"}]}),  # 8
+        _node(8, False, {"role": "tool", "tool_call_id": "z", "content": "rz"}),  # 9: outside main tree
+    ]
+    children, _ = build_children(nodes)
+    tree = main_tree(children)
+    assert tool_call_anchors(nodes, children, tree) == [4, 6]
+    seed = continue_seed(nodes, 6)
+    assert [m["role"] for m in seed] == ["system", "user", "assistant", "tool", "tool", "assistant", "tool"]
 
 
 def test_recheck_seed_drops_truncated_assistant_and_appends_instruction(forest):
@@ -128,27 +152,6 @@ def test_recheck_seed_strips_tool_calls_but_keeps_nonempty_assistant():
     assert nodes[1]["message"]["tool_calls"]  # original untouched
 
 
-def test_render_transcript_truncates_per_message(forest):
-    children, _ = build_children(forest)
-    tree = main_tree(children)
-    out = render_transcript(forest, children, tree, max_message_chars=50, max_total_chars=10_000)
-    assert "[SYSTEM]" in out
-    assert "[... truncated, 300 chars total]" in out  # node 8's 300-char tool result
-    assert "x" * 51 not in out
-    assert '[TOOL CALL] search({"q": "again"})' in out
-    assert "elided" not in out
-
-
-def test_render_transcript_elides_middle_under_total_budget(forest):
-    children, _ = build_children(forest)
-    tree = main_tree(children)
-    blocks = [_render_message(forest[i]["message"], 50) for i in (0, 6, 7, 8, 9)]
-    # Enough for the head (system + task statement) and the last block, but not one more.
-    budget = sum(len(b) + 2 for b in (blocks[0], blocks[1], blocks[4])) + 1
-    out = render_transcript(forest, children, tree, max_message_chars=50, max_total_chars=budget)
-    assert out == "\n\n".join([blocks[0], blocks[1], "[... 2 messages elided ...]", blocks[4]])
-
-
 def test_usable_screens_bad_records(forest):
     assert usable({"nodes": forest, "errors": None})
     assert not usable({"nodes": forest, "errors": ["timeout"]})
@@ -157,54 +160,52 @@ def test_usable_screens_bad_records(forest):
     assert not usable({"nodes": unsampled, "errors": None})
 
 
-# ------------------------------------------------------------------ verdict parsing
-
-
-def test_parse_verdict():
-    assert parse_verdict("Analysis...\nVERDICT: CORRECT") is True
-    assert parse_verdict("VERDICT: INCORRECT") is False
-    assert parse_verdict("verdict: correct") is True  # case-insensitive
-    assert parse_verdict("VERDICT: CORRECT\n...wait, no.\nVERDICT: INCORRECT") is False  # last wins
-    assert parse_verdict("the answer looks right to me") is None
-
-
-def test_parse_verdict_skips_instruction_echo():
-    echo = "answer with exactly `VERDICT: CORRECT` or `VERDICT: INCORRECT`."
-    # A line quoting both options is an echo, not an answer: fall through to the real verdict...
-    assert parse_verdict(f"VERDICT: CORRECT\n{echo}") is True
-    # ...and an echo with no verdict anywhere else is unparseable.
-    assert parse_verdict(echo) is None
+def test_unwrap_source_task_resolves_chains():
+    original = {"prompt": "sort the list", "image": "sandbox:1"}
+    depth_2 = {"kind": "recheck", "source_task": {"kind": "recheck", "source_task": original}}
+    assert unwrap_source_task(depth_2) == original
+    assert unwrap_source_task(original) == original  # non-derived tasks pass through
 
 
 # ------------------------------------------------------------------ config validation
 
 
-def test_config_recheck_requires_inner():
-    # `inner` is a required field on the delegating derivations, so leaving it out is
-    # a plain missing-field error — no bespoke validator involved.
+def test_config_requires_inner():
+    # `inner` is a required field on every derivation, so leaving it out is a plain
+    # missing-field error — no bespoke validator involved.
     with pytest.raises(ValidationError, match="inner"):
         ReplayTasksetConfig(buffer_dir="/tmp/buf", derivation={"type": "recheck"})
 
 
-def test_config_judge_has_no_inner_field():
-    # Judge scoring is self-contained: its derivation config has no `inner` at all.
-    with pytest.raises(ValidationError, match="inner"):
-        ReplayTasksetConfig(buffer_dir="/tmp/buf", derivation={"type": "judge", "inner": {"id": "reverse-text-v1"}})
+def test_config_rejects_unknown_derivation():
+    with pytest.raises(ValidationError, match="type"):
+        ReplayTasksetConfig(buffer_dir="/tmp/buf", derivation={"type": "judge"})
+
+
+def test_config_rejects_unknown_anchor():
+    with pytest.raises(ValidationError, match="anchor"):
+        ReplayTasksetConfig(
+            buffer_dir="/tmp/buf",
+            derivation={"type": "continue", "anchor": "turn", "inner": {"id": "reverse-text-v1"}},
+        )
 
 
 def test_config_requires_buffer_dir():
     with pytest.raises(ValidationError, match="buffer_dir"):
-        ReplayTasksetConfig(derivation={"type": "judge"})
+        ReplayTasksetConfig(derivation={"type": "recheck", "inner": {"id": "reverse-text-v1"}})
 
 
 def test_config_self_buffer_implies_online():
-    cfg = ReplayTasksetConfig(buffer_dir="self", derivation={"type": "judge"})
+    cfg = ReplayTasksetConfig(buffer_dir="self", derivation={"type": "recheck", "inner": {"id": "reverse-text-v1"}})
     assert cfg.online is True  # pinned before the orchestrator rewrites the sentinel
 
 
-def test_config_valid_judge_and_recheck():
-    judge = ReplayTasksetConfig(buffer_dir="/tmp/buf", derivation={"type": "judge"})
-    assert judge.derivation.success_threshold == 0.5
+def test_config_valid_continue_and_recheck():
+    cont = ReplayTasksetConfig(
+        buffer_dir="/tmp/buf",
+        derivation={"type": "continue", "anchor": "tool-call", "inner": {"id": "reverse-text-v1"}},
+    )
+    assert cont.derivation.anchor == "tool-call"
     recheck = ReplayTasksetConfig(
         buffer_dir="/tmp/buf", derivation={"type": "recheck", "inner": {"id": "reverse-text-v1"}}
     )
@@ -251,14 +252,13 @@ def buffer_dir(tmp_path: Path) -> tuple[Path, dict[str, dict]]:
     return tmp_path, records
 
 
-def _make_buffer(path: Path, mode: str, online: bool = False, **overrides) -> ReplayBuffer:
+def _make_buffer(path: Path, anchor: str | None = None, online: bool = False, **overrides) -> ReplayBuffer:
     kwargs = dict(
         buffer_dir=str(path),
-        mode=mode,
+        anchor=anchor,
         online=online,
         source_envs=None,
         allow_container=False,
-        success_threshold=0.5,
     )
     kwargs.update(overrides)
     return ReplayBuffer(**kwargs)
@@ -266,26 +266,30 @@ def _make_buffer(path: Path, mode: str, online: bool = False, **overrides) -> Re
 
 def test_online_scan_requires_barrier(buffer_dir):
     path, _ = buffer_dir
-    candidates = _make_buffer(path, "recheck", online=True).scan()
+    candidates = _make_buffer(path, online=True).scan()
     assert {c.step for c in candidates} == {1}  # step_2 has no train_rollouts.bin yet
 
 
 def test_offline_scan_skips_barrier_and_errored_records(buffer_dir):
     path, _ = buffer_dir
-    candidates = _make_buffer(path, "recheck").scan()
+    candidates = _make_buffer(path).scan()
     assert [c.source_id for c in candidates] == ["ddd", "aaa", "bbb", "ccc"]  # newest step first, no "eee"
 
 
-def test_judge_balancing_interleaves_and_truncates(buffer_dir):
+def test_rescan_accumulates_new_steps(buffer_dir):
     path, _ = buffer_dir
-    candidates = _make_buffer(path, "judge").scan()
-    # 3 successes vs 1 failure: interleaved 1:1 and truncated to the smaller label.
-    assert [c.original_reward for c in candidates] == [1.0, 0.0]
+    buffer = _make_buffer(path, online=True)
+    assert [c.source_id for c in buffer.scan()] == ["aaa", "bbb", "ccc"]
+    step_3 = path / "step_3"
+    step_3.mkdir()
+    step_3.joinpath("train_rollouts.jsonl").write_text(json.dumps(_record("fff", 0.0)) + "\n")
+    step_3.joinpath("train_rollouts.bin").touch()
+    assert [c.source_id for c in buffer.scan()] == ["fff", "aaa", "bbb", "ccc"]  # newest first
 
 
 def test_pick_is_deterministic_and_wraps(buffer_dir):
     path, _ = buffer_dir
-    buffer = _make_buffer(path, "recheck")
+    buffer = _make_buffer(path)
     buffer.scan()
     assert buffer.pick(2) == buffer.pick(2)
     assert buffer.pick(2) == buffer.pick(2 + len(buffer))
@@ -293,26 +297,33 @@ def test_pick_is_deterministic_and_wraps(buffer_dir):
 
 def test_read_record_round_trips(buffer_dir):
     path, records = buffer_dir
-    buffer = _make_buffer(path, "recheck")
+    buffer = _make_buffer(path)
     for candidate in buffer.scan():
         assert buffer.read_record(candidate) == records[candidate.source_id]
 
 
-def test_balance_is_a_view_not_attrition(buffer_dir):
-    """Majority-label candidates dropped from one balanced view must pair up in a later
-    one — rescans may not permanently destroy them."""
-    path, _ = buffer_dir
-    buffer = _make_buffer(path, "judge", online=True)
-    assert [c.original_reward for c in buffer.scan()] == [1.0, 0.0]  # step_1 only: 2 pos, 1 neg
-    step_3 = path / "step_3"
-    step_3.mkdir()
-    step_3.joinpath("train_rollouts.jsonl").write_text(
-        "".join(json.dumps(_record(i, 0.0)) + "\n" for i in ("fff", "ggg"))
-    )
-    step_3.joinpath("train_rollouts.bin").touch()
-    rebalanced = buffer.scan()
-    # 2 pos + 3 neg total: both step_1 positives pair with negatives now.
-    assert [c.original_reward for c in rebalanced] == [1.0, 0.0, 1.0, 0.0]
+def test_tool_call_anchor_is_sampled_deterministically(tmp_path):
+    call = {"name": "t", "arguments": "{}"}
+    record = _record("ttt", 1.0)
+    record["nodes"] = [
+        _node(None, False, {"role": "system", "content": "s"}),
+        _node(0, False, {"role": "user", "content": "task"}),
+        _node(1, True, {"role": "assistant", "content": "", "tool_calls": [call | {"id": "a"}]}),
+        _node(2, False, {"role": "tool", "tool_call_id": "a", "content": "ra"}),
+        _node(3, True, {"role": "assistant", "content": "", "tool_calls": [call | {"id": "b"}]}),
+        _node(4, False, {"role": "tool", "tool_call_id": "b", "content": "rb"}),
+        _node(5, True, {"role": "assistant", "content": "done"}),
+    ]
+    step = tmp_path / "step_1"
+    step.mkdir()
+    (step / "train_rollouts.jsonl").write_text(json.dumps(record) + "\n")
+    first = _make_buffer(tmp_path, anchor="tool-call").scan()
+    second = _make_buffer(tmp_path, anchor="tool-call").scan()
+    # One resume point per source rollout, identical across buffer instances (pool workers).
+    assert len(first) == 1 and first[0].anchor_node in (3, 5)
+    assert first[0].anchor_node == second[0].anchor_node
+    # Compaction anchoring finds nothing in this rollout (it never compacted).
+    assert _make_buffer(tmp_path, anchor="compaction").scan() == []
 
 
 def test_replay_derived_records_skipped_by_default_but_listable(buffer_dir):
@@ -326,14 +337,7 @@ def test_replay_derived_records_skipped_by_default_but_listable(buffer_dir):
     step_1 = path / "step_1"
     with open(step_1 / "train_rollouts.jsonl", "a") as f:
         f.write(json.dumps(nested) + "\n")
-    by_default = _make_buffer(path, "judge").scan()
+    by_default = _make_buffer(path).scan()
     assert "zzz" not in {c.source_id for c in by_default}
-    opted_in = _make_buffer(path, "judge", source_envs=["replay-recheck"]).scan()
+    opted_in = _make_buffer(path, source_envs=["replay-recheck"]).scan()
     assert {c.source_id for c in opted_in} == {"zzz"}
-
-
-def test_unwrap_source_task_resolves_chains():
-    original = {"prompt": "sort the list", "image": "sandbox:1"}
-    depth_2 = {"kind": "recheck", "source_task": {"kind": "recheck", "source_task": original}}
-    assert unwrap_source_task(depth_2) == original
-    assert unwrap_source_task(original) == original  # non-derived tasks pass through
