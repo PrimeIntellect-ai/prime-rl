@@ -374,9 +374,7 @@ class SFTDataset(StatefulIterableDataset):
         # Non-assistant roles are opted into the loss via the renderer's
         # body-only path: the message content is trained, not the role
         # scaffolding (e.g. <tool_response> tags) the harness emits.
-        content_sft_roles = {
-            role for role in ("user", "system", "tool") if getattr(self.loss_mask_config, role)
-        }
+        content_sft_roles = {role for role in ("user", "system", "tool") if getattr(self.loss_mask_config, role)}
         sample = build_training_sample(
             self.renderer,
             messages,
@@ -442,6 +440,8 @@ class SFTDataset(StatefulIterableDataset):
         mm_kwargs: dict[str, Tensor] | None = None
         if mm is not None and mm.mm_items:
             mm_kwargs = _flatten_mm_items(mm.mm_items)
+            if any("video" in key for key in mm_kwargs):
+                raise ValueError("Video SFT is not supported; sample contains video inputs")
         if mm_token_type_ids is not None:
             assert len(mm_token_type_ids) == len(input_ids)
 
