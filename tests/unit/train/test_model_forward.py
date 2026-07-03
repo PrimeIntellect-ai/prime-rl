@@ -14,8 +14,11 @@ class _CaptureModel(nn.Module):
 
     def forward(self, **kwargs):
         self.kwargs = kwargs
-        input_ids = kwargs["input_ids"]
-        return {"logits": torch.zeros(*input_ids.shape, 4)}
+        if "input_ids" in kwargs:
+            shape = kwargs["input_ids"].shape
+        else:
+            shape = kwargs["inputs_embeds"].shape[:2]
+        return {"logits": torch.zeros(*shape, 4)}
 
 
 def test_forward_passes_renderer_mm_token_type_ids_through():
@@ -84,3 +87,23 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
 
     assert model.kwargs is not None
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
+
+
+def test_forward_strips_position_ids_without_leaking_seq_lens_for_mrope_vlm():
+    """Generic VLMs do not receive PrimeRL-only packed-boundary kwargs."""
+    model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
+    input_ids = torch.tensor([[1, 10, 10, 2, 20, 20]])
+    position_ids = torch.tensor([[0, 1, 2, 0, 1, 2]])
+    seq_lens = torch.tensor([3, 3])
+
+    forward(
+        model,
+        input_ids,
+        position_ids,
+        mm_kwargs={"pixel_values": torch.ones(4, 3), "image_grid_thw": torch.tensor([[1, 1, 2], [1, 1, 2]])},
+        seq_lens=seq_lens,
+    )
+
+    assert model.kwargs is not None
+    assert "position_ids" not in model.kwargs
+    assert "seq_lens" not in model.kwargs

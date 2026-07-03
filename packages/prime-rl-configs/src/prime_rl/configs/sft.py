@@ -302,6 +302,31 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def vlm_freeze_incompatible_with_lora(self):
+        if self.model.vlm is not None and not self.model.vlm.freeze_vision_encoder and self.model.lora is not None:
+            raise ValueError(
+                "freeze_vision_encoder=false is incompatible with LoRA. "
+                "LoRA freezes all non-adapter parameters including the vision encoder."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_vlm_constraints(self):
+        if self.model.vlm is None:
+            return self
+        if self.model.cp > 1:
+            raise ValueError("VLM SFT does not support context parallelism yet.")
+        if self.data.micro_batch_size != 1:
+            raise ValueError(
+                "VLM SFT requires data.micro_batch_size = 1 (image samples can't be packed across samples)."
+            )
+        if self.val is not None and self.val.data.micro_batch_size != 1:
+            raise ValueError(
+                "VLM SFT requires val.data.micro_batch_size = 1 (image samples can't be packed across samples)."
+            )
+        return self
+
+    @model_validator(mode="after")
     def dont_do_massive_traces(self):
         if self.trace_path:
             if self.max_steps is None:
@@ -310,15 +335,6 @@ class SFTConfig(BaseConfig):
                 raise ValueError(
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
                 )
-        return self
-
-    @model_validator(mode="after")
-    def validate_renderer_vs_vlm(self):
-        if self.model.vlm is not None:
-            raise ValueError(
-                "renderer-only SFT does not support VLMs yet. The renderer tokenizes "
-                "text-only message dicts client-side and cannot handle image inputs."
-            )
         return self
 
     @model_validator(mode="after")

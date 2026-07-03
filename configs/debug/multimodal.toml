@@ -1,12 +1,14 @@
-# 2-GPU debug RL run for the multimodal (renderer) path: Qwen3-VL-4B on
+# 2-GPU debug RL run for the multimodal (renderer) path: Qwen3.5-0.8B on
 # color-codeword. Sized to actually learn (reward should trend up) while
-# staying 2-GPU friendly. Exercises RendererClient + Qwen3VLRenderer end-to-end.
+# staying 2-GPU friendly. Exercises RendererClient + Qwen35Renderer end-to-end.
+# VLM training is custom-implementation-only, so this runs the custom Qwen3.5
+# VLM (Qwen3-VL has no custom implementation and can no longer be RL-trained).
 
 max_steps = 15
 seq_len = 4096
 
 [model]
-name = "Qwen/Qwen3-VL-4B-Instruct"
+name = "Qwen/Qwen3.5-0.8B"
 
 [model.vlm]
 vision_encoder_attr = "model.visual"
@@ -23,9 +25,8 @@ group_size = 16
 # Image processor is CPU-bound and dominates for VLMs; returns diminish past 4.
 pool_size = 4
 
-# Step 0 on Qwen3-VL-4B vs color-codeword can be uniform (all-correct or
-# all-wrong), so don't enforce zero-advantage dropping or training would crash
-# before any progress.
+# Step 0 on color-codeword can be uniform (all-correct or all-wrong), so don't
+# enforce zero-advantage dropping or training would crash before any progress.
 [[orchestrator.post_batch_filters]]
 type = "gibberish"
 
@@ -44,8 +45,8 @@ name = "color-codeword"
 taskset = { id = "color-codeword-v1", images_per_turn = 1 }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
-# Default renderer (AutoRendererConfig) resolves Qwen3-VL-4B-Instruct from
-# MODEL_RENDERER_MAP to Qwen3VLRenderer at runtime; no explicit name needed.
+# Default renderer (AutoRendererConfig) resolves Qwen/Qwen3.5-0.8B from
+# MODEL_RENDERER_MAP at runtime; no explicit name needed.
 
 [trainer]
 
@@ -58,14 +59,6 @@ lr = 3e-6
 
 [inference]
 
-[inference.model]
-# Workaround for vLLM 0.20.1 Qwen3-VL deepstack buffer bug: when num_scheduled_tokens
-# (188) gets padded up to the next cudagraph_capture_size (192), the model's
-# _set_deepstack_input_embeds sizes the buffer to 188 but forward() runs with 192,
-# triggering "Requested more deepstack tokens than available in buffer". Eager mode
-# skips the padding so num_input_tokens == num_scheduled_tokens.
-enforce_eager = true
-
 [inference.parallel]
 dp = 1
 tp = 1
@@ -73,4 +66,4 @@ tp = 1
 [wandb]
 project = "debug"
 name = "multimodal"
-tags = ["qwen3vl-4b", "color-codeword", "renderer"]
+tags = ["qwen3.5-0.8b", "color-codeword", "renderer"]

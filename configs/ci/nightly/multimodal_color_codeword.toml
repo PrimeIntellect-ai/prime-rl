@@ -1,4 +1,5 @@
-# Based on configs/multimodal/rl_color_codeword.toml but tuned for CI
+# Based on configs/debug/multimodal.toml but tuned for CI.
+# Runs the custom Qwen3.5 VLM (VLM training is custom-implementation-only).
 max_steps = 25
 seq_len = 4096
 
@@ -7,7 +8,7 @@ num_train_gpus = 4
 num_infer_gpus = 4
 
 [model]
-name = "Qwen/Qwen3-VL-4B-Instruct"
+name = "Qwen/Qwen3.5-0.8B"
 
 [model.vlm]
 vision_encoder_attr = "model.visual"
