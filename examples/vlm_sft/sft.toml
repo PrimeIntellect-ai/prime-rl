@@ -26,7 +26,7 @@ freq = 1
 [data]
 type = "sft"
 name = "json"
-data_files = ["/home/ubuntu/browser_agent_traces_sample.jsonl.zst"]
+data_files = ["/path/to/your_multimodal_traces.jsonl.zst"]
 batch_size = 1
 micro_batch_size = 1
 seq_len = 16384
