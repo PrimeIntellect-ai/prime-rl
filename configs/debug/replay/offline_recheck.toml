@@ -45,13 +45,15 @@ max_total_tokens = 2048
 
 [orchestrator.train.env.taskset]
 id = "replay-v1"
-mode = "recheck"
 # Placeholder: a prior run's saved-rollout dir (or the run dir containing it).
 buffer_dir = "outputs/prior_run/rollouts"
 
+[orchestrator.train.env.taskset.derivation]
+type = "recheck"
+
 # Continue/recheck rollouts are scored by the original taskset, so `inner` must
 # reproduce the source run's taskset config (here the base env's defaults).
-[orchestrator.train.env.taskset.inner]
+[orchestrator.train.env.taskset.derivation.inner]
 id = "reverse-text-v1"
 
 [trainer.optim]

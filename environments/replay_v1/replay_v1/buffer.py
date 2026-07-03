@@ -54,33 +54,27 @@ def complete_steps(
     rollout_dir: Path,
     require_barrier: bool,
     skip: set[int] = frozenset(),
-    max_steps_back: int | None = None,
 ) -> list[tuple[int, Path]]:
     """(step, jsonl path) for every step whose rollout file is safe to read, newest first.
-    Steps in `skip` (already scanned) and outside the recency window are pruned by dirname
-    alone, before any file stat — rescans run every few seconds over runs with thousands
-    of steps, all but a handful already scanned.
+    Steps in `skip` (already scanned) are pruned by dirname alone, before any file stat —
+    rescans run every few seconds over runs with thousands of steps, all but a handful
+    already scanned.
 
     The jsonl itself is written non-atomically, but the orchestrator writes and closes it
     strictly before the atomic rename that creates the sibling ``train_rollouts.bin`` —
     so for online buffers the barrier file marks the jsonl complete. Offline buffers
     (finished runs) skip the barrier: their files are complete by definition, and a run
     with a non-filesystem rollout transport never writes the .bin at all."""
-    numbered = []
+    steps = []
     for step_dir in rollout_dir.glob("step_*"):
         match = _STEP_RE.match(step_dir.name)
-        if match is not None:
-            numbered.append((int(match.group(1)), step_dir))
-    if numbered and max_steps_back is not None:
-        newest = max(step for step, _ in numbered)
-        numbered = [(step, path) for step, path in numbered if step > newest - max_steps_back]
-    steps = []
-    for step, step_dir in numbered:
-        if step in skip or not (step_dir / ROLLOUT_FILE).is_file():
+        if match is None or int(match.group(1)) in skip:
+            continue
+        if not (step_dir / ROLLOUT_FILE).is_file():
             continue
         if require_barrier and not (step_dir / BARRIER_FILE).is_file():
             continue
-        steps.append((step, step_dir / ROLLOUT_FILE))
+        steps.append((int(match.group(1)), step_dir / ROLLOUT_FILE))
     return sorted(steps, reverse=True)
 
 
@@ -106,7 +100,6 @@ class ReplayBuffer:
         source_envs: list[str] | None,
         allow_container: bool,
         success_threshold: float,
-        max_steps_back: int | None,
     ) -> None:
         self.rollout_dir = resolve_rollout_dir(buffer_dir)
         self.mode = mode
@@ -115,7 +108,6 @@ class ReplayBuffer:
         self.source_envs = set(source_envs) if source_envs else None
         self.allow_container = allow_container
         self.success_threshold = success_threshold
-        self.max_steps_back = max_steps_back
         # Pool workers each hold their own buffer instance; a fresh OS-entropy rng per
         # instance keeps online sampling uncorrelated across worker processes.
         self._rng = random.Random()
@@ -129,16 +121,12 @@ class ReplayBuffer:
     # ------------------------------------------------------------------ scanning
 
     def scan(self) -> list[Candidate]:
-        """Index all unscanned complete steps, newest first, under the caps. Synchronous
-        file IO — called directly at server startup, via a thread during rollouts. The
-        retained index keeps every candidate under the caps; label balancing is a derived
+        """Index all unscanned complete steps, newest first, under the capacity cap
+        (which doubles as recency eviction: newest candidates win). Synchronous file
+        IO — called directly at server startup, via a thread during rollouts. The
+        retained index keeps every candidate under the cap; label balancing is a derived
         view, so candidates dropped from one balanced view can pair up in a later one."""
-        steps = complete_steps(
-            self.rollout_dir,
-            require_barrier=self.online,
-            skip=self._scanned_steps,
-            max_steps_back=self.max_steps_back,
-        )
+        steps = complete_steps(self.rollout_dir, require_barrier=self.online, skip=self._scanned_steps)
         retained = list(self._all)
         fresh = 0
         for i, (step, path) in enumerate(steps):
@@ -152,12 +140,9 @@ class ReplayBuffer:
                 self._scanned_steps.update(step for step, _ in steps[i + 1 :])
                 break
         if fresh:
-            # Newest steps win the cap; within the window this evicts the oldest candidates.
+            # Newest steps win the cap; this evicts the oldest candidates.
             retained.sort(key=lambda c: c.step, reverse=True)
             del retained[MAX_CANDIDATES:]
-            if self.max_steps_back is not None and self._scanned_steps:
-                newest = max(self._scanned_steps)
-                retained = [c for c in retained if c.step > newest - self.max_steps_back]
             self._set_index(retained)
         self._last_scan = time.monotonic()
         return self._view

@@ -180,25 +180,35 @@ def test_parse_verdict_skips_instruction_echo():
 
 
 def test_config_recheck_requires_inner():
-    with pytest.raises(ValidationError, match="scored by the original taskset"):
-        ReplayTasksetConfig(buffer_dir="/tmp/buf", mode="recheck")
+    # `inner` is a required field on the delegating derivations, so leaving it out is
+    # a plain missing-field error — no bespoke validator involved.
+    with pytest.raises(ValidationError, match="inner"):
+        ReplayTasksetConfig(buffer_dir="/tmp/buf", derivation={"type": "recheck"})
 
 
-def test_config_judge_forbids_inner():
-    with pytest.raises(ValidationError, match="self-contained"):
-        ReplayTasksetConfig(buffer_dir="/tmp/buf", mode="judge", inner={"id": "reverse-text-v1"})
+def test_config_judge_has_no_inner_field():
+    # Judge scoring is self-contained: its derivation config has no `inner` at all.
+    with pytest.raises(ValidationError, match="inner"):
+        ReplayTasksetConfig(buffer_dir="/tmp/buf", derivation={"type": "judge", "inner": {"id": "reverse-text-v1"}})
 
 
 def test_config_requires_buffer_dir():
     with pytest.raises(ValidationError, match="buffer_dir"):
-        ReplayTasksetConfig(mode="judge")
+        ReplayTasksetConfig(derivation={"type": "judge"})
+
+
+def test_config_self_buffer_implies_online():
+    cfg = ReplayTasksetConfig(buffer_dir="self", derivation={"type": "judge"})
+    assert cfg.online is True  # pinned before the orchestrator rewrites the sentinel
 
 
 def test_config_valid_judge_and_recheck():
-    judge = ReplayTasksetConfig(buffer_dir="/tmp/buf", mode="judge")
-    assert judge.inner is None
-    recheck = ReplayTasksetConfig(buffer_dir="/tmp/buf", mode="recheck", inner={"id": "reverse-text-v1"})
-    assert isinstance(recheck.inner, ReverseTextConfig)  # narrowed to the inner taskset's type
+    judge = ReplayTasksetConfig(buffer_dir="/tmp/buf", derivation={"type": "judge"})
+    assert judge.derivation.success_threshold == 0.5
+    recheck = ReplayTasksetConfig(
+        buffer_dir="/tmp/buf", derivation={"type": "recheck", "inner": {"id": "reverse-text-v1"}}
+    )
+    assert isinstance(recheck.derivation.inner, ReverseTextConfig)  # narrowed to the inner taskset's type
 
 
 # ------------------------------------------------------------------ buffer
@@ -250,7 +260,6 @@ def _make_buffer(path: Path, mode: str, online: bool = False, **overrides) -> Re
         source_envs=None,
         allow_container=False,
         success_threshold=0.5,
-        max_steps_back=None,
     )
     kwargs.update(overrides)
     return ReplayBuffer(**kwargs)

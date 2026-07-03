@@ -4,7 +4,7 @@ The `replay-v1` environment turns a run's saved rollouts back into training task
 
 ## Table of Contents
 
-- [The Three Modes](#the-three-modes)
+- [The Three Derivations](#the-three-derivations)
 - [Offline vs Online Buffers](#offline-vs-online-buffers)
 - [Configuration](#configuration)
   - [Field Reference](#field-reference)
@@ -12,29 +12,29 @@ The `replay-v1` environment turns a run's saved rollouts back into training task
 - [Metrics](#metrics)
 - [Constraints and Caveats](#constraints-and-caveats)
 
-## The Three Modes
+## The Three Derivations
 
-Each replay env serves exactly one `mode`; mix modes (and weight them) with multiple env entries.
+Each replay env serves exactly one derivation, chosen by `derivation.type`; mix derivations (and weight them) with multiple env entries.
 
-| `mode` | Seed | Scored by |
+| `derivation.type` | Seed | Scored by |
 |---|---|---|
 | `continue` | The post-compaction prompt (system + summary user message) recovered from the trace's message graph — the model resumes the task from a context-compaction point. | The original (`inner`) taskset. |
-| `recheck` | The finished conversation plus an appended check-your-work user turn (`recheck_instruction`). | The original (`inner`) taskset. |
-| `judge` | A rendered transcript of the rollout and the question "was this correct?" (`judge_instruction`). | Self-contained: reward is `judge_correct` — 1.0 when the model's `VERDICT: CORRECT|INCORRECT` line matches whether the source rollout's reward exceeded `success_threshold`, 0.0 otherwise (including unparseable verdicts). |
+| `recheck` | The finished conversation plus an appended check-your-work user turn (`instruction`). | The original (`inner`) taskset. |
+| `judge` | A rendered transcript of the rollout and the question "was this correct?" (`instruction`). | Self-contained: reward is `judge_correct` — 1.0 when the model's `VERDICT: CORRECT\|INCORRECT` line matches whether the source rollout's reward exceeded `success_threshold`, 0.0 otherwise (including unparseable verdicts). |
 
-For `continue` and `recheck`, the rollout is scored by the original taskset: `inner` must reproduce the source run's taskset config, and the inner rewards land on the trace with their original names and weights. The replay taskset also delegates tools, setup, and finalize to the inner taskset, so tool-using tasks replay with their tools intact. `judge` needs no original taskset and forbids `inner`.
+For `continue` and `recheck`, the rollout is scored by the original taskset: `inner` must reproduce the source run's taskset config, and the inner rewards land on the trace with their original names and weights. The replay taskset also delegates tools, setup, and finalize to the inner taskset, so tool-using tasks replay with their tools intact. `judge` is self-contained — its derivation config has no `inner`.
 
 `continue` produces one task per compaction point in the source rollout, so only rollouts that actually compacted are candidates. `recheck` and `judge` produce one task per rollout.
 
 ## Offline vs Online Buffers
 
-**Offline** (`online = false`, the default): point `buffer_dir` at a finished run's rollouts. The buffer is indexed once at env-server startup — steps are scanned newest-first under the recency window (`max_steps_back`) and an internal candidate cap — and each task index maps deterministically to one candidate. GRPO group members dispatched as independent rollouts therefore still bind the same source rollout.
+**Offline** (the default): point `buffer_dir` at a finished run's rollouts. The buffer is indexed once at env-server startup — steps are scanned newest-first up to the buffer's capacity (the newest few thousand candidates are retained) — and each task index maps deterministically to one candidate. GRPO group members dispatched as independent rollouts therefore still bind the same source rollout.
 
-**Online** (`online = true`, typically with `buffer_dir = "self"`): the buffer is the run's own growing rollout dir. The orchestrator resolves the `"self"` sentinel to `<output_dir>/rollouts` before the env servers spawn. Four consequences:
+**Online** (`buffer_dir = "self"`, which implies `online = true`): the buffer is the run's own growing rollout dir. The orchestrator resolves the `"self"` sentinel to `<output_dir>/rollouts` before the env servers spawn. Four consequences:
 
 - **Barrier semantics.** The jsonl is written non-atomically, so an online buffer only reads steps whose sibling `train_rollouts.bin` exists — the orchestrator writes and closes the jsonl strictly before the atomic rename that creates the `.bin`, so the barrier file marks the jsonl complete. This means online replay requires the filesystem rollout transport (a run with a non-filesystem transport never writes the `.bin`). Offline buffers skip the barrier: finished runs' files are complete by definition.
 - **Group dispatch.** Every request samples a fresh source rollout, so the whole GRPO group must share one draw — the taskset forces whole-group dispatch (`REQUIRES_GROUP_ROLLOUTS`), and all group members arrive at the env server as a single request.
-- **Startup.** Until the run has produced its first replayable step, replay requests wait briefly, then fail (with a logged warning) so their dispatch permits free up for the source envs — the orchestrator retries replay groups naturally, and they start succeeding once the first step's barrier appears. The buffer rescans for new steps during training; `max_steps_back` doubles as the eviction policy, keeping the buffer on recent policy behavior.
+- **Startup.** Until the run has produced its first replayable step, replay requests wait briefly, then fail (with a logged warning) so their dispatch permits free up for the source envs — the orchestrator retries replay groups naturally, and they start succeeding once the first step's barrier appears. The buffer rescans for new steps during training, and its capacity doubles as recency eviction: the newest candidates are retained, keeping the buffer on recent policy behavior.
 - **Choose your sources.** A `"self"` buffer sees every train env's saved rollouts — including the replay envs' own. By default (`source_envs` unset) replay-derived records are skipped: a judge judging its own judge rollouts is a feedback loop, not a task. Listing env names replays exactly those — and naming a replay env is the deliberate opt-in for chained derivations (a recheck env sourcing another recheck env is depth-2 self-correction; the env topology *is* the depth control, and scoring/tools/provisioning always resolve to the innermost original task).
 
 ## Configuration
@@ -44,32 +44,36 @@ The env is registered as `replay-v1` (installed via the `envs` extra). Configure
 ```toml
 [orchestrator.train.env.taskset]
 id = "replay-v1"
-mode = "judge"
-buffer_dir = "self"
-online = true
+buffer_dir = "self"        # implies online
 # Judge only the fresh env's rollouts. (Unset, source_envs replays every env except
 # replay envs; listing a replay env by name opts into chained derivations.)
 source_envs = ["reverse-text"]
+
+[orchestrator.train.env.taskset.derivation]
+type = "judge"
 ```
 
 ### Field Reference
 
-`buffer_dir`, `mode`, and (for continue/recheck) `inner` are the load-bearing fields; the rest tune candidate selection.
+Core fields (every replay env):
 
 | Field | Default | What it does |
 |---|---|---|
 | `buffer_dir` | *(required)* | The saved-rollout dir to replay: a run's `rollouts` dir (or the run dir containing it). Under prime-rl the literal `"self"` resolves to this run's own rollout dir (an online buffer over the run's freshly written rollouts). |
-| `mode` | `"judge"` | Which derived task this env serves (`continue`, `recheck`, `judge`). One mode per env entry — mix modes (and set their ratios) with multiple `[[orchestrator.train.env]]` entries. |
-| `inner` | `None` | The original taskset's config — continue/recheck rollouts are scored by it, so it must reproduce the source run's taskset config. Judge scoring is self-contained and forbids this field. |
-| `online` | `false` | Treat the buffer as growing (this run's own rollouts): steps are rescanned during training, only barrier-complete steps are read, and every request samples a fresh source rollout (which forces whole-group dispatch so GRPO groups share one source). Offline buffers are indexed once, deterministically per task index. |
-| `max_steps_back` | `None` | Recency window: only replay rollouts from the last N steps (None = no window). For online buffers this is also the eviction policy. |
-| `stop_conditions` | `None` | Only replay rollouts with these stop conditions (None = any non-error rollout). E.g. `["agent_completed"]` restricts recheck to conversations that actually finished. |
+| `derivation` | *(required)* | The derived task this env serves: `{ type = "continue" \| "recheck" \| "judge", ... }` with the per-derivation fields below. One derivation per env entry. |
 | `source_envs` | `None` | Which envs' rollouts to replay, by their stamped name (`info.prime_rl.env_name`). Unset: every env except replay envs. An explicit list replays exactly those — naming a replay env opts into chained derivations (recheck a recheck). With a list set, records without the stamp never match. |
-| `allow_container` | `false` | Allow continue/recheck over rollouts whose task ran in a container image. The container state the transcript references is gone — a fresh container is provisioned from the same image, so the model resumes in a reset world. Off by default; judge never provisions a container. |
-| `success_threshold` | `0.5` | Judge: the source rollout counts as correct when its reward exceeds this. |
-| `recheck_instruction` | *(built-in prompt)* | Recheck: the user turn appended to the finished conversation. |
-| `judge_instruction` | *(built-in prompt)* | Judge: the prompt template; `{transcript}` is replaced with the rendered rollout. |
-| `max_transcript_chars` | `60000` | Judge: total transcript budget; over it, middle messages are elided (the task statement and the trailing conversation are kept). |
+| `filters` | `[]` | Optional source filters, applied at index time — add entries only when you want them. Currently: `{ type = "stop-condition", allow = ["agent_completed", ...] }` (only replay sources that stopped one of these ways). |
+| `online` | *(inferred)* | Set automatically for `buffer_dir = "self"`. Set it yourself only to treat another still-running run's dir as a growing buffer. |
+
+Per-derivation fields:
+
+| Field | On | Default | What it does |
+|---|---|---|---|
+| `inner` | `continue`, `recheck` | *(required)* | The original taskset's config — it scores the derived rollouts and provides their tools, so it must reproduce the source run's taskset config. |
+| `allow_container` | `continue`, `recheck` | `false` | Allow sources whose task ran in a container image. The container state the transcript references is gone — a fresh container is provisioned from the same image, so the model resumes in a reset world. |
+| `instruction` | `recheck`, `judge` | *(built-in prompt)* | Recheck: the user turn appended to the finished conversation. Judge: the prompt template; `{transcript}` is replaced with the rendered rollout. |
+| `success_threshold` | `judge` | `0.5` | The source rollout counts as correct when its reward exceeds this. |
+| `max_transcript_chars` | `judge` | `60000` | Total transcript budget, sized to the model's context; over it, middle messages are elided (the task statement and the trailing conversation are kept). Single messages are capped at 1/20 of it. |
 
 ### Example
 
@@ -98,25 +102,25 @@ max_total_tokens = 2048
 
 [orchestrator.train.env.taskset]
 id = "replay-v1"
-mode = "judge"
 buffer_dir = "self"
-online = true
-# Judge only the fresh env's rollouts. (Unset, source_envs replays every env except
-# replay envs; listing a replay env by name opts into chained derivations.)
 source_envs = ["reverse-text"]
-max_steps_back = 4        # judge only the last 4 steps (and evict older ones)
+
+[orchestrator.train.env.taskset.derivation]
+type = "judge"
 max_transcript_chars = 4000
 ```
 
-For an offline continue/recheck env, point `buffer_dir` at the prior run and set `inner`:
+For an offline continue/recheck env, point `buffer_dir` at the prior run and set the derivation's `inner`:
 
 ```toml
 [orchestrator.train.env.taskset]
 id = "replay-v1"
-mode = "recheck"
 buffer_dir = "outputs/prior_run/rollouts"
 
-[orchestrator.train.env.taskset.inner]
+[orchestrator.train.env.taskset.derivation]
+type = "recheck"
+
+[orchestrator.train.env.taskset.derivation.inner]
 id = "reverse-text-v1"
 ```
 
@@ -128,8 +132,9 @@ Every replay rollout logs `replay/source_reward` (the reward the source rollout 
 
 ## Constraints and Caveats
 
-- **One mode — and one judge — per env entry.** `mode` is a taskset field, and env-level settings (harness runtime, token budgets, `ratio`) are per-env, so judge belongs on its own `[[orchestrator.train.env]]` entry rather than sharing one with continue/recheck.
+- **One derivation — and one judge — per env entry.** The derivation is a taskset field, and env-level settings (harness runtime, token budgets, `ratio`) are per-env, so judge belongs on its own `[[orchestrator.train.env]]` entry rather than sharing one with continue/recheck.
 - **Harness: match the source for continue/recheck; `null` for judge.** Continue and recheck resume a conversation — run them under the same harness the source env used, so the resumed rollout has the same scaffold and harness-side tools as the original. The harness must support message-prompt seeding (`SUPPORTS_MESSAGE_PROMPT`; the built-in `default` and `null` harnesses do — string-prompt CLI harnesses can't be seeded with a prior conversation). Judge is a tool-less verdict task: use the `null` chat-loop harness on a subprocess runtime.
+- **Replay envs need explicit ratios.** Without ratios, envs are weighted by task count — an online replay env advertises a single virtual task and would effectively never be drawn. Setting `ratio` on the replay env forces ratios on every train env (the all-or-none rule), which is the intended, explicit state.
 - **Set explicit token budgets on continue/recheck envs.** Continue seeds carry a compaction summary and recheck seeds carry the whole source conversation, so replay prompts are far longer than a fresh task's. Set `max_input_tokens` / `max_total_tokens` on the replay env entry so seeds fit `seq_len` instead of truncating mid-rollout.
 - **Long continue tasks age off-policy.** A continue task resumes deep into a long trajectory and keeps going, so its rollout can span many trainer steps and be discarded by `orchestrator.max_off_policy_steps` (default 8). If a continue env shows sustained `errored_rollouts`, raise `max_off_policy_steps` or shorten the tasks.
 - **`source_envs` needs the stamp.** The filter matches `info.prime_rl.env_name`, which prime-rl's rollout writer stamps into every saved record. Records without the stamp (rollout files from other producers) never match an explicit list — leave `source_envs` unset to replay them.
