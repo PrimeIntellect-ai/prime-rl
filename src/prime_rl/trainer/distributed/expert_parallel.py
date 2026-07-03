@@ -5,6 +5,7 @@ from torch.distributed import ProcessGroup
 from torch.distributed.tensor import DeviceMesh, Shard, distribute_module, distribute_tensor
 from torch.distributed.tensor.parallel import ParallelStyle
 from torchtitan.distributed.expert_parallel import ExpertParallel
+from torchao.prototype.moe_training.ep import a2a_combine_hp_fwd_mxfp8_bwd
 
 
 class MXFP8ExpertParallel(ExpertParallel):
@@ -28,7 +29,6 @@ class MXFP8ExpertParallel(ExpertParallel):
         return routed_input, num_tokens_per_expert_group
 
     def _token_combine(self, mod, routed_output, device_mesh):
-        from torchao.prototype.moe_training.ep import a2a_combine_hp_fwd_mxfp8_bwd
 
         return a2a_combine_hp_fwd_mxfp8_bwd(
             routed_output,
