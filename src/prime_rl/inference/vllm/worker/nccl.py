@@ -24,42 +24,6 @@ else:
 
 logger = init_logger("vllm.inference.vllm.worker_nccl")
 
-# NemotronH mixer.D is dropped by vLLM's layerwise online-reload path (left uninitialized).
-_RELOAD_CORRUPTED_SUFFIXES = (".mixer.D",)
-
-
-def _restore_reload_corrupted_params(model: Module, received: dict[str, torch.Tensor]) -> None:
-    """Work around a vLLM layerwise-reload bug for NemotronH (present through vLLM 0.23.0).
-
-    The online reload drops the weight load for every Mamba layer's ``mixer.D`` (the SSD skip
-    connection), leaving it as uninitialized ``empty_strided`` memory -- it reads back as garbage
-    (NaN/inf) and the logits go NaN after a weight update. Root cause: ``mixer.A`` is loaded with
-    ``composed_weight_loader`` (an extra in-place transform copy), so the reload element counter
-    double-counts ``A`` and finalizes the layer before ``D`` (loaded last) is loaded. The received
-    broadcast value is correct, so restore D from it via the param's own ``weight_loader``.
-
-    Fixed upstream by vllm-project/vllm#44814 (merged 2026-06-10) but NOT in the pinned 0.23.0
-    release; remove this shim once we bump to a vLLM release that includes it.
-    """
-
-    def _layer_key(name: str) -> str:
-        index = name.find("layers.")
-        return name[index:] if index >= 0 else name
-
-    received_by_key = {_layer_key(name): tensor for name, tensor in received.items()}
-    for name, param in model.named_parameters():
-        if not name.endswith(_RELOAD_CORRUPTED_SUFFIXES):
-            continue
-        tensor = received_by_key.get(_layer_key(name))
-        if tensor is None:
-            continue
-        tensor = tensor.to(device=param.device)
-        weight_loader = getattr(param, "weight_loader", None)
-        if weight_loader is not None:
-            weight_loader(param, tensor)
-        elif tensor.shape == param.shape:
-            param.data.copy_(tensor.to(param.dtype))
-
 
 def receive_integer(communicator: PyNcclCommunicator) -> int:
     """Receive an integer from the trainer master rank using NCCL communicator."""
@@ -184,20 +148,9 @@ class NCCLWeightUpdateWorker(Worker):
             update_mla_absorbed_weights(model)
             return
 
-        # vLLM's layerwise reload drops NemotronH mixer.D's weight load (see
-        # _restore_reload_corrupted_params). Capture the correct received value to restore after.
-        received_reload_fix: dict[str, torch.Tensor] = {}
-
-        def _capture_reload_fix(weights):
-            for name, tensor in weights:
-                if name.endswith(_RELOAD_CORRUPTED_SUFFIXES):
-                    received_reload_fix[name] = tensor.detach().to("cpu", copy=True)
-                yield name, tensor
-
         load_weights_checkpoint_layerwise(
             model,
-            _capture_reload_fix(state_iter),
+            state_iter,
             self.model_runner.model_config,
             self.vllm_config,
         )
-        _restore_reload_corrupted_params(model, received_reload_fix)

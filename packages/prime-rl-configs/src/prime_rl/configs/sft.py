@@ -178,10 +178,6 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class SFTExperimentalConfig(BaseConfig):
-    pass
-
-
 class SFTConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
 
@@ -232,7 +228,7 @@ class SFTConfig(BaseConfig):
     trace_path: Path | None = None
     """Path to write the PyTorch profiler trace to."""
 
-    dist_timeout_seconds: int = 600
+    dist_timeout_seconds: int = 3600
     """Timeout in seconds for torch distributed ops."""
 
     loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "liger_fused"
@@ -248,8 +244,6 @@ class SFTConfig(BaseConfig):
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
-
-    experimental: SFTExperimentalConfig = SFTExperimentalConfig()
 
     ### Pre-validation normalization
 

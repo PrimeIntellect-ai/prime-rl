@@ -151,16 +151,19 @@ Training environments are an array of tables — set one per env, optionally wit
 id = "math-env"
 name = "gsm8k"
 args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
+ratio = 3  # 75% of batches
 
 [[orchestrator.train.env]]
 id = "reverse-text"
-ratio = 0.25  # 25% of batches; remaining 75% goes to math-env
+ratio = 1  # default — 25% of batches
 
 [[orchestrator.eval.env]]
 id = "math-env"
 name = "gsm8k-eval"
 args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
 ```
+
+`ratio` defaults to `1` (equal weight per env); values are relative weights normalized to probabilities across envs.
 
 `args` is forwarded verbatim to the environment's `load_environment(**args)`.
 

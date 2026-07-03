@@ -144,7 +144,17 @@ echo "MASTER_PORT=${MASTER_PORT}"
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
+{% if not shared_fs %}
+# Node-local venv (e.g. UV_PROJECT_ENVIRONMENT on /tmp): a bare `uv sync` would only
+# build the batch node, so srun runs it on every node (one task each) and blocks until
+# all finish. `set -e` above aborts the job if any node's sync fails. Re-source .env
+# inside the task because unexported vars in .env don't cross srun even with normal
+# SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
+srun --ntasks-per-node=1 bash -c 'cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras'
+{% else %}
+# Shared (NFS) venv: one sync on the batch node populates it for all nodes.
 uv sync --all-extras
+{% endif %}
 
 {% if pre_run_command %}
 # Pre-run command
