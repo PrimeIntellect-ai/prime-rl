@@ -1380,7 +1380,7 @@ dependencies = [
 [[package]]
 name = "flash-linear-attention"
 version = "0.5.2"
-source = { git = "https://github.com/fla-org/flash-linear-attention#bd67d11782696e4ff54ee6cb411483621ed3d93d" }
+source = { git = "https://github.com/fla-org/flash-linear-attention#a95475391465272cd3dc11e47d4a7772522dc9b7" }
 dependencies = [
     { name = "einops" },
     { name = "transformers" },
