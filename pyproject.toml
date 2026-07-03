@@ -110,7 +110,8 @@ envs = [
     "prolog-v1",
     "r2e-gym-v1",
     "redsearcher-v1",
-    "replay-v1",
+    "replay-continue-v1",
+    "replay-recheck-v1",
     "reverse-text",
     "reverse-text-v1",
     "rlm-search",
@@ -284,7 +285,8 @@ patterned-needle-in-haystack-v1 = { path = "deps/research-environments/environme
 prolog-v1 = { path = "deps/research-environments/environments/prolog_v1", editable = true }
 r2e-gym-v1 = { path = "deps/research-environments/environments/r2e_gym_v1", editable = true }
 redsearcher-v1 = { path = "deps/research-environments/environments/redsearcher_v1", editable = true }
-replay-v1 = { path = "environments/replay_v1", editable = true }
+replay-continue-v1 = { path = "environments/replay_continue_v1", editable = true }
+replay-recheck-v1 = { path = "environments/replay_recheck_v1", editable = true }
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
 reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editable = true }
 rlm-search = { path = "deps/research-environments/environments/rlm_search", editable = true }

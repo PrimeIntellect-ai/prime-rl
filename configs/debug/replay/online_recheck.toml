@@ -43,18 +43,15 @@ max_input_tokens = 1536
 max_total_tokens = 2048
 
 [orchestrator.train.env.taskset]
-id = "replay-v1"
+id = "replay-recheck-v1"
 buffer_dir = "self"        # implies online
 # Recheck only the fresh env's rollouts. (Unset, source_envs replays every env except
 # replay envs; listing a replay env by name opts into chained derivations.)
 source_envs = ["reverse-text"]
 
-[orchestrator.train.env.taskset.derivation]
-type = "recheck"
-
 # Rechecks are scored by the original taskset, so `inner` must reproduce the source
 # run's taskset config (here the base env's defaults).
-[orchestrator.train.env.taskset.derivation.inner]
+[orchestrator.train.env.taskset.inner]
 id = "reverse-text-v1"
 
 [trainer.optim]

@@ -4025,7 +4025,8 @@ envs = [
     { name = "prolog-v1" },
     { name = "r2e-gym-v1" },
     { name = "redsearcher-v1" },
-    { name = "replay-v1" },
+    { name = "replay-continue-v1" },
+    { name = "replay-recheck-v1" },
     { name = "reverse-text" },
     { name = "reverse-text-v1" },
     { name = "rlm-search" },
@@ -4163,7 +4164,8 @@ requires-dist = [
     { name = "r2e-gym-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/r2e_gym_v1" },
     { name = "redsearcher-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/redsearcher_v1" },
     { name = "renderers", editable = "deps/renderers" },
-    { name = "replay-v1", marker = "extra == 'envs'", editable = "environments/replay_v1" },
+    { name = "replay-continue-v1", marker = "extra == 'envs'", editable = "environments/replay_continue_v1" },
+    { name = "replay-recheck-v1", marker = "extra == 'envs'", editable = "environments/replay_recheck_v1" },
     { name = "reverse-text", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text" },
     { name = "reverse-text-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text_v1" },
     { name = "rich", specifier = ">=14.0.0" },
@@ -4854,9 +4856,20 @@ dev = [
 ]
 
 [[package]]
-name = "replay-v1"
+name = "replay-continue-v1"
 version = "0.1.0"
-source = { editable = "environments/replay_v1" }
+source = { editable = "environments/replay_continue_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
+
+[[package]]
+name = "replay-recheck-v1"
+version = "0.1.0"
+source = { editable = "environments/replay_recheck_v1" }
 dependencies = [
     { name = "verifiers" },
 ]

@@ -1,0 +1,13 @@
+[project]
+name = "replay-recheck-v1"
+version = "0.1.0"
+description = "replay-recheck-v1 — a derivation over verifiers' replay taskset base."
+requires-python = ">=3.10"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["replay_recheck_v1"]

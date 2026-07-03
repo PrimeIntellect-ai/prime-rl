@@ -1,28 +1,23 @@
 # Replay
 
-The `replay-v1` environment turns a run's saved rollouts back into training tasks. Every RL run writes its train rollouts to `<output_dir>/rollouts/step_N/train_rollouts.jsonl` (one WireTrace per line, stamped with `info.prime_rl` metadata); the replay taskset indexes those files as a buffer and serves derived tasks from them — resume a conversation from a compaction point or a tool call, or ask the model to re-check a finished attempt. A replay env is a normal `[[orchestrator.train.env]]` entry mixed into training with a `ratio`, over either a previous run's rollouts (offline) or the current run's own (online, `buffer_dir = "self"`).
+The replay tasksets turn a run's saved rollouts back into training tasks. Every RL run writes its train rollouts to `<output_dir>/rollouts/step_N/train_rollouts.jsonl` (one WireTrace per line, stamped with `info.prime_rl` metadata); a replay taskset indexes those files as a buffer and serves tasks derived from them — resume a conversation from a compaction point or a tool call, or ask the model to re-check a finished attempt. A replay env is a normal `[[orchestrator.train.env]]` entry mixed into training with a `ratio`, over either a previous run's rollouts (offline) or the current run's own (online, `buffer_dir = "self"`).
+
+The machinery is split like verifiers' `harbor`/`textarena` tasksets: the shared base (buffer, trace surgery, scoring delegation) lives in verifiers as `verifiers.v1.tasksets.replay`, and each derivation is a thin subclass package under `environments/`:
+
+| Taskset id | Derived task |
+|---|---|
+| `replay-continue-v1` | Resume a source rollout mid-way — from a context-compaction point (`anchor = "compaction"`: the seed is the post-compaction prompt the original harness restarted from; one task per compaction) or right after a tool result (`anchor = "tool-call"`: one deterministically sampled resumable point per source; only points where every issued call has its result). |
+| `replay-recheck-v1` | The finished conversation plus an appended check-your-work user turn (`instruction`); one task per rollout, seeded from its final state. |
+
+Every derivation is scored by the original taskset: `inner` must reproduce the source run's taskset config, and the inner rewards land on the trace with their original names and weights. The replay base also delegates tools, setup, and finalize to the inner taskset, so tool-using tasks replay with their tools intact. Each drawn source spawns a fresh GRPO group.
 
 ## Table of Contents
 
-- [The Derivations](#the-derivations)
 - [Offline vs Online Buffers](#offline-vs-online-buffers)
 - [Configuration](#configuration)
-  - [Field Reference](#field-reference)
-  - [Example](#example)
 - [Metrics](#metrics)
+- [Writing a New Derivation](#writing-a-new-derivation)
 - [Constraints and Caveats](#constraints-and-caveats)
-
-## The Derivations
-
-Each replay env serves exactly one derivation, chosen by `derivation.type`; mix derivations (and weight them) with multiple env entries.
-
-| Derivation | Seed |
-|---|---|
-| `continue`, `anchor = "compaction"` | The post-compaction prompt (system + summary user message) recovered from the trace's message graph — the model resumes the task from a context-compaction point. One task per compaction, so only rollouts that actually compacted are sources. |
-| `continue`, `anchor = "tool-call"` | The conversation up to (and including) a tool result — the model resumes right after seeing it. One deterministically sampled resume point per source rollout; only points where every issued tool call has its result are resumable. |
-| `recheck` | The finished conversation plus an appended check-your-work user turn (`instruction`). One task per rollout, seeded from its final state. |
-
-Every derivation is scored by the original taskset: `inner` must reproduce the source run's taskset config, and the inner rewards land on the trace with their original names and weights. The replay taskset also delegates tools, setup, and finalize to the inner taskset, so tool-using tasks replay with their tools intact. Each drawn source spawns a fresh GRPO group.
 
 ## Offline vs Online Buffers
 
@@ -37,47 +32,7 @@ Every derivation is scored by the original taskset: `inner` must reproduce the s
 
 ## Configuration
 
-The env is registered as `replay-v1` (installed via the `envs` extra). Configure it as a v1 taskset on a train env entry:
-
-```toml
-[orchestrator.train.env.taskset]
-id = "replay-v1"
-buffer_dir = "self"        # implies online
-# Replay only the fresh env's rollouts. (Unset, source_envs replays every env except
-# replay envs; listing a replay env by name opts into chained derivations.)
-source_envs = ["swe"]
-
-[orchestrator.train.env.taskset.derivation]
-type = "continue"
-anchor = "compaction"
-
-[orchestrator.train.env.taskset.derivation.inner]
-id = "swe-env-v1"
-```
-
-### Field Reference
-
-Core fields (every replay env):
-
-| Field | Default | What it does |
-|---|---|---|
-| `buffer_dir` | *(required)* | The saved-rollout dir to replay: a run's `rollouts` dir (or the run dir containing it). Under prime-rl the literal `"self"` resolves to this run's own rollout dir (an online buffer over the run's freshly written rollouts). |
-| `derivation` | *(required)* | The derived task this env serves: `{ type = "continue" \| "recheck", ... }` with the per-derivation fields below. One derivation per env entry. |
-| `source_envs` | `None` | Which envs' rollouts to replay, by their stamped name (`info.prime_rl.env_name`). Unset: every env except replay envs. An explicit list replays exactly those — naming a replay env opts into chained derivations (recheck a recheck). With a list set, records without the stamp never match. |
-| `online` | *(inferred)* | Set automatically for `buffer_dir = "self"`. Set it yourself only to treat another still-running run's dir as a growing buffer. |
-
-Per-derivation fields:
-
-| Field | On | Default | What it does |
-|---|---|---|---|
-| `inner` | both | *(required)* | The original taskset's config — it scores the derived rollouts and provides their tools, so it must reproduce the source run's taskset config. |
-| `allow_container` | both | `false` | Allow sources whose task ran in a container image. The container state the transcript references is gone — a fresh container is provisioned from the same image, so the model resumes in a reset world. |
-| `anchor` | `continue` | `"compaction"` | Where to resume: `"compaction"` (each compaction point) or `"tool-call"` (one sampled resumable tool result per source). |
-| `instruction` | `recheck` | *(built-in prompt)* | The user turn appended to the finished conversation. |
-
-### Example
-
-A run that spends 3/4 of each batch on fresh reverse-text rollouts and 1/4 re-checking its own recent rollouts. Ratios are all-or-none across train envs: once any env sets one, every env must.
+The derivation packages are installed via the `envs` extra. A replay env's taskset config is flat — the base fields plus the package's own:
 
 ```toml
 [orchestrator]
@@ -91,7 +46,7 @@ ratio = 3.0
 taskset = { id = "reverse-text-v1" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
-# Recheck tasks over this run's own rollouts (1/4).
+# Recheck tasks over this run's own rollouts (1/4). Ratios are all-or-none.
 [[orchestrator.train.env]]
 name = "replay-recheck"
 ratio = 1.0
@@ -101,16 +56,25 @@ max_input_tokens = 1536
 max_total_tokens = 2048
 
 [orchestrator.train.env.taskset]
-id = "replay-v1"
+id = "replay-recheck-v1"
 buffer_dir = "self"
 source_envs = ["reverse-text"]
 
-[orchestrator.train.env.taskset.derivation]
-type = "recheck"
-
-[orchestrator.train.env.taskset.derivation.inner]
+[orchestrator.train.env.taskset.inner]
 id = "reverse-text-v1"
 ```
+
+Base fields (every replay taskset, from `verifiers.v1.tasksets.replay`):
+
+| Field | Default | What it does |
+|---|---|---|
+| `buffer_dir` | *(required)* | The saved-rollout dir to replay: a run's `rollouts` dir (or the run dir containing it). Under prime-rl the literal `"self"` resolves to this run's own rollout dir (an online buffer over the run's freshly written rollouts). |
+| `inner` | *(required)* | The original taskset's config — it scores the derived rollouts and provides their tools, so it must reproduce the source run's taskset config. |
+| `source_envs` | `None` | Which envs' rollouts to replay, by their stamped name (`info.prime_rl.env_name`). Unset: every env except replay envs. An explicit list replays exactly those — naming a replay env opts into chained derivations (recheck a recheck). With a list set, records without the stamp never match. |
+| `allow_container` | `false` | Allow sources whose task ran in a container image. The container state the transcript references is gone — a fresh container is provisioned from the same image, so the model resumes in a reset world. |
+| `online` | *(inferred)* | Set automatically for `buffer_dir = "self"`. Set it yourself only to treat another still-running run's dir as a growing buffer. |
+
+Per-package fields: `replay-continue-v1` adds `anchor = "compaction" | "tool-call"`; `replay-recheck-v1` adds `instruction` (the appended check-your-work turn, with a built-in default).
 
 Runnable debug configs live at `configs/debug/replay/` (`online_recheck.toml`, `offline_recheck.toml`).
 
@@ -118,9 +82,13 @@ Runnable debug configs live at `configs/debug/replay/` (`online_recheck.toml`, `
 
 Every replay rollout logs `replay/source_reward` (the reward the source rollout received) and `replay/source_step` (the trainer step that wrote it) alongside the inner taskset's own rewards and metrics.
 
+## Writing a New Derivation
+
+A derivation is a thin package over the base, exactly like `swebench-pro-v1` over verifiers' `harbor` taskset: subclass `ReplayTaskset` (binding your narrowed config in the generic) and implement two hooks — `record_anchors` (the resume points one saved rollout offers; each becomes one task) and `build_prompt` (the seeded conversation for one anchor). The base owns the buffer, online semantics, lazy binding, lineage, and inner-taskset delegation; `verifiers.v1.tasksets.replay.surgery` provides the graph enumerators (`compaction_forks`, `tool_call_anchors`, `recheck_seed`, ...). See `environments/replay_recheck_v1` for the ~30-line reference. Register the package in the root `pyproject.toml` (`envs` extra + `[tool.uv.sources]`) and `uv sync`.
+
 ## Constraints and Caveats
 
-- **One derivation per env entry.** The derivation is a taskset field, and env-level settings (harness runtime, token budgets, `ratio`) are per-env — mix derivations with multiple env entries.
+- **One derivation per env entry.** Env-level settings (harness runtime, token budgets, `ratio`) are per-env — mix derivations with multiple env entries.
 - **Harness: match the source.** Replay resumes conversations — run the replay env under the same harness the source env used, so the resumed rollout has the same scaffold and harness-side tools as the original. The harness must support message-prompt seeding (`SUPPORTS_MESSAGE_PROMPT`; the built-in `default` and `null` harnesses do — string-prompt CLI harnesses can't be seeded with a prior conversation).
 - **Replay envs need explicit ratios.** Without ratios, envs are weighted by task count — an online replay env advertises a single virtual task and would effectively never be drawn. Setting `ratio` on the replay env forces ratios on every train env (the all-or-none rule), which is the intended, explicit state.
 - **Set explicit token budgets.** Replay seeds carry compaction summaries, tool-call prefixes, or whole source conversations, so replay prompts are far longer than a fresh task's. Set `max_input_tokens` / `max_total_tokens` on the replay env entry so seeds fit `seq_len` instead of truncating mid-rollout.

@@ -1,19 +1,20 @@
 # Replay — Debug Configs
 
-Minimal end-to-end configs for the `replay-v1` taskset (`environments/replay_v1`), which turns
+Minimal end-to-end configs for the replay derivation tasksets (`environments/replay_*_v1`,
+thin subclasses of `verifiers.v1.tasksets.replay`), which turn
 saved rollouts (`<run>/rollouts/step_*/train_rollouts.jsonl`) back into training tasks. Each config
 mixes a fresh `reverse-text-v1` env with one replay env via ratios (ratios are all-or-none across
 train envs), using `PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT` as the policy and the `null`
 harness with the subprocess runtime for both envs.
 
-| Config | Derivation | Buffer | Notes |
+| Config | Taskset | Buffer | Notes |
 |---|---|---|---|
-| `offline_recheck.toml` | `recheck` | offline, a prior run's `rollouts` dir | edit `buffer_dir` to a real prior run first |
-| `online_recheck.toml` | `recheck` | `buffer_dir = "self"` — this run's own rollouts | forces whole-group dispatch; buffer fills as the run trains |
+| `offline_recheck.toml` | `replay-recheck-v1` | offline, a prior run's `rollouts` dir | edit `buffer_dir` to a real prior run first |
+| `online_recheck.toml` | `replay-recheck-v1` | `buffer_dir = "self"` — this run's own rollouts | forces whole-group dispatch; buffer fills as the run trains |
 
 Every derivation is scored by its `inner` taskset, which must reproduce the source run's taskset
 config. The replay env gets extra `max_input_tokens` headroom because its seeds carry whole source
-conversations. `continue` (`anchor = "compaction" | "tool-call"`) has no debug config here:
+conversations. `replay-continue-v1` (`anchor = "compaction" | "tool-call"`) has no debug config here:
 reverse-text rollouts neither compact nor call tools — point one at an agentic run's buffer instead.
 
 ## Run the debug configs
