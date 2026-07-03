@@ -421,6 +421,8 @@ def train(config: TrainerConfig):
                 else None
             )
 
+            seq_lens = micro_batch["seq_lens"].to("cuda") if micro_batch.get("seq_lens") is not None else None
+
             labels = shift_tensor_left(input_ids)
 
             # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
@@ -428,6 +430,9 @@ def train(config: TrainerConfig):
                 raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
 
             if cp_enabled:
+                # seq_lens spans the pre-shard sequence; consuming it under CP needs
+                # global-boundary handling that isn't wired up here yet.
+                seq_lens = None
                 input_ids, forward_position_ids = setup_cp_params(
                     input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
                 )
@@ -465,6 +470,7 @@ def train(config: TrainerConfig):
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
+                    seq_lens=seq_lens,
                     routed_experts=routed_experts,
                 )
 
