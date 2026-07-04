@@ -195,7 +195,8 @@ Key knobs on the `taskset` table:
 - `mode = "continue"` resumes a rollout mid-way; `anchor` picks the resume point: `"compaction"` (default; one task per recorded context restart, detected structurally so records from different harnesses mix freely) or `"tool-call"` (one deterministically-drawn resume point per rollout, right after a complete tool-result run; needs a message-seeding harness).
 - `mode = "recheck"` replays the final branch of each attempt (truncation artifacts stripped) plus a verification turn (`recheck_prompt` overrides the wording).
 - `max_seed_tokens` skips seeds whose context exceeds the budget — set it so seeds leave room to sample under the trainer's `seq_len`.
-- Lines that don't validate as the source taskset's task type (e.g. other envs' rollouts in a mixed `train_rollouts.jsonl`) are skipped and counted.
+- `records` globs are frozen to the concrete matched files at config validation, so every env-server pool worker builds the identical task list — point it at a finished run's records, not a live producer's output dir.
+- Lines that don't validate as the source taskset's task type (e.g. other envs' rollouts in a mixed `train_rollouts.jsonl`) are skipped and counted. The filter is structural: for a source whose task type has no distinguishing required fields, use single-env record files instead.
 
 Group rollouts of one seeded task form a regular GRPO group, so a group-relative algorithm gets contrastive signal at exactly the resumed state. The sandbox is fresh on re-entry: `setup` runs anew, and no filesystem state from the source rollout is replayed until sandbox snapshotting lands (records will then carry snapshot refs that the replay taskset restores automatically). Other recycling schemes can subclass `ReplayTaskset` and override `seeds()` — see `deps/verifiers/verifiers/v1/tasksets/replay/`.
 
