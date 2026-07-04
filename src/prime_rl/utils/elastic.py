@@ -342,7 +342,9 @@ class ElasticInferencePool:
         if self._desired.name and self._desired.path:
             try:
                 self.logger.debug(f"Loading adapter {self._desired.name} on {ip}")
-                await load_lora_adapter([self._admin_clients[ip]], self._desired.name, self._desired.path)
+                await load_lora_adapter(
+                    [self._admin_clients[ip]], self._desired.name, self._desired.path, step=self._desired.step
+                )
             except Exception as e:
                 server.status = "unhealthy"
                 server.sync_failures += 1

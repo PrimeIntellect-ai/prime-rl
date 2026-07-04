@@ -1,5 +1,5 @@
 """WeightWatcher: polls the broadcast dir, advances ``Policy``, notifies
-observers (dispatcher → off-policy cancel). Standalone async task; the
+observers (dispatcher → off-policy accounting). Standalone async task; the
 orchestrator's barrier bounds the in-flight lead."""
 
 from __future__ import annotations
@@ -92,16 +92,10 @@ class WeightWatcher:
                     f"Orchestrator resumed: checkpoint {next_step} ready (after {format_time(self.last_wait_for_ckpt_time)})"
                 )
 
-            # Drain off-policy rollouts BEFORE pausing the inference engines.
-            # Aborting a rollout triggers vLLM's KV-connector cleanup (NIXL's
-            # ``_reqs_not_processed``), which is only propagated to the workers
-            # while the engine is stepping. If we drain after resume instead,
-            # the aborts race with the flush of KV transfers that completed
-            # during the pause and trip ``assert req_id in self.requests`` in
-            # the decode scheduler's ``_update_from_kv_xfer_finished`` — killing
-            # the engine and cascading to every DP rank. Draining first lets the
-            # aborts settle under normal stepping. ``on_new_version`` (below)
-            # still runs post-update for observers that need the live version.
+            # Age in-flight rollouts BEFORE pausing the inference engines, so
+            # every rollout still generating when the new weights land gets its
+            # ``off_policy_steps`` bumped. ``on_new_version`` (below) still runs
+            # post-update for observers that need the live version.
             for observer in self.observers:
                 try:
                     await observer.on_version_pending(next_step)

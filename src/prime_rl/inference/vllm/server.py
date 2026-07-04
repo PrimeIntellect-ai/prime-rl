@@ -27,6 +27,7 @@ from prime_rl.inference.patches import (
     monkey_patch_tokenize_params_validation,
     monkey_patch_vllm_padded_input_scrub,
 )
+from prime_rl.inference.vllm.weight_version import monkey_patch_strip_weight_versions_from_chat
 
 # NOTE: Fix harmony stop token propagation for GPT-OSS models
 # Upstream issue still open: https://github.com/vllm-project/vllm/issues/22519
@@ -46,6 +47,10 @@ monkey_patch_vllm_padded_input_scrub()
 # routed_experts from chat responses since the server-wide enable flag has no
 # per-request toggle.
 monkey_patch_strip_routed_experts_from_chat()
+# NOTE: weight-version segments ride the finish kv_transfer_params and are only
+# consumed on the /generate path; strip them from chat responses so the PD
+# router never sees a foreign key there.
+monkey_patch_strip_weight_versions_from_chat()
 # NOTE: vLLM hard-codes a 120s DP coordinator startup timeout, which the rank-0
 # API server blows through when all engine-core ranks on the node are loading
 # weights concurrently (multi-node disaggregated deployments).
@@ -87,7 +92,14 @@ async def resume(request: Request):
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
-    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    client = engine_client(request)
+    await client.collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    # Stamp the new version on every engine core's scheduler while the engine
+    # is still paused, so per-token weight-version segments (see
+    # ``prime_rl.inference.vllm.weight_version``) have an exact boundary.
+    step = data.get("step")
+    if step is not None:
+        await client.engine_core.call_utility_async("set_prime_weight_version", int(step))
     return {"status": "ok"}
 
 
@@ -118,6 +130,11 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
         stored.load_inplace = False
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
+    # LoRA reloads swap policy weights without pausing the engine, so the
+    # per-token weight-version boundary is approximate (a few tokens) here.
+    step = raw_request.query_params.get("step")
+    if step is not None:
+        await engine_client(raw_request).engine_core.call_utility_async("set_prime_weight_version", int(step))
     return {"status": "ok"}
 
 

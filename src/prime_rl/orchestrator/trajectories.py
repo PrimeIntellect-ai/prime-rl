@@ -104,6 +104,7 @@ def trace_to_samples(
                 mm_kwargs=mm_kwargs,
                 mm_token_type_ids=mm_token_type_ids,
                 routed_experts=_encode_routed_experts(branch.routed_experts, len(token_ids)),
+                weight_versions=branch.weight_versions,
             )
         )
     if not samples:

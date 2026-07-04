@@ -48,10 +48,16 @@ from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
 from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
+from prime_rl.inference.vllm.weight_version import PRIME_WEIGHT_VERSIONS_KEY
 
 
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
     routed_experts: dict[str, Any] | None = None
+    # Weight-version segments over the completion tokens: ``[[version, start],
+    # ...]`` — tokens ``[start_i, start_{i+1})`` were sampled by ``version_i``
+    # (see ``prime_rl.inference.vllm.weight_version``). Lets the orchestrator
+    # mask tokens that aged past ``max_off_policy_steps`` out of the loss.
+    weight_versions: list[list[int]] | None = None
 
 
 class PrimeRlGenerateResponse(GenerateResponse):
@@ -337,6 +343,15 @@ class PrimeRlServingTokens(ServingTokens):
         if not isinstance(response, GenerateResponse):
             return response
 
+        # Extract the weight-version segments the scheduler smuggled through
+        # the finish kv_transfer_params (see ``weight_version.py``), restoring
+        # the dict to its pre-patch shape for downstream consumers (PD router).
+        weight_versions = None
+        if response.kv_transfer_params is not None:
+            weight_versions = response.kv_transfer_params.pop(PRIME_WEIGHT_VERSIONS_KEY, None)
+            if not response.kv_transfer_params:
+                response.kv_transfer_params = None
+
         if capture is not None:
             response = capture.post_process(response)
         elif not isinstance(response, PrimeRlGenerateResponse):
@@ -351,5 +366,10 @@ class PrimeRlServingTokens(ServingTokens):
 
         if final_capture.final_res is not None:
             response.usage = _build_usage(final_capture.final_res)
+
+        # Segments are recorded per request, so they only unambiguously
+        # describe a single-choice (n=1) response — the renderer path.
+        if weight_versions is not None and len(response.choices) == 1:
+            response.choices[0].weight_versions = weight_versions
 
         return response

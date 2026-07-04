@@ -416,7 +416,7 @@ async def update_weights(
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
     if lora_name is not None and weight_dir is not None:
-        await load_lora_adapter(admin_clients, lora_name, weight_dir)
+        await load_lora_adapter(admin_clients, lora_name, weight_dir, step=step)
     else:
         # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
         await _pause_engines(admin_clients, step=step)
@@ -434,7 +434,9 @@ async def update_weights(
                     _admin_post(
                         admin_client,
                         "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
+                        # ``step`` stamps the new weight version on the engine
+                        # schedulers for per-token off-policy tracking.
+                        json={"weight_dir": weight_dir_posix, "step": step},
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                     )
                     for admin_client in admin_clients
@@ -468,7 +470,9 @@ LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 
 
-async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
+async def load_lora_adapter(
+    admin_clients: list[AsyncClient], lora_name: str, lora_path: Path, step: int | None = None
+) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
     Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not reset
@@ -491,6 +495,9 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
         response = await admin_client.post(
             "/load_lora_adapter",
+            # ``step`` (query param, the request body is vLLM's schema) stamps
+            # the new weight version for per-token off-policy tracking.
+            params={"step": str(step)} if step is not None else None,
             json={"lora_name": lora_name, "lora_path": lora_path_posix},
             timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
         )

@@ -68,6 +68,14 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: list[float] | None = None
 
+    # Per-token policy weight version (full prompt+completion length, -1 on
+    # non-sampled positions): which checkpoint step sampled each token, for
+    # generation that spans in-flight weight updates. Consumed by the
+    # orchestrator's off-policy masking (``TrainSink``) and stripped before
+    # the sample ships to the trainer. ``None`` when the engine doesn't
+    # report versions.
+    weight_versions: list[int] | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""

@@ -159,6 +159,8 @@ At step $n = 1, 2, 3, \dots$:
 
 Step indices are 1-indexed; policy versions are 0-indexed, with $\pi_0$ the base model. At step 1 inference samples from $\pi_0$.
 
+Long rollouts keep generating across weight updates (the engines pause, swap weights in-flight, and resume), so one completion can span several policy versions. Rollouts are never dropped for going off-policy: the inference server records which weight version sampled each token, and the orchestrator masks tokens more than `orchestrator.max_off_policy_steps` versions behind the shipping policy out of the loss — they stay in the sequence as context, and a fully-stale rollout still shapes its group's advantages without shipping to the trainer. Fresh-enough tokens train with their sampling logprobs feeding the importance ratios as usual.
+
 ## Loss
 
 ### Loss Components
