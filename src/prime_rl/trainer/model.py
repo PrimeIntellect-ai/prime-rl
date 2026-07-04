@@ -368,12 +368,10 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
                 mlp.router.fp32_gate = True
             num_routers += 1
 
-    if num_routers == 0:
-        raise ValueError(
-            "No MoE routers found to run in fp32. model.moe_router_dtype='float32' requires a custom-impl MoE model."
-        )
-
-    logger.info(f"Running {num_routers} MoE router gates in fp32")
+    # No-op for non-MoE and HF-impl models: moe_router_dtype='float32' is the default,
+    # so absence of custom-impl MoE routers is the common case, not an error.
+    if num_routers > 0:
+        logger.info(f"Running {num_routers} MoE router gates in fp32")
 
 
 def freeze_sparse_indexer(model: nn.Module) -> None:
