@@ -18,6 +18,7 @@ Every `prime-rl` entrypoint uses [`pydantic-config`](https://github.com/PrimeInt
   - [None](#none)
   - [Discriminated Unions](#discriminated-unions)
   - [Environments](#environments-orchestratortrainenv)
+  - [Replaying Past Rollouts (Continue / Recheck)](#replaying-past-rollouts-continue--recheck)
   - [Environment Variables](#environment-variables)
 - [Examples](#examples)
 
@@ -168,6 +169,35 @@ args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
 `args` is forwarded verbatim to the environment's `load_environment(**args)`.
 
 The same `id` can appear multiple times across train and eval (or with different `args`) — useful for evaluating on a held-out split of the env you're training on, or comparing two configurations of the same env side by side. When `id` is reused, set a distinct `name` on each entry; `name` defaults to `id` and must be unique across all envs in the same group.
+
+### Replaying Past Rollouts (Continue / Recheck)
+
+The built-in `replay` taskset (verifiers v1) re-enters saved rollouts as fresh training tasks. Point it at rollout record files (`<output_dir>/rollouts/step_*/*_rollouts.jsonl`) and at the `source` taskset the records came from — the source provides tools, setup/finalize, and scoring, so new completions are judged by the original env's verifier:
+
+```toml
+# Continue: resume each recorded compaction from its handoff summary. The seed is a plain
+# string prompt, so it runs under any harness — use the same harness config as the source run.
+[[orchestrator.train.env]]
+name = "my-env-continue"
+taskset = { id = "replay", records = "/data/run1/rollouts/step_*/train_rollouts.jsonl", mode = "continue", source = { id = "my-env-v1" } }
+harness = { id = "rlm" }
+
+# Recheck: replay each finished attempt with a "check your work" turn appended. The seed is a
+# full conversation, which needs a message-seeding harness (`default`/`null`).
+[[orchestrator.train.env]]
+name = "my-env-recheck"
+taskset = { id = "replay", records = "/data/run1/rollouts/step_*/train_rollouts.jsonl", mode = "recheck", source = { id = "my-env-v1" } }
+harness = { id = "null" }
+```
+
+Key knobs on the `taskset` table:
+
+- `mode = "continue"` resumes a rollout mid-way; `anchor` picks the resume point: `"compaction"` (default; one task per recorded context restart, detected structurally so records from different harnesses mix freely) or `"tool-call"` (one deterministically-drawn resume point per rollout, right after a complete tool-result run; needs a message-seeding harness).
+- `mode = "recheck"` replays the final branch of each attempt (truncation artifacts stripped) plus a verification turn (`recheck_prompt` overrides the wording).
+- `max_seed_tokens` skips seeds whose context exceeds the budget — set it so seeds leave room to sample under the trainer's `seq_len`.
+- Lines that don't validate as the source taskset's task type (e.g. other envs' rollouts in a mixed `train_rollouts.jsonl`) are skipped and counted.
+
+Group rollouts of one seeded task form a regular GRPO group, so a group-relative algorithm gets contrastive signal at exactly the resumed state. The sandbox is fresh on re-entry: `setup` runs anew, and no filesystem state from the source rollout is replayed until sandbox snapshotting lands (records will then carry snapshot refs that the replay taskset restores automatically). Other recycling schemes can subclass `ReplayTaskset` and override `seeds()` — see `deps/verifiers/verifiers/v1/tasksets/replay/`.
 
 ### Environment Variables
 
