@@ -81,7 +81,7 @@ Every replay rollout logs `replay/source_reward` (the reward the source rollout 
 
 ## Writing a New Derivation
 
-A derivation is a thin package over the base, exactly like `swebench-pro-v1` over verifiers' `harbor` taskset: subclass `ReplayTaskset` (binding your narrowed config in the generic) and implement two hooks — `record_anchors` (the resume points one saved rollout offers; each becomes one task) and `build_prompt` (the seeded conversation for one anchor). The base owns the buffer, online semantics, lazy binding, lineage, and inner-taskset delegation; `verifiers.v1.tasksets.replay.surgery` provides the graph enumerators (`compaction_forks`, `tool_call_anchors`, `recheck_seed`, ...). See `environments/replay_recheck_v1` for the ~30-line reference. Register the package in the root `pyproject.toml` (`envs` extra + `[tool.uv.sources]`) and `uv sync`.
+A derivation is a thin package over the base, exactly like `swebench-pro-v1` over verifiers' `harbor` taskset: subclass `ReplayTaskset` (binding your narrowed config in the generic) and implement `build_prompt` (the seeded conversation for one anchor); derivations that resume mid-rollout also override `record_anchors` (the resume points one saved rollout offers; each becomes one task — the default is one task per rollout, anchored at its final state). The base owns the buffer, online semantics, lazy binding, lineage, and inner-taskset delegation; `verifiers.v1.tasksets.replay.surgery` provides the graph enumerators (`compaction_forks`, `tool_call_anchors`, `recheck_seed`, ...). See `environments/replay_recheck_v1` for the ~30-line reference. Register the package in the root `pyproject.toml` (`envs` extra + `[tool.uv.sources]`) and `uv sync`.
 
 ## Constraints and Caveats
 

@@ -5,8 +5,6 @@ final conversation plus an appended instruction to re-verify and fix the answer,
 the new rollout is scored by the original (`inner`) taskset.
 """
 
-from typing import Literal
-
 import verifiers.v1 as vf
 from verifiers.v1.tasksets.replay import (
     ReplayTask,
@@ -29,9 +27,6 @@ class ReplayRecheckConfig(ReplayTasksetConfig):
 
 
 class ReplayRecheckTaskset(ReplayTaskset, vf.Taskset[ReplayTask, ReplayRecheckConfig]):
-    def record_anchors(self, record, children, roots, tree) -> list[Literal[None]]:
-        return [None]  # one task per rollout, seeded from its final state
-
     def build_prompt(self, record: dict, anchor: int | None) -> list[dict]:
         nodes = record["nodes"]
         children, _ = build_children(nodes)
