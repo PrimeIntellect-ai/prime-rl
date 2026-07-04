@@ -73,7 +73,7 @@ export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
 export FLASHINFER_WORKSPACE_BASE=/tmp/flashinfer-$(whoami)
 
 export WANDB_SHARED_MODE=1
-export WANDB_SHARED_RUN_ID=$(python3 -c "import uuid; print(uuid.uuid4().hex)")
+export WANDB_SHARED_RUN_ID=${WANDB_SHARED_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
 
 # Networking
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
