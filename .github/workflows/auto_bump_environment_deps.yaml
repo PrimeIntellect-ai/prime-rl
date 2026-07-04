@@ -1,0 +1,216 @@
+name: Auto Bump Environment Deps
+
+on:
+  workflow_dispatch:
+    inputs:
+      auto_merge:
+        description: "Enable auto-merge for the generated PR"
+        required: true
+        type: boolean
+        default: true
+  repository_dispatch:
+    types:
+      - environment-deps-updated
+      - verifiers-updated
+      - renderers-updated
+      - research-environments-updated
+  schedule:
+    - cron: "17 */4 * * *"
+
+concurrency:
+  group: auto-bump-environment-deps
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  BASE_BRANCH: main
+  BUMP_BRANCH: chore/bump-environment-deps
+
+jobs:
+  bump:
+    name: Bump submodules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check bot token
+        env:
+          AUTO_BUMP_TOKEN: ${{ secrets.AUTO_BUMP_TOKEN }}
+        run: |
+          if [ -z "$AUTO_BUMP_TOKEN" ]; then
+            echo "::error title=Missing AUTO_BUMP_TOKEN::Set AUTO_BUMP_TOKEN to a PAT or GitHub App token that can push branches, open PRs, and trigger PR workflows."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+          submodules: false
+          token: ${{ secrets.AUTO_BUMP_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Configure git
+        env:
+          AUTO_BUMP_TOKEN: ${{ secrets.AUTO_BUMP_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global url."https://x-access-token:${AUTO_BUMP_TOKEN}@github.com/".insteadOf "git@github.com:"
+          git config --global url."https://x-access-token:${AUTO_BUMP_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Update dependency submodules
+        id: bump
+        run: |
+          set -euo pipefail
+
+          submodules=(
+            deps/verifiers
+            deps/renderers
+            deps/research-environments
+          )
+          init_submodules=(
+            "${submodules[@]}"
+            deps/pydantic-config
+          )
+
+          git submodule sync --recursive -- "${init_submodules[@]}"
+          git submodule update --init --recursive --depth 1 -- "${init_submodules[@]}"
+
+          git checkout -B "$BUMP_BRANCH"
+          git submodule update --remote --recursive -- "${submodules[@]}"
+
+          summary_file=/tmp/environment-deps-summary.md
+          : > "$summary_file"
+
+          for submodule_path in "${submodules[@]}"; do
+            before="$(git ls-tree HEAD "$submodule_path" | awk '{print $3}')"
+            after="$(git -C "$submodule_path" rev-parse HEAD)"
+
+            case "$submodule_path" in
+              deps/verifiers)
+                repo_url="https://github.com/PrimeIntellect-ai/verifiers"
+                ;;
+              deps/renderers)
+                repo_url="https://github.com/PrimeIntellect-ai/renderers"
+                ;;
+              deps/research-environments)
+                repo_url="https://github.com/PrimeIntellect-ai/research-environments"
+                ;;
+            esac
+
+            if [ "$before" != "$after" ]; then
+              printf -- "- \`%s\`: [\`%s\`...\`%s\`](%s/compare/%s...%s)\n" \
+                "$submodule_path" "${before:0:7}" "${after:0:7}" "$repo_url" "$before" "$after" \
+                >> "$summary_file"
+            fi
+          done
+
+          if [ ! -s "$summary_file" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No dependency submodule updates found."
+            exit 0
+          fi
+
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "summary<<EOF"
+            cat "$summary_file"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Refresh lockfile
+        if: steps.bump.outputs.has_changes == 'true'
+        run: uv lock
+
+      - name: Validate lockfile
+        if: steps.bump.outputs.has_changes == 'true'
+        run: uv sync --all-extras --locked --dry-run
+
+      - name: Commit and push update
+        if: steps.bump.outputs.has_changes == 'true'
+        id: commit
+        run: |
+          set -euo pipefail
+
+          git fetch origin "refs/heads/${BUMP_BRANCH}:refs/remotes/origin/${BUMP_BRANCH}" 2>/dev/null || true
+
+          if git rev-parse --verify --quiet "refs/remotes/origin/${BUMP_BRANCH}" >/dev/null; then
+            if git diff --quiet "origin/${BUMP_BRANCH}" -- deps/verifiers deps/renderers deps/research-environments uv.lock; then
+              echo "Remote bump branch already contains this update."
+              echo "sha=$(git rev-parse origin/${BUMP_BRANCH})" >> "$GITHUB_OUTPUT"
+              echo "pushed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          git add deps/verifiers deps/renderers deps/research-environments uv.lock
+          git commit -m "chore: bump environment deps"
+          git push --force-with-lease origin "HEAD:${BUMP_BRANCH}"
+
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update pull request
+        if: steps.bump.outputs.has_changes == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_BUMP_TOKEN }}
+          SUBMODULE_SUMMARY: ${{ steps.bump.outputs.summary }}
+        run: |
+          set -euo pipefail
+
+          body_file=/tmp/environment-deps-pr.md
+          cat > "$body_file" <<EOF
+          Automated bump for environment dependency submodules:
+
+          ${SUBMODULE_SUMMARY}
+
+          Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          EOF
+
+          pr_number="$(gh pr list \
+            --base "$BASE_BRANCH" \
+            --head "$BUMP_BRANCH" \
+            --state open \
+            --json number \
+            --jq '.[0].number')"
+
+          if [ -z "$pr_number" ]; then
+            gh pr create \
+              --base "$BASE_BRANCH" \
+              --head "$BUMP_BRANCH" \
+              --title "chore: bump environment deps" \
+              --body-file "$body_file"
+
+            pr_number="$(gh pr view "$BUMP_BRANCH" --json number --jq '.number')"
+          else
+            gh pr edit "$pr_number" \
+              --title "chore: bump environment deps" \
+              --body-file "$body_file"
+          fi
+
+          echo "number=$pr_number" >> "$GITHUB_OUTPUT"
+
+      - name: Enable auto-merge
+        if: steps.bump.outputs.has_changes == 'true' && (github.event_name != 'workflow_dispatch' || inputs.auto_merge)
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_BUMP_TOKEN }}
+        run: |
+          if [ "$(gh pr view "${{ steps.pr.outputs.number }}" --json autoMergeRequest --jq '.autoMergeRequest != null')" = "true" ]; then
+            echo "Auto-merge is already enabled."
+            exit 0
+          fi
+
+          gh pr merge "${{ steps.pr.outputs.number }}" \
+            --auto \
+            --squash \
+            --delete-branch \
+            --match-head-commit "${{ steps.commit.outputs.sha }}"

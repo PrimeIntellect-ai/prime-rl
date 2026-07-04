@@ -43,8 +43,11 @@ uv run pytest tests/integration/test_reverse_text.py -vvs  # one specific scenar
 | [`cpu_tests.yaml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/cpu_tests.yaml) | every PR + push to `main` | `pytest tests/unit -m "not gpu"`, plus a slim-wheel install check that `prime-rl-configs` imports cleanly without heavy deps (no torch / vllm / transformers / wandb / verifiers / datasets / liger / loguru in `sys.modules`) | `ubuntu-latest` |
 | [`gpu_tests.yaml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu_tests.yaml) | every non-draft PR + push to `main` | `pytest tests/unit -m gpu`, plus a matrix of named integration scenarios (`reverse_text`, `reverse_text_sft`, `reverse_text_lora`, `reverse_text_moe`, `reverse_text_multi_run`, `reverse_text_rl_opd`, `reverse_text_rl_sft`, `reverse_text_sft_lora`, `alphabet_sort`, `benchmark_regression`) | self-hosted GPU runners (`vm`, `4xa6000`) |
 | [`nightly_tests.yaml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/nightly_tests.yaml) | 03:00 PST daily + manual `workflow_dispatch` (single-file filter optional) | every file in `tests/nightly/`, one matrix job per file | `research-cluster` |
+| [`auto_bump_environment_deps.yaml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/auto_bump_environment_deps.yaml) | every 4 hours + manual `workflow_dispatch` + upstream `repository_dispatch` | bumps `deps/verifiers`, `deps/renderers`, and `deps/research-environments`, refreshes `uv.lock`, opens a non-draft PR, and enables auto-merge | `ubuntu-latest` |
 
 The GPU + Nightly workflows skip drafts — open the PR as **Draft** until you're ready to consume CI compute, then mark it ready for review to trigger the GPU matrix.
+
+The auto-bump workflow requires an `AUTO_BUMP_TOKEN` secret from a PAT or GitHub App installation that can push branches and open PRs. Use a real bot token rather than `GITHUB_TOKEN` so the generated PR triggers the normal PR workflows before GitHub auto-merge merges it.
 
 ### Markers
 
