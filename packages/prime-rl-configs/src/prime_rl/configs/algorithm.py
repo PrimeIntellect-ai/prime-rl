@@ -316,11 +316,12 @@ class StaticSFTAlgoConfig(BaseAlgoConfig):
     @model_validator(mode="after")
     def forbid_sampling_source(self):
         """Static SFT has no rollout generation — a sampling source is a
-        config error, not a knob."""
-        if "sampling" in self.model_fields_set:
+        config error, not a knob. Checked by value (not ``model_fields_set``)
+        so the config survives the entrypoint's dump/re-parse round trip."""
+        if self.sampling.source != "policy":
             raise ValueError(
                 "algorithm 'static-sft' trains on dataset tokens — nothing is sampled, "
-                "so sampling.source must not be set."
+                "so sampling.source must not point at a model."
             )
         return self
 
