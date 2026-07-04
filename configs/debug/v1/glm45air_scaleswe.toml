@@ -35,7 +35,8 @@ project = "swe-ablations"
 name = "glm45air-scaleswe"
 
 [weight_broadcast]
-type = "sparse_filesystem"
+type = "nccl"
+timeout = 3600
 
 [ckpt]
 interval = 50
