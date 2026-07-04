@@ -16,8 +16,8 @@ seq_len = 65536
 job_name = "glm45air-rlm"
 project_dir = "."
 partition = "all"
-# Clean up this run's orphaned prime sandboxes before launch (label == SLURM job name).
-pre_run_command = 'timeout 120 prime sandbox delete --label "$SLURM_JOB_NAME" -y || true'
+# Clean up this run's orphaned prime sandboxes before launch (hardcoded label, matches the harness labels below).
+pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-rlm" -y || true'
 
 [deployment]
 type = "multi_node"
