@@ -77,6 +77,9 @@ class FakeDataLoader:
         self.generate_samples = config.generate_samples
         self.batch_counter = 0
         self.multi_run_manager = get_multi_run_manager()
+        self.last_mm_materialize_time = 0.0
+        self.last_mm_images_materialized = 0
+        self.last_mm_images_placeholdered = 0
 
     def wait_for_batch(self) -> None:
         return

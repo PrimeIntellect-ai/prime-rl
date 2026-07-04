@@ -4,7 +4,7 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
-from renderers.kimi_k25 import KIMI_K25_IMAGE_LAYOUT, KimiK25ImageLayoutSpec
+from renderers.kimi_k25 import KimiK25ImageLayoutSpec
 
 from prime_rl.multimodal.adapters.base import ForwardPolicy, MaterializedMM
 from prime_rl.multimodal.schema import RawMMItem
@@ -44,8 +44,10 @@ def _float_triple(value: Any, *, name: str) -> tuple[float, float, float]:
 
 
 def _processor_layout(image_processor: Any) -> KimiK25ImageLayoutSpec:
+    """Read the actual processor's layout; drift from the renderer's baked
+    layout surfaces as a fingerprint mismatch at materialization."""
     cfg = _media_proc_cfg(image_processor)
-    layout = KimiK25ImageLayoutSpec(
+    return KimiK25ImageLayoutSpec(
         patch_size=int(_required_cfg(cfg, "patch_size")),
         merge_kernel_size=int(_required_cfg(cfg, "merge_kernel_size")),
         in_patch_limit=int(_required_cfg(cfg, "in_patch_limit")),
@@ -54,12 +56,6 @@ def _processor_layout(image_processor: Any) -> KimiK25ImageLayoutSpec:
         image_mean=_float_triple(_required_cfg(cfg, "image_mean"), name="image_mean"),
         image_std=_float_triple(_required_cfg(cfg, "image_std"), name="image_std"),
     )
-    if layout != KIMI_K25_IMAGE_LAYOUT:
-        raise ValueError(
-            "Kimi image processor layout does not match renderer layout contract: "
-            f"expected {KIMI_K25_IMAGE_LAYOUT}, got {layout}"
-        )
-    return layout
 
 
 def _grid_payload(item: RawMMItem) -> list[int]:

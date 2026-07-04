@@ -41,6 +41,23 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
     return RoutedExperts(data=arr.tobytes(), shape=list(arr.shape), dtype=str(arr.dtype))
 
 
+def _validate_image_spans(mm_refs: MMRefs, mm_token_type_ids: list[int]) -> None:
+    """Every image ref's placeholder span must land on image-typed tokens.
+
+    Placeholder offsets flow through the renderer, bridge extension, and node
+    attribution before arriving here — and the trainer truncates on them — so
+    any drift anywhere upstream must fail loudly before the sample ships.
+    """
+    for image in mm_refs.images:
+        span = mm_token_type_ids[image.offset : image.offset + image.length]
+        if len(span) != image.length or any(t != 1 for t in span):
+            raise ValueError(
+                f"Raw image placeholder [{image.offset}, {image.offset + image.length}) does not "
+                f"cover image-typed tokens (branch length {len(mm_token_type_ids)}) — placeholder "
+                "offsets have drifted from the branch token stream"
+            )
+
+
 def trace_to_samples(
     trace: vf.Trace,
     *,
@@ -72,6 +89,8 @@ def trace_to_samples(
             mm_refs = build_mm_refs(mmd)
             mapping = mm_token_type_ids_mapping or {}
             mm_token_type_ids = [mapping.get(t, 0) for t in token_ids]
+            if mm_refs is not None and mapping:
+                _validate_image_spans(mm_refs, mm_token_type_ids)
         samples.append(
             TrainingSample(
                 token_ids=token_ids,
