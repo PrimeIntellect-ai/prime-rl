@@ -1380,7 +1380,7 @@ dependencies = [
 [[package]]
 name = "flash-linear-attention"
 version = "0.5.2"
-source = { git = "https://github.com/fla-org/flash-linear-attention#bd67d11782696e4ff54ee6cb411483621ed3d93d" }
+source = { git = "https://github.com/fla-org/flash-linear-attention#a95475391465272cd3dc11e47d4a7772522dc9b7" }
 dependencies = [
     { name = "einops" },
     { name = "transformers" },
@@ -4474,7 +4474,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchaudio", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchdata", specifier = ">=0.11.0" },
-    { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
+    { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=23e4dfc" },
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", specifier = "==5.6.2" },
     { name = "unscramble-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/unscramble_v1" },
@@ -6277,7 +6277,7 @@ wheels = [
 [[package]]
 name = "torchtitan"
 version = "0.1.0"
-source = { git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e#a1fdd7e43694bbfeff5d6ad8ac738c067bb90d41" }
+source = { git = "https://github.com/pytorch/torchtitan?rev=23e4dfc#23e4dfca5ca52587dbaf18f67bee8d73e875df5b" }
 dependencies = [
     { name = "datasets" },
     { name = "fsspec" },
