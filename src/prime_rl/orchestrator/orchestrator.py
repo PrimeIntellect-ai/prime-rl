@@ -350,12 +350,12 @@ class Orchestrator:
             policy=self.policy,
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
-            max_off_policy_steps=config.max_off_policy_steps,
         )
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
             train_envs=self.train_envs,
+            policy=self.policy,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
@@ -578,6 +578,10 @@ class Orchestrator:
             )
             for name, count in self.train_sink.pre_filter_dropped_by_name.items():
                 metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
+        if self.train_sink.off_policy_seen_rollouts > 0:
+            metrics["off_policy/stale_rollout_rate"] = (
+                self.train_sink.off_policy_stale_rollouts / self.train_sink.off_policy_seen_rollouts
+            )
         self.monitor.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
         self.monitor.log_samples(effective.rollouts, step=step)
@@ -607,6 +611,7 @@ class Orchestrator:
         self.log_train_batch(batch, step=step, step_time=step_time)
 
         self.train_sink.reset_pre_filter_stats()
+        self.train_sink.reset_off_policy_stats()
         self.maybe_trigger_eval(self.progress.step)
         trim_process_memory()
 

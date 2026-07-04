@@ -528,8 +528,8 @@ class OrchestratorConfig(BaseConfig):
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
-    max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
+    max_off_policy_steps: int | None = Field(8, ge=0)
+    """Maximum staleness (in policy versions) a rollout may have and still be trained on. Rollouts are never cancelled for going off-policy — generation continues across in-flight weight updates — but a rollout whose generation started more than ``max_off_policy_steps`` versions behind the shipping policy doesn't ship to the trainer (it still finishes and its reward still shapes its group's advantages). ``None`` disables the cutoff. Higher values yield better throughput at the cost of off-policy noise."""
 
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""

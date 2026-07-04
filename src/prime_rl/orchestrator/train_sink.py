@@ -6,7 +6,8 @@
    rollouts skip this.
 2. ``process_group`` — filters errored rollouts, hands survivors to the env
    algorithm's ``finalize_group`` (advantages + per-sample wire stamping),
-   runs the pre-batch filter pass.
+   runs the pre-batch filter pass, and withholds rollouts past
+   ``max_off_policy_steps`` from the batch.
 3. ``process_batch`` — applies post-batch filter annotations and assembles
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
@@ -25,7 +26,7 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout, TrainBatch
+from prime_rl.orchestrator.types import Policy, Rollout, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -39,6 +40,7 @@ class TrainSink:
         *,
         tokenizer,
         train_envs: TrainEnvs,
+        policy: Policy,
         mm_token_type_ids_mapping: dict[int, int] | None,
         batch_size: int | None,
         token_batch_size: int | None,
@@ -51,6 +53,7 @@ class TrainSink:
         self.config = config
         self.tokenizer = tokenizer
         self.train_envs = train_envs
+        self.policy = policy
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
@@ -72,6 +75,10 @@ class TrainSink:
         self.pre_filter_seen = 0
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name: dict[str, int] = {}
+
+        # Off-policy staleness accounting; reset via ``reset_off_policy_stats``
+        self.off_policy_seen_rollouts = 0
+        self.off_policy_stale_rollouts = 0
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -155,7 +162,10 @@ class TrainSink:
     async def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
         when ``requires_group_scoring`` and any failed), assign advantages,
-        run pre-batch filters, append survivors to ``pending_batch``."""
+        run pre-batch filters, append survivors to ``pending_batch`` —
+        except rollouts that aged past ``max_off_policy_steps``, which are
+        finalized (their rewards shape the group's advantages) but withheld
+        from the trainer."""
         group = self.pending_groups.pop(group_id, [])
         if not group:
             return
@@ -179,6 +189,18 @@ class TrainSink:
                 f"rollouts={len(group)} (errored={num_errored}) | dropped: all failed"
             )
             return
+
+        # Off-policy staleness: rollouts are never cancelled mid-generation
+        # (see ``RolloutDispatcher.on_version_pending``) — one that started
+        # more than ``max_off_policy_steps`` policy versions behind the
+        # current policy still finishes and shapes its group's advantages
+        # (its reward stands), but none of its tokens ship to the trainer.
+        stale: set[int] = set()  # id(rollout); Rollout __eq__ deep-compares traces
+        if env.sampler.samples_from_live_policy and self.config.max_off_policy_steps is not None:
+            min_version = self.policy.version - self.config.max_off_policy_steps
+            stale = {id(r) for r in survivors if r.policy_version < min_version}
+            self.off_policy_seen_rollouts += len(survivors)
+            self.off_policy_stale_rollouts += len(stale)
 
         # Advantages + per-sample wire stamping (advantage stream, loss
         # routing) are the algorithm's job (finalize_group); the sink only
@@ -206,6 +228,8 @@ class TrainSink:
                         self.pre_filter_dropped_by_name[name] = self.pre_filter_dropped_by_name.get(name, 0) + 1
                         filtered_by_name[name] = filtered_by_name.get(name, 0) + 1
                 continue
+            if id(r) in stale:
+                continue
             # Reset annotations so the post-batch filter pass starts clean
             r.filter_results = {}
             r.is_filtered = False
@@ -220,7 +244,7 @@ class TrainSink:
         filter_str = ", ".join(f"{n}={c}" for n, c in filtered_by_name.items()) if filtered_by_name else "—"
         get_logger().debug(
             f"Finished group | env={env_name} task_idx={task_idx} | "
-            f"rollouts={len(group)} (errored={num_errored}, filtered={num_filtered}) | "
+            f"rollouts={len(group)} (errored={num_errored}, filtered={num_filtered}, stale={len(stale)}) | "
             f"reward={avg_reward:.4f} | filters: {filter_str}"
         )
 
@@ -267,3 +291,7 @@ class TrainSink:
         self.pre_filter_seen = 0
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name.clear()
+
+    def reset_off_policy_stats(self) -> None:
+        self.off_policy_seen_rollouts = 0
+        self.off_policy_stale_rollouts = 0

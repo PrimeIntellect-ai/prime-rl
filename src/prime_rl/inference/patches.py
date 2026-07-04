@@ -25,8 +25,8 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     """Tolerate KV-transfer finish notifications for already-freed requests.
 
     In disaggregated P/D (NIXL, optionally + a KV store connector) a request can
-    be finished — most often ``FINISHED_ABORTED`` from an off-policy cancel, a
-    client disconnect, or a request timeout — while it still has in-flight KV
+    be finished — most often ``FINISHED_ABORTED`` from a client disconnect or a
+    request timeout — while it still has in-flight KV
     transfers. When such a request's ``finished_recving`` and ``finished_sending``
     both land in the same ``Scheduler.update_from_output`` step, the stock
     ``_update_from_kv_xfer_finished`` frees it in the recving branch

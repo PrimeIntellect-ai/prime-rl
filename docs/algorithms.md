@@ -159,6 +159,8 @@ At step $n = 1, 2, 3, \dots$:
 
 Step indices are 1-indexed; policy versions are 0-indexed, with $\pi_0$ the base model. At step 1 inference samples from $\pi_0$.
 
+Long rollouts keep generating across weight updates (the engines pause, swap weights in-flight, and resume), so a rollout can be several policy versions stale by the time it completes. Rollouts are never cancelled for going off-policy: the sink checks staleness at ship time, and a rollout whose generation started more than `orchestrator.max_off_policy_steps` versions behind the current policy is withheld from the trainer — it still finishes and its reward still shapes its group's advantages, so the task's baseline survives. Everything fresher trains as usual, with the sampling logprobs feeding the importance ratios.
+
 ## Loss
 
 ### Loss Components

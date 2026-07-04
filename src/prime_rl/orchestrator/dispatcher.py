@@ -5,21 +5,21 @@
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched rollout eventually reaches
   ``out_q`` exactly once as a ``Rollout``. Failures
-  (env error, empty trajectory, task exception, off-policy cancel) carry
+  (env error, empty trajectory, task exception) carry
   ``trace.error`` set; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight rollouts of the opposite kind drain
   naturally on either side of an eval boundary.
 - ``on_version_pending`` (called by the watcher before the engines pause for
-  the weight update) bumps ``off_policy_steps`` on in-flight train rollouts and
-  drops groups past ``max_off_policy_steps``.
+  the weight update) bumps ``off_policy_steps`` on in-flight train rollouts.
+  Rollouts are never cancelled for going off-policy: generation continues
+  across weight updates and the ``TrainSink`` withholds rollouts past
+  ``max_off_policy_steps`` from the trainer instead.
   Eval rollouts are measurements for the policy version they started with,
   so they are allowed to finish even if training advances. Train rollouts
   sampled from a frozen model never age — their sampler doesn't change
   with policy updates.
-  Cancellations surface as synthetic ``Cancelled`` markers so the sink's
-  count-to-``group_size`` finalization still fires.
 """
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ class RolloutDispatcher:
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules
     rollouts under shared capacity, and emits ``Rollout``\\ s to
     ``out_q``. The watcher drives ``on_version_pending`` for off-policy
-    cancellation; the orchestrator triggers eval epochs."""
+    accounting; the orchestrator triggers eval epochs."""
 
     def __init__(
         self,
@@ -131,7 +131,6 @@ class RolloutDispatcher:
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
-        max_off_policy_steps: int,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -141,7 +140,6 @@ class RolloutDispatcher:
         self.policy_pool = policy_pool
         self.train_source = train_source
         self.eval_source = eval_source
-        self.max_off_policy_steps = max_off_policy_steps
 
         self.max_inflight = max_inflight_rollouts
         self.inflight_permits = 0
@@ -267,17 +265,11 @@ class RolloutDispatcher:
             self.task = None
 
     async def on_version_pending(self, step: int) -> None:
-        """Bump off-policy counters and drop groups past
-        ``max_off_policy_steps`` (drop_group emits ``Cancelled`` markers so
-        the sink still finalizes the partial group). Eval rollouts are not
-        aged because they are tied to their start-time policy version.
-
-        Runs *before* the inference engines are paused for the weight update so
-        the resulting aborts are processed while the engine is still stepping —
-        otherwise the orphaned KV transfers crash the decode engine on resume
-        (see ``WeightWatcher.apply_policy_update``)."""
-        stale_groups: set[uuid.UUID] = set()
-        cancelled = 0
+        """Bump off-policy counters on in-flight train rollouts. Rollouts are
+        never cancelled for aging: they keep generating across the weight
+        update and the ``TrainSink`` withholds rollouts past
+        ``max_off_policy_steps`` from the trainer. Eval rollouts are not aged
+        because they are tied to their start-time policy version."""
         for meta in self.inflight.values():
             if meta.kind != "train":
                 continue
@@ -286,18 +278,6 @@ class RolloutDispatcher:
             if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
                 continue
             meta.off_policy_steps += 1
-            if meta.off_policy_steps > self.max_off_policy_steps:
-                stale_groups.add(meta.group_id)
-
-        for gid in stale_groups:
-            removed = await self.drop_group(gid)
-            cancelled += removed
-
-        if cancelled:
-            get_logger().warning(
-                f"Cancelled {cancelled} train rollouts past max_off_policy_steps={self.max_off_policy_steps}. "
-                "Consider increasing it to avoid this."
-            )
 
     async def on_new_version(self, step: int) -> None:
         """No-op: the dispatcher drains in ``on_version_pending`` (pre-pause)."""
@@ -488,12 +468,12 @@ class RolloutDispatcher:
         """Emit every dispatched rollout exactly once to ``out_q``. Task
         exceptions synthesize ``meta.rollout_count`` error markers so the
         sink's count-to-``group_size`` finalization still triggers.
-        Cancelled tasks (popped by ``drop_group``) raise ``CancelledError``
-        and are discarded — ``drop_group`` already emitted their markers.
+        Cancelled tasks (popped by ``cancel_inflight_rollouts`` on shutdown)
+        raise ``CancelledError`` and are discarded.
         """
         meta = self.inflight.pop(task, None)
         if meta is None:
-            return  # already handled by drop_group / cancel_inflight_rollouts
+            return  # already handled by cancel_inflight_rollouts
         self.release(meta.rollout_count)
         group = self.groups.get(meta.group_id)
 
@@ -546,90 +526,6 @@ class RolloutDispatcher:
             assert eval_step is not None, "eval rollout missing eval_step"
             rollout.eval_step = eval_step
         await self.out_q.put(rollout)
-
-    async def drop_group(self, group_id: uuid.UUID) -> int:
-        """Cancel remaining in-flight tasks for this group and emit a
-        ``Cancelled`` marker for every rollout it still owes the sink
-        (both in-flight and not-yet-scheduled). Returns the count for
-        off-policy metrics."""
-        group = self.groups.pop(group_id, None)
-        task_idx = group.task_idx if group is not None else -1
-
-        # Sync claim phase: pop matching tasks from ``self.inflight`` and
-        # release their permits in one non-yielding sweep. After this loop
-        # the dropped tasks are no longer reachable from ``self.inflight``,
-        # so ``handle_completed_rollout``'s existing None-guard makes the
-        # subsequent async emit phase race-free.
-        claimed: list[tuple[asyncio.Task, InflightRollout]] = []
-        for task, meta in list(self.inflight.items()):
-            if meta.group_id != group_id:
-                continue
-            del self.inflight[task]
-            self.release(meta.rollout_count)
-            claimed.append((task, meta))
-
-        tasks_to_cancel = [task for task, _ in claimed]
-        inflight_cancelled = sum(meta.rollout_count for _, meta in claimed)
-        last_meta: InflightRollout | None = claimed[-1][1] if claimed else None
-        for _, meta in claimed:
-            for _ in range(meta.rollout_count):
-                trace = Rollout(
-                    task=vf.Task(idx=task_idx, prompt=None),
-                    errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
-                    stop_condition="error",
-                )
-                await self.emit_rollout(meta, group, trace)
-
-        # For non-group-scoring envs, the group may have rollouts that
-        # were never dispatched (``rollouts_to_schedule > 0``). Emit
-        # markers for those too so the sink hits ``target_rollouts``
-        #
-        # ``last_meta`` can be ``None`` if the only inflight task for this
-        # group completed naturally between ``on_version_pending``'s snapshot
-        # and us reaching it — synthesize a stand-in from the group state
-        unscheduled_cancelled = 0
-        if group is not None and group.rollouts_to_schedule > 0:
-            fallback_meta = last_meta or InflightRollout(
-                kind=group.kind,
-                env_name=group.env_name,
-                group_id=group_id,
-                policy_version=group.policy_version_at_start,
-                rollout_count=1,
-                eval_step=group.eval_step,
-            )
-            unscheduled_cancelled = group.rollouts_to_schedule
-            for _ in range(unscheduled_cancelled):
-                trace = Rollout(
-                    task=vf.Task(idx=task_idx, prompt=None),
-                    errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
-                    stop_condition="error",
-                )
-                await self.emit_rollout(fallback_meta, group, trace)
-
-        cancelled = inflight_cancelled + unscheduled_cancelled
-        if cancelled > 0:
-            meta_for_log = last_meta or (
-                InflightRollout(
-                    kind=group.kind,
-                    env_name=group.env_name,
-                    group_id=group_id,
-                    policy_version=group.policy_version_at_start if group else 0,
-                    rollout_count=1,
-                    eval_step=group.eval_step,
-                )
-                if group is not None
-                else None
-            )
-            if meta_for_log is not None:
-                self.metrics.record_cancellation(kind=meta_for_log.kind, env_name=meta_for_log.env_name, n=cancelled)
-                get_logger().debug(
-                    f"drain {meta_for_log.kind} | group={str(group_id)[:8]} env={meta_for_log.env_name} | "
-                    f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
-                )
-
-        if tasks_to_cancel:
-            await safe_cancel_all(tasks_to_cancel)
-        return cancelled
 
     async def cancel_inflight_rollouts(self) -> None:
         """Cancel all in-flight rollouts. Used on shutdown — doesn't emit

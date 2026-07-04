@@ -58,7 +58,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 |---|---|
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.group_size` | Rollouts generated per task. |
-| `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
+| `orchestrator.max_off_policy_steps` | Maximum staleness (in policy versions) a rollout may have and still be trained on (default 8, `None` disables). Rollouts are never cancelled for going off-policy — generation continues across in-flight weight updates, and a rollout that started more than this many versions behind the shipping policy is withheld from the trainer (it still finishes and feeds its group's advantage baseline). The main off-policy dial on long agentic rollouts — raise for throughput, lower for tighter on-policyness. Watch `off_policy/stale_rollout_rate` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
 | `[[orchestrator.train.env]]` | Training environments. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Environments](configuration.md#environments-orchestratortrainenv). |
 | `[[orchestrator.eval.env]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
