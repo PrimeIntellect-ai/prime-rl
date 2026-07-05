@@ -59,10 +59,14 @@ export PROJECT_DIR={{ project_dir }}
 export CONFIG_DIR={{ config_dir }}
 export OUTPUT_DIR={{ output_dir }}
 export ORCHESTRATOR_OUTPUT_DIR={{ orchestrator_output_dir }}
-mkdir -p $OUTPUT_DIR/logs/trainer $OUTPUT_DIR/logs/inference
+mkdir -p $OUTPUT_DIR/logs/trainer $OUTPUT_DIR/logs/inference $OUTPUT_DIR/control
 rm -f $OUTPUT_DIR/logs/inference/*.log
 ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
+{% if num_infer_nodes > 0 -%}
+export RUN_DONE_FILE="$OUTPUT_DIR/control/slurm_run_complete"
+rm -f "$RUN_DONE_FILE"
+{% endif %}
 
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_RUN_ID=${WANDB_SHARED_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
@@ -391,20 +395,29 @@ else
 
     echo $HOSTNAMES_STR | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 
-    WANDB_SHARED_LABEL=trainer uv run torchrun \
-        --role=trainer \
-        --nnodes=$NUM_TRAIN_NODES \
-        --nproc-per-node=$GPUS_PER_NODE \
-        --node-rank=$TRAIN_NODE_RANK \
-        --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
-        --rdzv-id=job_$SLURM_JOB_ID \
-        --log-dir=$OUTPUT_DIR/logs/trainer/torchrun \
-        --tee=3 \
-        --redirects=3 \
-        --local-ranks-filter={{ ranks_filter }} \
-        -m prime_rl.trainer.rl.train \
-        @ $CONFIG_DIR/trainer.toml \
-        2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log &
+    (
+        WANDB_SHARED_LABEL=trainer uv run torchrun \
+            --role=trainer \
+            --nnodes=$NUM_TRAIN_NODES \
+            --nproc-per-node=$GPUS_PER_NODE \
+            --node-rank=$TRAIN_NODE_RANK \
+            --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
+            --rdzv-id=job_$SLURM_JOB_ID \
+            --log-dir=$OUTPUT_DIR/logs/trainer/torchrun \
+            --tee=3 \
+            --redirects=3 \
+            --local-ranks-filter={{ ranks_filter }} \
+            -m prime_rl.trainer.rl.train \
+            @ $CONFIG_DIR/trainer.toml \
+            2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
+        TRAIN_EXIT_CODE=$?
+        {% if num_infer_nodes > 0 -%}
+        if [ "$TRAIN_EXIT_CODE" -eq 0 ]; then
+            touch "$RUN_DONE_FILE"
+        fi
+        {% endif -%}
+        exit "$TRAIN_EXIT_CODE"
+    ) &
 {% if num_infer_nodes > 0 %}    fi{% endif %}
 {% if num_infer_nodes > 0 %}
 # Launch the orchestrator on one node. Default is trainer rank 0 (SLURM_PROCID ==
@@ -427,6 +440,15 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
         2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
 fi
 {% endif %}
+{% if num_infer_nodes > 0 %}
+if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
+    (
+        while [ ! -f "$RUN_DONE_FILE" ]; do
+            sleep 5
+        done
+    ) &
+fi
+{% endif %}
 
 # Wait for the first background job to exit and propagate its exit code. This
 # turns background process crashes (router, orchestrator) into task failures
@@ -435,6 +457,18 @@ fi
 wait -n
 EXIT_CODE=$?
 REMAINING_PIDS=$(jobs -p)
+{%- if num_infer_nodes > 0 %}
+if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ] && [ "$EXIT_CODE" -eq 0 ] && [ ! -f "$RUN_DONE_FILE" ]; then
+    echo "[$(hostname)] orchestrator exited before trainer completion; waiting for trainer sentinel"
+    wait -n
+    EXIT_CODE=$?
+    REMAINING_PIDS=$(jobs -p)
+fi
+if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ] && [ "$EXIT_CODE" -eq 0 ] && [ ! -f "$RUN_DONE_FILE" ]; then
+    echo "[$(hostname)] inference component exited before trainer completion; treating as failure"
+    EXIT_CODE=1
+fi
+{% endif -%}
 {%- if cleanup_grace_period %}
 # Cross-node teardown is driven by `srun --kill-on-bad-exit=1`, which reaps peer
 # tasks only once a task *exits* non-zero. So on a non-zero exit (crash, SIGTERM,
