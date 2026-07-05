@@ -6,7 +6,14 @@ import httpx
 from verifiers.v1.clients.config import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import StaticInferencePool, _is_retryable_lora_error, load_lora_adapter, setup_clients
+from prime_rl.utils.client import (
+    DynamoInferencePool,
+    StaticInferencePool,
+    _is_retryable_lora_error,
+    load_lora_adapter,
+    setup_clients,
+    setup_inference_pool,
+)
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -121,4 +128,19 @@ def test_native_pool_preserves_admin_base_url_and_reuses_admin_clients():
 
     assert pool._frontend_admin_clients is pool._admin_clients
     assert [str(client.base_url).rstrip("/") for client in pool.admin_clients] == ["http://worker:8001"]
+    asyncio.run(pool.stop())
+
+
+def test_setup_inference_pool_selects_dynamo_pool_once():
+    pool = asyncio.run(
+        setup_inference_pool(
+            ClientConfig(
+                base_url=["http://frontend:8000/v1"],
+                admin_api="dynamo",
+            ),
+            model_name="test-model",
+        )
+    )
+
+    assert isinstance(pool, DynamoInferencePool)
     asyncio.run(pool.stop())

@@ -52,6 +52,19 @@ _WORKER_EXTENSION_CLS = {
 
 
 @dataclass(frozen=True)
+class DynamoProcessSpec:
+    module: str
+    arguments: tuple[str, ...]
+    environment_items: tuple[tuple[str, str], ...]
+
+    def command(self, executable: str = sys.executable) -> list[str]:
+        return [executable, "-m", self.module, *self.arguments]
+
+    def environment(self, base: dict[str, str] | None = None) -> dict[str, str]:
+        return (base or {}) | dict(self.environment_items)
+
+
+@dataclass(frozen=True)
 class DynamoWorkerSpec:
     name: str
     role: Role
@@ -60,18 +73,10 @@ class DynamoWorkerSpec:
     nixl_port: int
     kv_events_port: int | None
     engine_config: Path
+    process: DynamoProcessSpec
 
     def command(self) -> list[str]:
-        return [
-            sys.executable,
-            "-m",
-            "dynamo.vllm",
-            "--engine-config-json",
-            str(self.engine_config),
-            "--disaggregation-mode",
-            self.role,
-            "--enable-rl",
-        ]
+        return self.process.command()
 
 
 def _json_default(value: Any) -> Any:
@@ -96,6 +101,79 @@ def _validate_overrides(source: str, values: dict[str, Any]) -> None:
     conflicts = sorted(_RESERVED_ENGINE_KEYS & values.keys())
     if conflicts:
         raise ValueError(f"{source} cannot override Dynamo-managed engine keys: {conflicts}")
+
+
+def _environment_items(values: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted(values.items()))
+
+
+def _role_environment(config: InferenceConfig, role: Role) -> dict[str, str]:
+    if config.deployment.type != "disaggregated":
+        return {}
+    if role == "prefill":
+        return config.deployment.prefill_env_vars
+    if role == "decode":
+        return config.deployment.decode_env_vars
+    return {}
+
+
+def build_frontend_process(
+    config: InferenceConfig,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+) -> DynamoProcessSpec:
+    """Build the canonical Dynamo frontend process contract."""
+    environment = {
+        **config.env_vars,
+        "DYN_ENABLE_RL": "1",
+        "DYN_RL_PORT": "8001",
+    }
+    return DynamoProcessSpec(
+        module="dynamo.frontend",
+        arguments=(
+            "--http-host",
+            host or config.server.host or "0.0.0.0",
+            "--http-port",
+            str(port or config.server.port),
+            "--router-mode",
+            "kv",
+            "--router-reset-states",
+            "--enable-engine-apis",
+        ),
+        environment_items=_environment_items(environment),
+    )
+
+
+def build_worker_process(
+    config: InferenceConfig,
+    role: Role,
+    engine_config: Path,
+    *,
+    nixl_host: str | None,
+    nixl_port: int,
+) -> DynamoProcessSpec:
+    """Build the canonical Dynamo vLLM worker process contract."""
+    environment = {
+        **config.env_vars,
+        "DYN_ENABLE_RL": "1",
+        "VLLM_NIXL_SIDE_CHANNEL_PORT": str(nixl_port),
+        "VLLM_PLUGINS": "prime_rl",
+        **_role_environment(config, role),
+    }
+    if nixl_host is not None:
+        environment["VLLM_NIXL_SIDE_CHANNEL_HOST"] = nixl_host
+    return DynamoProcessSpec(
+        module="dynamo.vllm",
+        arguments=(
+            "--engine-config-json",
+            str(engine_config),
+            "--disaggregation-mode",
+            role,
+            "--enable-rl",
+        ),
+        environment_items=_environment_items(environment),
+    )
 
 
 def build_engine_config(
@@ -226,25 +304,20 @@ def build_local_worker_specs(
                 nixl_port=20100 + worker_index,
                 kv_events_port=kv_events_port,
                 engine_config=engine_path,
+                process=build_worker_process(
+                    config,
+                    role,
+                    engine_path,
+                    nixl_host="127.0.0.1",
+                    nixl_port=20100 + worker_index,
+                ),
             )
         )
     return specs
 
 
 def build_frontend_command(config: InferenceConfig) -> list[str]:
-    return [
-        sys.executable,
-        "-m",
-        "dynamo.frontend",
-        "--http-host",
-        config.server.host or "0.0.0.0",
-        "--http-port",
-        str(config.server.port),
-        "--router-mode",
-        "kv",
-        "--router-reset-states",
-        "--enable-engine-apis",
-    ]
+    return build_frontend_process(config).command()
 
 
 def build_worker_environment(
@@ -252,19 +325,10 @@ def build_worker_environment(
     spec: DynamoWorkerSpec,
     base_environment: dict[str, str],
 ) -> dict[str, str]:
-    environment = base_environment | {
+    return spec.process.environment(base_environment) | {
         "CUDA_VISIBLE_DEVICES": ",".join(spec.gpu_ids),
         "DYN_SYSTEM_PORT": str(spec.system_port),
-        "VLLM_NIXL_SIDE_CHANNEL_HOST": "127.0.0.1",
-        "VLLM_NIXL_SIDE_CHANNEL_PORT": str(spec.nixl_port),
-        "VLLM_PLUGINS": "prime_rl",
     }
-    if config.deployment.type == "disaggregated":
-        role_environment = (
-            config.deployment.prefill_env_vars if spec.role == "prefill" else config.deployment.decode_env_vars
-        )
-        environment.update(role_environment)
-    return environment
 
 
 def _terminate(process: subprocess.Popen) -> None:
@@ -300,11 +364,12 @@ def run_dynamo_local(config: InferenceConfig) -> None:
     processes: list[subprocess.Popen] = []
     with tempfile.TemporaryDirectory(prefix="prime-dynamo-") as temporary_dir:
         environment.setdefault("DYN_FILE_KV", str(Path(temporary_dir) / "discovery"))
-        frontend_env = environment | {"CUDA_VISIBLE_DEVICES": ""}
+        frontend = build_frontend_process(config)
+        frontend_env = frontend.environment(environment) | {"CUDA_VISIBLE_DEVICES": ""}
         frontend_env.pop("DYN_SYSTEM_PORT", None)
 
         try:
-            processes.append(subprocess.Popen(build_frontend_command(config), env=frontend_env, start_new_session=True))
+            processes.append(subprocess.Popen(frontend.command(), env=frontend_env, start_new_session=True))
             for spec in specs:
                 worker_env = build_worker_environment(config, spec, environment)
                 processes.append(subprocess.Popen(spec.command(), env=worker_env, start_new_session=True))

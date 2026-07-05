@@ -7,8 +7,10 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.inference import dynamo
 from prime_rl.inference.dynamo import (
     build_engine_config,
+    build_frontend_process,
     build_local_worker_specs,
     build_worker_environment,
+    build_worker_process,
     write_role_engine_configs,
 )
 
@@ -88,6 +90,39 @@ def test_wrapper_options_are_not_written_to_engine_json():
     engine = build_engine_config(disaggregated_config(), "prefill", kv_events_port=20080)
     assert "disaggregation_mode" not in engine
     assert "enable_rl" not in engine
+
+
+def test_process_specs_own_canonical_commands_and_environment(tmp_path: Path):
+    config = disaggregated_config(
+        env_vars={"SHARED": "value"},
+        deployment={
+            "type": "disaggregated",
+            "gpus_per_node": 1,
+            "num_prefill_nodes": 1,
+            "num_decode_nodes": 1,
+            "num_prefill_replicas": 1,
+            "num_decode_replicas": 1,
+            "prefill_env_vars": {"ROLE": "prefill"},
+        },
+    )
+
+    frontend = build_frontend_process(config)
+    prefill = build_worker_process(
+        config,
+        "prefill",
+        tmp_path / "prefill.json",
+        nixl_host="127.0.0.1",
+        nixl_port=20100,
+    )
+
+    assert frontend.module == "dynamo.frontend"
+    assert frontend.arguments[-1] == "--enable-engine-apis"
+    assert frontend.environment()["DYN_ENABLE_RL"] == "1"
+    assert prefill.module == "dynamo.vllm"
+    assert prefill.arguments[-3:] == ("--disaggregation-mode", "prefill", "--enable-rl")
+    assert prefill.environment()["ROLE"] == "prefill"
+    assert prefill.environment()["VLLM_PLUGINS"] == "prime_rl"
+    assert prefill.environment()["VLLM_NIXL_SIDE_CHANNEL_PORT"] == "20100"
 
 
 def test_worker_environment_applies_only_matching_role_overrides(tmp_path: Path):

@@ -132,8 +132,8 @@ class PrefillScorer:
         await asyncio.gather(*(c.close() for c in self._clients.values()))
 
 
-class StaticInferencePool:
-    """Static inference pool with fixed client list."""
+class _StaticClientPool:
+    """Shared request-client behavior for fixed inference pools."""
 
     def __init__(
         self,
@@ -154,16 +154,6 @@ class StaticInferencePool:
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
         self._client_config = client_config
-        self._dynamo_admin = DynamoAdminAPI() if client_config.admin_api == "dynamo" else None
-        self._dynamo_worker_urls: tuple[str, ...] = ()
-        if self._dynamo_admin is None:
-            self._admin_clients = setup_admin_clients(client_config)
-            self._frontend_admin_clients = self._admin_clients
-            self._discovery_clients = []
-        else:
-            self._frontend_admin_clients = setup_admin_clients(client_config, urls=client_config.base_url)
-            self._discovery_clients = setup_admin_clients(client_config, urls=discovery_urls(client_config))
-            self._admin_clients = []
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
@@ -193,6 +183,34 @@ class StaticInferencePool:
             await asyncio.sleep(0.5)
         return min(self.train_clients, key=lambda c: load[client_identity(c)])
 
+    async def score(self, token_ids: list[int]) -> list[float]:
+        """Prefill-score tokens under this pool's model."""
+        return await self._scorer.score(self.train_clients, self.model_name, token_ids)
+
+
+class StaticInferencePool(_StaticClientPool):
+    """Static native-vLLM inference pool with fixed clients."""
+
+    def __init__(
+        self,
+        client_config: ClientConfig,
+        model_name: str,
+        train_client_type: str = "openai_chat_completions",
+        eval_client_type: str = "openai_chat_completions",
+        renderer_config: RendererConfig | None = None,
+        pool_size: int | None = None,
+    ):
+        super().__init__(
+            client_config,
+            model_name,
+            train_client_type,
+            eval_client_type,
+            renderer_config,
+            pool_size,
+        )
+        self._admin_clients = setup_admin_clients(client_config)
+        self._frontend_admin_clients = self._admin_clients
+
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         ready_timeout = timeout if timeout is not None else self._wait_for_ready_timeout
         await check_health(
@@ -204,25 +222,8 @@ class StaticInferencePool:
             model_name,
             skip_model_check=self._skip_model_check,
         )
-        if self._dynamo_admin is not None:
-            worker_urls = await discover_worker_urls(self._discovery_clients, ready_timeout, model_name=model_name)
-            self._dynamo_worker_urls = tuple(worker_urls)
-            self._admin_clients = setup_admin_clients(self._client_config, urls=worker_urls)
-            await check_health(self._admin_clients, timeout=ready_timeout, strict=True)
-
-    async def _validate_dynamo_membership(self) -> None:
-        if self._dynamo_admin is None:
-            return
-        discovered = await discover_worker_urls(self._discovery_clients, 30, model_name=self.model_name)
-        validate_worker_membership(self._dynamo_worker_urls, discovered)
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        if self._dynamo_admin is not None:
-            if lora_name is not None:
-                raise ValueError("Dynamo backend does not yet support Prime LoRA weight updates")
-            await self._validate_dynamo_membership()
-            await self._dynamo_admin.update_weights(self._admin_clients, weight_dir, step)
-            return
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
 
     async def init_nccl_broadcast(
@@ -233,17 +234,6 @@ class StaticInferencePool:
         inference_world_size: int | None = None,
         quantize_in_weight_transfer: bool = False,
     ) -> None:
-        if self._dynamo_admin is not None:
-            await self._validate_dynamo_membership()
-            await self._dynamo_admin.initialize_nccl(
-                self._admin_clients,
-                host=host,
-                port=port,
-                timeout=timeout,
-                inference_world_size=inference_world_size,
-                quantize_in_weight_transfer=quantize_in_weight_transfer,
-            )
-            return
         await init_nccl_broadcast(
             self._admin_clients,
             host,
@@ -253,10 +243,78 @@ class StaticInferencePool:
             quantize_in_weight_transfer=quantize_in_weight_transfer,
         )
 
-    async def score(self, token_ids: list[int]) -> list[float]:
-        """Prefill-score ``token_ids`` under this pool's model (one logprob per
-        token, 0.0 for the leading token). Delegates to the shared scorer."""
-        return await self._scorer.score(self.train_clients, self.model_name, token_ids)
+    async def stop(self) -> None:
+        await self._scorer.aclose()
+        clients = {*self._frontend_admin_clients, *self._admin_clients}
+        await asyncio.gather(*(client.aclose() for client in clients))
+
+
+class DynamoInferencePool(_StaticClientPool):
+    """Static Dynamo pool with worker discovery and Dynamo administration."""
+
+    def __init__(
+        self,
+        client_config: ClientConfig,
+        model_name: str,
+        train_client_type: str = "openai_chat_completions",
+        eval_client_type: str = "openai_chat_completions",
+        renderer_config: RendererConfig | None = None,
+        pool_size: int | None = None,
+    ):
+        super().__init__(
+            client_config,
+            model_name,
+            train_client_type,
+            eval_client_type,
+            renderer_config,
+            pool_size,
+        )
+        self._frontend_admin_clients = setup_admin_clients(client_config, urls=client_config.base_url)
+        self._discovery_clients = setup_admin_clients(client_config, urls=discovery_urls(client_config))
+        self._admin_clients: list[AsyncClient] = []
+        self._worker_urls: tuple[str, ...] = ()
+        self._admin = DynamoAdminAPI()
+
+    async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
+        ready_timeout = timeout if timeout is not None else self._wait_for_ready_timeout
+        await check_health(self._frontend_admin_clients, timeout=ready_timeout)
+        await maybe_check_has_model(
+            self._frontend_admin_clients,
+            model_name,
+            skip_model_check=self._skip_model_check,
+        )
+        worker_urls = await discover_worker_urls(self._discovery_clients, ready_timeout, model_name=model_name)
+        self._worker_urls = tuple(worker_urls)
+        self._admin_clients = setup_admin_clients(self._client_config, urls=worker_urls)
+        await check_health(self._admin_clients, timeout=ready_timeout, strict=True)
+
+    async def _validate_membership(self) -> None:
+        discovered = await discover_worker_urls(self._discovery_clients, 30, model_name=self.model_name)
+        validate_worker_membership(self._worker_urls, discovered)
+
+    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+        if lora_name is not None:
+            raise ValueError("Dynamo backend does not yet support Prime LoRA weight updates")
+        await self._validate_membership()
+        await self._admin.update_weights(self._admin_clients, weight_dir, step)
+
+    async def init_nccl_broadcast(
+        self,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int | None = None,
+        quantize_in_weight_transfer: bool = False,
+    ) -> None:
+        await self._validate_membership()
+        await self._admin.initialize_nccl(
+            self._admin_clients,
+            host=host,
+            port=port,
+            timeout=timeout,
+            inference_world_size=inference_world_size,
+            quantize_in_weight_transfer=quantize_in_weight_transfer,
+        )
 
     async def stop(self) -> None:
         await self._scorer.aclose()
@@ -285,7 +343,8 @@ async def setup_inference_pool(
             pool_size=pool_size,
         )
 
-    return StaticInferencePool(
+    pool_type = DynamoInferencePool if client_config.admin_api == "dynamo" else StaticInferencePool
+    return pool_type(
         client_config,
         model_name=model_name,
         train_client_type=train_client_type,
