@@ -77,7 +77,6 @@ class BCFeedForward(nn.Module):
         self.w3 = nn.Parameter(torch.empty(hidden_dim, dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # return torch.matmul(self.w2, F.silu(torch.matmul(self.w1, x.T)) * torch.matmul(self.w3, x.T))
         return torch.matmul(F.silu(torch.matmul(x, self.w1.T)) * torch.matmul(x, self.w3.T), self.w2.T)
 
     def init_weights(self, init_std: float):
@@ -427,6 +426,9 @@ class TokenChoiceTopKRouter(nn.Module):
         self.route_norm = route_norm
         self.route_scale = route_scale
         self.force_balanced = False
+        # Set via model.moe_router_dtype='float32': the gate weight is kept in fp32
+        # (exempt from FSDP bf16 casting) and the gate GEMM runs in fp32.
+        self.fp32_gate = False
 
     def forward(
         self, x: torch.Tensor, expert_bias: torch.Tensor | None = None, routed_experts: torch.Tensor | None = None
@@ -453,7 +455,7 @@ class TokenChoiceTopKRouter(nn.Module):
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
             f"routed_experts shape: {routed_experts.shape}, top_k: {self.top_k}"
         )
-        scores = self.gate(x)
+        scores = self.gate(x.to(torch.float32)) if self.fp32_gate else self.gate(x)
 
         # By default, sigmoid or softmax is performed in float32 to avoid loss explosion
         if self.score_func == "sigmoid":

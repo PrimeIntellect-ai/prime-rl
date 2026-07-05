@@ -69,13 +69,12 @@ def trace_to_samples(
     Each `trace.branches` entry is already a flat token sequence (`branch.token_ids` /
     `branch.sampled_mask` / `branch.logprobs`), so a sample carries it directly: `mask` marks
     the trainable (model-sampled) tokens, the context tokens between completions stay masked
-    out. On a rollout error the whole completion is masked out. A branch carrying images also
-    gets `mm_refs` (raw image URIs + JSON-safe renderer metadata) and
-    `mm_token_type_ids` (the renderer's `mm_token_type_id_map` applied to the branch
-    tokens). Branches with no sampled tokens (e.g. an openai client carrying none) yield
-    nothing.
+    out. Errored rollouts are dropped upstream (`TrainSink.process_rollout`), so no error
+    handling happens here. A branch carrying images also gets `mm_refs` (raw image URIs +
+    JSON-safe renderer metadata) and `mm_token_type_ids` (the renderer's
+    `mm_token_type_id_map` applied to the branch tokens). Branches with no sampled tokens
+    (e.g. an openai client carrying none) yield nothing.
     """
-    has_error = trace.has_error
     samples: list[TrainingSample] = []
     for branch in trace.branches:
         mask = branch.sampled_mask
@@ -94,7 +93,7 @@ def trace_to_samples(
         samples.append(
             TrainingSample(
                 token_ids=token_ids,
-                mask=[m and not has_error for m in mask],
+                mask=mask,
                 logprobs=branch.logprobs,
                 temperatures=[],  # filled by TrainSink.process_group
                 env_name=env_name,
@@ -105,6 +104,6 @@ def trace_to_samples(
         )
     if not samples:
         get_logger().warning(
-            f"No trainable samples (error={has_error}, stop={trace.stop_condition}, num_turns={trace.num_turns})."
+            f"No trainable samples (error={trace.has_error}, stop={trace.stop_condition}, num_turns={trace.num_turns})."
         )
     return samples

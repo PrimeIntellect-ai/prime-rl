@@ -155,34 +155,6 @@ def gather_for_cp_wo_grad(t: torch.Tensor, cp_world_size: int, cp_group: dist.Pr
     return torch.cat(empty_like_t, dim=1)
 
 
-def get_padding_logit_from_prev_cp_rank(
-    logits: torch.Tensor, cp_rank: int, cp_world_size: int, cp_group: dist.ProcessGroup
-) -> torch.Tensor | None:
-    """
-    Get the padding logit from the previous context parallel rank.
-    Args:
-        logits: The logits tensor.
-        cp_rank: The rank of the current process.
-        cp_world_size: The number of processes in the context parallel group.
-        cp_group: The context parallel group.
-    Returns:
-        The padding logit from the previous context parallel rank.
-    """
-    last_logit = logits[:, -1, :].unsqueeze(1)
-
-    all_rank_last_logits = [
-        torch.zeros(1, 1, logits.shape[2], dtype=logits.dtype, device=logits.device) for _ in range(cp_world_size)
-    ]
-
-    dist.all_gather(all_rank_last_logits, last_logit, group=cp_group)
-
-    prev_cp_rank = cp_rank - 1
-    if prev_cp_rank >= 0:
-        return all_rank_last_logits[prev_cp_rank]
-    else:
-        return None
-
-
 def setup_cp_params(
     input_ids: torch.Tensor,
     position_ids: torch.Tensor,

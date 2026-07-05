@@ -166,6 +166,8 @@ class Orchestrator:
         # Trigger timestamps so eval success logs can report epoch duration
         self.eval_triggered_at = {}
         self.consecutive_empty_batches = 0
+        self.gate_closed_at = None
+        self.wait_for_policy_time = 0.0
         self.component_tasks = []
 
         # Optional attributes — ``setup()`` populates them when the relevant
@@ -223,6 +225,8 @@ class Orchestrator:
             tokenizer=self.tokenizer,
             run_config=config,
             keep_full_history=config.bench,
+            train_env_names=[env.resolved_name for env in config.train.env],
+            eval_env_names=[env.resolved_name for env in config.eval.env] if config.eval is not None else [],
         )
 
         if config.heartbeat is not None:
@@ -306,17 +310,21 @@ class Orchestrator:
 
         if self.resume_step is not None and self.ckpt_manager is not None:
             self.ckpt_manager.load(self.progress, step=self.resume_step)
+            # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
+            # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
+            # trainer even when ``ckpt.skip_progress`` left the counter unrestored.
+            self.progress.step = self.resume_step + 1
             get_logger().info(f"Resuming orchestrator from checkpoint step {self.resume_step}")
             check_exists = config.weight_broadcast.type != "nccl"
             wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
             weights_path = get_weight_dir(
-                config.output_dir, self.progress.step, check_exists=check_exists, wait_timeout=wait_timeout
+                config.output_dir, self.resume_step, check_exists=check_exists, wait_timeout=wait_timeout
             )
-            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=self.progress.step)
+            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=self.resume_step)
             if self.lora_name is not None:
                 self.policy_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
-            self.policy.version = self.progress.step
+            self.policy.version = self.resume_step
         else:
             get_logger().info("Training from scratch")
 
@@ -362,7 +370,7 @@ class Orchestrator:
             inference=self.policy_inference,
             observers=[self.dispatcher, self],
             lora_name=self.lora_name,
-            ckpt_step=self.progress.step,
+            ckpt_step=self.policy.version,
         )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
@@ -408,11 +416,11 @@ class Orchestrator:
             asyncio.create_task(self.watcher.start(), name="watcher"),
         ]
 
-        # Default step-0 base-model eval — fires before any train rollouts
-        # unless ``eval.skip_first_step=True`` (or this is a resume)
+        # Base-model eval (policy v0) — fires before any train rollouts, logged at the first
+        # step, unless ``eval.skip_first_step=True`` (or this is a resume)
         self.maybe_trigger_eval(self.progress.step)
 
-        # Anchor step-time clock so step 0 measures startup → first batch
+        # Anchor step-time clock so the first step measures startup → first batch
         self.last_batch_at = time.perf_counter()
 
         # ``clean_exit`` stays False if ``main_loop`` raises (signal-driven
@@ -429,7 +437,11 @@ class Orchestrator:
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
             self.monitor.save_final_summary()
-            if self.ckpt_manager is not None:
+            # ``progress.step`` points at the next (unshipped) step; the last finished step is
+            # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
+            # first ship).
+            if self.ckpt_manager is not None and self.progress.step > 1:
+                self.progress.step -= 1
                 get_logger().info("Writing final checkpoint")
                 self.ckpt_manager.save(self.progress, step=self.progress.step)
             await self.stop()
@@ -482,9 +494,7 @@ class Orchestrator:
         step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
         self.last_batch_at = now
 
-        save_ckpt_time = await self.maybe_save_ckpt(step)
-
-        if config.max_steps is not None and step >= config.max_steps:
+        if config.max_steps is not None and step > config.max_steps:
             self.draining = True
             self.dispatcher.disable_train_scheduling()
             n_cancelled = await self.dispatcher.cancel_inflight_train_rollouts()
@@ -523,7 +533,10 @@ class Orchestrator:
         await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
+        self.progress.step += 1
         self.update_dispatch_gate()
+        # Checkpoint the step we just shipped (resume point: continue at step + 1).
+        save_ckpt_time = await self.maybe_save_ckpt(step)
         trim_process_memory()
 
         # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``batch.rollouts`` is the
@@ -555,6 +568,7 @@ class Orchestrator:
             "progress/total_tasks": self.progress.total_problems,
             "time/step": step_time,
             "time/save_ckpt": save_ckpt_time,
+            "time/wait_for_policy": self.wait_for_policy_time,
             "step": step,
         }
         for env_name, env_pool in batch.rollouts.by_env().items():
@@ -566,6 +580,7 @@ class Orchestrator:
             for name, count in self.train_sink.pre_filter_dropped_by_name.items():
                 metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
         self.monitor.log(metrics, step=step)
+        self.wait_for_policy_time = 0.0
         self.monitor.log_samples(effective.rollouts, step=step)
         self.monitor.log_distributions(
             distributions={
@@ -593,7 +608,6 @@ class Orchestrator:
         self.log_train_batch(batch, step=step, step_time=step_time)
 
         self.train_sink.reset_pre_filter_stats()
-        self.progress.step += 1
         self.maybe_trigger_eval(self.progress.step)
         trim_process_memory()
 
@@ -765,19 +779,13 @@ class Orchestrator:
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:
-        """Save the checkpoint if we're at an interval boundary. Returns
+        """Checkpoint the step just shipped if it's an interval boundary. Returns
         elapsed time (0.0 when no save happened)."""
         if self.ckpt_manager is None or self.config.ckpt is None or not self.config.ckpt.interval:
             return 0.0
-        if step <= 0:
-            return 0.0
-        # Skip only the drain-entry step (step == max_steps, which never ships):
-        # it would double-save with the final checkpoint in ``start()`` (also at
-        # progress.step == max_steps). The last *shipped* step (max_steps - 1) is
-        # NOT skipped — the trainer saves there (its is_last_step is max_steps),
-        # so the orchestrator must too or resume from that interval ckpt breaks.
-        near_end = self.config.max_steps is not None and step >= self.config.max_steps
-        if near_end:
+        # The final step's checkpoint is written once in ``start()``'s teardown; skip it here so
+        # we don't double-save. This mirrors the trainer (its is_last_step skips the in-loop save).
+        if self.config.max_steps is not None and step >= self.config.max_steps:
             return 0.0
         if step % self.config.ckpt.interval != 0:
             return 0.0
@@ -787,11 +795,13 @@ class Orchestrator:
         return time.perf_counter() - t
 
     def update_dispatch_gate(self) -> None:
-        """Pause/resume the dispatcher based on how far the orchestrator's
-        next batch would run ahead of ``policy.version``. Called from two
-        sites: after shipping a batch (step advances) and from
-        ``on_new_version`` (policy advances)."""
-        lead = (self.progress.step + 1) - self.policy.version
+        """Pause/resume the dispatcher based on how far the in-flight batch runs
+        ahead of ``policy.version``. ``progress.step`` is always the batch being
+        collected — advanced right after shipping — so both call sites (ship time
+        here, policy update in ``on_new_version``) share one lead formula. Steps
+        are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
+        count is ``progress.step - 1``."""
+        lead = (self.progress.step - 1) - self.policy.version
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
         if lead > TARGET_LAG:
@@ -799,10 +809,14 @@ class Orchestrator:
                 get_logger().info(
                     "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."
                 )
+                self.gate_closed_at = time.perf_counter()
             gate.clear()
         else:
             if not was_set:
                 get_logger().info("Resuming dispatcher")
+                if self.gate_closed_at is not None:
+                    self.wait_for_policy_time += time.perf_counter() - self.gate_closed_at
+                    self.gate_closed_at = None
             gate.set()
 
     async def on_version_pending(self, step: int) -> None:

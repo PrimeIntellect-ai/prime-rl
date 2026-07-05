@@ -47,10 +47,6 @@ from prime_rl.utils.validation import (
 )
 
 
-class RLExperimentalConfig(BaseConfig):
-    pass
-
-
 class SharedLogConfig(BaseConfig):
     level: str | None = None
     """Log level for trainer, orchestrator, and inference. When unset, each sub-config's own log level applies (defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``)."""
@@ -237,8 +233,6 @@ class RLConfig(BaseConfig):
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
-
-    experimental: RLExperimentalConfig = RLExperimentalConfig()
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 

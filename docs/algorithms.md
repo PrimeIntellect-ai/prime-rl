@@ -157,7 +157,7 @@ At step $n = 1, 2, 3, \dots$:
 - **Trainer** produces policy $\pi_n$ with weights $\theta_n$ from rollouts $(x_n, y_n)$.
 - **Inference** produces rollouts $(x_n, y_n)$ from policy $\pi_{\max(0,\,n-1)}$.
 
-Step indices are 0-indexed so the gap holds at startup — inference is exactly one step behind the trainer.
+Step indices are 1-indexed; policy versions are 0-indexed, with $\pi_0$ the base model. At step 1 inference samples from $\pi_0$.
 
 ## Loss
 

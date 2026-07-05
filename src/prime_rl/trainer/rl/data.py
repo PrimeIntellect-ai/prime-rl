@@ -6,7 +6,6 @@ from typing import TypedDict
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
-from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig, MissingMMImagePolicy
 from prime_rl.multimodal.adapters.base import ForwardPolicy, MaterializedMM
@@ -193,7 +192,6 @@ class DataLoader:
         dp_world_size: int,
         seq_len: int,
         pad_to_multiple_of: int,
-        tokenizer: PreTrainedTokenizer,
         bin_cost: Callable[[Sequence[int]], int],
         config: TransportConfig,
         model_name: str,
@@ -206,7 +204,6 @@ class DataLoader:
             self.packer: BasePacker = setup_packer(
                 dp_world_size=dp_world_size,
                 seq_len=seq_len,
-                tokenizer=tokenizer,
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
                 bin_cost=bin_cost,

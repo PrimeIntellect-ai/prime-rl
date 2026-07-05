@@ -116,7 +116,9 @@ class MultiCheckpointManager:
         scheduler: "MultiLoRAScheduler",
     ) -> None:
         for idx in self.multi_run_manager.used_idxs:
-            step = self.multi_run_manager.progress[idx].step
+            # pack() already advanced progress to the next step, so the step just finished
+            # (and its broadcasts/step_{step} weights) is progress - 1.
+            step = self.multi_run_manager.progress[idx].step - 1
             if not self._should_save(idx, step):
                 continue
 

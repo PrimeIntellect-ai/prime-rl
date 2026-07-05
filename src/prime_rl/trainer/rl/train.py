@@ -222,6 +222,8 @@ def train(config: TrainerConfig):
     progress = Progress()
     if checkpoint_step is not None:
         ckpt_manager.load(checkpoint_step, model, [optimizer], scheduler, progress)
+        # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
+        progress.step += 1
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
 
     logger.info(
@@ -239,7 +241,6 @@ def train(config: TrainerConfig):
             parallel_dims.get_mesh("dp").size(),
             config.model.seq_len,
             config.model.cp,
-            tokenizer,
             build_bin_cost(model.config),
             config.rollout_transport,
             config.model.name,
@@ -252,7 +253,6 @@ def train(config: TrainerConfig):
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
-    is_first_step = True
     maybe_record_function = nullcontext
     if config.trace_path:
         logger.info(f"Tracing to {config.trace_path}")
@@ -264,73 +264,6 @@ def train(config: TrainerConfig):
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
-
-        # Broadcast weights every step except:
-        #   - step 0: nothing has changed yet, the orchestrator has the base model.
-        #   - the final NCCL broadcast: with a 1-step async barrier the orchestrator's last step
-        #     uses the trainer's penultimate ckpt, so the trainer's last broadcast has no receiver
-        #     (the inference NCCL group has been torn down). Filesystem broadcast still writes the
-        #     final step so we can resume from the broadcast directory.
-        if weight_broadcast is None:
-            broadcast_weights_time = 0
-        else:
-            nccl_broadcast_unused = (
-                config.weight_broadcast.type == "nccl"
-                and config.max_steps is not None
-                and progress.step >= config.max_steps - 1
-            )
-            if progress.step > 0 and not nccl_broadcast_unused:
-                broadcast_weights_start_time = time.perf_counter()
-                weight_broadcast.broadcast_weights(model, step=progress.step)
-                broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
-                # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-                if config.weight_broadcast.type == "filesystem":
-                    interval_to_keep = config.ckpt and config.ckpt.interval
-                    weight_broadcast.maybe_clean(interval_to_keep)
-            else:
-                broadcast_weights_time = 0
-                # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
-                for idx in multi_run_manager.used_idxs:
-                    multi_run_manager.ready_to_update[idx] = False
-
-        if config.max_concurrent_runs > 1:
-            # Multi-run: Save per-run checkpoints using each run's orchestrator config.
-            # Trainer-level ckpt config can be set by the combined rl entrypoint,
-            # but MultiCheckpointManager has a different save signature.
-            save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(optimizer, scheduler)
-            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
-            ckpt_manager.maybe_clean()
-        elif (
-            ckpt_manager is not None
-            and (config.ckpt and config.ckpt.interval)
-            and not (is_first_step or is_last_step)
-            and progress.step % config.ckpt.interval == 0
-        ):
-            save_ckpt_time = 0
-
-            if not config.ckpt.weights_only:
-                # Single-run: Save full checkpoint
-                logger.info(f"Saving checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
-
-            ckpt_manager.maybe_clean()
-
-            # Save weight checkpoint
-            if weight_ckpt_manager is not None:
-                logger.info(f"Saving weight checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                weight_ckpt_manager.save(progress.step, model, tokenizer)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
-                weight_ckpt_manager.maybe_clean()
-        else:
-            save_ckpt_time = 0
-
-        # Break if we have reached the maximum number of steps
-        if config.max_steps is not None and progress.step >= config.max_steps:
-            break
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
@@ -623,6 +556,69 @@ def train(config: TrainerConfig):
             current_lr = optimizer.get_current_lr()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
+        # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
+        # sample its next step from it. Skip the final NCCL broadcasts: with a 1-step async barrier
+        # the orchestrator's last step uses the trainer's penultimate ckpt, so they have no receiver
+        # (the inference NCCL group is torn down). Filesystem broadcast still writes them so we can
+        # resume from the broadcast directory.
+        if weight_broadcast is None:
+            broadcast_weights_time = 0
+        else:
+            nccl_broadcast_unused = (
+                config.weight_broadcast.type == "nccl"
+                and config.max_steps is not None
+                and progress.step >= config.max_steps - 1
+            )
+            if not nccl_broadcast_unused:
+                broadcast_weights_start_time = time.perf_counter()
+                weight_broadcast.broadcast_weights(model, step=progress.step)
+                broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
+                # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
+                if config.weight_broadcast.type == "filesystem":
+                    interval_to_keep = config.ckpt and config.ckpt.interval
+                    weight_broadcast.maybe_clean(interval_to_keep)
+            else:
+                broadcast_weights_time = 0
+                # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
+                for idx in multi_run_manager.used_idxs:
+                    multi_run_manager.ready_to_update[idx] = False
+
+        # Checkpoint the step we just finished (model = policy v{progress.step}).
+        if config.max_concurrent_runs > 1:
+            # Multi-run: save per-run checkpoints every step (interval-gated inside
+            # MultiCheckpointManager); there is no after-loop final save for multi-run.
+            save_ckpt_start_time = time.perf_counter()
+            ckpt_manager.save(optimizer, scheduler)
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            ckpt_manager.maybe_clean()
+        elif (
+            ckpt_manager is not None
+            and (config.ckpt and config.ckpt.interval)
+            # the last step is written once after the loop (final ckpt), so skip it here
+            and not is_last_step
+            and progress.step % config.ckpt.interval == 0
+        ):
+            save_ckpt_time = 0
+
+            if not config.ckpt.weights_only:
+                # Single-run: Save full checkpoint
+                logger.info(f"Saving checkpoint at step {progress.step}")
+                save_ckpt_start_time = time.perf_counter()
+                ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+
+            ckpt_manager.maybe_clean()
+
+            # Save weight checkpoint
+            if weight_ckpt_manager is not None:
+                logger.info(f"Saving weight checkpoint at step {progress.step}")
+                save_ckpt_start_time = time.perf_counter()
+                weight_ckpt_manager.save(progress.step, model, tokenizer)
+                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+                weight_ckpt_manager.maybe_clean()
+        else:
+            save_ckpt_time = 0
+
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
             memory_profiler.step()
@@ -743,12 +739,13 @@ def train(config: TrainerConfig):
                 run_stats=run_stats,
             )
 
-        progress.step += 1
-        is_first_step = False
-
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
+
+        if is_last_step:
+            break
+        progress.step += 1
 
     if config.trace_path:
         prof.__exit__(None, None, None)

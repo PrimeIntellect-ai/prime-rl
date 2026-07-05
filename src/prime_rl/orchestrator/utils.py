@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import orjson
-import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.utils.client import setup_inference_pool
@@ -51,14 +50,13 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     return renderer, inference_pool
 
 
-def save_rollouts(rollouts: list[dict], path: Path, exclude_keys: set[str] | None = None) -> None:
+def save_rollouts(rollouts: list[dict], path: Path) -> None:
     """Save rollouts (Trace dicts, already JSON-serializable) to a JSONL file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
     with open(path, "wb") as f:
         for rollout in rollouts:
-            row = {k: v for k, v in rollout.items() if k not in exclude_keys} if exclude_keys else rollout
-            f.write(orjson.dumps(row, default=str, option=opts))
+            f.write(orjson.dumps(rollout, default=str, option=opts))
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
@@ -92,16 +90,6 @@ def trim_process_memory() -> None:
         ctypes.CDLL("libc.so.6").malloc_trim(0)
     except Exception as exc:
         get_logger().debug(f"malloc_trim(0) failed: {exc!r}")
-
-
-def get_tool_response_len(trace: vf.Trace) -> int:
-    """Total tool-response tokens consumed across the whole rollout, read from a
-    harness-emitted metric (e.g. RLM's `rlm_total_tool_response_tokens`, deduped
-    across turns/branches/sub-RLMs). Returns 0 when no such metric is present."""
-    for key, value in (trace.metrics or {}).items():
-        if key.endswith("total_tool_response_tokens") and isinstance(value, (int, float)):
-            return int(value)
-    return 0
 
 
 def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:

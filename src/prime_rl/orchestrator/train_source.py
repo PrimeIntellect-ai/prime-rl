@@ -1,7 +1,7 @@
 """TrainSource: weighted round-robin across train envs, infinite pull.
 
-Weights default to configured ``ratio`` (when every env sets one) or to
-per-env dataset size. ``next_example`` reshuffles on cursor exhaustion."""
+Weights are each env's configured ``ratio`` (default 1, i.e. equal weight
+per env). ``next_example`` reshuffles on cursor exhaustion."""
 
 from __future__ import annotations
 
@@ -37,11 +37,7 @@ class TrainSource:
             self.env_costs[env.name] = env.config.group_size if env.requires_group_scoring else 1
 
         self.env_names = [e.name for e in self.envs]
-        configured_ratios = [e.config.ratio for e in self.envs]
-        if all(r is not None for r in configured_ratios):
-            self.weights: list[float] = [float(r) for r in configured_ratios]  # type: ignore[arg-type]
-        else:
-            self.weights = [float(len(self.examples[name])) for name in self.env_names]
+        self.weights: list[float] = [float(e.config.ratio) for e in self.envs]
 
     def next_example(self, available_permits: int) -> dict | None:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
