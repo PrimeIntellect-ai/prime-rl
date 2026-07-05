@@ -72,11 +72,7 @@ class DynamoWorkerSpec:
     system_port: int
     nixl_port: int
     kv_events_port: int | None
-    engine_config: Path
     process: DynamoProcessSpec
-
-    def command(self) -> list[str]:
-        return self.process.command()
 
 
 def _json_default(value: Any) -> Any:
@@ -303,7 +299,6 @@ def build_local_worker_specs(
                 system_port=8081 + worker_index,
                 nixl_port=20100 + worker_index,
                 kv_events_port=kv_events_port,
-                engine_config=engine_path,
                 process=build_worker_process(
                     config,
                     role,
@@ -314,10 +309,6 @@ def build_local_worker_specs(
             )
         )
     return specs
-
-
-def build_frontend_command(config: InferenceConfig) -> list[str]:
-    return build_frontend_process(config).command()
 
 
 def build_worker_environment(
@@ -369,7 +360,7 @@ def run_dynamo_local(config: InferenceConfig) -> None:
             processes.append(subprocess.Popen(frontend.command(), env=frontend_env, start_new_session=True))
             for spec in specs:
                 worker_env = build_worker_environment(spec, environment)
-                processes.append(subprocess.Popen(spec.command(), env=worker_env, start_new_session=True))
+                processes.append(subprocess.Popen(spec.process.command(), env=worker_env, start_new_session=True))
 
             while all(process.poll() is None for process in processes):
                 time.sleep(0.2)

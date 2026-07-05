@@ -83,7 +83,7 @@ def test_local_specs_allocate_four_workers_and_unique_ports(tmp_path: Path):
     assert len({spec.system_port for spec in specs}) == 4
     assert len({spec.nixl_port for spec in specs}) == 4
     assert [spec.kv_events_port for spec in specs if spec.role == "prefill"] == [20080, 20081]
-    assert all("--enable-rl" in spec.command() for spec in specs)
+    assert all("--enable-rl" in spec.process.command() for spec in specs)
 
 
 def test_wrapper_options_are_not_written_to_engine_json():
