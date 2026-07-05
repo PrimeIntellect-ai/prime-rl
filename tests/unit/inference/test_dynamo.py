@@ -140,8 +140,8 @@ def test_worker_environment_applies_only_matching_role_overrides(tmp_path: Path)
     )
     decode, prefill = build_local_worker_specs(config, tmp_path, gpu_ids=["3", "7"])
 
-    decode_env = build_worker_environment(config, decode, {"COMMON": "value"})
-    prefill_env = build_worker_environment(config, prefill, {"COMMON": "value"})
+    decode_env = build_worker_environment(decode, {"COMMON": "value"})
+    prefill_env = build_worker_environment(prefill, {"COMMON": "value"})
 
     assert decode_env["ROLE_SETTING"] == "decode"
     assert prefill_env["ROLE_SETTING"] == "prefill"

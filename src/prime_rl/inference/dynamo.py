@@ -321,7 +321,6 @@ def build_frontend_command(config: InferenceConfig) -> list[str]:
 
 
 def build_worker_environment(
-    config: InferenceConfig,
     spec: DynamoWorkerSpec,
     base_environment: dict[str, str],
 ) -> dict[str, str]:
@@ -353,8 +352,6 @@ def run_dynamo_local(config: InferenceConfig) -> None:
     environment.setdefault("DYN_EVENT_PLANE", "zmq")
     environment.setdefault("DYN_FILE_KV_TTL_SECS", "1800")
     environment.setdefault("DYN_NAMESPACE", f"prime-rl-{os.getpid()}")
-    environment.setdefault("DYN_ENABLE_RL", "1")
-    environment.setdefault("DYN_RL_PORT", "8001")
     environment.setdefault("PYTHONHASHSEED", "0")
 
     def request_stop(_signum, _frame):
@@ -371,7 +368,7 @@ def run_dynamo_local(config: InferenceConfig) -> None:
         try:
             processes.append(subprocess.Popen(frontend.command(), env=frontend_env, start_new_session=True))
             for spec in specs:
-                worker_env = build_worker_environment(config, spec, environment)
+                worker_env = build_worker_environment(spec, environment)
                 processes.append(subprocess.Popen(spec.command(), env=worker_env, start_new_session=True))
 
             while all(process.poll() is None for process in processes):
