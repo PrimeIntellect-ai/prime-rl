@@ -6,6 +6,9 @@
 # router replay, glm-4.5 renderer, cp=8 ulysses, muon, LM-head chunking, AC + activation/optimizer
 # offload, skip-gather/optimizer ckpt.
 #
+# v3: rlm auto-compaction enabled. Train draws a per-task threshold in [65536, 131072] (rollouts of a
+# task share one draw); eval compacts at a fixed 98304. seq_len / max_model_len stay at 131072.
+#
 # CAVEATS (search-specific): every env is bring-your-own-search and scored by a host-side LLM judge.
 #   - The rlm `search` skill calls Serper; SERPER_API_KEY is forwarded into the sandbox via the
 #     harness `forward_env`, so it must be set in the launch environment.
@@ -21,7 +24,7 @@ seq_len = 131072
 TRITON_CACHE_DIR = "/tmp/.triton-cache"
 
 [slurm]
-job_name = "glm45air-search-v2"
+job_name = "glm45air-search-v3"
 partition = "all"
 # Clean up this run's orphaned prime sandboxes before launch (hardcoded label, matches the harness labels below).
 pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-search" -y || true'
@@ -34,7 +37,7 @@ num_infer_replicas = 4
 
 [wandb]
 project = "search-ablations"
-name = "glm45air-search-v2"
+name = "glm45air-search-v3"
 
 [weight_broadcast]
 type = "nccl"
@@ -104,12 +107,12 @@ num_turns_weight = 0.1
 [[orchestrator.train.env]]
 name = "openseeker"
 taskset = { id = "openseeker-v1", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507" } }
-harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = [65536, 131072], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 [[orchestrator.train.env]]
 name = "redsearcher"
 taskset = { id = "redsearcher-v1", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507" } } # optional `difficulty` filter (easy/medium/hard)
-harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = [65536, 131072], runtime = { type = "prime", labels = ["glm45air-search"] } }
 
 # --- Eval: BrowseComp held-out test, every 20 steps (incl. step 0) ---
 
@@ -120,7 +123,7 @@ interval = 20
 name = "browsecomp"
 num_examples = 500 # full set is 1266; cap eval at 500
 taskset = { id = "browsecomp-v1", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507" } }
-harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-search"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = 98304, runtime = { type = "prime", labels = ["glm45air-search"] } }
 timeout = { rollout = 3600 }
 
 # --- Inference ---
