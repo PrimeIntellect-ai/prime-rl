@@ -1,0 +1,23 @@
+{{- if and .Values.inference.enabled (eq .Values.inference.mode "dynamoGraph") }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-frontend-rl
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl.labels" . | nindent 4 }}
+    role: inference
+  annotations:
+    {{- toYaml .Values.inference.dynamoGraph.resource.metadata.annotations | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    nvidia.com/dynamo-graph-deployment-name: {{ .Release.Name }}
+    nvidia.com/dynamo-component: Frontend
+    nvidia.com/dynamo-component-type: frontend
+  ports:
+  - name: rl
+    protocol: TCP
+    port: 8001
+    targetPort: rl
+{{- end }}

@@ -62,16 +62,11 @@ spec:
         - name: HEADLESS_SERVICE
           value: "{{ .Release.Name }}-orchestrator-headless.{{ .Values.namespace }}.svc.cluster.local"
         - name: INFERENCE_URL
-          {{- $releaseName := .Release.Name }}
-          {{- $namespace := .Values.namespace }}
-          {{- $port := int .Values.inference.service.port }}
-          {{- $replicas := int .Values.inference.replicas }}
-          {{- $urls := list }}
-          {{- range $i := until $replicas }}
-          {{- $url := printf "http://%s-inference-%d.%s-inference-headless.%s.svc.cluster.local:%d/v1" $releaseName $i $releaseName $namespace $port }}
-          {{- $urls = append $urls $url }}
-          {{- end }}
-          value: {{ $urls | join "," | quote }}
+          value: {{ include "prime-rl.inferenceUrls" . | quote }}
+        {{- if eq .Values.inference.mode "dynamoGraph" }}
+        - name: DYN_RL_DISCOVERY_URL
+          value: "http://{{ .Release.Name }}-frontend-rl.{{ .Values.namespace }}.svc.cluster.local:8001"
+        {{- end }}
         {{- with .Values.orchestrator.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -104,7 +99,7 @@ spec:
       {{- end }}
 {{- end }}
 ---
-{{- if .Values.inference.enabled }}
+{{- if and .Values.inference.enabled (eq .Values.inference.mode "statefulset") }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -301,16 +296,11 @@ spec:
           value: {{ .Values.trainer.pytorchCudaAllocConf | quote }}
         {{- end }}
         - name: INFERENCE_URL
-          {{- $releaseName := .Release.Name }}
-          {{- $namespace := .Values.namespace }}
-          {{- $port := int .Values.inference.service.port }}
-          {{- $replicas := int .Values.inference.replicas }}
-          {{- $urls := list }}
-          {{- range $i := until $replicas }}
-          {{- $url := printf "http://%s-inference-%d.%s-inference-headless.%s.svc.cluster.local:%d/v1" $releaseName $i $releaseName $namespace $port }}
-          {{- $urls = append $urls $url }}
-          {{- end }}
-          value: {{ $urls | join "," | quote }}
+          value: {{ include "prime-rl.inferenceUrls" . | quote }}
+        {{- if eq .Values.inference.mode "dynamoGraph" }}
+        - name: DYN_RL_DISCOVERY_URL
+          value: "http://{{ .Release.Name }}-frontend-rl.{{ .Values.namespace }}.svc.cluster.local:8001"
+        {{- end }}
         {{- with .Values.trainer.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -46,7 +46,7 @@ spec:
     name: nccl
 {{- end }}
 ---
-{{- if .Values.inference.enabled }}
+{{- if and .Values.inference.enabled (eq .Values.inference.mode "statefulset") }}
 {{- if .Values.inference.service.enabled }}
 apiVersion: v1
 kind: Service
@@ -98,7 +98,7 @@ spec:
 {{- end }}
 {{- end }}
 ---
-{{- if .Values.inference.enabled }}
+{{- if and .Values.inference.enabled (eq .Values.inference.mode "statefulset") }}
 apiVersion: v1
 kind: Service
 metadata:

@@ -5,6 +5,23 @@ Expand the name of the chart.
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{- define "prime-rl.inferenceUrls" -}}
+{{- if eq .Values.inference.mode "dynamoGraph" -}}
+{{- printf "http://%s-frontend.%s.svc.cluster.local:8000/v1" .Release.Name .Values.namespace -}}
+{{- else -}}
+{{- $releaseName := .Release.Name -}}
+{{- $namespace := .Values.namespace -}}
+{{- $port := int .Values.inference.service.port -}}
+{{- $replicas := int .Values.inference.replicas -}}
+{{- $urls := list -}}
+{{- range $i := until $replicas -}}
+{{- $url := printf "http://%s-inference-%d.%s-inference-headless.%s.svc.cluster.local:%d/v1" $releaseName $i $releaseName $namespace $port -}}
+{{- $urls = append $urls $url -}}
+{{- end -}}
+{{- $urls | join "," -}}
+{{- end -}}
+{{- end }}
+
 {{/*
 Create a default fully qualified app name.
 */}}

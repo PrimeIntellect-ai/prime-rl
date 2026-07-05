@@ -1,0 +1,3 @@
+{{- if and .Values.inference.enabled (eq .Values.inference.mode "dynamoGraph") }}
+{{- toYaml (required "inference.dynamoGraph.resource is required" .Values.inference.dynamoGraph.resource) }}
+{{- end }}
