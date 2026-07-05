@@ -81,8 +81,14 @@ def test_local_specs_allocate_four_workers_and_unique_ports(tmp_path: Path):
     assert [spec.role for spec in specs] == ["decode", "decode", "prefill", "prefill"]
     assert [spec.gpu_ids for spec in specs] == [("4",), ("5",), ("6",), ("7",)]
     assert len({spec.system_port for spec in specs}) == 4
-    assert len({spec.nixl_port for spec in specs}) == 4
-    assert [spec.kv_events_port for spec in specs if spec.role == "prefill"] == [20080, 20081]
+    assert len({spec.process.environment()["VLLM_NIXL_SIDE_CHANNEL_PORT"] for spec in specs}) == 4
+    prefill_configs = [
+        json.loads(Path(spec.process.arguments[1]).read_text()) for spec in specs if spec.role == "prefill"
+    ]
+    assert [config["kv_events_config"]["endpoint"] for config in prefill_configs] == [
+        "tcp://*:20080",
+        "tcp://*:20081",
+    ]
     assert all("--enable-rl" in spec.process.command() for spec in specs)
 
 

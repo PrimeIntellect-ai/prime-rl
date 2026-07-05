@@ -70,8 +70,6 @@ class DynamoWorkerSpec:
     role: Role
     gpu_ids: tuple[str, ...]
     system_port: int
-    nixl_port: int
-    kv_events_port: int | None
     process: DynamoProcessSpec
 
 
@@ -297,8 +295,6 @@ def build_local_worker_specs(
                 role=role,
                 gpu_ids=worker_gpus,
                 system_port=8081 + worker_index,
-                nixl_port=20100 + worker_index,
-                kv_events_port=kv_events_port,
                 process=build_worker_process(
                     config,
                     role,
