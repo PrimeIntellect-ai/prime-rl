@@ -410,6 +410,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_infer_replicas=config.deployment.num_infer_replicas,
             num_prefill_nodes=infer_deploy.num_prefill_nodes,
             num_decode_nodes=infer_deploy.num_decode_nodes,
+            prefill_nodes_per_replica=infer_deploy.prefill_nodes_per_replica,
+            decode_nodes_per_replica=infer_deploy.decode_nodes_per_replica,
             num_prefill_replicas=infer_deploy.num_prefill_replicas,
             num_decode_replicas=infer_deploy.num_decode_replicas,
             gpus_per_node=config.deployment.gpus_per_node,
@@ -441,11 +443,11 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes,
-            nodes_per_infer_replica=config.deployment.num_infer_nodes,
+            nodes_per_infer_replica=config.deployment.infer_nodes_per_replica,
             num_infer_replicas=config.deployment.num_infer_replicas,
             gpus_per_node=config.deployment.gpus_per_node,
             router=config.inference.deployment.router if config.inference else VllmRouterConfig(),
-            infer_nodes_per_replica=config.deployment.num_infer_nodes,
+            infer_nodes_per_replica=config.deployment.infer_nodes_per_replica,
             backend_port=config.inference.deployment.backend_port if config.inference else 8100,
             inference_tp=config.inference.parallel.tp if config.inference else 1,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
@@ -496,7 +498,7 @@ def rl_slurm(config: RLConfig):
         train_env_names = [env.resolved_name for env in config.orchestrator.train.env]
         eval_env_names = [env.resolved_name for env in config.orchestrator.eval.env] if config.orchestrator.eval else []
 
-        has_infer = config.deployment.num_infer_nodes > 0
+        has_infer = config.deployment.infer_nodes_per_replica > 0
         log_message = format_log_message(
             log_dir=log_dir,
             trainer=True,
