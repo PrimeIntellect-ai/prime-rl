@@ -365,6 +365,11 @@ def train(config: TrainerConfig):
             # tensor to CUDA and let the model's forward sort them.
             mm_kwargs_raw = micro_batch.get("mm_kwargs")
             mm_kwargs = {k: v.to("cuda") for k, v in mm_kwargs_raw.items()} if mm_kwargs_raw else None
+            if mm_kwargs is not None and config.model.vlm is None:
+                raise ValueError(
+                    "Received multimodal samples but [model.vlm] is not set. "
+                    "Set [model.vlm] to train on multimodal samples."
+                )
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
