@@ -194,6 +194,7 @@ class SFTDataset(StatefulIterableDataset):
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
+        multimodal: bool = False,
     ):
         super().__init__()
         self.logger = get_logger()
@@ -206,6 +207,7 @@ class SFTDataset(StatefulIterableDataset):
         self.loss_mask_config = loss_mask_config
         self.max_examples = max_examples
         self.max_epochs = max_epochs
+        self.multimodal = multimodal
 
         # If specified, select a subset of the dataset
         if self.max_examples is not None:
@@ -307,6 +309,11 @@ class SFTDataset(StatefulIterableDataset):
         loss_mask = list(sample.loss_mask)
         mm = sample.multi_modal_data
         mm_token_type_ids = list(sample.mm_token_type_ids) if sample.mm_token_type_ids is not None else None
+        if mm is not None and mm.mm_items and not self.multimodal:
+            raise ValueError(
+                "Renderer produced multimodal data but [model.vlm] is not set. "
+                "Set [model.vlm] to train on multimodal samples."
+            )
 
         was_mm_truncated = False
         if mm is not None:
@@ -660,6 +667,7 @@ def setup_dataset(
             loss_mask_config=config.loss_mask,
             non_dp_size=non_dp_size,
             max_epochs=max_epochs,
+            multimodal=multimodal,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")
