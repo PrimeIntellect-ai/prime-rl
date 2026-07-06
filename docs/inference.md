@@ -30,7 +30,7 @@ We support 3 distinct deployment shapes:
 
 Most of the features are supported for all deployment shapes, with few exceptions. These exceptions are rejected on validation.
 
-You can select the deployment shape with `InferenceDeploymentConfig` in your config file. This is a config-field that allows you to set the deployment shape, deployment-specific knobs such as `num_nodes`, `num_replicas`, `router_port`, `backend_port`, etc.
+You can select the deployment shape with `InferenceDeploymentConfig` in your config file. This is a config-field that allows you to set the deployment shape, deployment-specific knobs such as `num_nodes`, `num_replicas`, `backend_port`, and a `[...deployment.router]` block, etc.
 
 ```toml
 [inference.deployment]
@@ -102,7 +102,7 @@ tp = 2
 dp = 4
 ```
 
-This configuration will run 2 independent vLLM replicas, each with `tp=2` and `dp=4`. Routing will be handled by the `vllm-router` instance running on the same node as the 1st replica. We aim to support more advanced routing options, such as `llm-d` or `dynamo` in the future. You can read more about the supported routing options in the [router](#router) section.
+This configuration will run 2 independent vLLM replicas, each with `tp=2` and `dp=4`. Routing is handled by a router instance running on the same node as the 1st replica — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via the `[...deployment.router]` block. You can read more about the supported routing options in the [router](#router) section.
 
 ### Wide-EP
 
@@ -167,21 +167,34 @@ This will run 3 inference replicas, each running on 6 nodes. Each replica will r
 
 ## Router
 
-We use our own fork of [vllm-router](https://github.com/PrimeIntellect-ai/router) as the request handler. We plan to support more advanced proxy options in the future.
+Multi-node and disaggregated deployments front their vLLM backends with a router, configured via a discriminated `[...deployment.router]` block (`type = "vllm-router" | "llm-d"`):
 
-Right now, router handles 2 most important things:
+```toml
+[inference.deployment.router]   # or [deployment.router] for the standalone inference entrypoint
+type = "llm-d"                  # "vllm-router" (default) or "llm-d"
+# llm-d-only knobs (all optional):
+scorers = { "prefix-cache-scorer" = 3.0, "active-request-scorer" = 2.0 }   # base, applied to every profile
+prefill_scorer_overrides = { "queue-scorer" = 2.0, "kv-cache-utilization-scorer" = 2.0 }  # merged onto the P/D prefill profile
+decode_scorer_overrides = {}    # merged onto the P/D decode profile
+non_cached_tokens = 16          # below this many non-cached prompt tokens, skip remote prefill (P/D)
+```
+
+- **`vllm-router`** (default) — our fork of [vllm-router](https://github.com/PrimeIntellect-ai/router). Knob: `policy`.
+- **`llm-d`** — the upstream [llm-d](https://llm-d.ai) Endpoint Picker (EPP) + Envoy proxy. Routing combines **prefix-cache affinity** (grouped rollouts reuse a cached prefix and skip prefill) with the **`active-request-scorer`** — an in-flight load balancer that spreads requests across ranks immediately, unlike the metrics-scraped `queue-scorer` / `kv-cache-utilization-scorer` / `load-aware-scorer` (which lag and concentrate bursts of same-prefix requests). The scorer weights follow the upstream llm-d P/D guide; tune via `scorers` (base) + `prefill_scorer_overrides` / `decode_scorer_overrides` (per-profile, P/D). Does not support `enable_return_routed_experts` (router replay).
+
+Both backends support the 2 most important things:
 - Request routing - KV cache re-use and balanced routing
 - P/D disaggregation - handling the prefill and decode stages separately
 
 ### Routing policies
 The 2 policies you might want to configure are:
 - `consistent_hash` - this is the default policy that optimizes for KV cache re-use across turns - this works by hashing a request header to determine where to route the request to. You can configure what to hash by setting
-`orchestrator.student.client.extra_headers_from_state` to the header the `router` expects to be set.
+`orchestrator.model.client.extra_headers_from_state` to the header the `router` expects to be set.
 
 We set it to a sensible default, that works with all verifiers environments.
 
 ```toml
-[orchestrator.student.client.extra_headers_from_state]
+[orchestrator.model.client.extra_headers_from_state]
 X-Session-ID = "trajectory_id" # this is the default - each rollout has a unique trajectory_id and router expects X-Session-ID
 ```
 
@@ -232,15 +245,19 @@ For optimal P/D disaggregation deployment, we automatically set the decode `all2
 
 For KV cache transfer, we utilize the NIXL connector. This is the default and only currently supported connector. We aim to support more advanced options, such as D->P transfer, or Mooncake Connector in the future.
 
+> **Required:** The pip-wheel NIXL's bundled UCX segfaults on the prefill→decode KV transfer. You must build NIXL against UCX 1.19.x from source — see [Disaggregated Prefill/Decode Inference](advanced.md#disaggregated-prefilldecode-inference) in the Advanced docs for the full setup.
+
 For configuring various knobs with environment variables, we enable you to configure prefill and decode environment variables separately. This is useful if you want to configure different environment variables for the prefill and decode stages.
 
 ```toml
 [inference.deployment]
 type = "disaggregated"
 
-prefill_env_overrides = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="skip"}
-decode_env_overrides = {"VLLM_DEEP_GEMM_WARMUP"="skip"}
+prefill_env_vars = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="skip"}
+decode_env_vars = {"VLLM_DEEP_GEMM_WARMUP"="skip"}
 ```
+
+These are role-specific and layer on top of [`env_vars`](configuration.md#environment-variables) shared by all inference processes regardless of role.
 
 ### Other vLLM features
 We support various other vLLM features. Some of those, such as `enable_dbo`, `enable_eplb` are exposed as a top-level config fields. For those that are not, you can configure them by setting `inference.vllm_extra` to the desired value.

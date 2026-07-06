@@ -34,6 +34,8 @@ Default cadence: **1 hour** (researcher can override). At each check-in:
 **Notes**: anything unusual (errors, restarts, hangs). Omit if nothing notable.
 ```
 
+In W&B, each project auto-gets an **"overview" saved view** (train / eval / stability / performance sections) on its first run — use it for a quick check instead of the auto-generated default workspace.
+
 ### Restarting a run
 
 **Never restart unless the researcher explicitly asked.** Confirm the exact restart command and the conditions that warrant one.
@@ -71,9 +73,7 @@ After a restart, verify all processes are back up and progress resumed before th
 ├── inference/
 │   ├── node_*.log             # per-node (multi-node only)
 │   └── router_0.log           # vllm-router per replica (multi-node only)
-└── envs/{train,eval}/{env_name}/
-    ├── env_server.log
-    └── env_worker_*.log
+└── envs/{train,eval}/{env_name}.log    # one log file per env
 ```
 
 Usually tailing `trainer.log`, `orchestrator.log`, and `inference.log` is enough. Drop into per-node or per-rank logs only when debugging. All logs are loguru with `HH:mm:ss  LEVEL  message`; levels: `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`.
@@ -82,7 +82,7 @@ Scan for problems:
 
 ```bash
 grep -E "WARNING|ERROR" {output_dir}/logs/{trainer,orchestrator,inference}.log
-grep -E "WARNING|ERROR" {output_dir}/logs/envs/train/*/env_{server,worker_*}.log
+grep -E "WARNING|ERROR" {output_dir}/logs/envs/{train,eval}/*.log
 ```
 
 ### Metrics

@@ -1,6 +1,9 @@
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import tomli_w
 
@@ -8,10 +11,21 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir
-from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, DEFAULT_INFERENCE_ENV_VARS, set_proc_title
 
 INFERENCE_TOML = "inference.toml"
 INFERENCE_SBATCH = "inference.sbatch"
+
+
+def vllm_overrides_fragment(overrides: dict[str, Any]) -> str:
+    """Render per-role vLLM overrides as a JSON fragment for the ROLE_EXTRA bash string.
+
+    Returns a leading-comma fragment with quotes escaped for the double-quoted assignment
+    (e.g. `, \\"max_num_seqs\\": 256`), or an empty string when there are no overrides.
+    """
+    if not overrides:
+        return ""
+    return ", " + json.dumps(overrides)[1:-1].replace('"', '\\"')
 
 
 def write_config(config: InferenceConfig, output_dir: Path, exclude: set[str] | None = None) -> Path:
@@ -47,12 +61,13 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         dp_per_node=dp_per_node,
         num_nodes=getattr(config.deployment, "num_nodes", 1),
         port=config.server.port,
-        disaggregated=is_disaggregated,
+        is_disaggregated=is_disaggregated,
         kv_offload=offload is not None,
         kv_offload_mooncake=is_mooncake,
         kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if is_mooncake else 0,
         kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
         kv_offload_device_name=offload.device_name if is_mooncake else "",
+        inference_env_vars={**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars},
     )
 
     is_multi_node = config.deployment.type == "multi_node"
@@ -65,20 +80,21 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             num_decode_replicas=config.deployment.num_decode_replicas,
             prefill_port=config.deployment.prefill_port,
             decode_port=config.deployment.decode_port,
-            router_port=config.deployment.router.port,
-            router_policy=config.deployment.router.policy,
+            router=config.deployment.router,
             data_parallel_rpc_port=config.data_parallel_rpc_port,
             use_deep_gemm=config.use_deep_gemm,
-            prefill_env_overrides=config.deployment.prefill_env_overrides,
-            decode_env_overrides=config.deployment.decode_env_overrides,
+            prefill_env_vars=config.deployment.prefill_env_vars,
+            decode_env_vars=config.deployment.decode_env_vars,
+            prefill_vllm_extra_json=vllm_overrides_fragment(config.deployment.prefill_vllm_overrides),
+            decode_vllm_extra_json=vllm_overrides_fragment(config.deployment.decode_vllm_overrides),
         )
     elif is_multi_node:
         template_vars.update(
-            router_port=config.deployment.router.port,
+            router=config.deployment.router,
             backend_port=config.deployment.backend_port,
-            router_policy=config.deployment.router.policy,
             data_parallel_rpc_port=config.data_parallel_rpc_port,
             enable_expert_parallel=config.enable_expert_parallel,
+            infer_nodes_per_replica=config.deployment.num_nodes,
         )
 
     script = template.render(**template_vars)
@@ -136,6 +152,11 @@ def inference_local(config: InferenceConfig):
     host = config.server.host or "0.0.0.0"
     port = config.server.port
     logger.info(f"Starting inference on http://{host}:{port}/v1\n")
+
+    # Apply the inference env (defaults + [inference.env_vars]) in-process so a standalone
+    # `uv run inference` gets the same environment the rl/SLURM launchers inject into the
+    # server subprocess. config.env_vars wins over the defaults; existing os.environ loses.
+    os.environ.update({**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars})
 
     setup_vllm_env(config)
 

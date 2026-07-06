@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
-from prime_rl.configs.shared import BaseModelConfig, LogConfig, SlurmConfig
+from prime_rl.configs.shared import BaseModelConfig, EnvVars, LogConfig, SlurmConfig
 from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
@@ -167,8 +167,26 @@ All2AllBackend = Literal[
 ]
 
 
+# Known llm-d EPP scorer plugins (used to guard the ``scorers`` map against typos).
+KNOWN_SCORERS = frozenset(
+    {
+        "prefix-cache-scorer",
+        "precise-prefix-cache-scorer",
+        "queue-scorer",
+        "kv-cache-utilization-scorer",
+        "active-request-scorer",
+        "load-aware-scorer",
+        "running-requests-size-scorer",
+        "token-load-scorer",
+        "latency-scorer",
+        "session-affinity-scorer",
+        "lora-affinity-scorer",
+    }
+)
+
+
 class VllmRouterConfig(BaseConfig):
-    """PrimeIntellect vllm-router fronting the per-rank (external-LB) endpoints."""
+    """PrimeIntellect vllm-router."""
 
     type: Literal["vllm-router"] = "vllm-router"
 
@@ -179,9 +197,57 @@ class VllmRouterConfig(BaseConfig):
     """Routing policy, e.g. ``consistent_hash`` or ``round_robin``."""
 
 
-# Discriminated on ``type`` so additional router backends can be added to the
-# union (a single member needs no discriminator yet).
-RouterConfig: TypeAlias = VllmRouterConfig
+class LlmdRouterConfig(BaseConfig):
+    """llm-d router backend (EPP + Envoy)."""
+
+    type: Literal["llm-d"] = "llm-d"
+
+    port: int = 8000
+    """Port the Envoy gateway listens on — becomes the client-facing router URL."""
+
+    scorers: dict[str, float] = {
+        "prefix-cache-scorer": 3.0,
+        "active-request-scorer": 2.0,
+    }
+    """EPP scorer name → weight, applied to every routing profile (before the per-profile P/D overrides). Defaults to prefix-cache affinity plus in-flight (active-request) load balancing. Unknown scorer names are rejected."""
+
+    prefill_scorer_overrides: dict[str, float] = {
+        "queue-scorer": 2.0,
+        "kv-cache-utilization-scorer": 2.0,
+    }
+    """P/D only: scorer → weight merged onto ``scorers`` for the prefill profile (a per-profile weight overrides the base)."""
+
+    decode_scorer_overrides: dict[str, float] = {}
+    """P/D only: scorer → weight merged onto ``scorers`` for the decode profile (a per-profile weight overrides the base); empty by default."""
+
+    non_cached_tokens: int = 16
+    """P/D only: requests with fewer than this many non-cached prompt tokens skip remote prefill and run decode-only."""
+
+    decode_sidecar_port: int = 8300
+    """P/D only: port the decode-side llm-d sidecar listens on."""
+
+    @property
+    def prefill_scorers(self) -> dict[str, float]:
+        """Effective prefill-profile scorers: ``scorers`` merged with ``prefill_scorer_overrides``."""
+        return {**self.scorers, **self.prefill_scorer_overrides}
+
+    @property
+    def decode_scorers(self) -> dict[str, float]:
+        """Effective decode-profile scorers: ``scorers`` merged with ``decode_scorer_overrides``."""
+        return {**self.scorers, **self.decode_scorer_overrides}
+
+    @model_validator(mode="after")
+    def validate_scorers(self):
+        unknown = (
+            set(self.scorers) | set(self.prefill_scorer_overrides) | set(self.decode_scorer_overrides)
+        ) - KNOWN_SCORERS
+        if unknown:
+            raise ValueError(f"Unknown llm-d scorer(s): {sorted(unknown)}. Known scorers: {sorted(KNOWN_SCORERS)}.")
+        return self
+
+
+# Discriminated on ``type`` so the launch path can pick the router backend.
+RouterConfig: TypeAlias = Annotated[VllmRouterConfig | LlmdRouterConfig, Field(discriminator="type")]
 
 
 class BaseInferenceDeploymentConfig(BaseConfig):
@@ -234,11 +300,17 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     decode_port: int = 8200
     """Port for decode vLLM instances."""
 
-    prefill_env_overrides: dict[str, str] = {}
+    prefill_env_vars: EnvVars = {}
     """Extra environment variables exported only on prefill nodes."""
 
-    decode_env_overrides: dict[str, str] = {}
+    decode_env_vars: EnvVars = {}
     """Extra environment variables exported only on decode nodes."""
+
+    prefill_vllm_overrides: dict[str, Any] = {}
+    """Extra vLLM config options merged into --vllm-extra only for prefill ranks (SLURM only)."""
+
+    decode_vllm_overrides: dict[str, Any] = {}
+    """Extra vLLM config options merged into --vllm-extra only for decode ranks (SLURM only)."""
 
     @property
     def num_nodes(self) -> int:
@@ -265,10 +337,6 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class InferenceExperimentalConfig(BaseConfig):
-    pass
-
-
 class InferenceConfig(BaseConfig):
     server: ServerConfig = ServerConfig()
 
@@ -279,6 +347,9 @@ class InferenceConfig(BaseConfig):
 
     log: LogConfig = LogConfig()
     """Logging configuration."""
+
+    env_vars: EnvVars = {}
+    """Extra environment variables for the inference server process(es). Merged on top of the launcher defaults."""
 
     enable_lora: bool = False
     """Enable LoRA. Forwarded as ``--enable-lora``."""
@@ -345,6 +416,9 @@ class InferenceConfig(BaseConfig):
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
 
+    enable_fp32_router_logits: bool = True
+    """Emit fp32 MoE router logits for DeepSeek-family models (incl. GLM-5.x) by setting ``out_dtype=float32`` on the gate: the bf16×bf16 gate GEMM writes its fp32 accumulator out unrounded instead of truncating logits to bf16 before expert scoring. Matches fp32-routed checkpoints (e.g. GLM-5.x, trained with Megatron ``--moe-router-dtype fp32``); pairs with ``trainer.model.moe_router_dtype = "float32"``. Implemented as a monkey-patch over vLLM's DeepseekV2MoE, activated by setting ``additional_config["fp32_router_logits"] = True`` on the vLLM config."""
+
     vllm_extra: dict[str, Any] = {}
     """Extra arguments forwarded to vLLM. Applied as attributes on the vLLM namespace after config translation."""
 
@@ -361,12 +435,22 @@ class InferenceConfig(BaseConfig):
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
 
-    experimental: InferenceExperimentalConfig = InferenceExperimentalConfig()
-
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_llmd_no_routed_experts(self):
+        """Reject routed-expert return with the llm-d router (breaks P/D, unverified for multi-node)."""
+        router = getattr(self.deployment, "router", None)
+        if router is not None and router.type == "llm-d" and self.enable_return_routed_experts:
+            raise ValueError(
+                "The llm-d router backend does not support routed-expert return "
+                "(enable_return_routed_experts): it breaks P/D and is unverified for multi-node. "
+                "Use router type 'vllm-router' for routed-expert runs."
+            )
         return self
 
     @model_validator(mode="after")
@@ -526,6 +610,10 @@ class InferenceConfig(BaseConfig):
         if self.enable_fp32_lm_head:
             existing = getattr(namespace, "additional_config", None) or {}
             existing["fp32_lm_head"] = True
+            rsetattr(namespace, "additional_config", existing)
+        if self.enable_fp32_router_logits:
+            existing = getattr(namespace, "additional_config", None) or {}
+            existing["fp32_router_logits"] = True
             rsetattr(namespace, "additional_config", existing)
 
         # Remove chat_template if not set (vLLM doesn't accept None)

@@ -2,7 +2,6 @@ import asyncio
 import functools
 import importlib
 import os
-import subprocess
 import sys
 from collections import defaultdict
 from contextlib import contextmanager
@@ -13,7 +12,6 @@ import torch
 import torch.distributed as dist
 import wandb
 
-from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig
 from prime_rl.utils.logger import get_logger
 
 # TODO: Change all imports to use utils.pathing
@@ -39,11 +37,6 @@ def import_object(dotted_path: str) -> Any:
     module_path, _, name = dotted_path.rpartition(".")
     module = importlib.import_module(module_path)
     return getattr(module, name)
-
-
-def capitalize(s: str) -> str:
-    """Capitalize the first letter of a string."""
-    return s[0].upper() + s[1:]
 
 
 def clean_exit(func: Callable) -> Callable:
@@ -115,26 +108,6 @@ def to_col_format(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[Any]]:
     return dict(dict_of_lists)
 
 
-def to_row_format(dict_of_lists: dict[str, list[Any]]) -> list[dict[str, Any]]:
-    """
-    Turns a dict of lists to a list of dicts.
-
-    Example:
-
-    ```python
-    dict_of_lists = {"a": [1, 3], "b": [2, 4]} # Column format
-    to_row_format(dict_of_lists)
-    ```
-
-    Returns:
-
-    ```python
-    [{"a": 1, "b": 2}, {"a": 3, "b": 4}] # Row format
-    ```
-    """
-    return [dict(zip(dict_of_lists.keys(), values)) for values in zip(*dict_of_lists.values())]
-
-
 def format_time(time_s: float) -> str:
     """
     Format a time in seconds to a human-readable format:
@@ -190,15 +163,6 @@ def get_free_port() -> int:
     return port
 
 
-def get_cuda_visible_devices() -> list[int]:
-    """Returns the list of availble CUDA devices, taking into account the CUDA_VISIBLE_DEVICES environment variable."""
-    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if cuda_visible is None:
-        # Default to all devices if the environment variable is not set
-        return list(range(torch.cuda.device_count()))
-    return list(sorted([int(device) for device in cuda_visible.split(",")]))
-
-
 def get_latest_ckpt_step(weights_dir: Path) -> int | None:
     step_dirs = list(weights_dir.glob("step_*"))
     if len(step_dirs) == 0:
@@ -210,17 +174,6 @@ def get_latest_ckpt_step(weights_dir: Path) -> int | None:
     return None
 
 
-def mean(values: list[float] | list[int]) -> float:
-    """Compute the mean of a list of values."""
-    return sum(values) / len(values) if values else 0.0
-
-
-def mean_normalize(values: list[float] | list[int]) -> list[float]:
-    """Mean-Normalize a list of values to 0-1."""
-    sum_values = sum(values)
-    return [value / sum_values if sum_values > 0 else 0.0 for value in values]
-
-
 @contextmanager
 def default_dtype(dtype):
     prev = torch.get_default_dtype()
@@ -229,31 +182,3 @@ def default_dtype(dtype):
         yield
     finally:
         torch.set_default_dtype(prev)
-
-
-def install_env(env_id: str, prerelease: bool = False) -> None:
-    """Install an environment in subprocess."""
-    logger = get_logger()
-    logger.info(f"Installing environment {env_id}")
-    install_cmd = ["uv", "run", "--no-sync", "prime", "env", "install", env_id]
-    if prerelease:
-        install_cmd.insert(-1, "--prerelease")
-    result = subprocess.run(install_cmd, capture_output=True, text=True)
-    for line in result.stdout.splitlines():
-        if line.strip():
-            logger.info(line)
-    for line in result.stderr.splitlines():
-        if line.strip():
-            logger.warning(line)
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to install environment {env_id} (exit code {result.returncode})")
-    logger.info(f"Successfully installed environment {env_id}")
-
-
-def get_env_ids_to_install(env_configs: list[EnvConfig] | list[EvalEnvConfig]) -> set[str]:
-    """Get the list of environment IDs to install."""
-    env_ids_to_install = set()
-    for env_config in env_configs:
-        if "/" in env_config.id:
-            env_ids_to_install.add(env_config.id)
-    return env_ids_to_install

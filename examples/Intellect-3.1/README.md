@@ -58,21 +58,3 @@ PS: If using the tmux helper, you can run the command in the `Terminal` (window 
 ```bash
 uv run rl @ examples/Intellect-3.1/rl.toml --output-dir /shared/outputs/intellect-3.1
 ```
-
-Output of the command:
-```
-XXX:XX:XX    INFO Wrote subconfigs to /shared/outputs/intellect-3.1/configs [rl.py::515]
-XXX:XX:XX    INFO Wrote SLURM script to /shared/outputs/intellect-3.1/rl.sbatch [rl.py::534]
-XXX:XX:XX    INFO Submitting: sbatch /shared/outputs/intellect-3.1/rl.sbatch [rl.py::540]
-XXX:XX:XX SUCCESS Submitted batch job YYYY
-
-Logs:
-  Trainer:          tail -F /shared/outputs/intellect-3.1/logs/trainer.log
-  Orchestrator:     tail -F /shared/outputs/intellect-3.1/logs/orchestrator.log
-  Inference:        tail -F /shared/outputs/intellect-3.1/logs/inference.log
-  Envs:             tail -F /shared/outputs/intellect-3.1/logs/envs/*/*/*.log
-   Train:           tail -F /shared/outputs/intellect-3.1/logs/envs/train/*/*.log
-    swe:           tail -F /shared/outputs/intellect-3.1/logs/envs/train/swe/*.log 
-```
-
-

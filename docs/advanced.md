@@ -25,7 +25,7 @@ impl = "custom"        # or "hf" to force the HF path
 
 | Family | HF config types | EP | CP |
 |---|---|---|---|
-| GLM-5 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8` | ✅ | ✅ |
+| GLM-5 / GLM-5.2 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8`, `zai-org/GLM-5.2`, `zai-org/GLM-5.2-FP8` | ✅ | ✅ |
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
 | Qwen3 / Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
@@ -37,6 +37,8 @@ impl = "custom"        # or "hf" to force the HF path
 | GPT-OSS (HF MoE) | `openai/gpt-oss-20b`, `openai/gpt-oss-120b` | ❌ | ✅ |
 
 The custom path enables you to set EP, CP, selective activation checkpointing, FP8 training (`model.fp8 = true`, requires SM90+), and faster MoE kernels (`moe_use_grouped_mm = true`, default). Forcing `impl = "hf"` is mostly useful when debugging — it's slower and disables most MoE-specific knobs.
+
+GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
 
 ### Expert Parallelism Backends
 
@@ -137,9 +139,11 @@ curl -s http://<decode_node>:8200/metrics | grep num_requests_waiting
 
 If prefill queues and decode is idle, add prefill nodes (and vice versa).
 
-**UCX 1.19 requirement.** NVSHMEM needs UCX ≥ 1.19 for multi-GPU CUDA. If your cluster doesn't ship with UCX >=1.19, you can build it from source with the following command:
+**Required setup for disaggregated P/D (NIXL/UCX).** The pip-wheel NIXL's bundled UCX segfaults on the prefill→decode KV transfer (`signal 11: invalid permissions for mapped object` in `libucs.so`) — reproduced on vLLM 0.22 and 0.23, with/without mooncake, with/without llm-d. Building NIXL against UCX 1.19.x from source is therefore **required** (not optional) for disaggregated P/D.
+
 ```bash
 salloc -N 1 --gres=gpu:1 bash -c 'bash scripts/install_nixl_from_source.sh'
+uv pip install --reinstall --no-deps deps/nixl_cu12-*.whl
 ```
 
-The script writes UCX 1.19 to `third_party/ucx/`; the bundled sbatch templates prepend it to `LD_LIBRARY_PATH` so it overrides the system version.
+The script writes UCX 1.19 to `third_party/ucx/`; the bundled sbatch templates prepend it to `LD_LIBRARY_PATH` so it overrides the system version. Re-run both commands after every `uv sync`, since the lock pins the wheel.

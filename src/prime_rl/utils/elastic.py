@@ -17,12 +17,19 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-import verifiers as vf
+import verifiers.v1 as vf
 from httpx import AsyncClient
 from renderers import RendererConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import ClientIdentity, client_identity, load_lora_adapter, setup_admin_clients, setup_clients
+from prime_rl.utils.client import (
+    ClientIdentity,
+    PrefillScorer,
+    client_identity,
+    load_lora_adapter,
+    setup_admin_clients,
+    setup_clients,
+)
 from prime_rl.utils.logger import get_logger
 
 # --- Shared discovery functions ---
@@ -138,6 +145,7 @@ class ElasticInferencePool:
 
         self._sync_task: asyncio.Task | None = None
         self._started = False
+        self._scorer = PrefillScorer()
 
     @classmethod
     async def from_config(
@@ -191,8 +199,6 @@ class ElasticInferencePool:
 
             self._eval_index = 0
             url_config = ClientConfig(
-                timeout=self.client_config.timeout,
-                connect_timeout=self.client_config.connect_timeout,
                 base_url=urls,
                 api_key_var=self.client_config.api_key_var,
                 headers=self.client_config.headers,
@@ -236,6 +242,9 @@ class ElasticInferencePool:
             await asyncio.sleep(self.sync_interval)
         return min(self.train_clients, key=lambda c: load[client_identity(c)])
 
+    async def score(self, token_ids: list[int]) -> list[float]:
+        return await self._scorer.score(self.train_clients, self.model_name, token_ids)
+
     @property
     def admin_clients(self) -> list[AsyncClient]:
         return list(self._admin_clients.values())
@@ -251,7 +260,6 @@ class ElasticInferencePool:
     async def _create_admin_client(self, ip: str) -> AsyncClient:
         url = self._build_url(ip)
         config = ClientConfig(
-            timeout=self.client_config.timeout,
             base_url=[f"{url}/v1"],
             api_key_var=self.client_config.api_key_var,
             headers=self.client_config.headers,
@@ -470,6 +478,7 @@ class ElasticInferencePool:
         for ip in list(self._servers.keys()):
             await self._remove_server(ip)
 
+        await self._scorer.aclose()
         self._train_clients = []
         self._eval_clients = []
         self._client_urls = []
@@ -502,10 +511,3 @@ class ElasticInferencePool:
         if lora_name is None:
             raise ValueError("Elastic inference pool requires LoRA training (lora_name must be set)")
         await self.sync_weights(weight_dir, lora_name, step)
-
-    def get_metrics(self) -> dict[str, float]:
-        return {
-            "elastic/num_servers": self.num_servers,
-            "elastic/num_ready_servers": self.num_ready_servers,
-            "elastic/desired_step": self._desired.step,
-        }

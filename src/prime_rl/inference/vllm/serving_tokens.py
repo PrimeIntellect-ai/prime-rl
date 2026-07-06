@@ -1,28 +1,24 @@
 """Prime-RL extensions to vLLM's `/inference/v1/generate` handler.
 
-vLLM 0.20 ships a generic tokens-in / tokens-out handler at
+vLLM 0.22 ships a generic tokens-in / tokens-out handler at
 ``vllm.entrypoints.serve.disagg.serving.ServingTokens`` that already covers
-prefix-cache salting, lora dispatch, multimodal features, prompt logprobs and
-priority. Three prime-RL features are not in the upstream protocol though, so
-we subclass it to add them back:
+prefix-cache salting, lora dispatch, multimodal features, prompt logprobs,
+priority, ``data_parallel_rank`` header routing and server-side ``max_tokens``
+defaulting. We subclass it for the bits still missing from the upstream handler:
 
 1. ``data_parallel_rank`` routing — read from the ``X-data-parallel-rank``
-   header and forwarded to ``engine_client.generate``. The DP-replicated
-   inference servers prime-RL runs need this to target a specific replica.
+   header and forwarded to ``engine_client.generate``. Upstream ``ServingTokens``
+   now does this too; we keep the equivalent path for the DP-replicated
+   inference servers prime-RL runs.
 
 2. Compact ``routed_experts`` export — when the engine emits routing
    decisions, surface them as base64 raw-byte payloads without requiring a vLLM
    source fork.
 
-3. Server-side ``max_tokens`` defaulting — ``ServingTokens`` hands the
-   client-supplied ``SamplingParams`` to the engine verbatim, and
-   ``SamplingParams.max_tokens`` defaults to ``16`` (a dataclass-level
-   default that predates the OpenAI-compat layer). Every other vLLM
-   endpoint masks this server-side via
-   ``vllm.entrypoints.utils.get_max_tokens`` (see e.g.
-   ``OpenAIServingChat`` at ``serving.py:284``); the disagg endpoint
-   skips that path. Mirror it here so callers that omit ``max_tokens``
-   don't silently truncate at 16. Drop once vLLM patches upstream.
+3. Server-side ``max_tokens`` defaulting — upstream ``ServingTokens`` now applies
+   this itself (via ``GenerateRequest.is_sampling_param_provided`` +
+   ``get_max_tokens``); we keep an equivalent guard so callers that omit
+   ``max_tokens`` don't truncate at vLLM's 16-token ``SamplingParams`` default.
 
 Everything else (request/response schema, sampling params, error handling)
 delegates to upstream so we track future vLLM changes for free.
@@ -47,7 +43,7 @@ from vllm.entrypoints.serve.disagg.protocol import (
     GenerateResponseChoice,
 )
 from vllm.entrypoints.serve.disagg.serving import ServingTokens
-from vllm.entrypoints.utils import get_max_tokens
+from vllm.entrypoints.serve.utils.api_utils import get_max_tokens
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
@@ -156,7 +152,7 @@ class PrimeRlServingTokens(ServingTokens):
 
     @cached_property
     def _max_tokens_defaults(self) -> tuple[dict, int | None]:
-        """Server-side ``max_tokens`` defaulting inputs, mirroring ``OpenAIServingChat``.
+        """Server-side ``max_tokens`` defaulting inputs, mirroring upstream ``ServingTokens``.
 
         Computed lazily because ``custom_init_app_state`` swaps in this
         subclass via ``object.__new__`` + ``__dict__.update`` (so our
@@ -180,7 +176,7 @@ class PrimeRlServingTokens(ServingTokens):
         request: GenerateRequest,
         raw_request: Request | None = None,
     ) -> PrimeRlGenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
-        # Mirrors upstream ``ServingTokens.serve_tokens`` (vllm 0.20). Diffs:
+        # Mirrors upstream ``ServingTokens.serve_tokens`` (vllm 0.22). Diffs:
         # (a) inject ``data_parallel_rank`` from the inbound header into
         # ``engine_client.generate``; (b) default ``sampling_params.max_tokens``
         # to ``max_model_len - prompt_len`` when the caller didn't set it; and
@@ -253,10 +249,10 @@ class PrimeRlServingTokens(ServingTokens):
             extra["kv_transfer_params"] = request.kv_transfer_params
             sampling_params.extra_args = extra
 
-        # Server-side ``max_tokens`` defaulting — see module docstring.
-        # Mirrors ``OpenAIServingChat`` (vllm/entrypoints/openai/chat_completion/
-        # serving.py:284) so callers that omit ``max_tokens`` don't get capped
-        # at vLLM's 16-token ``SamplingParams`` default.
+        # Server-side ``max_tokens`` defaulting — see module docstring. Upstream
+        # ``ServingTokens`` now does this too; kept here so callers that omit
+        # ``max_tokens`` don't get capped at vLLM's 16-token ``SamplingParams``
+        # default.
         if not await _client_set_max_tokens(raw_request):
             diff_sp, override = self._max_tokens_defaults
             sampling_params.max_tokens = get_max_tokens(

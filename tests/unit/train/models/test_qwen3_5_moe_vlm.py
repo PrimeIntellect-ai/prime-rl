@@ -35,6 +35,7 @@ def _tiny_vlm_config():
     tc.linear_num_key_heads = 4
     tc.linear_num_value_heads = 8
     tc.use_cache = False
+    tc.rope_parameters["mrope_section"] = [3, 3, 2]
 
     vc = config.vision_config
     vc.depth = 2
@@ -62,6 +63,12 @@ def _make_image_inputs(config, device="cuda", dtype=torch.float32):
     return pixel_values, image_grid_thw, num_image_tokens
 
 
+def _make_mm_token_type_ids(input_ids, image_token_id):
+    mm_token_type_ids = torch.zeros_like(input_ids)
+    mm_token_type_ids[input_ids == image_token_id] = 1
+    return mm_token_type_ids
+
+
 def test_vlm_forward():
     """Custom VLM produces logits for both text-only and multimodal inputs."""
     config = _tiny_vlm_config()
@@ -82,8 +89,14 @@ def test_vlm_forward():
     text_part = torch.randint(0, 200, (1, 10), device="cuda")
     img_part = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
     input_ids_mm = torch.cat([text_part[:, :5], img_part, text_part[:, 5:]], dim=1)
+    mm_token_type_ids = _make_mm_token_type_ids(input_ids_mm, config.image_token_id)
 
-    out_mm = model(input_ids=input_ids_mm, pixel_values=pixel_values, image_grid_thw=image_grid_thw)
+    out_mm = model(
+        input_ids=input_ids_mm,
+        pixel_values=pixel_values,
+        image_grid_thw=image_grid_thw,
+        mm_token_type_ids=mm_token_type_ids,
+    )
     assert out_mm["logits"].shape == (1, input_ids_mm.shape[1], vocab)
 
 
@@ -98,8 +111,14 @@ def test_vlm_backward():
     text_part = torch.randint(0, 200, (1, 10), device="cuda")
     img_part = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
     input_ids = torch.cat([text_part[:, :5], img_part, text_part[:, 5:]], dim=1)
+    mm_token_type_ids = _make_mm_token_type_ids(input_ids, config.image_token_id)
 
-    out = model(input_ids=input_ids, pixel_values=pixel_values, image_grid_thw=image_grid_thw)
+    out = model(
+        input_ids=input_ids,
+        pixel_values=pixel_values,
+        image_grid_thw=image_grid_thw,
+        mm_token_type_ids=mm_token_type_ids,
+    )
     out["logits"].sum().backward()
 
     assert model.model.language_model.embed_tokens.weight.grad is not None
@@ -170,6 +189,42 @@ def test_vlm_weight_roundtrip():
     assert torch.equal(roundtripped[original_vision_key], original_vision_weight)
 
 
+def test_vlm_forward_requires_mm_token_type_ids():
+    """Image MRoPE needs renderer-supplied modality token types."""
+    config = _tiny_vlm_config()
+    with torch.device("cuda"), default_dtype(torch.float32):
+        model = Qwen3_5MoeForCausalLM(config)
+    inject_prime_lm_head(model)
+
+    pixel_values, image_grid_thw, n_img_tokens = _make_image_inputs(config)
+    input_ids = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
+
+    with pytest.raises(ValueError, match="mm_token_type_ids"):
+        model(input_ids=input_ids, pixel_values=pixel_values, image_grid_thw=image_grid_thw)
+
+
+def test_vlm_forward_rejects_2d_positions_with_images():
+    """Trainer 1D/2D packed positions are not valid image MRoPE coordinates."""
+    config = _tiny_vlm_config()
+    with torch.device("cuda"), default_dtype(torch.float32):
+        model = Qwen3_5MoeForCausalLM(config)
+    inject_prime_lm_head(model)
+
+    pixel_values, image_grid_thw, n_img_tokens = _make_image_inputs(config)
+    input_ids = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
+    mm_token_type_ids = _make_mm_token_type_ids(input_ids, config.image_token_id)
+    position_ids = torch.arange(n_img_tokens, device="cuda").unsqueeze(0)
+
+    with pytest.raises(ValueError, match="3D MRoPE position_ids"):
+        model(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
+        )
+
+
 def test_vlm_router_replay():
     """routed_experts bypasses router computation in VLM multimodal forward."""
     config = _tiny_vlm_config()
@@ -182,6 +237,7 @@ def test_vlm_router_replay():
     text_part = torch.randint(0, 200, (1, 10), device="cuda")
     img_part = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
     input_ids = torch.cat([text_part[:, :5], img_part, text_part[:, 5:]], dim=1)
+    mm_token_type_ids = _make_mm_token_type_ids(input_ids, config.image_token_id)
     seq_len = input_ids.shape[1]
 
     num_layers = config.text_config.num_hidden_layers
@@ -189,7 +245,11 @@ def test_vlm_router_replay():
     routed_experts = torch.randint(0, config.text_config.num_experts, (1, seq_len, num_layers, topk), device="cuda")
 
     out = model(
-        input_ids=input_ids, pixel_values=pixel_values, image_grid_thw=image_grid_thw, routed_experts=routed_experts
+        input_ids=input_ids,
+        pixel_values=pixel_values,
+        image_grid_thw=image_grid_thw,
+        mm_token_type_ids=mm_token_type_ids,
+        routed_experts=routed_experts,
     )
     assert out["logits"].shape == (1, seq_len, vocab)
 

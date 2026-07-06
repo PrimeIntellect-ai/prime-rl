@@ -31,7 +31,7 @@ from prime_rl.trainer.rl.loss import (
     compute_loss,
     compute_importance_ratio_and_mismatch_kl,
     selective_log_softmax,
-    setup_loss_fns,
+    setup_rl_loss_fn,
     shift_tensor_left,
     shift_tensor_right,
 )
@@ -43,9 +43,10 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     get_load_balance_stats,
 )
-from prime_rl.trainer.parallel_dims import get_parallel_dims
+from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
+    build_bin_cost,
     GarbageCollection,
     MemoryProfiler,
     Tensors,
@@ -55,7 +56,6 @@ from prime_rl.trainer.utils import (
     get_ckpt_disk_metrics,
     setup_torch_distributed,
     print_benchmark,
-    get_response_lengths,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_multi_run_manager, Progress, get_multi_run_manager
@@ -121,6 +121,9 @@ def train(config: TrainerConfig):
         config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank), config.model.lora
     )
 
+    # Resolve ep="auto" to a concrete integer before creating parallel dims
+    resolve_ep(config.model)
+
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
@@ -149,9 +152,9 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
-    # Set up the loss function
+    # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Setting up loss function ({config.loss})")
-    loss_fns = setup_loss_fns(config.loss)
+    rl_loss_fn = setup_rl_loss_fn(config.loss)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -219,6 +222,8 @@ def train(config: TrainerConfig):
     progress = Progress()
     if checkpoint_step is not None:
         ckpt_manager.load(checkpoint_step, model, [optimizer], scheduler, progress)
+        # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
+        progress.step += 1
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
 
     logger.info(
@@ -236,7 +241,7 @@ def train(config: TrainerConfig):
             parallel_dims.get_mesh("dp").size(),
             config.model.seq_len,
             config.model.cp,
-            tokenizer,
+            build_bin_cost(model.config),
             config.rollout_transport,
         )
 
@@ -245,7 +250,6 @@ def train(config: TrainerConfig):
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
-    is_first_step = True
     maybe_record_function = nullcontext
     if config.trace_path:
         logger.info(f"Tracing to {config.trace_path}")
@@ -257,73 +261,6 @@ def train(config: TrainerConfig):
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
-
-        # Broadcast weights every step except:
-        #   - step 0: nothing has changed yet, the orchestrator has the base model.
-        #   - the final NCCL broadcast: with a 1-step async barrier the orchestrator's last step
-        #     uses the trainer's penultimate ckpt, so the trainer's last broadcast has no receiver
-        #     (the inference NCCL group has been torn down). Filesystem broadcast still writes the
-        #     final step so we can resume from the broadcast directory.
-        if weight_broadcast is None:
-            broadcast_weights_time = 0
-        else:
-            nccl_broadcast_unused = (
-                config.weight_broadcast.type == "nccl"
-                and config.max_steps is not None
-                and progress.step >= config.max_steps - 1
-            )
-            if progress.step > 0 and not nccl_broadcast_unused:
-                broadcast_weights_start_time = time.perf_counter()
-                weight_broadcast.broadcast_weights(model, step=progress.step)
-                broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
-                # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-                if config.weight_broadcast.type == "filesystem":
-                    interval_to_keep = config.ckpt and config.ckpt.interval
-                    weight_broadcast.maybe_clean(interval_to_keep)
-            else:
-                broadcast_weights_time = 0
-                # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
-                for idx in multi_run_manager.used_idxs:
-                    multi_run_manager.ready_to_update[idx] = False
-
-        if config.max_concurrent_runs > 1:
-            # Multi-run: Save per-run checkpoints using each run's orchestrator config.
-            # Trainer-level ckpt config can be set by the combined rl entrypoint,
-            # but MultiCheckpointManager has a different save signature.
-            save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(optimizer, scheduler)
-            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
-            ckpt_manager.maybe_clean()
-        elif (
-            ckpt_manager is not None
-            and (config.ckpt and config.ckpt.interval)
-            and not (is_first_step or is_last_step)
-            and progress.step % config.ckpt.interval == 0
-        ):
-            save_ckpt_time = 0
-
-            if not config.ckpt.weights_only:
-                # Single-run: Save full checkpoint
-                logger.info(f"Saving checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
-
-            ckpt_manager.maybe_clean()
-
-            # Save weight checkpoint
-            if weight_ckpt_manager is not None:
-                logger.info(f"Saving weight checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                weight_ckpt_manager.save(progress.step, model, tokenizer)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
-                weight_ckpt_manager.maybe_clean()
-        else:
-            save_ckpt_time = 0
-
-        # Break if we have reached the maximum number of steps
-        if config.max_steps is not None and progress.step >= config.max_steps:
-            break
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
@@ -350,15 +287,29 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        # Normalize by the global (dp_cp) number of unmasked tokens in the batch, so every rank
+        # Normalize each loss component by its own global (dp_cp) token count, so every rank
         # divides by the same denominator. With a per-rank denominator, ranks with fewer loss
         # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
-        # FSDP's per-rank divide is undone after the microbatch loop via fsdp_gradient_divide_factor.
-        local_loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        global_loss_scale = torch.tensor(local_loss_scale, dtype=torch.int64, device="cuda")
+        # FSDP's per-rank divide is undone after the microbatch loop via
+        # fsdp_gradient_divide_factor. One batched collective keeps every rank issuing the same
+        # op regardless of which components its samples carry.
+        local_rl_scale = 0
+        local_ce_scale = 0
+        local_ref_kl_scale = 0
+        for micro_batch in micro_batches:
+            mask = micro_batch["loss_mask"]
+            rl_w = micro_batch["rl_weights"]
+            local_rl_scale += int((mask & (rl_w != 0)).sum()) if rl_w is not None else int(mask.sum())
+            if micro_batch["ce_weights"] is not None:
+                local_ce_scale += int((micro_batch["ce_weights"] != 0).sum())
+            if micro_batch["ref_kl_weights"] is not None:
+                local_ref_kl_scale += int((micro_batch["ref_kl_weights"] != 0).sum())
+        global_scales = torch.tensor(
+            [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.int64, device="cuda"
+        )
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
-        dist.all_reduce(global_loss_scale, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        loss_scale = max(global_loss_scale.item(), 1)
+        dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        rl_scale, ce_scale, ref_kl_scale = (max(scale, 1) for scale in global_scales.tolist())
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -373,8 +324,11 @@ def train(config: TrainerConfig):
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
-            teacher_logprobs = (
-                micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
+            ref_logprobs = micro_batch["ref_logprobs"].to("cuda") if micro_batch["ref_logprobs"] is not None else None
+            rl_weights = micro_batch["rl_weights"].to("cuda") if micro_batch["rl_weights"] is not None else None
+            ce_weights = micro_batch["ce_weights"].to("cuda") if micro_batch["ce_weights"] is not None else None
+            ref_kl_weights = (
+                micro_batch["ref_kl_weights"].to("cuda") if micro_batch["ref_kl_weights"] is not None else None
             )
             routed_experts = (
                 micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
@@ -472,18 +426,20 @@ def train(config: TrainerConfig):
             )
 
             # Compute loss
-            response_lengths = get_response_lengths(position_ids)
+            sequence_lengths = micro_batch["sequence_lengths"]
             loss, loss_tensors = compute_loss(
-                trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
-                inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
-                teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
-                if teacher_logprobs is not None
-                else None,
-                advantages=advantages.squeeze().split(response_lengths),
-                loss_mask=loss_mask.squeeze().split(response_lengths),
-                loss_fns=loss_fns,
-                loss_scale=loss_scale,
-                training_mode=micro_batch["training_mode"],
+                trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
+                inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
+                ref_logprobs=ref_logprobs.squeeze().split(sequence_lengths) if ref_logprobs is not None else None,
+                advantages=advantages.squeeze().split(sequence_lengths),
+                loss_mask=loss_mask.squeeze().split(sequence_lengths),
+                rl_weights=rl_weights.squeeze().split(sequence_lengths) if rl_weights is not None else None,
+                ce_weights=ce_weights.squeeze().split(sequence_lengths) if ce_weights is not None else None,
+                ref_kl_weights=ref_kl_weights.squeeze().split(sequence_lengths) if ref_kl_weights is not None else None,
+                rl_loss_fn=rl_loss_fn,
+                rl_scale=rl_scale,
+                ce_scale=ce_scale,
+                ref_kl_scale=ref_kl_scale,
             )
 
             # Backward pass
@@ -504,12 +460,30 @@ def train(config: TrainerConfig):
             for env_name, indices in env_to_indices.items():
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
 
-            if micro_batch["training_mode"] != "sft":
+            # Mismatch KL is only meaningful where sampling logprobs exist —
+            # keep rl/ref_kl member tokens (policy-sampled), exclude tokens
+            # whose action component is ce (frozen-model tokens).
+            if rl_weights is None and ref_kl_weights is None:
+                mismatch_mask = loss_mask
+                has_mismatch_tokens = True
+            else:
+                sampled_mask = (rl_weights != 0) if rl_weights is not None else loss_mask
+                if ref_kl_weights is not None:
+                    sampled_mask = sampled_mask | (ref_kl_weights != 0)
+                mismatch_mask = loss_mask & sampled_mask
+                has_mismatch_tokens = bool(mismatch_mask.any())
+            if has_mismatch_tokens:
                 with torch.no_grad():
                     _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
-                mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
+                mismatch_kl = mismatch_kl[mismatch_mask].detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
-                for env_name, indices in env_to_indices.items():
+                mismatch_env_names = [
+                    env_name for env_name, keep in zip(env_names, mismatch_mask.flatten().tolist()) if keep
+                ]
+                mismatch_env_to_indices: dict[str, list[int]] = {}
+                for idx, env_name in enumerate(mismatch_env_names):
+                    mismatch_env_to_indices.setdefault(env_name, []).append(idx)
+                for env_name, indices in mismatch_env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
             token_exporter.export(
@@ -517,7 +491,7 @@ def train(config: TrainerConfig):
                 micro_step,
                 micro_batch,
                 out,
-                response_lengths,
+                sequence_lengths,
                 config.loss,
             )
 
@@ -533,7 +507,7 @@ def train(config: TrainerConfig):
 
             # Debug log with *local, micro step* stats
             micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss {tensors['loss'][-1].mean().item():.4f} | Entropy {tensors['entropy/all'][-1].mean().item():.4f}"
-            if micro_batch["training_mode"] != "sft":
+            if has_mismatch_tokens:
                 micro_step_message += f" | Mismatch KL {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio {tensors['max_vio'][-1].mean().item():.4f}"
@@ -579,6 +553,69 @@ def train(config: TrainerConfig):
         else:
             current_lr = optimizer.get_current_lr()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
+
+        # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
+        # sample its next step from it. Skip the final NCCL broadcasts: with a 1-step async barrier
+        # the orchestrator's last step uses the trainer's penultimate ckpt, so they have no receiver
+        # (the inference NCCL group is torn down). Filesystem broadcast still writes them so we can
+        # resume from the broadcast directory.
+        if weight_broadcast is None:
+            broadcast_weights_time = 0
+        else:
+            nccl_broadcast_unused = (
+                config.weight_broadcast.type == "nccl"
+                and config.max_steps is not None
+                and progress.step >= config.max_steps - 1
+            )
+            if not nccl_broadcast_unused:
+                broadcast_weights_start_time = time.perf_counter()
+                weight_broadcast.broadcast_weights(model, step=progress.step)
+                broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
+                # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
+                if config.weight_broadcast.type == "filesystem":
+                    interval_to_keep = config.ckpt and config.ckpt.interval
+                    weight_broadcast.maybe_clean(interval_to_keep)
+            else:
+                broadcast_weights_time = 0
+                # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
+                for idx in multi_run_manager.used_idxs:
+                    multi_run_manager.ready_to_update[idx] = False
+
+        # Checkpoint the step we just finished (model = policy v{progress.step}).
+        if config.max_concurrent_runs > 1:
+            # Multi-run: save per-run checkpoints every step (interval-gated inside
+            # MultiCheckpointManager); there is no after-loop final save for multi-run.
+            save_ckpt_start_time = time.perf_counter()
+            ckpt_manager.save(optimizer, scheduler)
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            ckpt_manager.maybe_clean()
+        elif (
+            ckpt_manager is not None
+            and (config.ckpt and config.ckpt.interval)
+            # the last step is written once after the loop (final ckpt), so skip it here
+            and not is_last_step
+            and progress.step % config.ckpt.interval == 0
+        ):
+            save_ckpt_time = 0
+
+            if not config.ckpt.weights_only:
+                # Single-run: Save full checkpoint
+                logger.info(f"Saving checkpoint at step {progress.step}")
+                save_ckpt_start_time = time.perf_counter()
+                ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+
+            ckpt_manager.maybe_clean()
+
+            # Save weight checkpoint
+            if weight_ckpt_manager is not None:
+                logger.info(f"Saving weight checkpoint at step {progress.step}")
+                save_ckpt_start_time = time.perf_counter()
+                weight_ckpt_manager.save(progress.step, model, tokenizer)
+                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+                weight_ckpt_manager.maybe_clean()
+        else:
+            save_ckpt_time = 0
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
@@ -697,12 +734,13 @@ def train(config: TrainerConfig):
                 run_stats=run_stats,
             )
 
-        progress.step += 1
-        is_first_step = False
-
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
+
+        if is_last_step:
+            break
+        progress.step += 1
 
     if config.trace_path:
         prof.__exit__(None, None, None)

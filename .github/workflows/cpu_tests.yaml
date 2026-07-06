@@ -25,7 +25,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install dependencies
-        run: uv sync --all-extras --locked
+        run: uv sync --extra flash-attn --extra envs --locked
       - name: Run tests
         env:
           USERNAME_CI: CI_RUNNER
@@ -77,8 +77,11 @@ jobs:
           from prime_rl.utils.config import BaseConfig, find_package_resource, rgetattr, rsetattr
           from prime_rl.utils.validation import validate_shared_ckpt_config
 
+          # `verifiers` (+ its `datasets` dep) is a declared slim dep: the v1 config types
+          # (EnvConfig, Task, ...) extend verifiers.v1, which is pure-pydantic and pulls no
+          # GPU/ML deps. We still forbid the actual heavy training deps below.
           forbidden = ["torch", "transformers", "vllm", "wandb", "ring_flash_attn",
-                       "verifiers", "prime", "datasets", "liger_kernel", "loguru"]
+                       "prime", "liger_kernel", "loguru"]
           leaked = [m for m in forbidden if m in sys.modules]
           if leaked:
               raise SystemExit(f"slim install leaked heavy deps into sys.modules: {leaked}")

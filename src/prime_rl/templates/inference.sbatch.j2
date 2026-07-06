@@ -28,7 +28,7 @@ set -e
 # Configs
 export NUM_NODES={{ num_nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
-{% if disaggregated -%}
+{% if is_disaggregated -%}
 export NUM_PREFILL_NODES={{ num_prefill_nodes }}
 export NUM_DECODE_NODES={{ num_decode_nodes }}
 export NUM_PREFILL_REPLICAS={{ num_prefill_replicas }}
@@ -38,10 +38,13 @@ export NODES_PER_PREFILL_REPLICA=$((NUM_PREFILL_NODES / NUM_PREFILL_REPLICAS))
 export NODES_PER_DECODE_REPLICA=$((NUM_DECODE_NODES / NUM_DECODE_REPLICAS))
 export PREFILL_PORT={{ prefill_port }}
 export DECODE_PORT={{ decode_port }}
-export ROUTER_PORT={{ router_port }}
+export ROUTER_PORT={{ router.port }}
 export RPC_PORT={{ data_parallel_rpc_port }}
+{%- if router.type == "llm-d" %}
+export DECODE_SIDECAR_PORT={{ router.decode_sidecar_port }}
+{%- endif %}
 {%- elif num_nodes > 1 %}
-export ROUTER_PORT={{ router_port }}
+export ROUTER_PORT={{ router.port }}
 export BACKEND_PORT={{ backend_port }}
 export RPC_PORT={{ data_parallel_rpc_port }}
 {%- endif %}
@@ -51,25 +54,29 @@ export PROJECT_DIR={{ project_dir }}
 export CONFIG_PATH={{ config_path }}
 export OUTPUT_DIR={{ output_dir }}
 mkdir -p $OUTPUT_DIR/logs/inference
+rm -f $OUTPUT_DIR/logs/inference/*.log
 ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
-
-# General
-export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export PYTHONUNBUFFERED=1
-export OMP_NUM_THREADS=1
-export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
-export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
 
 # Setup environment
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
+{% if not shared_fs %}
+# Node-local venv (e.g. UV_PROJECT_ENVIRONMENT on /tmp): a bare `uv sync` would only
+# build the batch node, so srun runs it on every node (one task each) and blocks until
+# all finish. `set -e` above aborts the job if any node's sync fails. Re-source .env
+# inside the task because unexported vars in .env don't cross srun even with normal
+# SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
+srun --ntasks-per-node=1 bash -c 'cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras'
+{% else %}
+# Shared (NFS) venv: one sync on the batch node populates it for all nodes.
 uv sync --all-extras
+{% endif %}
 
 # Print inference URLs
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
-{% if disaggregated -%}
+{% if is_disaggregated -%}
 # Build per-replica router URLs
 INFER_URLS=""
 ALL_ROUTER_ARGS=""
@@ -131,6 +138,10 @@ srun bash -s <<'CLEANUP_SH'
     pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null
     pkill -9 -f "[t]orchrun" 2>/dev/null
     pkill -9 -f "[v]llm-router" 2>/dev/null
+    # llm-d router procs (EPP + Envoy + decode pd-sidecar) left over from a prior run.
+    pkill -9 -f "[e]pp.*pool-name" 2>/dev/null
+    pkill -9 -f "[e]nvoy.*envoy.yaml" 2>/dev/null
+    pkill -9 -f "[p]d-sidecar" 2>/dev/null
     pkill -9 -f "[v]llm" 2>/dev/null
     pkill -9 -f "[p]rime_rl" 2>/dev/null
     # Also match prctl-set process names (kernel comm) like "vllm::router"
@@ -143,7 +154,7 @@ srun bash -s <<'CLEANUP_SH'
     pkill -9 -x mooncake_client 2>/dev/null
     sleep 2
     rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
-    procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::|mooncake_" | grep -v grep | wc -l)
+    procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::|mooncake_|[e]pp |envoy|pd-sidecar" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
     echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
 CLEANUP_SH
@@ -168,6 +179,10 @@ srun --kill-on-bad-exit=1 bash -c '
 
     INFER_NODE_RANK=$SLURM_PROCID
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
+    # Inference env vars: launcher defaults + [inference.env_vars]
+{%- for key, value in inference_env_vars.items() %}
+    export {{ key }}="{{ value }}"
+{%- endfor %}
 
 {% include '_launch_rank.sh.j2' %}
 {% include '_launch_router.sh.j2' %}
@@ -178,7 +193,7 @@ srun --kill-on-bad-exit=1 bash -c '
 {% include "_mooncake_store.sh.j2" %}
 {%- endif %}
 
-{% if disaggregated -%}
+{% if is_disaggregated -%}
     # NVSHMEM libs for DeepEP — ensure the rpath target exists on all nodes
     if [ ! -d /tmp/deepep_build/nvshmem/lib ] && [ -d "$OUTPUT_DIR/nvshmem/lib" ]; then
         mkdir -p /tmp/deepep_build/nvshmem
@@ -187,20 +202,11 @@ srun --kill-on-bad-exit=1 bash -c '
 
     # Reconstruct hostnames array
     read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
-
-    export VLLM_WORKER_MULTIPROC_METHOD=spawn
-{%- if use_deep_gemm %}
-    export VLLM_USE_DEEP_GEMM=1
-    export VLLM_MOE_USE_DEEP_GEMM=1
-{%- endif %}
-    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     # Bind gloo to the interface that owns LOCAL_IP (the rendezvous IP) — NIC
     # names vary across clusters (bond0, eth0, ...). If the lookup fails, leave
     # GLOO_SOCKET_IFNAME unset so gloo falls back to its own detection.
     GLOO_IFNAME=$(ip -o -4 addr show to "$LOCAL_IP" 2>/dev/null | awk "{print \$2; exit}")
     if [ -n "$GLOO_IFNAME" ]; then export GLOO_SOCKET_IFNAME=$GLOO_IFNAME; fi
-    export VLLM_ENGINE_READY_TIMEOUT_S=4200
-    export UCX_TLS=all
     # Enumerate RDMA NICs for UCX/NIXL from sysfs (ibv_devices is not on the job
     # PATH). Prefer InfiniBand ports and fall back to RoCE: "all" would also pick
     # up non-functional devices (e.g. an Ethernet bond UCX cannot open), which
@@ -243,10 +249,10 @@ srun --kill-on-bad-exit=1 bash -c '
         PORT=$PREFILL_PORT
         HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + SUB_REPLICA * NODES_PER_PREFILL_REPLICA))]}"
 
-{% for key, value in prefill_env_overrides.items() %}
+{% for key, value in prefill_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
-        ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\""
+        ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
     else
         # ── Decode node ──
         export UCX_NET_DEVICES=mlx5_0:1
@@ -258,10 +264,10 @@ srun --kill-on-bad-exit=1 bash -c '
         PORT=$DECODE_PORT
         HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + NUM_PREFILL_NODES + SUB_REPLICA * NODES_PER_DECODE_REPLICA))]}"
 
-{% for key, value in decode_env_overrides.items() %}
+{% for key, value in decode_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
-        ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG"
+        ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG{{ decode_vllm_extra_json }}"
     fi
 
     echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
@@ -270,8 +276,28 @@ srun --kill-on-bad-exit=1 bash -c '
     # Start the router on the first prefill node of each replica (external LB across per-rank endpoints)
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-        launch_router pd "$REPLICA_ROUTER_ARGS" "$ROUTER_PORT" "{{ router_policy }}" "$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log" "$REPLICA_IDX"
+        launch_router pd "$REPLICA_ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log" "$REPLICA_IDX" "$REPLICA_BASE"
     fi
+{%- if router.type == "llm-d" %}
+    # pd-sidecar on each decode node: EPP routes decode -> sidecar (DECODE_SIDECAR_PORT
+    # + rank) -> vLLM decode (DECODE_PORT + rank) after orchestrating remote prefill.
+    # Every decode node fronts its own local ranks, so launch on each (not just the
+    # replica head), or decode nodes beyond the head get advertised but unserved endpoints.
+    if [ "$ROLE" = "decode" ]; then
+        SIDECAR_LOG="$OUTPUT_DIR/logs/inference/sidecar_${INFER_NODE_RANK}.log"
+        echo "Starting pd-sidecar on $LOCAL_IP:$DECODE_SIDECAR_PORT(+rank) -> vLLM $DECODE_PORT(+rank)" | tee $SIDECAR_LOG
+        export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
+        pd-sidecar \
+            --port $DECODE_SIDECAR_PORT \
+            --vllm-port $DECODE_PORT \
+            --kv-connector nixlv2 \
+            --secure-proxy=false \
+            --enable-ssrf-protection=false \
+            --inference-pool prime-rl \
+            --data-parallel-size {{ dp_per_node }} \
+            >> $SIDECAR_LOG 2>&1 &
+    fi
+{%- endif %}
 
     # External-LB: one vLLM API server per local DP rank (PORT + k), each pinned to its TP
     # slice of GPUs with a unique NIXL side-channel port. Each role is its own external-LB DP
@@ -288,14 +314,13 @@ srun --kill-on-bad-exit=1 bash -c '
     echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
         | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
-    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
     DP_PER_NODE={{ dp_per_node }}
     TP=$((GPUS_PER_NODE / DP_PER_NODE))
     EP={{ "1" if enable_expert_parallel else "0" }}
 
     # Start the router on node 0 (balances across per-rank endpoints — no intra-node DP header)
     if [ "$INFER_NODE_RANK" -eq 0 ]; then
-        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router_policy }}" "$OUTPUT_DIR/logs/inference/router.log"
+        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log" 0 0 "$NUM_NODES"
     fi
 
     # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + dp_local),
@@ -313,8 +338,6 @@ srun --kill-on-bad-exit=1 bash -c '
     done
 {%- else %}
     echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
-    # Required for graph compilation to work
-    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
 
     uv run inference \
         @ $CONFIG_PATH \

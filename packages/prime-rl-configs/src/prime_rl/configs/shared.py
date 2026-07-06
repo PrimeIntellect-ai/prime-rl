@@ -2,9 +2,29 @@ import os
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import AfterValidator, Field, model_validator
 
 from prime_rl.utils.config import BaseConfig
+
+# Launcher-managed env vars that a component's `env_vars` must not set: GPU partitioning
+# and the single shared W&B run. The launcher always sets these last, so allowing them in
+# `env_vars` would be a silent no-op (or, on multi-node, a footgun) — reject them instead.
+PROTECTED_ENV_VARS = frozenset(
+    {"CUDA_VISIBLE_DEVICES", "WANDB_SHARED_MODE", "WANDB_SHARED_RUN_ID", "WANDB_SHARED_LABEL"}
+)
+
+
+def reject_protected_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
+    clobbered = sorted(PROTECTED_ENV_VARS & env_vars.keys())
+    if clobbered:
+        raise ValueError(
+            f"env_vars cannot set launcher-managed vars {clobbered} — set by the launcher, not overridable"
+        )
+    return env_vars
+
+
+EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_env_vars)]
+"""A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
 
 
 class SlurmConfig(BaseConfig):
@@ -38,6 +58,9 @@ class SlurmConfig(BaseConfig):
     cleanup_grace_period: int = Field(3600, ge=0)
     """Seconds to wait before tearing down a multi-node RL job that hit a non-zero exit, letting in-flight checkpoints flush. Set to 0 to tear down immediately."""
 
+    shared_fs: bool = True
+    """Whether the project filesystem (including the venv) is shared across nodes (e.g. NFS). When True, a single ``uv sync`` on the batch node suffices. Set to False when the venv is node-local (e.g. ``UV_PROJECT_ENVIRONMENT`` on ``/tmp``) so ``uv sync`` runs on every node via srun."""
+
     @property
     def template_vars(self) -> dict:
         """Common template variables for all SLURM templates."""
@@ -51,6 +74,7 @@ class SlurmConfig(BaseConfig):
             "time": self.time,
             "pre_run_command": self.pre_run_command,
             "cleanup_grace_period": self.cleanup_grace_period,
+            "shared_fs": self.shared_fs,
         }
 
     @model_validator(mode="after")
@@ -83,10 +107,6 @@ class BaseModelConfig(BaseConfig):
     vlm: "VLMConfig | None" = None
     """VLM configuration. Setting this enables vision-language model support."""
 
-    @property
-    def is_vlm(self) -> bool:
-        return self.vlm is not None
-
 
 class ElasticConfig(BaseConfig):
     hostname: str
@@ -100,12 +120,6 @@ class ElasticConfig(BaseConfig):
 
 
 class ClientConfig(BaseConfig):
-    timeout: int = 1200
-    """Request timeout in seconds."""
-
-    connect_timeout: float = 30.0
-    """TCP connect timeout in seconds for inference API requests."""
-
     wait_for_ready_timeout: int = 1800
     """Seconds to wait at startup for the inference pool to become ready. Applies to both the static health check and elastic DNS-based discovery."""
 

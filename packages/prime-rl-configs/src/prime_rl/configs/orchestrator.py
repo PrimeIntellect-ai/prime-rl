@@ -1,15 +1,19 @@
-import math
 import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, Field, model_serializer, model_validator
-from pydantic_core.core_schema import SerializerFunctionWrapHandler
+import verifiers.v1 as vf
+from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
+from prime_rl.configs.algorithm import (
+    AlgoConfig,
+    GRPOAlgoConfig,
+)
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
+    EnvVars,
     FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
@@ -41,9 +45,12 @@ class ModelConfig(BaseModelConfig):
     lora: LoRAConfig | None = None
     """Per-run LoRA configuration. If None, LoRA is disabled."""
 
+    client: ClientConfig = ClientConfig()
+    """Client of the live deployment (``[orchestrator.model.client]``)."""
+
 
 class TrainSamplingConfig(BaseConfig):
-    temperature: float = Field(1.0, ge=0)
+    temperature: float = Field(1.0, ge=0, le=2.0)
     """Sampling temperature."""
 
     max_completion_tokens: int | None = Field(
@@ -85,7 +92,7 @@ class TrainSamplingConfig(BaseConfig):
 
 
 class EvalSamplingConfig(BaseConfig):
-    temperature: float | None = Field(None, ge=0)
+    temperature: float | None = Field(None, ge=0, le=2.0)
     """Sampling temperature. None defers to the inference server default."""
 
     top_p: float | None = None
@@ -143,109 +150,63 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
-class TokensLengthPenaltyConfig(BaseConfig):
-    type: Literal["tokens"] = "tokens"
-
-    completion_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on model completion tokens. Finite and non-negative."""
-
-    tool_response_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on tool-response tokens (read from the rollout's ``*_total_tool_response_tokens`` harness metric; 0 if absent). Finite and non-negative."""
-
-
-class TurnsLengthPenaltyConfig(BaseConfig):
-    type: Literal["turns"] = "turns"
-
-
-LengthPenaltyConfig: TypeAlias = Annotated[
-    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
-    Field(discriminator="type"),
-]
-
-
-class DefaultAdvantageConfig(BaseConfig):
-    type: Literal["default"] = "default"
-
-    length_penalty: LengthPenaltyConfig | None = None
-    """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
-
-
-class CustomAdvantageConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Import path to the advantage function (e.g. ``my_module.my_advantage``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the advantage function."""
-
-
-AdvantageConfig: TypeAlias = Annotated[
-    DefaultAdvantageConfig | CustomAdvantageConfig,
-    Field(discriminator="type"),
-]
-
-
-class EnvConfig(BaseConfig):
-    id: str = "reverse-text"
-    """Registered verifiers environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation."""
-
+class EnvConfig(vf.EnvServerConfig):
     name: str | None = None
-    """Display name for this environment in logs, metrics, and buffer keys. Defaults to the ``id`` without ``@version``. Must be unique across all envs in the same group."""
-
-    args: dict = {}
-    """Keyword arguments forwarded to ``vf.load_environment``. See the environment's docstring for accepted args."""
-
-    extra_env_kwargs: dict[str, Any] = {}
-    """Extra kwargs passed to the env (e.g. ``seq_len``, ``max_total_completion_tokens``). Auto-populated by the orchestrator; user overrides are generally discouraged. The main use case is matching ``extra_env_kwargs`` when running an env in an isolated environment server."""
+    """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
     address: str | None = None
-    """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically."""
+    """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically. The ``pool`` sizes the spawned server."""
 
-    num_workers: int | Literal["auto"] = "auto"
-    """Worker processes for the spawned env server. ``auto`` scales to 1 worker per 256 concurrent rollouts. Ignored when ``address`` is set."""
+    ratio: float = Field(1.0, gt=0)
+    """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
 
-    ratio: float | None = Field(None, gt=0)
-    """Sampling weight for this environment in the buffer. When None for all envs, samples uniformly across all available problems. When set, must be set on all envs — values are relative weights normalized to probabilities (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
-
-    max_retries: int = Field(3, ge=0)
-    """Times the env server retries a failed rollout before returning an error."""
-
-    max_total_completion_tokens: int = -1
-    """Maximum total completion tokens across all turns in a multi-turn rollout. ``-1`` disables. Auto-populated into ``extra_env_kwargs``."""
-
-    timeout: float | None = Field(None, validation_alias=AliasChoices("timeout", "timeout_seconds"))
-    """Per-rollout wall-clock timeout in seconds. None disables."""
-
-    state_columns: list[str] = []
-    """Extra ``State`` fields to persist into the saved rollout records (in addition to the always-saved ``trajectory`` and ``sampling_args``). Values must be JSON-serializable."""
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_num_workers(cls, data):
+        """Back-compat: the removed ``num_workers`` maps onto ``pool`` — an int becomes a
+        fixed ``static`` pool, ``"auto"`` falls through to the default ``elastic`` pool. An
+        explicit ``pool`` always wins."""
+        if isinstance(data, dict) and "num_workers" in data:
+            num_workers = data.pop("num_workers")
+            if "pool" not in data and num_workers != "auto":
+                data["pool"] = {"type": "static", "num_workers": num_workers}
+        return data
 
     @property
-    def stripped_id(self) -> str:
-        """Environment ID without the @version suffix."""
-        return self.id.split("@")[0]
+    def is_legacy(self) -> bool:
+        """A v0/legacy env (run via the bridge): an ``id`` is set and no v1 ``taskset`` is."""
+        return not self.taskset.id
+
+    @property
+    def env_id(self) -> str:
+        """The env identifier — the v1 taskset id (v1) or the legacy env id (v0)."""
+        return self.taskset.id or self.id or ""
 
     @property
     def resolved_name(self) -> str:
-        return self.name or self.stripped_id
+        return self.name or self.env_id
 
     @model_validator(mode="after")
-    def validate_env_name(self):
-        if self.resolved_name == "all":
+    def validate_env(self):
+        if not self.taskset.id and not self.id:
+            raise ValueError('no env configured — set taskset = { id = "<id>" } (v1) or id = "<id>" (v0/legacy)')
+        if self.resolved_name == "agg":
             raise ValueError(
-                'Environment name "all" is reserved for global metric aggregation. Use a different name or id.'
+                'Environment name "agg" is reserved for cross-env metric aggregation. Use a different name or id.'
             )
         return self
 
     @model_validator(mode="after")
-    def resolve_max_total_completion_tokens(self):
-        self.extra_env_kwargs["max_total_completion_tokens"] = self.max_total_completion_tokens
-        return self
-
-    @model_validator(mode="after")
-    def resolve_timeout(self):
-        if self.timeout is not None:
-            self.extra_env_kwargs["timeout_seconds"] = self.timeout
+    def resolve_legacy_env_kwargs(self):
+        """For a v0/legacy env, surface the v1 knobs the legacy bridge applies via
+        ``extra_env_kwargs`` (``env.set_kwargs(...)``): the per-rollout wall-clock timeout and
+        the multi-turn completion-token budget. (``max_seq_len`` is added per train run in
+        ``OrchestratorConfig.resolve_env_config``, which knows ``seq_len``.)"""
+        if self.is_legacy:
+            if self.timeout.rollout is not None:
+                self.extra_env_kwargs["timeout_seconds"] = self.timeout.rollout
+            if self.max_output_tokens is not None:
+                self.extra_env_kwargs["max_total_completion_tokens"] = self.max_output_tokens
         return self
 
 
@@ -257,10 +218,10 @@ class TrainEnvConfig(EnvConfig):
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
 
-    advantage: AdvantageConfig | None = None
-    """Advantage strategy for this env's GRPO groups. Inherits from the top-level
-    ``orchestrator.advantage`` when unset; set a different ``default``/``custom``
-    config to give this env its own advantage computation."""
+    algo: AlgoConfig | None = None
+    """Training algorithm for this env. Inherits from the top-level
+    ``orchestrator.algo`` when unset; set ``type`` (and its params) to give
+    this env its own algorithm."""
 
 
 class EvalEnvConfig(EnvConfig):
@@ -278,21 +239,16 @@ class EvalEnvConfig(EnvConfig):
 
 
 class TrainConfig(BaseConfig):
-    env: list[TrainEnvConfig] = [TrainEnvConfig()]
+    env: list[TrainEnvConfig] = Field(default_factory=list)
     """Training environments."""
 
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
 
-    num_workers: int | Literal["auto"] = "auto"
-    """Default worker processes for env servers. Can be overridden per env."""
-
-    max_retries: int = Field(3, ge=0)
-    """Default retries for failed rollouts. Can be overridden per env."""
-
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_workers, and max_retries."""
+        """Resolve per-env overrides: inherit group-level sampling (the worker ``pool``
+        is configured per env, defaulting to elastic)."""
         group_sampling = self.sampling.model_dump()
         for env in self.env:
             if "sampling" not in env.model_fields_set:
@@ -300,10 +256,6 @@ class TrainConfig(BaseConfig):
             else:
                 merged = group_sampling | env.sampling.model_dump(exclude_unset=True)
                 env.sampling = TrainSamplingConfig(**merged)
-            if "num_workers" not in env.model_fields_set:
-                env.num_workers = self.num_workers
-            if "max_retries" not in env.model_fields_set:
-                env.max_retries = self.max_retries
         return self
 
     @model_validator(mode="after")
@@ -316,18 +268,9 @@ class TrainConfig(BaseConfig):
             )
         return self
 
-    @model_validator(mode="after")
-    def validate_env_ratios(self):
-        ratios = [env.ratio for env in self.env]
-        if all(r is None for r in ratios):
-            return self
-        if any(r is None for r in ratios):
-            raise ValueError("Either all envs must have a ratio or none of them. Got a mix of set and unset ratios.")
-        return self
-
 
 class EvalConfig(BaseConfig):
-    env: list[EvalEnvConfig] = [EvalEnvConfig()]
+    env: list[EvalEnvConfig] = Field(default_factory=list)
     """Evaluation environments."""
 
     sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
@@ -339,12 +282,6 @@ class EvalConfig(BaseConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Default rollouts per example. Can be overridden per env."""
 
-    num_workers: int | Literal["auto"] = "auto"
-    """Default worker processes for env servers. Can be overridden per env."""
-
-    max_retries: int = Field(3, ge=0)
-    """Default retries for failed rollouts. Can be overridden per env."""
-
     interval: int = Field(100, ge=1)
     """Step interval at which to evaluate the model."""
 
@@ -354,7 +291,8 @@ class EvalConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, group_size, and interval. Then resolve auto num_workers."""
+        """Resolve per-env overrides: inherit group-level sampling, num_examples,
+        group_size, and interval (the worker ``pool`` is configured per env, default elastic)."""
         group_sampling = self.sampling.model_dump()
         for env in self.env:
             if "sampling" not in env.model_fields_set:
@@ -368,17 +306,6 @@ class EvalConfig(BaseConfig):
                 env.group_size = self.group_size
             if "interval" not in env.model_fields_set:
                 env.interval = self.interval
-            if "num_workers" not in env.model_fields_set:
-                env.num_workers = self.num_workers
-            if "max_retries" not in env.model_fields_set:
-                env.max_retries = self.max_retries
-            # Resolve auto num_workers now that num_examples and group_size are set
-            if env.num_workers == "auto":
-                if env.num_examples == -1:
-                    env.num_workers = 4
-                else:
-                    max_concurrent = env.num_examples * env.group_size
-                    env.num_workers = max(1, math.ceil(max_concurrent / 256))
         return self
 
     @model_validator(mode="after")
@@ -494,62 +421,39 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
-class OrchestratorExperimentalConfig(BaseConfig):
-    pass
-
-
-class RolloutModelConfig(BaseConfig):
-    model: ModelConfig = ModelConfig()
-
-    client: ClientConfig = ClientConfig()
-
-
 class OrchestratorConfig(BaseConfig):
-    training_mode: Literal["rl", "opd", "sft"] = "rl"
-    """Training mode. ``rl``: student generates rollouts, no teacher. ``opd``: student generates rollouts, teacher computes logprobs (teacher_tau > 0). ``sft``: teacher generates rollouts, student inference pool used for evals and weight sync."""
+    algo: AlgoConfig = GRPOAlgoConfig()
+    """Training algorithm: sampling plus the per-token training signal (credit
+    assignment and loss routing, fused — its ``type`` names the algorithm).
+    Defaults to ``grpo``. Override per env via ``[[orchestrator.train.env]]``'s
+    ``algo``."""
 
-    student: RolloutModelConfig = Field(RolloutModelConfig(), validation_alias=AliasChoices("student", "model"))
-    """Student rollout participant (model + client) — the model being trained."""
-
-    teacher: RolloutModelConfig | None = Field(None, validation_alias=AliasChoices("teacher", "teacher_model"))
-    """Teacher rollout participant (model + client). Role depends on ``training_mode``: ``opd`` — teacher computes logprobs; ``sft`` — teacher generates rollouts."""
+    model: ModelConfig = ModelConfig()
+    """The model being trained: its model fields plus the client of the live
+    vLLM deployment (``[orchestrator.model] name = ...`` with
+    ``[orchestrator.model.client]``). Algorithm components reference it as
+    ``"policy"``."""
 
     train: TrainConfig = TrainConfig()
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig | None = AutoRendererConfig()
-    """Typed renderer config (``renderers.RendererConfig`` discriminated
-    union). Defaults to ``"auto"``, which resolves from
-    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. ``None``
-    opts into MITO (``openai_chat_completions``)."""
+    renderer: RendererConfig = AutoRendererConfig()
+    """Typed renderer config (``renderers.RendererConfig`` discriminated union), required —
+    training is renderer-only. Defaults to ``"auto"``, which resolves from
+    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
+    client; SFT uses it to backfill tokens for its chat-completions teacher."""
 
     pool_size: int | None = Field(None, ge=1)
     """Number of renderer slots shared across concurrent rollouts. Bump
     for long multi-turn prompts where client-side jinja tokenization
-    serializes. Only meaningful when ``renderer`` is not ``None``."""
-
-    @model_serializer(mode="wrap")
-    def _preserve_mito_renderer(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        """Emit ``renderer = "None"`` (string) when MITO so
-        ``model_dump(exclude_none=True)`` round-trips: dumped TOML has
-        ``renderer = "None"``, and on reload
-        ``BaseConfig._none_str_to_none`` coerces it back to ``None``.
-        Without this, a MITO orchestrator config saved to
-        ``control/orch.toml`` would lose the renderer key entirely and
-        reload as the default ``AutoRendererConfig()`` (TITO)."""
-        result = handler(self)
-        if self.renderer is None:
-            result["renderer"] = "None"
-        return result
+    serializes."""
 
     optim: OptimizerConfig = OptimizerConfig()
     """Per-run optimizer configuration for multi-run training."""
 
     eval: EvalConfig | None = None
     """Evaluation configuration."""
-
-    advantage: AdvantageConfig | None = DefaultAdvantageConfig()
 
     pre_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(enforce=False),
@@ -571,6 +475,9 @@ class OrchestratorConfig(BaseConfig):
 
     log: LogConfig = LogConfig()
 
+    env_vars: EnvVars = {}
+    """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
+
     wandb: WandbWithExtrasConfig | None = None
 
     prime_monitor: PrimeMonitorConfig | None = None
@@ -579,7 +486,7 @@ class OrchestratorConfig(BaseConfig):
     """Collect inference-server metrics (requires wandb)."""
 
     inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
-    """Role for each student admin client when collecting P/D inference metrics."""
+    """Role for each policy admin client when collecting P/D inference metrics."""
 
     ckpt: CheckpointConfig | None = None
     """Checkpoint configuration."""
@@ -630,72 +537,6 @@ class OrchestratorConfig(BaseConfig):
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
-    env_install_prerelease: bool = False
-    """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
-
-    experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
-
-    @model_validator(mode="before")
-    @classmethod
-    def fold_student_shortcuts(cls, data: Any) -> Any:
-        """Accept top-level ``[orchestrator.model]`` / ``[orchestrator.client]``
-        as shorthand for the student sub-config. Useful for ergonomic rl configs
-        where ``[orchestrator.student.*]`` is overkill, and required for
-        pre-refactor configs that used the flat layout to keep parsing:
-
-        - [orchestrator.client.*]     -> [orchestrator.student.client.*]
-        - [orchestrator.model.<k>]    -> [orchestrator.student.model.<k>]
-          (where <k> is any ModelConfig field)
-
-        Teacher must always be configured under [orchestrator.teacher.*]
-        (no equivalent shortcut), because rl mode forbids a teacher and we
-        don't want the same shortcut to silently route to two different roles.
-        """
-        if not isinstance(data, dict):
-            return data
-
-        def deep_merge(dst: dict, src: dict) -> None:
-            """In-place recursive merge of ``src`` into ``dst``. ``src`` wins at the leaf."""
-            for k, v in src.items():
-                if isinstance(v, dict) and isinstance(dst.get(k), dict):
-                    deep_merge(dst[k], v)
-                else:
-                    dst[k] = v
-
-        # 1. Re-nest top-level [orchestrator.client] under student.client.
-        legacy_client = data.pop("client", None)
-        if isinstance(legacy_client, dict):
-            student = data.setdefault("student", {})
-            if isinstance(student, dict):
-                deep_merge(student.setdefault("client", {}), legacy_client)
-            else:
-                # Mismatched types - put it back and let pydantic surface the error.
-                data["client"] = legacy_client
-
-        # 2. Consolidate the legacy `model` alias into `student` so the
-        # flat-layout fix-up below sees a single target. Deep-merge with the
-        # legacy keys winning so a CLI `--model.<k>` overrides TOML `student.model.<k>`.
-        legacy_model = data.pop("model", None)
-        if legacy_model is not None:
-            existing = data.get("student")
-            if existing is None:
-                data["student"] = legacy_model
-            elif isinstance(existing, dict) and isinstance(legacy_model, dict):
-                deep_merge(existing, legacy_model)
-            else:
-                # Mismatched types - put it back and let pydantic surface the error.
-                data["model"] = legacy_model
-
-        # 3. Re-nest flat ModelConfig keys under student.model.
-        model_only_keys = set(ModelConfig.model_fields)
-        student = data.get("student")
-        if isinstance(student, dict):
-            flat = {k: student.pop(k) for k in list(student) if k in model_only_keys}
-            if flat:
-                student.setdefault("model", {}).update(flat)
-
-        return data
-
     @model_validator(mode="before")
     @classmethod
     def _env_to_train(cls, data: Any) -> Any:
@@ -726,15 +567,15 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:
-            self.tokenizer.name = self.student.model.name
+            self.tokenizer.name = self.model.name
         if self.tokenizer.trust_remote_code is None:
-            self.tokenizer.trust_remote_code = self.student.model.trust_remote_code
+            self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self
 
     @model_validator(mode="after")
     def auto_setup_session_headers(self):
         """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
-        self.student.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
+        self.model.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
         return self
 
     @model_validator(mode="after")
@@ -758,49 +599,32 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def _force_no_renderer_for_sft(self):
-        """Teacher-backed SFT rolls out via the teacher's plain chat-completions
-        endpoint; the renderer client doesn't apply. When no teacher is
-        configured, SFT uses the student rollout path and keeps the renderer."""
-        if self.training_mode == "sft" and self.teacher is not None:
-            self.renderer = None
+    def inherit_env_algorithms(self):
+        """Envs without their own algorithm inherit the top-level one.
+        Declared before any validator that reads ``algo``."""
+        for env_cfg in self.train.env:
+            if env_cfg.algo is None:
+                env_cfg.algo = self.algo.model_copy(deep=True)
         return self
 
-    @model_validator(mode="after")
-    def validate_training_mode(self):
-        """Enforce training mode invariants that involve only orchestrator fields."""
-        has_teacher = self.teacher is not None
-        if self.training_mode == "rl" and has_teacher:
-            raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
-        if self.training_mode == "opd" and not has_teacher:
-            raise ValueError("orchestrator.teacher must be configured when training_mode = 'opd'.")
-        return self
+    @property
+    def any_policy_sourced(self) -> bool:
+        """True when at least one train env samples rollouts from the live policy."""
+        return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.env)
 
     @model_validator(mode="after")
     def validate_pool_size(self):
-        """``pool_size`` is only meaningful when the renderer is enabled
-        (``renderer is not None``). Reject otherwise so callers don't
-        silently pass it and wonder why it's ignored."""
-        if self.renderer is None and self.pool_size is not None:
+        """``pool_size`` sizes the renderer-client pool for policy-sourced
+        sampling. Reject it when that path never runs — no train env samples
+        from the policy — so callers don't silently pass it and wonder why
+        it's ignored."""
+        if self.pool_size is None:
+            return self
+        if not self.any_policy_sourced:
             raise ValueError(
-                f"orchestrator.pool_size={self.pool_size!r} is set but "
-                "orchestrator.renderer is None (MITO mode). Either configure a renderer "
-                "or remove pool_size."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def vlm_requires_renderer(self):
-        """VLMs (``[model.vlm]`` block set) must go through the renderer.
-
-        The renderer owns the processor per-slot, produces byte-identical
-        tokens, and ships generic ``mm_kwargs`` keyed by whatever the
-        model's forward signature expects.
-        """
-        if self.student.model.vlm is not None and self.renderer is None:
-            raise ValueError(
-                "orchestrator.renderer must be set when model.vlm is set. "
-                "VLMs must go through a renderer (e.g. Qwen3VLRenderer) that owns the processor."
+                f"orchestrator.pool_size={self.pool_size!r} is set but no train env samples "
+                "from the policy — the renderer-client sampling pool never runs (the renderer "
+                "is still used for client-side tokenization). Remove pool_size."
             )
         return self
 
@@ -817,11 +641,11 @@ class OrchestratorConfig(BaseConfig):
         ``DefaultRendererConfig.tool_parser`` is configured. Surface at
         config time so ``--dry-run`` reports the error.
         """
-        if self.renderer is None or self.renderer.name != "auto":
+        if self.renderer.name != "auto":
             return self
         from renderers.base import MODEL_RENDERER_MAP
 
-        model_id = self.tokenizer.name or self.student.model.name
+        model_id = self.tokenizer.name or self.model.name
         if model_id in MODEL_RENDERER_MAP:
             return self
         raise ValueError(
@@ -835,9 +659,7 @@ class OrchestratorConfig(BaseConfig):
             f"(b) [orchestrator.renderer] name=<model-specific renderer> — "
             f"if {model_id!r} is template-identical to a mapped family "
             f"(and ideally also add it upstream to "
-            f"renderers.base.MODEL_RENDERER_MAP). "
-            f"(c) orchestrator.renderer='none' — opt out of the renderer "
-            f"client entirely (MITO)."
+            f"renderers.base.MODEL_RENDERER_MAP)."
         )
 
     @model_validator(mode="after")
@@ -880,17 +702,6 @@ class OrchestratorConfig(BaseConfig):
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
 
-        # Propagate the top-level ``advantage`` into each train env that didn't set its own.
-        for env_cfg in self.train.env:
-            if "advantage" not in env_cfg.model_fields_set:
-                env_cfg.advantage = self.advantage
-
-        # Resolve train env num_workers from max_inflight_rollouts
-        for env_cfg in self.train.env:
-            if env_cfg.num_workers == "auto":
-                assert self.max_inflight_rollouts is not None
-                env_cfg.num_workers = max(1, math.ceil(self.max_inflight_rollouts / 256))
-
         return self
 
     @model_validator(mode="after")
@@ -909,12 +720,17 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_config(self):
-        """Populate extra_env_kwargs and vLLM sampling defaults from top-level fields."""
-        is_vllm = self.training_mode != "sft"
+        """Set vLLM sampling defaults + legacy env kwargs on each train env from top-level fields."""
         for env in self.train.env:
-            env.extra_env_kwargs.update(max_seq_len=self.seq_len)
-            if is_vllm:
+            # Policy-sourced rollouts hit our vLLM server; frozen-sourced
+            # rollouts may hit external OAI endpoints that reject these knobs.
+            assert env.algo is not None
+            if env.algo.sampling.source == "policy":
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)
+            if env.is_legacy:
+                # v0 env: cap per-turn response tokens to the training budget (the legacy
+                # bridge applies extra_env_kwargs via env.set_kwargs).
+                env.extra_env_kwargs["max_seq_len"] = self.seq_len
         return self

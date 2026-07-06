@@ -10,15 +10,21 @@ from transformers.configuration_utils import PretrainedConfig
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeVisionModel
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, logging
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers.attn import (
+    flash_attn_3_varlen_func,
+    flash_attn_4_varlen_func,
+    flash_attn_varlen_func,
+)
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
-from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
 from .converting_qwen3_5_moe import (
@@ -27,22 +33,7 @@ from .converting_qwen3_5_moe import (
     convert_tt_layer_to_hf,
     convert_tt_to_hf_moe,
 )
-
-# Flash attention imports
-try:
-    from flash_attn import flash_attn_varlen_func
-except ImportError:
-    flash_attn_varlen_func = None  # type: ignore
-
-try:
-    from flash_attn_interface import flash_attn_varlen_func as flash_attn_3_varlen_func
-except ImportError:
-    flash_attn_3_varlen_func = None  # type: ignore
-
-try:
-    from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen_func
-except ImportError:
-    flash_attn_4_varlen_func = None  # type: ignore
+from .mrope import build_qwen3_5_mrope_position_ids
 
 # Flash linear attention imports (for GatedDeltaNet fast path)
 try:
@@ -668,22 +659,113 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
 
 
 # ---------------------------------------------------------------------------
-# Model classes
+# Rotary embedding
 # ---------------------------------------------------------------------------
 
 
-def _create_rotary_emb(config: Qwen3_5MoeConfig) -> RotaryEmbedding:
-    if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
-        rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type", "default"))
-    else:
-        rope_type = "default"
+class Qwen3_5MoeRotaryEmbedding(nn.Module):
+    inv_freq: torch.Tensor
 
-    rotary_config = RotaryEmbeddingConfig(
-        max_position_embeddings=config.max_position_embeddings,
-        rope_type=rope_type,
-        model_config=config,
-    )
-    return RotaryEmbedding(rotary_config)
+    def __init__(self, config: Qwen3_5MoeConfig, device=None):
+        super().__init__()
+        self.config = config
+        self.max_seq_len_cached = config.max_position_embeddings
+        self.original_max_seq_len = config.max_position_embeddings
+
+        rope_parameters = getattr(config, "rope_parameters", None)
+        if rope_parameters is None:
+            config.standardize_rope_params()
+            rope_parameters = config.rope_parameters
+
+        self.rope_type = rope_parameters.get("rope_type", rope_parameters.get("type", "default"))
+        self.rope_init_fn = self.compute_default_rope_parameters
+        if self.rope_type != "default":
+            self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+
+        inv_freq, self.attention_scaling = self.rope_init_fn(config, device)
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.original_inv_freq = self.inv_freq.clone()
+
+        self.mrope_section = rope_parameters.get("mrope_section")
+        if self.mrope_section is None:
+            self.mrope_section = self._scaled_default_mrope_section(self.inv_freq.numel())
+        if not rope_parameters.get("mrope_interleaved", True):
+            raise ValueError("Qwen3.5 MoE custom model expects interleaved MRoPE")
+        if sum(self.mrope_section) != self.inv_freq.numel():
+            raise ValueError(
+                "Qwen3.5 mrope_section must sum to rotary_dim // 2: "
+                f"mrope_section={self.mrope_section}, rotary_dim={self.inv_freq.numel() * 2}"
+            )
+
+    @staticmethod
+    def _scaled_default_mrope_section(num_rotary_pairs: int) -> list[int]:
+        default_section = [11, 11, 10]
+        default_total = sum(default_section)
+        scaled_section = [num_rotary_pairs * section // default_total for section in default_section]
+        remainder = num_rotary_pairs - sum(scaled_section)
+        remainder_order = sorted(
+            range(len(default_section)),
+            key=lambda idx: num_rotary_pairs * default_section[idx] % default_total,
+            reverse=True,
+        )
+        for idx in remainder_order[:remainder]:
+            scaled_section[idx] += 1
+        return scaled_section
+
+    @staticmethod
+    def compute_default_rope_parameters(
+        config: Qwen3_5MoeConfig | None = None,
+        device: Optional[torch.device] = None,
+        seq_len: int | None = None,
+    ) -> tuple[torch.Tensor, float]:
+        rope_parameters = config.rope_parameters
+        base = rope_parameters["rope_theta"]
+        partial_rotary_factor = rope_parameters.get("partial_rotary_factor", 1.0)
+        head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+        dim = int(head_dim * partial_rotary_factor)
+        inv_freq = 1.0 / (
+            base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim)
+        )
+        return inv_freq, 1.0
+
+    @torch.no_grad()
+    @dynamic_rope_update
+    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if position_ids.ndim == 2:
+            position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
+        elif position_ids.ndim != 3:
+            raise ValueError(f"Qwen3.5 position_ids must be 2D or 3D, got shape={tuple(position_ids.shape)}")
+
+        position_ids = position_ids.to(device=x.device)
+        inv_freq_expanded = self.inv_freq[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
+        position_ids_expanded = position_ids[:, :, None, :].float()
+
+        device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):
+            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(2, 3)
+            freqs = self._apply_interleaved_mrope(freqs)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos() * self.attention_scaling
+            sin = emb.sin() * self.attention_scaling
+
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+
+    def _apply_interleaved_mrope(self, freqs: torch.Tensor) -> torch.Tensor:
+        freqs_t = freqs[0].clone()
+        for dim, offset in enumerate((1, 2), start=1):
+            length = self.mrope_section[dim] * 3
+            idx = slice(offset, length, 3)
+            freqs_t[..., idx] = freqs[dim, ..., idx]
+        return freqs_t
+
+
+def _create_rotary_emb(config: Qwen3_5MoeConfig) -> Qwen3_5MoeRotaryEmbedding:
+    return Qwen3_5MoeRotaryEmbedding(config)
+
+
+# ---------------------------------------------------------------------------
+# Model classes
+# ---------------------------------------------------------------------------
 
 
 class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
@@ -757,6 +839,7 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        seq_lens: Optional[torch.LongTensor] = None,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -764,9 +847,31 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+        if position_ids is None:
+            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
+
+        flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
+        if flash_attn_enabled:
+            if position_ids.ndim == 3:
+                if inputs_embeds.shape[0] != 1:
+                    raise ValueError("3D Qwen3.5 MRoPE positions require batch size 1 for varlen attention")
+                seq_len = inputs_embeds.shape[1]
+                if seq_lens is None:
+                    cu_seqlens = torch.tensor([0, seq_len], dtype=torch.int32, device=inputs_embeds.device)
+                    max_seqlen = seq_len
+                else:
+                    cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                        seq_lens.to(device=inputs_embeds.device),
+                        total_tokens=seq_len,
+                    )
+            else:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        elif position_ids.ndim == 3 and seq_lens is not None:
+            seq_lens = seq_lens.to(device=inputs_embeds.device)
+            if seq_lens.numel() > 1 and "full_attention" in self.config.layer_types:
+                raise ValueError("Packed Qwen3.5 MRoPE batches with full_attention layers require flash attention")
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens, total_tokens=inputs_embeds.shape[1])
         else:
             max_seqlen = None
             cu_seqlens = None
@@ -822,6 +927,16 @@ class Qwen3_5MoeVLMModel(nn.Module):
     def set_input_embeddings(self, value):
         self.language_model.embed_tokens = value
 
+    def _dummy_vision_inputs(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        """Smallest valid vision input: a single merged token (grid [1, m, m])."""
+        vcfg = self.config.vision_config
+        m = vcfg.spatial_merge_size
+        num_patches = m * m
+        patch_dim = vcfg.in_channels * vcfg.temporal_patch_size * vcfg.patch_size * vcfg.patch_size
+        pixel_values = torch.zeros(num_patches, patch_dim, device=device, dtype=self.visual.dtype)
+        grid_thw = torch.tensor([[1, m, m]], dtype=torch.long, device=device)
+        return pixel_values, grid_thw
+
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -829,28 +944,74 @@ class Qwen3_5MoeVLMModel(nn.Module):
         inputs_embeds: torch.FloatTensor | None = None,
         pixel_values: torch.Tensor | None = None,
         image_grid_thw: torch.LongTensor | None = None,
+        mm_token_type_ids: torch.LongTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
+        seq_lens: torch.LongTensor | None = None,
         **kwargs,
     ) -> MoeModelOutputWithPast:
         if inputs_embeds is None:
             inputs_embeds = self.language_model.embed_tokens(input_ids)
 
-        if pixel_values is not None:
-            pixel_values = pixel_values.type(self.visual.dtype)
-            vision_output = self.visual(pixel_values, grid_thw=image_grid_thw, return_dict=True)
-            image_embeds = vision_output.pooler_output.to(inputs_embeds.device, inputs_embeds.dtype)
+        if image_grid_thw is not None and input_ids is None:
+            raise ValueError("input_ids are required to compute Qwen3.5 multimodal MRoPE positions")
+        if image_grid_thw is not None and mm_token_type_ids is None:
+            raise ValueError(
+                "Qwen3.5 multimodal forward requires mm_token_type_ids to compute MRoPE positions correctly"
+            )
+        if image_grid_thw is not None and position_ids is not None and position_ids.ndim != 3:
+            raise ValueError(
+                f"Qwen3.5 multimodal forward requires 3D MRoPE position_ids; got shape={tuple(position_ids.shape)}"
+            )
 
+        # Keep distributed collectives in the same order when a batch mixes text-only
+        # and image samples across ranks. The frozen dummy pass is discarded below.
+        has_images = pixel_values is not None
+        vision_grid_thw = image_grid_thw
+        if has_images:
+            if input_ids is None:
+                raise ValueError("input_ids are required when scattering Qwen3.5 image features")
+            if image_grid_thw is None:
+                raise ValueError("image_grid_thw is required when pixel_values are provided")
+            pixel_values = pixel_values.type(self.visual.dtype)
+        else:
+            pixel_values, vision_grid_thw = self._dummy_vision_inputs(inputs_embeds.device)
+
+        vision_output = self.visual(pixel_values, grid_thw=vision_grid_thw, return_dict=True)
+        image_embeds = vision_output.pooler_output.to(inputs_embeds.device, inputs_embeds.dtype)
+
+        if has_images:
             image_mask = input_ids == self.config.image_token_id
+            image_token_count = int(image_mask.sum().item())
+            image_feature_count = int(image_embeds.shape[0])
+            if image_token_count != image_feature_count:
+                raise ValueError(
+                    "Qwen VLM image token/feature mismatch before scatter: "
+                    f"image_token_id={self.config.image_token_id}, "
+                    f"image_tokens={image_token_count}, image_features={image_feature_count}, "
+                    f"input_ids_shape={tuple(input_ids.shape)}, "
+                    f"pixel_values_shape={tuple(pixel_values.shape)}, "
+                    f"image_grid_thw_shape={tuple(image_grid_thw.shape) if image_grid_thw is not None else None}"
+                )
             image_mask = image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
 
         if position_ids is None:
-            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
+            if image_grid_thw is not None:
+                position_ids = build_qwen3_5_mrope_position_ids(
+                    input_ids=input_ids,
+                    mm_token_type_ids=mm_token_type_ids,
+                    image_grid_thw=image_grid_thw,
+                    spatial_merge_size=self.config.vision_config.spatial_merge_size,
+                    seq_lens=seq_lens,
+                )
+            else:
+                position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
         return self.language_model(
             inputs_embeds=inputs_embeds,
             position_ids=position_ids,
             routed_experts=routed_experts,
+            seq_lens=seq_lens,
         )
 
 
@@ -997,12 +1158,15 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         routed_experts: Optional[torch.LongTensor] = None,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.LongTensor] = None,
+        mm_token_type_ids: Optional[torch.LongTensor] = None,
+        seq_lens: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5_moe for now"
         assert past_key_values is None, "past_key_values is not supported for custom qwen3_5_moe for now"
 
-        if position_ids is None:
+        has_vlm_image_inputs = self._is_vlm and image_grid_thw is not None
+        if position_ids is None and not has_vlm_image_inputs:
             if inputs_embeds is not None:
                 position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
             elif input_ids is not None:
@@ -1015,7 +1179,9 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
                 inputs_embeds=inputs_embeds,
                 pixel_values=pixel_values,
                 image_grid_thw=image_grid_thw,
+                mm_token_type_ids=mm_token_type_ids,
                 routed_experts=routed_experts,
+                seq_lens=seq_lens,
             )
         else:
             outputs = self.model(
@@ -1023,6 +1189,7 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
                 position_ids=position_ids,
                 inputs_embeds=inputs_embeds,
                 routed_experts=routed_experts,
+                seq_lens=seq_lens,
             )
 
         hidden_states = outputs.last_hidden_state

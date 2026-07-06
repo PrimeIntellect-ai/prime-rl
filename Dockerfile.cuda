@@ -32,6 +32,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends --force-yes \
     libnl-route-3-dev \
     libibverbs-dev \
     librdmacm-dev \
+    python3.12 \
+    python3.12-venv \
+    python3.12-dev \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
     && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 ARG UCX_VERSION=1.19.1
@@ -60,8 +64,13 @@ ADD https://astral.sh/uv/install.sh /uv-installer.sh
 # Set install dir to location accessible to non-root users
 RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
 ENV PATH="/usr/local/bin:$PATH"
-ENV UV_PYTHON_INSTALL_DIR="/usr/local/share/uv/python"
+# Build .venv against the system CPython, so the venv's recorded interpreter
+# matches the runtime interpreter and no bin/python relink is needed at runtime.
+ENV UV_PYTHON_PREFERENCE=only-system
 ENV UV_CACHE_DIR="/usr/local/share/uv/cache"
+# Explicity set venv dir inside /app so to ensure it gets copied over during
+# the runtime stage's `COPY /app`
+ENV UV_PROJECT_ENVIRONMENT="/app/.venv"
 
 # Install Python dependencies (The gradual copies help with caching)
 WORKDIR /app
@@ -77,26 +86,92 @@ COPY deps/ /app/deps/
 COPY configs /app/configs
 COPY examples /app/examples
 COPY benchmarks/scripts /app/benchmarks/scripts
+COPY scripts/docker-editable-pretend-versions.sh /app/scripts/docker-editable-pretend-versions.sh
 
+# Use submodule git metadata from the build context when present. Docker copies
+# only the submodule .git pointer files into /app/deps, so we temporarily link
+# /app/.git/modules to the read-only context before resolving versions.
+# Opt-in extras for disaggregated P/D inference (deep-ep, deep-gemm, quack).
+# Default off — they're heavy source builds only the disagg-MoE path needs.
+# Enable via `--build-arg INCLUDE_DISAGG_EXTRAS=1`.
+ARG INCLUDE_DISAGG_EXTRAS=0
+ARG VERIFIERS_PRETEND_VERSION
+ARG RENDERERS_PRETEND_VERSION
 RUN --mount=type=cache,target=/app/.cache/uv \
-    uv sync --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra envs --extra gpt-oss --extra modelexpress --group mamba-ssm --locked --no-dev
+    --mount=type=bind,source=.,target=/build-context,readonly \
+    if [ -d /build-context/.git/modules ]; then mkdir -p /app/.git && ln -s /build-context/.git/modules /app/.git/modules; fi \
+    && \
+    eval "$(bash /app/scripts/docker-editable-pretend-versions.sh --shell /app)" \
+    && \
+    if [ -L /app/.git/modules ]; then rm /app/.git/modules && rmdir /app/.git 2>/dev/null || true; fi \
+    && \
+    sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${VERIFIERS_PRETEND_VERSION}\"/" /app/deps/verifiers/pyproject.toml \
+    && \
+    sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${RENDERERS_PRETEND_VERSION}\"/" /app/deps/renderers/pyproject.toml \
+    && \
+    EXTRA_DISAGG_FLAG=""; if [ "$INCLUDE_DISAGG_EXTRAS" = "1" ]; then EXTRA_DISAGG_FLAG="--extra disagg"; fi \
+    && \
+    uv sync --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra envs --extra gpt-oss --extra modelexpress $EXTRA_DISAGG_FLAG --group mamba-ssm --locked --no-dev
+
+# Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
+# nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer
+# (#2883); rebuilding against our UCX is the documented fix. Only needed for
+# the disaggregated P/D path — default off so training-only / single-node
+# inference builds are unaffected. Enable via `--build-arg INCLUDE_NIXL_FROM_SOURCE=1`.
+ARG INCLUDE_NIXL_FROM_SOURCE=0
+ARG NIXL_VERSION=0.10.1
+RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
+        VIRTUAL_ENV=/app/.venv uv pip install pip \
+        && git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git /tmp/nixl \
+        && cd /tmp/nixl \
+        && PKG_CONFIG_PATH=/opt/ucx/lib/pkgconfig \
+           LD_LIBRARY_PATH=/opt/ucx/lib:/opt/ucx/lib/ucx \
+           /app/.venv/bin/python -m pip wheel . --no-deps --wheel-dir=/app/deps \
+        && VIRTUAL_ENV=/app/.venv uv pip install --reinstall --no-deps /app/deps/nixl_cu12-*.whl \
+        && rm -rf /tmp/nixl /app/deps/nixl_cu12-*.whl; \
+    fi
 
 # arm64: build flash-attn from source, fix namespace conflicts, apply workarounds
 ARG TARGETARCH
 COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
 RUN if [ "$TARGETARCH" = "arm64" ]; then /app/scripts/docker-arm64-post-install.sh; fi
 
-FROM python:3.12-slim
+# Trim the CUDA toolkit to the nvcc-JIT essentials in a separate stage, so the runtime
+# COPY ships only the trimmed result (~1.5 GB) instead of the full ~6.6 GB. Drops the math
+# runtime libs (cublas/cusparse/cufft/cusolver/curand/npp/nvjpeg) and big static .a
+# archives since nvcc JIT (TileLang/FlashInfer build their own kernels) and torch
+# (uses pinned nvidia-* wheels) needs them. Keeps nvcc/nvvm/ptxas + headers +
+# libcudart/libnvrtc/libcudadevrt for JIT compile+link.
+FROM builder AS cuda-trim
+RUN find /usr/local/cuda-12.8/targets/*/lib \
+        \( -name 'libcublas*' -o -name 'libcusparse*' -o -name 'libcufft*' \
+           -o -name 'libcusolver*' -o -name 'libcurand*' -o -name 'libnpp*' \
+           -o -name 'libnvjpeg*' -o -name 'libnvblas*' \) -delete \
+    && find /usr/local/cuda-12.8 -name '*.a' ! -name 'libcudadevrt.a' ! -name 'libcudart_static.a' -delete
+
+# CUDA 13 runtime libs source
+FROM nvidia/cuda:13.0.1-runtime-ubuntu24.04 AS cuda13
+RUN mkdir -p /cu13 && cp -d $(find /usr/local \
+        -name 'libcudart.so.13*' -o -name 'libnvrtc.so.13*' -o -name 'libnvrtc-builtins.so.13*') /cu13/
+
+# Runtime image
+FROM nvidia/cuda:12.8.1-base-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     --no-install-recommends \
     --force-yes \
+    python3.12 \
+    python3.12-venv \
+    python3.12-dev \
     build-essential \
     wget \
     clang \
     tmux \
     iperf \
     openssh-server \
+    git \
     git-lfs \
     gpg \
     sudo \
@@ -110,13 +185,30 @@ RUN apt-get update && apt-get install -y \
     libibverbs1 \
     ibverbs-providers \
     librdmacm1 \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# CUDA 12.8 toolkit (TileLang's runtime nvcc JIT)
+COPY --from=cuda-trim /usr/local/cuda-12.8 /usr/local/cuda-12.8
+RUN ln -sfn /usr/local/cuda-12.8 /usr/local/cuda && test -x /usr/local/cuda/bin/nvcc
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH="/usr/local/cuda/bin:${PATH}"
+
+# CUDA 13 runtime libs for deep-gemm
+COPY --from=cuda13 /cu13/ /opt/cuda13/lib64/
+RUN echo /opt/cuda13/lib64 > /etc/ld.so.conf.d/cuda13.conf \
+    && ldconfig \
+    && ldconfig -p | grep -q libcudart.so.13 \
+    && ldconfig -p | grep -q libnvrtc.so.13
 
 
 ARG USER_ID=1000
 ARG GROUP_ID=1000
-RUN groupadd --gid $GROUP_ID appuser && \
+
+RUN userdel -r ubuntu 2>/dev/null || true; \
+    groupdel ubuntu 2>/dev/null || true; \
+    groupadd --gid $GROUP_ID appuser && \
     useradd --uid $USER_ID --gid appuser --create-home --shell /bin/bash appuser && \
     usermod -aG sudo appuser && \
     echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
@@ -135,10 +227,6 @@ COPY --from=builder /opt/ucx /opt/ucx
 # Copy and set up entrypoint script
 COPY --chown=appuser:appuser scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
-
-RUN rm /app/.venv/bin/python && ln -s /usr/local/bin/python /app/.venv/bin/python
-RUN rm /app/.venv/bin/python3 && ln -s /usr/local/bin/python /app/.venv/bin/python3
-RUN rm /app/.venv/bin/python3.12 && ln -s /usr/local/bin/python /app/.venv/bin/python3.12
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"

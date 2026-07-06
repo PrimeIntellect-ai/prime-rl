@@ -8,16 +8,17 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import httpx
-import verifiers as vf
+import verifiers.v1 as vf
 from httpx import AsyncClient
-from openai import NotFoundError
+from openai import AsyncOpenAI, NotFoundError
 from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
+from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
-# Identity tuple used by ``select_train_client`` to key load counts. ``api_base_url``
+# Identity tuple used by ``select_train_client`` to key load counts. ``base_url``
 # distinguishes servers; ``X-data-parallel-rank`` distinguishes DP shards within a
 # server, since the router uses that header to route to specific GPU ranks.
 ClientIdentity = tuple[str, str | None]
@@ -25,7 +26,7 @@ ClientIdentity = tuple[str, str | None]
 
 def client_identity(client: vf.ClientConfig) -> ClientIdentity:
     """Stable identity for load balancing across inference clients."""
-    return (client.api_base_url, client.extra_headers.get("X-data-parallel-rank"))
+    return (client.base_url, client.headers.get("X-data-parallel-rank"))
 
 
 @runtime_checkable
@@ -72,13 +73,46 @@ class InferencePool(Protocol):
         """Update weights on all inference servers."""
         ...
 
-    def get_metrics(self) -> dict[str, float]:
-        """Get pool metrics."""
+    async def score(self, token_ids: list[int]) -> list[float]:
+        """Prefill-score ``token_ids`` under the pool's model — one logprob per token."""
         ...
 
     async def stop(self) -> None:
         """Stop the inference pool."""
         ...
+
+
+class PrefillScorer:
+    """Prefill-scores token ids against a pool's *current* endpoints. Resolves one
+    client per endpoint, cached by endpoint identity — so it fills once for a
+    static pool and tolerates churn for an elastic one (a departed endpoint is
+    simply never selected again; its client is closed at stop). Round-robins over
+    the live endpoints."""
+
+    def __init__(self) -> None:
+        self._clients: dict = {}  # client_identity -> AsyncOpenAI, one per endpoint
+        self._rr = 0
+
+    async def score(self, configs: list[vf.ClientConfig], model: str, token_ids: list[int]) -> list[float]:
+        if not configs:
+            raise RuntimeError("no inference endpoints available to prefill-score")
+        cfg = configs[self._rr % len(configs)]
+        self._rr += 1
+        key = client_identity(cfg)
+        openai = self._clients.get(key)
+        if openai is None:
+            # Build the OpenAI client straight from the config fields — works for any
+            # ClientConfig type; resolve_client would hand back an EvalClient (no `.openai`)
+            # for these chat-completions teacher configs.
+            openai = self._clients[key] = AsyncOpenAI(
+                base_url=cfg.base_url,
+                api_key=os.environ.get(cfg.api_key_var) or "EMPTY",
+                default_headers=cfg.headers or None,
+            )
+        return await prefill_logprobs(openai, model, token_ids)
+
+    async def aclose(self) -> None:
+        await asyncio.gather(*(c.close() for c in self._clients.values()))
 
 
 class StaticInferencePool:
@@ -106,6 +140,7 @@ class StaticInferencePool:
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
+        self._scorer = PrefillScorer()
         self.model_name = model_name
 
     @property
@@ -140,11 +175,13 @@ class StaticInferencePool:
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
 
-    def get_metrics(self) -> dict[str, float]:
-        return {}
+    async def score(self, token_ids: list[int]) -> list[float]:
+        """Prefill-score ``token_ids`` under this pool's model (one logprob per
+        token, 0.0 for the leading token). Delegates to the shared scorer."""
+        return await self._scorer.score(self.train_clients, self.model_name, token_ids)
 
     async def stop(self) -> None:
-        pass
+        await self._scorer.aclose()
 
 
 async def setup_inference_pool(
@@ -185,42 +222,31 @@ def setup_clients(
     renderer_model_name: str | None = None,
     pool_size: int | None = None,
 ) -> list[vf.ClientConfig]:
-    clients = []
-    client_idx = 0
-    # Only forward the renderer config when the client actually uses a
-    # renderer — MITO/TITO clients ignore it.
+    """Build v1 client configs (one per base_url × DP rank). ``client_type``
+    ``renderer`` → token-in/out (``TrainClientConfig``, with the renderer the env
+    server should use forwarded as a serialized config so it doesn't fall back to the
+    default renderer); otherwise plain chat-completions (``EvalClientConfig``)."""
+    is_renderer = client_type == "renderer"
+    config_cls = TrainClientConfig if is_renderer else EvalClientConfig
     renderer_extra: dict = {}
-    if client_type == "renderer":
+    if is_renderer:
         renderer_extra = {
-            "renderer_config": renderer_config,
+            "renderer": renderer_config,
+            "pool_size": pool_size or 1,
             "renderer_model_name": renderer_model_name,
-            "renderer_pool_size": pool_size,
         }
     env_headers = {
         k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
     }
+    clients: list[vf.ClientConfig] = []
     for base_url in client_config.base_url:
         for dp_rank in range(client_config.dp_rank_count):
             headers = {**client_config.headers, **env_headers}
             if client_config.dp_rank_count > 1:
                 headers["X-data-parallel-rank"] = str(dp_rank)
             clients.append(
-                vf.ClientConfig(
-                    client_idx=client_idx,
-                    client_type=client_type,
-                    api_base_url=base_url,
-                    api_key_var=client_config.api_key_var,
-                    timeout=client_config.timeout,
-                    connect_timeout=client_config.connect_timeout,
-                    max_connections=8192,
-                    max_keepalive_connections=8192,
-                    max_retries=10,
-                    extra_headers=headers,
-                    extra_headers_from_state=client_config.extra_headers_from_state,
-                    **renderer_extra,
-                )
+                config_cls(base_url=base_url, api_key_var=client_config.api_key_var, headers=headers, **renderer_extra)
             )
-            client_idx += 1
     return clients
 
 
@@ -381,8 +407,9 @@ async def update_weights(
     weight update, then resumes. This ensures all DP workers are idle and can
     participate in the collective weight transfer.
 
-    Note: The server-side /update_weights endpoint automatically resets the prefix cache
-    to invalidate any cached KV states computed with the old weights.
+    Note: the prefix cache is intentionally not reset on weight update. The orchestrator
+    salts the prefix cache per weight version (``cache_salt`` in the sampling request, see
+    ``orchestrator/envs.py``), so KV computed under old weights is never reused.
     """
     logger = get_logger()
 
@@ -444,8 +471,9 @@ LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
-    Uses our wrapper endpoint that also resets the prefix cache to invalidate
-    KV states computed with old weights.
+    Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not reset
+    here; the orchestrator salts it per weight version (see ``orchestrator/envs.py``) so
+    KV computed under old weights is never reused.
 
     Retries with exponential backoff if the adapter files are not found,
     which can happen due to NFS propagation delays.
@@ -538,3 +566,39 @@ async def init_nccl_broadcast(
             for client_num, admin_client in enumerate(admin_clients)
         ]
     )
+
+
+async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:
+    """Prefill-score ``token_ids`` under ``model`` via ``/inference/v1/generate``
+    + ``prompt_logprobs`` (the prime-rl server-side extension in
+    ``inference/vllm/serving_tokens.py``). Returns one logprob per token (0.0 for
+    the leading token, which has no preceding context)."""
+    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
+
+    # `/inference/v1/generate` is mounted at server root, not under `/v1`: pass an
+    # absolute URL so the SDK skips the base-url merge. vLLM's `GenerateResponse`
+    # isn't an `openai.BaseModel`, so the SDK parse layer rejects it as `cast_to`;
+    # `cast_to=httpx.Response` lets the SDK still build the request (auth, retries,
+    # timeouts) and hand back the raw response for us to validate.
+    base = str(openai.base_url).rstrip("/").removesuffix("/v1")
+    http_response = await openai.post(
+        f"{base}/inference/v1/generate",
+        cast_to=httpx.Response,
+        body={
+            "model": model,
+            "token_ids": token_ids,
+            "sampling_params": {"max_tokens": 1, "temperature": 1.0, "top_p": 1.0, "prompt_logprobs": 1},
+        },
+    )
+    response = GenerateResponse.model_validate_json(http_response.content)
+    # `prompt_logprobs[i]` is a `{token_id: Logprob}` dict, or `None` for the
+    # leading token (no preceding context). Flatten to `list[float]`.
+    flat: list[float] = []
+    for entry in response.prompt_logprobs or []:
+        if not entry:
+            flat.append(0.0)
+            continue
+        first = next(iter(entry.values()))
+        lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
+        flat.append(float(lp) if lp is not None else 0.0)
+    return flat

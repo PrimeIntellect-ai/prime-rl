@@ -36,12 +36,6 @@ export OUTPUT_DIR={{ output_dir }}
 mkdir -p $OUTPUT_DIR/logs/trainer
 ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 
-# General
-export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export PYTHONUNBUFFERED=1
-export OMP_NUM_THREADS=1
-export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
-
 # Networking
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 echo "HOSTNAMES=${HOSTNAMES[@]}"
@@ -54,9 +48,17 @@ echo "MASTER_PORT=${MASTER_PORT}"
 # Install environment
 [ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
 source $PROJECT_DIR/.venv/bin/activate
-
-# Install environment as local package
+{% if not shared_fs %}
+# Node-local venv (e.g. UV_PROJECT_ENVIRONMENT on /tmp): a bare `uv sync` would only
+# build the batch node, so srun runs it on every node (one task each) and blocks until
+# all finish. `set -e` above aborts the job if any node's sync fails. Re-source .env
+# inside the task because unexported vars in .env don't cross srun even with normal
+# SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
+srun --ntasks-per-node=1 bash -c 'cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras'
+{% else %}
+# Shared (NFS) venv: one sync on the batch node populates it for all nodes.
 cd $PROJECT_DIR && uv sync --all-extras
+{% endif %}
 
 
 {% if pre_run_command %}
@@ -101,7 +103,6 @@ srun --kill-on-bad-exit=1 bash -c '
 
     # Higher ulimit
     ulimit -n 65536
-    export GIT_LFS_SKIP_SMUDGE=1
 
     # Infiniband setup
     IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
@@ -109,10 +110,10 @@ srun --kill-on-bad-exit=1 bash -c '
 
     TRAIN_NODE_RANK=$SLURM_PROCID
 
-    export HF_HUB_OFFLINE=1
-
-    # This is required for compilation to work correctly
-    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+    # Trainer env vars: launcher defaults + [env_vars]
+{%- for key, value in trainer_env_vars.items() %}
+    export {{ key }}="{{ value }}"
+{%- endfor %}
 
     echo $HOSTNAMES | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
     uv run torchrun \
