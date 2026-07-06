@@ -24,7 +24,7 @@ seq_len = 131072
 TRITON_CACHE_DIR = "/tmp/.triton-cache"
 
 [slurm]
-job_name = "glm45air-search-v3"
+job_name = "glm45air-search"
 partition = "all"
 # Clean up this run's orphaned prime sandboxes before launch (hardcoded label, matches the harness labels below).
 pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-search" -y || true'
@@ -37,7 +37,7 @@ num_infer_replicas = 4
 
 [wandb]
 project = "search-ablations"
-name = "glm45air-search-v3"
+name = "glm45air-search"
 
 [weight_broadcast]
 type = "nccl"
