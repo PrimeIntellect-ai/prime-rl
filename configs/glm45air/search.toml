@@ -104,15 +104,36 @@ num_turns_weight = 0.1
 
 # --- Train: the search envs with usable training data (rlm `search` skill, prime sandbox) ---
 
+# openseeker/redsearcher pre-plug a `reference` judge; declaring `judges` here replaces that
+# entry wholesale (keep `name`/`question_field`/`choices` in sync with the taskset defaults —
+# the plugged BC-style prompt is replaced by the reference judge's stock prompt).
 [[orchestrator.train.env]]
 name = "openseeker"
-taskset = { id = "openseeker-v1", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507" } }
 harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = [65536, 131072], runtime = { type = "prime", labels = ["glm45air-search"] } }
+
+[orchestrator.train.env.taskset]
+id = "openseeker-v1"
+
+[[orchestrator.train.env.taskset.judges]]
+id = "reference"
+name = "correct"
+model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+question_field = "question"
+choices = ["A", "B"]
 
 [[orchestrator.train.env]]
 name = "redsearcher"
-taskset = { id = "redsearcher-v1", judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507" } } # optional `difficulty` filter (easy/medium/hard)
 harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = [65536, 131072], runtime = { type = "prime", labels = ["glm45air-search"] } }
+
+[orchestrator.train.env.taskset]
+id = "redsearcher-v1" # optional `difficulty` filter (easy/medium/hard)
+
+[[orchestrator.train.env.taskset.judges]]
+id = "reference"
+name = "correct"
+model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+question_field = "question"
+choices = ["A", "B"]
 
 # --- Eval: BrowseComp held-out test, every 20 steps (incl. step 0) ---
 
