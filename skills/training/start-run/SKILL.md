@@ -78,6 +78,22 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
+## `ttt` — test-time-training service
+
+Per-rollout LoRA training at compaction boundaries (see `docs/ttt.md`). Runs on its own GPU,
+alongside an inference server with `enable_lora = true`; must share `output_dir` and the base
+model with the deployment. Launched manually — the `rl` entrypoint does not manage it.
+
+```bash
+uv run ttt @ configs/ttt/ttt.toml
+curl http://localhost:8092/health
+```
+
+- Config: `TTTServiceConfig` (`packages/prime-rl-configs/src/prime_rl/configs/ttt.py`)
+- Entrypoint: `src/prime_rl/entrypoints/ttt.py`
+- Env side: `ttt = { base_url = ... }` on a train/eval env (needs the `compacting` harness
+  and the renderer client); experiment arms in `configs/ttt/README.md`
+
 ## Summary
 
 | Command | Purpose | Typical use |
@@ -85,10 +101,11 @@ curl http://localhost:8000/v1/chat/completions \
 | `rl` | Full RL pipeline | Production RL training |
 | `sft` | Supervised fine-tuning | SFT and hard-distill |
 | `inference` | vLLM server | Standalone serving / debugging |
+| `ttt` | Test-time-training service | TTT experiments (with `rl` or the v1 eval CLI) |
 
 ## Key paths
 
-- `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference` (+ `trainer`, `orchestrator` for direct launches)
+- `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference`, `ttt` (+ `trainer`, `orchestrator` for direct launches)
 - `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
 - `configs/debug/` — minimal debug configs
 - `examples/` — full example configs (e.g. `reverse_text/`)

@@ -1,0 +1,10 @@
+# Inference for TTT experiments: vLLM serving the base model + per-rollout LoRA adapters.
+# `uv run inference @ configs/ttt/inference.toml`
+
+enable_lora = true
+max_lora_rank = 16   # >= [lora].rank in ttt.toml
+max_loras = 32       # >= expected concurrent TTT rollouts
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+max_model_len = 32768

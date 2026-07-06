@@ -1,0 +1,23 @@
+# The TTT service: per-rollout LoRA training at compaction boundaries.
+# Run on its own GPU: `uv run ttt @ configs/ttt/ttt.toml`
+# Must share `output_dir` (checkpoints) and the base model with the inference deployment.
+
+output_dir = "outputs"
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+device = "cuda"
+
+[lora]
+rank = 16
+alpha = 32
+
+[optim]
+type = "adamw"
+lr = 1e-4
+
+# Engines to (re)load adapters on after each update (vLLM admin roots, no /v1).
+inference_admin_urls = ["http://localhost:8000"]
+
+steps_per_update = 1
+max_concurrent_updates = 1

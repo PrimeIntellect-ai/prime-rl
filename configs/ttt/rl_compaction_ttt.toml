@@ -1,0 +1,42 @@
+# RL with test-time training: GRPO on deepdive-v1 with the compacting harness, per-rollout
+# TTT adapters at every compaction, and frozen-adapter replay in the trainer.
+#
+# Start the TTT service FIRST (own GPU): `uv run ttt @ configs/ttt/ttt.toml`
+# Then: `uv run rl @ configs/ttt/rl_compaction_ttt.toml`
+#
+# Constraints (enforced by config validation):
+# - full-weight policy training (no [trainer.model.lora] — frozen TTT adapters don't stack)
+# - inference serves LoRA (enable_lora below) for the TTT service's adapter loads
+# All numbers are illustrative.
+
+max_steps = 200
+seq_len = 40960   # trainer must fit a branch (compact_at_tokens + the turn that crossed it)
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[trainer]
+
+[trainer.model.ac]
+freq = 1
+
+[orchestrator]
+batch_size = 256
+rollouts_per_example = 8
+
+[[orchestrator.train.env]]
+taskset = { id = "deepdive-v1" }
+harness = { id = "compacting", compact_at_tokens = 8192, search = true }
+max_input_tokens = 32768   # total context budget per rollout (across compactions)
+ttt = { base_url = "http://localhost:8092" }
+# Q&A arms:
+#   ttt = { base_url = "...", qa = { num_pairs = 8 } }                              # QA-TTT
+#   ttt = { base_url = "...", qa = { num_pairs = 8, recycle_to_policy = true } }    # + QA -> policy (ce)
+
+[inference]
+enable_lora = true
+max_lora_rank = 16
+max_loras = 32
+
+[inference.model]
+max_model_len = 40960
