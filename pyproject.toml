@@ -154,7 +154,7 @@ dev = [
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
 preview = true
-no-build-isolation-package = ["flash-attn"]
+no-build-isolation-package = ["flash-attn", "torchao"]
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
     "sys_platform == 'linux' and platform_machine == 'aarch64'",
@@ -264,6 +264,7 @@ torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
+torchao = { git = "https://github.com/pytorch/ao.git", rev = "02105d4" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
 vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }
@@ -284,6 +285,10 @@ mamba-ssm = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
+# Build torchao's CUDA kernels (incl. the MXFP8 sm100a path) from source against
+# the local torch cu128 / py3.12. The PyPI wheel is cu13 + cpython-310 and fails
+# to load here. Restrict the arch list to B200 (sm_100a) to keep the build short.
+torchao = { CUDA_HOME = "/usr/local/cuda-12.8", TORCH_CUDA_ARCH_LIST = "10.0a", USE_CPP = "1" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
