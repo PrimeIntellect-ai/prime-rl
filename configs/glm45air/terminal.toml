@@ -23,7 +23,7 @@ seq_len = 131072
 TRITON_CACHE_DIR = "/tmp/.triton-cache"
 
 [slurm]
-job_name = "glm45air-terminal"
+job_name = "glm45air-terminal-v2"
 partition = "all"
 # Clean up this run's orphaned prime sandboxes before launch (hardcoded label, matches the harness labels below).
 pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-terminal" -y || true'
@@ -36,7 +36,7 @@ num_infer_replicas = 4
 
 [wandb]
 project = "terminal-ablations"
-name = "glm45air-terminal"
+name = "glm45air-terminal-v2"
 
 [weight_broadcast]
 type = "nccl"
