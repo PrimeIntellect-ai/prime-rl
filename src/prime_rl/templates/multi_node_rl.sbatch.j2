@@ -41,8 +41,8 @@ export NUM_PREFILL_NODES={{ num_prefill_nodes }}
 export NUM_DECODE_NODES={{ num_decode_nodes }}
 export NUM_PREFILL_REPLICAS={{ num_prefill_replicas }}
 export NUM_DECODE_REPLICAS={{ num_decode_replicas }}
-export NODES_PER_PREFILL_REPLICA=$((NUM_PREFILL_NODES / NUM_PREFILL_REPLICAS))
-export NODES_PER_DECODE_REPLICA=$((NUM_DECODE_NODES / NUM_DECODE_REPLICAS))
+export NODES_PER_PREFILL_REPLICA={{ prefill_nodes_per_replica }}
+export NODES_PER_DECODE_REPLICA={{ decode_nodes_per_replica }}
 export PREFILL_PORT={{ prefill_port }}
 export DECODE_PORT={{ decode_port }}
 {%- if router.type == "llm-d" %}

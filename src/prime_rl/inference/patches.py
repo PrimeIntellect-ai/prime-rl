@@ -695,6 +695,45 @@ def monkey_patch_fp32_lm_head():
     logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")
 
 
+def monkey_patch_fp32_router_logits():
+    """Emit fp32 MoE router logits for DeepSeek-family models (incl. GLM-5.x glm_moe_dsa).
+
+    vLLM's DeepseekV2MoE gate is a GateLinear with a bf16 weight and no out_dtype,
+    so router logits are rounded to bf16 before expert scoring. GLM-5.x was trained
+    with fp32 routing (Megatron ``--moe-router-dtype fp32``); upstream now runs its
+    gate fully in fp32 (vllm-project/vllm#47410, not in the pinned release).
+    Setting ``out_dtype=float32`` routes the gate through GateLinear's cuBLAS
+    bf16xbf16->fp32 tier: same GEMM, but the fp32 accumulator is written out
+    unrounded. Unlike the upstream PR, the gate weight stays bf16, so the LoRA
+    Triton kernel dtype assert and the bf16 weight-broadcast path are unaffected.
+
+    Activated by ``additional_config["fp32_router_logits"] = True``; the launcher
+    sets this when ``inference.enable_fp32_router_logits`` is set. The flag is read
+    at module construction, where vLLM guarantees a ``set_current_vllm_config()``
+    context. No-op if something else already set an out_dtype (e.g. the ROCm AITER
+    branch, whose kernel wants matching dtypes).
+    """
+    import torch
+    from vllm.config import get_current_vllm_config
+    from vllm.logger import init_logger
+    from vllm.model_executor.models.deepseek_v2 import DeepseekV2MoE
+
+    logger = init_logger(__name__)
+
+    _original_init = DeepseekV2MoE.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        _original_init(self, *args, **kwargs)
+        additional_config = get_current_vllm_config().additional_config or {}
+        if not additional_config.get("fp32_router_logits", False):
+            return
+        if self.gate.out_dtype is None:
+            self.gate.set_out_dtype(torch.float32)
+
+    DeepseekV2MoE.__init__ = _patched_init
+    logger.info("Installed fp32 router logits patch (self-gates on additional_config['fp32_router_logits']).")
+
+
 def monkey_patch_dp_coordinator_startup_timeout():
     """Raise the DP coordinator startup timeout from vLLM's hard-coded 120s.
 

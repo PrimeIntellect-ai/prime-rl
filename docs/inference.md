@@ -128,41 +128,39 @@ This configuration will run 2 vLLM processes, each with `data_parallel_size_loca
 
 This is the most advanced deployment shape. It allows you to disaggregate the prefill and decode stages, with KV cache flowing between them. This is useful for large scale deployments, where there are high requirements on latency, such as agentic workflows spanning 100s of turns.
 
-This deployment shape is defined by setting `inference.deployment.type = "disaggregated"` and `inference.deployment.num_prefill_nodes` and `inference.deployment.num_decode_nodes` to the number of nodes you want to run the prefill and decode stages on.
+This deployment shape is defined by setting `inference.deployment.type = "disaggregated"` and choosing how many nodes each prefill and decode replica spans.
 
 ```toml
 [inference.deployment]
 type = "disaggregated"
-num_prefill_nodes = 2
-num_decode_nodes = 2
+prefill_nodes_per_replica = 2
+decode_nodes_per_replica = 2
 ```
 
-Sometimes, you may want to run multiple independent vLLM instances within the prefill and decode node groups. You can do this by setting `inference.deployment.num_prefill_replicas` and `inference.deployment.num_decode_replicas` to the number of replicas you want to run.
+Sometimes, you may want to run multiple independent vLLM instances within the prefill and decode stages. You can do this by setting `inference.deployment.num_prefill_replicas` and `inference.deployment.num_decode_replicas` to the number of role replicas you want to run.
 
 ```toml
 [inference.deployment]
 type = "disaggregated"
-num_prefill_nodes = 2
-num_decode_nodes = 2
-
+prefill_nodes_per_replica = 2
 num_prefill_replicas = 2
+decode_nodes_per_replica = 2
 num_decode_replicas = 1
 ```
 
-Now the total deployment will span 6 nodes - 2x2 for prefill and 1x2 for decode. 2 prefill replicas will run on 2 nodes each - total of 4 nodes for prefill. 1 decode replica will run on 2 nodes for decode.
+Now each prefill replica spans 2 nodes and each decode replica spans 2 nodes. With 2 prefill replicas and 1 decode replica, one inference island spans 6 nodes.
 
-We also allow you to configure the total amount of inference replicas - this is useful if you'd like to multiply the above configuration by a factor of `k`, each running behind a separate `vllm-router` instance.
+For RL runs, the top-level deployment can multiply that whole inference island by setting `deployment.num_infer_replicas`. `deployment.num_infer_nodes` is inferred from the nested inference deployment when you omit it.
 
 ```toml
 [deployment] # this is a top-level RL deployment, not inference.deployment!!
 type = "multi_node"
 num_train_nodes = 4
-num_infer_nodes = 6 # this is per-replica
 
 num_infer_replicas = 3
 ```
 
-This will run 3 inference replicas, each running on 6 nodes. Each replica will run on 2x2 nodes for prefill and 1x2 nodes for decode. The total deployment will span 18 nodes. This will also spin-up 3 separate `vllm-router` instances.
+This will run 3 inference islands, each running on 6 nodes. The total inference deployment will span 18 nodes and start 3 separate router instances.
 
 
 ## Router
