@@ -405,9 +405,11 @@ class WeightCheckpointManager:
                     gen_config = deepcopy(model.generation_config)
                     gen_config.use_cache = True
                     gen_config.save_pretrained(path)
-                tokenizer.save_pretrained(path)
+                # Processor first: it saves its own (unmodified) tokenizer, which the
+                # configured tokenizer (pad token, custom chat template) must override.
                 if processor is not None:
                     processor.save_pretrained(path)
+                tokenizer.save_pretrained(path)
 
             if lora_state_dict is not None:
                 adapter_path = path / "lora_adapters"
