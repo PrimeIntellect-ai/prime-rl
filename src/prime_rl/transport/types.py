@@ -68,6 +68,14 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: list[float] | None = None
 
+    # Test-time-training replay: the PEFT adapter checkpoint this branch was
+    # sampled under (shared FS, written by the TTT service). The trainer loads
+    # it FROZEN for this sample's forward so the importance ratio is computed
+    # under the same weights the sampler used. ``None`` = sampled from the base
+    # model (no TTT, or the pre-first-compaction branch) — the plain wire is
+    # unchanged (omit_defaults).
+    ttt_adapter_path: str | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
@@ -108,3 +116,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # Packer-derived metadata used for run-local token exports.
     run_id: str | None = None
     run_step: int | None = None
+
+    # Test-time-training replay (see TrainingSample.ttt_adapter_path). Uniform
+    # across the micro batch — the packer never mixes adapters in one bin.
+    ttt_adapter_path: str | None = None

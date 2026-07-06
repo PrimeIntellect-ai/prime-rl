@@ -60,6 +60,7 @@ from prime_rl.trainer.utils import (
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_multi_run_manager, Progress, get_multi_run_manager
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
+from prime_rl.trainer.ttt_replay import TTTReplayManager
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
 from prime_rl.utils.monitor import setup_monitor
@@ -148,6 +149,11 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+
+    # TTT replay: run each micro batch's forward under the frozen adapter its tokens were
+    # sampled with (see prime_rl.trainer.ttt_replay). Armed lazily — the manager is inert
+    # until a micro batch carries a ``ttt_adapter_path``.
+    ttt_replay: TTTReplayManager | None = None
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
@@ -382,6 +388,21 @@ def train(config: TrainerConfig):
                         adjusted_cu, prepend=torch.tensor([0], device=adjusted_cu.device, dtype=adjusted_cu.dtype)
                     )
                 set_lora_num_tokens(lora_num_tokens)
+
+            # TTT replay: (de)activate the micro batch's frozen sampling adapter around the
+            # forward. Constraints enforced elsewhere: one adapter per micro batch (packer),
+            # no policy-LoRA combination (config validator), no CP sharding of the hook math
+            # (the hook is per-token local, so CP composes fine).
+            ttt_adapter_path = micro_batch.get("ttt_adapter_path")
+            if ttt_adapter_path is not None and ttt_replay is None:
+                if config.model.lora is not None:
+                    raise RuntimeError(
+                        "TTT replay samples cannot be trained with policy LoRA enabled — "
+                        "train the policy full-weights (unset [trainer.model.lora])."
+                    )
+                ttt_replay = TTTReplayManager(model, torch.device("cuda", world.local_rank))
+            if ttt_replay is not None:
+                ttt_replay.activate(ttt_adapter_path)
 
             temperatures = micro_batch["temperatures"].to("cuda")
 

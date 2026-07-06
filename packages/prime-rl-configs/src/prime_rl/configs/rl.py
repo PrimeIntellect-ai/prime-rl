@@ -303,6 +303,28 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_ttt(self):
+        """Test-time-training envs (``env.ttt``) constrain the deployment: the trainer must
+        run the policy full-weights (frozen-adapter replay can't stack on a trainable policy
+        LoRA), and the inference server must serve LoRA adapters for the TTT service to
+        load. Enforced here — at launch, not mid-run."""
+        ttt_envs = [env.resolved_name for env in self.orchestrator.train.env if getattr(env, "ttt", None) is not None]
+        if not ttt_envs:
+            return self
+        if self.trainer.model.lora is not None:
+            raise ValueError(
+                f"TTT env(s) {ttt_envs} require full-weight policy training: frozen TTT adapter "
+                "replay cannot be combined with a trainable policy LoRA — unset [trainer.model.lora]."
+            )
+        if self.inference is not None and not self.inference.enable_lora:
+            raise ValueError(
+                f"TTT env(s) {ttt_envs} need the inference server to serve LoRA adapters — "
+                "set [inference] enable_lora = true (and size max_loras / max_lora_rank for the "
+                "TTT service's adapters)."
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_weight_broadcast(self):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference."""
         if self.weight_broadcast is not None:

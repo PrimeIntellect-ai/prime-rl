@@ -52,6 +52,7 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
+from prime_rl.orchestrator.ttt_gc import TTTCheckpointGC
 from prime_rl.orchestrator.types import (
     EvalBatch,
     Policy,
@@ -168,6 +169,7 @@ class Orchestrator:
         self.gate_closed_at = None
         self.wait_for_policy_time = 0.0
         self.component_tasks = []
+        self.ttt_gc = TTTCheckpointGC()
 
         # Optional attributes — ``setup()`` populates them when the relevant
         # config is present
@@ -532,6 +534,9 @@ class Orchestrator:
         await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
+        # TTT replay artifacts: defer shipped rollouts' adapter checkpoints until the
+        # trainer consumes this step; delete dropped rollouts' checkpoints now.
+        self.ttt_gc.track_batch(step, batch)
         self.progress.step += 1
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
@@ -824,8 +829,10 @@ class Orchestrator:
 
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
-        re-evaluate the dispatch gate (may resume if the trainer caught up)."""
+        re-evaluate the dispatch gate (may resume if the trainer caught up) and
+        release the consumed steps' TTT adapter checkpoints."""
         self.update_dispatch_gate()
+        self.ttt_gc.on_new_version(step)
 
     async def stop(self) -> None:
         """Bounded best-effort teardown of all components. Has a global

@@ -57,6 +57,10 @@ class TensorMicroBatch(TypedDict):
     run_id: str | None
     run_step: int | None
 
+    # TTT replay: the frozen adapter checkpoint this micro batch's forward runs under
+    # (uniform per micro batch — a packer constraint). None = base model.
+    ttt_adapter_path: str | None
+
 
 class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
@@ -137,6 +141,7 @@ class FakeDataLoader:
             "ref_kl_weights": None,
             "run_id": None,
             "run_step": None,
+            "ttt_adapter_path": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -169,6 +174,7 @@ class FakeDataLoader:
             "ref_kl_weights": None,
             "run_id": None,
             "run_step": None,
+            "ttt_adapter_path": None,
         }
 
 
@@ -272,6 +278,7 @@ class DataLoader:
             else None,
             run_id=micro_batch.run_id,
             run_step=micro_batch.run_step,
+            ttt_adapter_path=micro_batch.ttt_adapter_path,
         )
 
 

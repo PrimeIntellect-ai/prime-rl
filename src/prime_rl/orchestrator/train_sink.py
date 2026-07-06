@@ -24,7 +24,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.metrics import TrainRollouts
-from prime_rl.orchestrator.trajectories import trace_to_samples
+from prime_rl.orchestrator.trajectories import qa_recycle_samples, trace_to_samples
 from prime_rl.orchestrator.types import Rollout, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
@@ -184,6 +184,14 @@ class TrainSink:
         # routing) are the algorithm's job (finalize_group); the sink only
         # owns the grouping mechanics.
         await env.algorithm.finalize_group(survivors)
+
+        # TTT Q&A recycling: append the ce-routed Q&A samples AFTER group
+        # finalization, so the advantage broadcast/stamping never sees them —
+        # they carry no rl credit, only a ce stream on the answer tokens.
+        ttt_config = getattr(env.config, "ttt", None)
+        if ttt_config is not None and ttt_config.qa is not None and ttt_config.qa.recycle_to_policy:
+            for r in survivors:
+                r.samples.extend(await asyncio.to_thread(qa_recycle_samples, r, self.tokenizer, env_name))
 
         # The env has a single sampling temperature; fan it out per token
         # (context tokens are masked out, so their temperature is don't-care).

@@ -64,6 +64,71 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
     return RoutedExperts(data=arr.tobytes(), shape=list(arr.shape), dtype=str(arr.dtype))
 
 
+def _ttt_adapter_path(trace: vf.Trace, branch: vf.Branch) -> str | None:
+    """Resolve the branch's TTT adapter checkpoint from the trace's stamps: version 0 (or an
+    un-stamped rollout) sampled from the base model — no adapter; version k maps to the TTT
+    service's checkpoint dir for this rollout (recorded per update in ``trace.info["ttt"]``).
+    ``Branch.ttt_version`` enforces the one-version-per-branch invariant (raises on a mix).
+    A stamped branch whose checkpoint path is missing from the info records is a hard error —
+    replaying it against the base model would silently corrupt the importance ratio."""
+    version = branch.ttt_version
+    if not version:  # None (no TTT) or 0 (base model)
+        return None
+    for update in trace.info.get("ttt", {}).get("updates", []):
+        if update.get("version") == version:
+            path = update.get("ckpt_path")
+            if path:
+                return str(path)
+            break
+    raise ValueError(
+        f"branch {branch.index} of rollout {trace.id} was sampled under TTT adapter "
+        f"version {version}, but no checkpoint path is recorded in trace.info['ttt'] — "
+        "cannot build an exact replay sample."
+    )
+
+
+def qa_recycle_samples(trace: vf.Trace, tokenizer, env_name: str = "") -> list[TrainingSample]:
+    """Build ce-routed training samples from the rollout's recorded TTT Q&A pairs — the
+    "recycle the Q&A compute into a permanent weight update" step: each pair (text, from
+    ``trace.info["ttt"]``) is rendered standalone with the policy tokenizer's chat template
+    and routed entirely to the **ce** loss component (answer tokens; ``rl_weights`` all
+    zero, no advantages), so it rides the same training batch as the RL samples without
+    touching the policy-gradient math. QA samples carry no adapter ref — they train the
+    live policy weights."""
+    samples: list[TrainingSample] = []
+    for update in trace.info.get("ttt", {}).get("updates", []):
+        for pair in update.get("qa_pairs") or []:
+            question = str(pair.get("question", ""))
+            answer = str(pair.get("answer", ""))
+            if not answer.strip():
+                continue
+            conversation = [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": answer},
+            ]
+            full = tokenizer.apply_chat_template(conversation, tokenize=True, add_generation_prompt=False)
+            full = list(full["input_ids"] if not isinstance(full, list) else full)
+            prompt = tokenizer.apply_chat_template(conversation[:1], tokenize=True, add_generation_prompt=True)
+            prompt = list(prompt["input_ids"] if not isinstance(prompt, list) else prompt)
+            prompt_len = len(prompt) if full[: len(prompt)] == prompt else 0
+            answer_len = len(full) - prompt_len
+            if answer_len < 1:
+                continue
+            mask = [False] * prompt_len + [True] * answer_len
+            samples.append(
+                TrainingSample(
+                    token_ids=full,
+                    mask=mask,
+                    logprobs=[0.0] * len(full),  # ce is masked NLL — no importance ratio
+                    temperatures=[],  # filled by TrainSink.process_group
+                    env_name=env_name,
+                    rl_weights=[0.0] * len(full),
+                    ce_weights=[1.0 if m else 0.0 for m in mask],
+                )
+            )
+    return samples
+
+
 def trace_to_samples(
     trace: vf.Trace,
     *,
@@ -104,6 +169,7 @@ def trace_to_samples(
                 mm_kwargs=mm_kwargs,
                 mm_token_type_ids=mm_token_type_ids,
                 routed_experts=_encode_routed_experts(branch.routed_experts, len(token_ids)),
+                ttt_adapter_path=_ttt_adapter_path(trace, branch),
             )
         )
     if not samples:

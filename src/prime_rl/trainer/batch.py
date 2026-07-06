@@ -214,6 +214,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         rl_weights=rl_weights,
         ce_weights=ce_weights,
         ref_kl_weights=ref_kl_weights,
+        ttt_adapter_path=training_example.ttt_adapter_path,
     )
 
 
@@ -237,14 +238,17 @@ class _MicroBatchBin:
 
     def can_add(self, sample: MicroBatch, max_seq_len: int) -> bool:
         # Loss routing is per token (component weight streams), so samples of
-        # different loss types pack together freely — only modality, length and
-        # routed-experts presence constrain packing.
+        # different loss types pack together freely — only modality, length,
+        # routed-experts presence, and the TTT replay adapter constrain packing.
+        # TTT: one frozen adapter is loaded per micro batch (the whole bin runs
+        # its forward under it), so samples from different adapters never mix.
         first_sample = self.first_sample
         return (
             not _is_multimodal_sample(first_sample)
             and not _is_multimodal_sample(sample)
             and self.length + len(sample.input_ids) <= max_seq_len
             and (first_sample.routed_experts is None) == (sample.routed_experts is None)
+            and first_sample.ttt_adapter_path == sample.ttt_adapter_path
         )
 
     def add(self, lora_idx: int, sample: MicroBatch) -> None:
@@ -345,6 +349,8 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         rl_weights=streams["rl_weights"],
         ce_weights=streams["ce_weights"],
         ref_kl_weights=streams["ref_kl_weights"],
+        # Uniform across the bin (a `can_add` constraint), so the first sample's is the bin's.
+        ttt_adapter_path=first_sample.ttt_adapter_path,
     )
 
 
