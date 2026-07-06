@@ -623,6 +623,12 @@ def get_model(
     # For VLM models, optionally freeze the vision encoder
     if is_vlm_training and config.vlm.freeze_vision_encoder:
         freeze_vision_encoder(model, override_attr=config.vlm.vision_encoder_attr)
+    elif config.vlm is None and custom_vlm_cls is not None and model_cls is custom_vlm_cls:
+        # Text-only training of a VLM checkpoint: the vision tower still runs
+        # (dummy input for collective symmetry), so its params get zero — not
+        # None — grads and AdamW weight decay would silently shrink them.
+        logger.info("Training a VLM checkpoint on text-only data; freezing the vision encoder")
+        freeze_vision_encoder(model)
 
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
