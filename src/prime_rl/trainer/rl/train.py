@@ -66,6 +66,7 @@ from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
+from prime_rl.utils.vlm import validate_multi_modal_pack
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
@@ -152,6 +153,9 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
+    if config.model.vlm is not None:
+        validate_multi_modal_pack(model, attn_impl=config.model.attn)
+
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Setting up loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
@@ -204,8 +208,7 @@ def train(config: TrainerConfig):
             substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
         from prime_rl.utils.cp import (
             assert_cp_style_supports_model,
-            setup_hybrid_cp,
-            setup_nemotron_h_cp,
+            setup_model_cp,
             setup_sparse_mla_cp,
         )
 
@@ -215,8 +218,7 @@ def train(config: TrainerConfig):
         # Linear-attn / Mamba layers are only configured under ulysses; with ring
         # we'd have already raised above.
         if config.model.cp_style == "ulysses":
-            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
-            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -349,24 +351,43 @@ def train(config: TrainerConfig):
             # tensor to CUDA and let the model's forward sort them.
             mm_kwargs_raw = micro_batch.get("mm_kwargs")
             mm_kwargs = {k: v.to("cuda") for k, v in mm_kwargs_raw.items()} if mm_kwargs_raw else None
+            if mm_kwargs is not None and config.model.vlm is None:
+                raise ValueError(
+                    "Received multimodal samples but [model.vlm] is not set. "
+                    "Set [model.vlm] to train on multimodal samples."
+                )
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
                 else None
             )
 
+            seq_lens = micro_batch["seq_lens"].to("cuda") if micro_batch.get("seq_lens") is not None else None
+
             labels = shift_tensor_left(input_ids)
 
-            # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
-            if cp_enabled and mm_kwargs is not None:
-                raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
+            seq_lens_are_global = False
+            # MRoPE MM batches keep global input_ids/position_ids: the vision
+            # encoder and image-embed merge need the full sequence, so the model
+            # shards after merge (as in SFT).
+            defer_vlm_cp_to_model = (
+                cp_enabled
+                and mm_kwargs is not None
+                and "image_grid_thw" in mm_kwargs
+                and config.model.cp_style == "ulysses"
+            )
 
             if cp_enabled:
-                input_ids, forward_position_ids = setup_cp_params(
-                    input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
-                )
+                if not defer_vlm_cp_to_model:
+                    input_ids, forward_position_ids = setup_cp_params(
+                        input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                    )
+                else:
+                    forward_position_ids = position_ids
+                seq_lens_are_global = seq_lens is not None
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
-                if routed_experts is not None:
+                if routed_experts is not None and not defer_vlm_cp_to_model:
+                    # The model shards routed_experts itself when CP is deferred.
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
                 forward_position_ids = position_ids
@@ -374,7 +395,8 @@ def train(config: TrainerConfig):
             if config.model.lora:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
                 if cp_enabled:
-                    chunk_size = input_ids.shape[1]
+                    # input_ids stays global when VLM CP defers sharding to the model.
+                    chunk_size = input_ids.shape[1] // cp_size if defer_vlm_cp_to_model else input_ids.shape[1]
                     # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
                     cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
                     adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
@@ -399,6 +421,8 @@ def train(config: TrainerConfig):
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
+                    seq_lens=seq_lens,
+                    seq_lens_are_global=seq_lens_are_global,
                     routed_experts=routed_experts,
                 )
 

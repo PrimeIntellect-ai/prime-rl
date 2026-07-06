@@ -24,6 +24,7 @@ from prime_rl.trainer.models.layers.attn import (
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
+from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
@@ -43,6 +44,7 @@ except ImportError:
 
 try:
     from fla.modules import FusedRMSNormGated
+    from fla.modules.convolution import causal_conv1d as fla_causal_conv1d
     from fla.ops.cp import FLACPContext, build_cp_context
     from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 except ImportError:
@@ -50,6 +52,12 @@ except ImportError:
     FusedRMSNormGated = None  # type: ignore
     FLACPContext = None  # type: ignore
     build_cp_context = None  # type: ignore
+    fla_causal_conv1d = None  # type: ignore
+
+if fla_causal_conv1d is not None:
+    # The CP boundary-state exchange inside fla's conv is not dynamo-traceable;
+    # graph-break deliberately so the rest of the layer still compiles.
+    fla_causal_conv1d = torch.compiler.disable(fla_causal_conv1d)
 
 logger = logging.get_logger(__name__)
 
@@ -233,14 +241,23 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         self._causal_conv1d_fn = causal_conv1d_fn
         self._chunk_gated_delta_rule = chunk_gated_delta_rule or torch_chunk_gated_delta_rule
 
-    def _build_cp_context(self, local_seq_len: int, device: torch.device) -> "FLACPContext | None":
+    def _build_cp_context(
+        self,
+        local_seq_len: int,
+        device: torch.device,
+        cu_seqlens: torch.LongTensor | None = None,
+        cu_seqlens_are_global: bool = False,
+    ) -> "FLACPContext | None":
         """Build fla CP context from the local (sharded) sequence length."""
         cp_group = getattr(self, "cp_group", None)
         if cp_group is None or build_cp_context is None:
             return None
-        # Reconstruct global cu_seqlens: single contiguous sequence across all CP ranks
-        global_seq_len = local_seq_len * self.cp_world_size
-        global_cu_seqlens = torch.tensor([0, global_seq_len], dtype=torch.int32, device=device)
+        # Provenance flag rather than reading cu_seqlens back (per-layer CPU-GPU sync).
+        if cu_seqlens is not None and cu_seqlens_are_global:
+            global_cu_seqlens = cu_seqlens.to(device=device, dtype=torch.int32)
+        else:
+            global_seq_len = local_seq_len * self.cp_world_size
+            global_cu_seqlens = torch.tensor([0, global_seq_len], dtype=torch.int32, device=device)
         return build_cp_context(
             cu_seqlens=global_cu_seqlens,
             group=cp_group,
@@ -251,6 +268,7 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.LongTensor | None = None,
+        cu_seqlens_are_global: bool = False,
     ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -259,9 +277,20 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
+        cp_context = self._build_cp_context(seq_len, hidden_states.device, cu_seqlens, cu_seqlens_are_global)
+
         # Causal conv1d — must reset at sequence boundaries for packed batches,
         # otherwise the kernel-1 left pad leaks state across sequences.
-        if self._causal_conv1d_fn is not None:
+        if cp_context is not None and fla_causal_conv1d is not None:
+            mixed_qkv, _ = fla_causal_conv1d(
+                x=mixed_qkv.transpose(1, 2),
+                weight=self.conv1d.weight.squeeze(1),
+                bias=self.conv1d.bias,
+                activation=self.activation,
+                cp_context=cp_context,
+            )
+            mixed_qkv = mixed_qkv.transpose(1, 2)
+        elif self._causal_conv1d_fn is not None:
             seq_idx = None
             if cu_seqlens is not None:
                 seg_lens = cu_seqlens[1:] - cu_seqlens[:-1]
@@ -303,7 +332,6 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
         # Use fla's native CP when available, otherwise fall back to PyTorch kernel
-        cp_context = self._build_cp_context(seq_len, hidden_states.device)
         if cp_context is not None:
             cu_seqlens = cp_context.cu_seqlens
             core_attn_out, _ = self._chunk_gated_delta_rule(
@@ -497,6 +525,13 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
     ) -> torch.Tensor:
+        if query_states.shape[0] != 1:
+            # Varlen flash attention consumes a single packed row; extra batch rows
+            # would be silently dropped by the [0] indexing below.
+            raise ValueError(
+                f"Qwen3.5 varlen flash attention requires batch size 1, got {query_states.shape[0]}. "
+                "Use packed sequences (micro_batch_size=1) with flash attention."
+            )
         return self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
 
     def attn_projections(
@@ -551,6 +586,14 @@ QWEN35MOE_ATTN_IMPL2CLASS = {
 }
 
 
+def normalize_qwen3_5_attn_implementation(attn_impl: str) -> str:
+    if attn_impl == "eager":
+        return "sdpa"
+    if attn_impl == "kernels-community/vllm-flash-attn3":
+        return "flash_attention_3"
+    return attn_impl
+
+
 # ---------------------------------------------------------------------------
 # Decoder layer
 # ---------------------------------------------------------------------------
@@ -567,9 +610,8 @@ def _get_gated_attention(config: Qwen3_5MoeConfig) -> nn.Module:
         attention_dropout=config.attention_dropout,
     )
 
-    attn_impl = config._attn_implementation
-    if attn_impl == "eager":
-        attn_impl = "sdpa"
+    attn_impl = normalize_qwen3_5_attn_implementation(config._attn_implementation)
+    config._attn_implementation = attn_impl
 
     if attn_impl not in QWEN35MOE_ATTN_IMPL2CLASS:
         supported = list(QWEN35MOE_ATTN_IMPL2CLASS.keys())
@@ -623,13 +665,16 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        cu_seqlens_are_global: bool = False,
     ) -> torch.FloatTensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 
         # Token mixer
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(hidden_states, cu_seqlens=cu_seqlens)
+            hidden_states = self.linear_attn(
+                hidden_states, cu_seqlens=cu_seqlens, cu_seqlens_are_global=cu_seqlens_are_global
+            )
         elif self.layer_type == "full_attention":
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,
@@ -783,6 +828,17 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
         "hidden_states": Qwen3_5MoeDecoderLayer,
     }
 
+    def _check_and_adjust_attn_implementation(
+        self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
+    ) -> str:
+        attn_impl = normalize_qwen3_5_attn_implementation(attn_implementation or "sdpa")
+        if attn_impl not in QWEN35MOE_ATTN_IMPL2CLASS:
+            supported = list(QWEN35MOE_ATTN_IMPL2CLASS.keys())
+            raise ValueError(
+                f"Qwen3.5-MoE attention does not support '{attn_implementation}'. Supported implementations: {supported}."
+            )
+        return attn_impl
+
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return any(
@@ -819,6 +875,7 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
 
 class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
     def __init__(self, config: Qwen3_5MoeConfig):
+        config._attn_implementation = normalize_qwen3_5_attn_implementation(config._attn_implementation)
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -833,6 +890,16 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
 
         self.post_init()
 
+    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
+        self._cp_group = cp_group
+        self._cp_rank = cp_rank
+        self._cp_world_size = cp_world_size
+        for layer in self.layers:
+            if getattr(layer, "layer_type", None) == "linear_attention":
+                layer.linear_attn.cp_group = cp_group
+                layer.linear_attn.cp_rank = cp_rank
+                layer.linear_attn.cp_world_size = cp_world_size
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -840,6 +907,7 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
+        seq_lens_are_global: bool = False,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -852,7 +920,9 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
 
         flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
         if flash_attn_enabled:
-            if position_ids.ndim == 3:
+            if seq_lens_are_global and seq_lens is not None:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens.to(device=inputs_embeds.device))
+            elif position_ids.ndim == 3:
                 if inputs_embeds.shape[0] != 1:
                     raise ValueError("3D Qwen3.5 MRoPE positions require batch size 1 for varlen attention")
                 seq_len = inputs_embeds.shape[1]
@@ -867,17 +937,24 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
             else:
                 cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        elif position_ids.ndim == 3 and seq_lens is not None:
+        elif seq_lens is not None:
+            # seq_lens is only populated for batch size 1 (see cat_collate), so this
+            # covers both 2D text-only packs and 3D MRoPE packs identically.
             seq_lens = seq_lens.to(device=inputs_embeds.device)
             if seq_lens.numel() > 1 and "full_attention" in self.config.layer_types:
-                raise ValueError("Packed Qwen3.5 MRoPE batches with full_attention layers require flash attention")
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens, total_tokens=inputs_embeds.shape[1])
+                raise ValueError("Packed Qwen3.5 batches with full_attention layers require flash attention")
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                seq_lens,
+                total_tokens=None if seq_lens_are_global else inputs_embeds.shape[1],
+            )
         else:
             max_seqlen = None
             cu_seqlens = None
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
+
+        cu_seqlens_are_global = seq_lens_are_global and seq_lens is not None
 
         for layer_idx, decoder_layer in enumerate(self.layers):
             routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
@@ -887,6 +964,7 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
                 routed_experts=routed_experts_layer,
+                cu_seqlens_are_global=cu_seqlens_are_global,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -927,6 +1005,9 @@ class Qwen3_5MoeVLMModel(nn.Module):
     def set_input_embeddings(self, value):
         self.language_model.embed_tokens = value
 
+    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
+        self.language_model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+
     def _dummy_vision_inputs(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         """Smallest valid vision input: a single merged token (grid [1, m, m])."""
         vcfg = self.config.vision_config
@@ -937,7 +1018,7 @@ class Qwen3_5MoeVLMModel(nn.Module):
         grid_thw = torch.tensor([[1, m, m]], dtype=torch.long, device=device)
         return pixel_values, grid_thw
 
-    def forward(
+    def prepare_inputs_embeds_and_position_ids(
         self,
         input_ids: torch.LongTensor | None = None,
         position_ids: torch.LongTensor | None = None,
@@ -945,11 +1026,11 @@ class Qwen3_5MoeVLMModel(nn.Module):
         pixel_values: torch.Tensor | None = None,
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
-        routed_experts: torch.LongTensor | None = None,
         seq_lens: torch.LongTensor | None = None,
-        **kwargs,
-    ) -> MoeModelOutputWithPast:
+    ) -> tuple[torch.FloatTensor, torch.LongTensor]:
         if inputs_embeds is None:
+            if input_ids is None:
+                raise ValueError("input_ids are required when inputs_embeds are not provided")
             inputs_embeds = self.language_model.embed_tokens(input_ids)
 
         if image_grid_thw is not None and input_ids is None:
@@ -963,8 +1044,11 @@ class Qwen3_5MoeVLMModel(nn.Module):
                 f"Qwen3.5 multimodal forward requires 3D MRoPE position_ids; got shape={tuple(position_ids.shape)}"
             )
 
-        # Keep distributed collectives in the same order when a batch mixes text-only
-        # and image samples across ranks. The frozen dummy pass is discarded below.
+        # Always run the vision encoder for collective symmetry: under FSDP + EP
+        # all ranks share one process group, so every rank must issue the vision
+        # encoder's collectives in the same order each step. Text-only microbatches
+        # keep the dummy embeds in the graph with zero contribution so trainable
+        # vision modules also participate in backward collectives.
         has_images = pixel_values is not None
         vision_grid_thw = image_grid_thw
         if has_images:
@@ -994,6 +1078,8 @@ class Qwen3_5MoeVLMModel(nn.Module):
                 )
             image_mask = image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+        else:
+            inputs_embeds = inputs_embeds + image_embeds.sum() * 0.0
 
         if position_ids is None:
             if image_grid_thw is not None:
@@ -1007,11 +1093,48 @@ class Qwen3_5MoeVLMModel(nn.Module):
             else:
                 position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
+        return inputs_embeds, position_ids
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.LongTensor | None = None,
+        mm_token_type_ids: torch.LongTensor | None = None,
+        routed_experts: torch.LongTensor | None = None,
+        seq_lens: torch.LongTensor | None = None,
+        seq_lens_are_global: bool = False,
+        **kwargs,
+    ) -> MoeModelOutputWithPast:
+        inputs_embeds, position_ids = self.prepare_inputs_embeds_and_position_ids(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
+            seq_lens=seq_lens,
+        )
+
+        cp_group = getattr(self.language_model, "_cp_group", None)
+        if image_grid_thw is not None and cp_group is not None:
+            cp_rank = self.language_model._cp_rank
+            cp_world_size = self.language_model._cp_world_size
+            setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style="ulysses", seq_lens=seq_lens)
+            inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            if routed_experts is not None:
+                routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_world_size)
+            seq_lens_are_global = True
+
         return self.language_model(
             inputs_embeds=inputs_embeds,
             position_ids=position_ids,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
+            seq_lens_are_global=seq_lens_are_global,
         )
 
 
@@ -1053,6 +1176,7 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
         self._is_vlm = hasattr(config, "vision_config")
+        self.supports_packed_multimodal_training = self._is_vlm
 
         if self._is_vlm:
             self.model = Qwen3_5MoeVLMModel(config)
@@ -1082,6 +1206,9 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
 
     def get_decoder(self):
         return self.model
+
+    def set_context_parallel_attributes(self, cp_group, cp_rank: int, cp_world_size: int) -> None:
+        self.model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
 
     # ------------------------------------------------------------------
     # State dict detection & conversion (handles both text-only and VLM)
@@ -1144,6 +1271,16 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
     # Forward
     # ------------------------------------------------------------------
 
+    def prime_forward_kwargs(
+        self,
+        *,
+        seq_lens: Tensor | None = None,
+        seq_lens_are_global: bool = False,
+    ) -> dict[str, object]:
+        if seq_lens is None:
+            return {}
+        return {"seq_lens": seq_lens, "seq_lens_are_global": seq_lens_are_global}
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -1160,6 +1297,7 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         image_grid_thw: Optional[torch.LongTensor] = None,
         mm_token_type_ids: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
+        seq_lens_are_global: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5_moe for now"
@@ -1182,6 +1320,7 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
                 mm_token_type_ids=mm_token_type_ids,
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
+                seq_lens_are_global=seq_lens_are_global,
             )
         else:
             outputs = self.model(
@@ -1190,6 +1329,7 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
                 inputs_embeds=inputs_embeds,
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
+                seq_lens_are_global=seq_lens_are_global,
             )
 
         hidden_states = outputs.last_hidden_state

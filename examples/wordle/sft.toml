@@ -5,6 +5,9 @@ max_steps = 20
 [model]
 name = "PrimeIntellect/Qwen3-1.7B"
 
+[renderer]
+name = "qwen3"
+
 [data]
 name = "willcb/V3-wordle"
 seq_len = 1024

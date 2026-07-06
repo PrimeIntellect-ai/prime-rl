@@ -29,8 +29,9 @@ from prime_rl.trainer.model import (
     forward,
     get_load_balance_stats,
     is_tt_moe_model,
-    setup_tokenizer,
     setup_model,
+    setup_processor,
+    setup_tokenizer,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -56,6 +57,19 @@ from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from prime_rl.trainer.models.layers.lm_head import FUSED_CE_IGNORE_INDEX
 
 from torchtitan.distributed.utils import clip_grad_norm_
+
+
+def setup_renderer(tokenizer, config):
+    """Create the SFT renderer, rejecting the DefaultRenderer fallback."""
+    renderer = create_renderer(tokenizer, config)
+    if isinstance(renderer, DefaultRenderer):
+        raise ValueError(
+            f"SFT renderer for {tokenizer.name_or_path!r} resolved to DefaultRenderer. "
+            "SFT is renderer-only and requires a hand-coded renderer for stable "
+            "message-to-token attribution. Use a model with a hand-coded renderer "
+            "(see renderers.base.MODEL_RENDERER_MAP), or set [renderer] name=<hand-coded renderer> explicitly."
+        )
+    return renderer
 
 
 @clean_exit
@@ -123,7 +137,7 @@ def train(config: SFTConfig):
 
             substitute_hf_ulysses_attn(cp_group)
             substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_hybrid_cp, setup_nemotron_h_cp, setup_sparse_mla_cp
+        from prime_rl.utils.cp import setup_model_cp, setup_sparse_mla_cp
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
@@ -151,8 +165,7 @@ def train(config: SFTConfig):
         # Linear-attn / Mamba layers are only configured under ulysses; with ring
         # we'd have already raised above.
         if config.model.cp_style == "ulysses":
-            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
-            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     if config.model.lora is not None:
         multi_run_manager = get_multi_run_manager()
@@ -161,19 +174,25 @@ def train(config: SFTConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
+    processor = setup_processor(config.tokenizer)
+    if config.model.vlm is not None and processor is None:
+        raise ValueError(
+            f"[model.vlm] is set but no multimodal processor could be loaded for {config.tokenizer.name!r}"
+        )
 
+    # Fake data never renders messages, so a model without a hand-coded renderer
+    # can still be used to benchmark step time / memory. Validation data is
+    # always real, so it needs the renderer even when training data is fake.
     renderer = None
-    if config.renderer is not None:
-        renderer = create_renderer(tokenizer, config.renderer)
-        if isinstance(renderer, DefaultRenderer):
-            raise ValueError(
-                f"renderer set for {config.tokenizer.name!r} resolved to DefaultRenderer. "
-                "DefaultRenderer falls back to incremental apply_chat_template and does NOT "
-                "fix position-dependent chat templates — the bug the renderer client is meant to solve. "
-                "Either use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
-                "set [renderer] name=<hand-coded renderer> explicitly, or remove the [renderer] block."
-            )
-        logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
+    if config.data.type != "fake" or config.val is not None:
+        renderer = setup_renderer(tokenizer, config.renderer)
+
+        if processor is not None and hasattr(renderer, "_processor"):
+            renderer._processor = processor
+        logger.info(
+            f"Initialized {type(renderer).__name__} for {config.tokenizer.name} "
+            f"(multimodal_processor={processor is not None})"
+        )
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -193,14 +212,15 @@ def train(config: SFTConfig):
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer)
+    multimodal = config.model.vlm is not None
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer, multimodal=multimodal)
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
     val_raw_dataset = None
     if config.val is not None:
         logger.info(f"Loading validation dataset ({config.val.data.name})")
-        val_raw_dataset = load_sft_dataset(config.val.data)
+        val_raw_dataset = load_sft_dataset(config.val.data, multimodal=multimodal)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -248,16 +268,28 @@ def train(config: SFTConfig):
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
+        mm_kwargs = micro_batch.get("mm_kwargs")
+        mm_type_ids = micro_batch.get("mm_token_type_ids")
+        seq_lens = micro_batch.get("seq_lens")
+
+        seq_lens_are_global = False
 
         if cp_enabled:
-            input_ids, position_ids = setup_cp_params(
-                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+            # CP requires the sequence length to be divisible by cp_size. CatDataset
+            # pads every pack to seq_len; shard_for_cp raises on violations.
+            defer_vlm_cp_to_model = (
+                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
             )
+            if not defer_vlm_cp_to_model:
+                input_ids, position_ids = setup_cp_params(
+                    input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                )
+            seq_lens_are_global = seq_lens is not None
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
         if config.model.lora is not None:
-            set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
+            set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
@@ -265,10 +297,27 @@ def train(config: SFTConfig):
             if config.loss_impl in ("liger_fused", "quack_fused"):
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
-                out = forward(model, input_ids, position_ids, labels=masked_target_ids)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    labels=masked_target_ids,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
+                    seq_lens=seq_lens,
+                    seq_lens_are_global=seq_lens_are_global,
+                )
                 loss_sum = out["loss"] * token_count
             else:
-                out = forward(model, input_ids, position_ids)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
+                    seq_lens=seq_lens,
+                    seq_lens_are_global=seq_lens_are_global,
+                )
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
@@ -321,6 +370,7 @@ def train(config: SFTConfig):
             max_epochs=1,
             raw_dataset=val_raw_dataset,
             renderer=renderer,
+            multimodal=multimodal,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
@@ -477,7 +527,7 @@ def train(config: SFTConfig):
             if weight_ckpt_manager is not None:
                 logger.info(f"Saving weight checkpoint at step {progress.step}")
                 save_ckpt_start_time = time.perf_counter()
-                weight_ckpt_manager.save(progress.step, model, tokenizer)
+                weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
                 save_ckpt_time += time.perf_counter() - save_ckpt_start_time
                 weight_ckpt_manager.maybe_clean()
         else:
@@ -613,7 +663,7 @@ def train(config: SFTConfig):
     # Write final weight checkpoint
     if weight_ckpt_manager is not None:
         logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(progress.step, model, tokenizer)
+        weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
         weight_ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")

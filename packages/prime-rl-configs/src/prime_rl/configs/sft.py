@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
-from renderers import RendererConfig
+from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
     EnvVars,
@@ -30,7 +30,7 @@ class BaseDataConfig(BaseConfig):
     batch_size: int = Field(128, ge=1)
     """Global batch size."""
 
-    seq_len: int = Field(128, ge=1)
+    seq_len: int = Field(256, ge=1)
     """Sequence length."""
 
     pack_function: Literal["cat", "stack"] = "cat"
@@ -50,6 +50,12 @@ class BaseDataConfig(BaseConfig):
 
 class FakeDataConfig(BaseDataConfig):
     type: Literal["fake"] = "fake"
+
+    seq_len: int = Field(128, ge=1)
+    """Sequence length."""
+
+    pack_function: Literal["cat", "stack"] = "cat"
+    """Sample packing strategy."""
 
     length: Literal["fixed", "variable"] = "fixed"
     """Use fixed-length samples or variable-length samples."""
@@ -78,6 +84,9 @@ class SFTDataConfig(BaseDataConfig):
     name: str = "PrimeIntellect/Reverse-Text-SFT"
     """HF dataset name or path."""
 
+    data_files: list[str] | None = None
+    """Optional local dataset files passed to ``load_dataset``."""
+
     subsets: list[str] | None = None
     """Subsets to load from the HF dataset."""
 
@@ -102,6 +111,8 @@ class SFTDataConfig(BaseDataConfig):
 
     @model_validator(mode="after")
     def validate_subsets_and_splits(self):
+        if self.data_files is not None and (self.subsets is not None or self.splits is not None):
+            raise ValueError("data_files cannot be combined with subsets/splits")
         if self.subsets is not None or self.splits is not None:
             if self.subsets is not None and self.splits is not None:
                 if len(self.subsets) != len(self.splits):
@@ -175,13 +186,8 @@ class SFTConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig | None = None
-    """Typed renderer config (``renderers.RendererConfig`` discriminated
-    union). When set, SFT tokenizes samples through the ``renderers``
-    library (single ``render()`` + ``message_indices`` mask) instead of
-    the default ``build_incremental_token_mask`` path. Required for chat
-    templates that render position-dependently (e.g. Qwen3, Qwen3.5).
-    ``None`` (default) uses the legacy tokenization path."""
+    renderer: RendererConfig = AutoRendererConfig()
+    """Renderer config. Defaults to auto-selecting from the tokenizer model name."""
 
     data: DataConfig = SFTDataConfig()
 
@@ -225,8 +231,8 @@ class SFTConfig(BaseConfig):
     dist_timeout_seconds: int = 3600
     """Timeout in seconds for torch distributed ops."""
 
-    loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "torch"
-    """Cross-entropy loss implementation. ``liger_fused`` fuses the lm_head projection with the CE loss to avoid materializing full logits. ``quack_fused`` uses quack-kernels for chunked linear + CE with CuTe DSL CUDA kernels."""
+    loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "liger_fused"
+    """Cross-entropy loss implementation. Defaults to fused Liger loss to avoid materializing full logits."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
@@ -281,6 +287,20 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_qwen3_5_stack_flash(self):
+        name = self.model.name.lower()
+        is_qwen3_5 = "qwen3.5" in name or "qwen3_5" in name
+        is_flash = self.model.attn in ("flash_attention_2", "flash_attention_3", "fa4")
+        if is_qwen3_5 and self.model.impl != "hf" and is_flash:
+            if self.data.pack_function == "stack":
+                raise ValueError("Qwen3.5 custom flash attention does not support pack_function='stack'; use 'cat'")
+            if self.val is not None and self.val.data.pack_function == "stack":
+                raise ValueError(
+                    "Qwen3.5 custom flash attention does not support pack_function='stack' for validation data; use 'cat'"
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_cp_seq_len(self):
         if self.model.cp > 1:
             if self.data.seq_len % self.model.cp != 0:
@@ -296,6 +316,31 @@ class SFTConfig(BaseConfig):
                 raise ValueError("Micro batch size must be 1 when CP is enabled")
             if self.val is not None and self.val.data.micro_batch_size != 1:
                 raise ValueError("Validation micro batch size must be 1 when CP is enabled")
+        return self
+
+    @model_validator(mode="after")
+    def vlm_freeze_incompatible_with_lora(self):
+        if self.model.vlm is not None and not self.model.vlm.freeze_vision_encoder and self.model.lora is not None:
+            raise ValueError(
+                "freeze_vision_encoder=false is incompatible with LoRA. "
+                "LoRA freezes all non-adapter parameters including the vision encoder."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_vlm_constraints(self):
+        if self.model.vlm is None:
+            return self
+        if self.model.cp > 1 and self.model.cp_style != "ulysses":
+            raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
+        if self.data.micro_batch_size != 1:
+            raise ValueError(
+                "VLM SFT requires data.micro_batch_size = 1 (image samples can't be packed across samples)."
+            )
+        if self.val is not None and self.val.data.micro_batch_size != 1:
+            raise ValueError(
+                "VLM SFT requires val.data.micro_batch_size = 1 (image samples can't be packed across samples)."
+            )
         return self
 
     @model_validator(mode="after")
@@ -315,15 +360,6 @@ class SFTConfig(BaseConfig):
                 raise ValueError(
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
                 )
-        return self
-
-    @model_validator(mode="after")
-    def validate_renderer_vs_vlm(self):
-        if self.renderer is not None and self.model.vlm is not None:
-            raise ValueError(
-                "renderer is not supported for VLMs in SFT. The renderer tokenizes "
-                "text-only message dicts client-side and cannot handle image inputs."
-            )
         return self
 
     @model_validator(mode="after")

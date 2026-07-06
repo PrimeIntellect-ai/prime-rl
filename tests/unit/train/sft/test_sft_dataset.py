@@ -1,11 +1,16 @@
 from collections import Counter
 
 import pytest
+import torch
 from datasets import Dataset, interleave_datasets
+from renderers import create_renderer
+from renderers.base import MultiModalData, PlaceholderRange, RenderedTrainingSample
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.sft.data import SFTDataset
+import prime_rl.trainer.sft.data as sft_data
+from prime_rl.trainer.sft.data import CatDataset, SFTDataset, _normalize_oai_record
 from prime_rl.trainer.utils import print_sample
+from prime_rl.utils.chat_template import deserialize_tool_calls
 
 
 @pytest.fixture(scope="module")
@@ -24,7 +29,7 @@ def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
     """Tests that an error is raised if no supported SFT message fields are provided."""
     dataset = build_dummy_dataset("a", 1)
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    sft_dataset = SFTDataset(dataset, tokenizer=tokenizer)
+    sft_dataset = SFTDataset(dataset, tokenizer=tokenizer, renderer=create_renderer(tokenizer))
     with pytest.raises(ValueError):
         next(iter(sft_dataset))
 
@@ -194,7 +199,7 @@ def test_multiturn_loss_mask():
         ]
     )
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    dataset = SFTDataset(dataset, tokenizer=tokenizer, max_examples=1)
+    dataset = SFTDataset(dataset, tokenizer=tokenizer, renderer=create_renderer(tokenizer), max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
@@ -257,7 +262,7 @@ def test_multiturn_loss_mask_with_tools():
 
     dataset = Dataset.from_list([tool_example])
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    dataset = SFTDataset(dataset, tokenizer=tokenizer, max_examples=1)
+    dataset = SFTDataset(dataset, tokenizer=tokenizer, renderer=create_renderer(tokenizer), max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
@@ -282,10 +287,16 @@ def test_messages_rows_are_equivalent_to_empty_prompt_completion():
     ]
 
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
-    messages_dataset = SFTDataset(Dataset.from_list([{"messages": messages}]), tokenizer=tokenizer, max_examples=1)
+    messages_dataset = SFTDataset(
+        Dataset.from_list([{"messages": messages}]),
+        tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
+        max_examples=1,
+    )
     split_dataset = SFTDataset(
         Dataset.from_list([{"prompt": [], "completion": messages}]),
         tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
         max_examples=1,
     )
 
@@ -304,11 +315,169 @@ def test_messages_take_precedence_over_prompt_and_completion():
         "completion": [{"role": "assistant", "content": "Ignored completion"}],
     }
 
-    messages_dataset = SFTDataset(Dataset.from_list([row]), tokenizer=tokenizer, max_examples=1)
+    messages_dataset = SFTDataset(
+        Dataset.from_list([row]),
+        tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
+        max_examples=1,
+    )
     expected_dataset = SFTDataset(
         Dataset.from_list([{"prompt": [], "completion": row["messages"]}]),
         tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
         max_examples=1,
     )
 
     assert next(iter(messages_dataset)) == next(iter(expected_dataset))
+
+
+def test_null_messages_falls_back_to_prompt_and_completion():
+    # Arrow schema union adds `messages: None` to prompt/completion rows when
+    # other rows in the file have a `messages` column
+    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
+    prompt = [{"role": "user", "content": "What is 2+2?"}]
+    completion = [{"role": "assistant", "content": "4"}]
+
+    mixed_row_dataset = SFTDataset(
+        Dataset.from_list([{"messages": None, "prompt": prompt, "completion": completion}]),
+        tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
+        max_examples=1,
+    )
+    expected_dataset = SFTDataset(
+        Dataset.from_list([{"prompt": prompt, "completion": completion}]),
+        tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
+        max_examples=1,
+    )
+
+    assert next(iter(mixed_row_dataset)) == next(iter(expected_dataset))
+
+
+def test_normalize_oai_record_stringifies_tool_calls_in_all_message_columns():
+    tool_calls = [
+        {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": {"location": "SF"}}}
+    ]
+    record = {
+        "prompt": [{"role": "user", "content": "What's the weather?", "tool_calls": None}],
+        "completion": [{"role": "assistant", "content": None, "tool_calls": tool_calls}],
+        "messages": [{"role": "assistant", "content": None, "tool_calls": []}],
+        "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}],
+    }
+
+    normalized = _normalize_oai_record(record)
+
+    # tool_calls become a string column everywhere: "" when null/empty, JSON otherwise
+    assert normalized["prompt"][0]["tool_calls"] == ""
+    assert normalized["messages"][0]["tool_calls"] == ""
+    assert isinstance(normalized["completion"][0]["tool_calls"], str)
+    assert isinstance(normalized["tools"], str)
+
+    # deserialize_tool_calls restores the original payload downstream
+    roundtripped = deserialize_tool_calls(normalized["completion"])
+    assert roundtripped[0]["tool_calls"] == tool_calls
+    assert deserialize_tool_calls(normalized["prompt"])[0]["tool_calls"] == []
+
+
+def test_vlm_truncation_does_not_append_trainable_eos(monkeypatch):
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+    mm = MultiModalData(
+        mm_placeholders={"image": [PlaceholderRange(offset=1, length=1)]},
+        mm_items={"image": [{"pixel_values": torch.ones(1, 1), "image_grid_thw": torch.tensor([[1, 1, 1]])}]},
+    )
+
+    def fake_build_training_sample(*args, **kwargs):
+        return RenderedTrainingSample(
+            token_ids=[10, 11, 12, tokenizer.eos_token_id],
+            loss_mask=[False, False, False, True],
+            multi_modal_data=mm,
+            mm_token_type_ids=[0, 1, 0, 0],
+        )
+
+    monkeypatch.setattr(sft_data, "build_training_sample", fake_build_training_sample)
+    dataset = SFTDataset(Dataset.from_list([]), tokenizer=tokenizer, renderer=object(), seq_len=2, multimodal=True)
+
+    assert dataset._process({"messages": [{"role": "assistant", "content": "ignored"}]}) is None
+
+
+def _sft_sample(
+    input_ids: list[int],
+    *,
+    mm_kwargs: dict[str, torch.Tensor] | None = None,
+    mm_token_type_ids: list[int] | None = None,
+) -> dict:
+    return {
+        "input_ids": input_ids,
+        "position_ids": list(range(len(input_ids))),
+        "loss_mask": [True] * len(input_ids),
+        "target_ids": [x + 1 for x in input_ids],
+        "seq_lens": [len(input_ids)],
+        "mm_kwargs": mm_kwargs,
+        "mm_token_type_ids": mm_token_type_ids,
+    }
+
+
+def test_cat_dataset_packs_multimodal_samples():
+    dataset = CatDataset(
+        [
+            _sft_sample(
+                [1, 2],
+                mm_kwargs={
+                    "pixel_values": torch.ones(2, 3),
+                    "image_grid_thw": torch.tensor([[1, 1, 2]]),
+                },
+                mm_token_type_ids=[0, 1],
+            ),
+            _sft_sample(
+                [3, 4, 5],
+                mm_kwargs={
+                    "pixel_values": 2 * torch.ones(3, 3),
+                    "image_grid_thw": torch.tensor([[1, 1, 3]]),
+                },
+                mm_token_type_ids=[0, 1, 1],
+            ),
+        ],
+        seq_len=5,
+    )
+
+    packed = next(iter(dataset))
+
+    assert packed["input_ids"] == [1, 2, 3, 4, 5]
+    assert packed["seq_lens"] == [2, 3]
+    assert packed["mm_token_type_ids"] == [0, 1, 0, 1, 1]
+    assert packed["mm_kwargs"]["pixel_values"].shape == (5, 3)
+    assert packed["mm_kwargs"]["image_grid_thw"].tolist() == [[1, 1, 2], [1, 1, 3]]
+
+
+def test_cat_dataset_packs_text_and_multimodal_samples_together():
+    dataset = CatDataset(
+        [
+            _sft_sample([1]),
+            _sft_sample(
+                [2, 3],
+                mm_kwargs={
+                    "pixel_values": torch.ones(2, 3),
+                    "image_grid_thw": torch.tensor([[1, 1, 2]]),
+                },
+                mm_token_type_ids=[0, 1],
+            ),
+            _sft_sample([4]),
+            _sft_sample([5, 6]),
+        ],
+        seq_len=5,
+    )
+
+    dataiter = iter(dataset)
+    packed = next(dataiter)
+    text_pack = next(dataiter)
+
+    assert packed["input_ids"] == [1, 2, 3, 4, 0]
+    assert packed["loss_mask"] == [True, True, True, True, False]
+    assert packed["seq_lens"] == [1, 2, 1, 1]
+    assert packed["mm_kwargs"] is not None
+    assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0]
+    assert text_pack["input_ids"] == [5, 6, 0, 0, 0]
+    assert text_pack["loss_mask"] == [True, True, False, False, False]
+    assert text_pack["seq_lens"] == [2, 3]
+    assert text_pack["mm_kwargs"] is None
+    assert text_pack["mm_token_type_ids"] is None
