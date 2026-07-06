@@ -3,12 +3,13 @@
 # (NEEDS_CONTAINER) injected into the sandbox; grading is host-side inside the container. GRPO +
 # linear length penalty. 2 train + 4 infer nodes. Single run label (glm45air-terminal) for all envs.
 #
-# Train = the terminal training sets (terminal-bench-lite + a synthetic forensic-CTF).
-# Eval = terminal-bench-2 (full, avg@1).
+# Train = tmax-v1 (TMax Harbor taskset).
+# Eval = swebench-verified (SWE-Bench Verified) + terminal-bench-2 (full, avg@1), both every 20 steps.
 #
-# NOTE: this is the TERMINAL domain — the SWE tasksets (scaleswe-v1, r2e-gym-v1) are a separate SWE
-# domain and are intentionally NOT trained here. terminal-bench-2-v1 rlm compatibility is inferred
-# from its Harbor base (harness-opaque reward), not config-proven — smoke-test it.
+# NOTE: this is the TERMINAL domain — the SWE tasksets are a separate SWE domain and are
+# intentionally NOT trained here; swebench-verified appears only as an eval signal. rlm compatibility
+# of the Harbor-based eval tasksets is inferred from their Harbor base (harness-opaque reward), not
+# config-proven — smoke-test them.
 #
 # Mirrors configs/debug/v1/glm45air_scaleswe.toml (model/trainer/parallelism/caches): glm4_moe
 # router replay, glm-4.5 renderer, cp=8 ulysses, muon, LM-head chunking, AC + activation/optimizer
@@ -100,17 +101,23 @@ num_turns_weight = 0.1
 
 [orchestrator.prime_monitor]
 
-# --- Train: terminal-lego (per-task Docker image in a prime sandbox, rlm ipython) ---
+# --- Train: tmax (per-task Docker image in a prime sandbox, rlm ipython) ---
 
 [[orchestrator.train.env]]
-name = "terminal-lego"
-taskset = { id = "terminal-lego-v1" } # rlm-terminal taskset, harness-agnostic v1 port (Harbor; NEEDS_CONTAINER)
+name = "tmax"
+taskset = { id = "tmax-v1" } # TMax Harbor taskset (NEEDS_CONTAINER)
 harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
 
-# --- Eval: terminal-bench-2 (full, avg@1) every 20 steps, incl. step 0 ---
+# --- Eval: swebench-verified + terminal-bench-2 (full, avg@1) every 20 steps, incl. step 0 ---
 
 [orchestrator.eval]
 interval = 20
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+taskset = { id = "swebench-verified-v1", use_prime_registry = true }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-terminal"] } }
+timeout = { rollout = 3600 }
 
 [[orchestrator.eval.env]]
 name = "terminal-bench-2"

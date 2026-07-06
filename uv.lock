@@ -423,7 +423,7 @@ dependencies = [
 requires-dist = [
     { name = "httpx" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev422" },
 ]
 
 [[package]]
@@ -929,7 +929,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev422" },
 ]
 
 [[package]]
@@ -1555,7 +1555,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev422" },
 ]
 
 [[package]]
@@ -1838,7 +1838,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev422" },
 ]
 
 [[package]]
@@ -3367,7 +3367,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev422" },
 ]
 
 [[package]]
@@ -3386,7 +3386,7 @@ requires-dist = [
     { name = "datasets" },
     { name = "openai" },
     { name = "python-dateutil" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev422" },
 ]
 
 [[package]]
@@ -3468,7 +3468,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev422" },
 ]
 
 [[package]]
@@ -3686,7 +3686,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev422" },
 ]
 
 [[package]]
@@ -4040,6 +4040,7 @@ envs = [
     { name = "tau2-bench-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "terminal-bench-2-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "terminal-lego-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "tmax-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "unscramble-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "uuid-ctf-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "verbatim-copy-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4185,6 +4186,7 @@ requires-dist = [
     { name = "terminal-bench-2-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/terminal_bench_2_v1" },
     { name = "terminal-lego-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/terminal_lego_v1" },
     { name = "tilelang", specifier = ">=0.1.8" },
+    { name = "tmax-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/tmax_v1" },
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchaudio", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchdata", specifier = ">=0.11.0" },
@@ -4794,7 +4796,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev422" },
 ]
 
 [[package]]
@@ -5018,7 +5020,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev422" },
 ]
 
 [[package]]
@@ -5183,7 +5185,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev422" },
 ]
 
 [[package]]
@@ -5200,7 +5202,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev422" },
 ]
 
 [[package]]
@@ -5740,6 +5742,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f7/8a/1cbeee79d62abaa02441c2d00621554e41aa62dbf3b94a4feb3867184b01/tilelang-0.1.9-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4bbccfe9035aed775ffafb6dc25a5994504b24e2c5d95d0f39643edfafa7bf12", size = 45419374, upload-time = "2026-04-22T09:15:56.014Z" },
     { url = "https://files.pythonhosted.org/packages/c6/a7/f4bfb86f87e107703146e703204cec2c0eae2492b633e0052b0ace3febb6/tilelang-0.1.9-cp38-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:77ab0ee2f40f66ea015b6b21426d482751e28cbc635ef9d1198cbd6502454a7c", size = 42110365, upload-time = "2026-04-22T09:17:18.292Z" },
 ]
+
+[[package]]
+name = "tmax-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/tmax_v1" }
+dependencies = [
+    { name = "verifiers", extra = ["harbor"], marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.1.15.dev410" }]
 
 [[package]]
 name = "tokenizers"
