@@ -395,7 +395,7 @@ def test_vlm_truncation_does_not_append_trainable_eos(monkeypatch):
         )
 
     monkeypatch.setattr(sft_data, "build_training_sample", fake_build_training_sample)
-    dataset = SFTDataset(Dataset.from_list([]), tokenizer=tokenizer, renderer=object(), seq_len=2)
+    dataset = SFTDataset(Dataset.from_list([]), tokenizer=tokenizer, renderer=object(), seq_len=2, multimodal=True)
 
     assert dataset._process({"messages": [{"role": "assistant", "content": "ignored"}]}) is None
 
