@@ -19,10 +19,10 @@ class FakeTrainer:
         self.released: list[str] = []
         self.fail_with: Exception | None = None
 
-    def update(self, rollout_id, adapter_name, token_ids, loss_mask, seq_no):
+    def update(self, rollout_id, adapter_name, token_ids, loss_mask, seq_no, qa_pairs=None, train_rollout=True):
         if self.fail_with is not None:
             raise self.fail_with
-        self.updates.append((rollout_id, adapter_name, token_ids, loss_mask, seq_no))
+        self.updates.append((rollout_id, adapter_name, token_ids, loss_mask, seq_no, qa_pairs, train_rollout))
         self.adapters[rollout_id] = type("S", (), {"version": seq_no})()
         return {
             "version": seq_no,
@@ -130,3 +130,19 @@ async def test_health(service):
         response = await client.get("/health")
         assert response.status_code == 200
         assert response.json() == {"status": "ok", "adapters": 0}
+
+
+async def test_update_forwards_qa_fields(service):
+    async with service() as (client, trainer, engine):
+        response = await client.post(
+            "/update",
+            json={
+                **UPDATE,
+                "qa_pairs": [{"question": "q1", "answer": "a1"}],
+                "train_rollout": False,
+            },
+        )
+        assert response.status_code == 200
+        (*_, qa_pairs, train_rollout) = trainer.updates[0]
+        assert qa_pairs == [{"question": "q1", "answer": "a1"}]
+        assert train_rollout is False

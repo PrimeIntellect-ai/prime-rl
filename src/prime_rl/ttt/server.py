@@ -37,6 +37,11 @@ class UpdateRequest(BaseModel):
     token_ids: list[int]
     loss_mask: list[bool]
     seq_no: int
+    qa_pairs: list[dict] | None = None
+    """Cartridges-style Q&A pairs (`{question, answer}` text), rendered and trained by the
+    service with the base model's chat template, loss on the answers."""
+    train_rollout: bool = True
+    """Whether the raw branch sequence itself joins the training set (False = Q&A only)."""
 
 
 class UpdateResponse(BaseModel):
@@ -113,6 +118,8 @@ def build_app(config: TTTServiceConfig, trainer: "TTTTrainer | None" = None) -> 
                         request.token_ids,
                         request.loss_mask,
                         request.seq_no,
+                        request.qa_pairs,
+                        request.train_rollout,
                     )
                 except ValueError as e:
                     raise HTTPException(status_code=409, detail=str(e)) from e

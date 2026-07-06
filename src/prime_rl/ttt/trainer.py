@@ -11,7 +11,11 @@ One adapter set is *resident* in the PEFT wrapper at a time; per-rollout states 
 in/out around each update (cheap: rank-r matrices). Concurrency is therefore serialized in
 the trainer itself; the server layer bounds queuing.
 
-No tokenizer anywhere: the service consumes the exact token ids the inference engine saw.
+The raw-branch path needs no tokenizer: it consumes the exact token ids the inference
+engine saw. Q&A training is the one exception — the pairs arrive as text (they are trained
+*standalone*, without the branch context they were generated under, so the engine's
+context-tokenization is meaningless for them) and are rendered with the base model's own
+chat template, loss on the answer tokens. The tokenizer is lazy-loaded on first Q&A use.
 """
 
 from __future__ import annotations
@@ -76,6 +80,7 @@ class TTTTrainer:
             if param.requires_grad
         }
         self.adapters: dict[str, AdapterState] = {}
+        self._tokenizer = None  # lazy — only Q&A training needs it
         self.logger.info(
             f"TTT trainer ready (rank={config.lora.rank}, alpha={config.lora.alpha}, "
             f"targets={config.lora.target_modules}, {len(self._template)} adapter tensors)"
@@ -126,6 +131,40 @@ class TTTTrainer:
 
     # -- the update -------------------------------------------------------------------------
 
+    def _tokenize_qa(self, qa_pairs: list[dict]) -> list[tuple[list[int], list[bool]]]:
+        """Render each Q&A pair standalone with the base model's chat template (no branch
+        context — that's the point: the knowledge must come from the weights), loss on the
+        answer tokens only. Returns `(token_ids, loss_mask)` per pair; pairs whose answer
+        renders to nothing are skipped."""
+        if self._tokenizer is None:
+            from transformers import AutoTokenizer
+
+            self._tokenizer = AutoTokenizer.from_pretrained(self.config.model.name)
+
+        def render(conversation: list[dict], generation_prompt: bool) -> list[int]:
+            out = self._tokenizer.apply_chat_template(
+                conversation, tokenize=True, add_generation_prompt=generation_prompt
+            )
+            # transformers returns a list of ids or (newer) a BatchEncoding.
+            return list(out["input_ids"] if not isinstance(out, list) else out)
+
+        sequences: list[tuple[list[int], list[bool]]] = []
+        for pair in qa_pairs:
+            if not str(pair.get("answer", "")).strip():
+                continue  # a blank answer renders only template scaffold — nothing to learn
+            conversation = [
+                {"role": "user", "content": pair["question"]},
+                {"role": "assistant", "content": pair["answer"]},
+            ]
+            full = render(conversation, generation_prompt=False)
+            prompt = render(conversation[:1], generation_prompt=True)
+            prompt_len = len(prompt) if full[: len(prompt)] == prompt else 0
+            if len(full) - prompt_len < 1:
+                continue
+            mask = [False] * prompt_len + [True] * (len(full) - prompt_len)
+            sequences.append((full, mask))
+        return sequences
+
     def update(
         self,
         rollout_id: str,
@@ -133,9 +172,14 @@ class TTTTrainer:
         token_ids: list[int],
         loss_mask: list[bool],
         seq_no: int,
+        qa_pairs: list[dict] | None = None,
+        train_rollout: bool = True,
     ) -> dict:
-        """One TTT update: `steps_per_update` gradient steps on the branch's sequence, then
-        a versioned PEFT checkpoint. Returns `{version, loss, ckpt_path, num_loss_tokens}`.
+        """One TTT update: `steps_per_update` gradient steps, then a versioned PEFT
+        checkpoint. The training set is the branch's raw sequence (`train_rollout`), the
+        rendered Q&A pairs (`qa_pairs`), or both; each gradient step accumulates over every
+        sequence, normalized by the step's total loss-token count. Returns
+        `{version, loss, ckpt_path, num_loss_tokens}`.
 
         `seq_no` must be exactly `state.version + 1` — the rollout side blocks per update,
         so a mismatch means a lost/duplicated update and the state can't be trusted."""
@@ -147,37 +191,53 @@ class TTTTrainer:
         if seq_no != state.version + 1:
             raise ValueError(f"out-of-order update for {rollout_id}: expected seq_no {state.version + 1}, got {seq_no}")
 
+        sequences: list[tuple[list[int], list[bool]]] = []
+        if train_rollout:
+            sequences.append((token_ids, loss_mask))
+        if qa_pairs:
+            sequences.extend(self._tokenize_qa(qa_pairs))
+        sequences = [(ids, mask) for ids, mask in sequences if len(ids) >= 2 and any(mask[1:])]
+        if not sequences:
+            raise ValueError("no trainable sequences (empty loss masks / QA rendered empty)")
+
         start = time.perf_counter()
         self._swap_in(state)
         optim = self._optimizer(state)
 
-        input_ids = torch.tensor([token_ids], dtype=torch.long, device=self.device)
-        # Next-token loss: position i predicts token i+1, so shift the mask left — the
-        # loss lands on the *predicting* positions of masked targets.
-        labels = torch.tensor([token_ids[1:]], dtype=torch.long, device=self.device)
-        target_mask = torch.tensor([loss_mask[1:]], dtype=torch.bool, device=self.device)
-        num_loss_tokens = int(target_mask.sum())
-        if num_loss_tokens == 0:
-            raise ValueError("loss_mask selects no target tokens")
+        # Next-token loss per sequence: position i predicts token i+1, so shift the mask
+        # left — the loss lands on the *predicting* positions of masked targets.
+        tensors = []
+        for ids, mask in sequences:
+            tensors.append(
+                (
+                    torch.tensor([ids], dtype=torch.long, device=self.device),
+                    torch.tensor([ids[1:]], dtype=torch.long, device=self.device),
+                    torch.tensor([mask[1:]], dtype=torch.bool, device=self.device),
+                )
+            )
+        num_loss_tokens = int(sum(m.sum() for _, _, m in tensors))
 
         loss_value = 0.0
         for _ in range(self.config.steps_per_update):
             optim.zero_grad(set_to_none=True)
-            logits = self.model(input_ids=input_ids).logits[:, :-1]
-            losses = nn.functional.cross_entropy(
-                logits.reshape(-1, logits.shape[-1]).float(),
-                labels.reshape(-1),
-                reduction="none",
-            )
-            loss = (losses * target_mask.reshape(-1)).sum() / num_loss_tokens
-            loss.backward()
+            step_loss = 0.0
+            for input_ids, labels, target_mask in tensors:
+                logits = self.model(input_ids=input_ids).logits[:, :-1]
+                losses = nn.functional.cross_entropy(
+                    logits.reshape(-1, logits.shape[-1]).float(),
+                    labels.reshape(-1),
+                    reduction="none",
+                )
+                loss = (losses * target_mask.reshape(-1)).sum() / num_loss_tokens
+                loss.backward()
+                step_loss += float(loss.detach())
             if self.config.optim.max_norm is not None:
                 torch.nn.utils.clip_grad_norm_(
                     (p for p in self.model.parameters() if p.requires_grad),
                     self.config.optim.max_norm,
                 )
             optim.step()
-            loss_value = float(loss.detach())
+            loss_value = step_loss
 
         state.optim_state = optim.state_dict()
         self._swap_out(state)
@@ -186,7 +246,7 @@ class TTTTrainer:
         seconds = time.perf_counter() - start
         self.logger.info(
             f"ttt update {rollout_id} v{seq_no}: loss={loss_value:.4f} "
-            f"({num_loss_tokens}/{len(token_ids)} loss tokens, {seconds:.2f}s)"
+            f"({num_loss_tokens} loss tokens over {len(sequences)} sequence(s), {seconds:.2f}s)"
         )
         return {
             "version": state.version,

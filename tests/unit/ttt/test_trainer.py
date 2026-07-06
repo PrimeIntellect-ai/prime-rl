@@ -167,5 +167,94 @@ def test_alignment_validation(tmp_path, tiny_model_name):
         trainer.update("r1", "a", [1, 2, 3], [True, True], seq_no=1)
     with pytest.raises(ValueError, match="at least 2"):
         trainer.update("r1", "a", [1], [True], seq_no=1)
-    with pytest.raises(ValueError, match="no target"):
+    with pytest.raises(ValueError, match="no trainable sequences"):
         trainer.update("r1", "a", [1, 2, 3], [True, False, False], seq_no=1)
+
+
+# -- Q&A training -----------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def tiny_model_with_tokenizer(tiny_model_name) -> str:
+    """The tiny model dir + a from-scratch tokenizer with a chat template (no network)."""
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+    from transformers import PreTrainedTokenizerFast
+
+    words = "what is x ? empty q a longer answer here 42".split()
+    specials = ["<unk>", "<|user|>", "<|assistant|>", "</s>"]
+    vocab = {tok: i for i, tok in enumerate([*specials, *words])}
+    backend = Tokenizer(WordLevel(vocab, unk_token="<unk>"))
+    backend.pre_tokenizer = Whitespace()
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object=backend, unk_token="<unk>")
+    tokenizer.chat_template = (
+        "{% for m in messages %}<|{{ m['role'] }}|> {{ m['content'] }} </s> {% endfor %}"
+        "{% if add_generation_prompt %}<|assistant|>{% endif %}"
+    )
+    tokenizer.save_pretrained(tiny_model_name)
+    return tiny_model_name
+
+
+def test_qa_pairs_render_with_answer_loss(tmp_path, tiny_model_with_tokenizer):
+    trainer = make_trainer(tiny_model_with_tokenizer, tmp_path)
+    sequences = trainer._tokenize_qa(
+        [
+            {"question": "what is x?", "answer": "x is 42"},
+            {"question": "empty?", "answer": ""},
+        ]
+    )
+    # The empty answer renders no loss tokens under this template and is kept only if it
+    # produced trainable positions; the real pair must be there.
+    assert len(sequences) >= 1
+    ids, mask = sequences[0]
+    assert len(ids) == len(mask)
+    assert any(mask) and not all(mask)  # answer tokens in loss, prompt tokens out
+    # The masked positions decode back to (a suffix containing) the answer.
+    text = trainer._tokenizer.decode([t for t, m in zip(ids, mask) if m])
+    assert "42" in text
+
+
+def test_update_with_qa_only(tmp_path, tiny_model_with_tokenizer):
+    """`train_rollout=False` trains purely on the rendered Q&A pairs — the branch tokens
+    ride along only for validation."""
+    trainer = make_trainer(tiny_model_with_tokenizer, tmp_path)
+    tokens = list(range(2, 20))
+    result = trainer.update(
+        "r1",
+        "ttt-r1",
+        tokens,
+        [True] * len(tokens),
+        seq_no=1,
+        qa_pairs=[{"question": "what is x?", "answer": "x is 42"}],
+        train_rollout=False,
+    )
+    assert result["version"] == 1
+    # Loss tokens come from the QA rendering, not the branch (whose mask was all-True).
+    assert 0 < result["num_loss_tokens"] < len(tokens)
+    state = trainer.adapters["r1"]
+    assert any("lora_B" in n and t.abs().sum() > 0 for n, t in state.tensors.items())
+
+
+def test_update_with_qa_and_rollout(tmp_path, tiny_model_with_tokenizer):
+    trainer = make_trainer(tiny_model_with_tokenizer, tmp_path)
+    tokens = list(range(2, 20))
+    qa = [{"question": "q", "answer": "a longer answer here"}]
+    result = trainer.update("r1", "ttt-r1", tokens, [True] * len(tokens), seq_no=1, qa_pairs=qa, train_rollout=True)
+    # Both the branch's shifted targets and the QA answer tokens count.
+    assert result["num_loss_tokens"] > len(tokens) - 1
+
+
+def test_qa_only_with_unrenderable_pairs_rejected(tmp_path, tiny_model_with_tokenizer):
+    trainer = make_trainer(tiny_model_with_tokenizer, tmp_path)
+    tokens = list(range(2, 10))
+    with pytest.raises(ValueError, match="no trainable sequences"):
+        trainer.update(
+            "r1",
+            "ttt-r1",
+            tokens,
+            [True] * len(tokens),
+            seq_no=1,
+            qa_pairs=[{"question": "q", "answer": ""}],
+            train_rollout=False,
+        )
