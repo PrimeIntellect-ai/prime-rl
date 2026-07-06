@@ -44,11 +44,13 @@ dependencies = [
     "orjson>=3.10",
     "pandas>=2.0",
     "msgspec>=0.18",
+    "peft>=0.17.0",
 ]
 
 [project.scripts]
 rl = "prime_rl.entrypoints.rl:main"
 sft = "prime_rl.entrypoints.sft:main"
+ttt = "prime_rl.entrypoints.ttt:main"
 inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.entrypoints.trainer:main"
 orchestrator = "prime_rl.entrypoints.orchestrator:main"
