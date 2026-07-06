@@ -5,7 +5,7 @@ class HYV3Config(PretrainedConfig):
     r"""
     Configuration class for Tencent Hy3 (HYV3) models. Instantiating a configuration with the
     defaults will yield a configuration close to that of
-    [tencent/Hy3-preview](https://huggingface.co/tencent/Hy3-preview).
+    [tencent/Hy3](https://huggingface.co/tencent/Hy3).
 
     Field names follow the hub `config.json` (glm4_moe-style: `first_k_dense_replace`, `qk_norm`,
     `route_norm`) rather than the transformers-native `HYV3Config`, so the hub checkpoint config

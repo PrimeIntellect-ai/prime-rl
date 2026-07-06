@@ -141,7 +141,7 @@ ARCH_PRESETS = {
         ),
         "hf_model_class": HFHYV3ForCausalLM,
         "prime_model_class": PrimeRLHYV3ForCausalLM,
-        "tokenizer_source": "tencent/Hy3-preview",
+        "tokenizer_source": "tencent/Hy3",
     },
     "minimax_m2": {
         "config_class": MiniMaxM2Config,

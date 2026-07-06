@@ -11,7 +11,7 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
     """Convert a single layer from HF format to TT format in-place.
 
     Handles both source formats:
-    - hub checkpoint (tencent/Hy3-preview): per-expert `mlp.experts.{j}.{gate,up,down}_proj.weight`,
+    - hub checkpoint (tencent/Hy3): per-expert `mlp.experts.{j}.{gate,up,down}_proj.weight`,
       `mlp.router.gate.weight`, `mlp.expert_bias`, `mlp.shared_mlp.*`
     - transformers in-memory format: fused `mlp.experts.{gate_up,down}_proj`, `mlp.gate.weight`,
       `mlp.e_score_correction_bias`, `mlp.shared_experts.*`
