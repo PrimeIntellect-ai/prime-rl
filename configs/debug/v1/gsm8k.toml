@@ -15,7 +15,6 @@ name = "gsm8k-v1"
 name = "Qwen/Qwen3-0.6B"
 
 [orchestrator]
-training_mode = "rl"
 batch_size = 512
 group_size = 16
 
@@ -24,7 +23,7 @@ max_completion_tokens = 2048
 
 [[orchestrator.train.env]]
 taskset = { id = "gsm8k-v1", split = "train" }
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
 interval = 20
@@ -35,7 +34,7 @@ max_completion_tokens = 2048
 
 [[orchestrator.eval.env]]
 taskset = { id = "gsm8k-v1", split = "test" }
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [trainer] # Default trainer config
 

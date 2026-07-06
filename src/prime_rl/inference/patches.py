@@ -3,20 +3,19 @@ import torch
 from prime_rl.inference.vllm.padded_input_scrub import monkey_patch_vllm_padded_input_scrub
 
 
-def transformers_v5_compat():
-    """vLLM general plugin: patch transformers v5 config attrs that vLLM still expects.
+def apply_shared_vllm_patches():
+    """vLLM general plugin: prime-rl patches that must run in every vLLM process.
 
     Registered as a ``vllm.general_plugins`` entry-point so it runs automatically
-    in every vLLM process, including spawned workers.
+    in every vLLM process, including spawned workers. Note vLLM swallows plugin
+    load failures (``load_plugins_by_group`` logs and continues), so a broken
+    entry-point target silently skips ALL of these patches.
     """
-    from transformers import Qwen3VLMoeTextConfig
-
-    if not hasattr(Qwen3VLMoeTextConfig, "tie_word_embeddings"):
-        Qwen3VLMoeTextConfig.tie_word_embeddings = False
-
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
+    monkey_patch_qwen3_coder_param_newline_trim()
+    monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
@@ -98,6 +97,91 @@ def monkey_patch_nano_v3_reasoning_parser():
             return reasoning_content, final_content
 
     ReasoningParserManager.register_module("nano_v3", module=NanoV3ReasoningParser)
+
+
+def monkey_patch_qwen3_coder_param_newline_trim():
+    """Restore vLLM 0.23's single-newline trim for qwen3_coder tool parameters.
+
+    vLLM 0.24's parser engine applies a full ``.strip()`` to every parameter
+    value in ``_qwen3_arg_converter``; 0.23's ``Qwen3CoderToolParser`` trimmed
+    exactly one leading and one trailing newline. A full strip corrupts
+    whitespace-significant string parameters (str_replace-style
+    ``old_str``/``new_str``, file content with an indented first line, values
+    with intentional trailing newlines), silently changing tool execution and
+    rewards for agentic runs. Copy of ``_qwen3_arg_converter`` with only the
+    trim changed. Also covers ``nemotron_v3``, which reuses ``qwen3_config``.
+    """
+    import json
+
+    from vllm.parser import qwen3
+
+    def _trim_one_newline(value: str) -> str:
+        if value.startswith("\n"):
+            value = value[1:]
+        if value.endswith("\n"):
+            value = value[:-1]
+        return value
+
+    def _patched_arg_converter(raw_args: str, partial: bool) -> str:
+        params: dict[str, object] = {}
+
+        for match in qwen3._PARAM_RE.finditer(raw_args):
+            name = match.group(1)
+            value = match.group(2)
+            ## START PATCHED CODE (upstream: value.strip())
+            params[name] = _trim_one_newline(value)
+            ## END PATCHED CODE
+
+        if partial:
+            remaining = qwen3._PARAM_RE.sub("", raw_args)
+            m = qwen3._PARTIAL_PARAM_RE.search(remaining)
+            if m:
+                name = m.group(1)
+                value = m.group(2)
+                if name:
+                    ## START PATCHED CODE (upstream: value.strip())
+                    params[name] = _trim_one_newline(value)
+                    ## END PATCHED CODE
+
+        return json.dumps(params, ensure_ascii=False)
+
+    qwen3._qwen3_arg_converter = _patched_arg_converter
+    # qwen3_config captures the converter when first built; drop any cached configs.
+    qwen3.qwen3_config.cache_clear()
+
+
+def monkey_patch_minimax_m2_think_end_passthrough():
+    """Keep the literal ``</think>`` in MiniMax-M2 content on tool-calling turns.
+
+    prime-rl serves MiniMax-M2 with ``reasoning=minimax_m2_append_think``, which
+    returns content as ``<think>`` + the full completion so think tags round-trip
+    through multi-turn re-serialization. vLLM 0.24's minimax_m2 parser engine
+    added a ``(CONTENT, THINK_END) -> no-events`` transition that silently
+    swallows the ``</think>`` (0.23's regex tool parser passed it through
+    untouched), and it also ``.strip()``s content whenever tool calls are
+    present. Drop the transition — the engine emits unmatched terminals as plain
+    state content — and disable the content strip.
+    """
+    import dataclasses
+    import functools
+
+    from vllm.parser import minimax_m2
+    from vllm.parser.engine.parser_engine_config import ParserState
+
+    original_config = minimax_m2.minimax_m2_config
+
+    @functools.cache
+    def _patched_config():
+        config = original_config()
+        transitions = dict(config.transitions)
+        del transitions[(ParserState.CONTENT, "THINK_END")]
+        return dataclasses.replace(
+            config,
+            transitions=transitions,
+            strip_content_whitespace_with_tools=False,
+        )
+
+    minimax_m2.minimax_m2_config = _patched_config
 
 
 def monkey_patch_return_routed_experts_with_nixl_connector():
@@ -185,7 +269,7 @@ def monkey_patch_strip_routed_experts_from_chat():
 def _patch_qwen35_moe_lora_format():
     """Force Qwen3.5-MoE onto vLLM's 2D per-expert LoRA format.
 
-    vLLM 0.23.0 defaults ``Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = True``,
+    vLLM 0.24.0 still defaults ``Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = True``,
     which makes the LoRA loader expect 3D stacked-expert adapters
     (``base_layer.lora_{A,B}.weight`` / ``lora_{A,B}.weight``, experts folded into the
     rank dim; see ``_stack_moe_lora_weights``). Our trainer instead emits the 2D
@@ -206,16 +290,23 @@ def _patch_qwen35_moe_lora_format():
 
 
 def _patch_lora_key_prefix():
-    """Patch vLLM's LoRA loading to handle keys without base_model.model. prefix.
+    """Accept both bare-suffix and fully-qualified expert module names in LoRA adapters.
 
-    This is a copy of the upstream patch: https://github.com/vllm-project/vllm/pull/38522
-    We can remove this patch once that PR makes it into a release.
+    Copy of vLLM 0.24.0's ``LoRAModel.from_local_checkpoint`` with one change: the
+    ``.experts`` branch of ``check_unexpected_modules`` accepts either the bare suffix
+    (``down_proj``) or the qualified per-expert name (``experts.N.down_proj``), where
+    upstream only accepts the qualified form. Our trainer's 2D per-expert adapters
+    (Qwen3.5-MoE) carry names whose qualified form is not in the expected set while
+    the bare suffix is; Qwen3-30B-A3B adapters go the other way. Upstream fix
+    vllm-project/vllm#38522 was closed unmerged, so this stays.
     """
     from vllm.lora.lora_model import (
         LoRAModel,
+        MoEEPLoadSpec,
         PEFTHelper,
         TensorizerConfig,
         WeightsMapper,
+        _is_remote_expert_key,
         get_lora_id,
         is_base_embedding_weights,
         os,
@@ -236,6 +327,7 @@ def _patch_lora_key_prefix():
         weights_mapper: WeightsMapper | None = None,
         tensorizer_config_dict: dict | None = None,
         skip_prefixes: list[str] | None = None,
+        moe_ep_spec: MoEEPLoadSpec | None = None,
     ) -> "LoRAModel":
         """Create a LoRAModel from a local checkpoint.
 
@@ -251,6 +343,11 @@ def _patch_lora_key_prefix():
             skip_prefixes: List of module name prefixes to skip during loading.
                 Models can define this to skip modules not used in inference
                 (e.g., MTP layers). Format: ["mtp."]
+            moe_ep_spec: When 2D FusedMoE LoRA modules are present with
+                expert parallelism enabled, the (ep_rank, local, global)
+                slicing metadata shared across all MoE layers. Non-local
+                expert weights are skipped at read time instead of being
+                loaded and discarded later.
 
         Returns:
             Loaded LoRA Model.
@@ -275,22 +372,13 @@ def _patch_lora_key_prefix():
                     continue
                 module_name, _ = parse_fine_tuned_lora_name(lora_module, weights_mapper)
                 # Case for expert lora weights.
-                # For standard MoE models the name ends in "...experts",
-                # so expert_idx+1 yields "experts" which is in
-                # expected_lora_modules.
-                # For Qwen 3.5 MoE (and similar models) the expert index
-                # is embedded: "...experts.N.down_proj".  Taking everything
-                # after ".experts" gives "experts.N.down_proj" which is
-                # never in the expected set even though "down_proj" is.
-                # Qwen3-30B-A3B goes the other way: the expected set
-                # contains the fully-qualified per-expert name
-                # ("experts.N.down_proj") but not the bare suffix.
-                # Accept either form.
+                ## START PATCHED CODE (upstream only accepts the qualified form)
                 if ".experts" in module_name:
                     expert_suffix = module_name.split(".")[-1]
                     experts_qualified = "experts" + module_name.split(".experts", 1)[-1]
                     if expert_suffix not in expected_lora_modules and experts_qualified not in expected_lora_modules:
                         unexpected_modules.append(module_name)
+                ## END PATCHED CODE
 
                 elif module_name.rsplit(".", 1)[-1] not in expected_lora_modules:
                     unexpected_modules.append(module_name)
@@ -307,11 +395,15 @@ def _patch_lora_key_prefix():
             from tensorizer import TensorDeserializer
 
             tensorizer_config = TensorizerConfig(**tensorizer_config_dict)
-            lora_tensor_path = os.path.join(tensorizer_config.tensorizer_dir, "adapter_model.tensors")
+            tensorizer_dir = tensorizer_config.tensorizer_dir
+            if tensorizer_dir is None:
+                raise ValueError("tensorizer_dir must be set in tensorizer config.")
+            lora_tensor_path = os.path.join(tensorizer_dir, "adapter_model.tensors")
             tensorizer_args = tensorizer_config._construct_tensorizer_args()
             tensors = TensorDeserializer(
                 lora_tensor_path,
                 dtype=tensorizer_config.dtype,
+                device=device,
                 **tensorizer_args.deserialization_kwargs,
             )
             check_unexpected_modules(tensors)
@@ -328,11 +420,18 @@ def _patch_lora_key_prefix():
                 # Load tensors if there are only expected modules.
                 check_unexpected_modules(f)
                 for module in f.keys():  # noqa
+                    if moe_ep_spec is not None and _is_remote_expert_key(module, moe_ep_spec):
+                        continue
                     tensors[module] = f.get_tensor(module)
         elif os.path.isfile(lora_bin_file_path) or os.path.isfile(lora_pt_file_path):
             lora_file_path = lora_bin_file_path if os.path.isfile(lora_bin_file_path) else lora_pt_file_path
             tensors = torch.load(lora_file_path, map_location=device, weights_only=True)
             check_unexpected_modules(tensors)
+            if moe_ep_spec is not None:
+                # `.bin`/`.pt` adapters can't be lazy-loaded, but pruning
+                # the dict here still frees the non-local expert tensors
+                # before the dtype cast / pin_memory work that follows.
+                tensors = {k: v for k, v in tensors.items() if not _is_remote_expert_key(k, moe_ep_spec)}
         else:
             raise ValueError(f"{lora_dir} doesn't contain tensors")
 
@@ -348,177 +447,6 @@ def _patch_lora_key_prefix():
         )
 
     LoRAModel.from_local_checkpoint = classmethod(_patched_from_local_checkpoint)
-
-
-# Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
-# TODO: may be removable if we pass load_inplace=True (supported since vLLM 0.18, PR #31326)
-def monkey_patch_load_lora_adapter():
-    from http import HTTPStatus
-
-    from vllm.entrypoints.openai.engine.protocol import ErrorResponse
-    from vllm.entrypoints.openai.models.serving import (
-        OpenAIServingModels,
-        create_error_response,
-    )
-    from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
-    from vllm.logger import init_logger
-    from vllm.lora.request import LoRARequest
-
-    logger = init_logger(__name__)
-
-    async def _patched_load_lora_adapter(
-        self: OpenAIServingModels, request: LoadLoRAAdapterRequest, base_model_name: str | None = None
-    ) -> ErrorResponse | str:
-        lora_name = request.lora_name
-
-        # Ensure atomicity based on the lora name
-        async with self.lora_resolver_lock[lora_name]:
-            lora_path = request.lora_path
-            ## START PATCHED CODE
-            if lora_name in self.lora_requests:
-                lora_request = self.lora_requests[lora_name]
-                lora_request.lora_path = lora_path
-            else:
-                unique_id = self.lora_id_counter.inc(1)
-                lora_request = LoRARequest(lora_name=lora_name, lora_int_id=unique_id, lora_path=lora_path)
-            ## END PATCHED CODE
-            if base_model_name is not None and self.is_base_model(base_model_name):
-                lora_request.base_model_name = base_model_name
-
-            # Validate that the adapter can be loaded into the engine
-            # This will also preload it for incoming requests
-            try:
-                await self.engine_client.add_lora(lora_request)
-            except Exception as e:
-                error_type = "BadRequestError"
-                status_code = HTTPStatus.BAD_REQUEST
-                if "No adapter found" in str(e):
-                    error_type = "NotFoundError"
-                    status_code = HTTPStatus.NOT_FOUND
-
-                return create_error_response(message=str(e), err_type=error_type, status_code=status_code)
-
-            self.lora_requests[lora_name] = lora_request
-            logger.info("Loaded new LoRA adapter: name '%s', path '%s'", lora_name, lora_path)
-            return f"Success: LoRA adapter '{lora_name}' added successfully."
-
-    OpenAIServingModels.load_lora_adapter = _patched_load_lora_adapter
-
-
-# Monkeypatch LRUCacheWorkerLoRAManager to allow loading adapter inplace without doing it every request
-# TODO: may be removable if we pass load_inplace=True (supported since vLLM 0.18, PR #31326)
-def monkey_patch_LRUCacheWorkerLoRAManager():
-    from vllm.lora.worker_manager import LoRARequest, LRUCacheLoRAModelManager, LRUCacheWorkerLoRAManager
-
-    # The dunder is intended. It's a private method that we're patching.
-    def _patched__apply_adapters(self: LRUCacheWorkerLoRAManager, lora_requests: set[LoRARequest]) -> None:
-        loras_map = {lora_request.lora_int_id: lora_request for lora_request in lora_requests if lora_request}
-        if len(loras_map) > self._adapter_manager.lora_slots:
-            raise RuntimeError(
-                f"Number of requested LoRAs ({len(loras_map)}) is greater "
-                "than the number of GPU LoRA slots "
-                f"({self._adapter_manager.lora_slots})."
-            )
-        for lora in loras_map.values():
-            ## START PATCHED CODE
-            self.add_adapter(lora, force_load=False)
-            ## END PATCHED CODE
-
-    def _patched_add_adapter(
-        self: LRUCacheWorkerLoRAManager, lora_request: LoRARequest, force_load: bool = True
-    ) -> bool:
-        # Note that this method is not thread-safe. It may be invoked multiple
-        # times for the same adapter when using multiple API servers.
-        # This is ok because it's currently only called from
-        # the single-threaded core engine loop.
-
-        ## START PATCHED CODE
-        if lora_request.lora_int_id not in self.list_adapters() or force_load:
-            ## END PATCHED CODE
-            # Load the new adapter first to ensure it is actually valid, before
-            # evicting any existing adapters.
-            # This may cause the # of loaded lora adapters to very temporarily
-            # exceed `--max-cpu-loras`.
-            lora = self._load_adapter(lora_request)
-            ## START PATCHED CODE
-            self._adapter_manager.remove_adapter(lora.id)
-            ## END PATCHED CODE
-
-            # Loading succeeded, now check if we will exceed cache capacity and
-            # evict if the oldest adapter if so
-            if len(self._adapter_manager) + 1 > self._adapter_manager.capacity:
-                assert isinstance(self._adapter_manager, LRUCacheLoRAModelManager)
-                self._adapter_manager.remove_oldest_adapter()
-            # Then add the new adapter to the cache
-            loaded = self._adapter_manager.add_adapter(lora)
-        else:
-            # If the lora is already loaded, just touch it to
-            # update its position in the caches
-            loaded = self._adapter_manager.get_adapter(lora_request.lora_int_id) is not None
-        self._adapter_manager.activate_adapter(lora_request.lora_int_id)
-        return loaded
-
-    LRUCacheWorkerLoRAManager._apply_adapters = _patched__apply_adapters
-    LRUCacheWorkerLoRAManager.add_adapter = _patched_add_adapter
-
-
-# Monkeypatch WorkerLoRAManager._load_adapter to skip the per-module regex
-# warning loop. On wide MoE models (Qwen3.5-35B-A3B) it spends minutes
-# recompiling regex patterns inside is_supported_lora_module — purely to emit
-# logger.warning_once about modules that will be ignored. Adapter validity is
-# already enforced by from_local_checkpoint, so dropping the warnings is safe.
-def monkey_patch_skip_lora_module_warnings():
-    from vllm.exceptions import LoRAAdapterNotFoundError
-    from vllm.lora.lora_model import LoRAModel
-    from vllm.lora.peft_helper import PEFTHelper
-    from vllm.lora.request import LoRARequest
-    from vllm.lora.utils import get_adapter_absolute_path
-    from vllm.lora.worker_manager import WorkerLoRAManager
-
-    def _patched_load_adapter(self: WorkerLoRAManager, lora_request: LoRARequest) -> LoRAModel:
-        try:
-            supported_lora_modules = self._adapter_manager.supported_lora_modules
-            packed_modules_mapping = self._adapter_manager.packed_modules_mapping
-            expected_lora_lst: list[str] = []
-            for module in supported_lora_modules:
-                if module in packed_modules_mapping:
-                    expected_lora_lst.extend(packed_modules_mapping[module])
-                else:
-                    expected_lora_lst.append(module)
-                if module == "experts":
-                    expected_lora_lst.append(module)
-            expected_lora_modules = set(expected_lora_lst)
-            lora_path = get_adapter_absolute_path(lora_request.lora_path)
-
-            peft_helper = PEFTHelper.from_local_dir(
-                lora_path,
-                self.max_position_embeddings,
-                lora_request.tensorizer_config_dict,
-            )
-            peft_helper.validate_legal(self.lora_config)
-
-            model = self._adapter_manager.model
-            hf_to_vllm_mapper = getattr(model, "hf_to_vllm_mapper", None)
-            lora_skip_prefixes = getattr(model, "lora_skip_prefixes", None)
-
-            lora = self._lora_model_cls.from_local_checkpoint(
-                lora_path,
-                expected_lora_modules,
-                peft_helper=peft_helper,
-                lora_model_id=lora_request.lora_int_id,
-                device="cpu",
-                dtype=self.lora_config.lora_dtype,
-                model_vocab_size=self.vocab_size,
-                tensorizer_config_dict=lora_request.tensorizer_config_dict,
-                weights_mapper=hf_to_vllm_mapper,
-                skip_prefixes=lora_skip_prefixes,
-            )
-        except FileNotFoundError as e:
-            raise LoRAAdapterNotFoundError(lora_request.lora_name, lora_request.lora_path) from e
-
-        return lora
-
-    WorkerLoRAManager._load_adapter = _patched_load_adapter
 
 
 # Monkeypatch TokenizeParams to fix overly conservative validation
@@ -608,7 +536,7 @@ def monkey_patch_minimax_m2_for_lora():
         asserts inputs are float16/bfloat16. Qwen3 MoE doesn't have this
         problem because its gate uses the model dtype.
         Fix: rebuild the gate as GateLinear with a bf16 weight (out_dtype=float32
-        keeps fp32 router logits). vLLM 0.23.0's own forward already drops the
+        keeps fp32 router logits). vLLM 0.24.0's own forward already drops the
         float32 input cast. FusedMoE also has router_logits_dtype=float32, so
         routing precision is preserved inside the expert dispatch.
 
@@ -634,7 +562,7 @@ def monkey_patch_minimax_m2_for_lora():
         _original_init(self, config, quant_config, prefix)
         from vllm.model_executor.layers.fused_moe.router.gate_linear import GateLinear
 
-        # vLLM 0.23.0 builds the gate as GateLinear with a float32 weight; rebuild it
+        # vLLM 0.24.0 builds the gate as GateLinear with a float32 weight; rebuild it
         # with a bf16 weight (model dtype) so the LoRA Triton kernel's float16/bfloat16
         # assertion passes, keeping out_dtype=float32 so router logits stay fp32 (the
         # GateLinear bf16xbf16->fp32 path).
@@ -646,19 +574,7 @@ def monkey_patch_minimax_m2_for_lora():
             prefix=f"{prefix}.gate",
         )
 
-    def _patched_forward(self, hidden_states):
-        from vllm.distributed import tensor_model_parallel_all_reduce
-
-        num_tokens, hidden_dim = hidden_states.shape
-        hidden_states = hidden_states.view(-1, hidden_dim)
-        router_logits, _ = self.gate(hidden_states)
-        final_hidden_states = self.experts(hidden_states=hidden_states, router_logits=router_logits)
-        if self.tp_size > 1:
-            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
-        return final_hidden_states.view(num_tokens, hidden_dim)
-
     MiniMaxM2MoE.__init__ = _patched_init
-    MiniMaxM2MoE.forward = _patched_forward
 
     # --- Adapter key remapping (only read by vLLM's LoRA adapter loader) ---
     MiniMaxM2ForCausalLM.hf_to_vllm_mapper = WeightsMapper(
@@ -703,23 +619,15 @@ def monkey_patch_no_moe_lora():
     Otherwise, the oracle will always try to pick TritonExperts.
     For blackwells, we want TRTLLMFlashInfer.
     """
-    from vllm.model_executor.layers.fused_moe.config import FusedMoEConfig, logger
+    from vllm.model_executor.layers.fused_moe.config import FusedMoEConfig
+
+    original_post_init = FusedMoEConfig.__post_init__
 
     def _patched__post_init__(self: FusedMoEConfig):
-        if self.dp_size > 1:
-            logger.debug_once("Using FusedMoEConfig::max_num_tokens=%d", self.max_num_tokens)
-
-        assert self.max_num_tokens > 0
-
-        if self.router_logits_dtype is None:
-            self.router_logits_dtype = self.in_dtype
-
-        if self.hidden_dim_unpadded is None:
-            self.hidden_dim_unpadded = self.hidden_dim
-        if self.intermediate_size_per_partition_unpadded is None:
-            self.intermediate_size_per_partition_unpadded = self.intermediate_size_per_partition
-
-        # Disable LoRA for MoE layers
+        original_post_init(self)
+        # Disable LoRA for MoE layers. `is_lora_enabled` is only read later during
+        # kernel selection (modular_kernel / unquantized oracle), never inside
+        # `__post_init__`, so flipping it after the original runs is sufficient.
         self.is_lora_enabled = False
 
     FusedMoEConfig.__post_init__ = _patched__post_init__
@@ -787,12 +695,51 @@ def monkey_patch_fp32_lm_head():
     logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")
 
 
+def monkey_patch_fp32_router_logits():
+    """Emit fp32 MoE router logits for DeepSeek-family models (incl. GLM-5.x glm_moe_dsa).
+
+    vLLM's DeepseekV2MoE gate is a GateLinear with a bf16 weight and no out_dtype,
+    so router logits are rounded to bf16 before expert scoring. GLM-5.x was trained
+    with fp32 routing (Megatron ``--moe-router-dtype fp32``); upstream now runs its
+    gate fully in fp32 (vllm-project/vllm#47410, not in the pinned release).
+    Setting ``out_dtype=float32`` routes the gate through GateLinear's cuBLAS
+    bf16xbf16->fp32 tier: same GEMM, but the fp32 accumulator is written out
+    unrounded. Unlike the upstream PR, the gate weight stays bf16, so the LoRA
+    Triton kernel dtype assert and the bf16 weight-broadcast path are unaffected.
+
+    Activated by ``additional_config["fp32_router_logits"] = True``; the launcher
+    sets this when ``inference.enable_fp32_router_logits`` is set. The flag is read
+    at module construction, where vLLM guarantees a ``set_current_vllm_config()``
+    context. No-op if something else already set an out_dtype (e.g. the ROCm AITER
+    branch, whose kernel wants matching dtypes).
+    """
+    import torch
+    from vllm.config import get_current_vllm_config
+    from vllm.logger import init_logger
+    from vllm.model_executor.models.deepseek_v2 import DeepseekV2MoE
+
+    logger = init_logger(__name__)
+
+    _original_init = DeepseekV2MoE.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        _original_init(self, *args, **kwargs)
+        additional_config = get_current_vllm_config().additional_config or {}
+        if not additional_config.get("fp32_router_logits", False):
+            return
+        if self.gate.out_dtype is None:
+            self.gate.set_out_dtype(torch.float32)
+
+    DeepseekV2MoE.__init__ = _patched_init
+    logger.info("Installed fp32 router logits patch (self-gates on additional_config['fp32_router_logits']).")
+
+
 def monkey_patch_dp_coordinator_startup_timeout():
-    """Raise the DP coordinator startup timeout from vLLM's hard-coded 30s.
+    """Raise the DP coordinator startup timeout from vLLM's hard-coded 120s.
 
     The coordinator child process is spawned on the DP-rank-0 API server while
     every engine-core rank on the node is importing and loading weights, so its
-    own spawn-time re-import can take well over 30s under that CPU/IO
+    own spawn-time re-import can exceed the hard-coded timeout under that CPU/IO
     contention (seen on multi-node disaggregated GLM-5.1 launches). Configurable
     via PRIME_DP_COORDINATOR_STARTUP_TIMEOUT (seconds, default 300).
     """

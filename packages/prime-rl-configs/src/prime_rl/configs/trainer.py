@@ -6,6 +6,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    EnvVars,
     FileSystemTransportConfig,
     HeartbeatConfig,
     MetricsServerConfig,
@@ -122,19 +123,19 @@ class ModelConfig(BaseModelConfig):
     attn: AttnImplementation = "flash_attention_2"
     """Attention implementation. With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
 
-    compile: CompileConfig | None = None
+    compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""
 
-    ac: ActivationCheckpointConfig | None = None
+    ac: ActivationCheckpointConfig | None = ActivationCheckpointConfig()
     """Activation checkpointing configuration. If None, activation checkpointing is disabled."""
 
-    ac_offloading: ActivationOffloadingConfig | None = None
+    ac_offloading: ActivationOffloadingConfig | None = ActivationOffloadingConfig()
     """Activation offloading configuration. If None, activation offloading is disabled."""
 
     fsdp_cpu_offload: bool = False
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
-    optim_cpu_offload: bool = False
+    optim_cpu_offload: bool = True
     """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
 
     reshard_after_forward: bool = True
@@ -143,8 +144,8 @@ class ModelConfig(BaseModelConfig):
     dp_replicate: int = 1
     """Data parallel dim where model weights are replicated."""
 
-    ep: int = 1
-    """Expert parallelism degree for MoE layers. 1 disables EP."""
+    ep: int | Literal["auto"] = "auto"
+    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves to ``min(fsdp_island_size, 8)`` for MoE models (where ``fsdp_island_size = world_size // dp_replicate``), and to 1 for non-MoE models. Set an explicit integer to override."""
 
     ep_comm_backend: EPCommBackend = "torch"
     """Communication backend for expert parallelism. ``torch`` uses TorchTitan all-to-all collectives; ``deepep`` uses DeepEP custom kernels."""
@@ -170,6 +171,9 @@ class ModelConfig(BaseModelConfig):
     reduce_dtype: Literal["bfloat16", "float32"] = "float32"
     """dtype for gradient/parameter reductions."""
 
+    moe_router_dtype: Literal["bfloat16", "float32"] = "float32"
+    """Compute dtype for MoE router gates. ``float32`` (default) keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. Router score functions (sigmoid/softmax) run in fp32 regardless. Only affects the custom MoE implementation; a no-op for non-MoE and HF-impl models."""
+
     moe_use_grouped_mm: bool = True
     """Use grouped mm for MoE layers. Requires compute capability ≥ 9.0."""
 
@@ -188,8 +192,8 @@ class ModelConfig(BaseModelConfig):
     debug: DebugModelConfig = DebugModelConfig()
     """Debugging knobs for the model and distributed training."""
 
-    fused_lm_head_token_chunk_size: int | Literal["auto", "disabled"] = "disabled"
-    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``auto`` auto-enables (RL training picks 8192); ``disabled`` uses the vanilla LM head. Integer values aren't supported for SFT training."""
+    fused_lm_head_token_chunk_size: int | Literal["disabled"] = 1024
+    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. SFT training silently disables this (not supported yet)."""
 
     @model_validator(mode="before")
     @classmethod
@@ -258,7 +262,7 @@ class ModelConfig(BaseModelConfig):
         if self.ep_comm_backend == "torch":
             return self
 
-        if self.ep <= 1:
+        if isinstance(self.ep, int) and self.ep <= 1:
             raise ValueError(f"model.ep_comm_backend='{self.ep_comm_backend}' requires model.ep > 1.")
 
         return self
@@ -510,7 +514,7 @@ class TrainerConfig(BaseConfig):
     data: DataLoaderConfig = DataLoaderConfig()
 
     loss: LossConfig = DefaultLossConfig()
-    """Loss config for rl-mode batches. opd and sft batches dispatch to their own loss fns unconditionally and do not read this."""
+    """Loss config for the rl loss component (see ``setup_rl_loss_fn``). The ce / ref_kl components are fixed and do not read this."""
 
     optim: OptimizerConfig = AdamWConfig()
 
@@ -553,7 +557,7 @@ class TrainerConfig(BaseConfig):
     trace_path: Path | None = None
     """Path to write the PyTorch profiler trace to."""
 
-    dist_timeout_seconds: int = 600
+    dist_timeout_seconds: int = 3600
     """Timeout in seconds for torch distributed ops."""
 
     heartbeat: HeartbeatConfig | None = None
@@ -567,6 +571,9 @@ class TrainerConfig(BaseConfig):
 
     enable_token_export: bool = False
     """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
+
+    env_vars: EnvVars = {}
+    """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
@@ -658,15 +665,8 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_fused_lm_head_token_chunk_size(self):
-        if self.model.fused_lm_head_token_chunk_size == "auto":
-            self.model.fused_lm_head_token_chunk_size = 8192
-
-        return self
-
-    @model_validator(mode="after")
     def ep_only_with_custom_impl(self):
-        if self.model.ep > 1 and self.model.impl not in ("custom", "auto"):
+        if self.model.ep != 1 and self.model.ep != "auto" and self.model.impl not in ("custom", "auto"):
             raise ValueError("EP is only supported with the custom implementation or auto mode")
 
         return self

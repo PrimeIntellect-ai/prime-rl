@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
-from prime_rl.configs.shared import BaseModelConfig, LogConfig, SlurmConfig
+from prime_rl.configs.shared import BaseModelConfig, EnvVars, LogConfig, SlurmConfig
 from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
@@ -300,10 +300,10 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     decode_port: int = 8200
     """Port for decode vLLM instances."""
 
-    prefill_env_overrides: dict[str, str] = {}
+    prefill_env_vars: EnvVars = {}
     """Extra environment variables exported only on prefill nodes."""
 
-    decode_env_overrides: dict[str, str] = {}
+    decode_env_vars: EnvVars = {}
     """Extra environment variables exported only on decode nodes."""
 
     prefill_vllm_overrides: dict[str, Any] = {}
@@ -337,10 +337,6 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-class InferenceExperimentalConfig(BaseConfig):
-    pass
-
-
 class InferenceConfig(BaseConfig):
     server: ServerConfig = ServerConfig()
 
@@ -351,6 +347,9 @@ class InferenceConfig(BaseConfig):
 
     log: LogConfig = LogConfig()
     """Logging configuration."""
+
+    env_vars: EnvVars = {}
+    """Extra environment variables for the inference server process(es). Merged on top of the launcher defaults."""
 
     enable_lora: bool = False
     """Enable LoRA. Forwarded as ``--enable-lora``."""
@@ -417,6 +416,9 @@ class InferenceConfig(BaseConfig):
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
 
+    enable_fp32_router_logits: bool = True
+    """Emit fp32 MoE router logits for DeepSeek-family models (incl. GLM-5.x) by setting ``out_dtype=float32`` on the gate: the bf16×bf16 gate GEMM writes its fp32 accumulator out unrounded instead of truncating logits to bf16 before expert scoring. Matches fp32-routed checkpoints (e.g. GLM-5.x, trained with Megatron ``--moe-router-dtype fp32``); pairs with ``trainer.model.moe_router_dtype = "float32"``. Implemented as a monkey-patch over vLLM's DeepseekV2MoE, activated by setting ``additional_config["fp32_router_logits"] = True`` on the vLLM config."""
+
     vllm_extra: dict[str, Any] = {}
     """Extra arguments forwarded to vLLM. Applied as attributes on the vLLM namespace after config translation."""
 
@@ -432,8 +434,6 @@ class InferenceConfig(BaseConfig):
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
-
-    experimental: InferenceExperimentalConfig = InferenceExperimentalConfig()
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
@@ -610,6 +610,10 @@ class InferenceConfig(BaseConfig):
         if self.enable_fp32_lm_head:
             existing = getattr(namespace, "additional_config", None) or {}
             existing["fp32_lm_head"] = True
+            rsetattr(namespace, "additional_config", existing)
+        if self.enable_fp32_router_logits:
+            existing = getattr(namespace, "additional_config", None) or {}
+            existing["fp32_router_logits"] = True
             rsetattr(namespace, "additional_config", existing)
 
         # Remove chat_template if not set (vLLM doesn't accept None)

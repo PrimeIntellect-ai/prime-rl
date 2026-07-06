@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
-from typing import Generic, Literal, Protocol
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Generic, Literal, Protocol
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
 from verifiers.v1.task import TaskT
 
 from prime_rl.transport import TrainingSample
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.metrics import EvalRollouts, TrainRollouts
 
 
 @dataclass
@@ -24,9 +27,9 @@ class Policy:
 
 @dataclass
 class Progress:
-    """Persistent counters; ``step`` is the trainer-aligned step."""
+    """Persistent counters; ``step`` is the trainer-aligned step (1-indexed)."""
 
-    step: int = 0
+    step: int = 1
     total_tokens: int = 0
     total_samples: int = 0
     total_problems: int = 0
@@ -71,7 +74,12 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     orchestration metadata lives on it directly (set by the dispatcher once the rollout
     returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
     fields are ``exclude=True``, so dumping a Rollout yields a plain trace — the on-disk
-    ``results.jsonl`` is unchanged."""
+    ``results.jsonl`` is unchanged.
+
+    It is also the single currency the scoring hooks receive: a hook reads the trace
+    directly (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``) and writes
+    credit through :meth:`assign_advantages` (scalar broadcast or per-token), which
+    spreads over the samples' trainable (mask-True) tokens."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)  # ``samples`` holds msgspec structs
 
@@ -81,91 +89,69 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
-    advantage: float | None = Field(default=None, exclude=True)
+    # Per-token rl advantage stream, full-length-N (= len(token_ids)) per
+    # sample, concatenated across the rollout's samples in order; 0.0 on
+    # non-trainable positions. None = no credit assigned (advantage-based
+    # filters skip it; the wire ships no advantage stream).
+    advantages: list[float] | None = Field(default=None, exclude=True)
     is_filtered: bool = Field(default=False, exclude=True)
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
     eval_step: int | None = Field(default=None, exclude=True)
 
+    def assign_advantages(self, values: float | list[float]) -> None:
+        """Write the rl advantage stream: a scalar broadcast over the
+        rollout's trainable (mask-True) tokens (0.0 elsewhere), or a per-token
+        list already aligned full-length to the samples' concatenated
+        ``token_ids``. A rollout never assigned ships no advantage stream."""
+        total = sum(len(sample.token_ids) for sample in self.samples)
+        if isinstance(values, (int, float)):
+            self.advantages = [
+                float(values) if trainable else 0.0 for sample in self.samples for trainable in sample.mask
+            ]
+            return
+        if len(values) != total:
+            raise ValueError(
+                f"per-token advantages must align with the rollout's tokens: "
+                f"got {len(values)}, expected {total} (env '{self.env_name}')."
+            )
+        self.advantages = [float(v) for v in values]
 
-@dataclass
-class TrainBatchMetrics:
-    """Per-batch aggregates from ``TrainSink.process_batch``; consumed by
-    ``MetricsBuilder.build``. ``arrivals_by_env`` / ``errors_by_env`` count
-    rollouts at the sink."""
+    def scalar_advantage(self) -> float | None:
+        """Scalar view of the per-token advantage stream for monitoring: the
+        mean over assigned (non-zero) positions — exact for the uniform GRPO
+        case, 0.0 for a zero-advantage group, None when no credit was assigned."""
+        if not self.advantages:
+            return None
+        nonzero = [a for a in self.advantages if a != 0.0]
+        return sum(nonzero) / len(nonzero) if nonzero else 0.0
 
-    n_trainable: int
-    num_prefill_tokens: int
-    num_decode_tokens: int
-    rollout_prefill_lens: list[int]
-    rollout_decode_lens: list[int]
-    samples_per_rollout: list[int]
-    samples_shipped: int
-    arrivals_by_env: dict[str, int] = field(default_factory=dict)
-    errors_by_env: dict[str, int] = field(default_factory=dict)
+    @property
+    def is_trainable(self) -> bool:
+        """Whether the rollout carries a training signal — a nonzero advantage on some token. A
+        uniform-reward GRPO group (all-zero advantages) or an unscored rollout has no gradient."""
+        return bool(self.advantages) and any(a != 0.0 for a in self.advantages)
 
 
 @dataclass
 class TrainBatch:
-    """``samples`` is the trainer-bound payload (post-filter survivors);
-    ``rollouts`` is the full cohort kept for orchestrator-side I/O."""
+    """``rollouts`` is the full arrival window since the last ship (errored + filtered included; its
+    ``.effective`` / ``.metrics`` views drive logging). ``samples`` is the trainer-bound payload (the
+    shipped cohort's post-filter survivors) — an empty list means nothing ships, which would stall the
+    trainer. Trainable counts derive from ``rollouts`` (``r.is_trainable``) and token totals from
+    ``samples``, so neither is carried as a field."""
 
-    rollouts: list[Rollout]
+    rollouts: TrainRollouts
     samples: list[TrainingSample]
-    metrics: TrainBatchMetrics
-
-
-@dataclass
-class EvalBatchMetrics:
-    """Typed per-batch metrics from ``EvalSink.process_batch``. Final wandb
-    dict derived via ``to_wandb_dict`` at log time."""
-
-    n_rollouts: int
-    n_cancelled: int
-    n_errored: int
-    n_examples: int = 0
-    group_size: int = 1
-    reward_mean: float = 0.0
-    completion_len_mean: float = 0.0
-    completion_len_max: float = 0.0
-    completion_len_min: float = 0.0
-    truncation_rate: float = 0.0
-    no_response_rate: float = 0.0
-    num_turns_mean: float = 0.0
-    num_turns_min: float = 0.0
-    num_turns_max: float = 0.0
-    pass_at_k: dict[str, float] = field(default_factory=dict)
-
-    def to_wandb_dict(self, *, env_name: str, step: int) -> dict[str, float]:
-        prefix = f"eval/{env_name}"
-        out: dict[str, float] = {
-            "step": float(step),
-            f"{prefix}/cancelled_count": float(self.n_cancelled),
-            f"{prefix}/errored_count": float(self.n_errored),
-        }
-        if self.n_examples > 0:
-            out[f"{prefix}/avg@{self.group_size}"] = self.reward_mean
-            out[f"{prefix}/completion_len/mean"] = self.completion_len_mean
-            out[f"{prefix}/completion_len/max"] = self.completion_len_max
-            out[f"{prefix}/completion_len/min"] = self.completion_len_min
-            out[f"{prefix}/is_truncated/mean"] = self.truncation_rate
-            out[f"{prefix}/no_response/mean"] = self.no_response_rate
-            out[f"{prefix}/num_turns/mean"] = self.num_turns_mean
-            out[f"{prefix}/num_turns/min"] = self.num_turns_min
-            out[f"{prefix}/num_turns/max"] = self.num_turns_max
-            for k, v in self.pass_at_k.items():
-                out[f"{prefix}/{k}"] = v
-        return out
 
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch. ``metrics`` is the typed view from
-    ``EvalSink.process_batch``."""
+    """One env's eval epoch. ``rollouts`` is the full returned cohort (errored included); its
+    ``.effective`` / ``.metrics`` views drive logging."""
 
     env_name: str
     step: int
-    rollouts: list[Rollout]
-    metrics: EvalBatchMetrics
+    rollouts: EvalRollouts
 
 
 class VersionObserver(Protocol):

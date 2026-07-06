@@ -2,17 +2,14 @@ import asyncio
 import ctypes
 import gc
 import logging
-import os
+import math
 import time
 from concurrent.futures import ThreadPoolExecutor
-from itertools import cycle
 from pathlib import Path
 
 import orjson
-import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.transport import TrainingSample
 from prime_rl.utils.client import setup_inference_pool
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
 from prime_rl.utils.utils import (
@@ -22,20 +19,26 @@ from prime_rl.utils.utils import (
 )
 
 
-async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer):
-    """Build the student renderer and inference pool, returning ``(renderer, inference_pool)``.
+async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
+    """Build the live policy inference pool + matching renderer. Returns
+    ``(renderer, inference_pool)``.
 
-    Training is renderer-only: RL/OPD roll out through the env server's renderer client
-    (token-in/out), and SFT — which rolls out against a chat-completions teacher that returns
-    no tokens — re-renders the conversation with this renderer to backfill them. The renderer
-    is built here from the (always-set) ``config.renderer`` and also supplies the multimodal
-    token-type-id map. The eval client is plain chat-completions (eval traces aren't trained)."""
+    Training is renderer-only: the renderer object is the canonical
+    messages → token ids path (sft backfill, opsd scoring prefixes, echo role
+    attribution) and is always built. The renderer-client sampling path is
+    wired onto the pool; when no train env samples from the live policy the
+    renderer is still kept for client-side tokenization and the pool's evals
+    use plain chat-completions."""
     from renderers.base import create_renderer
 
-    client_config = config.student.client
-    model_name = config.student.model.name
+    client_config = config.model.client
+    model_name = config.model.name
     renderer = create_renderer(tokenizer, config.renderer)
-    get_logger().info("Using renderer rollout client")
+    get_logger().info(f"Initialized {type(renderer).__name__} for {model_name}")
+    if config.any_policy_sourced:
+        get_logger().info("Using direct renderer rollout client")
+    else:
+        get_logger().info("No policy-sourced train env — renderer kept for client-side tokenization only")
     inference_pool = await setup_inference_pool(
         client_config,
         model_name=model_name,
@@ -47,14 +50,13 @@ async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer)
     return renderer, inference_pool
 
 
-def save_rollouts(rollouts: list[dict], path: Path, exclude_keys: set[str] | None = None) -> None:
+def save_rollouts(rollouts: list[dict], path: Path) -> None:
     """Save rollouts (Trace dicts, already JSON-serializable) to a JSONL file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
     with open(path, "wb") as f:
         for rollout in rollouts:
-            row = {k: v for k, v in rollout.items() if k not in exclude_keys} if exclude_keys else rollout
-            f.write(orjson.dumps(row, default=str, option=opts))
+            f.write(orjson.dumps(rollout, default=str, option=opts))
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
@@ -88,67 +90,6 @@ def trim_process_memory() -> None:
         ctypes.CDLL("libc.so.6").malloc_trim(0)
     except Exception as exc:
         get_logger().debug(f"malloc_trim(0) failed: {exc!r}")
-
-
-async def compute_teacher_logprobs(
-    clients: list[vf.ClientConfig],
-    model_name: str,
-    samples: list[TrainingSample],
-) -> list[list[float]]:
-    """Compute teacher model logprobs for a batch of training samples via prefill."""
-    import httpx
-    from openai import AsyncOpenAI
-    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
-
-    async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
-        client = AsyncOpenAI(
-            base_url=client_config.base_url,
-            api_key=os.environ.get(client_config.api_key_var, "EMPTY"),
-            default_headers=client_config.headers or None,
-        )
-
-        # Two escape hatches from ``AsyncOpenAI.post``:
-        #   1. URL — ``/inference/v1/generate`` is mounted at server root, not
-        #      under ``/v1``. Pass an absolute URL so the SDK's
-        #      ``_prepare_url`` skips the base-url merge (it short-circuits
-        #      when the path passes ``httpx.URL.is_relative_url`` as False).
-        #   2. Parse — vLLM's ``GenerateResponse`` is a plain
-        #      ``pydantic.BaseModel`` and the SDK's parse layer rejects any
-        #      ``cast_to`` that doesn't subclass ``openai.BaseModel``. Use
-        #      ``cast_to=httpx.Response`` so the SDK still builds the request
-        #      (preserving ``auth_headers``, retries, timeouts, idempotency
-        #      keys) and just hands us the raw response to validate ourselves.
-        base = str(client.base_url).rstrip("/").removesuffix("/v1")
-        http_response = await client.post(
-            f"{base}/inference/v1/generate",
-            cast_to=httpx.Response,
-            body={
-                "model": model_name,
-                "token_ids": list(sample.token_ids),
-                "sampling_params": {
-                    "max_tokens": 1,
-                    "temperature": 1.0,
-                    "top_p": 1.0,
-                    "prompt_logprobs": 1,
-                },
-            },
-        )
-        response = GenerateResponse.model_validate_json(http_response.content)
-        # ``prompt_logprobs[i]`` is a ``{token_id: Logprob}`` dict for tokens
-        # the engine could score, or ``None`` for the leading token which has
-        # no preceding context. Flatten to ``list[float]`` with 0.0 in the
-        # unscored slot.
-        flat: list[float] = []
-        for entry in response.prompt_logprobs or []:
-            if not entry:
-                flat.append(0.0)
-                continue
-            first = next(iter(entry.values()))
-            lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
-            flat.append(float(lp) if lp is not None else 0.0)
-        return flat
-
-    return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 
 
 def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:
@@ -194,3 +135,25 @@ def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_
         return broadcast_weight_dir
 
     raise FileNotFoundError(f"No weight directory found for checkpoint step {step}")
+
+
+def compute_pass_metrics(rewards: list[float]) -> dict[str, float]:
+    """Unbiased pass@k and pass^k for one example's binary (0/1) rewards.
+
+    pass@k = 1 - C(n-c, k) / C(n, k)  (at least one of k samples correct)
+    pass^k = C(c, k) / C(n, k)        (all k samples correct)
+
+    ``n`` = number of rewards, ``c`` = number correct, ``k`` = powers of 2 in [1, n].
+    ``math.comb`` returns 0 when ``k`` exceeds its first argument, so the edge cases
+    (``n - c < k`` → pass@k = 1; ``c < k`` → pass^k = 0) fall out without branching.
+    """
+    n = len(rewards)
+    c = sum(1 for r in rewards if r == 1.0)
+    out: dict[str, float] = {}
+    k = 1
+    while k <= n:
+        n_choose_k = math.comb(n, k)
+        out[f"pass@{k}"] = 1.0 - math.comb(n - c, k) / n_choose_k
+        out[f"pass^{k}"] = math.comb(c, k) / n_choose_k
+        k *= 2
+    return out

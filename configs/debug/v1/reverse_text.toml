@@ -14,7 +14,6 @@ name = "v1"
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [orchestrator]
-training_mode = "rl"
 batch_size = 128
 group_size = 16
 
@@ -28,7 +27,7 @@ max_completion_tokens = 128
 taskset = { id = "reverse-text-v1" }
 # reverse-text is a pure-text single-turn env: disable the bash tool (the model answers
 # directly) and use the subprocess runtime (no docker).
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 # No eval block, mirroring examples/reverse_text/rl.toml — this is a train-only
 # smoke. Add an [orchestrator.eval] block (with an interval) to exercise eval.

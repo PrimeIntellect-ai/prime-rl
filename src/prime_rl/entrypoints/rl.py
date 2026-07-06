@@ -12,6 +12,7 @@ from threading import Event, Thread
 import pynvml
 import tomli_w
 
+from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.inference import vllm_overrides_fragment
@@ -25,7 +26,15 @@ from prime_rl.utils.pathing import (
     resolve_latest_ckpt_step,
     validate_output_dir,
 )
-from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process, set_proc_title
+from prime_rl.utils.process import (
+    DEFAULT_COMMON_ENV_VARS,
+    DEFAULT_INFERENCE_ENV_VARS,
+    DEFAULT_TRAINER_ENV_VARS,
+    cleanup_processes,
+    cleanup_threads,
+    monitor_process,
+    set_proc_title,
+)
 
 RL_TOML = "rl.toml"
 RL_SBATCH = "rl.sbatch"
@@ -118,16 +127,16 @@ def rl_local(config: RLConfig):
     }
 
     # Validate client port matches inference server port
-    if config.inference is not None and not config.orchestrator.student.client.is_elastic:
+    if config.inference is not None and not config.orchestrator.model.client.is_elastic:
         from urllib.parse import urlparse
 
-        base_url = config.orchestrator.student.client.base_url[0]
+        base_url = config.orchestrator.model.client.base_url[0]
         parsed = urlparse(base_url)
         client_port = parsed.port
         expected_port = config.inference.server.port
         if client_port != expected_port:
             raise ValueError(
-                f"orchestrator.student.client.base_url port ({client_port}) does not match "
+                f"orchestrator.model.client.base_url port ({client_port}) does not match "
                 f"inference.server.port ({expected_port}). "
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
@@ -162,6 +171,10 @@ def rl_local(config: RLConfig):
                     inference_cmd,
                     env={
                         **os.environ,
+                        **DEFAULT_COMMON_ENV_VARS,
+                        **DEFAULT_INFERENCE_ENV_VARS,
+                        **config.env_vars,
+                        **config.inference.env_vars,
                         "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids)),
                     },
                     stdout=log_file,
@@ -181,19 +194,26 @@ def rl_local(config: RLConfig):
             monitor_threads.append(monitor_thread)
         else:
             logger.warning(
-                "No [inference] block configured - the student inference server will not be started here. "
-                "All training modes (rl/opd/sft) require a student inference pool for evals + weight sync; "
-                "make sure one is running at orchestrator.student.client.base_url "
-                f"({', '.join(config.orchestrator.student.client.base_url)}), otherwise the orchestrator "
+                "No [inference] block configured - the policy inference server will not be started here. "
+                "Every algorithm requires a policy inference pool for evals + weight sync; "
+                "make sure one is running at orchestrator.model.client.base_url "
+                f"({', '.join(config.orchestrator.model.client.base_url)}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
 
-        if config.orchestrator.teacher:
+        frozen_endpoints: list[str] = []
+        for env in config.orchestrator.train.env:
+            algo = env.algo
+            assert algo is not None, "TrainEnvConfig.algo must be resolved before launch (inherit_env_algorithms)"
+            for ref in (algo.sampling.source, getattr(algo, "teacher", None)):
+                if isinstance(ref, FrozenModelConfig):
+                    frozen_endpoints.append(f"{ref.name} ({', '.join(ref.base_url)})")
+        if frozen_endpoints:
+            endpoints = ", ".join(dict.fromkeys(frozen_endpoints))
             logger.info(
-                "orchestrator.teacher is configured - the rl entrypoint does not start teacher inference "
-                "servers. Make sure your teacher endpoint at "
-                f"{', '.join(config.orchestrator.teacher.client.base_url)} is running before the "
-                "orchestrator starts, otherwise rollouts will hang."
+                "Frozen model references are configured - the rl entrypoint does not start them. "
+                f"Make sure these endpoints are serving before the orchestrator starts: {endpoints}; "
+                "otherwise rollouts will hang."
             )
 
         orchestrator_cmd = ["orchestrator", "@", (config_dir / ORCHESTRATOR_TOML).as_posix()]
@@ -206,11 +226,14 @@ def rl_local(config: RLConfig):
                 stderr=log_file,
                 env={
                     **os.environ,
-                    **wandb_shared_env,
-                    "WANDB_SHARED_LABEL": "orchestrator",
+                    **DEFAULT_COMMON_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
                     "WANDB_ARGS": json.dumps(start_command),
+                    **config.env_vars,
+                    **config.orchestrator.env_vars,
+                    **wandb_shared_env,
+                    "WANDB_SHARED_LABEL": "orchestrator",
                 },
             )
         processes.append(orchestrator_process)
@@ -252,14 +275,16 @@ def rl_local(config: RLConfig):
                 trainer_cmd,
                 env={
                     **os.environ,
-                    **wandb_shared_env,
-                    "WANDB_SHARED_LABEL": "trainer",
-                    "CUDA_VISIBLE_DEVICES": ",".join(map(str, trainer_gpu_ids)),
-                    "PYTHONUNBUFFERED": "1",
-                    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+                    **DEFAULT_COMMON_ENV_VARS,
+                    **DEFAULT_TRAINER_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
                     "WANDB_ARGS": json.dumps(start_command),
+                    **config.env_vars,
+                    **config.trainer.env_vars,
+                    **wandb_shared_env,
+                    "WANDB_SHARED_LABEL": "trainer",
+                    "CUDA_VISIBLE_DEVICES": ",".join(map(str, trainer_gpu_ids)),
                 },
                 stdout=log_file,
                 stderr=log_file,
@@ -348,6 +373,21 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         kv_offload_device_name=offload.device_name if is_mooncake else "",
     )
 
+    # Per-component env vars: launcher defaults (shared + multi-node-specific) with the
+    # user's config merged on top. Runtime wiring stays in the template.
+    trainer_env_vars = {
+        **DEFAULT_COMMON_ENV_VARS,
+        **DEFAULT_TRAINER_ENV_VARS,
+        **config.env_vars,
+        **config.trainer.env_vars,
+    }
+    orchestrator_env_vars = {**DEFAULT_COMMON_ENV_VARS, **config.env_vars, **config.orchestrator.env_vars}
+    inference_env_vars = (
+        {**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars, **config.inference.env_vars}
+        if config.inference
+        else {}
+    )
+
     if config.deployment.type == "single_node":
         script = template.render(
             **config.slurm.template_vars,
@@ -379,8 +419,11 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_tp=config.inference.parallel.tp,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
             use_deep_gemm=config.inference.use_deep_gemm,
-            prefill_env_overrides=infer_deploy.prefill_env_overrides,
-            decode_env_overrides=infer_deploy.decode_env_overrides,
+            prefill_env_vars=infer_deploy.prefill_env_vars,
+            decode_env_vars=infer_deploy.decode_env_vars,
+            trainer_env_vars=trainer_env_vars,
+            orchestrator_env_vars=orchestrator_env_vars,
+            inference_env_vars=inference_env_vars,
             prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
             decode_vllm_extra_json=vllm_overrides_fragment(infer_deploy.decode_vllm_overrides),
             dp_per_node=config.deployment.gpus_per_node // config.inference.parallel.tp,
@@ -412,6 +455,9 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
+            trainer_env_vars=trainer_env_vars,
+            orchestrator_env_vars=orchestrator_env_vars,
+            inference_env_vars=inference_env_vars,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)

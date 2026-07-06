@@ -32,7 +32,6 @@ freq = 1
 [trainer.model.compile]
 
 [orchestrator]
-training_mode = "rl"
 batch_size = 256
 rollouts_per_example = 8
 max_off_policy_steps = 32
@@ -43,7 +42,7 @@ name = "qwen3"
 [[orchestrator.train.env]]
 # v1 general-agent solver taskset; the tool server is colocated in the harness's modal sandbox.
 taskset = { id = "general-agent-v1", tools = { colocated = true } }
-harness = { id = "default", runtime = { type = "modal" } }
+harness = { id = "null", runtime = { type = "modal" } }
 
 [inference]
 gpu_memory_utilization = 0.85

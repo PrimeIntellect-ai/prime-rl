@@ -1,9 +1,7 @@
 import torch
 from torch import Tensor
 
-
-def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
-    return max(int(key.split(".")[2]) for key in state_dict if key.startswith("model.layers.")) + 1
+from prime_rl.trainer.conversion_utils import get_max_layer_num
 
 
 def _pop_first(state_dict: dict[str, Tensor], keys: tuple[str, ...]) -> Tensor | None:

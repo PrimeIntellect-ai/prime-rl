@@ -107,18 +107,21 @@ def check_loss_goes_down(lines: list[str]):
     return check_number_goes_up_or_down(lines, go_up=False, pattern=r"Loss:?\s+(\d+\.\d{4})")
 
 
-def check_eval_avg_goes_up(lines: list[str], env_name: str):
-    """Assert that the last `Evaluated {env_name} (Step N) | ... | Reward X.XXXX`
-    line reports a higher score than the first one. Use for smoke tests with
-    `interval = 1` evals."""
+def check_final_eval_reward_above(lines: list[str], env_name: str, min_threshold: float):
+    """Assert the LAST `Evaluated {env_name} (Step N) | ... | Reward X.XXXX`
+    line reports a reward above ``min_threshold``.
+
+    Robust for short distill smokes: until the policy converges, eval reward is
+    truncation-dominated noise, so an endpoint "did it go up?" compare is a coin
+    flip (e.g. distillation here doesn't surface until ~step 13). A threshold
+    the converged plateau clears — but the early noise floor doesn't —
+    validates that training actually worked. Pick one between the two."""
     pattern = rf"Evaluated {re.escape(env_name)} .*Reward:?\s+(\d+\.\d{{4}})"
     eval_lines = [line for line in lines if "SUCCESS" in line and re.search(pattern, line)]
     assert len(eval_lines) >= 2, f"Need at least 2 eval lines for {env_name!r}, found {len(eval_lines)}"
-    start = float(re.search(pattern, eval_lines[0]).group(1))
-    end = float(re.search(pattern, eval_lines[-1]).group(1))
-    assert end > start, (
-        f"Eval avg for {env_name!r} did not go up: first={start} last={end}\n"
-        f"first line: {eval_lines[0]}\nlast line: {eval_lines[-1]}"
+    final = float(re.search(pattern, eval_lines[-1]).group(1))
+    assert final >= min_threshold, (
+        f"Final eval reward for {env_name!r} below threshold: {final} < {min_threshold}\nlast line: {eval_lines[-1]}"
     )
 
 

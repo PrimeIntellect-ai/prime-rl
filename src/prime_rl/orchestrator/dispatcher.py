@@ -4,7 +4,7 @@
   A group-scoring task that runs N rollouts in one call reserves N permits.
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched rollout eventually reaches
-  ``out_q`` exactly once as a ``TrainRollout`` / ``EvalRollout``. Failures
+  ``out_q`` exactly once as a ``Rollout``. Failures
   (env error, empty trajectory, task exception, off-policy cancel) carry
   ``trace.error`` set; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
@@ -15,7 +15,9 @@
   the weight update) bumps ``off_policy_steps`` on in-flight train rollouts and
   drops groups past ``max_off_policy_steps``.
   Eval rollouts are measurements for the policy version they started with,
-  so they are allowed to finish even if training advances.
+  so they are allowed to finish even if training advances. Train rollouts
+  sampled from a frozen model never age — their sampler doesn't change
+  with policy updates.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
   count-to-``group_size`` finalization still fires.
 """
@@ -114,7 +116,7 @@ class DispatcherMetrics:
 class RolloutDispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules
-    rollouts under shared capacity, and emits ``FinishedRollout``\\ s to
+    rollouts under shared capacity, and emits ``Rollout``\\ s to
     ``out_q``. The watcher drives ``on_version_pending`` for off-policy
     cancellation; the orchestrator triggers eval epochs."""
 
@@ -125,26 +127,20 @@ class RolloutDispatcher:
         eval_envs: EvalEnvs | None,
         train_source: TrainSource,
         eval_source: EvalSource | None,
-        inference: InferencePool,
-        eval_inference: InferencePool,
+        policy_pool: InferencePool,
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
-        training_mode: Literal["rl", "opd", "sft"],
-        use_cache_salt: bool = True,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
         self.eval_envs = eval_envs
-        # Train rollouts go to ``inference`` (the teacher in SFT mode);
-        # eval always evaluates the student, so it uses ``eval_inference``.
-        self.inference = inference
-        self.eval_inference = eval_inference
+        # Train rollouts go to the env sampler's pool; eval always
+        # evaluates the policy.
+        self.policy_pool = policy_pool
         self.train_source = train_source
         self.eval_source = eval_source
-        self.training_mode = training_mode
-        self.use_cache_salt = use_cache_salt
         self.max_off_policy_steps = max_off_policy_steps
 
         self.max_inflight = max_inflight_rollouts
@@ -174,14 +170,13 @@ class RolloutDispatcher:
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
 
-    @property
-    def train_model_name(self) -> str:
-        """Model name for *train* rollouts. In SFT mode train data comes from
-        the teacher pool, so use its model name; otherwise the live student
-        policy. (Eval always uses ``policy.model_name`` — the student.)"""
-        if self.training_mode == "sft":
-            return self.inference.model_name
-        return self.policy.model_name
+    def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
+        """``(pool, model_name, is_live)`` for *train* rollouts of this env —
+        the env sampler's pool. (Eval always uses the policy.)"""
+        sampler = self.train_envs.get(env_name).sampler
+        if sampler.samples_from_live_policy:
+            return sampler.pool, self.policy.model_name, True
+        return sampler.pool, sampler.pool.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -207,11 +202,20 @@ class RolloutDispatcher:
         return len(self.eval_source) if self.eval_source is not None else 0
 
     @property
+    def eval_has_work(self) -> bool:
+        """Eval has work while its source queue is non-empty OR any opened eval group still has
+        rollouts to schedule. An example leaves ``eval_source`` when its group opens
+        (``next_fresh_group``), but its ``group_size`` rollouts dispatch one at a time across
+        ``fill_inflight`` passes — so the queue can be empty while a group is still mid-schedule."""
+        return bool(self.eval_source) or any(
+            g.kind == "eval" and g.rollouts_to_schedule > 0 for g in self.groups.values()
+        )
+
+    @property
     def is_idle(self) -> bool:
-        """True once nothing is in flight, no eval queued, and ``out_q`` is
-        empty — the pipeline has fully drained."""
-        eval_drained = self.eval_source is None or not self.eval_source
-        return not self.inflight and eval_drained and self.out_q.empty()
+        """True once nothing is in flight, no eval work remains (queued *or* a partly-scheduled eval
+        group), and ``out_q`` is empty — the pipeline has fully drained."""
+        return not self.inflight and not self.eval_has_work and self.out_q.empty()
 
     def disable_train_scheduling(self) -> None:
         """Stop scheduling new train rollouts; in-flight train + any
@@ -277,6 +281,10 @@ class RolloutDispatcher:
         for meta in self.inflight.values():
             if meta.kind != "train":
                 continue
+            # Frozen-sourced rollouts never go stale — their sampler doesn't
+            # change with policy updates.
+            if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
+                continue
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:
                 stale_groups.add(meta.group_id)
@@ -308,10 +316,7 @@ class RolloutDispatcher:
                 # PREFER_EVAL is only entered when the orchestrator triggers
                 # eval, which requires ``eval_source`` to be configured
                 assert self.eval_source is not None
-                eval_has_work = bool(self.eval_source) or any(
-                    g.kind == "eval" and g.rollouts_to_schedule > 0 for g in self.groups.values()
-                )
-                if not eval_has_work:
+                if not self.eval_has_work:
                     # Eval source + all eval groups fully dispatched. Flip
                     # to PREFER_TRAIN so any remaining permits go to train
                     # while the in-flight eval tail completes naturally
@@ -394,14 +399,15 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the rollout pool (teacher in SFT) via the
-        # renderer/token train client. Eval always evaluates the student and
+        # Train rollouts use the env sampler's pool via the
+        # renderer/token train client. Eval always evaluates the policy and
         # goes through the eval client (chat-completions) — the same path the
         # legacy orchestrator used, so eval scores stay comparable.
         if group.kind == "eval":
-            pool, model_name = self.eval_inference, self.policy.model_name
+            pool, model_name = self.policy_pool, self.policy.model_name
+            live_sourced = True
         else:
-            pool, model_name = self.inference, self.train_model_name
+            pool, model_name, live_sourced = self._train_pool_for(group.env_name)
 
         # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
@@ -422,7 +428,10 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        if group.kind == "eval" or self.use_cache_salt:
+        # Frozen-sourced train rollouts hit a frozen pool; salting per policy
+        # version would invalidate its prefix cache every weight update for
+        # no reason.
+        if live_sourced:
             cache_salt = str(group.policy_version_at_start)
         else:
             cache_salt = None
