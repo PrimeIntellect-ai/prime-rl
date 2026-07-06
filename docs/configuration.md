@@ -198,7 +198,7 @@ Key knobs on the `taskset` table:
 - `records` globs are frozen to the concrete matched files at config validation, so every env-server pool worker builds the identical task list — point it at a finished run's records, not a live producer's output dir.
 - Lines that don't validate as the source taskset's task type (e.g. other envs' rollouts in a mixed `train_rollouts.jsonl`) are skipped and counted. The filter is structural: for a source whose task type has no distinguishing required fields, use single-env record files instead.
 
-Group rollouts of one seeded task form a regular GRPO group, so a group-relative algorithm gets contrastive signal at exactly the resumed state. The sandbox is fresh on re-entry: `setup` runs anew, and no filesystem state from the source rollout is replayed until sandbox snapshotting lands (records will then carry snapshot refs that the replay taskset restores automatically). Other recycling schemes can subclass `ReplayTaskset` and override `seeds()` — see `deps/verifiers/verifiers/v1/tasksets/replay/`.
+Group rollouts of one seeded task form a regular GRPO group, so a group-relative algorithm gets contrastive signal at exactly the resumed state. The sandbox is fresh on re-entry: `setup` runs anew, and no filesystem state from the source rollout is replayed. Records carrying sandbox snapshot refs (`trace.info["snapshots"]`) restrict resume points to snapshotted anchors and restore the ref during `setup` — no runtime implements snapshot capture yet, so restore fails loudly if refs ever appear before support lands. Other recycling schemes can subclass `ReplayTaskset` and override `seeds()` — see `deps/verifiers/verifiers/v1/tasksets/replay/`.
 
 ### Environment Variables
 
