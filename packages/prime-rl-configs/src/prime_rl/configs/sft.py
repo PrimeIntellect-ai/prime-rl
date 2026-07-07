@@ -4,6 +4,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
+from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.shared import (
     EnvVars,
@@ -271,6 +272,31 @@ class SFTConfig(BaseConfig):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
         return self
+
+    @model_validator(mode="after")
+    def validate_auto_renderer_resolves(self):
+        """Reject renderer auto-resolution misses at config time (mirrors the
+        OrchestratorConfig validator). Resolution is an exact-name lookup, so
+        it is fully decidable here; fake-data runs without validation need no
+        renderer and are exempt.
+        """
+        if not isinstance(self.renderer, AutoRendererConfig):
+            return self
+        if self.data.type == "fake" and self.val is None:
+            return self
+        model_id = self.tokenizer.name or self.model.name
+        if model_id in MODEL_RENDERER_MAP:
+            return self
+        raise ValueError(
+            f"renderer.name='auto' but {model_id!r} is not in "
+            f"renderers.base.MODEL_RENDERER_MAP, so it would silently fall back to "
+            f"DefaultRenderer. Pick one: "
+            f"(a) [renderer] name='default' — for fine-tunes / vendored mirrors with "
+            f"custom chat templates (DefaultRenderer calls apply_chat_template). "
+            f"(b) [renderer] name=<model-specific renderer> — if {model_id!r} is "
+            f"template-identical to a mapped family (and ideally also add it upstream "
+            f"to renderers.base.MODEL_RENDERER_MAP)."
+        )
 
     @model_validator(mode="after")
     def validate_pack_function(self):
