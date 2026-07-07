@@ -38,10 +38,16 @@ class UpdateRequest(BaseModel):
     loss_mask: list[bool]
     seq_no: int
     qa_pairs: list[dict] | None = None
-    """Cartridges-style Q&A pairs (`{question, answer}` text), rendered and trained by the
-    service with the base model's chat template, loss on the answers."""
+    """Cartridges-style Q&A pairs (`{type, question, answer}` text), rendered and trained
+    by the service with the base model's chat template, loss on the answers."""
     train_rollout: bool = True
     """Whether the raw branch sequence itself joins the training set (False = Q&A only)."""
+    system_prompt: str | None = None
+    """The rollout's system prompt: each standalone Q&A rendering is conditioned on it
+    (loss-masked) so pairs are learned in the same frame the rollout ran under."""
+    tools: list[dict] | None = None
+    """The rollout's tool schemas (OpenAI wire format), passed to the chat template's
+    `tools=` so tool lessons are learned next to the tool descriptions (loss-masked)."""
 
 
 class UpdateResponse(BaseModel):
@@ -120,6 +126,8 @@ def build_app(config: TTTServiceConfig, trainer: "TTTTrainer | None" = None) -> 
                         request.seq_no,
                         request.qa_pairs,
                         request.train_rollout,
+                        request.system_prompt,
+                        request.tools,
                     )
                 except ValueError as e:
                     raise HTTPException(status_code=409, detail=str(e)) from e

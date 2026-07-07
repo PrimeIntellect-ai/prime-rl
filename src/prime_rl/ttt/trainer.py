@@ -131,33 +131,44 @@ class TTTTrainer:
 
     # -- the update -------------------------------------------------------------------------
 
-    def _tokenize_qa(self, qa_pairs: list[dict]) -> list[tuple[list[int], list[bool]]]:
-        """Render each Q&A pair standalone with the base model's chat template (no branch
-        context — that's the point: the knowledge must come from the weights), loss on the
-        answer tokens only. Returns `(token_ids, loss_mask)` per pair; pairs whose answer
-        renders to nothing are skipped."""
+    def _tokenize_qa(
+        self,
+        qa_pairs: list[dict],
+        system_prompt: str | None = None,
+        tools: list[dict] | None = None,
+    ) -> list[tuple[list[int], list[bool]]]:
+        """Render each Q&A pair standalone with the base model's chat template — no branch
+        context (that's the point: the knowledge must come from the weights), but
+        conditioned on the rollout's system prompt and tool schemas (chat templates render
+        tools into the system block), so tool lessons are learned next to the tool
+        descriptions. Loss on the answer tokens only; the system/question prefix is
+        context. Returns `(token_ids, loss_mask)` per pair; pairs whose answer renders to
+        nothing are skipped."""
         if self._tokenizer is None:
             from transformers import AutoTokenizer
 
             self._tokenizer = AutoTokenizer.from_pretrained(self.config.model.name)
 
         def render(conversation: list[dict], generation_prompt: bool) -> list[int]:
-            out = self._tokenizer.apply_chat_template(
-                conversation, tokenize=True, add_generation_prompt=generation_prompt
-            )
+            kwargs: dict = {"tokenize": True, "add_generation_prompt": generation_prompt}
+            if tools:
+                kwargs["tools"] = tools
+            out = self._tokenizer.apply_chat_template(conversation, **kwargs)
             # transformers returns a list of ids or (newer) a BatchEncoding.
             return list(out["input_ids"] if not isinstance(out, list) else out)
 
+        head = [{"role": "system", "content": system_prompt}] if system_prompt else []
         sequences: list[tuple[list[int], list[bool]]] = []
         for pair in qa_pairs:
             if not str(pair.get("answer", "")).strip():
                 continue  # a blank answer renders only template scaffold — nothing to learn
             conversation = [
+                *head,
                 {"role": "user", "content": pair["question"]},
                 {"role": "assistant", "content": pair["answer"]},
             ]
             full = render(conversation, generation_prompt=False)
-            prompt = render(conversation[:1], generation_prompt=True)
+            prompt = render(conversation[:-1], generation_prompt=True)
             prompt_len = len(prompt) if full[: len(prompt)] == prompt else 0
             if len(full) - prompt_len < 1:
                 continue
@@ -174,6 +185,8 @@ class TTTTrainer:
         seq_no: int,
         qa_pairs: list[dict] | None = None,
         train_rollout: bool = True,
+        system_prompt: str | None = None,
+        tools: list[dict] | None = None,
     ) -> dict:
         """One TTT update: `steps_per_update` gradient steps, then a versioned PEFT
         checkpoint. The training set is the branch's raw sequence (`train_rollout`), the
@@ -195,7 +208,7 @@ class TTTTrainer:
         if train_rollout:
             sequences.append((token_ids, loss_mask))
         if qa_pairs:
-            sequences.extend(self._tokenize_qa(qa_pairs))
+            sequences.extend(self._tokenize_qa(qa_pairs, system_prompt, tools))
         sequences = [(ids, mask) for ids, mask in sequences if len(ids) >= 2 and any(mask[1:])]
         if not sequences:
             raise ValueError("no trainable sequences (empty loss masks / QA rendered empty)")

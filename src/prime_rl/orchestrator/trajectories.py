@@ -91,24 +91,35 @@ def qa_recycle_samples(trace: vf.Trace, tokenizer, env_name: str = "") -> list[T
     """Build ce-routed training samples from the rollout's recorded TTT Q&A pairs — the
     "recycle the Q&A compute into a permanent weight update" step: each pair (text, from
     ``trace.info["ttt"]``) is rendered standalone with the policy tokenizer's chat template
-    and routed entirely to the **ce** loss component (answer tokens; ``rl_weights`` all
-    zero, no advantages), so it rides the same training batch as the RL samples without
-    touching the policy-gradient math. QA samples carry no adapter ref — they train the
-    live policy weights."""
+    — conditioned on the rollout's system prompt + tool schemas (the same frame the adapter
+    training used), loss-masked — and routed entirely to the **ce** loss component (answer
+    tokens; ``rl_weights`` all zero, no advantages), so it rides the same training batch as
+    the RL samples without touching the policy-gradient math. QA samples carry no adapter
+    ref — they train the live policy weights."""
+    ttt_info = trace.info.get("ttt", {})
+    system_prompt = ttt_info.get("system_prompt")
+    tools = ttt_info.get("tools")
+    head = [{"role": "system", "content": system_prompt}] if system_prompt else []
+    template_kwargs: dict = {"tools": tools} if tools else {}
     samples: list[TrainingSample] = []
-    for update in trace.info.get("ttt", {}).get("updates", []):
+    for update in ttt_info.get("updates", []):
         for pair in update.get("qa_pairs") or []:
             question = str(pair.get("question", ""))
             answer = str(pair.get("answer", ""))
             if not answer.strip():
                 continue
             conversation = [
+                *head,
                 {"role": "user", "content": question},
                 {"role": "assistant", "content": answer},
             ]
-            full = tokenizer.apply_chat_template(conversation, tokenize=True, add_generation_prompt=False)
+            full = tokenizer.apply_chat_template(
+                conversation, tokenize=True, add_generation_prompt=False, **template_kwargs
+            )
             full = list(full["input_ids"] if not isinstance(full, list) else full)
-            prompt = tokenizer.apply_chat_template(conversation[:1], tokenize=True, add_generation_prompt=True)
+            prompt = tokenizer.apply_chat_template(
+                conversation[:-1], tokenize=True, add_generation_prompt=True, **template_kwargs
+            )
             prompt = list(prompt["input_ids"] if not isinstance(prompt, list) else prompt)
             prompt_len = len(prompt) if full[: len(prompt)] == prompt else 0
             answer_len = len(full) - prompt_len
@@ -145,10 +156,26 @@ def trace_to_samples(
     pixel tensors) and `mm_token_type_ids` (the renderer's `mm_token_type_id_map` applied to
     the branch tokens). Branches with no sampled tokens (e.g. an openai client carrying none)
     yield nothing.
+
+    A sampled node is trainable exactly ONCE across the trace: branches sharing a sampled
+    prefix (TTT Q&A side-generations fork off the trajectory's leaf; subagent forks) re-carry
+    those tokens as pure context (mask False) in every branch after the first, so shared
+    tokens never receive N× gradient weight. Node order follows `trace.nodes` (creation
+    order), so the "first" branch containing a node is deterministic.
     """
     samples: list[TrainingSample] = []
+    trained_nodes: set[int] = set()  # id(node) of sampled nodes already granted their mask
     for branch in trace.branches:
-        mask = branch.sampled_mask
+        mask: list[bool] = []
+        for node in branch.nodes:
+            if node.sampled and any(node.mask):
+                if id(node) in trained_nodes:
+                    mask.extend([False] * len(node.mask))  # context here; trained elsewhere
+                else:
+                    trained_nodes.add(id(node))
+                    mask.extend(node.mask)
+            else:
+                mask.extend(node.mask)
         if not any(mask):
             continue
         token_ids = branch.token_ids

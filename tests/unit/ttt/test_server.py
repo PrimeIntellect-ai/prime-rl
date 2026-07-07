@@ -19,10 +19,23 @@ class FakeTrainer:
         self.released: list[str] = []
         self.fail_with: Exception | None = None
 
-    def update(self, rollout_id, adapter_name, token_ids, loss_mask, seq_no, qa_pairs=None, train_rollout=True):
+    def update(
+        self,
+        rollout_id,
+        adapter_name,
+        token_ids,
+        loss_mask,
+        seq_no,
+        qa_pairs=None,
+        train_rollout=True,
+        system_prompt=None,
+        tools=None,
+    ):
         if self.fail_with is not None:
             raise self.fail_with
-        self.updates.append((rollout_id, adapter_name, token_ids, loss_mask, seq_no, qa_pairs, train_rollout))
+        self.updates.append(
+            (rollout_id, adapter_name, token_ids, loss_mask, seq_no, qa_pairs, train_rollout, system_prompt, tools)
+        )
         self.adapters[rollout_id] = type("S", (), {"version": seq_no})()
         return {
             "version": seq_no,
@@ -143,6 +156,7 @@ async def test_update_forwards_qa_fields(service):
             },
         )
         assert response.status_code == 200
-        (*_, qa_pairs, train_rollout) = trainer.updates[0]
+        (*_, qa_pairs, train_rollout, system_prompt, tools) = trainer.updates[0]
         assert qa_pairs == [{"question": "q1", "answer": "a1"}]
         assert train_rollout is False
+        assert system_prompt is None and tools is None

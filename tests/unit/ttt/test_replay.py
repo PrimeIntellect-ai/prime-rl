@@ -277,3 +277,88 @@ def test_ttt_gc_lifecycle(tmp_path):
     assert shipped_dir.exists()  # step 7 not consumed yet
     gc.on_new_version(7)
     assert not shipped_dir.exists()
+
+
+def test_shared_sampled_prefix_trained_once():
+    """Branches sharing a SAMPLED prefix (QA side-branches, subagent forks) grant each
+    sampled node its mask exactly once — the first branch trains it, later branches carry
+    it as context — so shared tokens never get N× gradient weight."""
+    import verifiers.v1 as vf
+    from verifiers.v1.graph import MessageNode
+    from verifiers.v1.types import AssistantMessage, UserMessage
+
+    from prime_rl.orchestrator.trajectories import trace_to_samples
+
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    # Shared trajectory: user -> assistant (sampled).
+    trace.nodes.append(MessageNode(parent=None, message=UserMessage(content="u"), token_ids=[1], mask=[False]))
+    trace.nodes.append(
+        MessageNode(
+            parent=0,
+            message=AssistantMessage(content="a"),
+            sampled=True,
+            token_ids=[2, 3],
+            mask=[True, True],
+            logprobs=[-0.1, -0.2],
+        )
+    )
+    # Two QA-style forks off the assistant leaf, each with its own sampled tail.
+    for k in (0, 1):
+        base = len(trace.nodes)
+        trace.nodes.append(
+            MessageNode(parent=1, message=UserMessage(content=f"q{k}"), token_ids=[10 + k], mask=[False])
+        )
+        trace.nodes.append(
+            MessageNode(
+                parent=base,
+                message=AssistantMessage(content=f"ans{k}"),
+                sampled=True,
+                token_ids=[20 + k],
+                mask=[True],
+                logprobs=[-0.3],
+            )
+        )
+
+    samples = trace_to_samples(trace, env_name="e")
+    assert len(samples) == 2  # two leaves -> two branches
+    # The shared assistant tokens [2, 3] are mask-True in exactly one sample.
+    trained_counts = [sum(s.mask[1:3]) for s in samples]  # positions of tokens 2,3
+    assert sorted(trained_counts) == [0, 2]
+    # Each branch's own tail is trainable in its own sample.
+    for s in samples:
+        assert s.mask[-1] is True or s.mask[-1] == True  # noqa: E712
+
+
+def test_qa_recycle_conditions_on_system_and_tools():
+    """Recycled QA samples render [system, Q, A] with the rollout's tools — the same frame
+    the adapter training used — with loss (ce) only on the answer."""
+    from prime_rl.orchestrator.trajectories import qa_recycle_samples
+
+    class RecordingTokenizer:
+        def __init__(self):
+            self.calls = []
+
+        def apply_chat_template(self, conversation, tokenize=True, add_generation_prompt=False, tools=None):
+            self.calls.append({"roles": [m["role"] for m in conversation], "tools": tools})
+            # 2 tokens per message + 1 for the generation prompt.
+            n = 2 * len(conversation) + (1 if add_generation_prompt else 0)
+            return list(range(n))
+
+    info = {
+        "ttt": {
+            "system_prompt": "sys",
+            "tools": [{"type": "function", "function": {"name": "search"}}],
+            "updates": [{"version": 1, "qa_pairs": [{"question": "q", "answer": "a"}]}],
+        }
+    }
+    trace = make_trace([1, 1], info=info)
+    tokenizer = RecordingTokenizer()
+    (sample,) = qa_recycle_samples(trace, tokenizer, env_name="e")
+    # Rendered with system head + tools on both the full and the prompt-only calls.
+    assert all(c["roles"][0] == "system" for c in tokenizer.calls)
+    assert all(c["tools"] is not None for c in tokenizer.calls)
+    # full = 6 tokens ([sys, user, assistant]), prompt = 5 ([sys, user] + gen prompt) but the
+    # prefix check fails (prompt ids 0..4 == full ids 0..4) -> prompt_len 5, answer len 1.
+    assert len(sample.token_ids) == 6
+    assert sample.mask == [False] * 5 + [True]
+    assert sample.ce_weights == [0.0] * 5 + [1.0]
