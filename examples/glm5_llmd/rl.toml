@@ -98,17 +98,9 @@ extra_body = {chat_template_kwargs = {clear_thinking = false}}
 
 
 [[orchestrator.train.env]]
-id = "rlm_swe"
 name = "r2e"
-num_workers = 16
-
-[orchestrator.train.env.args]
-max_turns = 300
-timeout_seconds = 21600
-summarize_at_tokens = [35000, 80000]
-poll_interval = 5
-rlm_ref = "907115a79b2a50d193863e7ea1f3550acb4386f0"
-labels = ["glm5-llmd"]
+taskset = { id = "r2e-gym-v1" }
+harness = { id = "rlm", runtime = { type = "prime", labels = ["glm5-llmd"] } }
 
 [inference]
 enable_expert_parallel = true

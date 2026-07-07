@@ -11,18 +11,17 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
+from prime_rl.trainer.conversion_utils import get_max_layer_num
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
-from prime_rl.trainer.weights import get_max_layer_num
+from prime_rl.utils.client import NCCL_READY_MARKER
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 from prime_rl.utils.vlm import get_layer_prefix
-
-NCCL_READY_MARKER = "NCCL_READY"
 
 
 def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
@@ -225,9 +224,11 @@ class NCCLWeightBroadcast(WeightBroadcast):
             if not self.multi_run_manager.ready_to_update[idx]:
                 continue
             try:
+                # pack() already advanced progress to the next step, so the model we just
+                # trained — policy v(step-1) — broadcasts to broadcasts/step_{step-1}.
                 save_dir = get_step_path(
                     get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
-                    self.multi_run_manager.progress[idx].step,
+                    self.multi_run_manager.progress[idx].step - 1,
                 )
                 notified_runs.append((idx, save_dir))
             except FileNotFoundError:

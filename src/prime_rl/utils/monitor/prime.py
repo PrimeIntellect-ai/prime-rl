@@ -349,8 +349,8 @@ class PrimeMonitor(Monitor):
                     "messages": [m.model_dump(mode="json") for m in branch.messages],
                     "reward": rollout.reward,
                     "advantage": rollout.scalar_advantage(),
-                    "num_input_tokens": branch.prompt_len,
-                    "num_output_tokens": branch.completion_len,
+                    "num_input_tokens": branch.num_input_tokens,
+                    "num_output_tokens": branch.num_output_tokens,
                 }
                 for branch in branches
             ]
@@ -373,8 +373,8 @@ class PrimeMonitor(Monitor):
                     "advantage": rollout.scalar_advantage(),
                     "metrics": json.dumps(rollout.metrics),
                     "timing": rollout.timing.model_dump_json(),
-                    "num_input_tokens": branches[-1].prompt_len,
-                    "num_output_tokens": branches[-1].completion_len,
+                    "num_input_tokens": branches[-1].num_input_tokens,
+                    "num_output_tokens": branches[-1].num_output_tokens,
                     "created_at": now,
                 }
             )

@@ -1,10 +1,7 @@
 import torch
 from torch import Tensor
 
-
-def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
-    """Get the maximum number of layers in the model."""
-    return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
+from prime_rl.trainer.conversion_utils import get_max_layer_num
 
 
 def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):

@@ -274,25 +274,22 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
 
 
 # Disaggregated prefill/decode inference. Each replica is split into separate
-# prefill and decode node groups. Requires NIXL for KV transfer and a vllm-router
-# for request routing. Multi-replica: set ``num_prefill_replicas`` /
-# ``num_decode_replicas`` to run multiple independent vLLM instances within the
-# prefill / decode node groups. E.g. ``num_prefill_nodes=4, num_prefill_replicas=2``
-# creates two prefill vLLM instances each spanning 2 nodes (EP16 with 8 GPUs/node).
+# prefill and decode node groups. Requires NIXL for KV transfer and a router for
+# request routing.
 class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     type: Literal["disaggregated"] = "disaggregated"
 
-    num_prefill_nodes: int = Field(1, ge=1)
-    """Total prefill nodes."""
+    prefill_nodes_per_replica: int = Field(1, ge=1)
+    """Nodes in each prefill vLLM instance."""
 
-    num_decode_nodes: int = Field(1, ge=1)
-    """Total decode nodes."""
+    decode_nodes_per_replica: int = Field(1, ge=1)
+    """Nodes in each decode vLLM instance."""
 
     num_prefill_replicas: int = Field(1, ge=1)
-    """Independent prefill vLLM instances. Must evenly divide ``num_prefill_nodes``."""
+    """Independent prefill vLLM instances."""
 
     num_decode_replicas: int = Field(1, ge=1)
-    """Independent decode vLLM instances. Must evenly divide ``num_decode_nodes``."""
+    """Independent decode vLLM instances."""
 
     prefill_port: int = 8100
     """Port for prefill vLLM instances."""
@@ -313,32 +310,48 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     """Extra vLLM config options merged into --vllm-extra only for decode ranks (SLURM only)."""
 
     @property
+    def num_prefill_nodes(self) -> int:
+        return self.prefill_nodes_per_replica * self.num_prefill_replicas
+
+    @property
+    def num_decode_nodes(self) -> int:
+        return self.decode_nodes_per_replica * self.num_decode_replicas
+
+    @property
     def num_nodes(self) -> int:
         return self.num_prefill_nodes + self.num_decode_nodes
 
-    @model_validator(mode="after")
-    def validate_replicas_divide_nodes(self):
-        if self.num_prefill_nodes % self.num_prefill_replicas != 0:
-            raise ValueError(
-                f"num_prefill_replicas ({self.num_prefill_replicas}) must evenly divide "
-                f"num_prefill_nodes ({self.num_prefill_nodes})"
-            )
-        if self.num_decode_nodes % self.num_decode_replicas != 0:
-            raise ValueError(
-                f"num_decode_replicas ({self.num_decode_replicas}) must evenly divide "
-                f"num_decode_nodes ({self.num_decode_nodes})"
-            )
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_node_counts(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        data = dict(data)
+
+        def normalize_total_nodes(total_key: str, per_replica_key: str, replicas_key: str) -> None:
+            has_total = total_key in data
+            has_per_replica = per_replica_key in data
+            if has_total and has_per_replica:
+                raise ValueError(f"Set only {per_replica_key}; {total_key} is derived from it.")
+            if not has_total:
+                return
+
+            total_nodes = int(data.pop(total_key))
+            replicas = int(data.get(replicas_key, 1))
+            if total_nodes % replicas != 0:
+                raise ValueError(f"{total_key} ({total_nodes}) must be divisible by {replicas_key} ({replicas}).")
+            data[per_replica_key] = total_nodes // replicas
+
+        normalize_total_nodes("num_prefill_nodes", "prefill_nodes_per_replica", "num_prefill_replicas")
+        normalize_total_nodes("num_decode_nodes", "decode_nodes_per_replica", "num_decode_replicas")
+        return data
 
 
 InferenceDeploymentConfig: TypeAlias = Annotated[
     SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig | DisaggregatedInferenceDeploymentConfig,
     Field(discriminator="type"),
 ]
-
-
-class InferenceExperimentalConfig(BaseConfig):
-    pass
 
 
 class InferenceConfig(BaseConfig):
@@ -420,6 +433,9 @@ class InferenceConfig(BaseConfig):
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
 
+    enable_fp32_router_logits: bool = True
+    """Emit fp32 MoE router logits for DeepSeek-family models (incl. GLM-5.x) by setting ``out_dtype=float32`` on the gate: the bf16×bf16 gate GEMM writes its fp32 accumulator out unrounded instead of truncating logits to bf16 before expert scoring. Matches fp32-routed checkpoints (e.g. GLM-5.x, trained with Megatron ``--moe-router-dtype fp32``); pairs with ``trainer.model.moe_router_dtype = "float32"``. Implemented as a monkey-patch over vLLM's DeepseekV2MoE, activated by setting ``additional_config["fp32_router_logits"] = True`` on the vLLM config."""
+
     vllm_extra: dict[str, Any] = {}
     """Extra arguments forwarded to vLLM. Applied as attributes on the vLLM namespace after config translation."""
 
@@ -435,8 +451,6 @@ class InferenceConfig(BaseConfig):
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
-
-    experimental: InferenceExperimentalConfig = InferenceExperimentalConfig()
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
@@ -613,6 +627,10 @@ class InferenceConfig(BaseConfig):
         if self.enable_fp32_lm_head:
             existing = getattr(namespace, "additional_config", None) or {}
             existing["fp32_lm_head"] = True
+            rsetattr(namespace, "additional_config", existing)
+        if self.enable_fp32_router_logits:
+            existing = getattr(namespace, "additional_config", None) or {}
+            existing["fp32_router_logits"] = True
             rsetattr(namespace, "additional_config", existing)
 
         # Remove chat_template if not set (vLLM doesn't accept None)

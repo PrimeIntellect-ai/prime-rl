@@ -54,7 +54,7 @@ from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_bl
 from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.moe import LatentMoE, MoE
+from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -358,6 +358,29 @@ def freeze_moe_router(model: nn.Module) -> None:
         raise ValueError("No MoE router parameters found to freeze. Is this a MoE model?")
 
     logger.info(f"Froze {num_frozen} MoE router parameters")
+
+
+def apply_fp32_moe_router(model: nn.Module) -> None:
+    """Cast MoE router gates to fp32 so routing runs in fp32 in forward and backward.
+
+    The FSDP bf16 cast exemption is applied separately in `setup_fsdp`.
+    """
+    logger = get_logger()
+    language_model = get_language_model(model)
+    num_routers = 0
+
+    for layer in language_model.layers:
+        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
+        if isinstance(mlp, (MoE, LatentMoE)):
+            mlp.router.to(torch.float32)
+            if isinstance(mlp.router, TokenChoiceTopKRouter):
+                mlp.router.fp32_gate = True
+            num_routers += 1
+
+    # No-op for non-MoE and HF-impl models: moe_router_dtype='float32' is the default,
+    # so absence of custom-impl MoE routers is the common case, not an error.
+    if num_routers > 0:
+        logger.info(f"Running {num_routers} MoE router gates in fp32")
 
 
 def freeze_sparse_indexer(model: nn.Module) -> None:
@@ -694,6 +717,17 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
             block_mlp.experts.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
 
+        if config.moe_router_dtype == "float32" and isinstance(block_mlp, (MoE, LatentMoE)):
+            # Own FSDP unit with an fp32 policy so the gate weight is not cast to
+            # bf16 for forward and its gradients reduce in fp32.
+            fully_shard(
+                block_mlp.router,
+                mesh=hsdp_mesh,
+                mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
+                offload_policy=offload_policy,
+                reshard_after_forward=config.reshard_after_forward,
+            )
+
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,
@@ -747,7 +781,11 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         if next_transformer_block is not None:
             next_mlp = getattr(next_transformer_block, "mlp", None)
             if next_mlp is not None and isinstance(next_mlp, (MoE, LatentMoE)):
-                transformer_block.set_modules_to_forward_prefetch([next_transformer_block, next_mlp.experts])
+                prefetch_modules = [next_transformer_block]
+                if isinstance(next_mlp.router, FSDPModule):
+                    prefetch_modules.append(next_mlp.router)
+                prefetch_modules.append(next_mlp.experts)
+                transformer_block.set_modules_to_forward_prefetch(prefetch_modules)
             else:
                 transformer_block.set_modules_to_forward_prefetch([next_transformer_block])
         elif language_model.norm is not None and model.lm_head is not None:
@@ -768,7 +806,10 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         if prev_transformer_block is not None:
             prev_mlp = getattr(prev_transformer_block, "mlp", None)
             if prev_mlp is not None and isinstance(prev_mlp, (MoE, LatentMoE)):
-                transformer_block.set_modules_to_backward_prefetch([prev_transformer_block, prev_mlp.experts])
+                prefetch_modules = [prev_transformer_block, prev_mlp.experts]
+                if isinstance(prev_mlp.router, FSDPModule):
+                    prefetch_modules.append(prev_mlp.router)
+                transformer_block.set_modules_to_backward_prefetch(prefetch_modules)
             else:
                 transformer_block.set_modules_to_backward_prefetch([prev_transformer_block])
         elif embed_module is not None:
@@ -1149,6 +1190,9 @@ def setup_model(
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
+
+    if config.moe_router_dtype == "float32":
+        apply_fp32_moe_router(model)
 
     # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
     # never trainable. Freeze it so optimizer state stays symmetric across checkpoint

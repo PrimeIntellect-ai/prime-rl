@@ -407,8 +407,9 @@ async def update_weights(
     weight update, then resumes. This ensures all DP workers are idle and can
     participate in the collective weight transfer.
 
-    Note: The server-side /update_weights endpoint automatically resets the prefix cache
-    to invalidate any cached KV states computed with the old weights.
+    Note: the prefix cache is intentionally not reset on weight update. The orchestrator
+    salts the prefix cache per weight version (``cache_salt`` in the sampling request, see
+    ``orchestrator/envs.py``), so KV computed under old weights is never reused.
     """
     logger = get_logger()
 
@@ -470,8 +471,9 @@ LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
-    Uses our wrapper endpoint that also resets the prefix cache to invalidate
-    KV states computed with old weights.
+    Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not reset
+    here; the orchestrator salts it per weight version (see ``orchestrator/envs.py``) so
+    KV computed under old weights is never reused.
 
     Retries with exponential backoff if the adapter files are not found,
     which can happen due to NFS propagation delays.
