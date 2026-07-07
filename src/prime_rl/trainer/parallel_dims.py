@@ -278,12 +278,16 @@ def _is_moe_model(config: ModelConfig) -> bool:
     return hasattr(model_config, "num_experts") or hasattr(model_config, "n_routed_experts")
 
 
-def resolve_ep(config: ModelConfig) -> None:
+def resolve_ep(config: ModelConfig, world_size: int | None = None) -> None:
     """Resolve ``ep="auto"`` in-place to a concrete integer.
 
     For MoE models, resolves to ``min(fsdp_island_size, 8)`` where
     ``fsdp_island_size = world_size // dp_replicate``. For non-MoE
     models, resolves to 1 (no-op).
+
+    ``world_size`` defaults to the initialized process group's size; pass it
+    explicitly to resolve for a hypothetical allocation without ``dist`` being
+    initialized (used by the ``rl --check`` preflight).
     """
     if config.ep != "auto":
         return
@@ -294,7 +298,8 @@ def resolve_ep(config: ModelConfig) -> None:
         get_logger().info(f"EP auto: impl='{config.impl}' does not support EP, resolving ep=1")
         return
 
-    world_size = dist.get_world_size()
+    if world_size is None:
+        world_size = dist.get_world_size()
 
     if not _is_moe_model(config):
         config.ep = 1

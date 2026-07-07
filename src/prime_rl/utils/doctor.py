@@ -193,13 +193,32 @@ def check_parallelism(config: "RLConfig", probe: HostProbe) -> list[CheckResult]
     if config.deployment.type != "single_node":
         return [CheckResult("parallelism", CheckStatus.SKIP, "multi-node — validated at config parse time")]
 
-    from prime_rl.trainer.parallel_dims import get_parallel_dims  # deferred: imports torch
+    from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep  # deferred: imports torch
 
     model = config.trainer.model
     world_size = config.deployment.num_train_gpus
-    # ep="auto" is resolved against the model config at trainer startup; only
-    # an explicit integer ep can be validated here.
-    resolved_model = model if isinstance(model.ep, int) else model.model_copy(update={"ep": 1})
+    resolved_model = model.model_copy()
+    ep_note = ""
+    if not isinstance(model.ep, int):
+        # Run the trainer's real auto-EP resolution (MoE detection needs the HF
+        # model config — cached locally or a tiny download) so EP divisibility
+        # is validated with the value the trainer will actually use.
+        try:
+            resolve_ep(resolved_model, world_size=world_size)
+            ep_note = f" × ep={resolved_model.ep} (auto)"
+        except ValueError as e:
+            # Genuine startup failure (e.g. ep_comm_backend requires ep > 1)
+            return [
+                CheckResult(
+                    "parallelism",
+                    CheckStatus.FAIL,
+                    str(e).strip().split("\n")[0],
+                    hint="the trainer would fail at startup with this error",
+                )
+            ]
+        except Exception:  # noqa: BLE001 — HF model config unavailable (offline/gated)
+            resolved_model.ep = 1
+            ep_note = " (ep='auto' unresolvable here — EP divisibility is validated at trainer startup)"
     try:
         dims = get_parallel_dims(resolved_model, seq_len=model.seq_len, world_size=world_size)
     except (AssertionError, ValueError) as e:
@@ -212,9 +231,9 @@ def check_parallelism(config: "RLConfig", probe: HostProbe) -> list[CheckResult]
                 "trainer.model.dp_replicate, trainer.model.cp, or seq_len",
             )
         ]
-    detail = f"world={world_size}: dp_replicate={model.dp_replicate} × dp_shard={dims.dp_shard} × cp={model.cp}"
-    if not isinstance(model.ep, int):
-        detail += " (ep='auto' resolves at trainer startup)"
+    detail = (
+        f"world={world_size}: dp_replicate={model.dp_replicate} × dp_shard={dims.dp_shard} × cp={model.cp}{ep_note}"
+    )
     return [CheckResult("parallelism", CheckStatus.PASS, detail)]
 
 
