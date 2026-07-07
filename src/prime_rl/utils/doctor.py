@@ -407,7 +407,9 @@ async def _check_one_env(env_config, log_dir: Path) -> CheckResult:
             hint=f"full server output: {log_dir / f'{name}.log'}",
         )
     finally:
-        env.shutdown()
+        # shutdown blocks (join with timeout, kill if stuck) — keep it off the
+        # event loop so one wedged env doesn't stall the other parallel checks.
+        await asyncio.to_thread(env.shutdown)
 
 
 def check_envs(config: "RLConfig", probe: HostProbe) -> list[CheckResult]:

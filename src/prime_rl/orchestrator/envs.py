@@ -194,9 +194,18 @@ class Env:
         return [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in wires]
 
     def shutdown(self) -> None:
+        """Terminate the spawned env server and reap it (terminate → join →
+        kill), mirroring ``Envs.shutdown``. Blocks up to ~30s for a stuck
+        process; call via ``asyncio.to_thread`` from async contexts."""
         if self._env_server_process is None:
             return
-        self._env_server_process.terminate()
+        process = self._env_server_process
+        process.terminate()
+        process.join(timeout=25)
+        if process.is_alive():
+            get_logger().warning(f"Env server {process.pid} did not exit after 25s, force killing")
+            process.kill()
+            process.join(timeout=5)
         self._env_server_process = None
 
 
