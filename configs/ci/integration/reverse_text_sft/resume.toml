@@ -6,8 +6,9 @@ resume_step = 5
 [model]
 name = "PrimeIntellect/Qwen3-0.6B"
 
+# PrimeIntellect/Qwen3-0.6B ships its own chat template (distinct from Qwen3's)
 [renderer]
-name = "qwen3"
+name = "default"
 
 [data]
 name = "PrimeIntellect/Reverse-Text-SFT"

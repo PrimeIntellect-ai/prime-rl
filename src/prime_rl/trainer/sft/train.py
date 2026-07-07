@@ -4,6 +4,7 @@ import time
 from contextlib import nullcontext
 from datetime import timedelta
 
+from renderers import DefaultRendererConfig
 from renderers.base import create_renderer
 from renderers.default import DefaultRenderer
 from ring_flash_attn import substitute_hf_flash_attn
@@ -59,14 +60,20 @@ from torchtitan.distributed.utils import clip_grad_norm_
 
 
 def setup_renderer(tokenizer, config):
-    """Create the SFT renderer, rejecting the DefaultRenderer fallback."""
+    """Create the SFT renderer, rejecting a silent DefaultRenderer fallback.
+
+    An explicit ``[renderer] name = "default"`` is honored: checkpoints whose
+    chat template has no hand-coded renderer (e.g. PrimeIntellect/Qwen3-0.6B,
+    which ships its own template distinct from Qwen3's) train with the
+    template they were built with via ``apply_chat_template``.
+    """
     renderer = create_renderer(tokenizer, config)
-    if isinstance(renderer, DefaultRenderer):
+    if isinstance(renderer, DefaultRenderer) and not isinstance(config, DefaultRendererConfig):
         raise ValueError(
             f"SFT renderer for {tokenizer.name_or_path!r} resolved to DefaultRenderer. "
-            "SFT is renderer-only and requires a hand-coded renderer for stable "
-            "message-to-token attribution. Use a model with a hand-coded renderer "
-            "(see renderers.base.MODEL_RENDERER_MAP), or set [renderer] name=<hand-coded renderer> explicitly."
+            "Use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
+            "set [renderer] name=<hand-coded renderer>, or opt into the model's own chat "
+            'template explicitly with [renderer] name = "default".'
         )
     return renderer
 
