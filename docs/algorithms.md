@@ -201,6 +201,8 @@ $$
 
 $\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), $\hat{A}_{i,t}$ is the token-level advantage, $\delta$ is the importance-sampling clipping ratio, and $\tau_{KL}$ is the KL temperature. The `min` clamps the importance ratio from above so a stale rollout assigning very low probability to a high-reward token doesn't produce a runaway gradient.
 
+The trainer also reports `mismatch_kl` from the unclipped trainer/inference log-ratio as an off-policy diagnostic. That diagnostic is only numerically saturated to keep metrics finite; it is not clipped to `importance_ratio_max`, so large drift still shows up in monitoring.
+
 The knobs (under `[trainer.loss]` with `type = "default"`):
 
 | Knob | Default | What it does |
@@ -208,6 +210,7 @@ The knobs (under `[trainer.loss]` with `type = "default"`):
 | `dppo_mask_low` / `dppo_mask_high` | 0.2 / 0.2 | Lower / upper thresholds for DPPO-style token-level masking. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 to drop the policy-gradient term, leaving only the KL regularizer. |
 | `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
+| `importance_ratio_max` | 20.0 | Upper clip on the policy-gradient importance ratio before it multiplies the token advantage. |
 
 Set `[trainer.loss] type = "default"` and configure via the knobs above. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
 

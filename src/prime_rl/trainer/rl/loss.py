@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -8,6 +9,8 @@ from torch import Tensor
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, IPOLossConfig, LossConfig
 from prime_rl.utils.utils import import_object
+
+REF_KL_IMPORTANCE_RATIO_MAX = 20.0
 
 
 @dataclass
@@ -97,12 +100,23 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     return values[mask].sum() / denom
 
 
+def _max_exp_input(tensor: Tensor) -> float:
+    return math.log(torch.finfo(tensor.dtype).max) - 1.0
+
+
+def _clipped_importance_ratio(log_importance_ratio: Tensor, max_importance_ratio: float) -> tuple[Tensor, Tensor]:
+    max_log_ratio = min(math.log(max_importance_ratio), _max_exp_input(log_importance_ratio))
+    clipped = log_importance_ratio > max_log_ratio
+    return torch.exp(log_importance_ratio.clamp(max=max_log_ratio)), clipped
+
+
 def compute_importance_ratio_and_mismatch_kl(
     trainer_logprobs: Tensor, inference_logprobs: Tensor
 ) -> tuple[Tensor, Tensor, Tensor]:
     log_importance_ratio = trainer_logprobs - inference_logprobs
-    importance_ratio = torch.exp(log_importance_ratio)
-    mismatch_kl = importance_ratio - log_importance_ratio - 1
+    safe_log_importance_ratio = log_importance_ratio.clamp(max=_max_exp_input(log_importance_ratio))
+    importance_ratio = torch.exp(safe_log_importance_ratio)
+    mismatch_kl = importance_ratio - safe_log_importance_ratio - 1
     return log_importance_ratio, importance_ratio, mismatch_kl
 
 
@@ -123,8 +137,11 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
-    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+    log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
+    )
+    pg_importance_ratio, importance_ratio_clipped = _clipped_importance_ratio(
+        log_importance_ratio, loss_config.importance_ratio_max
     )
 
     probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
@@ -141,7 +158,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     keep_mask = loss_mask & ~is_masked
 
     advantages = loss_config.adv_tau * advantages
-    pg_loss = keep_mask * advantages * importance_ratio
+    pg_loss = keep_mask * advantages * pg_importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
     per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
     if inputs.loss_weights is not None:
@@ -156,6 +173,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         "is_masked_high": _safe_mean(is_masked_high, loss_mask),
         "masked_advantage_positive": _safe_mean(positive_advantages, drop_mask),
         "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
+        "importance_ratio_clipped": _safe_mean(importance_ratio_clipped, loss_mask),
     }
 
     return LossOutputs(loss=loss, metrics=metrics)
@@ -170,8 +188,11 @@ def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
-    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+    log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
+    )
+    pg_importance_ratio, importance_ratio_clipped = _clipped_importance_ratio(
+        log_importance_ratio, loss_config.importance_ratio_max
     )
 
     abs_probs_diff = torch.abs(torch.exp(trainer_logprobs) - torch.exp(inference_logprobs))
@@ -180,7 +201,7 @@ def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
     keep_mask = loss_mask & ~is_masked
 
     advantages = loss_config.adv_tau * advantages
-    pg_loss = keep_mask * advantages * importance_ratio
+    pg_loss = keep_mask * advantages * pg_importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
     per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
     if inputs.loss_weights is not None:
@@ -191,6 +212,7 @@ def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
         "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
         "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
         "is_masked": _safe_mean(is_masked, loss_mask),
+        "importance_ratio_clipped": _safe_mean(importance_ratio_clipped, loss_mask),
     }
 
     return LossOutputs(loss=loss, metrics=metrics)
@@ -213,8 +235,11 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     if ref_logprobs is None:
         raise ValueError("ref_kl loss type requires ref_logprobs — use the 'opd' or 'opsd' algorithm.")
 
-    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+    log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
+    )
+    pg_importance_ratio, importance_ratio_clipped = _clipped_importance_ratio(
+        log_importance_ratio, REF_KL_IMPORTANCE_RATIO_MAX
     )
 
     probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
@@ -224,7 +249,7 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
 
     ref_kl = ref_logprobs - trainer_logprobs
 
-    pg_loss = keep_mask * ref_kl.detach() * importance_ratio
+    pg_loss = keep_mask * ref_kl.detach() * pg_importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
     per_token_loss = -pg_loss + 1e-3 * kl_loss
     if inputs.loss_weights is not None:
@@ -238,6 +263,7 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
         "ref_kl/unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
         "ref_kl/is_masked": _safe_mean(is_masked, loss_mask),
         "ref_kl": _safe_mean(ref_kl, loss_mask),
+        "ref_kl/importance_ratio_clipped": _safe_mean(importance_ratio_clipped, loss_mask),
     }
 
     return LossOutputs(loss=loss, metrics=metrics)

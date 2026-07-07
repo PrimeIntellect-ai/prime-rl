@@ -603,10 +603,12 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
         "is_masked_high/",
         "masked_advantage_positive/",
         "masked_advantage_negative/",
+        "importance_ratio_clipped/",
         "mismatch_kl/",
         "masked_mismatch_kl/",
         "unmasked_mismatch_kl/",
         "ref_kl/is_masked/",
+        "ref_kl/importance_ratio_clipped/",
         "ref_kl/masked_mismatch_kl/",
         "ref_kl/unmasked_mismatch_kl/",
     )

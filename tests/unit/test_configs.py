@@ -11,8 +11,8 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.trainer import DefaultLossConfig, IPOLossConfig, TrainerConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
-from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli
 
 # All config config classes
@@ -189,6 +189,18 @@ def test_env_algo_overrides_top_level():
 def test_trainer_enable_token_export_cli_flag():
     assert not cli(TrainerConfig, args=[]).enable_token_export
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
+
+
+def test_importance_ratio_max_loss_config_defaults():
+    assert DefaultLossConfig().importance_ratio_max == 20.0
+    assert IPOLossConfig().importance_ratio_max == 20.0
+
+
+@pytest.mark.parametrize("config_cls", [DefaultLossConfig, IPOLossConfig])
+@pytest.mark.parametrize("value", [0.0, -1.0, float("inf"), float("nan")])
+def test_importance_ratio_max_rejects_invalid_values(config_cls, value):
+    with pytest.raises(ValidationError):
+        config_cls.model_validate({"importance_ratio_max": value})
 
 
 def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
