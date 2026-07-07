@@ -2,6 +2,7 @@ from collections import Counter
 
 import pytest
 from datasets import Dataset, interleave_datasets
+from renderers import create_renderer
 from transformers import AutoTokenizer
 
 from prime_rl.trainer.sft.data import SFTDataset
@@ -24,7 +25,7 @@ def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
     """Tests that an error is raised if no supported SFT message fields are provided."""
     dataset = build_dummy_dataset("a", 1)
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    sft_dataset = SFTDataset(dataset, tokenizer=tokenizer)
+    sft_dataset = SFTDataset(dataset, tokenizer=tokenizer, renderer=create_renderer(tokenizer))
     with pytest.raises(ValueError):
         next(iter(sft_dataset))
 
@@ -194,7 +195,7 @@ def test_multiturn_loss_mask():
         ]
     )
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    dataset = SFTDataset(dataset, tokenizer=tokenizer, max_examples=1)
+    dataset = SFTDataset(dataset, tokenizer=tokenizer, renderer=create_renderer(tokenizer), max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
@@ -257,7 +258,7 @@ def test_multiturn_loss_mask_with_tools():
 
     dataset = Dataset.from_list([tool_example])
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    dataset = SFTDataset(dataset, tokenizer=tokenizer, max_examples=1)
+    dataset = SFTDataset(dataset, tokenizer=tokenizer, renderer=create_renderer(tokenizer), max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
@@ -282,10 +283,16 @@ def test_messages_rows_are_equivalent_to_empty_prompt_completion():
     ]
 
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
-    messages_dataset = SFTDataset(Dataset.from_list([{"messages": messages}]), tokenizer=tokenizer, max_examples=1)
+    messages_dataset = SFTDataset(
+        Dataset.from_list([{"messages": messages}]),
+        tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
+        max_examples=1,
+    )
     split_dataset = SFTDataset(
         Dataset.from_list([{"prompt": [], "completion": messages}]),
         tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
         max_examples=1,
     )
 
@@ -304,11 +311,40 @@ def test_messages_take_precedence_over_prompt_and_completion():
         "completion": [{"role": "assistant", "content": "Ignored completion"}],
     }
 
-    messages_dataset = SFTDataset(Dataset.from_list([row]), tokenizer=tokenizer, max_examples=1)
+    messages_dataset = SFTDataset(
+        Dataset.from_list([row]),
+        tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
+        max_examples=1,
+    )
     expected_dataset = SFTDataset(
         Dataset.from_list([{"prompt": [], "completion": row["messages"]}]),
         tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
         max_examples=1,
     )
 
     assert next(iter(messages_dataset)) == next(iter(expected_dataset))
+
+
+def test_null_messages_falls_back_to_prompt_and_completion():
+    # Arrow schema union adds `messages: None` to prompt/completion rows when
+    # other rows in the file have a `messages` column
+    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
+    prompt = [{"role": "user", "content": "What is 2+2?"}]
+    completion = [{"role": "assistant", "content": "4"}]
+
+    mixed_row_dataset = SFTDataset(
+        Dataset.from_list([{"messages": None, "prompt": prompt, "completion": completion}]),
+        tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
+        max_examples=1,
+    )
+    expected_dataset = SFTDataset(
+        Dataset.from_list([{"prompt": prompt, "completion": completion}]),
+        tokenizer=tokenizer,
+        renderer=create_renderer(tokenizer),
+        max_examples=1,
+    )
+
+    assert next(iter(mixed_row_dataset)) == next(iter(expected_dataset))
