@@ -92,7 +92,8 @@ thinking_retention = "all"
 
 [orchestrator.prime_monitor]
 
-# --- Eval: SWE-Bench Verified, same harness/TTT regime as training (arm overlays set it) ---
+# --- Eval: SWE-Bench Verified, same compaction regime as training (arm overlays set it;
+# TTT is off during orchestrator evals — see the arm files' note) ---
 
 [orchestrator.eval]
 interval = 20
