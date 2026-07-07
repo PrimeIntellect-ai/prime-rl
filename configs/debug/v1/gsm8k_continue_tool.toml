@@ -1,0 +1,55 @@
+# GSM8K (v1) + online continue replay — gsm8k.toml plus a second train env that re-enters this
+# run's own finished attempts mid-conversation, anchored at a tool call (the default harness
+# gives the model bash+edit tools, so source rollouts contain real tool calls; gsm8k is
+# stateless so replay fidelity is exact). The replay env starts empty and grows as steps ship
+# records into <output_dir>/rollouts/. Rollouts with no tool calls are skipped (no_seed), so
+# the replay taskset may be a small fraction of the base env's records.
+#
+# Derived from configs/debug/v1/gsm8k_recheck.toml. Runs on 2 GPUs (1 inference, 1 training):
+#   uv run inference --model.name PrimeIntellect/Qwen3-0.6B          # Inference pane (GPU 0)
+#   uv run rl @ configs/debug/v1/gsm8k_continue_tool.toml --ckpt     # Trainer pane (GPU 1)
+
+max_steps = 100
+seq_len = 2048
+output_dir = "outputs-continue"
+
+[wandb]
+project = "gsm8k-debug"
+name = "gsm8k-continue-v1"
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[orchestrator]
+batch_size = 512
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.train.env]]
+taskset = { id = "gsm8k-v1", split = "train" }
+harness = { id = "default", runtime = { type = "subprocess" } }
+
+# `records` must point at THIS run's own records (note the run-id subdir the
+# orchestrator nests under output_dir) — adjust if you launch with --output-dir.
+[[orchestrator.train.env]]
+name = "gsm8k-continue"
+taskset = { id = "replay", records = "outputs-continue/run_default/rollouts/step_*/train_rollouts.jsonl", mode = "continue", anchor = "tool-call", source = { id = "gsm8k-v1", split = "train" }, max_seed_tokens = 4096 }
+harness = { id = "default", runtime = { type = "subprocess" } }
+ratio = 1
+
+[orchestrator.eval]
+interval = 20
+num_examples = 256
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.eval.env]]
+taskset = { id = "gsm8k-v1", split = "test" }
+harness = { id = "null", runtime = { type = "subprocess" } }
+
+[trainer] # Default trainer config
+
+[inference] # Default inference config
