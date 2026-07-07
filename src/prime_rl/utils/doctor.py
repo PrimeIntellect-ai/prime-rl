@@ -193,35 +193,23 @@ def check_parallelism(config: "RLConfig", probe: HostProbe) -> list[CheckResult]
     if config.deployment.type != "single_node":
         return [CheckResult("parallelism", CheckStatus.SKIP, "multi-node — validated at config parse time")]
 
-    from prime_rl.trainer.parallel_dims import ParallelDims  # deferred: imports torch
+    from prime_rl.trainer.parallel_dims import get_parallel_dims  # deferred: imports torch
 
     model = config.trainer.model
     world_size = config.deployment.num_train_gpus
-    # ep="auto" is resolved against the model config at trainer startup;
-    # only an explicit integer ep can be validated here.
-    ep = model.ep if isinstance(model.ep, int) else 1
+    # ep="auto" is resolved against the model config at trainer startup; only
+    # an explicit integer ep can be validated here.
+    resolved_model = model if isinstance(model.ep, int) else model.model_copy(update={"ep": 1})
     try:
-        dims = ParallelDims(
-            dp_replicate=model.dp_replicate, dp_shard=-1, cp=model.cp, pp=1, ep=ep, world_size=world_size
-        )
-    except AssertionError as e:
+        dims = get_parallel_dims(resolved_model, seq_len=model.seq_len, world_size=world_size)
+    except (AssertionError, ValueError) as e:
         return [
             CheckResult(
                 "parallelism",
                 CheckStatus.FAIL,
                 str(e).strip().split("\n")[0],
-                hint="the trainer would crash at startup with this ParallelDims error — adjust "
-                "deployment.num_train_gpus, trainer.model.dp_replicate, or trainer.model.cp",
-            )
-        ]
-    if model.seq_len % dims.seq_len_divisor != 0:
-        return [
-            CheckResult(
-                "parallelism",
-                CheckStatus.FAIL,
-                f"seq_len ({model.seq_len}) is not divisible by 2 * cp ({dims.seq_len_divisor})",
-                hint="context-parallel load balancing requires seq_len % (2 * cp) == 0 — "
-                "adjust seq_len or trainer.model.cp",
+                hint="the trainer would fail at startup with this error — adjust deployment.num_train_gpus, "
+                "trainer.model.dp_replicate, trainer.model.cp, or seq_len",
             )
         ]
     detail = f"world={world_size}: dp_replicate={model.dp_replicate} × dp_shard={dims.dp_shard} × cp={model.cp}"

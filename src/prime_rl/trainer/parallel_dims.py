@@ -316,7 +316,13 @@ def resolve_ep(config: ModelConfig) -> None:
         )
 
 
-def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> ParallelDims:
+def get_parallel_dims(config: ModelConfig, seq_len: int | None = None, world_size: int | None = None) -> ParallelDims:
+    """Build (and validate) ParallelDims from a model config.
+
+    ``world_size`` defaults to the initialized process group's size; pass it
+    explicitly to validate a hypothetical allocation without ``dist`` being
+    initialized (used by the ``rl --check`` preflight).
+    """
     assert isinstance(config.ep, int), (
         f"config.ep must be resolved to an int before get_parallel_dims; got {config.ep!r}. "
         "Call resolve_ep(config) first."
@@ -329,7 +335,7 @@ def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> Parall
         cp=config.cp,
         pp=1,
         ep=config.ep,
-        world_size=dist.get_world_size(),
+        world_size=world_size if world_size is not None else dist.get_world_size(),
     )
 
     # Validate sequence length against parallel dimensions requirements
