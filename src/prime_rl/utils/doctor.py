@@ -185,32 +185,49 @@ def check_ports(config: "RLConfig", probe: HostProbe) -> list[CheckResult]:
 
 def check_parallelism(config: "RLConfig", probe: HostProbe) -> list[CheckResult]:
     # tp×dp vs num_infer_gpus and multi-node divisibility are enforced by
-    # config validators at parse time. A non-divisible train-GPU/cp allocation
-    # is caught by the trainer's ParallelDims assert — but only after the
-    # launcher has cleaned the output dir and spawned all processes, with the
-    # error buried in logs/trainer.log. Catch it here, before any side effects.
+    # config validators at parse time. Here, mirror the trainer's own startup
+    # validation (ParallelDims + the CP seq-len divisor) so the crash it would
+    # produce — after the launcher has cleaned the output dir and spawned all
+    # processes, with the error buried in logs/trainer.log — happens here
+    # instead, in milliseconds and with no side effects.
     if config.deployment.type != "single_node":
         return [CheckResult("parallelism", CheckStatus.SKIP, "multi-node — validated at config parse time")]
 
-    num_train_gpus = config.deployment.num_train_gpus
-    cp = config.trainer.model.cp
-    if cp > num_train_gpus or num_train_gpus % cp != 0:
+    from prime_rl.trainer.parallel_dims import ParallelDims  # deferred: imports torch
+
+    model = config.trainer.model
+    world_size = config.deployment.num_train_gpus
+    # ep="auto" is resolved against the model config at trainer startup;
+    # only an explicit integer ep can be validated here.
+    ep = model.ep if isinstance(model.ep, int) else 1
+    try:
+        dims = ParallelDims(
+            dp_replicate=model.dp_replicate, dp_shard=-1, cp=model.cp, pp=1, ep=ep, world_size=world_size
+        )
+    except AssertionError as e:
         return [
             CheckResult(
                 "parallelism",
                 CheckStatus.FAIL,
-                f"num_train_gpus ({num_train_gpus}) is not divisible by trainer.model.cp ({cp})",
-                hint="the trainer would crash at startup (ParallelDims: dp_shard * cp must equal its "
-                "world size) — adjust deployment.num_train_gpus or trainer.model.cp",
+                str(e).strip().split("\n")[0],
+                hint="the trainer would crash at startup with this ParallelDims error — adjust "
+                "deployment.num_train_gpus, trainer.model.dp_replicate, or trainer.model.cp",
             )
         ]
-    return [
-        CheckResult(
-            "parallelism",
-            CheckStatus.PASS,
-            f"{num_train_gpus} train GPU(s), cp={cp} → {num_train_gpus // cp} data-parallel worker(s)",
-        )
-    ]
+    if model.seq_len % dims.seq_len_divisor != 0:
+        return [
+            CheckResult(
+                "parallelism",
+                CheckStatus.FAIL,
+                f"seq_len ({model.seq_len}) is not divisible by 2 * cp ({dims.seq_len_divisor})",
+                hint="context-parallel load balancing requires seq_len % (2 * cp) == 0 — "
+                "adjust seq_len or trainer.model.cp",
+            )
+        ]
+    detail = f"world={world_size}: dp_replicate={model.dp_replicate} × dp_shard={dims.dp_shard} × cp={model.cp}"
+    if not isinstance(model.ep, int):
+        detail += " (ep='auto' resolves at trainer startup)"
+    return [CheckResult("parallelism", CheckStatus.PASS, detail)]
 
 
 def check_ckpt(config: "RLConfig", probe: HostProbe) -> list[CheckResult]:
@@ -391,21 +408,29 @@ async def _check_one_env(env_config, log_dir: Path) -> CheckResult:
 
     env = Env(env_config)
     name = env.name
+    timed_out = CheckResult(
+        f"env '{name}'",
+        CheckStatus.SKIP,
+        f"did not come up within {ENV_CHECK_TIMEOUT:.0f}s",
+        hint=f"often a slow first-time dataset download, not a bug — see {log_dir / f'{name}.log'}",
+    )
     try:
-        await asyncio.wait_for(env.start(log_dir), timeout=ENV_CHECK_TIMEOUT)
+        # spawn_timeout does the real bounding: the spawn waits in a worker
+        # thread (queue.get) that asyncio cancellation cannot interrupt, so an
+        # outer wait_for alone would block until the thread's own (600s)
+        # timeout. The wait_for here only guards the pure-async external
+        # address path (health poll + info), where cancellation works.
+        await asyncio.wait_for(env.start(log_dir, spawn_timeout=ENV_CHECK_TIMEOUT), timeout=ENV_CHECK_TIMEOUT + 30)
         return CheckResult(
             f"env '{name}'",
             CheckStatus.PASS,
             f"loaded: num_tasks={env.num_tasks}, group_scoring={env.requires_group_scoring}",
         )
-    except asyncio.TimeoutError:
-        return CheckResult(
-            f"env '{name}'",
-            CheckStatus.SKIP,
-            f"did not come up within {ENV_CHECK_TIMEOUT:.0f}s",
-            hint=f"often a slow first-time dataset download, not a bug — see {log_dir / f'{name}.log'}",
-        )
+    except (asyncio.TimeoutError, TimeoutError):
+        return timed_out
     except Exception as e:  # noqa: BLE001 — report, don't crash the check run
+        if isinstance(e, RuntimeError) and "did not report its address" in str(e):
+            return timed_out
         detail = str(e).strip().split("\n")[0][:200] or type(e).__name__
         return CheckResult(
             f"env '{name}'",
