@@ -1,13 +1,10 @@
-# GSM8K (v1) + online recheck replay — gsm8k.toml plus a second train env that re-enters this
-# run's own finished attempts with a verification turn (scored by the gsm8k verifier; no
-# sandbox state involved, so replay fidelity is exact). The replay env starts empty and grows
-# as steps ship records into <output_dir>/rollouts/.
-#
-# Derived from configs/debug/v1/gsm8k.toml: Trains Qwen3-0.6B on GSM8K through the
-# v1 env server: the orchestrator spawns a v1 EnvServer for the gsm8k-v1 taskset and trains on
-# the returned Traces. Runs on 2 GPUs (1 inference, 1 training):
-#   uv run inference --model.name PrimeIntellect/Qwen3-0.6B   # Inference pane (GPU 0)
-#   uv run rl @ configs/debug/v1/gsm8k.toml --ckpt            # Trainer pane (GPU 1)
+# GSM8K (v1) + online recheck replay — configs/debug/v1/gsm8k.toml plus a second train env
+# that re-enters this run's own finished attempts with a verification turn (scored by the
+# gsm8k verifier; no sandbox state involved, so replay fidelity is exact). The replay env
+# starts empty and grows as steps ship records into <output_dir>/rollouts/. Runs on 2 GPUs
+# (1 inference, 1 training):
+#   uv run inference --model.name PrimeIntellect/Qwen3-0.6B          # Inference pane (GPU 0)
+#   uv run rl @ configs/debug/v1/gsm8k_recheck.toml --ckpt           # Trainer pane (GPU 1)
 
 max_steps = 100
 seq_len = 2048
