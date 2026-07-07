@@ -30,10 +30,11 @@ max_completion_tokens = 2048
 taskset = { id = "gsm8k-v1", split = "train" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
-# `records` must point at THIS run's output dir — adjust if you launch with --output-dir.
+# `records` must point at THIS run's own records (note the run-id subdir the
+# orchestrator nests under output_dir) — adjust if you launch with --output-dir.
 [[orchestrator.train.env]]
 name = "gsm8k-recheck"
-taskset = { id = "replay", records = "outputs/rollouts/step_*/train_rollouts.jsonl", mode = "recheck", source = { id = "gsm8k-v1", split = "train" }, max_seed_tokens = 4096 }
+taskset = { id = "replay", records = "outputs/run_default/rollouts/step_*/train_rollouts.jsonl", mode = "recheck", source = { id = "gsm8k-v1", split = "train" }, max_seed_tokens = 4096 }
 harness = { id = "null", runtime = { type = "subprocess" } }
 ratio = 1
 
