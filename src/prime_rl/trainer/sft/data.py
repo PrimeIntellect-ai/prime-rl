@@ -1,7 +1,7 @@
 import json
 import uuid
 from collections import defaultdict
-from typing import Literal, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
@@ -15,13 +15,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.chat_template import (
-    IncrementalTokenizationError,
-    build_incremental_token_mask,
-    deserialize_tool_calls,
-    normalize_messages,
-    strip_message_content,
-)
+from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
 
 STACKING_DATASET_BUCKET_TIMEOUT = 10
@@ -114,6 +108,23 @@ class FakeDataset(StatefulIterableDataset):
             yield fake_sample
 
 
+def _drop_null_fields(value: Any) -> Any:
+    """Recursively strip ``None``-valued keys from dict structures.
+
+    PyArrow's JSON loader unifies schemas across rows, so heterogeneous
+    OAI content blocks (text vs image_url) end up with all union keys
+    filled with ``None`` where absent. That confuses permissive
+    content-type predicates inside renderers (e.g. ``"image_url" in item``
+    returns ``True`` even when the value is null). Strip the noise before
+    handing messages off to the renderer.
+    """
+    if isinstance(value, dict):
+        return {k: _drop_null_fields(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_drop_null_fields(v) for v in value]
+    return value
+
+
 class SFTDataset(StatefulIterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt/completion or raw messages format."""
 
@@ -121,6 +132,7 @@ class SFTDataset(StatefulIterableDataset):
         self,
         dataset: Dataset,
         tokenizer: PreTrainedTokenizer | None,
+        renderer: Renderer | None = None,
         shuffle: bool = True,
         seed: int = 0,
         seq_len: int = 128,
@@ -128,7 +140,6 @@ class SFTDataset(StatefulIterableDataset):
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
-        renderer: Renderer | None = None,
     ):
         super().__init__()
         self.logger = get_logger()
@@ -143,9 +154,6 @@ class SFTDataset(StatefulIterableDataset):
         self.max_epochs = max_epochs
         self.renderer = renderer
         self._warned_chat_template_kwargs = False
-
-        if self.tokenizer is None:
-            self.logger.warning("No tokenizer provided, will not process examples")
 
         # If specified, select a subset of the dataset
         if self.max_examples is not None:
@@ -163,16 +171,19 @@ class SFTDataset(StatefulIterableDataset):
         self.data_world_size = get_world().world_size // non_dp_size * num_workers
 
     def _process(self, example: dict) -> dict | None:
-        # Skip processing if no tokenizer was provided
         if self.tokenizer is None:
             return example
+        if self.renderer is None:
+            raise ValueError("SFT processing requires a renderer.")
 
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
-            # as a whole-chat training sample with an empty prompt.
-            if "messages" in example:
+            # as a whole-chat training sample with an empty prompt. Null-check rather
+            # than key-check: Arrow schema union adds `messages: null` to
+            # prompt/completion rows whenever other rows have a `messages` column.
+            if example.get("messages") is not None:
                 messages = normalize_messages(example["messages"], default_role="assistant")
-            elif "prompt" in example and "completion" in example:
+            elif example.get("prompt") is not None and example.get("completion") is not None:
                 messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
                     example["completion"], default_role="assistant"
                 )
@@ -182,22 +193,17 @@ class SFTDataset(StatefulIterableDataset):
                     "or both 'prompt' and 'completion' columns for SFT"
                 )
 
-            # Deserialize tool call arguments from message list, if present - assumes OAI format
-            # Reference: https://platform.openai.com/docs/guides/function-calling#handling-function-calls
-            messages = deserialize_tool_calls(messages)
-
-            # Strip content from all messages so that incremental tokenization works
-            # NOTE: This has the side effect that we do never train on leading or trailing whitespace
-            return strip_message_content(messages)
+            # Strip nulls before deserializing so genuine nulls inside tool-call
+            # argument strings survive.
+            messages = [_drop_null_fields(m) for m in messages]
+            return deserialize_tool_calls(messages)
 
         messages = resolve_messages(example)
 
-        # Parse available tools, if present - assumes OAI format
-        # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
-        # Accepts either `tools` or `tool_defs` (the verifiers rollout format),
-        # as either a JSON-encoded string of a list or a list of dicts. Tools
-        # arriving in the verifiers shape are converted to OAI form so any
-        # downstream chat template can consume them.
+        # Parse available tools, if present - assumes OAI format. Accepts either
+        # `tools` or `tool_defs` (the verifiers rollout format), as either a
+        # JSON-encoded string of a list or a list of dicts; verifiers-shaped
+        # tools are converted to OAI form for the chat template.
         raw_tools = example.get("tools", example.get("tool_defs"))
         if not raw_tools:
             tools = []
@@ -223,45 +229,36 @@ class SFTDataset(StatefulIterableDataset):
             assert "role" in message, "Message must have a role"
             match message["role"]:
                 case "user":
-                    return True if self.loss_mask_config.user else False
+                    return self.loss_mask_config.user
                 case "assistant":
-                    return True if self.loss_mask_config.assistant else False
+                    return self.loss_mask_config.assistant
                 case "system":
-                    return True if self.loss_mask_config.system else False
+                    return self.loss_mask_config.system
                 case "tool":
-                    return True if self.loss_mask_config.tool else False
+                    return self.loss_mask_config.tool
                 case _:
                     raise ValueError(f"Invalid message role: {message['role']}")
 
-        if self.renderer is not None:
-            if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
-                self.logger.warning(
-                    "Example carries chat_template_kwargs but a renderer is configured; "
-                    "renderers don't forward chat_template_kwargs (model-specific "
-                    "renderers bake their template behavior in). These kwargs will "
-                    "be ignored. Further warnings suppressed for this dataset."
-                )
-                self._warned_chat_template_kwargs = True
-
-            input_ids, loss_mask = build_training_sample(
-                self.renderer,
-                messages,
-                role_to_mask=should_mask,
-                tools=tools,
+        if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
+            self.logger.warning(
+                "Ignoring per-example chat_template_kwargs; renderers only take "
+                "template kwargs run-wide via the [renderer] config."
             )
-        else:
-            try:
-                input_ids, loss_mask = build_incremental_token_mask(
-                    self.tokenizer,
-                    messages,
-                    role_to_mask=should_mask,
-                    tools=tools,
-                    chat_template_kwargs=example.get("chat_template_kwargs", {}),
-                    collapse_consecutive_tool_messages=True,
-                )
-            except IncrementalTokenizationError as e:
-                self.logger.warning(f"Skipping example {example.get('__index', '')}: {e}")
-                return None
+            self._warned_chat_template_kwargs = True
+
+        # Non-assistant roles are opted into the loss via the renderer's
+        # body-only path: the message content is trained, not the role
+        # scaffolding (e.g. <|im_start|>assistant) the harness emits.
+        content_sft_roles = {role for role in ("user", "system", "tool") if getattr(self.loss_mask_config, role)}
+        sample = build_training_sample(
+            self.renderer,
+            messages,
+            role_to_mask=should_mask,
+            tools=tools,
+            content_sft_roles=content_sft_roles or None,
+        )
+        input_ids = list(sample.token_ids)
+        loss_mask = list(sample.loss_mask)
 
         # If EOS token is not found, manually append it
         if not self.tokenizer.eos_token_id in input_ids:
@@ -271,7 +268,7 @@ class SFTDataset(StatefulIterableDataset):
             input_ids.append(cast(int, self.tokenizer.eos_token_id))
             loss_mask.append(True)
 
-        # Prepare inputs
+        # Causal shift: model predicts next token from current.
         target_ids = input_ids.copy()[1:]
         loss_mask = loss_mask[1:]
         input_ids = input_ids[:-1]
@@ -280,7 +277,7 @@ class SFTDataset(StatefulIterableDataset):
             self.logger.warning(
                 f"Skipping example {example.get('__index', '')} because no trainable tokens were found within the context window ({self.seq_len}). This is to prevent NaN loss."
             )
-            return
+            return None
 
         assert len(input_ids) == len(loss_mask) == len(target_ids), (
             f"input_ids, loss_mask and target_ids must have the same length, but got {len(input_ids)=}, {len(loss_mask)=}, {len(target_ids)=}"
@@ -288,7 +285,6 @@ class SFTDataset(StatefulIterableDataset):
         assert sum(loss_mask) > 0, "There are no tokens in this sample that contribute to the loss"
         assert self.tokenizer.eos_token_id in target_ids, "EOS token ID must be present in target_ids"
 
-        # Create sample (with one fake target for the last token)
         return {
             "input_ids": input_ids,
             "target_ids": target_ids,
@@ -297,9 +293,6 @@ class SFTDataset(StatefulIterableDataset):
         }
 
     def __iter__(self):
-        """
-        Apply chat template and tokenize a single example in prompt + completion format (https://github.com/huggingface/trl/blob/de27d612b026526ba39b88eee348994d7636e033/trl/trainer/sft_trainer.py#L661)
-        """
         dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
         while True:
             self.step += 1
@@ -585,21 +578,26 @@ def setup_dataset(
 ) -> StatefulIterableDataset:
     if config.type == "fake":
         return FakeDataset(
-            vocab_size=tokenizer.vocab_size, seq_len=config.seq_len, length=config.length, input_ids=config.input_ids
+            vocab_size=tokenizer.vocab_size,
+            seq_len=config.seq_len,
+            length=config.length,
+            input_ids=config.input_ids,
         )
     elif config.type == "sft":
+        if renderer is None:
+            raise ValueError("SFT data requires a renderer.")
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
         return SFTDataset(
             raw_dataset,
             tokenizer,
+            renderer=renderer,
             shuffle=config.shuffle,
             seed=config.seed,
             seq_len=config.seq_len,
             loss_mask_config=config.loss_mask,
             non_dp_size=non_dp_size,
             max_epochs=max_epochs,
-            renderer=renderer,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")

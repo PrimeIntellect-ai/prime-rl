@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
-from renderers import RendererConfig
+from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
     EnvVars,
@@ -30,7 +30,7 @@ class BaseDataConfig(BaseConfig):
     batch_size: int = Field(128, ge=1)
     """Global batch size."""
 
-    seq_len: int = Field(128, ge=1)
+    seq_len: int = Field(256, ge=1)
     """Sequence length."""
 
     pack_function: Literal["cat", "stack"] = "cat"
@@ -50,6 +50,12 @@ class BaseDataConfig(BaseConfig):
 
 class FakeDataConfig(BaseDataConfig):
     type: Literal["fake"] = "fake"
+
+    seq_len: int = Field(128, ge=1)
+    """Sequence length."""
+
+    pack_function: Literal["cat", "stack"] = "cat"
+    """Sample packing strategy."""
 
     length: Literal["fixed", "variable"] = "fixed"
     """Use fixed-length samples or variable-length samples."""
@@ -175,13 +181,8 @@ class SFTConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig | None = None
-    """Typed renderer config (``renderers.RendererConfig`` discriminated
-    union). When set, SFT tokenizes samples through the ``renderers``
-    library (single ``render()`` + ``message_indices`` mask) instead of
-    the default ``build_incremental_token_mask`` path. Required for chat
-    templates that render position-dependently (e.g. Qwen3, Qwen3.5).
-    ``None`` (default) uses the legacy tokenization path."""
+    renderer: RendererConfig = AutoRendererConfig()
+    """Renderer config. Defaults to auto-selecting from the tokenizer model name."""
 
     data: DataConfig = SFTDataConfig()
 
@@ -225,8 +226,8 @@ class SFTConfig(BaseConfig):
     dist_timeout_seconds: int = 3600
     """Timeout in seconds for torch distributed ops."""
 
-    loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "torch"
-    """Cross-entropy loss implementation. ``liger_fused`` fuses the lm_head projection with the CE loss to avoid materializing full logits. ``quack_fused`` uses quack-kernels for chunked linear + CE with CuTe DSL CUDA kernels."""
+    loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "liger_fused"
+    """Cross-entropy loss implementation. Defaults to fused Liger loss to avoid materializing full logits."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
@@ -319,9 +320,9 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_renderer_vs_vlm(self):
-        if self.renderer is not None and self.model.vlm is not None:
+        if self.model.vlm is not None:
             raise ValueError(
-                "renderer is not supported for VLMs in SFT. The renderer tokenizes "
+                "renderer-only SFT does not support VLMs yet. The renderer tokenizes "
                 "text-only message dicts client-side and cannot handle image inputs."
             )
         return self

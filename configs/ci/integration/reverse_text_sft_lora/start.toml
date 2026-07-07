@@ -8,6 +8,9 @@ save_adapter_separately = true
 [model]
 name = "PrimeIntellect/Qwen3-0.6B"
 
+[renderer]
+name = "qwen3"
+
 [model.lora]
 rank = 8
 target_modules = [
