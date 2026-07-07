@@ -26,6 +26,7 @@ flash-attn-3 = false
 prime-tunnel = false
 deep-gemm = false
 prime-evals = false
+torchao = false
 tokenspeed-mla = false
 deep-ep = false
 prime-sandboxes = false
@@ -3562,7 +3563,8 @@ dependencies = [
     { name = "tenacity" },
     { name = "tilelang" },
     { name = "torch" },
-    { name = "torchao" },
+    { name = "torchao", version = "0.17.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64'" },
+    { name = "torchao", version = "0.17.0+git02105d46c", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "torchaudio" },
     { name = "torchdata" },
     { name = "torchtitan" },
@@ -3750,7 +3752,8 @@ requires-dist = [
     { name = "terminal-bench-2-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/terminal_bench_2_v1" },
     { name = "tilelang", specifier = ">=0.1.8" },
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "torchao", git = "https://github.com/pytorch/ao.git?rev=02105d4" },
+    { name = "torchao", marker = "platform_machine != 'x86_64'", specifier = ">=0.17.0" },
+    { name = "torchao", marker = "platform_machine == 'x86_64'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl" },
     { name = "torchaudio", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchdata", specifier = ">=0.11.0" },
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
@@ -5204,8 +5207,55 @@ wheels = [
 
 [[package]]
 name = "torchao"
-version = "0.17.0+git02105d46"
-source = { git = "https://github.com/pytorch/ao.git?rev=02105d4#02105d46c61dc80a8c9d39d5836e827ba3af8439" }
+version = "0.17.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c9/37/ef37ca885265e5f79a168616767dd416a3cea1cc3b28bb6b503ce4a5b652/torchao-0.17.0-py3-none-any.whl", hash = "sha256:02eba449036715b9ae784fbaa1a6f97994bb7b0421ce92d1d5d1c08e5bd6d349", size = 1200680, upload-time = "2026-03-30T22:25:54.457Z" },
+]
+
+[[package]]
+name = "torchao"
+version = "0.17.0+git02105d46c"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+wheels = [
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl", hash = "sha256:899ee5ac05292a5ffac1e44817c524b63fff850c6d5f679d3087f6770ba628c6" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bitsandbytes", marker = "extra == 'dev'" },
+    { name = "blobfile", marker = "extra == 'dev'" },
+    { name = "cmake", marker = "extra == 'dev'", specifier = ">=3.19.0,<4.0.0" },
+    { name = "diskcache", marker = "extra == 'dev'" },
+    { name = "expecttest", marker = "extra == 'dev'" },
+    { name = "fire", marker = "extra == 'dev'" },
+    { name = "hypothesis", marker = "extra == 'dev'" },
+    { name = "importlib-metadata", marker = "extra == 'dev'" },
+    { name = "lm-eval", marker = "extra == 'dev'" },
+    { name = "matplotlib", marker = "extra == 'dev'" },
+    { name = "ninja", marker = "extra == 'dev'" },
+    { name = "packaging", marker = "extra == 'dev'" },
+    { name = "pandas", marker = "extra == 'dev'" },
+    { name = "parameterized", marker = "extra == 'dev'" },
+    { name = "pre-commit", marker = "extra == 'dev'" },
+    { name = "pycocotools", marker = "extra == 'dev'" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = "==8.4.2" },
+    { name = "pyyaml", marker = "extra == 'dev'" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.11.6" },
+    { name = "sentencepiece", marker = "extra == 'dev'" },
+    { name = "tabulate", marker = "extra == 'dev'" },
+    { name = "tiktoken", marker = "extra == 'dev'" },
+    { name = "tqdm", marker = "extra == 'dev'" },
+    { name = "transformers", marker = "extra == 'dev'" },
+    { name = "unittest-xml-reporting", marker = "extra == 'dev'" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "torchaudio"
