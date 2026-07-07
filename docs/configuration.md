@@ -192,7 +192,7 @@ harness = { id = "null" }
 
 Key knobs on the `taskset` table:
 
-- `mode = "continue"` resumes a rollout mid-way; `anchor` picks the resume point: `"compaction"` (default; one task per recorded context restart, detected structurally so records from different harnesses mix freely) or `"tool-call"` (one deterministically-drawn resume point per rollout, right after a complete tool-result run; needs a message-seeding harness).
+- `mode = "continue"` resumes a rollout mid-way; `anchor` picks the resume point: `"compaction"` (default; one task per recorded context restart, detected structurally so records from different harnesses mix freely) or `"tool-call"` (deterministically-drawn resume points right after complete tool-result runs; needs a message-seeding harness). For `"tool-call"`, `max_anchors` sets how many resume points each source rollout seeds (default 1; `None` seeds every valid one, in trajectory order).
 - `mode = "recheck"` replays the final branch of each attempt (truncation artifacts stripped) plus a verification turn (`recheck_prompt` overrides the wording).
 - `max_seed_tokens` skips seeds whose context exceeds the budget — set it so seeds leave room to sample under the trainer's `seq_len`.
 - `records` globs are followed: new matching files are picked up continuously (append-only, so pool workers stay index-aligned). Point it at a finished run's records, or at the *current* run's own `rollouts/` dir for online self-replay — the env starts empty and grows as steps ship; the replay env's own rollouts are never re-mined as seeds. Avoid sources that grow out of glob order (e.g. several runs writing one tree).
