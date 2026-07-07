@@ -32,7 +32,7 @@ harness = { id = "null", runtime = { type = "subprocess" } }
 # orchestrator nests under output_dir) — adjust if you launch with --output-dir.
 [[orchestrator.train.env]]
 name = "gsm8k-recheck-wrong"
-taskset = { id = "replay", records = "outputs-wrong/run_default/rollouts/step_*/train_rollouts.jsonl", mode = "recheck", max_source_reward = 0.5, source = { id = "gsm8k-v1", split = "train" }, max_seed_tokens = 4096 }
+taskset = { id = "replay", records = "outputs-wrong/run_default/rollouts/step_*/train_rollouts_gsm8k-v1.jsonl", mode = "recheck", max_source_reward = 0.5, source = { id = "gsm8k-v1", split = "train" }, max_seed_tokens = 4096 }
 harness = { id = "null", runtime = { type = "subprocess" } }
 ratio = 1
 

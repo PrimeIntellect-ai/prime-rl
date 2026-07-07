@@ -1,0 +1,107 @@
+output_dir = "outputs-wrong"
+matmul_precision = "high"
+max_steps = 100
+enable_router_replay = false
+dist_timeout_seconds = 3600
+max_concurrent_runs = 1
+enable_token_export = false
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+trust_remote_code = false
+seq_len = 2048
+attn = "flash_attention_2"
+fsdp_cpu_offload = false
+optim_cpu_offload = true
+reshard_after_forward = true
+dp_replicate = 1
+ep = "auto"
+ep_comm_backend = "torch"
+deepep_num_sms = 20
+cp = 1
+cp_style = "ring"
+impl = "auto"
+optimization_dtype = "float32"
+reduce_dtype = "float32"
+moe_use_grouped_mm = true
+fp8 = false
+freeze_moe_router = false
+fused_lm_head_token_chunk_size = 1024
+
+[model.compile]
+fullgraph = false
+
+[model.ac]
+mode = "full"
+freq = 1
+targets = [
+    "norm",
+]
+
+[model.ac_offloading]
+pin_memory = true
+max_inflight_activations = 5
+
+[model.debug]
+random_init = false
+force_balanced_routing = false
+
+[tokenizer]
+name = "Qwen/Qwen3-0.6B"
+trust_remote_code = false
+
+[data]
+
+[loss]
+type = "default"
+dppo_mask_low = 0.2
+dppo_mask_high = 0.2
+adv_tau = 1.0
+kl_tau = 0.001
+
+[optim]
+lr = 1e-06
+weight_decay = 0.01
+max_norm = 1.0
+type = "adamw"
+betas1 = 0.9
+betas2 = 0.999
+
+[scheduler]
+type = "constant"
+
+[ckpt]
+skip_gather_master_weights = false
+weights_only = false
+skip_progress = false
+skip_scheduler = false
+skip_dataloader = false
+skip_optimizer = false
+
+[ckpt.weights]
+save_sharded = true
+save_format = "safetensors"
+save_adapter_separately = false
+
+[weight_broadcast]
+type = "filesystem"
+save_sharded = true
+save_format = "safetensors"
+
+[rollout_transport]
+type = "filesystem"
+
+[log]
+level = "info"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+ranks_filter = [
+    0,
+]
+
+[gc]
+interval = 50
+
+[env_vars]

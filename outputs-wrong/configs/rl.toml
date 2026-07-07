@@ -1,0 +1,435 @@
+output_dir = "outputs-wrong"
+max_steps = 100
+seq_len = 2048
+bench = false
+
+[trainer]
+output_dir = "outputs-wrong"
+matmul_precision = "high"
+max_steps = 100
+enable_router_replay = false
+dist_timeout_seconds = 3600
+max_concurrent_runs = 1
+enable_token_export = false
+
+[trainer.model]
+name = "Qwen/Qwen3-0.6B"
+trust_remote_code = false
+seq_len = 2048
+attn = "flash_attention_2"
+fsdp_cpu_offload = false
+optim_cpu_offload = true
+reshard_after_forward = true
+dp_replicate = 1
+ep = "auto"
+ep_comm_backend = "torch"
+deepep_num_sms = 20
+cp = 1
+cp_style = "ring"
+impl = "auto"
+optimization_dtype = "float32"
+reduce_dtype = "float32"
+moe_use_grouped_mm = true
+fp8 = false
+freeze_moe_router = false
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.compile]
+fullgraph = false
+
+[trainer.model.ac]
+mode = "full"
+freq = 1
+targets = [
+    "norm",
+]
+
+[trainer.model.ac_offloading]
+pin_memory = true
+max_inflight_activations = 5
+
+[trainer.model.debug]
+random_init = false
+force_balanced_routing = false
+
+[trainer.tokenizer]
+name = "Qwen/Qwen3-0.6B"
+trust_remote_code = false
+
+[trainer.data]
+
+[trainer.loss]
+type = "default"
+dppo_mask_low = 0.2
+dppo_mask_high = 0.2
+adv_tau = 1.0
+kl_tau = 0.001
+
+[trainer.optim]
+lr = 1e-06
+weight_decay = 0.01
+max_norm = 1.0
+type = "adamw"
+betas1 = 0.9
+betas2 = 0.999
+
+[trainer.scheduler]
+type = "constant"
+
+[trainer.ckpt]
+skip_gather_master_weights = false
+weights_only = false
+skip_progress = false
+skip_scheduler = false
+skip_dataloader = false
+skip_optimizer = false
+
+[trainer.ckpt.weights]
+save_sharded = true
+save_format = "safetensors"
+save_adapter_separately = false
+
+[trainer.weight_broadcast]
+type = "filesystem"
+save_sharded = true
+save_format = "safetensors"
+
+[trainer.rollout_transport]
+type = "filesystem"
+
+[trainer.log]
+level = "info"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+ranks_filter = [
+    0,
+]
+
+[trainer.gc]
+interval = 50
+
+[trainer.env_vars]
+
+[orchestrator]
+pre_batch_filters = [
+    { type = "gibberish", enforce = false, token_id_threshold = 100000, logprob_offset = 2.0 },
+    { type = "repetition", enforce = false, window = 3000, prob_threshold = 0.99 },
+    { type = "zero_advantage", enforce = false },
+]
+post_batch_filters = [
+    { type = "gibberish", enforce = false, token_id_threshold = 100000, logprob_offset = 2.0 },
+    { type = "repetition", enforce = false, window = 3000, prob_threshold = 0.99 },
+    { type = "zero_advantage", enforce = true },
+]
+collect_inference_metrics = true
+output_dir = "outputs-wrong/run_default"
+batch_size = 512
+max_inflight_rollouts = 512
+group_size = 16
+seq_len = 2048
+num_train_workers = 1
+max_steps = 100
+max_off_policy_steps = 8
+bench = false
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.sampling]
+source = "policy"
+
+[orchestrator.model]
+name = "Qwen/Qwen3-0.6B"
+trust_remote_code = false
+
+[orchestrator.model.client]
+wait_for_ready_timeout = 1800
+base_url = [
+    "http://localhost:8000/v1",
+]
+api_key_var = "VLLM_API_KEY"
+skip_model_check = false
+dp_rank_count = 1
+
+[orchestrator.model.client.headers]
+
+[orchestrator.model.client.headers_from_env]
+
+[orchestrator.model.client.extra_headers_from_state]
+X-Session-ID = "trajectory_id"
+
+[[orchestrator.train.env]]
+multiplex = 32
+ratio = 1.0
+group_size = 16
+
+[orchestrator.train.env.taskset]
+id = "gsm8k-v1"
+split = "train"
+
+[orchestrator.train.env.harness]
+id = "null"
+forward_env = []
+
+[orchestrator.train.env.harness.runtime]
+type = "subprocess"
+
+[orchestrator.train.env.harness.env]
+
+[orchestrator.train.env.timeout]
+
+[orchestrator.train.env.retries.rollout]
+max_retries = 0
+include = []
+exclude = []
+
+[orchestrator.train.env.args]
+
+[orchestrator.train.env.extra_env_kwargs]
+
+[orchestrator.train.env.pool]
+type = "elastic"
+multiplex = 128
+
+[orchestrator.train.env.sampling]
+temperature = 1.0
+max_completion_tokens = 2048
+
+[orchestrator.train.env.sampling.extra_body]
+top_k = -1
+min_p = 0.0
+return_token_ids = true
+
+[orchestrator.train.env.algo]
+type = "grpo"
+
+[orchestrator.train.env.algo.sampling]
+source = "policy"
+
+[[orchestrator.train.env]]
+multiplex = 32
+name = "gsm8k-recheck-wrong"
+ratio = 1.0
+group_size = 16
+
+[orchestrator.train.env.taskset]
+id = "replay"
+records = "outputs-wrong/run_default/rollouts/step_*/train_rollouts.jsonl"
+mode = "recheck"
+anchor = "compaction"
+recheck_prompt = "Carefully check your work above. Re-verify the reasoning and the final answer against the task; if you find any mistakes, fix them. Then state your final answer."
+max_seed_tokens = 4096
+max_source_reward = 0.5
+seed = 0
+
+[orchestrator.train.env.taskset.source]
+id = "gsm8k-v1"
+split = "train"
+
+[orchestrator.train.env.harness]
+id = "null"
+forward_env = []
+
+[orchestrator.train.env.harness.runtime]
+type = "subprocess"
+
+[orchestrator.train.env.harness.env]
+
+[orchestrator.train.env.timeout]
+
+[orchestrator.train.env.retries.rollout]
+max_retries = 0
+include = []
+exclude = []
+
+[orchestrator.train.env.args]
+
+[orchestrator.train.env.extra_env_kwargs]
+
+[orchestrator.train.env.pool]
+type = "elastic"
+multiplex = 128
+
+[orchestrator.train.env.sampling]
+temperature = 1.0
+max_completion_tokens = 2048
+
+[orchestrator.train.env.sampling.extra_body]
+top_k = -1
+min_p = 0.0
+return_token_ids = true
+
+[orchestrator.train.env.algo]
+type = "grpo"
+
+[orchestrator.train.env.algo.sampling]
+source = "policy"
+
+[orchestrator.train.sampling]
+temperature = 1.0
+max_completion_tokens = 2048
+
+[orchestrator.train.sampling.extra_body]
+
+[orchestrator.tokenizer]
+name = "Qwen/Qwen3-0.6B"
+trust_remote_code = false
+
+[orchestrator.renderer]
+name = "auto"
+
+[orchestrator.optim]
+lr = 0.0001
+
+[orchestrator.eval]
+num_examples = 256
+group_size = 1
+interval = 20
+skip_first_step = false
+
+[[orchestrator.eval.env]]
+multiplex = 32
+ratio = 1.0
+num_examples = 256
+group_size = 1
+interval = 20
+
+[orchestrator.eval.env.taskset]
+id = "gsm8k-v1"
+split = "test"
+
+[orchestrator.eval.env.harness]
+id = "null"
+forward_env = []
+
+[orchestrator.eval.env.harness.runtime]
+type = "subprocess"
+
+[orchestrator.eval.env.harness.env]
+
+[orchestrator.eval.env.timeout]
+
+[orchestrator.eval.env.retries.rollout]
+max_retries = 0
+include = []
+exclude = []
+
+[orchestrator.eval.env.args]
+
+[orchestrator.eval.env.extra_env_kwargs]
+
+[orchestrator.eval.env.pool]
+type = "elastic"
+multiplex = 128
+
+[orchestrator.eval.env.sampling]
+max_completion_tokens = 2048
+
+[orchestrator.eval.env.sampling.extra_body]
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 2048
+
+[orchestrator.eval.sampling.extra_body]
+
+[orchestrator.log]
+level = "info"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+
+[orchestrator.env_vars]
+
+[orchestrator.ckpt]
+skip_progress = false
+
+[orchestrator.weight_broadcast]
+type = "filesystem"
+
+[orchestrator.rollout_transport]
+type = "filesystem"
+
+[inference]
+enable_lora = false
+max_loras = 8
+max_cpu_loras = 100
+gpu_memory_utilization = 0.9
+api_server_count = 1
+data_parallel_rpc_port = 13345
+seed = 0
+enable_expert_parallel = false
+all2all_backend = "allgather_reducescatter"
+enable_eplb = false
+enable_dbo = false
+use_deep_gemm = false
+use_pd_kv_transfer = false
+enable_return_routed_experts = false
+enable_fp32_lm_head = true
+output_dir = "outputs"
+dry_run = false
+
+[inference.server]
+port = 8000
+liveness_timeout_seconds = 30.0
+
+[inference.model]
+name = "Qwen/Qwen3-0.6B"
+trust_remote_code = false
+dtype = "auto"
+enforce_eager = false
+tool_call_parser = "hermes"
+
+[inference.parallel]
+tp = 1
+dp = 1
+
+[inference.log]
+level = "info"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+
+[inference.env_vars]
+
+[inference.weight_broadcast]
+type = "filesystem"
+
+[inference.vllm_extra]
+
+[inference.deployment]
+gpus_per_node = 8
+backend_port = 8100
+type = "single_node"
+
+[inference.deployment.router]
+type = "vllm-router"
+port = 8000
+policy = "consistent_hash"
+
+[inference.slurm]
+job_name = "gsm8k-recheck-wrong"
+project_dir = "/home/fares/prime-rl-resume"
+template_path = "/home/fares/prime-rl-resume/src/prime_rl/templates/inference.sbatch.j2"
+partition = "all"
+cleanup_grace_period = 3600
+shared_fs = true
+
+[env_vars]
+
+[log]
+json_logging = false
+
+[ckpt]
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[deployment]
+gpus_per_node = 8
+type = "single_node"
+num_train_gpus = 1
+num_infer_gpus = 1

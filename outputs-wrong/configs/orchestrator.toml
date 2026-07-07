@@ -1,0 +1,238 @@
+pre_batch_filters = [
+    { type = "gibberish", enforce = false, token_id_threshold = 100000, logprob_offset = 2.0 },
+    { type = "repetition", enforce = false, window = 3000, prob_threshold = 0.99 },
+    { type = "zero_advantage", enforce = false },
+]
+post_batch_filters = [
+    { type = "gibberish", enforce = false, token_id_threshold = 100000, logprob_offset = 2.0 },
+    { type = "repetition", enforce = false, window = 3000, prob_threshold = 0.99 },
+    { type = "zero_advantage", enforce = true },
+]
+collect_inference_metrics = true
+output_dir = "outputs-wrong/run_default"
+batch_size = 512
+max_inflight_rollouts = 512
+group_size = 16
+seq_len = 2048
+num_train_workers = 1
+max_steps = 100
+max_off_policy_steps = 8
+bench = false
+
+[algo]
+type = "grpo"
+
+[algo.sampling]
+source = "policy"
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+trust_remote_code = false
+
+[model.client]
+wait_for_ready_timeout = 1800
+base_url = [
+    "http://localhost:8000/v1",
+]
+api_key_var = "VLLM_API_KEY"
+skip_model_check = false
+dp_rank_count = 1
+
+[model.client.headers]
+
+[model.client.headers_from_env]
+
+[model.client.extra_headers_from_state]
+X-Session-ID = "trajectory_id"
+
+[[train.env]]
+multiplex = 32
+ratio = 1.0
+group_size = 16
+
+[train.env.taskset]
+id = "gsm8k-v1"
+split = "train"
+
+[train.env.harness]
+id = "null"
+forward_env = []
+
+[train.env.harness.runtime]
+type = "subprocess"
+
+[train.env.harness.env]
+
+[train.env.timeout]
+
+[train.env.retries.rollout]
+max_retries = 0
+include = []
+exclude = []
+
+[train.env.args]
+
+[train.env.extra_env_kwargs]
+
+[train.env.pool]
+type = "elastic"
+multiplex = 128
+
+[train.env.sampling]
+temperature = 1.0
+max_completion_tokens = 2048
+
+[train.env.sampling.extra_body]
+top_k = -1
+min_p = 0.0
+return_token_ids = true
+
+[train.env.algo]
+type = "grpo"
+
+[train.env.algo.sampling]
+source = "policy"
+
+[[train.env]]
+multiplex = 32
+name = "gsm8k-recheck-wrong"
+ratio = 1.0
+group_size = 16
+
+[train.env.taskset]
+id = "replay"
+records = "outputs-wrong/run_default/rollouts/step_*/train_rollouts.jsonl"
+mode = "recheck"
+anchor = "compaction"
+recheck_prompt = "Carefully check your work above. Re-verify the reasoning and the final answer against the task; if you find any mistakes, fix them. Then state your final answer."
+max_seed_tokens = 4096
+max_source_reward = 0.5
+seed = 0
+
+[train.env.taskset.source]
+id = "gsm8k-v1"
+split = "train"
+
+[train.env.harness]
+id = "null"
+forward_env = []
+
+[train.env.harness.runtime]
+type = "subprocess"
+
+[train.env.harness.env]
+
+[train.env.timeout]
+
+[train.env.retries.rollout]
+max_retries = 0
+include = []
+exclude = []
+
+[train.env.args]
+
+[train.env.extra_env_kwargs]
+
+[train.env.pool]
+type = "elastic"
+multiplex = 128
+
+[train.env.sampling]
+temperature = 1.0
+max_completion_tokens = 2048
+
+[train.env.sampling.extra_body]
+top_k = -1
+min_p = 0.0
+return_token_ids = true
+
+[train.env.algo]
+type = "grpo"
+
+[train.env.algo.sampling]
+source = "policy"
+
+[train.sampling]
+temperature = 1.0
+max_completion_tokens = 2048
+
+[train.sampling.extra_body]
+
+[tokenizer]
+name = "Qwen/Qwen3-0.6B"
+trust_remote_code = false
+
+[renderer]
+name = "auto"
+
+[optim]
+lr = 0.0001
+
+[eval]
+num_examples = 256
+group_size = 1
+interval = 20
+skip_first_step = false
+
+[[eval.env]]
+multiplex = 32
+ratio = 1.0
+num_examples = 256
+group_size = 1
+interval = 20
+
+[eval.env.taskset]
+id = "gsm8k-v1"
+split = "test"
+
+[eval.env.harness]
+id = "null"
+forward_env = []
+
+[eval.env.harness.runtime]
+type = "subprocess"
+
+[eval.env.harness.env]
+
+[eval.env.timeout]
+
+[eval.env.retries.rollout]
+max_retries = 0
+include = []
+exclude = []
+
+[eval.env.args]
+
+[eval.env.extra_env_kwargs]
+
+[eval.env.pool]
+type = "elastic"
+multiplex = 128
+
+[eval.env.sampling]
+max_completion_tokens = 2048
+
+[eval.env.sampling.extra_body]
+
+[eval.sampling]
+max_completion_tokens = 2048
+
+[eval.sampling.extra_body]
+
+[log]
+level = "info"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+
+[env_vars]
+
+[ckpt]
+skip_progress = false
+
+[weight_broadcast]
+type = "filesystem"
+
+[rollout_transport]
+type = "filesystem"

@@ -534,9 +534,15 @@ class Orchestrator:
         # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables); to_record
         # drops the per-node training tensors — they're for training, not the rollout record, and
         # can't round-trip json (raw numpy bytes).
-        rollout_dicts = [r.to_record() for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
-        await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
+        by_env: dict[str, list[dict]] = {}
+        for rollout in batch.rollouts:
+            by_env.setdefault(rollout.env_name, []).append(rollout.to_record())
+        # One file per env (mirroring eval's `eval_rollouts_<env>.jsonl`), so record consumers
+        # (e.g. a replay env mining this run's own rollouts) select an env by filename instead
+        # of parsing and discarding other envs' lines.
+        for env_name, rollout_dicts in by_env.items():
+            await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / f"train_rollouts_{env_name}.jsonl")
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.progress.step += 1

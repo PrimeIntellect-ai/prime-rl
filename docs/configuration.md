@@ -179,14 +179,14 @@ The built-in `replay` taskset (verifiers v1) re-enters saved rollouts as fresh t
 # string prompt, so it runs under any harness — use the same harness config as the source run.
 [[orchestrator.train.env]]
 name = "my-env-continue"
-taskset = { id = "replay", records = "/data/run1/rollouts/step_*/train_rollouts.jsonl", mode = "continue", source = { id = "my-env-v1" } }
+taskset = { id = "replay", records = "/data/run1/rollouts/step_*/train_rollouts_<env>.jsonl", mode = "continue", source = { id = "my-env-v1" } }
 harness = { id = "rlm" }
 
 # Recheck: replay each finished attempt with a "check your work" turn appended. The seed is a
 # full conversation, which needs a message-seeding harness (`default`/`null`).
 [[orchestrator.train.env]]
 name = "my-env-recheck"
-taskset = { id = "replay", records = "/data/run1/rollouts/step_*/train_rollouts.jsonl", mode = "recheck", source = { id = "my-env-v1" } }
+taskset = { id = "replay", records = "/data/run1/rollouts/step_*/train_rollouts_<env>.jsonl", mode = "recheck", source = { id = "my-env-v1" } }
 harness = { id = "null" }
 ```
 
@@ -196,7 +196,7 @@ Key knobs on the `taskset` table:
 - `mode = "recheck"` replays the final branch of each attempt (truncation artifacts stripped) plus a verification turn (`recheck_prompt` overrides the wording).
 - `max_seed_tokens` skips seeds whose context exceeds the budget — set it so seeds leave room to sample under the trainer's `seq_len`.
 - `records` globs are followed: new matching files are picked up continuously (append-only, so pool workers stay index-aligned). Point it at a finished run's records, or at the *current* run's own `rollouts/` dir for online self-replay — the env starts empty and grows as steps ship; the replay env's own rollouts are never re-mined as seeds. Avoid sources that grow out of glob order (e.g. several runs writing one tree).
-- Lines that don't validate as the source taskset's task type (e.g. other envs' rollouts in a mixed `train_rollouts.jsonl`) are skipped and counted. The filter is structural: for a source whose task type has no distinguishing required fields, use single-env record files instead.
+- Lines that don't validate as the source taskset's task type (e.g. other envs' rollouts in a mixed `train_rollouts_<env>.jsonl`) are skipped and counted. The filter is structural: for a source whose task type has no distinguishing required fields, use single-env record files instead.
 
 Group rollouts of one seeded task form a regular GRPO group, so a group-relative algorithm gets contrastive signal at exactly the resumed state. The sandbox is fresh on re-entry: `setup` runs anew, and no filesystem state from the source rollout is replayed. Records carrying sandbox snapshot refs (`trace.info["snapshots"]`) restrict resume points to snapshotted anchors and restore the ref during `setup` — no runtime implements snapshot capture yet, so restore fails loudly if refs ever appear before support lands. Other recycling schemes can subclass `ReplayTaskset` and override `seeds()` — see `deps/verifiers/verifiers/v1/tasksets/replay/`.
 
