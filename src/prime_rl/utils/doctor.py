@@ -178,8 +178,10 @@ def check_ports(config: "RLConfig", probe: HostProbe) -> list[CheckResult]:
 
 def check_parallelism(config: "RLConfig", probe: HostProbe) -> list[CheckResult]:
     # tp×dp vs num_infer_gpus and multi-node divisibility are enforced by
-    # config validators at parse time; the gap is trainer GPU allocation vs
-    # context parallelism, which today floor-divides silently.
+    # config validators at parse time. A non-divisible train-GPU/cp allocation
+    # is caught by the trainer's ParallelDims assert — but only after the
+    # launcher has cleaned the output dir and spawned all processes, with the
+    # error buried in logs/trainer.log. Catch it here, before any side effects.
     if config.deployment.type != "single_node":
         return [CheckResult("parallelism", CheckStatus.SKIP, "multi-node — validated at config parse time")]
 
@@ -191,8 +193,8 @@ def check_parallelism(config: "RLConfig", probe: HostProbe) -> list[CheckResult]
                 "parallelism",
                 CheckStatus.FAIL,
                 f"num_train_gpus ({num_train_gpus}) is not divisible by trainer.model.cp ({cp})",
-                hint="the orchestrator sizes train workers as num_train_gpus // cp, so a non-divisible "
-                "allocation silently strands GPUs — adjust deployment.num_train_gpus or trainer.model.cp",
+                hint="the trainer would crash at startup (ParallelDims: dp_shard * cp must equal its "
+                "world size) — adjust deployment.num_train_gpus or trainer.model.cp",
             )
         ]
     return [
