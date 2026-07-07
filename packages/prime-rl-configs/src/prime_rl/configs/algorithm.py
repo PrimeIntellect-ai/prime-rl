@@ -1,7 +1,8 @@
 """Algorithm abstraction: sampling and the per-token training signal.
 
 An algorithm is a named, self-contained config — a discriminated union keyed
-on ``type`` (``grpo``, ``max_rl``, ``opd``, ``opsd``, ``sft``, ``echo``).
+on ``type`` (``grpo``, ``max_rl``, ``opd``, ``topd``, ``opsd``, ``sft``,
+``echo``).
 The bundle *is* the algorithm: each variant carries
 its sampling component and its credit-assignment / loss-routing parameters,
 and its class defaults are the vetted setting — ``type = "opd"`` with a
@@ -251,6 +252,35 @@ class OPDAlgoConfig(BaseAlgoConfig):
     demo-conditioned self-teaching)."""
 
 
+class TOPDAlgoConfig(BaseAlgoConfig):
+    type: Literal["topd"] = "topd"
+    """Trust Region Policy Distillation (TOP-D, arXiv:2607.04751): on-policy
+    distillation through a *proximal teacher* — the probability-space
+    interpolation ``α·π_teacher + (1−α)·π_student`` — giving the bounded
+    per-token reward ``log(α·ρ + 1−α)`` (``ρ`` = teacher/sampler probability
+    ratio), floored at ``log(1−α)`` where standard OPD's ``log ρ`` diverges.
+    The signal is compiled on the orchestrator into token-level advantages
+    (per-token return = reward + mean future reward, z-normalized across the
+    group's tokens) consumed by the ``rl`` loss component, whose importance
+    ratio and trust region provide the paper's internal trust region
+    iterations. Needs a frozen ``teacher``; ``group_size`` is the
+    normalization cohort."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    teacher: FrozenModelConfig
+    """The teacher — an inline frozen hosted model (``name`` + ``base_url``)
+    the proximal teacher interpolates toward. Required, and necessarily a
+    frozen endpoint (as for ``opd``: the ratio against the policy itself
+    carries no signal)."""
+
+    alpha: float = Field(0.2, gt=0, lt=1)
+    """Proximal-teacher interpolation coefficient α ∈ (0, 1). Floors the
+    per-token reward at ``log(1−α)``; α → 1 recovers standard OPD's unbounded
+    log-ratio reward. The paper reports α ∈ {0.1, 0.2, 0.3} as uniformly
+    stable and trains with 0.1–0.2."""
+
+
 class OPSDAlgoConfig(BaseAlgoConfig):
     type: Literal["opsd"] = "opsd"
     """On-policy self-distillation (SDFT, https://arxiv.org/abs/2601.19897):
@@ -305,7 +335,7 @@ class SFTAlgoConfig(BaseAlgoConfig):
 
 
 AlgoConfig: TypeAlias = Annotated[
-    GRPOAlgoConfig | EchoAlgoConfig | MaxRLAlgoConfig | OPDAlgoConfig | OPSDAlgoConfig | SFTAlgoConfig,
+    GRPOAlgoConfig | EchoAlgoConfig | MaxRLAlgoConfig | OPDAlgoConfig | TOPDAlgoConfig | OPSDAlgoConfig | SFTAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -315,6 +345,7 @@ its class defaults are the vetted setting.
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
+- ``topd`` — TOP-D: opd through a proximal teacher — bounded per-token reward compiled to token-level group-normalized advantages on the rl loss. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.

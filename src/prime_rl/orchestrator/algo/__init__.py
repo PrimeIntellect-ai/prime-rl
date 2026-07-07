@@ -6,7 +6,7 @@ turns the signal half into runtime objects (the sampling half is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`):
 
 - one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``opd``,
-  ``opsd``, ``sft``) — each named class owns its scoring hooks
+  ``topd``, ``opsd``, ``sft``) — each named class owns its scoring hooks
   (``score_rollout`` / ``score_group``) and declares what it needs (loss
   component, a "teacher", ...). One instance per env, built by
   :func:`build_algorithm`. A new credit-assignment scheme is a new named class:
@@ -36,6 +36,7 @@ from prime_rl.orchestrator.algo.opd import OPDAlgorithm
 from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
+from prime_rl.orchestrator.algo.topd import TOPDAlgorithm
 from prime_rl.orchestrator.types import Rollout
 
 if TYPE_CHECKING:
@@ -49,6 +50,7 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "echo": EchoAlgorithm,
     "max_rl": MaxRLAlgorithm,
     "opd": OPDAlgorithm,
+    "topd": TOPDAlgorithm,
     "opsd": OPSDAlgorithm,
     "sft": SFTDistillAlgorithm,
 }
@@ -74,6 +76,7 @@ __all__ = [
     "OPSDAlgorithm",
     "Rollout",
     "SFTDistillAlgorithm",
+    "TOPDAlgorithm",
     "build_algorithm",
     "connect_frozen_pool",
     "stamp_advantages",

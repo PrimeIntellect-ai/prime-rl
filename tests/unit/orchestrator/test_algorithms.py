@@ -8,7 +8,7 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import EchoAlgorithm, TOPDAlgorithm, stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.transport.types import TrainingSample
@@ -38,6 +38,7 @@ def _ref_kind(ref):
         ("grpo", {}, "policy", "rl"),
         ("max_rl", {}, "policy", "rl"),
         ("opd", {"teacher": FROZEN}, "policy", "ref_kl"),
+        ("topd", {"teacher": FROZEN}, "policy", "rl"),
         ("sft", {"sampling": {"source": FROZEN}}, "frozen", "ce"),
         ("opsd", {}, "policy", "ref_kl"),
         ("echo", {}, "policy", "rl"),
@@ -68,14 +69,15 @@ def test_echo_roles_require_at_least_one():
         _build(type="echo", roles={})
 
 
-def test_opd_teacher_must_be_a_frozen_endpoint():
-    # opd needs a teacher, and it must be frozen: a missing teacher is a
-    # structural error, and "policy" can't even be set — opd.teacher is typed
-    # FrozenModelConfig (the KL against the policy itself would be zero).
+@pytest.mark.parametrize("algorithm_type", ["opd", "topd"])
+def test_distillation_teacher_must_be_a_frozen_endpoint(algorithm_type):
+    # opd/topd need a teacher, and it must be frozen: a missing teacher is a
+    # structural error, and "policy" can't even be set — the teacher is typed
+    # FrozenModelConfig (the signal against the policy itself would be zero).
     with pytest.raises(ValueError, match="Field required"):
-        _build(type="opd")
+        _build(type=algorithm_type)
     with pytest.raises(ValueError, match="FrozenModelConfig"):
-        _build(type="opd", teacher="policy")
+        _build(type=algorithm_type, teacher="policy")
 
 
 def test_sft_requires_teacher():
@@ -205,6 +207,38 @@ def test_assign_advantages_list_rejects_misaligned():
     rollout = _make_rollout([_make_sample()])
     with pytest.raises(ValueError, match="align"):
         rollout.assign_advantages([0.5])
+
+
+# --------------------------------------------------------------------------
+# TOP-D: bounded distillation reward compiled to token-level group credit.
+# --------------------------------------------------------------------------
+
+
+def _topd_sample(logprobs: list[float], ref_logprobs: list[float]) -> TrainingSample:
+    # One prompt token (mask False, filler logprobs), the rest trainable.
+    return TrainingSample(
+        token_ids=list(range(len(logprobs))),
+        mask=[False] + [True] * (len(logprobs) - 1),
+        logprobs=logprobs,
+        temperatures=[],
+        env_name="test-env",
+        ref_logprobs=ref_logprobs,
+    )
+
+
+def test_topd_token_level_group_advantages():
+    # Hand-computed with the default alpha = 0.2: per trainable token, reward
+    # r = log(0.2 * exp(teacher - sampler) + 0.8); return = r + mean of the
+    # later trainable tokens' rewards; advantages z-normalize the returns
+    # across the whole group's tokens (token-level, unbiased std).
+    algo = TOPDAlgorithm(_build(type="topd", teacher=FROZEN), MagicMock())
+    a = _make_rollout([_topd_sample([0.0, -0.5, -1.0, -0.2], [0.0, -0.3, -2.0, -0.2])])
+    b = _make_rollout([_topd_sample([0.0, -0.4, -0.1], [0.0, -0.1, -0.6])])
+    asyncio.run(algo.score_group([a, b]))
+    assert a.advantages == pytest.approx([0.0, 0.4772, -1.4909, 0.9075], abs=1e-3)
+    assert b.advantages == pytest.approx([0.0, 0.6532, -0.5469], abs=1e-3)
+    # Teacher logprobs are consumed into advantages, never shipped on the wire.
+    assert a.samples[0].ref_logprobs is None and b.samples[0].ref_logprobs is None
 
 
 # --------------------------------------------------------------------------
