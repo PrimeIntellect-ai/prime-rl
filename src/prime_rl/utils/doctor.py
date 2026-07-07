@@ -71,10 +71,14 @@ class CheckResult:
 class HostProbe:
     """Thin, mockable layer over host state (sockets, disk, env vars)."""
 
-    def port_is_free(self, port: int) -> bool:
+    def port_is_free(self, port: int, host: str = "") -> bool:
+        # Bind-probe only: listen() is never called, so nothing is exposed and
+        # no connection can be accepted; the socket closes as soon as the
+        # answer is known. ``host`` should be whatever the real server will
+        # bind — "" (all interfaces) mirrors a server binding 0.0.0.0.
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             try:
-                sock.bind(("", port))
+                sock.bind((host, port))
                 return True
             except OSError:
                 return False
@@ -153,7 +157,10 @@ def check_ports(config: "RLConfig", probe: HostProbe) -> list[CheckResult]:
     # Bind probe is only meaningful when this host is the compute host.
     if _is_local_single_node(config):
         port = config.inference.server.port
-        if probe.port_is_free(port):
+        # Probe the exact address the server will bind (vLLM binds all
+        # interfaces when server.host is unset).
+        bind_host = config.inference.server.host or ""
+        if probe.port_is_free(port, bind_host):
             results.append(CheckResult("inference port free", CheckStatus.PASS, f"port {port} is free"))
         else:
             results.append(
