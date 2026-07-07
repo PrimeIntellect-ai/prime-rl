@@ -1,15 +1,11 @@
 """Preflight checks for the ``rl`` entrypoint (``rl @ config.toml --check``).
 
-Answers "will this run actually start?" before any GPU-hour is spent. Checks
-are pure functions ``(RLConfig, HostProbe) -> list[CheckResult]`` so they can
+Checks are pure functions ``(RLConfig, HostProbe) -> list[CheckResult]`` so they can
 be unit-tested on CPU-only CI with a fake probe. Host/config checks run in
 well under a second; the env check spawns each configured env server (bounded
 concurrency, per-env timeout) and the endpoint check probes frozen/external
 inference servers over the network, so a full run takes seconds to a couple
 of minutes.
-
-Invariant: ``--check`` never writes to ``output_dir`` (unlike ``--dry-run``,
-which writes resolved configs). Env-server logs go to a temp directory.
 """
 
 from __future__ import annotations

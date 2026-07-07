@@ -235,7 +235,7 @@ class RLConfig(BaseConfig):
     """Only validate and dump resolved configs, then exit early."""
 
     check: bool = False
-    """Run preflight checks and exit without launching or writing to the output directory. Validates ports, parallelism, checkpoint resume, disk, and credentials; spawns each configured env server to verify it loads; and probes frozen-model/external inference endpoints."""
+    """Run preflight checks. Validates ports, parallelism, checkpoint resume, disk, and credentials; spawns each configured env server to verify it loads; and probes frozen-model/external inference endpoints."""
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 

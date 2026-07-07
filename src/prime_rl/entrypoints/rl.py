@@ -530,8 +530,7 @@ def rl_slurm(config: RLConfig):
 def rl(config: RLConfig):
     if config.check:
         # Preflight mode: validate the run can start, then exit. Runs before
-        # validate_output_dir/clean_future_steps on purpose — --check must
-        # never mutate the output directory.
+        # validate_output_dir/clean_future_steps on purpose
         from prime_rl.utils.doctor import run_checks
 
         setup_logger(

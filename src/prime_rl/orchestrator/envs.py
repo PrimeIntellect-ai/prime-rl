@@ -108,10 +108,7 @@ class Env:
         """Spawn the env server (if needed), connect, and cache its ``info``.
 
         ``spawn_timeout`` caps the wait for a spawned server to report its
-        address (default ``ENV_SERVER_SPAWN_TIMEOUT``). The wait blocks a
-        worker thread that asyncio cancellation cannot interrupt, so callers
-        needing a shorter budget (e.g. preflight) must bound it here rather
-        than with ``asyncio.wait_for``."""
+        address (default ``ENV_SERVER_SPAWN_TIMEOUT``)."""
         external = self.config.address is not None
         address = self.config.address or await self._spawn(
             log_dir, log_level or "INFO", json_logging, spawn_timeout=spawn_timeout
@@ -212,8 +209,7 @@ class Env:
 
     def shutdown(self) -> None:
         """Terminate the spawned env server and reap it (terminate → join →
-        kill), mirroring ``Envs.shutdown``. Blocks up to ~30s for a stuck
-        process; call via ``asyncio.to_thread`` from async contexts."""
+        kill), mirroring ``Envs.shutdown``"""
         if self._env_server_process is None:
             return
         process = self._env_server_process
