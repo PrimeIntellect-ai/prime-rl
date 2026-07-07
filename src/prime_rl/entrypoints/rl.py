@@ -477,7 +477,7 @@ def rl_slurm(config: RLConfig):
     log_dir = get_log_dir(config.output_dir)
 
     if config.deployment.type == "single_node":
-        write_config(config, config_dir, exclude={"slurm", "dry_run", "clean_output_dir"})
+        write_config(config, config_dir, exclude={"slurm", "dry_run", "clean_output_dir", "check", "check_level"})
         logger.info(f"Wrote config to {config_dir / RL_TOML}")
 
         train_env_names = [env.resolved_name for env in config.orchestrator.train.env]
@@ -528,6 +528,18 @@ def rl_slurm(config: RLConfig):
 
 
 def rl(config: RLConfig):
+    if config.check:
+        # Preflight mode: validate the run can start, then exit. Runs before
+        # validate_output_dir/clean_future_steps on purpose — --check must
+        # never mutate the output directory.
+        from prime_rl.utils.doctor import run_checks
+
+        setup_logger(
+            config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
+            json_logging=config.log.json_logging,
+        )
+        sys.exit(run_checks(config))
+
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
     clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None

@@ -234,6 +234,12 @@ class RLConfig(BaseConfig):
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
 
+    check: bool = False
+    """Run preflight checks (ports, parallelism, checkpoint resume, disk, tokens) and exit without launching or writing to the output directory. See ``check_level`` for depth."""
+
+    check_level: Literal["static", "full"] = "static"
+    """Preflight check depth. ``static`` runs host/config checks only (sub-second); ``full`` additionally spawns each configured env server to validate it loads, and probes frozen-model/external inference endpoints over the network."""
+
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
     @model_validator(mode="after")
