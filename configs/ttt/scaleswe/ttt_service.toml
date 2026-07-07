@@ -1,0 +1,38 @@
+# TTT service for the scaleswe experiments: the FSDP engine (trainer stack + MultiLoRA
+# slots) on one GLM-4.5-Air node. Launch (own node, before the rl run):
+#   torchrun --nproc-per-node 8 -m prime_rl.entrypoints.ttt @ configs/ttt/scaleswe/ttt_service.toml
+# Must share output_dir with the rl run (adapter checkpoints ride the filesystem) and
+# inference_admin_urls must list every vLLM replica (root URLs, no /v1).
+
+output_dir = "outputs"
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+
+[engine]
+type = "fsdp"
+max_slots = 256                 # >= orchestrator.max_inflight_rollouts on TTT arms
+max_tokens_per_forward = 65536  # activation budget per packed update forward
+max_batch_wait_seconds = 0.5    # collect concurrent rollouts' updates into one forward
+
+[engine.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 8
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+
+[lora]
+rank = 16
+alpha = 32
+# Attention-only: vLLM's LoRA serving does not cover MoE expert FFNs.
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+[optim]
+type = "adamw"
+lr = 1e-4
+
+steps_per_update = 1
+
+# Every vLLM replica's admin root (adapters are (re)loaded on all of them after each update).
+inference_admin_urls = ["http://localhost:8000"]

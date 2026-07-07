@@ -1,0 +1,121 @@
+# TTT RL experiments on scaleswe-v1: GLM-4.5-Air, compacting harness on prime sandboxes,
+# eval on SWE-Bench Verified (same harness/TTT regime as training). Derived from the
+# glm45air-swe ablation config; adapted for TTT (compaction + LoRA serving + TTT service).
+#
+# ARMS (see ttt-implementation.md / the experiment table):
+#   A0 pure RL, no compaction, 64k ......... arm_a0_no_compaction.toml (overlay)
+#   A1 compaction baseline (no TTT) ........ arm_a1_compaction.toml
+#   A2 compaction + TTT (raw branch) ....... arm_a2_ttt.toml
+#   A3 + QA (adapter trains on QA pairs) ... arm_a3_qa.toml
+#   A4 = A3 + naive recycle_to_policy ...... arm_a4_recycle.toml
+#   A5 = A3 + group meta-lessons ........... arm_a5_meta.toml
+# Launch: uv run rl @ configs/ttt/scaleswe/base.toml @ configs/ttt/scaleswe/arm_<X>.toml
+#
+# TTT arms additionally need the TTT service running (its own node, torchrun across 8 GPUs):
+#   torchrun --nproc-per-node 8 -m prime_rl.entrypoints.ttt @ configs/ttt/scaleswe/ttt_service.toml
+# and share output_dir with trainer+orchestrator (adapter ckpts + replay refs go via FS).
+
+max_steps = 1000
+seq_len = 65536
+
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/triton-cache-$USER-$SLURM_JOB_ID"
+
+[slurm]
+job_name = "glm45air-ttt-swe"
+project_dir = "."
+partition = "all"
+pre_run_command = 'timeout 120 prime sandbox delete --label "$SLURM_JOB_NAME" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 4
+
+[wandb]
+project = "ttt-swe"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[ckpt]
+interval = 50
+keep_last = 1
+resume_step = -1
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+
+# --- Trainer ---
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 8
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.ckpt]
+skip_gather_master_weights = true
+skip_optimizer = true
+
+[trainer.optim]
+type = "muon"
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 256
+group_size = 16
+max_off_policy_steps = 32
+# TTT arms: every in-flight rollout holds a vLLM adapter slot + a TTT service slot; keep
+# inflight <= [inference].max_loras and <= the service's [engine].max_slots.
+max_inflight_rollouts = 256
+
+[orchestrator.renderer]
+name = "glm-4.5"
+thinking_retention = "all"
+
+[orchestrator.prime_monitor]
+
+# --- Eval: SWE-Bench Verified, same harness/TTT regime as training (arm overlays set it) ---
+
+[orchestrator.eval]
+interval = 20
+skip_first_step = false
+
+# --- Inference ---
+
+[inference]
+gpu_memory_utilization = 0.85
+enable_prefix_caching = true
+enable_return_routed_experts = true
+# TTT: serve per-rollout LoRA adapters. Attention-only adapters (vLLM LoRA does not cover
+# MoE expert FFNs); rank must cover the TTT service's [lora].rank.
+enable_lora = true
+max_lora_rank = 16
+max_loras = 256
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/.vllm_cache_$(whoami)"
+FLASHINFER_WORKSPACE_BASE = "/tmp/flashinfer-$(whoami)"
+
+[inference.model]
+max_model_len = 65536
+
+[inference.parallel]
+tp = 8

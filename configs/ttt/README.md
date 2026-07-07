@@ -42,10 +42,20 @@ LIMITS="--max-input-tokens 32768"   # total-context budget for every arm
 | compaction + TTT (0-LR wiring ablation) | ... `--ttt.base-url ... --ttt.enabled false` |
 | compaction + Q&A-TTT | ... `--ttt.base-url ... --ttt.qa.num-pairs 8` |
 
-## RL arm
+## RL arm (small scale)
 
 `rl_compaction_ttt.toml` — GRPO on deepdive with compaction+TTT rollouts and frozen-adapter
 replay in the trainer (start the TTT service first). Constraints enforced by config
 validation: full-weight policy training (no `[trainer.model.lora]`), `enable_lora = true`
 on inference. Add `--orchestrator.train.env.0.ttt.qa.recycle-to-policy true` for the
 Q&A→policy arm.
+
+## RL experiment family (scaleswe, GLM-4.5-Air)
+
+`scaleswe/` — the A0–A5 arm matrix on `scaleswe-v1` (see the header of
+`scaleswe/base.toml`): pure-RL and compaction baselines, compaction+TTT, QA, and the two
+permanent-SFT variants (naive recycle vs group meta-lessons, head-to-head). TTT arms use
+the **fsdp engine** (`scaleswe/ttt_service.toml`): the prime-rl trainer stack with
+`max_slots` resident MultiLoRA adapter slots and cross-rollout batched updates, launched
+under torchrun on its own node. `[engine] type = "peft"` (the default) remains the
+single-GPU engine for small models.

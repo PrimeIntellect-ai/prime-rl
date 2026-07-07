@@ -1,0 +1,19 @@
+# A4 — A3 + naive per-rollout recycling: each rollout's QA pairs additionally train the
+# POLICY's main weights (ce component). Read against A3 (and head-to-head vs A5 — never
+# combine recycle_to_policy with meta_lessons; effects must stay disentangled).
+
+[wandb]
+name = "a4-glm45air-scaleswe-ttt-qa-recycle"
+
+[[orchestrator.train.env]]
+name = "scaleswe"
+taskset = { id = "scaleswe-v1" }
+harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+ttt = { base_url = "http://TTT_NODE:8092", qa = { recycle_to_policy = true } }
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+taskset = { id = "swebench-verified-v1", use_prime_registry = true }
+harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+ttt = { base_url = "http://TTT_NODE:8092", qa = {} }
+timeout = { rollout = 3600 }

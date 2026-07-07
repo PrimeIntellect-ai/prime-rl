@@ -1,0 +1,20 @@
+# A2 — compaction + TTT (headline): adapter trains on each compacted-away branch
+# (loss_scope=all) before it drops; the rest of the rollout samples through the adapter;
+# the trainer replays every branch under its exact frozen adapter. Read against A1.
+# Requires the TTT service (ttt_service.toml) on its own node.
+
+[wandb]
+name = "a2-glm45air-scaleswe-ttt"
+
+[[orchestrator.train.env]]
+name = "scaleswe"
+taskset = { id = "scaleswe-v1" }
+harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+ttt = { base_url = "http://TTT_NODE:8092" }
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+taskset = { id = "swebench-verified-v1", use_prime_registry = true }
+harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+ttt = { base_url = "http://TTT_NODE:8092" }
+timeout = { rollout = 3600 }

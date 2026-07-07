@@ -15,9 +15,15 @@ def main():
     from prime_rl.utils.logger import setup_logger
 
     setup_logger(config.log.level, json_logging=config.log.json_logging)
-    from prime_rl.ttt.server import run_server
+    if config.engine.type == "fsdp":
+        # The trainer-stack engine (multi-rank; launch under torchrun for >1 GPU).
+        from prime_rl.ttt.server_v2 import run_server_v2
 
-    run_server(config)
+        run_server_v2(config)
+    else:
+        from prime_rl.ttt.server import run_server
+
+        run_server(config)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, PrivateAttr, model_validator
 
 from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import BaseConfig
@@ -54,10 +54,72 @@ class TTTModelConfig(BaseConfig):
     serves (updates consume the engine's exact token ids)."""
 
     device: str = "cuda"
-    """Device for the base model (one copy; adapters are swapped onto it per update)."""
+    """Device for the base model (peft engine only; the fsdp engine places per rank)."""
 
     gradient_checkpointing: bool = True
-    """Trade compute for memory on the long single-sequence updates."""
+    """Trade compute for memory on the long single-sequence updates (peft engine only; the
+    fsdp engine configures AC via ``engine.model``)."""
+
+
+class PeftEngineConfig(BaseConfig):
+    """The lightweight engine (v1): single-device HF + PEFT, one resident adapter swapped
+    in/out per update. Right for small models (≤~8B) and CPU tests; can't hold large MoEs
+    and serializes updates."""
+
+    type: Literal["peft"] = "peft"
+
+
+class FSDPEngineConfig(BaseConfig):
+    """The trainer-stack engine (v2): the prime-rl custom modeling stack (FSDP2 / EP / CP /
+    AC / fused LM head) with ``max_slots`` resident MultiLoRA adapter slots — one slot per
+    concurrent TTT rollout, claimed on first update and freed on release. Updates for
+    different rollouts pack into shared forwards (the segmented ``lora_num_tokens``
+    layout), so throughput scales with tokens, not update count. Launch under torchrun
+    across the TTT node(s)."""
+
+    type: Literal["fsdp"] = "fsdp"
+
+    max_slots: int = Field(64, ge=1)
+    """Resident adapter slots = max concurrent TTT rollouts this service instance can hold.
+    Rank-r attention adapters are tens of MB each; size against orchestrator
+    ``max_inflight_rollouts`` (and the engines' ``max_loras``)."""
+
+    max_tokens_per_forward: int = Field(65536, ge=1024)
+    """Token budget per packed update forward (activation-memory bound, like the RL
+    trainer's ``seq_len``). Jobs are packed whole into forwards under this cap."""
+
+    max_batch_wait_seconds: float = Field(0.25, ge=0)
+    """How long the server collects queued update jobs into one batch before running it.
+    Small values favor latency (rollouts block per update); larger values favor packing."""
+
+    model: dict = Field(default_factory=dict)
+    """Trainer ``ModelConfig`` overrides for the TTT model stack (e.g. ``impl``, ``attn``,
+    ``cp``, ``cp_style``, ``ac``, ``fused_lm_head_token_chunk_size``,
+    ``optimization_dtype``). ``name`` and ``lora`` are filled from the TTT config; pick the
+    same modeling settings as the RL trainer for numerics parity."""
+
+    def to_model_config(self, lora: "TTTLoRAConfig"):
+        """Build the trainer ``ModelConfig`` for the TTT stack: user overrides + the TTT
+        model name + the slotted LoRA config (rank/alpha/targets from ``[lora]``)."""
+        from prime_rl.configs.trainer import LoRAConfig as TrainerLoRAConfig
+        from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
+
+        data = dict(self.model)
+        if "name" not in data and self._model_name is not None:
+            data["name"] = self._model_name
+        data["lora"] = TrainerLoRAConfig(
+            rank=lora.rank,
+            alpha=lora.alpha,
+            dropout=lora.dropout,
+            target_modules=lora.target_modules,
+        ).model_dump()
+        return TrainerModelConfig.model_validate(data)
+
+    # Set by TTTServiceConfig validation so the engine renders the right base model.
+    _model_name: str | None = PrivateAttr(default=None)
+
+
+TTTEngineConfig = PeftEngineConfig | FSDPEngineConfig
 
 
 class TTTServiceConfig(BaseConfig):
@@ -68,6 +130,11 @@ class TTTServiceConfig(BaseConfig):
     deployment. See `verifiers.v1.ttt` for the rollout side."""
 
     model: TTTModelConfig = TTTModelConfig()
+
+    engine: TTTEngineConfig = Field(default_factory=PeftEngineConfig, discriminator="type")
+    """The training engine: ``peft`` (v1 — single-device HF+PEFT, small models) or ``fsdp``
+    (v2 — the prime-rl trainer stack with MultiLoRA slots, large models / high throughput;
+    launch under torchrun)."""
 
     lora: TTTLoRAConfig = TTTLoRAConfig()
 
@@ -101,3 +168,9 @@ class TTTServiceConfig(BaseConfig):
     that will never replay)."""
 
     log: LogConfig = LogConfig()
+
+    @model_validator(mode="after")
+    def thread_model_name_into_engine(self):
+        if isinstance(self.engine, FSDPEngineConfig):
+            self.engine._model_name = self.model.name
+        return self

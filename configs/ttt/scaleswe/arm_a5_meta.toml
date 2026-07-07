@@ -1,0 +1,19 @@
+# A5 — A3 + group meta-lessons: after each GRPO group, contrastive general lessons
+# (success vs failure attempts) are extracted and train the POLICY's main weights (ce).
+# Head-to-head vs A4 (naive recycling) — never combine the two.
+
+[wandb]
+name = "a5-glm45air-scaleswe-ttt-qa-meta"
+
+[[orchestrator.train.env]]
+name = "scaleswe"
+taskset = { id = "scaleswe-v1" }
+harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+ttt = { base_url = "http://TTT_NODE:8092", qa = { meta_lessons = true } }
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+taskset = { id = "swebench-verified-v1", use_prime_registry = true }
+harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+ttt = { base_url = "http://TTT_NODE:8092", qa = {} }
+timeout = { rollout = 3600 }

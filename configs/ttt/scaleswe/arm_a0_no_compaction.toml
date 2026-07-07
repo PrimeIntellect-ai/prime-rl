@@ -1,0 +1,15 @@
+# A0 — pure RL anchor: plain harness, full 64k context, no compaction, no TTT.
+
+[wandb]
+name = "a0-glm45air-scaleswe-64k"
+
+[[orchestrator.train.env]]
+name = "scaleswe"
+taskset = { id = "scaleswe-v1" }
+harness = { id = "default", runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+taskset = { id = "swebench-verified-v1", use_prime_registry = true }
+harness = { id = "default", runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+timeout = { rollout = 3600 }

@@ -1,0 +1,16 @@
+# A1 — compaction baseline: compacting harness @16k, no TTT.
+# The direct baseline every TTT arm is read against.
+
+[wandb]
+name = "a1-glm45air-scaleswe-compact16k"
+
+[[orchestrator.train.env]]
+name = "scaleswe"
+taskset = { id = "scaleswe-v1" }
+harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+taskset = { id = "swebench-verified-v1", use_prime_registry = true }
+harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+timeout = { rollout = 3600 }

@@ -50,6 +50,18 @@ inference deployment), LoRA rank/alpha/targets, optimizer + LR + `steps_per_upda
 `inference_admin_urls` (every vLLM server), `output_dir` (checkpoints at
 `outputs/ttt/<rollout_id>/v<k>/`, shared FS with inference and trainer).
 
+Two engines (`[engine] type`):
+
+- **`peft`** (default) — single-device HF + PEFT, one resident adapter swapped per update.
+  Small models (≤~8B), CPU tests.
+- **`fsdp`** — the prime-rl trainer stack (custom modeling / FSDP2 / CP / AC / fused LM
+  head) with `max_slots` resident MultiLoRA adapter slots; updates for *different*
+  rollouts pack into shared forwards (the segmented `lora_num_tokens` layout), so
+  throughput scales with tokens rather than update count. Launch under torchrun across
+  the TTT node(s). Large MoEs (e.g. GLM-4.5-Air) and high rollout concurrency. Note:
+  vLLM serves LoRA on attention projections only — keep `lora.target_modules`
+  attention-only for MoE deployments.
+
 Inference: `enable_lora = true`, `max_lora_rank >=` the TTT rank, `max_loras >=` concurrent
 TTT rollouts.
 
