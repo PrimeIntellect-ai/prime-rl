@@ -70,6 +70,29 @@ from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
 
+def _raise_if_nonfinite_gradients(model: torch.nn.Module) -> None:
+    grad_device = None
+    for param in model.parameters():
+        if param.grad is not None:
+            grad_device = param.grad.device
+            break
+    if grad_device is None:
+        return
+
+    gradients_are_finite = torch.ones((), device=grad_device, dtype=torch.int32)
+    for param in model.parameters():
+        if param.grad is not None:
+            gradients_are_finite = torch.minimum(
+                gradients_are_finite,
+                torch.isfinite(param.grad).to(torch.int32).amin(),
+            )
+
+    if dist.is_initialized():
+        dist.all_reduce(gradients_are_finite, op=dist.ReduceOp.MIN)
+    if not bool(gradients_are_finite.item()):
+        raise RuntimeError("Non-finite gradients detected before optimizer.step(); aborting to avoid corrupting weights.")
+
+
 @clean_exit
 def train(config: TrainerConfig):
     # Setup world and logger
@@ -534,10 +557,15 @@ def train(config: TrainerConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             grad_norm = clip_grad_norm_(
-                model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
+                model.parameters(),
+                max_norm=config.optim.max_norm,
+                ep_enabled=parallel_dims.ep_enabled,
+                error_if_nonfinite=True,
             )
             if grad_norm.device.type == "cpu":
                 grad_norm = grad_norm.to(torch.device("cuda"))
+        else:
+            _raise_if_nonfinite_gradients(model)
 
         zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
 
