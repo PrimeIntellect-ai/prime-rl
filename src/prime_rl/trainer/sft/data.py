@@ -142,6 +142,10 @@ class SFTDataset(StatefulIterableDataset):
         max_epochs: int | None = None,
     ):
         super().__init__()
+        # tokenizer=None puts the dataset in passthrough mode (no processing);
+        # with a tokenizer, a renderer is required.
+        if tokenizer is not None and renderer is None:
+            raise ValueError("SFTDataset requires a renderer when a tokenizer is provided.")
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
@@ -153,7 +157,6 @@ class SFTDataset(StatefulIterableDataset):
         self.max_examples = max_examples
         self.max_epochs = max_epochs
         self.renderer = renderer
-        self._warned_chat_template_kwargs = False
 
         # If specified, select a subset of the dataset
         if self.max_examples is not None:
@@ -173,8 +176,6 @@ class SFTDataset(StatefulIterableDataset):
     def _process(self, example: dict) -> dict | None:
         if self.tokenizer is None:
             return example
-        if self.renderer is None:
-            raise ValueError("SFT processing requires a renderer.")
 
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
@@ -238,13 +239,6 @@ class SFTDataset(StatefulIterableDataset):
                     return self.loss_mask_config.tool
                 case _:
                     raise ValueError(f"Invalid message role: {message['role']}")
-
-        if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
-            self.logger.warning(
-                "Ignoring per-example chat_template_kwargs; renderers only take "
-                "template kwargs run-wide via the [renderer] config."
-            )
-            self._warned_chat_template_kwargs = True
 
         # Non-assistant roles are opted into the loss via the renderer's
         # body-only path: the message content is trained, not the role
