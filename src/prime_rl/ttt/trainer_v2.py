@@ -72,12 +72,25 @@ class TTTTrainerV2:
     cross-rollout batching."""
 
     def __init__(self, config: TTTServiceConfig):
+        assert config.engine.type == "fsdp"
+        model_config = config.engine.to_model_config(config.lora)
+        if getattr(model_config, "cp", 1) > 1:
+            # update_batch feeds full packed sequences to every rank; CP would need the RL
+            # train loop's per-rank sequence sharding (setup_cp_params/shard_for_cp), which
+            # this engine deliberately doesn't do — updates are many short-ish sequences
+            # packed together, so FSDP across ranks is the right axis. Fail at startup, not
+            # with silent numerics.
+            raise ValueError(
+                "TTT fsdp engine does not support context parallelism (engine.model.cp > 1): "
+                "update forwards are packed multi-sequence batches, not one long sequence. "
+                "Use FSDP sharding (more ranks) and lower max_tokens_per_forward instead."
+            )
+
         from prime_rl.trainer.model import setup_model, setup_tokenizer
         from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
         from prime_rl.trainer.runs import MultiRunManager, setup_multi_run_manager
         from prime_rl.trainer.world import get_world
 
-        assert config.engine.type == "fsdp"
         self.config = config
         self.logger = get_logger()
         self.world = get_world()
@@ -85,7 +98,6 @@ class TTTTrainerV2:
         self.ckpt_root = config.output_dir / "ttt"
         self.max_slots = config.engine.max_slots
 
-        model_config = config.engine.to_model_config(config.lora)
         # The slot registry: we use MultiRunManager purely as the module/param registry
         # (register_module / *_for_run / reset_run_parameters) — its run-discovery /
         # eviction machinery is multi-tenant-platform-shaped and stays unused. max_runs

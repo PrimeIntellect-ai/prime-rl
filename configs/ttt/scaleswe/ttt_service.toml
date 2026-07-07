@@ -15,11 +15,11 @@ max_slots = 256                 # >= orchestrator.max_inflight_rollouts on TTT a
 max_tokens_per_forward = 65536  # activation budget per packed update forward
 max_batch_wait_seconds = 0.5    # collect concurrent rollouts' updates into one forward
 
+# No cp here: the engine packs many shortish sequences per forward (CP is for one long
+# sequence and is rejected by the engine); FSDP across the node's 8 GPUs shards the model.
 [engine.model]
 impl = "custom"
 attn = "flash_attention_3"
-cp = 8
-cp_style = "ulysses"
 fused_lm_head_token_chunk_size = 1024
 
 [lora]

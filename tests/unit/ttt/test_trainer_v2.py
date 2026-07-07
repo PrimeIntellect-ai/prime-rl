@@ -132,3 +132,14 @@ def test_service_config_engine_dispatch():
     assert mc.cp == 8 and mc.cp_style == "ulysses"
     assert mc.lora is not None and mc.lora.rank == 16
     assert mc.lora.target_modules == ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+
+def test_fsdp_engine_rejects_context_parallelism():
+    """update_batch feeds full packed sequences to every rank — CP would silently
+    mis-shard; the engine must refuse at startup."""
+    config = TTTServiceConfig(
+        engine={"type": "fsdp", "model": {"cp": 8, "cp_style": "ulysses"}},
+        lora=TTTLoRAConfig(rank=4),
+    )
+    with pytest.raises(ValueError, match="context parallelism"):
+        TTTTrainerV2(config)

@@ -11,9 +11,12 @@ taskset = { id = "scaleswe-v1" }
 harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
 ttt = { base_url = "http://TTT_NODE:8092", qa = { recycle_to_policy = true } }
 
+# NOTE: no `ttt` on the eval env — the orchestrator's eval path samples through the
+# chat-relay client (no token ids), which TTT refuses by design. Evals here measure the
+# policy under compaction WITHOUT adapters; for TTT-on evals, run the env's eval CLI
+# with `--client.type train --ttt.base-url ...` against the same checkpoints.
 [[orchestrator.eval.env]]
 name = "swebench-verified"
 taskset = { id = "swebench-verified-v1", use_prime_registry = true }
 harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
-ttt = { base_url = "http://TTT_NODE:8092", qa = {} }
 timeout = { rollout = 3600 }

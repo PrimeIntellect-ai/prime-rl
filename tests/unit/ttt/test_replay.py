@@ -255,14 +255,19 @@ def test_ttt_gc_lifecycle(tmp_path):
     @dataclass
     class FakeRollout:
         info: dict = field(default_factory=dict)
+        has_error: bool = False
+        is_filtered: bool = False
 
     @dataclass
     class FakeBatch:
         rollouts: list
         samples: list
 
-    shipped_rollout = FakeRollout(info={"ttt": {"updates": [{"version": 1, "ckpt_path": str(shipped_dir / "v1")}]}})
-    dropped_rollout = FakeRollout(info={"ttt": {"updates": [{"version": 1, "ckpt_path": str(dropped_dir / "v1")}]}})
+    def rollout_for(d, **kwargs):
+        return FakeRollout(info={"ttt": {"updates": [{"version": 1, "ckpt_path": str(d / "v1")}]}}, **kwargs)
+
+    shipped_rollout = rollout_for(shipped_dir)
+    dropped_rollout = rollout_for(dropped_dir, is_filtered=True)
     batch = FakeBatch(
         rollouts=[shipped_rollout, dropped_rollout],
         samples=[make_sample(ttt_adapter_path=str(shipped_dir / "v1"))],
@@ -270,13 +275,53 @@ def test_ttt_gc_lifecycle(tmp_path):
 
     gc = TTTCheckpointGC()
     gc.track_batch(step=7, batch=batch)
-    assert not dropped_dir.exists()  # dropped rollout's dir removed immediately
+    assert not dropped_dir.exists()  # filtered rollout's dir removed immediately
     assert shipped_dir.exists()  # shipped rollout's dir deferred
 
     gc.on_new_version(6)
     assert shipped_dir.exists()  # step 7 not consumed yet
     gc.on_new_version(7)
     assert not shipped_dir.exists()
+
+
+def test_ttt_gc_carries_window_straddlers(tmp_path):
+    """``batch.rollouts`` is the ARRIVAL window, not the ship cohort: a rollout can arrive
+    in step N's window and ship its samples in step N+1 (batch overflow; group finalized
+    after the cut). Its adapter dirs must NOT be deleted at step N — they're carried until
+    they ship (then deferred + freed on consumption) — otherwise the trainer's replay load
+    hard-fails at N+1."""
+    from dataclasses import dataclass, field
+
+    from prime_rl.orchestrator.ttt_gc import TTTCheckpointGC
+
+    straddler_dir = tmp_path / "ttt" / "r-straddler"
+    (straddler_dir / "v1").mkdir(parents=True)
+
+    @dataclass
+    class FakeRollout:
+        info: dict = field(default_factory=dict)
+        has_error: bool = False
+        is_filtered: bool = False
+
+    @dataclass
+    class FakeBatch:
+        rollouts: list
+        samples: list
+
+    straddler = FakeRollout(info={"ttt": {"updates": [{"version": 1, "ckpt_path": str(straddler_dir / "v1")}]}})
+
+    gc = TTTCheckpointGC()
+    # Step 1: the rollout is in the arrival window but its samples don't ship yet.
+    gc.track_batch(step=1, batch=FakeBatch(rollouts=[straddler], samples=[make_sample()]))
+    assert straddler_dir.exists()  # carried, not deleted
+
+    # Step 2: its samples ship (it is no longer in the arrival window).
+    gc.track_batch(
+        step=2, batch=FakeBatch(rollouts=[], samples=[make_sample(ttt_adapter_path=str(straddler_dir / "v1"))])
+    )
+    assert straddler_dir.exists()  # now deferred on step 2
+    gc.on_new_version(2)
+    assert not straddler_dir.exists()  # freed once consumed
 
 
 def test_shared_sampled_prefix_trained_once():

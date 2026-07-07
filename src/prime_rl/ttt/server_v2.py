@@ -219,8 +219,9 @@ def run_server_v2(config: TTTServiceConfig) -> None:
     from prime_rl.ttt.trainer_v2 import TTTTrainerV2
 
     world = get_world()
+    torch.cuda.set_device(world.local_rank)
     if torch.distributed.is_available() and not torch.distributed.is_initialized() and world.world_size > 1:
-        torch.distributed.init_process_group(backend="nccl")
+        torch.distributed.init_process_group(backend="nccl", device_id=torch.device("cuda", world.local_rank))
     trainer = TTTTrainerV2(config)
     work_queue: Queue = Queue()
 
