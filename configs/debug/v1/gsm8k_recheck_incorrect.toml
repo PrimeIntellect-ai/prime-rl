@@ -1,0 +1,52 @@
+output_dir = "outputs-wrong"
+# GSM8K (v1) + online recheck replay — configs/debug/v1/gsm8k.toml plus a second train env
+# that re-enters this run's own finished attempts with a verification turn (scored by the
+# gsm8k verifier; no sandbox state involved, so replay fidelity is exact). The replay env
+# starts empty and grows as steps ship records into <output_dir>/rollouts/. Runs on 2 GPUs
+# (1 inference, 1 training):
+#   uv run inference --model.name PrimeIntellect/Qwen3-0.6B          # Inference pane (GPU 0)
+#   uv run rl @ configs/debug/v1/gsm8k_recheck.toml --ckpt           # Trainer pane (GPU 1)
+
+max_steps = 100
+seq_len = 2048
+
+[wandb]
+project = "gsm8k-debug"
+name = "gsm8k-v1"
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[orchestrator]
+batch_size = 512
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.train.env]]
+taskset = { id = "gsm8k-v1", split = "train" }
+harness = { id = "null", runtime = { type = "subprocess" } }
+
+# `records` must point at THIS run's own records (note the run-id subdir the
+# orchestrator nests under output_dir) — adjust if you launch with --output-dir.
+[[orchestrator.train.env]]
+name = "gsm8k-recheck-wrong"
+taskset = { id = "replay", records = "outputs-wrong/run_default/rollouts/step_*/train_rollouts.jsonl", mode = "recheck", max_source_reward = 0.5, source = { id = "gsm8k-v1", split = "train" }, max_seed_tokens = 4096 }
+harness = { id = "null", runtime = { type = "subprocess" } }
+ratio = 1
+
+[orchestrator.eval]
+interval = 20
+num_examples = 256
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.eval.env]]
+taskset = { id = "gsm8k-v1", split = "test" }
+harness = { id = "null", runtime = { type = "subprocess" } }
+
+[trainer] # Default trainer config
+
+[inference] # Default inference config

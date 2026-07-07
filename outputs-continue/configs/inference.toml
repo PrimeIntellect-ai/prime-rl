@@ -1,0 +1,44 @@
+enable_lora = false
+max_loras = 8
+max_cpu_loras = 100
+gpu_memory_utilization = 0.9
+api_server_count = 1
+data_parallel_rpc_port = 13345
+seed = 0
+enable_expert_parallel = false
+all2all_backend = "allgather_reducescatter"
+enable_eplb = false
+enable_dbo = false
+use_deep_gemm = false
+use_pd_kv_transfer = false
+enable_return_routed_experts = false
+enable_fp32_lm_head = true
+
+[server]
+port = 8000
+liveness_timeout_seconds = 30.0
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+trust_remote_code = false
+dtype = "auto"
+enforce_eager = false
+tool_call_parser = "hermes"
+
+[parallel]
+tp = 1
+dp = 1
+
+[log]
+level = "info"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+
+[env_vars]
+
+[weight_broadcast]
+type = "filesystem"
+
+[vllm_extra]
