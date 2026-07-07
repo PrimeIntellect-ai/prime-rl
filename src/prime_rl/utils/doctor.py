@@ -2,14 +2,14 @@
 
 Answers "will this run actually start?" before any GPU-hour is spent. Checks
 are pure functions ``(RLConfig, HostProbe) -> list[CheckResult]`` so they can
-be unit-tested on CPU-only CI with a fake probe. The static tier is
-host/config-only and runs in well under a second; the full tier
-(``--check-level full``) additionally spawns each configured env server and
-probes frozen/external inference endpoints over the network.
+be unit-tested on CPU-only CI with a fake probe. Host/config checks run in
+well under a second; the env check spawns each configured env server (bounded
+concurrency, per-env timeout) and the endpoint check probes frozen/external
+inference servers over the network, so a full run takes seconds to a couple
+of minutes.
 
 Invariant: ``--check`` never writes to ``output_dir`` (unlike ``--dry-run``,
-which writes resolved configs). Env-server logs from the full tier go to a
-temp directory.
+which writes resolved configs). Env-server logs go to a temp directory.
 """
 
 from __future__ import annotations
@@ -38,10 +38,16 @@ if TYPE_CHECKING:
 DISK_FAIL_GB = 5
 DISK_WARN_GB = 100
 
-# Per-env timeout for the full-tier env spawn check. Deliberately much shorter
-# than the orchestrator's ENV_SERVER_SPAWN_TIMEOUT (600s): a slow dataset
-# download is a SKIP with a hint, not a FAIL, so --check stays usable in CI.
+# Per-env timeout for the env spawn check. Deliberately much shorter than the
+# orchestrator's ENV_SERVER_SPAWN_TIMEOUT (600s): a slow dataset download is a
+# SKIP with a hint, not a FAIL, so --check stays usable in CI.
 ENV_CHECK_TIMEOUT = 120.0
+
+# Max env servers spawned concurrently. Each is a real child process that
+# loads a taskset (RAM + network), so many-env configs shouldn't fork-bomb the
+# launcher host; 8 keeps the worst case at a few timeout windows without
+# contending badly on downloads.
+ENV_CHECK_CONCURRENCY = 8
 
 # Timeout for endpoint reachability probes.
 ENDPOINT_PROBE_TIMEOUT = 5.0
@@ -112,7 +118,7 @@ def check_ports(config: "RLConfig", probe: HostProbe) -> list[CheckResult]:
             CheckResult(
                 "ports",
                 CheckStatus.SKIP,
-                "no [inference] block — external server checked in full tier",
+                "no [inference] block — the external server is probed by the endpoints check",
             )
         ]
 
@@ -419,13 +425,18 @@ def check_envs(config: "RLConfig", probe: HostProbe) -> list[CheckResult]:
     log_dir = Path(tempfile.mkdtemp(prefix="prime-rl-check-envs-"))
 
     async def run_all() -> list[CheckResult]:
-        return [await _check_one_env(env_config, log_dir) for env_config in env_configs]
+        semaphore = asyncio.Semaphore(ENV_CHECK_CONCURRENCY)
+
+        async def run_one(env_config) -> CheckResult:
+            async with semaphore:
+                return await _check_one_env(env_config, log_dir)
+
+        return list(await asyncio.gather(*(run_one(env_config) for env_config in env_configs)))
 
     return asyncio.run(run_all())
 
 
-STATIC_CHECKS = [check_ports, check_parallelism, check_ckpt, check_disk, check_tokens]
-FULL_CHECKS = [check_envs, check_endpoints]
+CHECKS = [check_ports, check_parallelism, check_ckpt, check_disk, check_tokens, check_envs, check_endpoints]
 
 _STATUS_SYMBOL = {
     CheckStatus.PASS: "✓",
@@ -442,13 +453,10 @@ def run_checks(config: "RLConfig", probe: HostProbe | None = None) -> int:
     logger = get_logger()
     probe = probe or HostProbe()
 
-    checks = list(STATIC_CHECKS)
-    if config.check_level == "full":
-        checks += FULL_CHECKS
-    logger.info(f"Running preflight checks (level={config.check_level})")
+    logger.info("Running preflight checks")
 
     results: list[CheckResult] = []
-    for check in checks:
+    for check in CHECKS:
         results.extend(check(config, probe))
 
     for result in results:
@@ -471,7 +479,5 @@ def run_checks(config: "RLConfig", probe: HostProbe | None = None) -> int:
     if num_failed:
         logger.error(f"Preflight failed: {summary}. Fix the failures above before launching.")
         return 1
-    if config.check_level == "static":
-        summary += " — use --check-level full to also spawn env servers and probe endpoints"
     logger.success(f"Preflight passed: {summary}")
     return 0

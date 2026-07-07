@@ -477,7 +477,7 @@ def rl_slurm(config: RLConfig):
     log_dir = get_log_dir(config.output_dir)
 
     if config.deployment.type == "single_node":
-        write_config(config, config_dir, exclude={"slurm", "dry_run", "clean_output_dir", "check", "check_level"})
+        write_config(config, config_dir, exclude={"slurm", "dry_run", "clean_output_dir", "check"})
         logger.info(f"Wrote config to {config_dir / RL_TOML}")
 
         train_env_names = [env.resolved_name for env in config.orchestrator.train.env]
