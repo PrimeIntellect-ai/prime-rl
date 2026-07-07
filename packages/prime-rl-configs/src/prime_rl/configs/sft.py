@@ -84,6 +84,10 @@ class SFTDataConfig(BaseDataConfig):
     name: str = "PrimeIntellect/Reverse-Text-SFT"
     """HF dataset name or path."""
 
+    data_files: list[str] | None = None
+    """Local data files passed through to ``load_dataset``. Requires a loader-style
+    ``name`` (e.g. ``"json"``). Supports glob patterns and compressed files natively."""
+
     subsets: list[str] | None = None
     """Subsets to load from the HF dataset."""
 
@@ -108,6 +112,8 @@ class SFTDataConfig(BaseDataConfig):
 
     @model_validator(mode="after")
     def validate_subsets_and_splits(self):
+        if self.data_files is not None and (self.subsets is not None or self.splits is not None):
+            raise ValueError("data_files cannot be combined with subsets/splits")
         if self.subsets is not None or self.splits is not None:
             if self.subsets is not None and self.splits is not None:
                 if len(self.subsets) != len(self.splits):

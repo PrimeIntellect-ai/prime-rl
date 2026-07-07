@@ -176,6 +176,7 @@ Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manag
 | Knob | What it controls |
 |---|---|
 | `data.name` | HF dataset name or local path |
+| `data.data_files` | Local data files passed to `load_dataset` (use with a loader-style `data.name` such as `"json"`); supports globs and compressed files |
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |

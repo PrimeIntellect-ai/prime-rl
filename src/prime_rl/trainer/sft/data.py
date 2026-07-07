@@ -505,12 +505,13 @@ def setup_and_interleave_datasets(
     probabilities: list[float] | None,
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
     seed: int = 0,
+    data_files: list[str] | None = None,
 ) -> Dataset:
     logger = get_logger()
     datasets = []
     for subset, split in subsets_and_splits:
-        logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split))
+        logger.debug(f"Loading dataset {dataset_name} with {subset=}, {split=}, {data_files=}")
+        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split, data_files=data_files))
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
@@ -539,6 +540,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(None, "train")],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            data_files=config.data_files,
         )
     elif config.subsets is not None and config.splits is None:
         logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
@@ -547,6 +549,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(subset, "train") for subset in config.subsets],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            data_files=config.data_files,
         )
     elif config.subsets is None and config.splits is not None:
         logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
@@ -555,6 +558,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=[(None, split) for split in config.splits],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            data_files=config.data_files,
         )
     else:
         assert config.subsets is not None and config.splits is not None
@@ -564,6 +568,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             subsets_and_splits=list(zip(config.subsets, config.splits)),
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
+            data_files=config.data_files,
         )
 
 
