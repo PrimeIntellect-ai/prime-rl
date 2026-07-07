@@ -1,16 +1,17 @@
-# TTT Implementation Plan (prime-rl)
+# TTT Implementation (prime-rl)
 
-Companion to `ttt-plan.md`. Target repo: `prime-rl` (branch `sebastian/ttt-2026-07-06`), with a
-paired branch on the `deps/verifiers` submodule (pinned by exact commit in the superproject).
-Everything below reuses existing components wherever possible; all numeric values (thresholds,
-LRs, ranks, steps) are config fields — nothing hard-coded.
+Companion to `ttt-plan.md`. **Status: implemented** — this document describes the system as
+built, plus the decision log. Branches: `prime-rl` `sebastian/ttt-2026-07-06`,
+`deps/verifiers` `sebastian/ttt-compact-harness-2026-07-06` (pinned by exact commit in the
+superproject). User-facing docs: `docs/ttt.md`; experiment configs: `configs/ttt/`
+(RL family: `configs/ttt/scaleswe/`); the general branch-sample double-counting bug found
+along the way is written up separately in `branch-sample-dedup-bug.md` (for an upstream PR).
 
-**Scope decision (2026-07-06):** the headline technique is **training at compaction time** (with
-and without Q&A). The sliding-window technique is tabled — its design is kept in Appendix A so it
-can be picked up later, and nothing in the compaction path forecloses it. Environment:
-`deepdive_v1`. Resolved defaults: TTT loss on **all** tail tokens (context extension = every
-token counts); blocking updates accepted; base-weight staleness under async RL accepted with
-`mismatch_kl` monitoring.
+**Scope:** the headline technique is **training at compaction time** (with and without Q&A).
+The sliding-window technique is tabled — its design is kept in Appendix A; nothing in the
+compaction path forecloses it. Experiments run **RL-first on `scaleswe-v1`** (GLM-4.5-Air,
+SWE-Bench Verified evals); the earlier eval-only deepdive arms remain available in
+`configs/ttt/` as the small-scale path.
 
 ## 0. Core design decisions
 
@@ -19,284 +20,302 @@ token counts); blocking updates accepted; base-weight staleness under async RL a
 **TTT updates happen only at compaction boundaries, and every trace branch is sampled under
 exactly one LoRA version.**
 
-verifiers v1 already gives us the perfect substrate: a rollout is a message *graph*; a compaction
-(the harness rebuilds its prompt as `[system, user(summary)]`) forks a new **branch**, and a
-branch is already the unit of a training sample (`Branch.token_ids` / `sampled_mask` /
-`logprobs`). Aligning "one TTT update" with "one branch fork" means:
+verifiers v1 already gives us the perfect substrate: a rollout is a message *graph*; a
+compaction (the harness rebuilds its prompt as `[system, user(summary)]`) forks a new
+**branch**, and a branch is already the unit of a training sample (`Branch.token_ids` /
+`sampled_mask` / `logprobs`). Aligning "one TTT update" with "one branch fork" means:
 
-- the TTT trigger is *passive*: the interception layer detects the fork (`prepare_turn` returns a
-  prefix that doesn't extend the previous leaf) and runs one update on the just-abandoned branch
-  before serving the first turn of the new branch;
-- each branch carries a single `(adapter_name, adapter_version)` stamp — exactly the metadata the
-  RL replay needs later;
-- the harness stays a plain program (it just rewrites its prompt, as rlm already does); it needs
+- the TTT trigger is *passive*: the interception layer detects the fork (`prepare_turn`
+  returns a prefix that doesn't extend the previous leaf) and runs one update on the
+  just-abandoned branch before serving the first turn of the new branch;
+- each committed node is stamped with the version its tokens ran under
+  (`MessageNode.ttt_version`); `Branch.ttt_version` derives the branch's single version and
+  *enforces* uniformity (raises on a mix) — exactly the metadata the RL replay needs;
+- the harness stays a plain program (it just rewrites its prompt, as rlm does); it needs
   zero knowledge of TTT, vLLM admin, or token ids.
 
-Compaction-only scope makes the trigger especially simple: **every fork is a compaction**, and
-the abandoned branch is entirely fresh content (the new branch shares at most the system-prompt
-prefix). No partial-tail watermark bookkeeping is needed — the update trains on the whole
-abandoned branch, which by construction ends with the summary turn generated with the full
-context in prompt (exactly the ordering "training at compaction time" requires).
+Compaction-only scope keeps the trigger simple: every fork is a compaction, the abandoned
+branch is fresh content (the new branch shares at most the system-prompt prefix; shared
+prefixes and already-trained nodes ride as loss-masked context via the hook's `seen` set),
+and the branch ends with the summary turn generated with the full context in prompt —
+exactly the ordering "training at compaction time" requires. An empty-tail guard keeps SDK
+retries of committed turns from triggering spurious updates.
 
 ### 0.2 One LoRA per rollout, updated in place, checkpointed per version
 
-- Adapter name: `ttt-{trace.id}` (unique per rollout), served by vLLM alongside the base model.
+- Adapter name: `ttt-{trace.id}` (unique per rollout), served by vLLM alongside the base
+  model.
 - LoRA starts zero-init (B=0) ⇒ identical to base model ⇒ created lazily on the *first*
   compaction; the first branch runs under the base model name with exact consistency.
 - Every update: gradient step(s) → save PEFT-format checkpoint to
-  `outputs/ttt/<trace_id>/v<k>/` (shared FS) → `POST /load_lora_adapter` (prime-rl's wrapper
-  already supports in-place same-name reload) → subsequent generate calls use the adapter name.
-- Checkpoints persist on disk after the rollout ends (adapter unloaded from vLLM) — they are the
-  replay artifacts for the RL phase and for analysis.
+  `outputs/ttt/<trace_id>/v<k>/` (shared FS) → `POST /load_lora_adapter` (prime-rl's
+  wrapper does in-place same-name reload) → subsequent generate calls use the adapter name
+  **with a per-version cache salt** (`{adapter}-v{k}` merged into any existing salt) — the
+  in-place reload keeps the lora id, so unsalted prefix KV from old weights would be
+  silently reused. (Fixing this exposed a latent bug: the v1 `TrainClient` passed
+  `cache_salt` inside vLLM `sampling_params` where it isn't a field; it now rides the
+  top-level generate-request field, which also makes prime-rl's existing per-policy-version
+  salting reach the engine.)
+- Checkpoints persist after the rollout ends (adapter unloaded from vLLM) — the replay
+  artifacts for RL; the orchestrator GCs them once consumed (§6).
+- Failure semantics: any failed update, QA generation, or version mismatch is a `TTTError`
+  (non-retryable 400 to the harness) — the rollout fails loudly; after a lost update the
+  adapter no longer matches the context the model believes it has.
 
 ### 0.3 Where each piece lives
 
-| Piece | Repo / location | New or extended |
+| Piece | Location | State |
 |---|---|---|
-| Compacting default harness (rlm-style) | `deps/verifiers` branch: `verifiers/v1/harnesses/default/program.py` + `harness.py` config | extend |
-| TTT trigger hook (fork detection → update call, adapter-version stamping, cache salting) | `deps/verifiers` branch: `verifiers/v1/interception/` + `clients/` | new, small |
-| TTT config (`TTTConfig`) | `deps/verifiers` branch: `verifiers/v1/configs/` (flows through `EnvServerConfig`, and the `eval` CLI) | new |
-| TTT update service (holds base model, computes LoRA steps, drives vLLM adapter loads) | `prime-rl`: `src/prime_rl/ttt/` + `ttt` entrypoint | new |
-| vLLM adapter serving | `prime-rl`: existing `enable_lora` + `/load_lora_adapter` in-place reload | reuse |
-| Branch → sample adapter refs on the wire | `prime-rl`: `orchestrator/trajectories.py`, `transport/types.py` | extend (RL phase) |
-| Frozen-adapter replay in trainer | `prime-rl`: `trainer/rl/packer.py`, `trainer/rl/train.py`, MultiLoRA layers | extend (RL phase) |
-| Q&A generation + recycling | verifiers hook (generation) + existing `ce_weights` loss routing (recycling) | new + reuse |
+| `compacting` harness (default harness + rlm-style compaction) | verifiers: `v1/harnesses/compacting/` (+ hooks in `harnesses/default/`) | done |
+| TTT trigger hook, version stamping, cache salting, QA generation | verifiers: `v1/ttt.py`, driven by `v1/interception/server.py` + `v1/rollout.py` | done |
+| `TTTConfig` / `QAConfig` (env-level, `--ttt.*`) | verifiers: `v1/ttt.py`, field on `EnvConfig` | done |
+| TTT service — peft engine (v1, small models) | prime-rl: `src/prime_rl/ttt/{trainer,server}.py` | done |
+| TTT service — fsdp engine (v2, large models/throughput) | prime-rl: `src/prime_rl/ttt/{trainer_v2,server_v2}.py` | done |
+| Service config (`TTTServiceConfig`, engine union) + `ttt` entrypoint | prime-rl: `configs/ttt.py`, `entrypoints/ttt.py` | done |
+| Branch → sample adapter refs on the wire | prime-rl: `orchestrator/trajectories.py`, `transport/types.py` | done |
+| Frozen-adapter replay in the trainer | prime-rl: `trainer/ttt_replay.py`, wired in `trainer/rl/train.py` + packer | done |
+| Q&A recycling / group meta-extraction into the policy | prime-rl: `orchestrator/trajectories.py` (`qa_recycle_samples`), `orchestrator/qa_meta.py`, wired in `train_sink.py` | done |
+| Adapter checkpoint GC | prime-rl: `orchestrator/ttt_gc.py`, driven by the orchestrator | done |
+| Launch validation (full-weight policy, `enable_lora`) | prime-rl-configs: `RLConfig.validate_ttt` | done |
 
-## 1. Component A — compacting default harness (verifiers branch)
+## 1. The compacting harness (verifiers)
 
-Extend the **default harness** (uv-script chat loop, `harnesses/default/`) with rlm-style
-compaction, per the decision to use "default harness with compaction like in rlm".
+A **new built-in harness id `compacting`** — a subclass of `DefaultHarness`, not a change to
+its behavior (the default harness gained only a subclass hook, `extra_program_args()`, and
+its chat loop reads the full completion for `usage`). `CompactingHarnessConfig` extends the
+default's knobs with:
 
-`DefaultHarnessConfig` additions (optional, default = today's append-only behavior):
+- `compact_at_tokens: int` (required, positive — no baked-in number);
+- `checkpoint_prompt` / `compaction_framing` overrides (None = rlm-mirroring built-ins).
 
-```python
-compact_at_tokens: int | None = None  # compact once prompt tokens cross this (rlm's SUMMARIZE_AT_TOKENS); None = never
-```
+The compaction logic lives in the shared program (mirrors rlm's `_compact_branch`): when a
+turn's reported `usage.prompt_tokens` crosses the threshold (checked after tool results are
+appended, at most once per loop turn), ask the model for a handoff summary **with the full
+conversation still in context** — the summary turn is the last turn of the old branch —
+advertising the same tools with `tool_choice="none"` (identical rendered system block, so
+the trace branches exactly at the rewrite), then rebuild messages as
+`[system, user(framing + summary)]`.
 
-Program changes (`program.py`, pure message-list logic → unit-testable as plain functions):
+Baselines fall out for free: plain harness = no compaction; `compacting` without `ttt` =
+the compaction-only baseline; `ttt.enabled=false` = wiring ablation.
 
-- Track the running prompt-token count from each response's `usage.prompt_tokens` (the same
-  signal rlm uses; the renderer client reports exact counts).
-- When the threshold is crossed, port rlm's `_compact_branch` semantics: append a checkpoint
-  prompt and ask the model for a handoff summary **with the full conversation in context** —
-  this summary turn is the last turn of the old branch and is therefore included in the TTT
-  update. Advertise the same tools with `tool_choice="none"` on the summary turn (rlm's trick to
-  keep the rendered system prompt identical so branching is clean and deliberate).
-- Rebuild messages as `[system, user(framing + summary)]` and continue. The next request forks
-  the trace — the compaction boundary the TTT hook keys on.
-- Fires at most once per loop turn; threshold check after tool results are appended (mirrors rlm).
+## 2. The TTT trigger hook (verifiers)
 
-Baselines fall out for free:
-- *full context* = `compact_at_tokens=None` (today's behavior).
-- *small plain context* = `compact_at_tokens=None` + `RolloutLimits.max_input_tokens` (exists).
-- *compaction without TTT* = compaction on, TTT off — same code path minus the update calls.
+`TTTRolloutHook` (attached to the `RolloutSession` by the `Rollout` when `EnvConfig.ttt` is
+set; driven by the interception server around each turn):
 
-Note on `deepdive_v1`: it runs on the default harness with MCP search tools, so the compacting
-default harness slots straight in; the env itself needs no changes.
+1. **Fork detection** (`on_turn_prepared`): the prepared turn doesn't extend the previous
+   leaf → the branch was abandoned → one blocking update on it. Empty-tail guard for SDK
+   retries.
+2. **Payload**: the branch's flat exact token ids + a loss mask — `loss_scope="all"`
+   (default: memory formation; tool outputs count) or `"sampled"` (ablation); shared-prefix
+   and already-trained nodes are context; strict `seq_no = version + 1` ack.
+3. **Model/sampling switch**: after the ack, `turn_model()` returns the adapter name and
+   `turn_sampling()` the per-version-salted sampling (`RolloutSession` consults both).
+4. **Stamping** (`after_commit`): new nodes get `ttt_version` (and `ttt_qa` for QA
+   exchanges).
+5. **Tools capture** (`capture_request`): tool schemas are lifted from the harness's own
+   request bodies — used for QA generation and shipped with updates (§5).
+6. **Lifecycle**: optional `train_final_branch` at rollout end; `aclose()` always releases
+   the adapter (service slot + engine), checkpoints stay on disk.
+7. Metrics per update (loss, token counts, seconds, QA stats) → `trace.info["ttt"]`.
 
-## 2. Component B — TTT trigger hook (verifiers branch)
+TTT requires the renderer (train) client — updates consume exact token ids; the eval relay
+fails loudly. Streaming turns under TTT are refused.
 
-A small, framework-owned object attached to the `RolloutSession` when `TTTConfig` is present
-(invisible to harnesses; works identically under the `eval` CLI and the env server — both drive
-rollouts through the same interception path).
+## 3. The TTT service (prime-rl, fourth process type)
 
-Behavior, in the interception request handler around `graph.prepare_turn(...)`:
+`uv run ttt @ config.toml` (`TTTServiceConfig`). HTTP surface (both engines):
+`POST /update {rollout_id, adapter_name, token_ids, loss_mask, seq_no, qa_pairs,
+train_rollout, system_prompt, tools}` → gradient step(s) + versioned PEFT checkpoint +
+in-place `/load_lora_adapter` on every `inference_admin_urls` entry; `POST /release`;
+`GET /health`. No tokenizer on the raw-branch path (exact ids in); Q&A pairs are the one
+text input (§5).
 
-1. **Fork detection**: keep the previous leaf's node path per session. If the new
-   `PendingTurn`'s resolved prefix does not extend the previous leaf → the previous branch was
-   abandoned → it was a compaction (the only rewrite the compacting harness performs).
-2. **Update payload**: the abandoned branch as a flat sequence — `token_ids = branch.token_ids`,
-   `loss_mask` = all tokens (`loss_scope="all"`, the resolved default: this is memory formation
-   for context extension, so tool outputs and prompts count too; `"sampled"` kept as a config
-   ablation). The shared system-prompt prefix is excluded from loss (it's in every branch).
-3. **Call the TTT service** (`POST {ttt.base_url}/update`) with
-   `{rollout_id, adapter_name, token_ids, loss_mask, seq_no}` and *block* until it acks
-   (update applied + adapter (re)loaded into vLLM). Simplicity and exactness over latency
-   (accepted: ~1–3 s per compaction at 8B/32k).
-4. **Version bookkeeping**: bump the session's `ttt_version`; from now on the client's generate
-   calls use `model = adapter_name` and a per-version **cache salt**
-   (`extra_body.cache_salt = f"{existing_salt}-ttt{version}"`). The salt is mandatory: prime-rl's
-   in-place adapter reload keeps the same `lora_int_id`, so vLLM's prefix cache would otherwise
-   reuse KV computed under the *old* adapter weights (same issue prime-rl already solves for
-   policy reloads with `cache_salt=policy_version`).
-5. **Stamping**: record `ttt_version` on every `MessageNode` at commit time (new optional field);
-   `Branch` gets a derived `ttt_version` property that asserts uniformity — the §0.1 invariant,
-   enforced.
-6. **Metrics**: per-update loss, token counts, wall time → `trace.info["ttt"]` (and surfaced as
-   `@metric`s), so W&B/eval tables show TTT behavior per rollout.
-7. **Teardown**: on rollout end (the `Rollout.run` finally), `POST /release` (unload adapter
-   from vLLM, drop optimizer state; checkpoints stay on disk).
+Two engines (`[engine] type`, discriminated union):
 
-Error semantics: a failed update call is a rollout error (new `TTTError` boundary) — fail
-loudly, no silent degradation.
+- **`peft`** (default; `trainer.py`/`server.py`): single-device HF + PEFT, one resident
+  adapter, per-rollout CPU tensor + optimizer state swapped in/out per update. Small models
+  (≤~8B), CPU tests. Checkpoints written in the PEFT format vLLM consumes.
+- **`fsdp`** (v2; `trainer_v2.py`/`server_v2.py`): the prime-rl trainer stack —
+  `setup_model` (custom modeling / FSDP2 / CP / AC / fused LM head, configured via
+  `engine.model` overrides for numerics parity with the RL trainer) with
+  `engine.max_slots` **resident MultiLoRA adapter slots** (the multi-tenant LoRA machinery:
+  `apply_lora_to_model`, slot-registry `MultiRunManager`, per-slot AdamW over
+  `get_named_parameters_for_run`, `reset_parameters(idx)` = B=0 zero-init on claim,
+  deterministic lowest-free-index). **Cross-rollout batched updates**: whole jobs pack into
+  forwards under `max_tokens_per_forward`; slot-ordered tokens ride the segmented
+  `lora_num_tokens` layout; each job's loss is normalized by its own token count; per-slot
+  optimizers step independently — throughput scales with tokens, not update count. Rank 0
+  serves HTTP + coalesces jobs (`max_batch_wait_seconds`), validates per-job *before*
+  broadcasting (a malformed job 409s alone), broadcasts work orders to all ranks. Slot-
+  sliced adapter export via `get_state_dict_for_run` + `convert_adapter_to_hf` +
+  `save_lora_config` — byte-compatible with the peft engine's checkpoint format. Launch
+  under torchrun on the TTT node(s).
 
-`TTTConfig` (new, in `verifiers/v1/configs/`, reachable from `EnvServerConfig` /
-`--ttt.*` on the eval CLI):
+vLLM constraint for MoE deployments: LoRA serves attention projections only — keep
+`lora.target_modules` attention-only (`q/k/v/o_proj`) for e.g. GLM-4.5-Air.
 
-```python
-class TTTConfig(BaseConfig):
-    base_url: str                      # TTT service
-    enabled: bool = True               # false = ablation wiring without updates
-    loss_scope: Literal["all", "sampled"] = "all"
-    train_final_branch: bool = False   # update on the last branch at rollout end (default off)
-    qa: QAConfig | None = None         # §5
-```
+## 4. Deployment wiring
 
-(LR/optimizer/rank live on the *service* config — the service owns training hyperparams; the
-env-side config owns triggering. One place per knob.)
+- Inference: `enable_lora = true`, `max_lora_rank >= lora.rank`,
+  `max_loras >=` concurrent in-flight TTT rollouts (co-size with
+  `orchestrator.max_inflight_rollouts` and the fsdp engine's `max_slots`).
+- Orchestrator: `EnvConfig.ttt` flows through to the spawned env server untouched (the
+  orchestrator EnvConfig inherits `vf.EnvServerConfig`); the eval CLI gets `--ttt.*` for
+  free.
+- Launch validation (`RLConfig.validate_ttt`): TTT envs require **full-weight policy
+  training** (frozen TTT adapters don't stack on a trainable policy LoRA) and
+  `enable_lora` on inference.
+- NCCL weight broadcast is unaffected: adapters travel via filesystem + `/load_lora_adapter`.
+  Service base-weight staleness under async RL is accepted (same class as `async_level`
+  off-policyness; monitored via `mismatch_kl`) — replay exactness does not depend on it.
 
-## 3. Component C — the TTT service (`src/prime_rl/ttt/`)
+## 5. Q&A at compaction (v2 — model-authored, on-trace, verified)
 
-A fourth process type alongside inference/orchestrator/trainer, with its own entrypoint
-(`ttt = "prime_rl.entrypoints.ttt:main"`) and `TTTServiceConfig` in `prime-rl-configs`.
+When `ttt.qa` is set, each compaction runs **before** its update:
 
-- **Model**: loads the base model (HF `AutoModelForCausalLM`, bf16, gradient checkpointing) on
-  its own GPU(s). For the experiment scale (≤8B dense) one GPU suffices; no FSDP in v1 of this.
-- **Adapters**: PEFT `LoraConfig` per rollout (rank/alpha/dropout/target_modules from config).
-  PEFT rather than prime-rl's MultiLoRA because (a) the service trains *one adapter at a time*
-  per request, (b) PEFT's on-disk format is exactly what vLLM's `/load_lora_adapter` consumes.
-  Per-rollout optimizer (configurable: `adamw` default, `sgd` option; LR, `steps_per_update`,
-  grad clip all config).
-- **API** (FastAPI, mirrors the inference server's style):
-  - `POST /update {rollout_id, adapter_name, token_ids, loss_mask, seq_no}` →
-    forward/backward/step(s) on the sequence (single-sequence batch), save checkpoint
-    `outputs/ttt/<rollout_id>/v<k>/`, call vLLM `/load_lora_adapter` (admin URLs from config;
-    reuse `prime_rl.utils.client.load_lora_adapter`), return `{version, loss}`. Requests for the
-    same rollout are serialized; distinct rollouts run concurrently up to a semaphore
-    (`max_concurrent_updates`).
-  - `POST /release {rollout_id}` → unload adapter from vLLM, free optimizer state.
-  - `GET /health`.
-- **Weight updates under RL** (phase 2): the service follows the trainer's weight broadcasts
-  exactly like vLLM does (watch `broadcasts/` dir, reload base weights per policy version) so
-  TTT gradients are computed against the same base the policy serves. For the eval-only phase
-  the base is static and this is inert. Staleness under async RL (adapter trained on base *v*,
-  replayed against *v+lag*) is **accepted** — same class as existing `async_level`
-  off-policyness, monitored via `mismatch_kl`.
-- **Tokenization**: none. The service consumes exact token ids from the trace — no re-rendering,
-  no drift.
+1. **Generation**: `qa.num_generations` parallel calls, each with the full abandoned branch
+   in context plus one *seeded* instruction (`qa.seeds` — facts / what worked / what failed
+   / theories / setup / tool behavior), under the current pre-update adapter, advertising
+   the rollout's captured tools. The model authors **both questions and answers** —
+   `qa.items_per_generation` structured `<item>` blocks per call (`type: qa | lesson`),
+   extracted robustly (`parse_qa_items`) and near-dup-filtered (`dedup_items`). The prompt
+   enforces the **self-containment contract** (pairs are trained context-free, so a
+   question referencing "the conversation above" has no retrieval key) and phrases lessons
+   with the **trigger condition as the question** ("When X and Y happens, what should you
+   do?" → lesson + validity scope).
+2. **On the trace**: each QA exchange is committed as a `ttt_qa`-tagged branch — real
+   sampled tokens under a known adapter version, so **RL trains the memory-writing behavior
+   itself** through the rollout's advantage. The tag excludes QA from `RolloutLimits` and
+   the trace's turn/token metrics (own `qa.max_tokens` budget);
+   `graph.leaves(include_qa=False)` backs the main-branch views.
+3. **Verification** (`qa.verify`, opt-in): one extra call re-presents the branch + all
+   numbered items; flagged items (answer unsupported / question not self-contained) are
+   dropped and recorded in `trace.info["ttt"]["qa_rejected"]`. Fails **open** on a
+   malformed verdict.
+4. **Adapter training**: the service renders each surviving pair **standalone** —
+   `[system, question, answer]` via the chat template with the rollout's `tools=`
+   (loss-masked; tool lessons learn next to the tool descriptions), loss on the answer
+   tokens only — Cartridges-style: the knowledge must come from the weights.
+   `qa.also_train_rollout` adds the raw branch back into the same update.
 
-Memory envelope: 8B bf16 ≈ 16 GB + LoRA/optimizer (MBs per rollout) + one ≤32k-token
-activation-checkpointed fwd/bwd — fits one H100. Concurrency bound is compute, not memory.
+Two RL-time paths recycle QA into the **policy's** main weights (both ce-routed, riding the
+normal training batch, `rl_weights` zero — kept strictly disjoint in experiments):
 
-## 4. Component D — vLLM/orchestrator wiring (prime-rl, minimal)
+- `qa.recycle_to_policy` — each rollout's own pairs, rendered with the policy tokenizer
+  under the same system+tools conditioning (`qa_recycle_samples`). The naive arm.
+- `qa.meta_lessons` — group-level meta-extraction (`orchestrator/qa_meta.py`): after a GRPO
+  group finishes, one call sees every rollout's pairs **with its reward** and distills
+  contrastive general lessons (what high-reward attempts did that low-reward ones didn't).
+  De-myopifies per-rollout extraction; enrichment-only (needs ≥2 rollouts with pairs, fails
+  open). No cross-task lesson buffer (deliberate: buffers are a complexity class prime-rl
+  doesn't support yet).
 
-- Inference config: `enable_lora = true`, `max_lora_rank ≥ ttt rank`, `max_loras ≥` expected
-  concurrent in-flight TTT rollouts (config validation cross-check + docs; adapters
-  unloaded-mid-request is the crash edge the existing `max_cpu_loras` comment warns about —
-  sizing rule documented, validation warning first).
-- Orchestrator: pass-through of `TTTConfig` on `EnvConfig` (train + eval) into the spawned env
-  server (it already forwards the full config), plus surfacing TTT metrics from `trace.info`.
-- Nothing else changes in the orchestrator for the eval phase.
+## 6. RL integration (frozen-adapter replay)
 
-## 5. Component E — Q&A at compaction (Cartridges-style)
+1. **Wire**: `TrainingSample.ttt_adapter_path` (msgspec, omit-default — the plain GRPO wire
+   is unchanged). `trace_to_samples` resolves each branch's stamped `ttt_version` to the
+   service's checkpoint path via `trace.info["ttt"]`; a stamped branch with no recorded
+   checkpoint is a hard error (never a silent base-model replay).
+2. **Sample dedup**: a sampled node is trainable **exactly once** across the trace — the
+   first branch containing it keeps its mask; later branches (QA forks, subagent-style
+   forks) re-carry it as context. This fixes a general latent bug (N× gradient weight on
+   shared sampled prefixes) documented in `branch-sample-dedup-bug.md` for upstreaming.
+3. **Packer**: bins never mix adapter paths (`_MicroBatchBin.can_add` constraint) — one
+   frozen adapter per micro batch; the bin's path rides on the `MicroBatch`.
+4. **Trainer**: `TTTReplayManager` — forward hooks on the adapter's target Linears add
+   `scale·(x @ Aᵀ @ Bᵀ)` from no-grad bf16 tensors (LRU-cached per checkpoint). No
+   parameters, no wrapping — composes with FSDP/AC/compile; gradients flow to base weights
+   only, *through* the frozen adapter path; `activate(None)` restores the exact base
+   forward. Activated per micro batch in the RL train loop; the importance ratio is honest
+   because trainer logprobs are computed under the same weights the sampler used. Samples
+   with no adapter ref (first branch) run adapter-free — also exact.
+5. **GC** (`TTTCheckpointGC`): dropped rollouts' adapter dirs deleted at ship time; shipped
+   ones once the weight watcher observes the trainer consume their step.
+6. **Constraint**: full-weight policy training (validated at launch); router replay
+   composes (routing decisions come from inference, which sampled *with* the adapter).
 
-When `ttt.qa` is set, the trigger's compaction handling becomes:
+## 7. Experiments — RL-first on scaleswe (`configs/ttt/scaleswe/`)
 
-1. The hook makes `qa.num_pairs`-worth of side generations *with the full abandoned branch in
-   context* (prompted templates: knowledge contained, approaches that worked/failed, theories,
-   task setup...). These go through the same intercepted client, so they are recorded on the
-   trace as branches — tagged `ttt_qa` (new node/branch tag) so they are excluded from the main
-   trajectory's samples and RL credit, but preserved as training data.
-2. The update step then trains the LoRA on the Q&A dataset (`qa.train_lora: bool`, default true)
-   instead of / in addition to the raw branch (`qa.also_train_rollout: bool`), matching the two
-   arms in the plan's experiments.
-3. Recycling into main weights (RL phase): Q&A branches ship as `TrainingSample`s routed to the
-   **`ce` loss component** (the `ce_weights` stream + `action_loss_type` machinery already
-   exists — echo uses it today). No new trainer loss code: the "one SFT step after RL" becomes
-   "Q&A samples ride the same batch with ce routing".
+GLM-4.5-Air on `scaleswe-v1`, compacting harness on prime sandboxes, eval on SWE-Bench
+Verified **under the same harness/TTT regime as training**. TTT arms:
+`compact_at_tokens = 16384` at 64k total; fsdp-engine service on its own 8-GPU node
+(torchrun); attention-only rank-16 adapters. Launch:
+`uv run rl @ scaleswe/base.toml @ scaleswe/arm_<X>.toml` (+ the service for TTT arms).
 
-`QAConfig`: `num_pairs`, prompt template(s), sampling overrides, `qa.max_tokens` (Q&A budget is
-counted separately from `RolloutLimits` — housekeeping, like rlm's summary call), `train_lora`,
-`also_train_rollout`, `recycle_to_policy` (phase 2).
+| # | Arm | Config | Reads against | Isolates |
+|---|-----|--------|---------------|----------|
+| A0 | Pure RL, no compaction | plain harness, 64k | — | Full-context anchor |
+| A1 | Compaction baseline | `compacting@16k`, no TTT | A0 | What summaries alone buy |
+| A2 | Compaction + TTT | + `ttt` (raw branch) | **A1** | **Headline: weights-as-memory** |
+| A3 | + QA | + `qa = {}` | A2 | QA as the adapter signal; RL'd memory-writing |
+| A4 | + naive recycle | `qa.recycle_to_policy` | A3, vs A5 | Per-rollout pairs → policy (ce) |
+| A5 | + meta-lessons | `qa.meta_lessons` | A3, vs A4 | Group-contrastive lessons → policy (ce) |
 
-## 6. Component F — RL integration (phase 2)
+A4/A5 are strictly disjoint (effects must stay disentangled). Primary metric: reward /
+SWE-Bench score; secondary: per-update TTT loss, QA quality over training (sampled from
+`trace.info["ttt"]` — the "learning to write memories" evidence), `mismatch_kl` (replay
+health canary), compactions per rollout, reward-vs-rollout-length breakdown.
 
-The full replay design, building on §0.1's one-adapter-per-branch invariant:
+The eval-only deepdive arms (full/small/compaction-only/±TTT/±QA) remain in `configs/ttt/`
+as the small-scale path (peft engine); the eval CLI drives them via `--ttt.*`.
 
-1. **Wire**: `TrainingSample` gains `ttt_adapter_path: str | None` (msgspec, omit-default so
-   the plain GRPO wire is unchanged). `trace_to_samples` reads the branch's stamped version and
-   resolves the checkpoint path (`outputs/ttt/<trace_id>/v<k>/`, shared FS between orchestrator
-   and trainer — same assumption the weight broadcast dir already makes).
-2. **Packer**: group samples by adapter; v0 simplification: **one adapter per microbatch**
-   (compaction rollouts have few branches, each a long sample — packing loss is small). The
-   segmented `lora_num_tokens` layout MultiLoRA already computes with allows mixing later.
-3. **Trainer**: a "frozen context adapter" mode for the MultiLoRA layers — per microbatch, load
-   the referenced checkpoint into an adapter slot (small H2D copies), `requires_grad=False`,
-   set `lora_num_tokens`. Gradients flow to base weights only; the loss stack (importance ratio,
-   advantages) is untouched — and the ratio is *honest* because the trainer's logprobs are
-   computed under the same adapter the sampler used. Samples with `ttt_adapter_path=None`
-   (first-branch, pre-first-compaction) run adapter-free — also exact.
-4. **Constraint**: policy trained with full weights (not policy-LoRA) in TTT experiments —
-   stacking a trainable policy LoRA on frozen TTT LoRAs is possible with MultiLoRA's slots but
-   not worth the complexity now; enforce via config validator.
-5. **Checkpoint GC**: orchestrator deletes a rollout's adapter checkpoints after its batch ships
-   (train sink hook), TTL fallback for errored/filtered rollouts.
-6. **Q&A recycling** per §5.3.
+## 8. Status log
 
-## 7. Experiments mapping (what config runs what)
+- **Phase 1–5 (original plan)**: done — compacting harness; hook + service (peft engine);
+  Q&A; RL replay; configs/docs/skills.
+- **QA v2** (review round): model-authored items, seeded generations, structural
+  extraction, self-containment contract, `ttt_qa` trace branches, system+tools
+  conditioning, `qa.verify`, `qa.meta_lessons`, sample dedup fix.
+- **fsdp engine (v2)** + `configs/ttt/scaleswe/` A0–A5 family: done.
+- Tests: verifiers `tests/v1/test_ttt.py` + `tests/test_compacting_harness.py`; prime-rl
+  `tests/unit/ttt/` (trainer math on a tiny on-disk llama, QA rendering with an offline
+  tokenizer, HTTP surfaces against fakes, replay-hook math vs a hand LoRA reference, slot
+  registry/packing, GC, meta-extraction). All green; lint clean.
+- **Remaining (needs the GPU box)**: `uv lock` regen (peft dep added; lock env is
+  linux-only); first real run of the fsdp engine's collective path (smoke on 1 GPU with a
+  tiny model first); verify vLLM `enable_lora` × TP=8 × `enable_return_routed_experts` on
+  GLM-4.5-Air; deepdive/scaleswe smoke with the compacting harness + eyeball QA output
+  (decides whether `qa.verify` defaults on); draft PRs; the separate upstream PR for the
+  dedup bug.
 
-Environment: **`deepdive_v1`** (multi-turn MCP search over a corpus; long, information-dense
-rollouts; default harness; existing scoring). All runs use the **renderer (train) client even
-for eval** — TTT needs exact token ids.
+## 9. Decision log
 
-Compaction suite (all knobs in TOML; numbers illustrative):
-
-| Arm | Harness | TTT |
-|---|---|---|
-| full context | `compact_at_tokens=None`, `max_input_tokens=32k` | off |
-| small plain context | `compact_at_tokens=None`, `max_input_tokens=8k` | off |
-| compaction only | `compact_at_tokens=8k` (total budget 32k) | off |
-| compaction + TTT | same | on |
-| compaction + Q&A-TTT (context-extension only) | same | on, `qa` set, `train_lora=true` |
-| (RL phase) + Q&A→policy | same | on, `qa.recycle_to_policy=true` |
-
-Deliverable: `configs/ttt/` (or `examples/ttt/`) with one TOML per arm + a README with launch
-commands (eval first via the v1 `eval` CLI / orchestrator eval mode; RL later via `rl`).
-
-## 8. Phasing & deliverables
-
-- **Phase 1 — compacting default harness (no TTT at all).** verifiers branch: default-harness
-  `compact_at_tokens` + unit tests on the pure compaction functions + branch-fork behavior.
-  Unlocks the compaction-only baseline and de-risks branching/renderer-bridge behavior.
-  Smoke-eval on `deepdive_v1` against a live model.
-- **Phase 2 — TTT service + trigger hook (eval-only TTT).** `src/prime_rl/ttt/` service;
-  interception hook + `TTTConfig`; vLLM adapter wiring + cache salting; node/branch version
-  stamping; metrics. Unit tests: service step math (update changes outputs; checkpoint
-  round-trips through vLLM's PEFT loader format), fork-detection trigger against a scripted fake
-  client, cache-salt/version bookkeeping, branch-uniformity assertion. GPU integration test on a
-  remote box (tiny model): rollout with 2 compactions → 2 adapter versions → trace stamps
-  consistent, generations after update differ from before.
-- **Phase 3 — Q&A.** Side-generation + tagging + LoRA-training arms; config-driven templates.
-- **Phase 4 — RL replay.** Transport field, packer grouping, frozen-adapter trainer mode,
-  GC, Q&A→ce recycling. Unit tests: packer grouping/segment layout; frozen-adapter forward
-  equivalence (loading a known adapter reproduces reference logprobs); ce-routing of QA samples.
-- **Phase 5 — experiment configs + docs** (`configs/ttt/`, skills update per repo policy).
-
-Each phase = reviewable PR(s) on the two branches; verifiers submodule pinned by commit in
-prime-rl at every step.
-
-## 9. Resolved decisions (review log)
-
-1. **Loss scope** — `all` tokens by default (context extension: every token in the window
-   counts), `sampled` kept as ablation config. ✅ resolved 2026-07-06.
-2. **Environment** — `deepdive_v1`. ✅
-3. **Blocking updates** — accepted (correctness over latency). ✅
-4. **Sliding window** — tabled; compaction experiments first (see Appendix A). ✅
-5. **Base-weight staleness under async RL** — accepted, monitored via `mismatch_kl`. ✅
-6. **Final-branch update** — default off (`train_final_branch=false`), config-flippable.
-7. **Q&A token accounting** — separate `qa.max_tokens` budget, not counted against
-   `RolloutLimits` (housekeeping, like rlm's summary turn).
-8. **`max_loras` sizing** — document + config-validation warning first; hard dispatcher cap
-   only if it bites in practice.
+1. Loss scope — `all` tokens (context extension: every token counts); `sampled` as ablation.
+2. Environment — RL-first on `scaleswe-v1` (was: eval-first on `deepdive_v1`, kept as the
+   small-scale path).
+3. Blocking updates — accepted (correctness over latency); the fsdp engine's batching
+   recovers throughput across rollouts.
+4. Sliding window — tabled (Appendix A).
+5. Base-weight staleness under async RL — accepted, monitored via `mismatch_kl`.
+6. Final-branch update — default off (`train_final_branch`).
+7. Q&A budget — separate from `RolloutLimits` (`qa.max_tokens`); QA exchanges are `ttt_qa`
+   trace branches: RL'd, but excluded from rollout metrics/budgets.
+8. `max_loras` sizing — co-size with `max_inflight_rollouts` and `engine.max_slots`;
+   documented + launch-validated.
+9. Compacting harness is a **separate harness id**, not a default-harness knob.
+10. QA: model authors questions *and* answers; lessons phrased trigger-as-question;
+    self-containment contract; system prompt + tools as loss-masked training context.
+11. During the rollout the adapter is **SFT'd** on standalone pairs; for RL the QA
+    generations are trained **as branches** (what the model actually produced) — both, from
+    the same pairs.
+12. `recycle_to_policy` (naive) and `meta_lessons` (group-contrastive) are head-to-head
+    alternatives, never combined; no cross-task lesson buffer.
+13. Permanent-SFT comparisons must stay disentangled (A4 vs A5).
+14. The branch-sample double-counting is a general bug, fixed here and documented for a
+    standalone upstream PR (`branch-sample-dedup-bug.md`).
 
 ## Appendix A — sliding-window technique (tabled)
 
 Kept for later; nothing in the compaction path forecloses it. Sketch: add
-`context_mode="sliding_window"` + `window_tokens` to the default harness; after each turn, drop
-oldest *turn groups* (assistant + its tool messages together; system + task pinned) once the
-prompt exceeds the window → each drop forks a branch → the same TTT trigger fires with a
-*watermark* per rollout (train only the not-yet-trained tail; the retained window is context).
-Message-granularity drops (not exact 1k-token slices) keep chat templates valid — the accepted
-simplicity tradeoff. Mid-branch updates every N tokens (without dropping context) would break
-the one-branch-one-adapter invariant and are deliberately out of scope. The experiment arms
-(32k full vs 8k window+TTT vs 8k window no-training vs 8k plain) are in `ttt-plan.md`.
+`context_mode="sliding_window"` + `window_tokens` to the compacting harness; after each
+turn, drop oldest *turn groups* (assistant + its tool messages together; system + task
+pinned) once the prompt exceeds the window → each drop forks a branch → the same TTT
+trigger fires with a *watermark* per rollout (train only the not-yet-trained tail; the
+retained window is context — the hook's `seen` set already implements most of this).
+Message-granularity drops (not exact token slices) keep chat templates valid — the accepted
+simplicity tradeoff. Mid-branch updates every N tokens (without dropping context) would
+break the one-branch-one-adapter invariant and stay deliberately out of scope. The
+experiment arms (32k full vs 8k window+TTT vs 8k window no-training vs 8k plain) are in
+`ttt-plan.md`.
