@@ -55,17 +55,37 @@ TTT rollouts.
 
 ## Q&A at compaction (Cartridges-style)
 
-`ttt.qa = { num_pairs = 8 }` generates question–answer pairs about the abandoned branch
-*with the branch still in context* (through the rollout's own client, under its current
-adapter), then trains the adapter on the pairs rendered **standalone** — the knowledge must
-come from the weights, not a context-conditioned mapping. `qa.also_train_rollout` adds the
-raw branch back into the update. Q&A exchanges are framework housekeeping: never on the
-trace, never counted against `RolloutLimits` (own `qa.max_tokens` budget), recorded in
-`trace.info["ttt"]`.
+`ttt.qa = {}` runs `qa.num_generations` parallel seeded generations per compaction, each
+with the abandoned branch *still in context* (through the rollout's own client, under its
+current adapter): the model writes **both the questions and the answers** — several
+structured `<item>` blocks per call, including trigger-phrased lessons ("When X happens,
+do Y") — extracted robustly and near-dup-filtered. The generation prompt enforces
+self-containment (pairs are later trained context-free, so a question referencing "the
+conversation above" has no retrieval key). The adapter then trains on the pairs rendered
+**standalone** — conditioned on the rollout's system prompt + tool schemas (loss-masked),
+loss on the answers — so the knowledge must come from the weights, not a
+context-conditioned mapping. `qa.also_train_rollout` adds the raw branch back in.
 
-`qa.recycle_to_policy = true` (RL) additionally recycles the pairs into the **policy's**
-main weights: the orchestrator renders them with the policy tokenizer and routes them to the
-`ce` loss component, riding the same training batch as the RL samples.
+Q&A exchanges are committed to the trace as `ttt_qa`-tagged branches: real sampled tokens
+under a known adapter version, so **RL trains the generation behavior itself** — the
+rollout's advantage reinforces lessons that helped. The tag keeps them out of
+`RolloutLimits` and the trace's turn/token metrics (own `qa.max_tokens` budget); items are
+recorded in `trace.info["ttt"]`.
+
+Optional quality/aggregation knobs:
+
+- `qa.verify = true` — one extra call per compaction re-presents the branch + all
+  candidate items and drops the ones the model flags (answer unsupported, or question not
+  self-contained). Fails open on a malformed verdict; rejected items land in
+  `trace.info["ttt"]["qa_rejected"]`.
+- `qa.recycle_to_policy = true` (RL) — recycles each rollout's pairs into the **policy's**
+  main weights: rendered with the policy tokenizer (same system+tools conditioning) and
+  routed to the `ce` loss component, riding the same training batch.
+- `qa.meta_lessons = true` (RL) — group-level meta-extraction: after a GRPO group
+  finishes, one call sees every rollout's pairs together with its **reward** and distills
+  contrastive, general lessons (what the high-reward attempts did that the low-reward ones
+  didn't), shipped as ce-routed samples like recycled pairs. De-myopifies the per-rollout
+  extraction; enrichment only (a failed call logs and skips).
 
 ## RL replay
 

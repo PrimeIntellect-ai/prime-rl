@@ -29,9 +29,11 @@ taskset = { id = "deepdive-v1" }
 harness = { id = "compacting", compact_at_tokens = 8192, search = true }
 max_input_tokens = 32768   # total context budget per rollout (across compactions)
 ttt = { base_url = "http://localhost:8092" }
-# Q&A arms:
-#   ttt = { base_url = "...", qa = { num_pairs = 8 } }                              # QA-TTT
-#   ttt = { base_url = "...", qa = { num_pairs = 8, recycle_to_policy = true } }    # + QA -> policy (ce)
+# Q&A arms (defaults: 4 seeded generations x 4 items, structural extraction + dedup):
+#   ttt = { base_url = "...", qa = {} }                                        # QA-TTT
+#   ttt = { base_url = "...", qa = { verify = true } }                         # + verification pass
+#   ttt = { base_url = "...", qa = { recycle_to_policy = true } }              # + QA -> policy (ce)
+#   ttt = { base_url = "...", qa = { meta_lessons = true } }                   # + group meta-lessons -> policy
 
 [inference]
 enable_lora = true

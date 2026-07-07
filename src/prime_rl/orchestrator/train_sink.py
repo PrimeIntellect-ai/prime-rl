@@ -73,6 +73,10 @@ class TrainSink:
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name: dict[str, int] = {}
 
+        # Lazy chat client for TTT group meta-extraction (built on first use from the
+        # env's sampler pool; one per sink is fine — the pool round-robins internally).
+        self._meta_client = None
+
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
 
@@ -189,9 +193,33 @@ class TrainSink:
         # finalization, so the advantage broadcast/stamping never sees them —
         # they carry no rl credit, only a ce stream on the answer tokens.
         ttt_config = getattr(env.config, "ttt", None)
-        if ttt_config is not None and ttt_config.qa is not None and ttt_config.qa.recycle_to_policy:
+        qa_config = ttt_config.qa if ttt_config is not None else None
+        if qa_config is not None and qa_config.recycle_to_policy:
             for r in survivors:
                 r.samples.extend(await asyncio.to_thread(qa_recycle_samples, r, self.tokenizer, env_name))
+
+        # TTT group-level meta-extraction: one call over the finished cohort (every
+        # rollout's Q&A pairs + its reward) distills contrastive, general lessons —
+        # what the high-reward attempts did that the low-reward ones didn't — shipped
+        # as ce-routed samples on the group's first survivor. Enrichment: a failed
+        # extraction logs and skips, never fails the group.
+        if qa_config is not None and qa_config.meta_lessons and len(survivors) >= 2:
+            from prime_rl.orchestrator.qa_meta import (
+                build_meta_client,
+                extract_meta_lessons,
+                meta_lesson_samples,
+            )
+
+            if self._meta_client is None:
+                self._meta_client = build_meta_client(await env.sampler.pool.get_eval_client())
+            items = await extract_meta_lessons(survivors, qa_config, self._meta_client, env.sampler.pool.model_name)
+            if items:
+                survivors[0].samples.extend(
+                    await asyncio.to_thread(meta_lesson_samples, items, survivors, self.tokenizer, env_name)
+                )
+                get_logger().debug(
+                    f"TTT meta-lessons | env={env_name} task_idx={task_idx} | {len(items)} lesson(s) extracted"
+                )
 
         # The env has a single sampling temperature; fan it out per token
         # (context tokens are masked out, so their temperature is don't-care).

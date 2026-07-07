@@ -362,3 +362,124 @@ def test_qa_recycle_conditions_on_system_and_tools():
     assert len(sample.token_ids) == 6
     assert sample.mask == [False] * 5 + [True]
     assert sample.ce_weights == [0.0] * 5 + [1.0]
+
+
+# -- group-level meta-extraction --------------------------------------------------------------
+
+
+def rollout_with_pairs(reward: float, pairs: list[dict]):
+    from dataclasses import dataclass, field
+
+    @dataclass
+    class FakeGroupRollout:
+        reward: float
+        info: dict = field(default_factory=dict)
+        samples: list = field(default_factory=list)
+
+    return FakeGroupRollout(
+        reward=reward,
+        info={
+            "ttt": {
+                "system_prompt": "sys",
+                "tools": [{"type": "function", "function": {"name": "search"}}],
+                "updates": [{"version": 1, "qa_pairs": pairs}],
+            }
+        },
+    )
+
+
+class FakeChat:
+    """AsyncOpenAI stand-in: records the prompt, returns scripted content."""
+
+    def __init__(self, content: str, fail: bool = False):
+        self._content = content
+        self._fail = fail
+        self.prompts: list[str] = []
+
+        outer = self
+
+        class _Completions:
+            async def create(self, *, model, messages, max_tokens):
+                if outer._fail:
+                    raise RuntimeError("model down")
+                outer.prompts.append(messages[0]["content"])
+
+                class _Msg:
+                    content = outer._content
+
+                class _Choice:
+                    message = _Msg()
+
+                class _Completion:
+                    choices = [_Choice()]
+
+                return _Completion()
+
+        class _Chat:
+            completions = _Completions()
+
+        self.chat = _Chat()
+
+
+@pytest.mark.asyncio
+async def test_meta_extraction_contrasts_rewards():
+    from verifiers.v1.ttt import QAConfig
+
+    from prime_rl.orchestrator.qa_meta import extract_meta_lessons
+
+    good = rollout_with_pairs(1.0, [{"type": "qa", "question": "How to find X for task T?", "answer": "use search"}])
+    bad = rollout_with_pairs(0.0, [{"type": "lesson", "question": "When S rate-limits?", "answer": "give up"}])
+    lesson = "<item><type>lesson</type><question>When solving research task T, what search strategy works?</question><answer>narrow queries with site: filters</answer></item>"
+    chat = FakeChat(lesson)
+    items = await extract_meta_lessons([good, bad], QAConfig(meta_lessons=True), chat, "m")
+
+    (prompt,) = chat.prompts
+    # Both attempts appear, with rewards and their pairs.
+    assert "Attempt 1 (reward: 1.000)" in prompt
+    assert "Attempt 2 (reward: 0.000)" in prompt
+    assert "use search" in prompt and "give up" in prompt
+    assert "SELF-CONTAINED" in prompt
+    (item,) = items
+    assert item["type"] == "lesson"
+    assert "search strategy" in item["question"]
+
+
+@pytest.mark.asyncio
+async def test_meta_extraction_needs_two_with_pairs_and_fails_open():
+    from verifiers.v1.ttt import QAConfig
+
+    from prime_rl.orchestrator.qa_meta import extract_meta_lessons
+
+    good = rollout_with_pairs(1.0, [{"question": "q", "answer": "a"}])
+    empty = rollout_with_pairs(0.5, [])
+    # Only one rollout has pairs -> nothing to contrast.
+    assert await extract_meta_lessons([good, empty], QAConfig(), FakeChat("x"), "m") == []
+    # A failing model call is enrichment, not an error.
+    bad_chat = FakeChat("", fail=True)
+    two = [good, rollout_with_pairs(0.0, [{"question": "q2", "answer": "a2"}])]
+    assert await extract_meta_lessons(two, QAConfig(), bad_chat, "m") == []
+
+
+def test_meta_lesson_samples_are_ce_routed_with_conditioning():
+    from prime_rl.orchestrator.qa_meta import meta_lesson_samples
+
+    class RecordingTokenizer:
+        def __init__(self):
+            self.calls = []
+
+        def apply_chat_template(self, conversation, tokenize=True, add_generation_prompt=False, tools=None):
+            self.calls.append({"roles": [m["role"] for m in conversation], "tools": tools})
+            return list(range(2 * len(conversation) + (1 if add_generation_prompt else 0)))
+
+    group = [rollout_with_pairs(1.0, [{"question": "q", "answer": "a"}])]
+    items = [
+        {"type": "lesson", "question": "When X, do?", "answer": "Y"},
+        {"type": "lesson", "question": "empty", "answer": "  "},  # skipped
+    ]
+    tokenizer = RecordingTokenizer()
+    (sample,) = meta_lesson_samples(items, group, tokenizer, env_name="e")
+    assert all(c["roles"][0] == "system" for c in tokenizer.calls)  # group conditioning
+    assert all(c["tools"] is not None for c in tokenizer.calls)
+    assert sample.rl_weights == [0.0] * len(sample.token_ids)
+    assert sample.ce_weights[-1] == 1.0 and sample.ce_weights[0] == 0.0
+    assert sample.ttt_adapter_path is None  # trains the live policy
