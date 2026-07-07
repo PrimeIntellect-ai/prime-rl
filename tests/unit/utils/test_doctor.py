@@ -62,8 +62,22 @@ def test_ports_pass_when_defaults_align():
     assert statuses(results) == [CheckStatus.PASS, CheckStatus.PASS]
 
 
-def test_ports_fail_on_client_server_port_mismatch():
+def test_ports_pass_when_client_auto_syncs_to_server_port():
+    # base_url not explicitly set -> auto_setup_inference_client syncs it to
+    # the server port, so there is no mismatch to catch.
     config = make_config(inference={"server": {"port": 8001}})
+    results = check_ports(config, FakeProbe())
+    match = next(r for r in results if r.name == "client/server port match")
+    assert match.status == CheckStatus.PASS
+
+
+def test_ports_fail_on_client_server_port_mismatch():
+    # A mismatch only survives config validation when base_url is explicitly
+    # set (auto-sync respects model_fields_set) — that's the case this guards.
+    config = make_config(
+        orchestrator={"model": {"client": {"base_url": ["http://localhost:8000/v1"]}}},
+        inference={"server": {"port": 8001}},
+    )
     results = check_ports(config, FakeProbe())
     match = next(r for r in results if r.name == "client/server port match")
     assert match.status == CheckStatus.FAIL
