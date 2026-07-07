@@ -5,9 +5,10 @@ from torch.distributed import ProcessGroup
 from torch.distributed.distributed_c10d import _resolve_process_group
 from torch.distributed.tensor import DeviceMesh, Shard, distribute_module, distribute_tensor
 from torch.distributed.tensor.parallel import ParallelStyle
-from torchtitan.distributed.expert_parallel import ExpertParallel
-from torchao.prototype.moe_training.ep import a2a_dispatch_mxfp8_fwd_hp_bwd, a2a_combine_hp_fwd_mxfp8_bwd
+from torchao.prototype.moe_training.ep import a2a_combine_hp_fwd_mxfp8_bwd, a2a_dispatch_mxfp8_fwd_hp_bwd
 from torchao.prototype.mx_formats.mx_tensor import MXTensor
+from torchtitan.distributed.expert_parallel import ExpertParallel
+
 
 class _MXFP8Dispatch(torch.autograd.Function):
     @staticmethod
