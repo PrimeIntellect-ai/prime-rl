@@ -1306,7 +1306,9 @@ def forward(
         kwargs["position_ids"] = position_ids
 
     if isinstance(model, PreTrainedModelPrimeRL):
-        kwargs.update(model.prime_forward_kwargs(seq_lens=seq_lens, seq_lens_are_global=seq_lens_are_global))
+        # Universal contract: every custom model declares these typed params.
+        kwargs["seq_lens"] = seq_lens
+        kwargs["seq_lens_are_global"] = seq_lens_are_global
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts

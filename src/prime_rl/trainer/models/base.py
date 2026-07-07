@@ -21,15 +21,6 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """PrimeRL models use custom MoE implementations and don't support dynamic experts implementation."""
         return False
 
-    def prime_forward_kwargs(
-        self,
-        *,
-        seq_lens: Tensor | None = None,
-        seq_lens_are_global: bool = False,
-    ) -> dict[str, object]:
-        """Return PrimeRL-only kwargs needed by this model's forward path."""
-        return {}
-
     def get_correct_experts_implementation(self, requested_experts: str | None) -> str:
         """PrimeRL models always use eager experts implementation."""
         return "eager"

@@ -506,16 +506,6 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
     def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
         return cls.convert_to_prime(state_dict)
 
-    def prime_forward_kwargs(
-        self,
-        *,
-        seq_lens: Tensor | None = None,
-        seq_lens_are_global: bool = False,
-    ) -> dict[str, object]:
-        if seq_lens is None:
-            return {}
-        return {"seq_lens": seq_lens, "seq_lens_are_global": seq_lens_are_global}
-
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,

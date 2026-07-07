@@ -464,6 +464,8 @@ class AfmoeModel(AfmoePreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        seq_lens: Optional[torch.LongTensor] = None,
+        seq_lens_are_global: bool = False,
     ) -> MoeModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
@@ -479,6 +481,10 @@ class AfmoeModel(AfmoePreTrainedModel):
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
         use_flash = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
+        if seq_lens is not None and seq_lens.numel() > 1 and not use_flash:
+            # SDPA/eager attention has no varlen support and would attend across
+            # packed document boundaries.
+            raise ValueError("Packed Afmoe batches require flash attention")
 
         if use_flash:
             cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
@@ -573,6 +579,8 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         token_type_ids: Optional[torch.Tensor] = None,  # will be ignored
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        seq_lens: Optional[torch.LongTensor] = None,
+        seq_lens_are_global: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -593,6 +601,8 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
+            seq_lens=seq_lens,
+            seq_lens_are_global=seq_lens_are_global,
         )
 
         hidden_states = outputs.last_hidden_state
