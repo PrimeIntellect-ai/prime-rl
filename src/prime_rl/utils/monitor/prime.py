@@ -16,6 +16,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from prime_cli.core.config import Config as PrimeConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
+from verifiers.v1.samples import trace_to_sample
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import PrimeMonitorConfig
@@ -325,35 +326,28 @@ class PrimeMonitor(Monitor):
         )
 
     def _rollouts_to_parquet_bytes(self, rollouts: list[Rollout], step: int) -> bytes | None:
-        """Convert rollouts to Parquet bytes for upload. One row per rollout, built from the
-        message graph: the conversation is the unit (no prompt/completion split — meaningless in
-        a multi-turn branch), so `completion` carries the main (last) branch's full message list
-        and `trajectory` carries one message list per branch (`trace.branches`)."""
+        """Convert rollouts to Parquet bytes for upload. One row per rollout. The conversation
+        is the unit (no prompt/completion split — meaningless mid-branch): `completion` is the
+        last branch's messages and `trajectory` is one message list per branch. Shares
+        `verifiers.v1.samples.trace_to_sample` with verifiers' eval `--push`, so a training-run
+        sample and an eval sample land on the platform identically; the RFT-only columns
+        (run/step/advantage/problem_id/env_name) are layered on here."""
         now = datetime.now(timezone.utc)
         rows = []
 
         for sample_id, rollout in enumerate(rollouts):
-            branches = rollout.branches
-            if not branches:
+            sample = trace_to_sample(rollout, rollout_number=sample_id + 1)
+            trajectory = sample["trajectory"]
+            if not trajectory:  # no branches (e.g. a rollout that errored before any message)
                 continue
-            main_messages = [m.model_dump(mode="json") for m in branches[-1].messages]
+            advantage = rollout.scalar_advantage()
+            trajectory = [{**branch, "advantage": advantage} for branch in trajectory]
 
-            task_idx = rollout.task.idx
+            example_id = sample["example_id"]
             try:
-                problem_id = int(task_idx) if task_idx is not None else sample_id
+                problem_id = int(example_id) if example_id is not None else sample_id
             except (TypeError, ValueError):
                 problem_id = sample_id
-
-            trajectory_data = [
-                {
-                    "messages": [m.model_dump(mode="json") for m in branch.messages],
-                    "reward": rollout.reward,
-                    "advantage": rollout.scalar_advantage(),
-                    "num_input_tokens": branch.num_input_tokens,
-                    "num_output_tokens": branch.num_output_tokens,
-                }
-                for branch in branches
-            ]
 
             rows.append(
                 {
@@ -363,18 +357,18 @@ class PrimeMonitor(Monitor):
                     "problem_id": problem_id,
                     "sample_id": sample_id,
                     "prompt": "",
-                    "completion": json.dumps(main_messages),
-                    "trajectory": json.dumps(trajectory_data),
+                    "completion": json.dumps(sample["completion"]),
+                    "trajectory": json.dumps(trajectory),
                     "answer": "",
                     "env_name": rollout.env_name,
-                    "task": rollout.task.model_dump_json(),
+                    "task": json.dumps(sample["task"]),
                     "info": json.dumps(rollout.info),
-                    "reward": rollout.reward,
-                    "advantage": rollout.scalar_advantage(),
-                    "metrics": json.dumps(rollout.metrics),
-                    "timing": rollout.timing.model_dump_json(),
-                    "num_input_tokens": branches[-1].num_input_tokens,
-                    "num_output_tokens": branches[-1].num_output_tokens,
+                    "reward": sample["reward"],
+                    "advantage": advantage,
+                    "metrics": json.dumps(sample["metrics"]),
+                    "timing": json.dumps(sample["timing"]),
+                    "num_input_tokens": trajectory[-1]["num_input_tokens"],
+                    "num_output_tokens": trajectory[-1]["num_output_tokens"],
                     "created_at": now,
                 }
             )
