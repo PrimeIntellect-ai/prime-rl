@@ -328,6 +328,7 @@ class Orchestrator:
             get_logger().info("Training from scratch")
 
         self.train_source = TrainSource(self.train_envs, seed=42)
+        self._source_refresh: asyncio.Task | None = None
         self.eval_source: EvalSource | None = (
             EvalSource(
                 self.eval_envs,
@@ -478,6 +479,12 @@ class Orchestrator:
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
 
+    async def _refresh_train_source(self) -> None:
+        try:
+            await self.train_source.refresh()
+        except Exception as e:  # a transient env-server hiccup must not kill the run
+            get_logger().warning(f"train source refresh failed: {e}")
+
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
         side-effects (ckpt, save_rollouts, reference scoring, sender.send,
@@ -534,6 +541,10 @@ class Orchestrator:
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.progress.step += 1
         self.update_dispatch_gate()
+        # Growing tasksets (a follow-mode replay env) pick up this step's records: re-poll env
+        # info off the ship path, one refresh in flight at a time.
+        if self._source_refresh is None or self._source_refresh.done():
+            self._source_refresh = asyncio.create_task(self._refresh_train_source())
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
         trim_process_memory()

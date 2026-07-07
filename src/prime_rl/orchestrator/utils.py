@@ -51,12 +51,16 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
 
 
 def save_rollouts(rollouts: list[dict], path: Path) -> None:
-    """Save rollouts (Trace dicts, already JSON-serializable) to a JSONL file."""
+    """Save rollouts (Trace dicts, already JSON-serializable) to a JSONL file. Written to a
+    tmp file and renamed, so concurrent readers (a replay env following this run's records)
+    never see a half-written file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
-    with open(path, "wb") as f:
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "wb") as f:
         for rollout in rollouts:
             f.write(orjson.dumps(rollout, default=str, option=opts))
+    tmp.rename(path)
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):

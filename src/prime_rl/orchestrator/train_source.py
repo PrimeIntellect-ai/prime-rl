@@ -44,6 +44,8 @@ class TrainSource:
         if self.env_costs[env_name] > available_permits:
             return None
         rows = self.examples[env_name]
+        if not rows:  # a follow-mode replay env before its first records appear
+            return None
         cursor = self.cursors[env_name]
         if cursor >= len(rows):
             self.rng.shuffle(rows)
@@ -51,3 +53,15 @@ class TrainSource:
         example = rows[cursor]
         self.cursors[env_name] = cursor + 1
         return example
+
+    async def refresh(self) -> None:
+        """Re-poll each env's ``info`` and extend the cycle with any new task indices — a
+        growing taskset (a follow-mode replay env) reports more tasks as the run produces
+        records. Appended rows join the current epoch's tail; existing indices are untouched."""
+        for env in self.envs:
+            info = await env.env_client.info()
+            rows = self.examples[env.name]
+            known = env.num_tasks
+            if info.num_tasks > known:
+                rows.extend({"task_idx": i, "env_name": env.name} for i in range(known, info.num_tasks))
+                env.num_tasks = info.num_tasks
