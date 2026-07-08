@@ -78,6 +78,16 @@ def test_validate_job_is_pure():
         trainer.validate_job(job("r1", seq_no=2))
     with pytest.raises(ValueError, match="no trainable sequences"):
         trainer.validate_job(job("r1", train_rollout=False))
+    # All-context mask: no trainable target after the next-token shift, no QA fallback.
+    all_context = job("r1")
+    all_context.loss_mask = [True] + [False] * (len(all_context.token_ids) - 1)
+    with pytest.raises(ValueError, match="no trainable target tokens"):
+        trainer.validate_job(all_context)
+    # Oversized job: can't fit any forward, would poison packing on every retry.
+    trainer.config.engine.max_tokens_per_forward = 100
+    with pytest.raises(ValueError, match="job too large"):
+        trainer.validate_job(job("r1", n=101))
+    trainer.config.engine.max_tokens_per_forward = 65536
 
     # Slot exhaustion is a validation error for NEW rollouts, not existing ones.
     trainer.slots["other"] = SlotState("other", "ttt-other", idx=0)
@@ -143,3 +153,79 @@ def test_fsdp_engine_rejects_context_parallelism():
     )
     with pytest.raises(ValueError, match="context parallelism"):
         TTTTrainerV2(config)
+
+
+def make_cpu_trainer(max_slots: int = 4, **engine_overrides):
+    """The registry trainer + just enough CPU fakes to run update_batch end-to-end: a
+    graph-bearing fake forward (grads flow to a dummy param), stubbed checkpointing."""
+    import torch
+
+    trainer = make_registry(max_slots=max_slots, **engine_overrides)
+    trainer.device = torch.device("cpu")
+    trainer.logger = type("L", (), {"info": lambda self, *a, **k: None})()
+    dummy = torch.nn.Parameter(torch.zeros(1))
+    trainer._forward_logprobs = lambda input_ids, position_ids, labels: (
+        dummy - torch.zeros_like(input_ids, dtype=torch.float32)
+    )
+    trainer._optimizer = lambda state: torch.optim.SGD([dummy], lr=0.0)
+    trainer.save_checkpoint = lambda state: f"/fake/{state.rollout_id}/v{state.version}"
+    return trainer
+
+
+def test_update_batch_isolates_poisoned_job_and_rolls_back_slot():
+    trainer = make_cpu_trainer(max_slots=4)
+    healthy = [job("r1"), job("r2")]
+    # Passes rank-0 validation (qa_pairs non-empty) but yields no sequences in prepare —
+    # the failure lands AFTER the slot claim, exercising the rollback path.
+    poisoned = UpdateJob(
+        rollout_id="bad",
+        adapter_name="ttt-bad",
+        token_ids=list(range(8)),
+        loss_mask=[True] * 8,
+        seq_no=1,
+        train_rollout=False,
+        qa_pairs=[{"question": "q", "answer": "   "}],
+    )
+    results = trainer.update_batch([healthy[0], poisoned, healthy[1]])
+    assert results["r1"]["version"] == 1 and results["r2"]["version"] == 1
+    assert "no trainable sequences" in results["bad"]["error"]
+    # The poisoned job's slot claim was rolled back: only r1/r2 hold slots.
+    assert set(trainer.slots) == {"r1", "r2"}
+    assert trainer.free_idxs == {2, 3}
+
+
+def test_update_batch_all_failed_returns_without_forward():
+    trainer = make_cpu_trainer(max_slots=2)
+    trainer._forward_logprobs = lambda *a, **k: pytest.fail("forward must not run")
+    bad = job("r1", seq_no=7)
+    results = trainer.update_batch([bad])
+    assert "expected seq_no 1" in results["r1"]["error"]
+    assert trainer.slots == {} and trainer.free_idxs == {0, 1}
+
+
+def test_update_batch_rejects_oversized_after_qa_tokenization():
+    trainer = make_cpu_trainer(max_slots=2, max_tokens_per_forward=1024)
+    trainer.config.engine.max_tokens_per_forward = 100  # below config floor, fine for the unit
+    # QA pairs only get tokenized in prepare_job — fake a render that busts the cap.
+    trainer._tokenize_qa = lambda pairs, sp, tools: [(list(range(200)), [False] + [True] * 199)]
+    oversized = job("r1", n=8, qa_pairs=[{"question": "q", "answer": "a"}])
+    results = trainer.update_batch([oversized])
+    assert "job too large after QA tokenization" in results["r1"]["error"]
+    assert trainer.slots == {} and trainer.free_idxs == {0, 1}  # claim rolled back
+
+
+def test_update_batch_asserts_unique_rollout_ids():
+    trainer = make_cpu_trainer(max_slots=2)
+    with pytest.raises(AssertionError, match="duplicate rollout_ids"):
+        trainer.update_batch([job("r1"), job("r1", seq_no=2)])
+
+
+def test_collector_dedups_same_rollout_keeping_first():
+    from prime_rl.ttt.server_v2 import _dedup_pendings, _Pending
+
+    first = _Pending(job=job("r1", seq_no=1))
+    second = _Pending(job=job("r1", seq_no=2))
+    other = _Pending(job=job("r2"))
+    batch, deferred = _dedup_pendings([first, second, other])
+    assert batch == [first, other]  # first pending per rollout stays, order preserved
+    assert deferred == [second]  # later duplicate deferred to the next batch

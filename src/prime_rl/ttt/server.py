@@ -131,10 +131,13 @@ def build_app(config: TTTServiceConfig, trainer: "TTTTrainer | None" = None) -> 
                     )
                 except ValueError as e:
                     raise HTTPException(status_code=409, detail=str(e)) from e
-            try:
-                await load_adapter(request.adapter_name, result["ckpt_path"])
-            except httpx.HTTPError as e:
-                raise HTTPException(status_code=502, detail=f"adapter load failed: {e}") from e
+                # load_adapter stays inside the train_lock so a concurrent /release can't
+                # unload+pop between train and load (orphaned adapter in vLLM). This
+                # serializes engine loads — acceptable: max_concurrent_updates defaults to 1.
+                try:
+                    await load_adapter(request.adapter_name, result["ckpt_path"])
+                except httpx.HTTPError as e:
+                    raise HTTPException(status_code=502, detail=f"adapter load failed: {e}") from e
         return UpdateResponse(**result)
 
     @app.post("/release")

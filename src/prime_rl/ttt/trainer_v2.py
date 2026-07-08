@@ -121,6 +121,9 @@ class TTTTrainerV2:
 
         self.slots: dict[str, SlotState] = {}
         self.free_idxs = set(range(self.max_slots))
+        # Optional gloo group for control-plane collectives (set by run_server_v2): the
+        # checkpoint barrier rides it so it shares the watchdog-free control plane.
+        self.ctrl_pg = None
         self.logger.info(
             f"TTT v2 ready: {self.max_slots} adapter slots, rank={config.lora.rank}, "
             f"targets={config.lora.target_modules}"
@@ -209,6 +212,13 @@ class TTTTrainerV2:
             raise ValueError(f"token_ids ({len(job.token_ids)}) and loss_mask ({len(job.loss_mask)}) must align")
         if len(job.token_ids) < 2:
             raise ValueError("need at least 2 tokens to form a next-token target")
+        if len(job.token_ids) > self.config.engine.max_tokens_per_forward:
+            # A single job that can't fit one forward would fail packing on every retry —
+            # reject it up-front instead of poisoning batches.
+            raise ValueError(
+                f"job too large: {len(job.token_ids)} tokens > "
+                f"max_tokens_per_forward ({self.config.engine.max_tokens_per_forward})"
+            )
         state = self.slots.get(job.rollout_id)
         expected = (state.version if state is not None else 0) + 1
         if job.seq_no != expected:
@@ -220,6 +230,10 @@ class TTTTrainerV2:
             )
         if not job.train_rollout and not job.qa_pairs:
             raise ValueError("no trainable sequences (train_rollout=false and no qa_pairs)")
+        if job.train_rollout and not any(job.loss_mask[1:]) and not job.qa_pairs:
+            # Mirrors the late "no trainable sequences" error but at rank-0 validation
+            # time, so an all-context mask 409s its caller before any slot claim.
+            raise ValueError("loss mask selects no trainable target tokens")
 
     def prepare_job(self, job: UpdateJob) -> SlotState:
         """Claim the job's slot and materialize its training sequences. MUTATING — must run
@@ -235,6 +249,14 @@ class TTTTrainerV2:
         sequences = [(ids, mask) for ids, mask in sequences if len(ids) >= 2 and any(mask[1:])]
         if not sequences:
             raise ValueError("no trainable sequences (empty loss masks / QA rendered empty)")
+        # QA pairs are only tokenized here, so the oversize check in validate_job can't
+        # see them — re-check the packed total now that all sequences are materialized.
+        total_tokens = sum(len(ids) for ids, _ in sequences)
+        if total_tokens > self.config.engine.max_tokens_per_forward:
+            raise ValueError(
+                f"job too large after QA tokenization: {total_tokens} tokens > "
+                f"max_tokens_per_forward ({self.config.engine.max_tokens_per_forward})"
+            )
         job.sequences = sequences
         return state
 
@@ -268,8 +290,26 @@ class TTTTrainerV2:
         shared, the backward populates each slot's grads independently (token segments)."""
         from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 
-        states = {job.rollout_id: self.prepare_job(job) for job in jobs}
+        assert len({job.rollout_id for job in jobs}) == len(jobs), "duplicate rollout_ids in one batch"
+        # Per-job isolation: a ValueError in prepare (validation, empty/oversized after QA
+        # tokenization) fails ONLY that job. prepare_job runs identically on every rank, so
+        # the failed set — and the slot-claim rollback — is deterministic across ranks.
+        states: dict[str, SlotState] = {}
         results: dict[str, dict] = {}
+        for job in jobs:
+            had_slot = job.rollout_id in self.slots
+            try:
+                states[job.rollout_id] = self.prepare_job(job)
+            except ValueError as e:
+                # Roll back a slot claim made BY THIS JOB (prepare can raise after _claim).
+                if not had_slot:
+                    claimed = self.slots.pop(job.rollout_id, None)
+                    if claimed is not None:
+                        self.free_idxs.add(claimed.idx)
+                results[job.rollout_id] = {"error": str(e)}
+        jobs = [job for job in jobs if job.rollout_id in states]
+        if not jobs:
+            return results  # everything failed validation: no forward to run
         for bin_jobs in self._pack(jobs):
             # Sort by slot: MultiLoRA's segment layout requires slot-ordered tokens.
             bin_jobs = sorted(bin_jobs, key=lambda j: states[j.rollout_id].idx)
@@ -388,5 +428,5 @@ class TTTTrainerV2:
             shutil.rmtree(path, ignore_errors=True)
             tmp.rename(path)
         if torch.distributed.is_initialized():
-            torch.distributed.barrier()
+            torch.distributed.barrier(group=self.ctrl_pg)
         return path

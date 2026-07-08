@@ -21,7 +21,10 @@ report their error to their callers.
 from __future__ import annotations
 
 import asyncio
+import datetime
+import os
 import threading
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from queue import Empty, Queue
@@ -33,6 +36,11 @@ from prime_rl.configs.ttt import TTTServiceConfig
 from prime_rl.ttt.server import ReleaseRequest, UpdateRequest, UpdateResponse
 from prime_rl.utils.logger import get_logger
 
+# How long an HTTP caller waits on the work loop before giving up with a 503. Generous:
+# an update normally completes within one batch window + forward, but a wedged work loop
+# must not pin request threads forever.
+_RESULT_WAIT_SECONDS = 3600.0
+
 
 @dataclass
 class _Pending:
@@ -42,9 +50,19 @@ class _Pending:
     done: threading.Event = field(default_factory=threading.Event)
     result: dict | None = None
     error: str | None = None
+    error_status: int = 409  # validation errors; anything unexpected maps to 500
 
 
-def _work_loop(trainer, work_queue: Queue, world) -> None:
+@dataclass
+class _ReleaseAck:
+    """Release work-order ack: `had_slot` comes from the work loop's authoritative
+    `trainer.release` result, not a racy pre-read of `trainer.slots`."""
+
+    done: threading.Event = field(default_factory=threading.Event)
+    had_slot: bool = False
+
+
+def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
     """The per-rank execution loop (runs in the main thread on every rank). Rank 0 feeds it
     from the HTTP side via `work_queue`; other ranks receive orders by broadcast."""
     import torch.distributed as dist
@@ -59,33 +77,49 @@ def _work_loop(trainer, work_queue: Queue, world) -> None:
         else:
             payload = [None, None]
         if dist.is_initialized() and world.world_size > 1:
-            dist.broadcast_object_list(payload, src=0)
+            # Control plane goes over a dedicated gloo group: non-master ranks block here
+            # for arbitrarily long idle gaps, and NCCL's ~10-min watchdog would abort them;
+            # gloo blocks CPU-side without a watchdog. Training collectives stay on NCCL.
+            dist.broadcast_object_list(payload, src=0, group=ctrl_pg)
         kind, data = payload
         if kind == "stop":
             return
         if kind == "release":
-            trainer.release(data)
+            released = trainer.release(data)
             if world.is_master:
-                order[2].set()  # release ack event
+                order[2].had_slot = released is not None
+                order[2].done.set()
             continue
         # kind == "update": data = list[UpdateJob]; on rank 0, order[2] = list[_Pending]
         jobs = data
         try:
             results = trainer.update_batch(jobs)
-        except Exception as e:
-            # A collective failure (OOM, NCCL) poisons the whole batch; per-job validation
-            # errors are handled inside update_batch/prepare via individual exclusion below.
-            logger.exception("ttt v2: batch failed")
+        except ValueError as e:
+            # Deterministic validation error raised identically on every rank (jobs arrive
+            # in the same order via broadcast): safe to report per-batch and keep going.
+            logger.exception("ttt v2: batch failed validation")
             if world.is_master:
                 for pending in order[2]:
                     pending.error = f"{type(e).__name__}: {e}"
                     pending.done.set()
             continue
+        except Exception:
+            # A rank-local fault mid-collective (OOM, NCCL, driver) would leave the peer
+            # ranks hung inside the collective. Crash this rank: torchrun tears the whole
+            # group down loudly instead of wedging silently — fail-loud stance.
+            logger.exception("ttt v2: non-deterministic batch failure, aborting rank")
+            os._exit(1)
         if world.is_master:
             for pending in order[2]:
                 pending.result = results.get(pending.job.rollout_id)
                 if pending.result is None:
                     pending.error = "job produced no result"
+                    pending.error_status = 500
+                elif "error" in pending.result:
+                    # Per-job failure isolated inside update_batch (ValueError in prepare):
+                    # the job's own 409, not a batch failure.
+                    pending.error = pending.result["error"]
+                    pending.result = None
                 pending.done.set()
 
 
@@ -117,6 +151,10 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.http = httpx.AsyncClient(timeout=120.0)
+        # Per-rollout locks order /update and /release: an update holds its rollout's lock
+        # across enqueue→result→adapter load so a concurrent release can't unload+free the
+        # slot between train and engine load (orphaned adapter in vLLM otherwise).
+        app.state.rollout_locks = defaultdict(asyncio.Lock)
         collector = threading.Thread(
             target=_collector_loop,
             args=(config, trainer, batch_queue, work_queue),
@@ -165,28 +203,53 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
             system_prompt=request.system_prompt,
             tools=request.tools,
         )
-        pending = _Pending(job=job)
-        batch_queue.put(pending)
-        await asyncio.to_thread(pending.done.wait)
-        if pending.error is not None:
-            raise HTTPException(status_code=409, detail=pending.error)
-        try:
-            await load_adapter(request.adapter_name, pending.result["ckpt_path"])
-        except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"adapter load failed: {e}") from e
-        return UpdateResponse(**pending.result)
+        async with app.state.rollout_locks[request.rollout_id]:
+            pending = _Pending(job=job)
+            batch_queue.put(pending)
+            finished = await asyncio.to_thread(pending.done.wait, _RESULT_WAIT_SECONDS)
+            if not finished:
+                raise HTTPException(status_code=503, detail="TTT work loop did not answer in time")
+            if pending.error is not None:
+                # 409: deterministic per-job validation errors; 500: unexpected (defensive —
+                # non-deterministic failures crash the rank, so this should be unreachable).
+                raise HTTPException(status_code=pending.error_status, detail=pending.error)
+            try:
+                await load_adapter(request.adapter_name, pending.result["ckpt_path"])
+            except httpx.HTTPError as e:
+                raise HTTPException(status_code=502, detail=f"adapter load failed: {e}") from e
+            return UpdateResponse(**pending.result)
 
     @app.post("/release")
     async def release(request: ReleaseRequest) -> dict:
-        had_slot = request.rollout_id in trainer.slots
-        ack = threading.Event()
-        work_queue.put(("release", request.rollout_id, ack))
-        await asyncio.to_thread(ack.wait)
-        if had_slot:
-            await unload_adapter(request.adapter_name)
-        return {"released": had_slot}
+        async with app.state.rollout_locks[request.rollout_id]:
+            ack = _ReleaseAck()
+            work_queue.put(("release", request.rollout_id, ack))
+            finished = await asyncio.to_thread(ack.done.wait, _RESULT_WAIT_SECONDS)
+            if not finished:
+                raise HTTPException(status_code=503, detail="TTT work loop did not answer in time")
+            # had_slot comes from the work order's result — a pre-read of trainer.slots
+            # could race the work loop's own mutation of the registry.
+            if ack.had_slot:
+                await unload_adapter(request.adapter_name)
+            return {"released": ack.had_slot}
 
     return app
+
+
+def _dedup_pendings(pendings: list["_Pending"]) -> tuple[list["_Pending"], list["_Pending"]]:
+    """Keep the FIRST pending per rollout_id; later duplicates are deferred to the next
+    batch. Legitimate back-to-back updates (seq_no k, k+1) can land in one drain — running
+    both in one packed batch would trip the strict seq_no validation on the second."""
+    seen: set[str] = set()
+    batch: list[_Pending] = []
+    deferred: list[_Pending] = []
+    for pending in pendings:
+        if pending.job.rollout_id in seen:
+            deferred.append(pending)
+        else:
+            seen.add(pending.job.rollout_id)
+            batch.append(pending)
+    return batch, deferred
 
 
 def _collector_loop(config, trainer, batch_queue: Queue, work_queue: Queue) -> None:
@@ -204,6 +267,9 @@ def _collector_loop(config, trainer, batch_queue: Queue, work_queue: Queue) -> N
                 pendings.append(batch_queue.get_nowait())
             except Empty:
                 break
+        pendings, deferred = _dedup_pendings(pendings)
+        for pending in deferred:
+            batch_queue.put(pending)  # re-queue: next batch, after this rollout's first job
         valid = _validate_and_split(trainer, pendings)
         if valid:
             work_queue.put(("update", [p.job for p in valid], valid))
@@ -222,7 +288,14 @@ def run_server_v2(config: TTTServiceConfig) -> None:
     torch.cuda.set_device(world.local_rank)
     if torch.distributed.is_available() and not torch.distributed.is_initialized() and world.world_size > 1:
         torch.distributed.init_process_group(backend="nccl", device_id=torch.device("cuda", world.local_rank))
+    ctrl_pg = None
+    if torch.distributed.is_initialized() and world.world_size > 1:
+        # Dedicated gloo group for the control-plane broadcast: idle services park
+        # non-master ranks in the broadcast for hours; NCCL's ~10-min watchdog would abort
+        # them, gloo just blocks CPU-side. Training collectives keep the default NCCL group.
+        ctrl_pg = torch.distributed.new_group(backend="gloo", timeout=datetime.timedelta(hours=24))
     trainer = TTTTrainerV2(config)
+    trainer.ctrl_pg = ctrl_pg  # checkpoint barrier rides the gloo group too
     work_queue: Queue = Queue()
 
     if world.is_master:
@@ -234,4 +307,4 @@ def run_server_v2(config: TTTServiceConfig) -> None:
         http_thread.start()
         get_logger().info(f"TTT v2 serving on {config.host}:{config.port} ({world})")
 
-    _work_loop(trainer, work_queue, world)
+    _work_loop(trainer, work_queue, world, ctrl_pg)

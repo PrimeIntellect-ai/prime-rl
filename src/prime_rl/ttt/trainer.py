@@ -207,9 +207,13 @@ class TTTTrainer:
             raise ValueError(f"token_ids ({len(token_ids)}) and loss_mask ({len(loss_mask)}) must align")
         if len(token_ids) < 2:
             raise ValueError("need at least 2 tokens to form a next-token target")
+        # Validate seq_no BEFORE allocating: a bad first update must not leave a fresh
+        # (never-trained) AdapterState behind that skews later expected seq_nos.
+        existing = self.adapters.get(rollout_id)
+        expected = (existing.version if existing is not None else 0) + 1
+        if seq_no != expected:
+            raise ValueError(f"out-of-order update for {rollout_id}: expected seq_no {expected}, got {seq_no}")
         state = self._get_or_create(rollout_id, adapter_name)
-        if seq_no != state.version + 1:
-            raise ValueError(f"out-of-order update for {rollout_id}: expected seq_no {state.version + 1}, got {seq_no}")
 
         sequences: list[tuple[list[int], list[bool]]] = []
         if train_rollout:

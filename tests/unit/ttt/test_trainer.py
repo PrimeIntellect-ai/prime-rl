@@ -108,6 +108,9 @@ def test_out_of_order_seq_no_rejected(tmp_path, tiny_model_name):
     tokens = list(range(2, 12))
     with pytest.raises(ValueError, match="expected seq_no 1"):
         trainer.update("r1", "ttt-r1", tokens, [True] * len(tokens), seq_no=2)
+    # seq_no is validated BEFORE allocation: the bad first update left no adapter state
+    # behind (a stale zero-version state would make the real seq_no 1 look out-of-order).
+    assert "r1" not in trainer.adapters
     trainer.update("r1", "ttt-r1", tokens, [True] * len(tokens), seq_no=1)
     with pytest.raises(ValueError, match="expected seq_no 2"):
         trainer.update("r1", "ttt-r1", tokens, [True] * len(tokens), seq_no=1)
