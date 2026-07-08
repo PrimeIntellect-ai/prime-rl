@@ -95,7 +95,7 @@ class QAEnv:
         temperature = None
 
     class _TTT:
-        pass
+        enabled = True
 
     def __init__(self):
         self._TTT.qa = self._QA()
@@ -137,4 +137,94 @@ async def test_qa_recycle_failure_skips_rollout_not_group():
     await sink.process_group(group_id)  # must not raise
     # Recycling was skipped (enrichment) but the rollout still reached the batch.
     assert rollout.samples == []
+    assert sink.pending_batch == [rollout]
+
+
+@pytest.mark.asyncio
+async def test_meta_lesson_failure_skips_group_not_run():
+    """The A5 path gets the same containment as recycling: a chat-template failure in
+    meta_lesson_samples (or client construction) must skip meta lessons, never kill the
+    group / propagate to the main loop."""
+    import uuid
+
+    import verifiers.v1 as vf
+
+    env = QAEnv()
+    env.config.ttt.qa.recycle_to_policy = False
+    env.config.ttt.qa.meta_lessons = True
+
+    class ExplodingPool:
+        model_name = "m"
+
+        async def get_eval_client(self):
+            raise RuntimeError("no eval client configured")
+
+    env.sampler = type("S", (), {"pool": ExplodingPool()})()
+
+    sink = TrainSink.__new__(TrainSink)
+    sink.train_envs = FakeTrainEnvs(env)
+    sink.tokenizer = RaisingTokenizer()
+    sink.pre_filters = []
+    sink.pending_batch = []
+    sink.pending_tokens = 0
+    sink.token_batch_size = None
+    sink.pre_filter_seen = 0
+    sink.pre_filter_dropped = 0
+    sink.pre_filter_dropped_by_name = {}
+    sink.pending_groups = {}
+    sink._meta_clients = {}
+
+    group_id = uuid.uuid4()
+    rollouts = []
+    for i in range(2):  # meta extraction needs >= 2 survivors with pairs
+        rollout = Rollout(task=vf.Task(idx=0, prompt="t"), env_name="e")
+        rollout.info["ttt"] = {"updates": [{"version": 1, "qa_pairs": [{"question": f"q{i}?", "answer": "a"}]}]}
+        rollouts.append(rollout)
+    sink.pending_groups[group_id] = rollouts
+
+    await sink.process_group(group_id)  # must not raise
+    assert sink.pending_batch == rollouts  # the group still ships
+    assert all(r.samples == [] for r in rollouts)  # no meta samples, no corruption
+
+
+@pytest.mark.asyncio
+async def test_disabled_ttt_runs_no_qa_to_policy_paths():
+    """ttt.enabled=false (the wiring ablation) must run neither recycling nor meta
+    lessons even with both QA flags set — same predicate as validate_ttt."""
+    import uuid
+
+    import verifiers.v1 as vf
+
+    env = QAEnv()
+    env.config.ttt.enabled = False
+    env.config.ttt.qa.recycle_to_policy = True
+
+    sink = TrainSink.__new__(TrainSink)
+    sink.train_envs = FakeTrainEnvs(env)
+    sink.tokenizer = RaisingTokenizer()  # would raise if recycling ran and weren't contained
+    sink.pre_filters = []
+    sink.pending_batch = []
+    sink.pending_tokens = 0
+    sink.token_batch_size = None
+    sink.pre_filter_seen = 0
+    sink.pre_filter_dropped = 0
+    sink.pre_filter_dropped_by_name = {}
+    sink.pending_groups = {}
+    sink._meta_clients = {}
+
+    recycle_calls = []
+    rollout = Rollout(task=vf.Task(idx=0, prompt="t"), env_name="e")
+    rollout.info["ttt"] = {"updates": [{"version": 1, "qa_pairs": [{"question": "q?", "answer": "a"}]}]}
+    group_id = uuid.uuid4()
+    sink.pending_groups[group_id] = [rollout]
+
+    import prime_rl.orchestrator.train_sink as ts
+
+    original = ts.qa_recycle_samples
+    ts.qa_recycle_samples = lambda *a, **k: recycle_calls.append(a) or []
+    try:
+        await sink.process_group(group_id)
+    finally:
+        ts.qa_recycle_samples = original
+    assert recycle_calls == []  # disabled TTT: recycling never invoked
     assert sink.pending_batch == [rollout]

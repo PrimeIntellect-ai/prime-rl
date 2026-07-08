@@ -60,10 +60,22 @@ def assert_prefix_stable_template(tokenizer, tools: list[dict] | None = None) ->
         "function": {"name": "noop", "description": "does nothing", "parameters": {"type": "object", "properties": {}}},
     }
     for kwargs in ({}, {"tools": tools or [dummy_tool]}):
-        full = _render(tokenizer, conversation, generation_prompt=False, template_kwargs=kwargs)
-        prompt = _render(tokenizer, conversation[:-1], generation_prompt=True, template_kwargs=kwargs)
+        name = getattr(tokenizer, "name_or_path", None) or type(tokenizer).__name__
+        try:
+            full = _render(tokenizer, conversation, generation_prompt=False, template_kwargs=kwargs)
+            prompt = _render(tokenizer, conversation[:-1], generation_prompt=True, template_kwargs=kwargs)
+        except Exception as e:
+            # Some templates reject the canary's fixture itself (no system-role support,
+            # no tools support). That still means the Q&A rendering paths can't work as
+            # configured — but say so, instead of a bare jinja traceback.
+            raise ValueError(
+                f"Chat template of tokenizer '{name}' failed the Q&A rendering canary "
+                f"({'with tools' if kwargs else 'without tools'}): {type(e).__name__}: {e}. "
+                "TTT Q&A training renders [system, question, answer] conversations "
+                "(with the rollout's tool schemas when present) — the template must accept "
+                "them."
+            ) from e
         if full[: len(prompt)] != prompt:
-            name = getattr(tokenizer, "name_or_path", None) or type(tokenizer).__name__
             raise ValueError(
                 f"Chat template of tokenizer '{name}' is not prefix-stable "
                 f"({'with tools' if kwargs else 'without tools'}): the prompt-only render is "

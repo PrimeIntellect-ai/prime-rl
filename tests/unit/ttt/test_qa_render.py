@@ -63,3 +63,19 @@ def test_assert_prefix_stable_template():
     assert_prefix_stable_template(StableTokenizer())  # no raise
     with pytest.raises(ValueError, match="not prefix-stable"):
         assert_prefix_stable_template(UnstableTokenizer())
+
+
+def test_assert_prefix_stable_template_wraps_template_errors():
+    """Templates that reject the canary fixture itself (no system role, no tools) must
+    fail with a self-explaining ValueError, not a bare jinja traceback."""
+
+    class NoSystemTokenizer(StableTokenizer):
+        name_or_path = "no-system-fake"
+
+        def apply_chat_template(self, conversation, **kwargs):
+            if any(m["role"] == "system" for m in conversation):
+                raise RuntimeError("System role not supported")
+            return super().apply_chat_template(conversation, **kwargs)
+
+    with pytest.raises(ValueError, match="failed the Q&A rendering canary.*System role"):
+        assert_prefix_stable_template(NoSystemTokenizer())

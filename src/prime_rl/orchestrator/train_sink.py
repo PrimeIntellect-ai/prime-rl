@@ -213,7 +213,9 @@ class TrainSink:
         # finalization, so the advantage broadcast/stamping never sees them —
         # they carry no rl credit, only a ce stream on the answer tokens.
         ttt_config = getattr(env.config, "ttt", None)
-        qa_config = ttt_config.qa if ttt_config is not None else None
+        # Gate on `enabled` too: a disabled TTT block (wiring ablation) must run neither
+        # QA-to-policy path — same predicate as RLConfig.validate_ttt and the launch canary.
+        qa_config = ttt_config.qa if ttt_config is not None and ttt_config.enabled else None
         if qa_config is not None and qa_config.recycle_to_policy:
             for r in survivors:
                 try:
@@ -235,17 +237,26 @@ class TrainSink:
                 meta_lesson_samples,
             )
 
-            if env_name not in self._meta_clients:
-                self._meta_clients[env_name] = build_meta_client(await env.sampler.pool.get_eval_client())
-            items = await extract_meta_lessons(
-                survivors, qa_config, self._meta_clients[env_name], env.sampler.pool.model_name
-            )
-            if items:
-                survivors[0].samples.extend(
-                    await asyncio.to_thread(meta_lesson_samples, items, survivors, self.tokenizer, env_name)
+            try:
+                if env_name not in self._meta_clients:
+                    self._meta_clients[env_name] = build_meta_client(await env.sampler.pool.get_eval_client())
+                items = await extract_meta_lessons(
+                    survivors, qa_config, self._meta_clients[env_name], env.sampler.pool.model_name
                 )
-                get_logger().debug(
-                    f"TTT meta-lessons | env={env_name} task_idx={task_idx} | {len(items)} lesson(s) extracted"
+                if items:
+                    survivors[0].samples.extend(
+                        await asyncio.to_thread(meta_lesson_samples, items, survivors, self.tokenizer, env_name)
+                    )
+                    get_logger().debug(
+                        f"TTT meta-lessons | env={env_name} task_idx={task_idx} | {len(items)} lesson(s) extracted"
+                    )
+            except Exception:
+                # Meta lessons are enrichment, never correctness — the same containment
+                # QA recycling gets above. extract_meta_lessons guards its own model call,
+                # but client construction and meta_lesson_samples' chat-template rendering
+                # (recorded tool schemas) can raise; a bad group must not kill the run.
+                get_logger().warning(
+                    f"Meta-lesson extraction failed | env={env_name} task_idx={task_idx}", exc_info=True
                 )
 
         # The env has a single sampling temperature; fan it out per token

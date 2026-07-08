@@ -144,8 +144,11 @@ def build_app(config: TTTServiceConfig, trainer: "TTTTrainer | None" = None) -> 
     async def release(request: ReleaseRequest) -> dict:
         async with app.state.train_lock:
             state = app.state.trainer.release(request.rollout_id)
-        if state is not None and state.version > 0:
-            await unload_adapter(request.adapter_name)
+        # Unload UNCONDITIONALLY: a client retry after a lost response finds no state (the
+        # first attempt already dropped it) but the engine unload may never have run —
+        # gating on it would leak the adapter in vLLM until restart. unload_adapter is
+        # idempotent (a not-loaded name is caught and warn-logged).
+        await unload_adapter(request.adapter_name)
         return {"released": state is not None}
 
     return app

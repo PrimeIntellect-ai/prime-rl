@@ -238,10 +238,14 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
             finished = await asyncio.to_thread(ack.done.wait, _RESULT_WAIT_SECONDS)
             if not finished:
                 raise HTTPException(status_code=503, detail="TTT work loop did not answer in time")
+            # Unload UNCONDITIONALLY: a client retry after a lost response finds
+            # had_slot=False (the first attempt already freed the slot) but the engine
+            # unload may never have run — gating it on had_slot would leak the adapter in
+            # vLLM until restart, permanently eating one of max_loras. unload_adapter is
+            # idempotent (a not-loaded name is caught and warn-logged).
+            await unload_adapter(request.adapter_name)
             # had_slot comes from the work order's result — a pre-read of trainer.slots
             # could race the work loop's own mutation of the registry.
-            if ack.had_slot:
-                await unload_adapter(request.adapter_name)
             return {"released": ack.had_slot}
 
     return app
