@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Callable
 
 from prime_rl.configs.algorithm import EchoAlgoConfig
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
+from prime_rl.orchestrator.trajectories import iter_trainable_branches
 from prime_rl.utils.utils import import_object
 
 if TYPE_CHECKING:
@@ -55,7 +56,9 @@ class EchoAlgorithm(GRPOAlgorithm):
         (role tags, separators, tool-response wraps) is excluded. Nodes without
         attribution (the default renderer, or relay turns with no token ids)
         fall back to weighting the whole non-sampled span."""
-        trainable_branches = [branch for branch in rollout.branches if any(branch.sampled_mask)]
+        # Same branch selection as ``trace_to_samples``, so the zip with ``rollout.samples``
+        # stays aligned when fork dedup drops a branch.
+        trainable_branches = [branch for branch, _ in iter_trainable_branches(rollout)]
         filter_masks = self._filter_masks(rollout, trainable_branches) if self.filter_fn is not None else None
         for sample_idx, (sample, branch) in enumerate(zip(rollout.samples, trainable_branches)):
             weights = [0.0] * len(sample.token_ids)
