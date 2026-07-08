@@ -93,7 +93,7 @@ num_turns_weight = 0.1
 
 [[orchestrator.train.env]]
 name = "tmax"
-harness = { id = "rlm", runtime = { type = "prime", vm = true, labels = ["glm45air-terminal"] } }
+harness = { id = "rlm", runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
 
 [orchestrator.train.env.taskset]
 id = "tmax-v1"
@@ -120,7 +120,7 @@ interval = 20
 
 [[orchestrator.eval.env]]
 name = "swebench-verified"
-harness = { id = "rlm", runtime = { type = "prime", vm = true, labels = ["glm45air-terminal"] } }
+harness = { id = "rlm", runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
 timeout = { rollout = 3600 }
 
 [orchestrator.eval.env.taskset]
@@ -144,7 +144,7 @@ weight = 0.0
 [[orchestrator.eval.env]]
 name = "terminal-bench-2"
 group_size = 4 # avg@4
-harness = { id = "rlm", runtime = { type = "prime", vm = true, labels = ["glm45air-terminal"] } }
+harness = { id = "rlm", runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
 timeout = { rollout = 3600 }
 
 [orchestrator.eval.env.taskset]

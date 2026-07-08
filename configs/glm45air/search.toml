@@ -95,7 +95,7 @@ num_turns_weight = 0.0
 # the plugged BC-style prompt is replaced by the reference judge's stock prompt).
 [[orchestrator.train.env]]
 name = "openseeker"
-harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, labels = ["glm45air-search"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-search"] } }
 
 [orchestrator.train.env.taskset]
 id = "openseeker-v1"
@@ -117,7 +117,7 @@ weight = 0.0
 
 [[orchestrator.train.env]]
 name = "redsearcher"
-harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, labels = ["glm45air-search"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-search"] } }
 
 [orchestrator.train.env.taskset]
 id = "redsearcher-v1" # optional `difficulty` filter (easy/medium/hard)
@@ -145,7 +145,7 @@ interval = 20
 [[orchestrator.eval.env]]
 name = "browsecomp"
 num_examples = 500 # full set is 1266; cap eval at 500
-harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, labels = ["glm45air-search"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-search"] } }
 timeout = { rollout = 3600 }
 
 [orchestrator.eval.env.taskset]
