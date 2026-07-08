@@ -307,8 +307,15 @@ class RLConfig(BaseConfig):
         """Test-time-training envs (``env.ttt``) constrain the deployment: the trainer must
         run the policy full-weights (frozen-adapter replay can't stack on a trainable policy
         LoRA), and the inference server must serve LoRA adapters for the TTT service to
-        load. Enforced here — at launch, not mid-run."""
-        ttt_envs = [env.resolved_name for env in self.orchestrator.train.env if getattr(env, "ttt", None) is not None]
+        load. Enforced here — at launch, not mid-run. Replay composes with activation
+        checkpointing and ``torch.compile`` (ttt_replay.py normalizes AC-wrapped FQNs and
+        installs eager, dynamo-disabled hooks), so neither is rejected here."""
+        # ``ttt.enabled`` is the master switch (verifiers TTTConfig.enabled): a disabled
+        # block leaves rollouts untouched, so it must impose no constraints here either.
+        active_ttt_envs = [
+            env for env in self.orchestrator.train.env if getattr(env, "ttt", None) is not None and env.ttt.enabled
+        ]
+        ttt_envs = [env.resolved_name for env in active_ttt_envs]
         if not ttt_envs:
             return self
         if self.trainer.model.lora is not None:
@@ -322,6 +329,26 @@ class RLConfig(BaseConfig):
                 "set [inference] enable_lora = true (and size max_loras / max_lora_rank for the "
                 "TTT service's adapters)."
             )
+        for env in active_ttt_envs:
+            qa = env.ttt.qa
+            if qa is not None and qa.recycle_to_policy and qa.meta_lessons:
+                raise ValueError(
+                    f"TTT env '{env.resolved_name}' sets both qa.recycle_to_policy and qa.meta_lessons: "
+                    "these are mutually exclusive experiment arms (A4 vs A5) whose effects must stay "
+                    "disentangled — enable at most one."
+                )
+        # Every in-flight rollout holds a vLLM adapter slot; the orchestrator resolves
+        # ``max_inflight_rollouts`` in its own validators (from batch_size when unset), so
+        # read it defensively and only enforce when determinable.
+        if self.inference is not None and self.inference.enable_lora:
+            max_inflight = self.orchestrator.max_inflight_rollouts
+            if max_inflight is not None and max_inflight > self.inference.max_loras:
+                raise ValueError(
+                    f"TTT env(s) {ttt_envs}: orchestrator max_inflight_rollouts ({max_inflight}) exceeds "
+                    f"[inference] max_loras ({self.inference.max_loras}) — every in-flight rollout holds a "
+                    "LoRA slot. Raise max_loras (and max_cpu_loras) or lower max_inflight_rollouts / "
+                    "oversampling_factor."
+                )
         # The trainer must arm the replay hooks before ``torch.compile`` (see TrainerConfig.ttt_replay).
         self.trainer.ttt_replay = True
         return self

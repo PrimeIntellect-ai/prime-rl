@@ -31,3 +31,72 @@ def test_scaleswe_lora_sizing():
     assert base["max_cpu_loras"] >= base["max_loras"]
     # The engine can only serve adapters whose rank fits max_lora_rank.
     assert base["max_lora_rank"] >= service["lora"]["rank"]
+
+
+# --- RLConfig.validate_ttt launch hardening ---
+
+from prime_rl.configs.rl import RLConfig  # noqa: E402
+from prime_rl.utils.config import cli  # noqa: E402
+
+
+def rl_payload(ttt: dict | None, **inference_overrides) -> dict:
+    """Minimal RLConfig payload with one (legacy-id) train env carrying a ``ttt`` block."""
+    env: dict = {"id": "dummy-env"}
+    if ttt is not None:
+        env["ttt"] = ttt
+    inference = {"enable_lora": True, "max_loras": 16, "max_cpu_loras": 16, **inference_overrides}
+    return {
+        "model": {"name": "Qwen/Qwen3-0.6B"},
+        "trainer": {},
+        "orchestrator": {"batch_size": 16, "group_size": 1, "train": {"env": [env]}},
+        "inference": inference,
+    }
+
+
+def test_disabled_ttt_imposes_no_constraints():
+    """enabled=false is the master switch: no LoRA-serving requirement, no ttt_replay."""
+    config = RLConfig.model_validate(
+        rl_payload({"base_url": "http://localhost:8092", "enabled": False}, enable_lora=False)
+    )
+    assert config.trainer.ttt_replay is False
+
+
+def test_active_ttt_sets_ttt_replay():
+    config = RLConfig.model_validate(rl_payload({"base_url": "http://localhost:8092"}))
+    assert config.trainer.ttt_replay is True
+
+
+def test_recycle_and_meta_lessons_mutually_exclusive():
+    """A4 (recycle_to_policy) and A5 (meta_lessons) must stay disentangled."""
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        RLConfig.model_validate(
+            rl_payload({"base_url": "http://localhost:8092", "qa": {"recycle_to_policy": True, "meta_lessons": True}})
+        )
+
+
+def test_inflight_exceeding_max_loras_rejected():
+    """Every in-flight rollout holds a vLLM adapter slot — inflight must fit max_loras."""
+    with pytest.raises(ValueError, match="max_loras"):
+        RLConfig.model_validate(rl_payload({"base_url": "http://localhost:8092"}, max_loras=8))
+
+
+def test_inflight_equal_to_max_loras_ok():
+    # batch_size=16 resolves max_inflight_rollouts=16 == max_loras.
+    RLConfig.model_validate(rl_payload({"base_url": "http://localhost:8092"}, max_loras=16))
+
+
+@pytest.mark.parametrize(
+    "arm",
+    [
+        "arm_a0_no_compaction.toml",
+        "arm_a1_compaction.toml",
+        "arm_a2_ttt.toml",
+        "arm_a3_qa.toml",
+        "arm_a4_recycle.toml",
+        "arm_a5_meta.toml",
+    ],
+)
+def test_scaleswe_arms_launchable(arm: str):
+    """Pins the invariant that every shipped base+arm overlay still validates end-to-end."""
+    base = CONFIGS / "scaleswe" / "base.toml"
+    cli(RLConfig, args=["@", str(base), "@", str(CONFIGS / "scaleswe" / arm)])
