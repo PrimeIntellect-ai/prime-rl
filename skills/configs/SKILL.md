@@ -17,9 +17,11 @@ uv run rl --model @ model.toml --data @ data.toml                          # nes
 uv run rl @ base.toml --trainer @ trainer.toml --trainer.lr 1e-3           # mixed
 ```
 
-Resolution order: CLI > config files (left-to-right) > class defaults. Merging is deep — unset fields in an overlay are preserved from the base.
+Resolution order: CLI > config files (left-to-right) > `PRL_*` env vars > class defaults. Merging is deep — unset fields in an overlay are preserved from the base.
 
 Naming: CLI uses kebab-case (`--model.max-model-len`); TOML uses snake_case (`max_model_len`).
+
+Env var overrides: any field is settable as `PRL_<PATH>` with nesting levels joined by a double underscore — `PRL_TRAINER__OPTIM__LR=1e-5` ≙ `--trainer.optim.lr 1e-5`. TOML/CLI values for the same field win; unrelated `PRL_*` vars are ignored; list/dict fields take JSON literals; `PRL_WANDB=None` disables an optional sub-config. (Distinct from `[env_vars]` TOML tables, which export OS env vars into launched processes.)
 
 ## Inspect & validate
 

@@ -25,6 +25,11 @@ def setup_logging():
 def setup_env():
     """Auto-fixture to reset environment variables between tests"""
     original_env = dict(os.environ)
+    # Strip config-override vars from the outer shell so they can't leak into
+    # config parsing; tests set their own via monkeypatch.
+    for key in list(os.environ):
+        if key.startswith("PRL_"):
+            del os.environ[key]
     yield
     os.environ.clear()
     os.environ.update(original_env)

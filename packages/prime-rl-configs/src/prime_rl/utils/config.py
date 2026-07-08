@@ -1,8 +1,16 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic_config import BaseConfig as BaseConfig  # noqa: F401
-from pydantic_config import cli  # noqa: F401
+from pydantic_config import cli as _cli
+
+T = TypeVar("T", bound=BaseConfig)
+
+
+def cli(cls: type[T], **kwargs: Any) -> T:
+    """`pydantic_config.cli` with `PRL_*` env-var overrides enabled (see docs/configuration.md)."""
+    kwargs.setdefault("env_prefix", "PRL")
+    return _cli(cls, **kwargs)
 
 
 def find_package_resource(subdir: str) -> Path | None:

@@ -18,16 +18,18 @@ Every `prime-rl` entrypoint uses [`pydantic-config`](https://github.com/PrimeInt
   - [None](#none)
   - [Discriminated Unions](#discriminated-unions)
   - [Environments](#environments-orchestratortrainenv)
+  - [PRL Environment Variable Overrides](#prl-environment-variable-overrides)
   - [Environment Variables](#environment-variables)
 - [Examples](#examples)
 
 ## Sources and Precedence
 
-Field values come from three sources — Pydantic defaults, TOML files (passed with `@`), and CLI flags. They're layered in this order, with later sources winning:
+Field values come from four sources — Pydantic defaults, `PRL_*` environment variables, TOML files (passed with `@`), and CLI flags. They're layered in this order, with later sources winning:
 
 1. **Defaults** declared on the Pydantic model.
-2. **TOML files** passed with `@`, left to right — later files override earlier ones.
-3. **CLI flags** in dotted, kebab-case form (`--model.name`).
+2. **`PRL_*` environment variables** — see [PRL Environment Variable Overrides](#prl-environment-variable-overrides).
+3. **TOML files** passed with `@`, left to right — later files override earlier ones.
+4. **CLI flags** in dotted, kebab-case form (`--model.name`).
 
 ## TOML Composition
 
@@ -168,6 +170,21 @@ args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
 `args` is forwarded verbatim to the environment's `load_environment(**args)`.
 
 The same `id` can appear multiple times across train and eval (or with different `args`) — useful for evaluating on a held-out split of the env you're training on, or comparing two configurations of the same env side by side. When `id` is reused, set a distinct `name` on each entry; `name` defaults to `id` and must be unique across all envs in the same group.
+
+### PRL Environment Variable Overrides
+
+Every config field can be set from the environment under the `PRL_` prefix. Nesting levels are joined with a **double underscore** (field names keep their own single underscores):
+
+```bash
+export PRL_MAX_STEPS=50                      # --max-steps 50
+export PRL_TRAINER__OPTIM__LR=1e-5           # --trainer.optim.lr 1e-5
+export PRL_WANDB=None                        # disable an optional sub-config (true enables with defaults)
+export PRL_CHECKPOINT_STEPS='[100,200]'      # list/dict fields take a JSON literal
+```
+
+Env vars sit below TOML and CLI in [precedence](#sources-and-precedence) — they set defaults, and any TOML or CLI value for the same field wins. Only variables matching a real config field are read; unrelated `PRL_*` variables are ignored. A value that fails validation is reported against the variable name (`PRL_TRAINER__OPTIM__LR (from env)`).
+
+> Not to be confused with [`[env_vars]`](#environment-variables) below, which *exports* OS environment variables into launched processes; `PRL_*` variables are *read* by the entrypoint to fill config fields.
 
 ### Environment Variables
 
