@@ -239,3 +239,36 @@ def test_collector_dedups_same_rollout_keeping_first():
     batch, deferred = _dedup_pendings([first, second, other])
     assert batch == [first, other]  # first pending per rollout stays, order preserved
     assert deferred == [second]  # later duplicate deferred to the next batch
+
+
+def test_update_batch_replays_duplicate_seq_no_from_cache():
+    trainer = make_cpu_trainer(max_slots=2)
+    first = trainer.update_batch([job("r1")])["r1"]
+    assert first["version"] == 1
+    # A retry after a lost response replays the exact same seq_no: answer from the cache —
+    # no forward, no optimizer step, no version bump.
+    trainer._forward_logprobs = lambda *a, **k: pytest.fail("forward must not run on replay")
+    replay = trainer.update_batch([job("r1")])["r1"]
+    assert replay is first  # the cached result, same ckpt_path/version
+    assert trainer.slots["r1"].version == 1
+
+
+def test_replay_of_older_seq_no_still_409s():
+    trainer = make_cpu_trainer(max_slots=2)
+    trainer.update_batch([job("r1")])
+    trainer.update_batch([job("r1", seq_no=2)])
+    # seq_no strictly below the slot version is NOT a replay of the last update: 409.
+    with pytest.raises(ValueError, match="expected seq_no 3"):
+        trainer.validate_job(job("r1", seq_no=1))
+    results = trainer.update_batch([job("r1", seq_no=1)])
+    assert "expected seq_no 3" in results["r1"]["error"]
+
+
+def test_seq_no_equal_version_without_cache_still_409s():
+    trainer = make_registry(max_slots=2)
+    # A slot at version 1 with no cached result (e.g. after a restart) can't prove the
+    # update applied — keep the strict 409.
+    trainer.slots["r1"] = SlotState("r1", "ttt-r1", idx=0, version=1)
+    trainer.free_idxs = {1}
+    with pytest.raises(ValueError, match="expected seq_no 2"):
+        trainer.validate_job(job("r1", seq_no=1))

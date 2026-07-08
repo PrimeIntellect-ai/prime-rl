@@ -50,6 +50,9 @@ class SlotState:
     idx: int
     version: int = 0
     optimizer: torch.optim.Optimizer | None = None
+    last_result: dict | None = None
+    """The successful UpdateResponse payload of the last applied update, so an exact
+    replay (client retry after a lost response) can be answered without re-training."""
 
 
 @dataclass
@@ -205,9 +208,11 @@ class TTTTrainerV2:
             sequences.append((full, [False] * prompt_len + [True] * (len(full) - prompt_len)))
         return sequences
 
-    def validate_job(self, job: UpdateJob) -> None:
+    def validate_job(self, job: UpdateJob) -> dict | None:
         """Pure validation (no slot claim, no state mutation) — safe to run on rank 0 only,
-        before a job is broadcast. Raises ValueError on a malformed or out-of-order job."""
+        before a job is broadcast. Raises ValueError on a malformed or out-of-order job.
+        Returns the cached result dict when the job is an exact replay of the last applied
+        update (a client retry after a lost response) — duplicate-ok, else None."""
         if len(job.token_ids) != len(job.loss_mask):
             raise ValueError(f"token_ids ({len(job.token_ids)}) and loss_mask ({len(job.loss_mask)}) must align")
         if len(job.token_ids) < 2:
@@ -220,6 +225,10 @@ class TTTTrainerV2:
                 f"max_tokens_per_forward ({self.config.engine.max_tokens_per_forward})"
             )
         state = self.slots.get(job.rollout_id)
+        if state is not None and job.seq_no == state.version and state.last_result is not None:
+            # Replay of the already-applied update (retry after a 503/502 lost the
+            # response): the training already happened — answer from cache, don't 409.
+            return state.last_result
         expected = (state.version if state is not None else 0) + 1
         if job.seq_no != expected:
             raise ValueError(f"out-of-order update for {job.rollout_id}: expected seq_no {expected}, got {job.seq_no}")
@@ -299,6 +308,13 @@ class TTTTrainerV2:
         for job in jobs:
             had_slot = job.rollout_id in self.slots
             try:
+                cached = self.validate_job(job)
+                if cached is not None:
+                    # Exact replay of the last applied update: answer from cache — no
+                    # forward, no optimizer step, no version bump. last_result is set on
+                    # every rank, so the short-circuit is deterministic across ranks.
+                    results[job.rollout_id] = cached
+                    continue
                 states[job.rollout_id] = self.prepare_job(job)
             except ValueError as e:
                 # Roll back a slot claim made BY THIS JOB (prepare can raise after _claim).
@@ -371,12 +387,15 @@ class TTTTrainerV2:
                 state.version = job.seq_no
                 ckpt_path = self.save_checkpoint(state)
                 num_loss = sum(sum(mask[1:]) for _, mask in job.sequences)
-                results[job.rollout_id] = {
+                # Cache the payload so an exact replay of this seq_no (client retry after
+                # a lost response) can be answered without re-training.
+                state.last_result = {
                     "version": state.version,
                     "loss": loss,
                     "ckpt_path": str(ckpt_path),
                     "num_loss_tokens": num_loss,
                 }
+                results[job.rollout_id] = state.last_result
                 self.logger.info(
                     f"ttt v2 update {job.rollout_id} v{job.seq_no}: loss={loss:.4f} "
                     f"({num_loss} loss tokens, slot {state.idx})"

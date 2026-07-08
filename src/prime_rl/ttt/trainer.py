@@ -44,6 +44,9 @@ class AdapterState:
     """The adapter's lora_A/lora_B tensors (CPU), swapped onto the model per update."""
     optim_state: dict | None = None
     """The optimizer state dict, restored per update so momentum carries across updates."""
+    last_result: dict | None = None
+    """The successful result payload of the last applied update, so an exact replay
+    (client retry after a lost response) can be answered without re-training."""
 
 
 class TTTTrainer:
@@ -210,6 +213,10 @@ class TTTTrainer:
         # Validate seq_no BEFORE allocating: a bad first update must not leave a fresh
         # (never-trained) AdapterState behind that skews later expected seq_nos.
         existing = self.adapters.get(rollout_id)
+        if existing is not None and seq_no == existing.version and existing.last_result is not None:
+            # Replay of the already-applied update (retry after a lost response): the
+            # training already happened — answer from cache, before any state mutation.
+            return existing.last_result
         expected = (existing.version if existing is not None else 0) + 1
         if seq_no != expected:
             raise ValueError(f"out-of-order update for {rollout_id}: expected seq_no {expected}, got {seq_no}")
@@ -272,12 +279,15 @@ class TTTTrainer:
             f"ttt update {rollout_id} v{seq_no}: loss={loss_value:.4f} "
             f"({num_loss_tokens} loss tokens over {len(sequences)} sequence(s), {seconds:.2f}s)"
         )
-        return {
+        # Cache the payload so an exact replay of this seq_no (client retry after a lost
+        # response) can be answered without re-training.
+        state.last_result = {
             "version": state.version,
             "loss": loss_value,
             "ckpt_path": str(ckpt_path),
             "num_loss_tokens": num_loss_tokens,
         }
+        return state.last_result
 
     def save_checkpoint(self, state: AdapterState) -> Path:
         """Write the adapter as a PEFT checkpoint (`adapter_config.json` +

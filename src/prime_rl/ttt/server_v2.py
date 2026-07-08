@@ -154,6 +154,10 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
         # Per-rollout locks order /update and /release: an update holds its rollout's lock
         # across enqueue→result→adapter load so a concurrent release can't unload+free the
         # slot between train and engine load (orphaned adapter in vLLM otherwise).
+        # They also serialize duplicate-replay retries: an orphaned 503 pending may still
+        # complete in the work loop WHILE a retry waits on the lock, so the duplicate check
+        # lives inside the work loop (which sees the post-completion slot version) and must
+        # NOT be a pre-read here in the HTTP layer — a pre-read would race that completion.
         app.state.rollout_locks = defaultdict(asyncio.Lock)
         collector = threading.Thread(
             target=_collector_loop,

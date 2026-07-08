@@ -112,8 +112,10 @@ def test_out_of_order_seq_no_rejected(tmp_path, tiny_model_name):
     # behind (a stale zero-version state would make the real seq_no 1 look out-of-order).
     assert "r1" not in trainer.adapters
     trainer.update("r1", "ttt-r1", tokens, [True] * len(tokens), seq_no=1)
+    # An exact replay of the last applied seq_no is duplicate-ok (retry after a lost
+    # response), so a genuinely out-of-order seq_no must skip AHEAD to be rejected.
     with pytest.raises(ValueError, match="expected seq_no 2"):
-        trainer.update("r1", "ttt-r1", tokens, [True] * len(tokens), seq_no=1)
+        trainer.update("r1", "ttt-r1", tokens, [True] * len(tokens), seq_no=3)
 
 
 def test_checkpoint_is_peft_loadable(tmp_path, tiny_model_name):
@@ -261,3 +263,18 @@ def test_qa_only_with_unrenderable_pairs_rejected(tmp_path, tiny_model_with_toke
             qa_pairs=[{"question": "q", "answer": ""}],
             train_rollout=False,
         )
+
+
+def test_duplicate_seq_no_replays_cached_result(tmp_path, tiny_model_name):
+    """A retry after a lost response replays the same seq_no: the cached result comes back
+    with no re-training and no version bump; older seq_nos still 409."""
+    trainer = make_trainer(tiny_model_name, tmp_path)
+    tokens = list(range(2, 34))
+    mask = [True] * len(tokens)
+    first = trainer.update("r1", "ttt-r1", tokens, mask, seq_no=1)
+    replay = trainer.update("r1", "ttt-r1", tokens, mask, seq_no=1)
+    assert replay is first  # cached — no state mutation, same ckpt_path/version
+    assert trainer.adapters["r1"].version == 1
+    trainer.update("r1", "ttt-r1", tokens, mask, seq_no=2)
+    with pytest.raises(ValueError, match="expected seq_no 3"):
+        trainer.update("r1", "ttt-r1", tokens, mask, seq_no=1)
