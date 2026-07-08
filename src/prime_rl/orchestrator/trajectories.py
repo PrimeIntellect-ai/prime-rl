@@ -15,6 +15,8 @@ the images it introduced (`branch.multi_modal_data`), rebuilt here into the flat
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import numpy as np
 import verifiers.v1 as vf
 
@@ -64,6 +66,29 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
     return RoutedExperts(data=arr.tobytes(), shape=list(arr.shape), dtype=str(arr.dtype))
 
 
+def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[bool]]]:
+    """Yield each branch that yields a training sample, with its trainable-token mask.
+
+    The mask is `branch.sampled_mask` except that a sampled node shared by several branches
+    (a mid-trajectory fork) is trainable only in the first branch containing it; later
+    branches carry its tokens as context (mask False). Branches left with no trainable
+    tokens are skipped, so consumers pairing branches with `trace_to_samples` output
+    (e.g. echo's observation weighting) must filter through here to stay aligned.
+    """
+    trained_nodes: set[int] = set()
+    for branch in trace.branches:
+        mask: list[bool] = []
+        for node in branch.nodes:
+            if node.sampled and any(node.mask) and id(node) in trained_nodes:
+                mask.extend([False] * len(node.mask))
+            else:
+                if node.sampled and any(node.mask):
+                    trained_nodes.add(id(node))
+                mask.extend(node.mask)
+        if any(mask):
+            yield branch, mask
+
+
 def trace_to_samples(
     trace: vf.Trace,
     *,
@@ -82,10 +107,7 @@ def trace_to_samples(
     yield nothing.
     """
     samples: list[TrainingSample] = []
-    for branch in trace.branches:
-        mask = branch.sampled_mask
-        if not any(mask):
-            continue
+    for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
         mm_kwargs: dict[str, EncodedTensor] | None = None
         mm_token_type_ids: list[int] | None = None
