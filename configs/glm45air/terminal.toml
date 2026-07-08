@@ -2,18 +2,6 @@
 # run through the rlm harness (ipython-only) on a prime sandbox. Each task ships its own Docker image
 # (NEEDS_CONTAINER) injected into the sandbox; grading is host-side inside the container. GRPO +
 # linear length penalty. 2 train + 4 infer nodes. Single run label (glm45air-terminal) for all envs.
-#
-# Train = tmax-v1 (TMax Harbor taskset).
-# Eval = swebench-verified (SWE-Bench Verified) + terminal-bench-2 (full, avg@4), both every 20 steps.
-#
-# NOTE: this is the TERMINAL domain — the SWE tasksets are a separate SWE domain and are
-# intentionally NOT trained here; swebench-verified appears only as an eval signal. rlm compatibility
-# of the Harbor-based eval tasksets is inferred from their Harbor base (harness-opaque reward), not
-# config-proven — smoke-test them.
-#
-# Mirrors configs/debug/v1/glm45air_scaleswe.toml (model/trainer/parallelism/caches): glm4_moe
-# router replay, glm-4.5 renderer, cp=8 ulysses, muon, LM-head chunking, AC + activation/optimizer
-# offload, skip-gather/optimizer ckpt.
 
 max_steps = 1000
 seq_len = 131072

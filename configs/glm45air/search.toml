@@ -1,20 +1,6 @@
 # exp: GLM-4.5-Air (100B MoE) RL across our v1 SEARCH-domain envs — bring-your-own-search QA, run
 # through the rlm harness (its built-in `search` skill) on a prime sandbox. GRPO + linear length
 # penalty. 2 train + 4 infer nodes. Single run label (glm45air-search) for all envs.
-#
-# Mirrors configs/debug/v1/glm45air_scaleswe.toml (model/trainer/parallelism/caches): glm4_moe
-# router replay, glm-4.5 renderer, cp=8 ulysses, muon, LM-head chunking, AC + activation/optimizer
-# offload, skip-gather/optimizer ckpt.
-#
-# v3: rlm auto-compaction enabled. Train draws a per-task threshold in [65536, 131072] (rollouts of a
-# task share one draw); eval compacts at a fixed 98304. seq_len / max_model_len stay at 131072.
-#
-# CAVEATS (search-specific): every env is bring-your-own-search and scored by a host-side LLM judge.
-#   - The rlm `search` skill calls Serper; SERPER_API_KEY is forwarded into the sandbox via the
-#     harness `forward_env`, so it must be set in the launch environment.
-#   - The judges (deepdive/papersearchqa gpt-5-mini, browsecomp gpt-4.1, wideseek gpt-4.1-mini,
-#     openseeker/redsearcher vf default) run host-side and need an OpenAI/PI key on the orchestrator.
-# Prime runtime is forced for all envs (these are normally subprocess) under one run label.
 
 max_steps = 1000
 seq_len = 131072
