@@ -13,6 +13,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.ttt import TTTServiceConfig
 from prime_rl.utils.config import BaseConfig, cli
 
 # All config config classes
@@ -22,7 +23,18 @@ CONFIG_CLASSES = [
     SFTConfig,
     OrchestratorConfig,
     InferenceConfig,
+    TTTServiceConfig,
 ]
+
+# Overlay families: directories of composed config fragments where the base and arm
+# files only validate together (`uv run rl @ base @ arm`). Maps the base file to the
+# directory whose remaining TOMLs are arm overlays; fragments are exempt from the
+# standalone assertion and validated as base+arm pairs instead.
+OVERLAY_FAMILIES = {
+    Path("configs/ttt/scaleswe/base.toml"): Path("configs/ttt/scaleswe"),
+}
+# Standalone files inside an overlay directory (validated normally, not as arms).
+OVERLAY_STANDALONE = {Path("configs/ttt/scaleswe/ttt_service.toml")}
 
 
 def get_config_files() -> list[Path]:
@@ -40,11 +52,34 @@ def is_eval_config(path: Path) -> bool:
     return isinstance(data.get("eval"), list)
 
 
+def overlay_family_for(config_file: Path) -> Path | None:
+    """The base file if ``config_file`` is a fragment of an overlay family, else None."""
+    if config_file in OVERLAY_STANDALONE:
+        return None
+    for base, directory in OVERLAY_FAMILIES.items():
+        if directory in config_file.parents:
+            return base
+    return None
+
+
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
 def test_load_configs(config_file: Path):
-    """Tests that all config files can be loaded by at least one config class."""
+    """Tests that all config files can be loaded by at least one config class.
+    Overlay-family fragments only validate composed (base + arm), so those are
+    asserted as pairs instead of standalone."""
     if is_eval_config(config_file):
         pytest.skip("vf-eval TOML files are not prime-rl entrypoint configs")
+
+    base = overlay_family_for(config_file)
+    if base is not None:
+        arm = base if config_file == base else config_file
+        if arm == base:
+            # The base validates when composed with any one arm; pick the first.
+            arms = sorted(p for p in OVERLAY_FAMILIES[base].glob("*.toml") if overlay_family_for(p) == base and p != base)
+            assert arms, f"Overlay family {base} has no arm files"
+            arm = arms[0]
+        cli(RLConfig, args=["@", base.as_posix(), "@", arm.as_posix()])
+        return
 
     could_parse = []
     for config_cls in CONFIG_CLASSES:

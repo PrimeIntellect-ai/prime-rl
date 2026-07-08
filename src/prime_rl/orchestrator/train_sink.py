@@ -20,6 +20,8 @@ import asyncio
 import uuid
 from collections import defaultdict
 
+import verifiers.v1 as vf
+
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
@@ -73,9 +75,10 @@ class TrainSink:
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name: dict[str, int] = {}
 
-        # Lazy chat client for TTT group meta-extraction (built on first use from the
-        # env's sampler pool; one per sink is fine — the pool round-robins internally).
-        self._meta_client = None
+        # Lazy chat clients for TTT group meta-extraction, keyed by env name (built on
+        # first use from that env's sampler pool — a single shared client would pin every
+        # env's calls to whichever pool triggered meta-lessons first).
+        self._meta_clients: dict[str, object] = {}
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -150,13 +153,22 @@ class TrainSink:
         ttt_config = getattr(env.config, "ttt", None)
         qa_config = getattr(ttt_config, "qa", None)
         qa_temperature = getattr(qa_config, "temperature", None)
-        samples = await asyncio.to_thread(
-            trace_to_samples,
-            rollout,
-            env_name=rollout.env_name,
-            mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
-            qa_temperature=qa_temperature,
-        )
+        try:
+            samples = await asyncio.to_thread(
+                trace_to_samples,
+                rollout,
+                env_name=rollout.env_name,
+                mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
+                qa_temperature=qa_temperature,
+            )
+        except Exception as exc:
+            # Tokenization can raise (e.g. a stamped TTT branch with no recorded
+            # checkpoint path, or mixed ttt_version within a branch). Contain it as a
+            # per-rollout error so the group logic drops it instead of killing the run.
+            get_logger().warning(f"Tokenization failed for rollout in group {rollout.group_id}", exc_info=True)
+            rollout.errors.append(vf.Error(type="TokenizationError", message=str(exc)))
+            rollout.samples = []
+            return
         rollout.samples = samples or []
         # Arrival phase: rollout-local scoring (raw reward, echo observation
         # weighting, opd/opsd reference logprobs) runs as soon as the rollout is
@@ -203,7 +215,12 @@ class TrainSink:
         qa_config = ttt_config.qa if ttt_config is not None else None
         if qa_config is not None and qa_config.recycle_to_policy:
             for r in survivors:
-                r.samples.extend(await asyncio.to_thread(qa_recycle_samples, r, self.tokenizer, env_name))
+                try:
+                    r.samples.extend(await asyncio.to_thread(qa_recycle_samples, r, self.tokenizer, env_name))
+                except Exception:
+                    # QA recycling is enrichment (chat templates can choke on odd tool
+                    # schemas): skip this rollout's recycling, never error the rollout.
+                    get_logger().warning(f"QA recycling failed | env={env_name} task_idx={task_idx}", exc_info=True)
 
         # TTT group-level meta-extraction: one call over the finished cohort (every
         # rollout's Q&A pairs + its reward) distills contrastive, general lessons —
@@ -217,9 +234,11 @@ class TrainSink:
                 meta_lesson_samples,
             )
 
-            if self._meta_client is None:
-                self._meta_client = build_meta_client(await env.sampler.pool.get_eval_client())
-            items = await extract_meta_lessons(survivors, qa_config, self._meta_client, env.sampler.pool.model_name)
+            if env_name not in self._meta_clients:
+                self._meta_clients[env_name] = build_meta_client(await env.sampler.pool.get_eval_client())
+            items = await extract_meta_lessons(
+                survivors, qa_config, self._meta_clients[env_name], env.sampler.pool.model_name
+            )
             if items:
                 survivors[0].samples.extend(
                     await asyncio.to_thread(meta_lesson_samples, items, survivors, self.tokenizer, env_name)
