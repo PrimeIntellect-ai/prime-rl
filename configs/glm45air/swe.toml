@@ -100,8 +100,8 @@ thinking_retention = "all"
 
 [[orchestrator.train.env]]
 name = "scaleswe"
-taskset = { id = "scaleswe-v1" }
-harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-swe"] } }
+taskset = { id = "scaleswe-v1", use_prime_registry = true }
+harness = { id = "rlm", runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] } }
 
 [orchestrator.prime_monitor]
 
@@ -113,7 +113,7 @@ interval = 20
 [[orchestrator.eval.env]]
 name = "swebench-verified"
 taskset = { id = "swebench-verified-v1", use_prime_registry = true }
-harness = { id = "rlm", runtime = { type = "prime", labels = ["glm45air-swe"] } }
+harness = { id = "rlm", runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] } }
 timeout = { rollout = 3600 }
 
 # --- Inference ---
