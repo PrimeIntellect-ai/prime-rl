@@ -40,15 +40,17 @@ LIMITS="--max-input-tokens 32768"   # total-context budget for every arm
 | compaction only | `uv run eval deepdive-v1 --harness.id compacting --harness.search true --harness.compact-at-tokens 8192 $CLIENT $LIMITS` |
 | compaction + TTT | ... `--ttt.base-url http://localhost:8092` |
 | compaction + TTT (0-LR wiring ablation) | ... `--ttt.base-url ... --ttt.enabled false` |
-| compaction + Q&A-TTT | ... `--ttt.base-url ... --ttt.qa.num-pairs 8` |
+| compaction + Q&A-TTT | ... `--ttt.base-url ... --ttt.qa.num-generations 2 --ttt.qa.items-per-generation 4` |
 
 ## RL arm (small scale)
 
 `rl_compaction_ttt.toml` — GRPO on deepdive with compaction+TTT rollouts and frozen-adapter
 replay in the trainer (start the TTT service first). Constraints enforced by config
 validation: full-weight policy training (no `[trainer.model.lora]`), `enable_lora = true`
-on inference. Add `--orchestrator.train.env.0.ttt.qa.recycle-to-policy true` for the
-Q&A→policy arm.
+on inference. For the Q&A→policy arm, edit the env's `ttt` line in the TOML to
+`ttt = { base_url = "...", qa = { recycle_to_policy = true } }` (or apply an overlay TOML
+with the full `[[orchestrator.train.env]]` block) — dotted CLI overrides cannot index into
+the env list.
 
 ## RL experiment family (scaleswe, GLM-4.5-Air)
 

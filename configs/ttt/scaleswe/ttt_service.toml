@@ -6,6 +6,11 @@
 
 output_dir = "outputs"
 
+steps_per_update = 1
+
+# Every vLLM replica's admin root (adapters are (re)loaded on all of them after each update).
+inference_admin_urls = ["http://localhost:8000"]
+
 [model]
 name = "zai-org/GLM-4.5-Air"
 
@@ -31,8 +36,3 @@ target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
 [optim]
 type = "adamw"
 lr = 1e-4
-
-steps_per_update = 1
-
-# Every vLLM replica's admin root (adapters are (re)loaded on all of them after each update).
-inference_admin_urls = ["http://localhost:8000"]
