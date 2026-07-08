@@ -13,13 +13,6 @@ from prime_rl.configs.trainer import MXFP8Recipe
 from prime_rl.utils.logger import get_logger
 
 
-def _recipe_params(recipe: MXFP8Recipe) -> tuple[KernelPreference, bool]:
-    emulated = recipe == "mxfp8_emulated_rceil"
-    wgrad_with_hp = recipe == "mxfp8_rceil_wgrad_with_hp"
-    kernel_preference = KernelPreference.EMULATED if emulated else KernelPreference.AUTO
-    return kernel_preference, wgrad_with_hp
-
-
 class MXFP8Linear(nn.Linear):
     def __init__(
         self,
@@ -33,12 +26,6 @@ class MXFP8Linear(nn.Linear):
         device=None,
         dtype=None,
     ) -> None:
-        sm_ver = (10, 0)
-        if kernel_preference == KernelPreference.EMULATED:
-            raise RuntimeError(f"MXFP8 requires SM{sm_ver}, emulated kernels are unsupported")
-        cap = torch.cuda.get_device_capability() if torch.cuda.is_available() else None
-        if cap is None or cap < sm_ver:
-            raise RuntimeError(f"MXFP8 requires SM{sm_ver} but device is SM{cap}")
         super().__init__(in_features, out_features, bias, device=device, dtype=dtype)
         self.kernel_preference = kernel_preference
         self.wgrad_with_hp = wgrad_with_hp
@@ -80,7 +67,7 @@ class MXFP8Linear(nn.Linear):
 
 
 def replace_linear_with_mxfp8_linear(model: nn.Module, recipe: MXFP8Recipe, ignore_modules: list[str]) -> None:
-    kernel_preference, wgrad_with_hp = _recipe_params(recipe)
+    wgrad_with_hp = recipe == "mxfp8_rceil_wgrad_with_hp"
     logger = get_logger()
     logger.info(f"Replacing linear layers with MXFP8 linear layers (recipe={recipe}, ignore={ignore_modules})")
     replaced_modules: list[str] = []
@@ -100,7 +87,7 @@ def replace_linear_with_mxfp8_linear(model: nn.Module, recipe: MXFP8Recipe, igno
         setattr(
             parent,
             attr_name,
-            MXFP8Linear.from_linear(module, kernel_preference=kernel_preference, wgrad_with_hp=wgrad_with_hp),
+            MXFP8Linear.from_linear(module, kernel_preference=KernelPreference.AUTO, wgrad_with_hp=wgrad_with_hp),
         )
         replaced_modules.append(name)
 

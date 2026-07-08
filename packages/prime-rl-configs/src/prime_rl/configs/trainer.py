@@ -116,35 +116,14 @@ class DebugModelConfig(BaseConfig):
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
 
 
-# MXFP8 grouped-GEMM / linear recipes. Names mirror torchao's
-# ``MXFP8TrainingRecipe`` enum (``torchao.prototype.moe_training.config``):
-# ``*_emulated_*`` runs the reference (non-tensorcore) path for correctness
-# checks on hardware without MXFP8 tensor cores; ``*_wgrad_with_hp`` keeps the
-# weight-gradient GEMM in high precision (bf16) while quantizing fwd/dgrad.
 MXFP8Recipe: TypeAlias = Literal["mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp"]
-
-DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
-    "lm_head",
-    "router",
-    # Use escaped dots — re.search treats `.` as any-char, so the previous
-    # "mlp.gate." pattern was also matching dense MLP `mlp.gate_proj` (the
-    # trailing `.` was matching `_`). That left the dense MLP gate projection
-    # in BF16 on the trainer while inference quantized it to FP8, causing
-    # hidden-state drift before the MoE router.
-    r"mlp\.gate\.",
-    "shared_expert_gate",  # Qwen3.5 MoE: nn.Linear(hidden, 1, bias=False)
-    "eh_proj",
-    "weights_proj",
-    "in_proj_a",
-    "in_proj_b",
-]
 
 
 class FP8Config(BaseConfig):
     type: Literal["fp8"] = "fp8"
     enable_gemm: bool = True
     enable_grouped_gemm: bool = True
-    ignore_patterns: list[str] = DEFAULT_FP8_IGNORE_PATTERNS
+    ignore_patterns: list[str] = []
 
 
 class MXFP8Config(BaseConfig):
@@ -153,7 +132,7 @@ class MXFP8Config(BaseConfig):
     enable_gemm: bool = True
     enable_grouped_gemm: bool = True
     enable_a2a: bool = True
-    ignore_patterns: list[str] = DEFAULT_FP8_IGNORE_PATTERNS
+    ignore_patterns: list[str] = []
 
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
