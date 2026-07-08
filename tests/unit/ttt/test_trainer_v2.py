@@ -160,6 +160,16 @@ def make_cpu_trainer(max_slots: int = 4, **engine_overrides):
     graph-bearing fake forward (grads flow to a dummy param), stubbed checkpointing."""
     import torch
 
+    from prime_rl.trainer.models.layers.lora import set_lora_num_tokens, set_multilora_scaling
+
+    # update_batch copies into the global LORA_NUM_TOKENS in place; the real service sizes
+    # it (and the paired SCALING_FACTORS) via setup_multi_run_manager, which this fake
+    # skips — pin both globals to a coherent max_slots shape so the test is isolated from
+    # whatever shapes other suites left behind (the setters cross-assert shapes).
+    set_lora_num_tokens(None, reset_reference=True)
+    set_multilora_scaling(torch.ones(max_slots, dtype=torch.float32), reset_reference=True)
+    set_lora_num_tokens(torch.zeros(max_slots, dtype=torch.int32), reset_reference=True)
+
     trainer = make_registry(max_slots=max_slots, **engine_overrides)
     trainer.device = torch.device("cpu")
     trainer.logger = type("L", (), {"info": lambda self, *a, **k: None})()
