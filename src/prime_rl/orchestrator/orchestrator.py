@@ -535,14 +535,37 @@ class Orchestrator:
         # drops the per-node training tensors — they're for training, not the rollout record, and
         # can't round-trip json (raw numpy bytes).
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
-        by_env: dict[str, list[dict]] = {}
+        by_env: dict[str, list[Rollout]] = {}
         for rollout in batch.rollouts:
-            by_env.setdefault(rollout.env_name, []).append(rollout.to_record())
+            by_env.setdefault(rollout.env_name, []).append(rollout)
         # One file per env (mirroring eval's `eval_rollouts_<env>.jsonl`), so record consumers
         # (e.g. a replay env mining this run's own rollouts) select an env by filename instead
         # of parsing and discarding other envs' lines.
-        for env_name, rollout_dicts in by_env.items():
-            await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / f"train_rollouts_{env_name}.jsonl")
+        for env_name, env_rollouts in by_env.items():
+            rollout_dicts = [r.to_record() for r in env_rollouts]
+            spans = await asyncio.to_thread(
+                save_rollouts, rollout_dicts, step_path / f"train_rollouts_{env_name}.jsonl"
+            )
+            # A derived per-record index beside the records: selection fields plus each line's
+            # byte span, so a replay env can pick records without parsing the file. Same
+            # tmp+rename write path as the records; the record file itself is unchanged.
+            index = [
+                {
+                    "trace": r.id,
+                    "task_idx": r.task.idx,
+                    "task_name": r.task.name,
+                    "reward": r.reward,
+                    "policy_version": r.policy_version,
+                    "step": step,
+                    "branches": r.num_branches,
+                    "turns": r.num_turns,
+                    "stop": r.stop_condition,
+                    "offset": offset,
+                    "len": length,
+                }
+                for r, (offset, length) in zip(env_rollouts, spans)
+            ]
+            await asyncio.to_thread(save_rollouts, index, step_path / f"index_{env_name}.jsonl")
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.progress.step += 1

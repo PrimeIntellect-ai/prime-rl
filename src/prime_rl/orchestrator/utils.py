@@ -50,17 +50,22 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     return renderer, inference_pool
 
 
-def save_rollouts(rollouts: list[dict], path: Path) -> None:
+def save_rollouts(rollouts: list[dict], path: Path) -> list[tuple[int, int]]:
     """Save rollouts (Trace dicts, already JSON-serializable) to a JSONL file. Written to a
     tmp file and renamed, so concurrent readers (a replay env following this run's records)
-    never see a half-written file."""
+    never see a half-written file. Returns each line's ``(offset, length)`` byte span
+    (newline included), so callers can index the records for span-selective readers."""
     path.parent.mkdir(parents=True, exist_ok=True)
     opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
     tmp = path.with_suffix(".tmp")
+    spans: list[tuple[int, int]] = []
     with open(tmp, "wb") as f:
         for rollout in rollouts:
-            f.write(orjson.dumps(rollout, default=str, option=opts))
+            line = orjson.dumps(rollout, default=str, option=opts)
+            spans.append((f.tell(), len(line)))
+            f.write(line)
     tmp.rename(path)
+    return spans
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
