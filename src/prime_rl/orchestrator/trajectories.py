@@ -82,8 +82,18 @@ def trace_to_samples(
     yield nothing.
     """
     samples: list[TrainingSample] = []
+    trained_nodes: set[int] = set()
     for branch in trace.branches:
-        mask = branch.sampled_mask
+        # A sampled node shared by several branches (a mid-trajectory fork) is trainable only
+        # in the first branch containing it; later branches carry its tokens as context.
+        mask: list[bool] = []
+        for node in branch.nodes:
+            if node.sampled and any(node.mask) and id(node) in trained_nodes:
+                mask.extend([False] * len(node.mask))
+            else:
+                if node.sampled and any(node.mask):
+                    trained_nodes.add(id(node))
+                mask.extend(node.mask)
         if not any(mask):
             continue
         token_ids = branch.token_ids
