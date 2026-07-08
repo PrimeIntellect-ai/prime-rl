@@ -98,20 +98,20 @@ harness = { id = "rlm", runtime = { type = "prime", vm = true, idle_timeout = "N
 [orchestrator.train.env.taskset]
 id = "tmax-v1"
 
-# Metric-only monitors (weight 0): rlm harness-mechanics + swe code-usage rubrics, judged by GLM-5.2.
-[[orchestrator.train.env.taskset.judges]]
-id = "rubric"
-name = "rlm"
-path = "deps/research-environments/rubrics/rlm.toml"
-model = "zai-org/GLM-5.2"
-weight = 0.0
+# # Metric-only monitors (weight 0): rlm harness-mechanics + swe code-usage rubrics, judged by GLM-5.2.
+# [[orchestrator.train.env.taskset.judges]]
+# id = "rubric"
+# name = "rlm"
+# path = "deps/research-environments/rubrics/rlm.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
 
-[[orchestrator.train.env.taskset.judges]]
-id = "rubric"
-name = "swe"
-path = "deps/research-environments/rubrics/swe.toml"
-model = "zai-org/GLM-5.2"
-weight = 0.0
+# [[orchestrator.train.env.taskset.judges]]
+# id = "rubric"
+# name = "swe"
+# path = "deps/research-environments/rubrics/swe.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
 
 # --- Eval: swebench-verified (avg@1) + terminal-bench-2 (full, avg@4) every 20 steps, incl. step 0 ---
 
@@ -127,19 +127,19 @@ timeout = { rollout = 3600 }
 id = "swebench-verified-v1"
 use_prime_registry = true
 
-[[orchestrator.eval.env.taskset.judges]]
-id = "rubric"
-name = "rlm"
-path = "deps/research-environments/rubrics/rlm.toml"
-model = "zai-org/GLM-5.2"
-weight = 0.0
+# [[orchestrator.eval.env.taskset.judges]]
+# id = "rubric"
+# name = "rlm"
+# path = "deps/research-environments/rubrics/rlm.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
 
-[[orchestrator.eval.env.taskset.judges]]
-id = "rubric"
-name = "swe"
-path = "deps/research-environments/rubrics/swe.toml"
-model = "zai-org/GLM-5.2"
-weight = 0.0
+# [[orchestrator.eval.env.taskset.judges]]
+# id = "rubric"
+# name = "swe"
+# path = "deps/research-environments/rubrics/swe.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
 
 [[orchestrator.eval.env]]
 name = "terminal-bench-2"
@@ -150,19 +150,19 @@ timeout = { rollout = 3600 }
 [orchestrator.eval.env.taskset]
 id = "terminal-bench-2-v1"
 
-[[orchestrator.eval.env.taskset.judges]]
-id = "rubric"
-name = "rlm"
-path = "deps/research-environments/rubrics/rlm.toml"
-model = "zai-org/GLM-5.2"
-weight = 0.0
+# [[orchestrator.eval.env.taskset.judges]]
+# id = "rubric"
+# name = "rlm"
+# path = "deps/research-environments/rubrics/rlm.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
 
-[[orchestrator.eval.env.taskset.judges]]
-id = "rubric"
-name = "swe"
-path = "deps/research-environments/rubrics/swe.toml"
-model = "zai-org/GLM-5.2"
-weight = 0.0
+# [[orchestrator.eval.env.taskset.judges]]
+# id = "rubric"
+# name = "swe"
+# path = "deps/research-environments/rubrics/swe.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
 
 # --- Inference ---
 

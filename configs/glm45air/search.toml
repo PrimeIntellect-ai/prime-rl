@@ -107,13 +107,13 @@ model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 question_field = "question"
 choices = ["A", "B"]
 
-# Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
-[[orchestrator.train.env.taskset.judges]]
-id = "rubric"
-name = "rlm"
-path = "deps/research-environments/rubrics/rlm.toml"
-model = "zai-org/GLM-5.2"
-weight = 0.0
+# # Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
+# [[orchestrator.train.env.taskset.judges]]
+# id = "rubric"
+# name = "rlm"
+# path = "deps/research-environments/rubrics/rlm.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
 
 [[orchestrator.train.env]]
 name = "redsearcher"
@@ -129,13 +129,13 @@ model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 question_field = "question"
 choices = ["A", "B"]
 
-# Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
-[[orchestrator.train.env.taskset.judges]]
-id = "rubric"
-name = "rlm"
-path = "deps/research-environments/rubrics/rlm.toml"
-model = "zai-org/GLM-5.2"
-weight = 0.0
+# # Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
+# [[orchestrator.train.env.taskset.judges]]
+# id = "rubric"
+# name = "rlm"
+# path = "deps/research-environments/rubrics/rlm.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
 
 # --- Eval: BrowseComp held-out test, every 20 steps (incl. step 0) ---
 
@@ -152,13 +152,13 @@ timeout = { rollout = 3600 }
 id = "browsecomp-v1"
 judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507" }
 
-# Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
-[[orchestrator.eval.env.taskset.judges]]
-id = "rubric"
-name = "rlm"
-path = "deps/research-environments/rubrics/rlm.toml"
-model = "zai-org/GLM-5.2"
-weight = 0.0
+# # Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
+# [[orchestrator.eval.env.taskset.judges]]
+# id = "rubric"
+# name = "rlm"
+# path = "deps/research-environments/rubrics/rlm.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
 
 # --- Inference ---
 
