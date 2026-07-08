@@ -37,6 +37,7 @@ import torch
 
 from prime_rl.configs.ttt import TTTServiceConfig
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.qa_render import assert_prefix_stable_template, render_qa_pair
 
 
 @dataclass
@@ -114,6 +115,9 @@ class TTTTrainerV2:
         self.model_config = model_config
         self._tokenizer = None
         self._tokenizer_setup = setup_tokenizer
+        # Startup canary: fail the service at launch when the chat template isn't
+        # prefix-stable (Q&A masking would otherwise silently skip every pair).
+        assert_prefix_stable_template(self.tokenizer)
 
         self.slots: dict[str, SlotState] = {}
         self.free_idxs = set(range(self.max_slots))
@@ -178,13 +182,7 @@ class TTTTrainerV2:
         """Identical contract to v1 (`TTTTrainer._tokenize_qa`): standalone [system, Q, A]
         rendering with the chat template's `tools=`, loss on the answer only."""
 
-        def render(conversation: list[dict], generation_prompt: bool) -> list[int]:
-            kwargs: dict = {"tokenize": True, "add_generation_prompt": generation_prompt}
-            if tools:
-                kwargs["tools"] = tools
-            out = self.tokenizer.apply_chat_template(conversation, **kwargs)
-            return list(out["input_ids"] if not isinstance(out, list) else out)
-
+        template_kwargs: dict = {"tools": tools} if tools else {}
         head = [{"role": "system", "content": system_prompt}] if system_prompt else []
         sequences: list[tuple[list[int], list[bool]]] = []
         for pair in qa_pairs:
@@ -195,9 +193,10 @@ class TTTTrainerV2:
                 {"role": "user", "content": pair["question"]},
                 {"role": "assistant", "content": pair["answer"]},
             ]
-            full = render(conversation, generation_prompt=False)
-            prompt = render(conversation[:-1], generation_prompt=True)
-            prompt_len = len(prompt) if full[: len(prompt)] == prompt else 0
+            rendered = render_qa_pair(self.tokenizer, conversation, template_kwargs)
+            if rendered is None:
+                continue  # non-prefix-stable render: skip rather than train on the full render
+            full, prompt_len = rendered
             if len(full) - prompt_len < 1:
                 continue
             sequences.append((full, [False] * prompt_len + [True] * (len(full) - prompt_len)))

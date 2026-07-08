@@ -144,11 +144,18 @@ class TrainSink:
         level, so skip them here."""
         if rollout.has_error:
             return
+        # ttt_qa branches may sample at their own temperature (QAConfig.temperature;
+        # None = same as the rollout, so nothing to stamp).
+        env = self.train_envs.get(rollout.env_name)
+        ttt_config = getattr(env.config, "ttt", None)
+        qa_config = getattr(ttt_config, "qa", None)
+        qa_temperature = getattr(qa_config, "temperature", None)
         samples = await asyncio.to_thread(
             trace_to_samples,
             rollout,
             env_name=rollout.env_name,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
+            qa_temperature=qa_temperature,
         )
         rollout.samples = samples or []
         # Arrival phase: rollout-local scoring (raw reward, echo observation
@@ -223,10 +230,13 @@ class TrainSink:
 
         # The env has a single sampling temperature; fan it out per token
         # (context tokens are masked out, so their temperature is don't-care).
+        # Only fill unstamped samples: ce recycle/meta samples (T=1) and ttt_qa
+        # branches (qa.temperature) already carry theirs.
         temperature = env.sampling_args["temperature"]
         for r in survivors:
             for sample in r.samples:
-                sample.temperatures = [temperature] * len(sample.token_ids)
+                if not sample.temperatures:
+                    sample.temperatures = [temperature] * len(sample.token_ids)
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)

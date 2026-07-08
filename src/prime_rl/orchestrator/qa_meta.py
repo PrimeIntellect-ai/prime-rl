@@ -24,6 +24,7 @@ from verifiers.v1.ttt import QAConfig, dedup_items, parse_qa_items
 
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.qa_render import render_qa_pair
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -94,15 +95,10 @@ def meta_lesson_samples(items: list[dict], group: list["Rollout"], tokenizer, en
             {"role": "user", "content": str(item.get("question", ""))},
             {"role": "assistant", "content": answer},
         ]
-        full = tokenizer.apply_chat_template(
-            conversation, tokenize=True, add_generation_prompt=False, **template_kwargs
-        )
-        full = list(full["input_ids"] if not isinstance(full, list) else full)
-        prompt = tokenizer.apply_chat_template(
-            conversation[:-1], tokenize=True, add_generation_prompt=True, **template_kwargs
-        )
-        prompt = list(prompt["input_ids"] if not isinstance(prompt, list) else prompt)
-        prompt_len = len(prompt) if full[: len(prompt)] == prompt else 0
+        rendered = render_qa_pair(tokenizer, conversation, template_kwargs)
+        if rendered is None:
+            continue  # non-prefix-stable render: skip rather than train on the full render
+        full, prompt_len = rendered
         answer_len = len(full) - prompt_len
         if answer_len < 1:
             continue
@@ -112,7 +108,7 @@ def meta_lesson_samples(items: list[dict], group: list["Rollout"], tokenizer, en
                 token_ids=full,
                 mask=mask,
                 logprobs=[0.0] * len(full),
-                temperatures=[],  # filled by TrainSink.process_group
+                temperatures=[1.0] * len(full),  # ce NLL is temperature-free MLE — never rescale logits
                 env_name=env_name,
                 rl_weights=[0.0] * len(full),
                 ce_weights=[1.0 if m else 0.0 for m in mask],

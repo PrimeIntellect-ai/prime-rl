@@ -345,8 +345,45 @@ def test_qa_recycle_samples_are_ce_routed():
     # ce on the answer tokens, rl weight zero everywhere: pure SFT recycling.
     assert sample.ce_weights == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
     assert sample.rl_weights == [0.0] * 6
+    # ce NLL is temperature-free MLE: T=1 always, and pre-stamped so the sink's
+    # rollout-temperature fill skips it.
+    assert sample.temperatures == [1.0] * 6
     assert sample.advantages is None
     assert sample.ttt_adapter_path is None
+
+
+def test_trace_to_samples_stamps_qa_temperature_on_ttt_qa_branches():
+    from prime_rl.orchestrator.trajectories import trace_to_samples
+
+    trace = make_trace([None, None])
+    trace.nodes[1].ttt_qa = True  # the branch's sampled node is a QA side-generation
+    (sample,) = trace_to_samples(trace, env_name="e", qa_temperature=0.9)
+    assert sample.temperatures == [0.9] * len(sample.token_ids)
+    # None = same-as-rollout: leave [] for the sink's rollout-temperature fill.
+    trace2 = make_trace([None, None])
+    trace2.nodes[1].ttt_qa = True
+    (sample2,) = trace_to_samples(trace2, env_name="e", qa_temperature=None)
+    assert sample2.temperatures == []
+    # Non-QA branches keep [] even when qa_temperature is set.
+    (sample3,) = trace_to_samples(make_trace([None, None]), env_name="e", qa_temperature=0.9)
+    assert sample3.temperatures == []
+
+
+def test_sink_temperature_stamp_skips_prestamped_samples():
+    """The sink's rollout-temperature fill (TrainSink.process_group) must only touch
+    unstamped samples — replicate its predicate over pre-stamped ce/qa samples."""
+    from prime_rl.transport import TrainingSample
+
+    def make(temperatures):
+        return TrainingSample(
+            token_ids=[1, 2], mask=[True, True], logprobs=[0.0, 0.0], temperatures=temperatures, env_name="e"
+        )
+
+    samples = [make([]), make([1.0, 1.0]), make([0.9, 0.9])]
+    for sample in samples:  # the sink's stamping loop
+        if not sample.temperatures:
+            sample.temperatures = [0.7] * len(sample.token_ids)
+    assert [s.temperatures for s in samples] == [[0.7, 0.7], [1.0, 1.0], [0.9, 0.9]]
 
 
 # -- checkpoint GC ---------------------------------------------------------------------------
@@ -637,4 +674,5 @@ def test_meta_lesson_samples_are_ce_routed_with_conditioning():
     assert all(c["tools"] is not None for c in tokenizer.calls)
     assert sample.rl_weights == [0.0] * len(sample.token_ids)
     assert sample.ce_weights[-1] == 1.0 and sample.ce_weights[0] == 0.0
+    assert sample.temperatures == [1.0] * len(sample.token_ids)  # ce is T-free MLE
     assert sample.ttt_adapter_path is None  # trains the live policy

@@ -21,6 +21,7 @@ import verifiers.v1 as vf
 from prime_rl.transport import TrainingSample
 from prime_rl.transport.types import EncodedTensor, RoutedExperts
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.qa_render import render_qa_pair
 
 
 def _to_numpy(val) -> np.ndarray:
@@ -113,15 +114,10 @@ def qa_recycle_samples(trace: vf.Trace, tokenizer, env_name: str = "") -> list[T
                 {"role": "user", "content": question},
                 {"role": "assistant", "content": answer},
             ]
-            full = tokenizer.apply_chat_template(
-                conversation, tokenize=True, add_generation_prompt=False, **template_kwargs
-            )
-            full = list(full["input_ids"] if not isinstance(full, list) else full)
-            prompt = tokenizer.apply_chat_template(
-                conversation[:-1], tokenize=True, add_generation_prompt=True, **template_kwargs
-            )
-            prompt = list(prompt["input_ids"] if not isinstance(prompt, list) else prompt)
-            prompt_len = len(prompt) if full[: len(prompt)] == prompt else 0
+            rendered = render_qa_pair(tokenizer, conversation, template_kwargs)
+            if rendered is None:
+                continue  # non-prefix-stable render: skip rather than train on the full render
+            full, prompt_len = rendered
             answer_len = len(full) - prompt_len
             if answer_len < 1:
                 continue
@@ -131,7 +127,7 @@ def qa_recycle_samples(trace: vf.Trace, tokenizer, env_name: str = "") -> list[T
                     token_ids=full,
                     mask=mask,
                     logprobs=[0.0] * len(full),  # ce is masked NLL — no importance ratio
-                    temperatures=[],  # filled by TrainSink.process_group
+                    temperatures=[1.0] * len(full),  # ce NLL is temperature-free MLE — never rescale logits
                     env_name=env_name,
                     rl_weights=[0.0] * len(full),
                     ce_weights=[1.0 if m else 0.0 for m in mask],
@@ -145,6 +141,7 @@ def trace_to_samples(
     *,
     env_name: str = "",
     mm_token_type_ids_mapping: dict[int, int] | None = None,
+    qa_temperature: float | None = None,
 ) -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
@@ -186,12 +183,19 @@ def trace_to_samples(
             mm_kwargs = _encode_mm_kwargs(mmd.mm_items)
             mapping = mm_token_type_ids_mapping or {}
             mm_token_type_ids = [mapping.get(t, 0) for t in token_ids]
+        # ttt_qa branches may be sampled at their own temperature (QAConfig.temperature);
+        # stamp it here so the sink's rollout-temperature fill doesn't clobber it. None
+        # means same-as-rollout — leave [] for the sink.
+        if qa_temperature is not None and branch.is_ttt_qa:
+            temperatures = [qa_temperature] * len(token_ids)
+        else:
+            temperatures = []  # filled by TrainSink.process_group
         samples.append(
             TrainingSample(
                 token_ids=token_ids,
                 mask=mask,
                 logprobs=branch.logprobs,
-                temperatures=[],  # filled by TrainSink.process_group
+                temperatures=temperatures,
                 env_name=env_name,
                 mm_kwargs=mm_kwargs,
                 mm_token_type_ids=mm_token_type_ids,

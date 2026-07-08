@@ -30,6 +30,7 @@ from torch import nn
 
 from prime_rl.configs.ttt import TTTServiceConfig
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.qa_render import assert_prefix_stable_template, render_qa_pair
 
 
 @dataclass
@@ -81,6 +82,18 @@ class TTTTrainer:
         }
         self.adapters: dict[str, AdapterState] = {}
         self._tokenizer = None  # lazy — only Q&A training needs it
+        # Startup canary: a chat template that isn't prefix-stable would silently skip every
+        # Q&A pair — fail the service at launch instead. A model dir without tokenizer files
+        # stays lazy (Q&A requests will then fail loudly on first use).
+        try:
+            from transformers import AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(config.model.name)
+        except Exception:
+            pass
+        else:
+            assert_prefix_stable_template(tokenizer)
+            self._tokenizer = tokenizer
         self.logger.info(
             f"TTT trainer ready (rank={config.lora.rank}, alpha={config.lora.alpha}, "
             f"targets={config.lora.target_modules}, {len(self._template)} adapter tensors)"
@@ -149,14 +162,7 @@ class TTTTrainer:
 
             self._tokenizer = AutoTokenizer.from_pretrained(self.config.model.name)
 
-        def render(conversation: list[dict], generation_prompt: bool) -> list[int]:
-            kwargs: dict = {"tokenize": True, "add_generation_prompt": generation_prompt}
-            if tools:
-                kwargs["tools"] = tools
-            out = self._tokenizer.apply_chat_template(conversation, **kwargs)
-            # transformers returns a list of ids or (newer) a BatchEncoding.
-            return list(out["input_ids"] if not isinstance(out, list) else out)
-
+        template_kwargs: dict = {"tools": tools} if tools else {}
         head = [{"role": "system", "content": system_prompt}] if system_prompt else []
         sequences: list[tuple[list[int], list[bool]]] = []
         for pair in qa_pairs:
@@ -167,9 +173,10 @@ class TTTTrainer:
                 {"role": "user", "content": pair["question"]},
                 {"role": "assistant", "content": pair["answer"]},
             ]
-            full = render(conversation, generation_prompt=False)
-            prompt = render(conversation[:-1], generation_prompt=True)
-            prompt_len = len(prompt) if full[: len(prompt)] == prompt else 0
+            rendered = render_qa_pair(self._tokenizer, conversation, template_kwargs)
+            if rendered is None:
+                continue  # non-prefix-stable render: skip rather than train on the full render
+            full, prompt_len = rendered
             if len(full) - prompt_len < 1:
                 continue
             mask = [False] * prompt_len + [True] * (len(full) - prompt_len)
