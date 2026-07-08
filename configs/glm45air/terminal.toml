@@ -96,7 +96,7 @@ name = "tmax"
 harness = { id = "rlm", runtime = { type = "prime", vm = true, labels = ["glm45air-terminal"] } }
 
 [orchestrator.train.env.taskset]
-id = "tmax-v1" # TMax Harbor taskset (NEEDS_CONTAINER)
+id = "tmax-v1"
 
 # Metric-only monitors (weight 0): rlm harness-mechanics + swe code-usage rubrics, judged by GLM-5.2.
 [[orchestrator.train.env.taskset.judges]]
