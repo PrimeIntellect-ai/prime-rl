@@ -57,7 +57,10 @@ the env list.
 `scaleswe/` — the A0–A5 arm matrix on `scaleswe-v1` (see the header of
 `scaleswe/base.toml`): pure-RL and compaction baselines, compaction+TTT, QA, and the two
 permanent-SFT variants (naive recycle vs group meta-lessons, head-to-head). TTT arms use
-the **fsdp engine** (`scaleswe/ttt_service.toml`): the prime-rl trainer stack with
-`max_slots` resident MultiLoRA adapter slots and cross-rollout batched updates, launched
-under torchrun on its own node. `[engine] type = "peft"` (the default) remains the
+the **fsdp engine**: the prime-rl trainer stack with `max_slots` resident MultiLoRA
+adapter slots and cross-rollout batched updates. The service is **launcher-managed** —
+each TTT arm sets `deployment.num_ttt_nodes = 1` plus a `[ttt]` section, and the SLURM
+launcher allocates the node, torchruns the service, and auto-wires output_dir / model /
+vLLM admin roots / env `base_url`s (see `docs/ttt.md`). `scaleswe/ttt_service.toml`
+remains for running the service standalone. `[engine] type = "peft"` (the default) is the
 single-GPU engine for small models.

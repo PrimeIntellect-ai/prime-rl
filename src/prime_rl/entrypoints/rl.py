@@ -42,6 +42,7 @@ RL_SBATCH = "rl.sbatch"
 TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
 INFERENCE_TOML = "inference.toml"
+TTT_TOML = "ttt.toml"
 
 
 def get_physical_gpu_ids() -> list[int]:
@@ -76,6 +77,12 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
         with open(output_dir / INFERENCE_TOML, "wb") as f:
             tomli_w.dump(config.inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"), f)
+
+    if config.ttt is not None:
+        # inference_admin_urls are only known at job start; the template overrides them
+        # (and output_dir already matches the run's — validated in RLConfig.validate_ttt).
+        with open(output_dir / TTT_TOML, "wb") as f:
+            tomli_w.dump(config.ttt.model_dump(exclude_none=True, mode="json"), f)
 
 
 def rl_local(config: RLConfig):
@@ -424,6 +431,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             trainer_env_vars=trainer_env_vars,
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
+            num_ttt_nodes=getattr(config.deployment, "num_ttt_nodes", 0) if config.ttt is not None else 0,
+            ttt_port=config.ttt.port if config.ttt is not None else 8092,
             prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
             decode_vllm_extra_json=vllm_overrides_fragment(infer_deploy.decode_vllm_overrides),
             dp_per_node=config.deployment.gpus_per_node // config.inference.parallel.tp,
@@ -458,6 +467,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             trainer_env_vars=trainer_env_vars,
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
+            num_ttt_nodes=getattr(config.deployment, "num_ttt_nodes", 0) if config.ttt is not None else 0,
+            ttt_port=config.ttt.port if config.ttt is not None else 8092,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)

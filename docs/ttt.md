@@ -67,6 +67,17 @@ Two engines (`[engine] type`):
 Inference: `enable_lora = true`, `max_lora_rank >=` the TTT rank, `max_loras >=` concurrent
 TTT rollouts.
 
+**Launcher-managed service (recommended for SLURM runs):** add a `[ttt]` section to the RL
+config and set `deployment.num_ttt_nodes` — the multi-node launcher then allocates the
+node(s) after the trainer nodes (layout: inference | train | ttt), runs the service under
+one torchrun, and auto-wires everything only known at job start: `output_dir` (shared
+with trainer + engines), the model name, the per-replica vLLM admin roots, and every TTT
+env's `base_url` (via the orchestrator's `ttt_base_url` override — config `base_url`
+values are placeholders, e.g. `"auto"`). Cross-checks run at launch: `lora.rank <=
+inference.max_lora_rank`, `max_inflight_rollouts <= engine.max_slots`. One SLURM job,
+one teardown — no manual node handshake. Alternatively run the service externally
+(`uv run ttt @ config.toml` / torchrun) and point env `ttt.base_url` at it.
+
 ## Q&A at compaction (Cartridges-style)
 
 `ttt.qa = {}` runs `qa.num_generations` parallel seeded generations per compaction, each

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name={{ job_name }}
-#SBATCH --nodes={{ num_train_nodes + num_infer_nodes }}
+#SBATCH --nodes={{ num_train_nodes + num_infer_nodes + (num_ttt_nodes | default(0)) }}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --partition={{ partition }}
@@ -28,6 +28,8 @@ set -e
 # Configs
 export NUM_TRAIN_NODES={{ num_train_nodes }}
 export NUM_INFER_NODES={{ num_infer_nodes }}
+export NUM_TTT_NODES={{ num_ttt_nodes | default(0) }}
+export TTT_PORT={{ ttt_port | default(8092) }}
 export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
@@ -69,7 +71,15 @@ export WANDB_SHARED_RUN_ID=${WANDB_SHARED_RUN_ID:-$(python3 -c "import uuid; pri
 
 # Networking
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
-TRAIN_HOSTS=( ${HOSTNAMES[@]:$NUM_INFER_NODES:$SLURM_JOB_NUM_NODES} )
+TRAIN_HOSTS=( ${HOSTNAMES[@]:$NUM_INFER_NODES:$NUM_TRAIN_NODES} )
+# TTT service nodes are appended after the trainer nodes (layout: infer | train | ttt).
+TTT_HOSTS=( ${HOSTNAMES[@]:$((NUM_INFER_NODES + NUM_TRAIN_NODES)):$NUM_TTT_NODES} )
+if [ "$NUM_TTT_NODES" -gt 0 ]; then
+    export TTT_ADDR="${TTT_HOSTS[0]}"
+    export TTT_BASE_URL="http://${TTT_ADDR}:${TTT_PORT}"
+    echo "TTT_HOSTS=${TTT_HOSTS[*]}"
+    echo "TTT_BASE_URL=${TTT_BASE_URL}"
+fi
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
 
 {% if num_infer_nodes > 0 -%}
@@ -378,6 +388,40 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     done
 {%- endif %}
 
+{% if num_ttt_nodes | default(0) > 0 -%}
+elif [ "$SLURM_PROCID" -ge "$((NUM_INFER_NODES + NUM_TRAIN_NODES))" ]; then
+    # TTT service node(s): one torchrun across all of them (fsdp engine shards the model;
+    # rank 0 = TTT_HOSTS[0] serves HTTP on TTT_PORT). Auto-wired to this run: output_dir
+    # (adapter ckpts ride the shared FS to vLLM + trainer replay) and the per-replica
+    # vLLM backend roots (ADMIN_URLS without the /v1 suffix — the service posts to the
+    # root-level /load_lora_adapter wrapper). NOTE: this whole role dispatch runs inside
+    # a single-quoted bash -c block — no apostrophes in comments here.
+    TTT_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES - NUM_TRAIN_NODES))
+{%- for key, value in trainer_env_vars.items() %}
+    export {{ key }}="{{ value }}"
+{%- endfor %}
+    mkdir -p $OUTPUT_DIR/logs/ttt
+    TTT_ADMIN_URLS=""
+    for u in $ADMIN_URLS; do
+        TTT_ADMIN_URLS="${TTT_ADMIN_URLS:+$TTT_ADMIN_URLS }${u%/v1}"
+    done
+    WANDB_SHARED_LABEL=ttt uv run torchrun \
+        --role=ttt \
+        --nnodes=$NUM_TTT_NODES \
+        --nproc-per-node=$GPUS_PER_NODE \
+        --node-rank=$TTT_NODE_RANK \
+        --rdzv-endpoint=$TTT_ADDR:29510 \
+        --rdzv-id=ttt_$SLURM_JOB_ID \
+        --log-dir=$OUTPUT_DIR/logs/ttt/torchrun \
+        --tee=3 \
+        --redirects=3 \
+        --local-ranks-filter=0 \
+        -m prime_rl.entrypoints.ttt \
+        @ $CONFIG_DIR/ttt.toml \
+        --output-dir $OUTPUT_DIR \
+        --inference-admin-urls $TTT_ADMIN_URLS \
+        2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/ttt/node_${TTT_NODE_RANK}.log &
+{% endif -%}
 else
     TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
 {%- else %}
@@ -416,6 +460,11 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.base-url $INFER_URLS"
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.admin-base-url $ADMIN_URLS"
+{%- if num_ttt_nodes | default(0) > 0 %}
+    # Launcher-managed TTT service: point every TTT env at it (config base_url values
+    # are placeholders — the service hostname is only known here).
+    ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --ttt-base-url $TTT_BASE_URL"
+{%- endif %}
 {%- if orchestrator_env_vars %}
     # Orchestrator env vars from [env_vars] + [orchestrator.env_vars]
 {%- for key, value in orchestrator_env_vars.items() %}

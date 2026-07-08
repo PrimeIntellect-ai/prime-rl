@@ -1,16 +1,42 @@
 # A2 — compaction + TTT (headline): adapter trains on each compacted-away branch
 # (loss_scope=all) before it drops; the rest of the rollout samples through the adapter;
 # the trainer replays every branch under its exact frozen adapter. Read against A1.
-# Requires the TTT service (ttt_service.toml) on its own node.
 
 [wandb]
 name = "a2-glm45air-scaleswe-ttt"
+
+# Launcher-managed TTT service: one extra node appended after the trainer nodes, torchrun
+# across its 8 GPUs, auto-wired (output_dir, model, vLLM admin roots, env base_urls — the
+# "auto" placeholders below are overwritten at job start).
+[deployment]
+num_ttt_nodes = 1
+
+[ttt.engine]
+type = "fsdp"
+max_slots = 256                 # >= orchestrator.max_inflight_rollouts
+max_tokens_per_forward = 65536
+max_batch_wait_seconds = 0.5
+
+[ttt.engine.model]
+impl = "custom"
+attn = "flash_attention_3"
+fused_lm_head_token_chunk_size = 1024
+
+[ttt.lora]
+rank = 16
+alpha = 32
+# Attention-only: vLLM's LoRA serving does not cover MoE expert FFNs.
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+[ttt.optim]
+type = "adamw"
+lr = 1e-4
 
 [[orchestrator.train.env]]
 name = "scaleswe"
 taskset = { id = "scaleswe-v1" }
 harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
-ttt = { base_url = "http://TTT_NODE:8092" }
+ttt = { base_url = "auto" }
 
 # Evals run the same TTT regime as training — the dispatcher routes TTT eval envs
 # through the renderer (train) client, and eval adapters/checkpoints are dismissed as
@@ -19,5 +45,5 @@ ttt = { base_url = "http://TTT_NODE:8092" }
 name = "swebench-verified"
 taskset = { id = "swebench-verified-v1", use_prime_registry = true }
 harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
-ttt = { base_url = "http://TTT_NODE:8092" }
+ttt = { base_url = "auto" }
 timeout = { rollout = 3600 }

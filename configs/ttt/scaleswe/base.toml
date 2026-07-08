@@ -11,9 +11,11 @@
 #   A5 = A3 + group meta-lessons ........... arm_a5_meta.toml
 # Launch: uv run rl @ configs/ttt/scaleswe/base.toml @ configs/ttt/scaleswe/arm_<X>.toml
 #
-# TTT arms additionally need the TTT service running (its own node, torchrun across 8 GPUs):
-#   torchrun --nproc-per-node 8 -m prime_rl.entrypoints.ttt @ configs/ttt/scaleswe/ttt_service.toml
-# and share output_dir with trainer+orchestrator (adapter ckpts + replay refs go via FS).
+# TTT arms carry their own [ttt] service config + deployment.num_ttt_nodes = 1: the SLURM
+# launcher allocates the extra node (layout: inference | train | ttt), runs the service
+# under torchrun, and auto-wires output_dir, the model, the vLLM admin roots, and every
+# TTT env's base_url ("auto" placeholders). One job per arm — nothing to start manually.
+# (ttt_service.toml remains for running the service standalone, e.g. eval-CLI workflows.)
 
 max_steps = 1000
 seq_len = 65536

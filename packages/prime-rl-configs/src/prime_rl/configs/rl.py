@@ -32,6 +32,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
+from prime_rl.configs.ttt import TTTServiceConfig
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
@@ -167,6 +168,12 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     orchestrator_on_inference: bool = False
     """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
 
+    num_ttt_nodes: int = Field(0, ge=0)
+    """Nodes for the test-time-training service (see ``RLConfig.ttt``). 0 = no TTT service
+    is launched (TTT envs then need an externally started service). The nodes are appended
+    after the trainer nodes; the service runs under one torchrun across all of them and is
+    auto-wired to the run's inference servers and output_dir."""
+
     @property
     def total_infer_nodes(self) -> int:
         return self.num_infer_nodes * self.num_infer_replicas
@@ -226,6 +233,13 @@ class RLConfig(BaseConfig):
 
     slurm: SlurmConfig | None = None
     """SLURM configuration. If None, runs locally."""
+
+    ttt: TTTServiceConfig | None = None
+    """Test-time-training service (None = no service launched). With
+    ``deployment.num_ttt_nodes > 0`` the SLURM launcher runs it on its own node(s) and
+    auto-wires ``output_dir``, the model name, the inference admin URLs, and every TTT
+    env's ``base_url`` — config placeholders like ``base_url = "auto"`` are overwritten at
+    job start. Training hyperparameters (engine, LoRA rank, LR) live here."""
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
@@ -367,6 +381,55 @@ class RLConfig(BaseConfig):
         # produces replay samples (eval adapters are dismissed per rollout).
         if active_train_ttt_envs:
             self.trainer.ttt_replay = True
+        # --- Launcher-managed TTT service (RLConfig.ttt + deployment.num_ttt_nodes) ---
+        num_ttt_nodes = getattr(self.deployment, "num_ttt_nodes", 0)
+        if num_ttt_nodes > 0 and self.ttt is None:
+            raise ValueError(
+                f"deployment.num_ttt_nodes = {num_ttt_nodes} but no [ttt] service config is set — "
+                "add a [ttt] section (engine, lora, optim) or set num_ttt_nodes = 0 and run the "
+                "service externally."
+            )
+        if self.ttt is not None:
+            if num_ttt_nodes == 0:
+                raise ValueError(
+                    "[ttt] service config is set but the launcher would never start it "
+                    "(deployment.num_ttt_nodes = 0 / single-node deployment). Set "
+                    "deployment.num_ttt_nodes (>=1) on a multi_node deployment, or drop [ttt] "
+                    "and run the service externally (env ttt.base_url pointing at it)."
+                )
+            # Auto-wire what the service must share with the run. Explicit values win.
+            if "output_dir" not in self.ttt.model_fields_set:
+                self.ttt.output_dir = self.output_dir
+            if self.ttt.output_dir != self.output_dir:
+                raise ValueError(
+                    f"[ttt] output_dir ({self.ttt.output_dir}) != run output_dir ({self.output_dir}) — "
+                    "adapter checkpoints ride the shared filesystem between the service, the "
+                    "inference engines, and the trainer's replay; the dirs must match."
+                )
+            if self.model is not None and "name" not in self.ttt.model.model_fields_set:
+                self.ttt.model.name = self.model.name
+            if self.model is not None and self.ttt.model.name != self.model.name:
+                raise ValueError(
+                    f"[ttt] model.name ({self.ttt.model.name}) != run model ({self.model.name}) — "
+                    "TTT updates consume the engine's exact token ids; the base models must match."
+                )
+            # inference_admin_urls are filled by the SLURM template at job start (the
+            # per-replica backend roots are only known then) — nothing to validate here.
+            if self.inference is not None and self.inference.enable_lora:
+                if self.inference.max_lora_rank is not None and self.ttt.lora.rank > self.inference.max_lora_rank:
+                    raise ValueError(
+                        f"[ttt] lora.rank ({self.ttt.lora.rank}) exceeds [inference] max_lora_rank "
+                        f"({self.inference.max_lora_rank}) — the engines cannot serve the adapters."
+                    )
+            engine = self.ttt.engine
+            max_inflight = self.orchestrator.max_inflight_rollouts
+            max_slots = getattr(engine, "max_slots", None)
+            if max_slots is not None and max_inflight is not None and max_inflight > max_slots:
+                raise ValueError(
+                    f"orchestrator max_inflight_rollouts ({max_inflight}) exceeds the TTT service's "
+                    f"[ttt.engine] max_slots ({max_slots}) — every in-flight TTT rollout holds a "
+                    "service adapter slot. Raise max_slots or lower max_inflight_rollouts."
+                )
         return self
 
     @model_validator(mode="after")

@@ -244,9 +244,11 @@ updates, same QA generation. The dispatcher routes TTT eval envs through the ren
 (train) client (TTT consumes exact token ids; the chat relay would refuse at the first
 compaction), and eval adapters/checkpoints are dismissed as each rollout finishes (no RL
 replay on eval). TTT arms:
-`compact_at_tokens = 16384` at 64k total; fsdp-engine service on its own 8-GPU node
-(torchrun); attention-only rank-16 adapters. Launch:
-`uv run rl @ scaleswe/base.toml @ scaleswe/arm_<X>.toml` (+ the service for TTT arms).
+`compact_at_tokens = 16384` at 64k total; fsdp-engine service on its own 8-GPU node,
+**launcher-managed** (`deployment.num_ttt_nodes` + `[ttt]` on the RL config: the SLURM
+template allocates the node after the trainers, torchruns the service, and auto-wires
+output_dir/model/admin-URLs/env base_urls); attention-only rank-16 adapters. Launch:
+`uv run rl @ scaleswe/base.toml @ scaleswe/arm_<X>.toml` — one job per arm.
 
 | # | Arm | Config | Reads against | Isolates |
 |---|-----|--------|---------------|----------|

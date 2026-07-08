@@ -88,9 +88,7 @@ def test_inflight_equal_to_max_loras_ok():
 def eval_only_ttt_payload(**inference_overrides) -> dict:
     """RLConfig payload where only the EVAL env carries a ``ttt`` block."""
     payload = rl_payload(None, **inference_overrides)
-    payload["orchestrator"]["eval"] = {
-        "env": [{"id": "dummy-eval-env", "ttt": {"base_url": "http://localhost:8092"}}]
-    }
+    payload["orchestrator"]["eval"] = {"env": [{"id": "dummy-eval-env", "ttt": {"base_url": "http://localhost:8092"}}]}
     return payload
 
 
@@ -122,3 +120,71 @@ def test_scaleswe_arms_launchable(arm: str):
     """Pins the invariant that every shipped base+arm overlay still validates end-to-end."""
     base = CONFIGS / "scaleswe" / "base.toml"
     cli(RLConfig, args=["@", str(base), "@", str(CONFIGS / "scaleswe" / arm)])
+
+
+# --- Launcher-managed TTT service (RLConfig.ttt + deployment.num_ttt_nodes) ---
+
+
+def rl_ttt_service_payload(**overrides) -> dict:
+    payload = rl_payload({"base_url": "auto"}, max_lora_rank=16, max_loras=64, max_cpu_loras=64)
+    payload["deployment"] = {
+        "type": "multi_node",
+        "num_train_nodes": 1,
+        "num_infer_nodes": 1,
+        "num_ttt_nodes": 1,
+    }
+    payload["slurm"] = {"job_name": "t"}  # multi_node requires SLURM
+    payload["ttt"] = {"engine": {"type": "fsdp", "max_slots": 64}, "lora": {"rank": 16}}
+    for key, value in overrides.items():
+        payload[key] = value
+    return payload
+
+
+def test_ttt_service_autowires_output_dir_and_model():
+    config = RLConfig.model_validate(rl_ttt_service_payload())
+    assert config.ttt.output_dir == config.output_dir
+    assert config.ttt.model.name == "Qwen/Qwen3-0.6B"
+
+
+def test_ttt_nodes_without_service_config_rejected():
+    payload = rl_ttt_service_payload()
+    del payload["ttt"]
+    with pytest.raises(ValueError, match="no \\[ttt\\] service config"):
+        RLConfig.model_validate(payload)
+
+
+def test_ttt_service_without_nodes_rejected():
+    payload = rl_ttt_service_payload()
+    payload["deployment"]["num_ttt_nodes"] = 0
+    with pytest.raises(ValueError, match="never start it"):
+        RLConfig.model_validate(payload)
+
+
+def test_ttt_service_rank_must_fit_max_lora_rank():
+    payload = rl_ttt_service_payload()
+    payload["ttt"]["lora"]["rank"] = 32  # > max_lora_rank 16
+    with pytest.raises(ValueError, match="max_lora_rank"):
+        RLConfig.model_validate(payload)
+
+
+def test_ttt_service_slots_must_cover_inflight():
+    payload = rl_ttt_service_payload()
+    payload["orchestrator"]["max_inflight_rollouts"] = 65
+    payload["inference"]["max_loras"] = 128
+    with pytest.raises(ValueError, match="max_slots"):
+        RLConfig.model_validate(payload)
+
+
+def test_orchestrator_ttt_base_url_fans_out():
+    from prime_rl.configs.orchestrator import OrchestratorConfig
+
+    config = OrchestratorConfig.model_validate(
+        {
+            "batch_size": 8,
+            "group_size": 2,
+            "train": {"env": [{"id": "dummy-env", "ttt": {"base_url": "auto"}}, {"id": "dummy-env2"}]},
+            "ttt_base_url": "http://ttt-node:8092",
+        }
+    )
+    assert config.train.env[0].ttt.base_url == "http://ttt-node:8092"
+    assert getattr(config.train.env[1], "ttt", None) is None  # non-TTT env untouched
