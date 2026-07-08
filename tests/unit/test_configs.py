@@ -166,7 +166,7 @@ def test_env_var_overrides_defaults(monkeypatch):
     """PRL_* env vars override defaults (nesting levels join with a double underscore)."""
     monkeypatch.setenv("PRL_SEED", "7")
     monkeypatch.setenv("PRL_NESTED__LR", "3e-4")
-    config = cli(DummyConfig, args=[])
+    config = cli(DummyConfig, args=[], env_prefix="PRL")
     assert config.seed == 7
     assert config.nested.lr == 3e-4
     assert config.nested.weight_decay == 0.01
@@ -176,14 +176,14 @@ def test_toml_overrides_env_var(tmp_path, monkeypatch):
     """TOML overrides PRL_* env vars."""
     monkeypatch.setenv("PRL_SEED", "7")
     write_toml(tmp_path / "cfg.toml", {"seed": 1})
-    config = cli(DummyConfig, args=["@", str(tmp_path / "cfg.toml")])
+    config = cli(DummyConfig, args=["@", str(tmp_path / "cfg.toml")], env_prefix="PRL")
     assert config.seed == 1
 
 
 def test_cli_overrides_env_var(monkeypatch):
     """CLI args override PRL_* env vars."""
     monkeypatch.setenv("PRL_SEED", "7")
-    config = cli(DummyConfig, args=["--seed", "99"])
+    config = cli(DummyConfig, args=["--seed", "99"], env_prefix="PRL")
     assert config.seed == 99
 
 

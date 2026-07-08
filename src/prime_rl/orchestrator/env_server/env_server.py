@@ -35,7 +35,7 @@ def run_server(config: EnvServerConfig):
 def main():
     """Main entry-point for env-server. Run using `uv run env-server`"""
     set_proc_title("EnvServer")
-    run_server(cli(EnvServerConfig))
+    run_server(cli(EnvServerConfig, env_prefix="PRL"))
 
 
 if __name__ == "__main__":

@@ -225,7 +225,7 @@ def sft(config: SFTConfig):
 
 def main():
     set_proc_title("SFT")
-    sft(cli(SFTConfig))
+    sft(cli(SFTConfig, env_prefix="PRL"))
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from prime_rl.utils.process import set_proc_title
 
 def main():
     set_proc_title("Trainer")
-    config = cli(TrainerConfig)
+    config = cli(TrainerConfig, env_prefix="PRL")
     from prime_rl.trainer.rl.train import train
 
     train(config)

@@ -630,7 +630,7 @@ def train(config: SFTConfig):
 
 def main():
     set_proc_title("SFTTrainer")
-    train(cli(SFTConfig))
+    train(cli(SFTConfig, env_prefix="PRL"))
 
 
 if __name__ == "__main__":

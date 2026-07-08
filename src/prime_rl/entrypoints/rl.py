@@ -567,7 +567,7 @@ def rl(config: RLConfig):
 
 def main():
     set_proc_title("Launcher")
-    rl(cli(RLConfig))
+    rl(cli(RLConfig, env_prefix="PRL"))
 
 
 if __name__ == "__main__":

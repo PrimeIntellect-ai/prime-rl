@@ -888,7 +888,7 @@ def main() -> None:
     import uvloop
 
     uvloop.install()
-    asyncio.run(run_orchestrator(cli(OrchestratorConfig)))
+    asyncio.run(run_orchestrator(cli(OrchestratorConfig, env_prefix="PRL")))
 
 
 if __name__ == "__main__":

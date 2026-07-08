@@ -785,7 +785,7 @@ def train(config: TrainerConfig):
 def main():
     """Main entry-point for RL trainer. Run using `uv run trainer`"""
     set_proc_title("Trainer")
-    train(cli(TrainerConfig))
+    train(cli(TrainerConfig, env_prefix="PRL"))
 
 
 if __name__ == "__main__":

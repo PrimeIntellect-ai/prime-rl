@@ -176,7 +176,7 @@ def inference(config: InferenceConfig):
 
 def main():
     set_proc_title("Inference")
-    inference(cli(InferenceConfig))
+    inference(cli(InferenceConfig, env_prefix="PRL"))
 
 
 if __name__ == "__main__":
