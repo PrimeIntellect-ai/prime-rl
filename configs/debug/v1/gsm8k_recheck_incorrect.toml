@@ -5,7 +5,7 @@ output_dir = "outputs-wrong"
 # starts empty and grows as steps ship records into <output_dir>/rollouts/. Runs on 2 GPUs
 # (1 inference, 1 training):
 #   uv run inference --model.name PrimeIntellect/Qwen3-0.6B          # Inference pane (GPU 0)
-#   uv run rl @ configs/debug/v1/gsm8k_recheck.toml --ckpt           # Trainer pane (GPU 1)
+#   uv run rl @ configs/debug/v1/gsm8k_recheck_incorrect.toml --ckpt # Trainer pane (GPU 1)
 
 max_steps = 100
 seq_len = 2048

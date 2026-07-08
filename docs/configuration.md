@@ -172,7 +172,7 @@ The same `id` can appear multiple times across train and eval (or with different
 
 ### Replaying Past Rollouts (Continue / Recheck)
 
-The built-in `replay` taskset (verifiers v1) re-enters saved rollouts as fresh training tasks. Point it at rollout record files (`<output_dir>/rollouts/step_*/*_rollouts.jsonl`) and at the `source` taskset the records came from — the source provides tools, setup/finalize, and scoring, so new completions are judged by the original env's verifier:
+The built-in `replay` taskset (verifiers v1) re-enters saved rollouts as fresh training tasks. Point it at rollout record files (`<output_dir>/rollouts/step_*/*_rollouts_*.jsonl`) and at the `source` taskset the records came from — the source provides tools, setup/finalize, and scoring, so new completions are judged by the original env's verifier:
 
 ```toml
 # Continue: resume each recorded compaction from its handoff summary. The seed is a plain

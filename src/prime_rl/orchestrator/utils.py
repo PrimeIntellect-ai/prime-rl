@@ -6,8 +6,10 @@ import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import orjson
+from verifiers.v1.tasksets.replay import index_path, index_row
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.utils.client import setup_inference_pool
@@ -17,6 +19,9 @@ from prime_rl.utils.utils import (
     get_ckpt_dir,
     get_step_path,
 )
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import Rollout
 
 
 async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
@@ -50,22 +55,40 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     return renderer, inference_pool
 
 
-def save_rollouts(rollouts: list[dict], path: Path) -> list[tuple[int, int]]:
-    """Save rollouts (Trace dicts, already JSON-serializable) to a JSONL file. Written to a
-    tmp file and renamed, so concurrent readers (a replay env following this run's records)
-    never see a half-written file. Returns each line's ``(offset, length)`` byte span
-    (newline included), so callers can index the records for span-selective readers."""
+def save_rollouts(records: list[dict], path: Path) -> list[tuple[int, int]]:
+    """Write JSON-serializable dicts to a JSONL file, one per line. Written to a tmp file and
+    renamed, so concurrent readers (a replay env following this run's records) never see a
+    half-written file. Returns each line's ``(offset, length)`` byte span (newline included),
+    so callers can index the lines for span-selective readers."""
     path.parent.mkdir(parents=True, exist_ok=True)
     opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
     tmp = path.with_suffix(".tmp")
     spans: list[tuple[int, int]] = []
     with open(tmp, "wb") as f:
-        for rollout in rollouts:
-            line = orjson.dumps(rollout, default=str, option=opts)
+        for record in records:
+            line = orjson.dumps(record, default=str, option=opts)
             spans.append((f.tell(), len(line)))
             f.write(line)
     tmp.rename(path)
     return spans
+
+
+def save_train_records(rollouts: list["Rollout"], env_name: str, step: int, step_path: Path) -> None:
+    """Write one env's train rollout records (``train_rollouts_<env>.jsonl``) and the derived
+    per-record index beside them (``index_<env>.jsonl``): the replay taskset's selection fields
+    plus each line's byte span, so a record consumer can pick records without parsing the file.
+    ``to_record`` serializes the typed Trace at this I/O boundary — it drops the per-node
+    training tensors (for training, not the record; they can't round-trip json). Blocking:
+    call via ``asyncio.to_thread``."""
+    records_path = step_path / f"train_rollouts_{env_name}.jsonl"
+    spans = save_rollouts([r.to_record() for r in rollouts], records_path)
+    index = [
+        index_row(r, offset=offset, length=length, step=step, policy_version=r.policy_version)
+        for r, (offset, length) in zip(rollouts, spans)
+    ]
+    index_file = index_path(records_path)
+    assert index_file is not None  # a train_rollouts_<env> filename always derives one
+    save_rollouts(index, index_file)
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):

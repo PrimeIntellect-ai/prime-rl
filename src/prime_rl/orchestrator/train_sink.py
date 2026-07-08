@@ -11,7 +11,7 @@
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
 ``add()`` returns ``TrainBatch | None``. I/O concerns (ship to trainer,
-save_rollouts, monitor.log) live on the orchestrator.
+save_train_records, monitor.log) live on the orchestrator.
 """
 
 from __future__ import annotations

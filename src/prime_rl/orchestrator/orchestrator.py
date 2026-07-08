@@ -63,6 +63,7 @@ from prime_rl.orchestrator.utils import (
     get_weight_dir,
     intercept_vf_logging,
     save_rollouts,
+    save_train_records,
     set_default_executor,
     setup_policy_inference_pool,
     trim_process_memory,
@@ -487,7 +488,7 @@ class Orchestrator:
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
-        side-effects (ckpt, save_rollouts, reference scoring, sender.send,
+        side-effects (ckpt, save_train_records, reference scoring, sender.send,
         metrics, heartbeat, progress, eval trigger). The sink has already
         done all data-transformation work."""
         config = self.config
@@ -531,41 +532,17 @@ class Orchestrator:
                 f"({n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
-        # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables); to_record
-        # drops the per-node training tensors — they're for training, not the rollout record, and
-        # can't round-trip json (raw numpy bytes).
+        # One record file per env (mirroring eval's `eval_rollouts_<env>.jsonl`), so record
+        # consumers (e.g. a replay env mining this run's own rollouts) select an env by filename
+        # instead of parsing and discarding other envs' lines. Each env's records + derived
+        # index are written in one thread, keeping to_record off the event loop.
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
-        by_env: dict[str, list[Rollout]] = {}
-        for rollout in batch.rollouts:
-            by_env.setdefault(rollout.env_name, []).append(rollout)
-        # One file per env (mirroring eval's `eval_rollouts_<env>.jsonl`), so record consumers
-        # (e.g. a replay env mining this run's own rollouts) select an env by filename instead
-        # of parsing and discarding other envs' lines.
-        for env_name, env_rollouts in by_env.items():
-            rollout_dicts = [r.to_record() for r in env_rollouts]
-            spans = await asyncio.to_thread(
-                save_rollouts, rollout_dicts, step_path / f"train_rollouts_{env_name}.jsonl"
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(save_train_records, env_rollouts.rollouts, env_name, step, step_path)
+                for env_name, env_rollouts in batch.rollouts.by_env().items()
             )
-            # A derived per-record index beside the records: selection fields plus each line's
-            # byte span, so a replay env can pick records without parsing the file. Same
-            # tmp+rename write path as the records; the record file itself is unchanged.
-            index = [
-                {
-                    "trace": r.id,
-                    "task_idx": r.task.idx,
-                    "task_name": r.task.name,
-                    "reward": r.reward,
-                    "policy_version": r.policy_version,
-                    "step": step,
-                    "branches": r.num_branches,
-                    "turns": r.num_turns,
-                    "stop": r.stop_condition,
-                    "offset": offset,
-                    "len": length,
-                }
-                for r, (offset, length) in zip(env_rollouts, spans)
-            ]
-            await asyncio.to_thread(save_rollouts, index, step_path / f"index_{env_name}.jsonl")
+        )
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.progress.step += 1
