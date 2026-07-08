@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import Literal
 from torch import nn
+from torch.distributed.tensor import DTensor
 from torchtitan.distributed.expert_parallel import expert_parallel
 from prime_rl.configs.trainer import EPCommBackend
 
@@ -86,7 +87,10 @@ class BCFeedForward(nn.Module):
 
 def _pack_gate_up_interleaved(w1: torch.Tensor, w3: torch.Tensor) -> torch.Tensor:
     E, H, D = w1.shape
-    return torch.stack((w1, w3), dim=2).reshape(E, H<<1, D).contiguous()
+    assert H % 128 == 0, f"moe_intermediate_size {H} must be a multiple of 128 for the fused MoE kernel"
+    g = w1.reshape(E, H >> 7, 128, D)
+    u = w3.reshape(E, H >> 7, 128, D)
+    return torch.stack((g, u), dim=2).reshape(E, H << 1, D).contiguous()
 
 # TODO: keeping this for-loop implementation for comparison
 #       and readability, may remove later
@@ -127,37 +131,129 @@ def _run_experts_for_loop_impl(
 def moe_align_block_size_simple(topk_ids: torch.Tensor, block_size_m: int, num_experts: int):
     assert topk_ids.dim() == 2
     device = topk_ids.device
-    T, top_k = topk_ids.shape
-    pair_ids = torch.arange(T * top_k, device=device, dtype=torch.int32)
+    n = topk_ids.numel()
     expert_flat = topk_ids.reshape(-1).to(torch.int32)
     sort_idx = torch.argsort(expert_flat)
-    expert_sorted = expert_flat[sort_idx]
-    pair_sorted = pair_ids[sort_idx]
-    counts = torch.bincount(expert_sorted, minlength=num_experts)
+    expert_sorted = expert_flat[sort_idx].to(torch.int64)
+    counts = torch.bincount(expert_flat.to(torch.int64), minlength=num_experts)
     padded_counts = ((counts + block_size_m - 1) // block_size_m) * block_size_m
-    total_padded = int(padded_counts.sum().item())
-    sorted_token_ids = torch.empty((total_padded,), device=device, dtype=torch.int32)
-    num_blocks = int((padded_counts // block_size_m).sum().item())
-    expert_ids = torch.empty((num_blocks,), device=device, dtype=torch.int32)
-    write_ptr = 0
-    block_ptr = 0
-    read_ptr = 0
-    for e in range(num_experts):
-        c = int(counts[e].item())
-        pc = int(padded_counts[e].item())
-        if c > 0:
-            sorted_token_ids[write_ptr : write_ptr + c] = pair_sorted[read_ptr : read_ptr + c]
-        if pc > c:
-            sorted_token_ids[write_ptr + c : write_ptr + pc] = -1
-        nb = pc // block_size_m
-        if nb > 0:
-            expert_ids[block_ptr : block_ptr + nb] = e
-            block_ptr += nb
-        write_ptr += pc
-        read_ptr += c
-
+    padded_offset = torch.cumsum(padded_counts, 0) - padded_counts
+    real_offset = torch.cumsum(counts, 0) - counts
+    total_padded = int(padded_counts.sum())  # single host sync (dynamic allocation size)
+    pos = torch.arange(n, device=device, dtype=torch.int64)
+    dest = padded_offset[expert_sorted] + (pos - real_offset[expert_sorted])
+    sorted_token_ids = torch.full((total_padded,), -1, device=device, dtype=torch.int32)
+    sorted_token_ids[dest] = sort_idx.to(torch.int32)
+    n_blocks = padded_counts // block_size_m
+    expert_ids = torch.repeat_interleave(
+        torch.arange(num_experts, device=device, dtype=torch.int32), n_blocks
+    )
     num_tokens_post_padded = torch.tensor([total_padded], device=device, dtype=torch.int32)
     return sorted_token_ids, expert_ids, num_tokens_post_padded
+
+
+def _to_local(t: torch.Tensor) -> torch.Tensor:
+    # FSDP2/EP store expert weights as DTensors; the fused kernel needs plain tensors.
+    # DTensor.to_local() is differentiable (its grad is wrapped back into a DTensor).
+    return t.to_local() if isinstance(t, DTensor) else t
+
+
+def _moe_reference_forward(
+    x: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+) -> torch.Tensor:
+    # Differentiable reference matching the fused kernel semantics: SwiGLU experts with
+    # top_scores applied after the experts, summed over top_k. Drives the backward pass.
+    top_k = selected_experts_indices.shape[1]
+    flat_experts = selected_experts_indices.reshape(-1)
+    num_tokens_per_expert = torch.histc(flat_experts.float(), bins=num_experts, min=0, max=num_experts)
+    order = torch.argsort(flat_experts, stable=True)
+    top_scores_sorted = top_scores.reshape(-1)[order]
+    token_idx = order // top_k
+    routed_input = x[token_idx]
+    routed_output = _run_experts_grouped_mm_impl(w1, w2, w3, routed_input, num_tokens_per_expert)
+    routed_output = (routed_output.float() * top_scores_sorted.reshape(-1, 1)).to(x.dtype)
+    return torch.zeros_like(x).index_add(0, token_idx, routed_output)
+
+
+def _fused_moe_kernel_forward(
+    x: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+) -> torch.Tensor:
+    # Packs gate/up on the fly (training path, where weights change every step).
+    w1_packed = _pack_gate_up_interleaved(w1.bfloat16(), w3.bfloat16())
+    return _fused_moe_kernel_call(x, w1_packed, w2, selected_experts_indices, top_scores, num_experts)
+
+
+def _fused_moe_kernel_call(
+    x: torch.Tensor,
+    w1_packed: torch.Tensor,
+    w2: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+) -> torch.Tensor:
+    # Low-level kernel invocation; w1_packed is the 128-row-block interleaved gate/up.
+    top_k = selected_experts_indices.shape[1]
+    block_m, block_n, warp_n, stages = 128, 32, 8, 1
+    sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size_simple(
+        selected_experts_indices.to(torch.int32), block_m, num_experts
+    )
+    out = torch.zeros_like(x, dtype=torch.bfloat16)
+    torch.ops.prime_moe.fused_moe_bf16(
+        x.bfloat16(),
+        w1_packed,
+        w2.bfloat16().contiguous(),
+        sorted_token_ids,
+        expert_ids,
+        num_tokens_post_padded,
+        top_scores.float(),
+        out,
+        top_k,
+        block_m,
+        block_n,
+        warp_n,
+        stages,
+    )
+    return out.type_as(x)
+
+
+class _FusedMoE(torch.autograd.Function):
+    """Forward runs the fused bf16 MoE CUDA kernel; backward recomputes the reference
+    SwiGLU grouped-mm path (the kernel is forward-only, so it has no autograd of its own)."""
+
+    @staticmethod
+    def forward(ctx, x, w1, w2, w3, selected_experts_indices, top_scores, num_experts):
+        ctx.save_for_backward(x, w1, w2, w3, selected_experts_indices, top_scores)
+        ctx.num_experts = num_experts
+        return _fused_moe_kernel_forward(x, w1, w2, w3, selected_experts_indices, top_scores, num_experts)
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x, w1, w2, w3, selected_experts_indices, top_scores = ctx.saved_tensors
+        needs = ctx.needs_input_grad
+        # positions in the apply() signature that carry gradients (skip the two ints)
+        positions = (0, 1, 2, 3, 5)
+        with torch.enable_grad():
+            leaves = [t.detach().requires_grad_(needs[p]) for t, p in zip((x, w1, w2, w3, top_scores), positions)]
+            out_ref = _moe_reference_forward(
+                leaves[0], leaves[1], leaves[2], leaves[3], selected_experts_indices, leaves[4], ctx.num_experts
+            )
+        wanted = [leaf for leaf, p in zip(leaves, positions) if needs[p]]
+        computed = iter(torch.autograd.grad(out_ref, wanted, grad_out) if wanted else [])
+        grads = {p: (next(computed) if needs[p] else None) for leaf, p in zip(leaves, positions)}
+        return grads[0], grads[1], grads[2], grads[3], None, grads[5], None
+
 
 @expert_parallel
 def _run_experts_for_loop(
@@ -235,6 +331,19 @@ class GroupedExperts(nn.Module):
         self.use_grouped_mm = use_grouped_mm
         self.fp8 = fp8
         self.ep_comm_backend: EPCommBackend = "torch"
+        # Cache of the 128-row-block interleaved gate/up weights for the fused kernel.
+        # Packed once and reused when weights are frozen (inference); reset on weight update.
+        self._packed_gate_up: torch.Tensor | None = None
+
+    def reset_packed_gate_up(self) -> None:
+        self._packed_gate_up = None
+
+    def packed_gate_up(self) -> torch.Tensor:
+        if self._packed_gate_up is None:
+            self._packed_gate_up = _pack_gate_up_interleaved(
+                _to_local(self.w1).bfloat16(), _to_local(self.w3).bfloat16()
+            )
+        return self._packed_gate_up
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
@@ -753,38 +862,28 @@ class MoE(nn.Module):
         assert x.dim() == 2
         assert selected_experts_indices.dim() == 2
         assert top_scores.dim() == 2
-        top_k = selected_experts_indices.shape[1]
-        block_m = 128
-        bn = 32
-        wn = 8
-        stages = 1
-        w1_packed = _pack_gate_up_interleaved(
-            self.experts.w1.bfloat16(),
-            self.experts.w3.bfloat16(),
+        experts = self.experts
+        if torch.is_grad_enabled() and self.training:
+            # Training: weights change every step, so pack fresh and route through the
+            # autograd Function (forward = kernel, backward = reference grouped-mm).
+            return _FusedMoE.apply(
+                x,
+                _to_local(experts.w1),
+                _to_local(experts.w2),
+                _to_local(experts.w3),
+                selected_experts_indices,
+                top_scores,
+                experts.num_experts,
+            )
+        # Inference: reuse the gate/up interleave packed once (see reset_packed_gate_up).
+        return _fused_moe_kernel_call(
+            x,
+            experts.packed_gate_up(),
+            _to_local(experts.w2),
+            selected_experts_indices,
+            top_scores,
+            experts.num_experts,
         )
-        w2 = self.experts.w2.bfloat16()
-        sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size_simple(
-            selected_experts_indices.to(torch.int32),
-            block_m,
-            self.experts.num_experts,
-        )
-        out = torch.zeros_like(x, dtype=torch.bfloat16)
-        torch.ops.prime_moe.fused_moe_bf16(
-            x.bfloat16(),
-            w1_packed,
-            w2,
-            sorted_token_ids,
-            expert_ids,
-            num_tokens_post_padded,
-            top_scores.float(),
-            out,
-            top_k,
-            block_m,
-            bn,
-            wn,
-            stages,
-        )
-        return out.type_as(x)
 
     def forward(
         self,
