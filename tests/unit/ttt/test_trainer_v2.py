@@ -88,6 +88,15 @@ def test_validate_job_is_pure():
     with pytest.raises(ValueError, match="job too large"):
         trainer.validate_job(job("r1", n=101))
     trainer.config.engine.max_tokens_per_forward = 65536
+    # Malformed qa_pairs must 409 at validation — past this point a KeyError inside
+    # _tokenize_qa would escape the per-job ValueError isolation and (pre-fix) hit the
+    # work loop's os._exit(1) fail-fast: one bad request killed the whole service.
+    with pytest.raises(ValueError, match="malformed qa_pairs\\[0\\]"):
+        trainer.validate_job(job("r1", qa_pairs=[{"answer": "a but no question"}]))
+    with pytest.raises(ValueError, match="malformed qa_pairs\\[1\\]"):
+        trainer.validate_job(job("r1", qa_pairs=[{"question": "q", "answer": "a"}, "not-a-dict"]))
+    with pytest.raises(ValueError, match="'answer' must be a string"):
+        trainer.validate_job(job("r1", qa_pairs=[{"question": "q", "answer": 42}]))
 
     # Slot exhaustion is a validation error for NEW rollouts, not existing ones.
     trainer.slots["other"] = SlotState("other", "ttt-other", idx=0)

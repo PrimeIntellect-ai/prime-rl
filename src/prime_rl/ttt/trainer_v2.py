@@ -237,6 +237,19 @@ class TTTTrainerV2:
                 f"no free TTT adapter slots (max_slots={self.max_slots}); "
                 "raise [engine].max_slots or lower rollout concurrency"
             )
+        if job.qa_pairs:
+            # Shape-check here so a malformed pair 409s its caller: past this point a
+            # KeyError inside `_tokenize_qa` would escape `update_batch`'s per-job
+            # ValueError isolation and hit the work loop's fail-fast — one bad request
+            # must never take the whole service down.
+            for i, pair in enumerate(job.qa_pairs):
+                if not isinstance(pair, dict) or not isinstance(pair.get("question"), str):
+                    raise ValueError(
+                        f"malformed qa_pairs[{i}]: expected a dict with a string 'question' "
+                        f"(and 'answer'), got {type(pair).__name__}"
+                    )
+                if not isinstance(pair.get("answer", ""), str):
+                    raise ValueError(f"malformed qa_pairs[{i}]: 'answer' must be a string when present")
         if not job.train_rollout and not job.qa_pairs:
             raise ValueError("no trainable sequences (train_rollout=false and no qa_pairs)")
         if job.train_rollout and not any(job.loss_mask[1:]) and not job.qa_pairs:
@@ -300,9 +313,12 @@ class TTTTrainerV2:
         from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 
         assert len({job.rollout_id for job in jobs}) == len(jobs), "duplicate rollout_ids in one batch"
-        # Per-job isolation: a ValueError in prepare (validation, empty/oversized after QA
-        # tokenization) fails ONLY that job. prepare_job runs identically on every rank, so
-        # the failed set — and the slot-claim rollback — is deterministic across ranks.
+        # Per-job isolation: any exception in prepare (validation, empty/oversized after QA
+        # tokenization, a chat-template failure on odd tool schemas) fails ONLY that job.
+        # prepare is a pure function of the job payload + slot registry — identical on every
+        # rank — so catching broadly is safe here: the failed set and the slot-claim rollback
+        # stay deterministic across ranks. (Rank-local faults — OOM, NCCL — live in the
+        # forward/step below, which stays outside this net and fail-fasts loudly.)
         states: dict[str, SlotState] = {}
         results: dict[str, dict] = {}
         for job in jobs:
@@ -316,13 +332,13 @@ class TTTTrainerV2:
                     results[job.rollout_id] = cached
                     continue
                 states[job.rollout_id] = self.prepare_job(job)
-            except ValueError as e:
+            except Exception as e:
                 # Roll back a slot claim made BY THIS JOB (prepare can raise after _claim).
                 if not had_slot:
                     claimed = self.slots.pop(job.rollout_id, None)
                     if claimed is not None:
                         self.free_idxs.add(claimed.idx)
-                results[job.rollout_id] = {"error": str(e)}
+                results[job.rollout_id] = {"error": f"{type(e).__name__}: {e}"}
         jobs = [job for job in jobs if job.rollout_id in states]
         if not jobs:
             return results  # everything failed validation: no forward to run

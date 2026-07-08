@@ -220,6 +220,17 @@ class TTTTrainer:
         expected = (existing.version if existing is not None else 0) + 1
         if seq_no != expected:
             raise ValueError(f"out-of-order update for {rollout_id}: expected seq_no {expected}, got {seq_no}")
+        if qa_pairs:
+            # Shape-check before any state mutation: a malformed pair must 409 (ValueError)
+            # with a clear message, not KeyError → 500 from inside `_tokenize_qa`.
+            for i, pair in enumerate(qa_pairs):
+                if not isinstance(pair, dict) or not isinstance(pair.get("question"), str):
+                    raise ValueError(
+                        f"malformed qa_pairs[{i}]: expected a dict with a string 'question' "
+                        f"(and 'answer'), got {type(pair).__name__}"
+                    )
+                if not isinstance(pair.get("answer", ""), str):
+                    raise ValueError(f"malformed qa_pairs[{i}]: 'answer' must be a string when present")
         state = self._get_or_create(rollout_id, adapter_name)
 
         sequences: list[tuple[list[int], list[bool]]] = []

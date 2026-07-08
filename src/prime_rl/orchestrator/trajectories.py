@@ -142,6 +142,7 @@ def trace_to_samples(
     env_name: str = "",
     mm_token_type_ids_mapping: dict[int, int] | None = None,
     qa_temperature: float | None = None,
+    rollout_temperature: float | None = None,
 ) -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
@@ -164,7 +165,16 @@ def trace_to_samples(
     trained_nodes: set[int] = set()  # id(node) of sampled nodes already granted their mask
     for branch in trace.branches:
         mask: list[bool] = []
+        node_temps: list[float] = []  # per-token; only used when the branch mixes QA/rollout nodes
         for node in branch.nodes:
+            # ttt_qa NODES sample at the QA temperature; everything else at the rollout's.
+            # Per-node, not per-branch: a QA branch forks off the abandoned trajectory's
+            # leaf, so it carries rollout-sampled nodes — under the train-once dedup the
+            # FIRST QA branch owns those tokens' trainable mask, and stamping the whole
+            # branch with the QA temperature would put the bulk of the pre-compaction
+            # trajectory at the wrong temperature in the importance ratio.
+            node_temp = qa_temperature if (node.ttt_qa and qa_temperature is not None) else rollout_temperature
+            node_temps.extend([node_temp] * len(node.mask))
             if node.sampled and any(node.mask):
                 if id(node) in trained_nodes:
                     mask.extend([False] * len(node.mask))  # context here; trained elsewhere
@@ -183,11 +193,15 @@ def trace_to_samples(
             mm_kwargs = _encode_mm_kwargs(mmd.mm_items)
             mapping = mm_token_type_ids_mapping or {}
             mm_token_type_ids = [mapping.get(t, 0) for t in token_ids]
-        # ttt_qa branches may be sampled at their own temperature (QAConfig.temperature);
-        # stamp it here so the sink's rollout-temperature fill doesn't clobber it. None
-        # means same-as-rollout — leave [] for the sink.
-        if qa_temperature is not None and branch.is_ttt_qa:
-            temperatures = [qa_temperature] * len(token_ids)
+        # Stamp temperatures only when the branch actually carries QA-temperature tokens
+        # (QAConfig.temperature set AND some node is ttt_qa); the sink's fill must not
+        # clobber the mix. Everything else leaves [] for the sink's rollout-temperature
+        # fill — the non-TTT hot path is unchanged.
+        if qa_temperature is not None and any(n.ttt_qa for n in branch.nodes):
+            assert rollout_temperature is not None, (
+                "qa_temperature stamping needs rollout_temperature for the branch's non-QA nodes"
+            )
+            temperatures = node_temps
         else:
             temperatures = []  # filled by TrainSink.process_group
         samples.append(

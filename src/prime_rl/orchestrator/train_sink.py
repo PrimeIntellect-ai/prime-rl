@@ -160,6 +160,7 @@ class TrainSink:
                 env_name=rollout.env_name,
                 mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
                 qa_temperature=qa_temperature,
+                rollout_temperature=env.sampling_args["temperature"],
             )
         except Exception as exc:
             # Tokenization can raise (e.g. a stamped TTT branch with no recorded

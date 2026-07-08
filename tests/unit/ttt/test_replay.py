@@ -357,16 +357,62 @@ def test_trace_to_samples_stamps_qa_temperature_on_ttt_qa_branches():
 
     trace = make_trace([None, None])
     trace.nodes[1].ttt_qa = True  # the branch's sampled node is a QA side-generation
-    (sample,) = trace_to_samples(trace, env_name="e", qa_temperature=0.9)
-    assert sample.temperatures == [0.9] * len(sample.token_ids)
+    (sample,) = trace_to_samples(trace, env_name="e", qa_temperature=0.9, rollout_temperature=0.7)
+    # Node-granular: the QA node's tokens get qa_temperature, the non-QA user node keeps
+    # the rollout temperature (see test_qa_temperature_is_node_granular_on_mixed_branches).
+    assert sample.temperatures == [0.7, 0.7, 0.9, 0.9]
     # None = same-as-rollout: leave [] for the sink's rollout-temperature fill.
     trace2 = make_trace([None, None])
     trace2.nodes[1].ttt_qa = True
-    (sample2,) = trace_to_samples(trace2, env_name="e", qa_temperature=None)
+    (sample2,) = trace_to_samples(trace2, env_name="e", qa_temperature=None, rollout_temperature=0.7)
     assert sample2.temperatures == []
     # Non-QA branches keep [] even when qa_temperature is set.
-    (sample3,) = trace_to_samples(make_trace([None, None]), env_name="e", qa_temperature=0.9)
+    (sample3,) = trace_to_samples(make_trace([None, None]), env_name="e", qa_temperature=0.9, rollout_temperature=0.7)
     assert sample3.temperatures == []
+
+
+def test_qa_temperature_is_node_granular_on_mixed_branches():
+    """A QA branch forks off the abandoned trajectory's leaf, so it CARRIES rollout-sampled
+    nodes — and under the train-once dedup the first QA branch owns those tokens' trainable
+    mask. Their temperature must stay the ROLLOUT's; only the ttt_qa nodes' tokens get
+    qa_temperature. (Branch-granular stamping put the bulk of the pre-compaction trajectory
+    at the wrong temperature in the importance ratio.)"""
+    import verifiers.v1 as vf
+    from verifiers.v1.graph import MessageNode
+    from verifiers.v1.types import AssistantMessage, UserMessage
+
+    from prime_rl.orchestrator.trajectories import trace_to_samples
+
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+
+    def add(parent, message, sampled, ttt_qa=False):
+        trace.nodes.append(
+            MessageNode(
+                parent=parent,
+                message=message,
+                sampled=sampled,
+                token_ids=[1, 2],
+                mask=[False, sampled],
+                logprobs=[-0.5] if sampled else [],
+                ttt_qa=ttt_qa,
+            )
+        )
+        return len(trace.nodes) - 1
+
+    # Abandoned trajectory: user -> assistant (rollout-sampled, temp 0.7).
+    n_user = add(None, UserMessage(content="u"), sampled=False)
+    n_asst = add(n_user, AssistantMessage(content="a"), sampled=True)
+    # QA side-generation forks off the abandoned leaf (its only child -> the trajectory
+    # tokens live ONLY inside this branch).
+    n_qa_prompt = add(n_asst, UserMessage(content="write items"), sampled=False, ttt_qa=True)
+    add(n_qa_prompt, AssistantMessage(content="<item>...</item>"), sampled=True, ttt_qa=True)
+
+    (sample,) = trace_to_samples(trace, env_name="e", qa_temperature=0.9, rollout_temperature=0.7)
+    # Tokens: [user(2), assistant(2), qa_prompt(2), qa_answer(2)]
+    assert sample.temperatures == [0.7, 0.7, 0.7, 0.7, 0.9, 0.9, 0.9, 0.9]
+    # And the rollout-sampled token is trainable in this branch (the dedup grants it here),
+    # which is exactly why its temperature matters.
+    assert sample.mask == [False, False, False, True, False, False, False, True]
 
 
 def test_sink_temperature_stamp_skips_prestamped_samples():

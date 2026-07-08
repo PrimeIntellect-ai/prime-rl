@@ -24,6 +24,7 @@ import asyncio
 import datetime
 import os
 import threading
+import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -40,6 +41,10 @@ from prime_rl.utils.logger import get_logger
 # an update normally completes within one batch window + forward, but a wedged work loop
 # must not pin request threads forever.
 _RESULT_WAIT_SECONDS = 3600.0
+
+# Idle-heartbeat period for the control-plane broadcast (see run_server_v2.heartbeat):
+# must be comfortably below the gloo group's 24h op timeout.
+_HEARTBEAT_SECONDS = 3600.0
 
 
 @dataclass
@@ -84,6 +89,8 @@ def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
         kind, data = payload
         if kind == "stop":
             return
+        if kind == "noop":
+            continue  # idle heartbeat: keeps the gloo broadcast fed (see run_server_v2)
         if kind == "release":
             released = trainer.release(data)
             if world.is_master:
@@ -309,6 +316,18 @@ def run_server_v2(config: TTTServiceConfig) -> None:
         )
         http_thread = threading.Thread(target=server.run, daemon=True)
         http_thread.start()
+
+        def heartbeat() -> None:
+            # Idle heartbeat: non-master ranks park inside the gloo broadcast between work
+            # orders, and gloo enforces the group timeout per op — a fully idle service
+            # (e.g. launched before the RL run starts) would have ranks 1..N time out and
+            # die after 24h, taking the WHOLE service down. A periodic no-op order keeps
+            # the broadcast fed; it costs one tiny gloo broadcast per interval.
+            while True:
+                time.sleep(_HEARTBEAT_SECONDS)
+                work_queue.put(("noop", None))
+
+        threading.Thread(target=heartbeat, daemon=True).start()
         get_logger().info(f"TTT v2 serving on {config.host}:{config.port} ({world})")
 
     _work_loop(trainer, work_queue, world, ctrl_pg)

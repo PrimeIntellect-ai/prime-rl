@@ -116,6 +116,10 @@ def test_out_of_order_seq_no_rejected(tmp_path, tiny_model_name):
     # response), so a genuinely out-of-order seq_no must skip AHEAD to be rejected.
     with pytest.raises(ValueError, match="expected seq_no 2"):
         trainer.update("r1", "ttt-r1", tokens, [True] * len(tokens), seq_no=3)
+    # Malformed qa_pairs 409 (ValueError) with a clear message before any state mutation —
+    # not a KeyError-500 from inside _tokenize_qa.
+    with pytest.raises(ValueError, match="malformed qa_pairs\\[0\\]"):
+        trainer.update("r1", "ttt-r1", tokens, [True] * len(tokens), seq_no=2, qa_pairs=[{"answer": "a"}])
 
 
 def test_checkpoint_is_peft_loadable(tmp_path, tiny_model_name):
