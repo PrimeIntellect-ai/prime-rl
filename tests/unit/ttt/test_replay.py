@@ -108,12 +108,14 @@ def test_replay_hooks_match_reference_and_deactivate(tmp_path):
 
     raw = safetensors.torch.load_file(ckpt / "adapter_model.safetensors")
     scale = 4.0 / 2
-    q_a = raw["base_model.model.q_proj.lora_A.weight"].to(torch.bfloat16)
-    q_b = raw["base_model.model.q_proj.lora_B.weight"].to(torch.bfloat16)
-    u_a = raw["base_model.model.up_proj.lora_A.weight"].to(torch.bfloat16)
-    u_b = raw["base_model.model.up_proj.lora_B.weight"].to(torch.bfloat16)
-    h = model.q_proj(x) + (x.to(torch.bfloat16) @ q_a.T @ q_b.T).to(x.dtype) * scale
-    expected = model.up_proj(h) + (h.to(torch.bfloat16) @ u_a.T @ u_b.T).to(x.dtype) * scale
+    # The manager loads adapters in the model's parameter dtype (fp32 for this CPU model).
+    dtype = model.q_proj.weight.dtype
+    q_a = raw["base_model.model.q_proj.lora_A.weight"].to(dtype)
+    q_b = raw["base_model.model.q_proj.lora_B.weight"].to(dtype)
+    u_a = raw["base_model.model.up_proj.lora_A.weight"].to(dtype)
+    u_b = raw["base_model.model.up_proj.lora_B.weight"].to(dtype)
+    h = model.q_proj(x) + (x.to(dtype) @ q_a.T @ q_b.T).to(x.dtype) * scale
+    expected = model.up_proj(h) + (h.to(dtype) @ u_a.T @ u_b.T).to(x.dtype) * scale
     assert torch.allclose(replay_out, expected, atol=1e-5)
     assert not torch.allclose(replay_out, base_out)
 
@@ -150,6 +152,114 @@ def test_replay_unknown_module_fails_loudly(tmp_path):
     manager = TTTReplayManager(model, torch.device("cpu"))
     with pytest.raises(ValueError, match="does not exist on the trainer model"):
         manager.activate(str(ckpt))
+
+
+def test_replay_resolves_ac_wrapped_modules(tmp_path):
+    """Under [trainer.model.ac] full mode, checkpoint_wrapper inserts
+    ``._checkpoint_wrapped_module.`` into FQNs — the manager must still resolve the
+    plain PEFT paths and produce the same hook math as the un-wrapped model."""
+    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+
+    from prime_rl.trainer.ttt_replay import TTTReplayManager
+
+    torch.manual_seed(1)
+    ckpt = tmp_path / "r1" / "v1"
+    write_adapter(ckpt, {"block.q_proj": (8, 8), "block.up_proj": (8, 16)})
+    x = torch.randn(3, 8)
+
+    class Outer(torch.nn.Module):
+        def __init__(self, block):
+            super().__init__()
+            self.block = block
+
+        def forward(self, x):
+            return self.block(x)
+
+    # Un-wrapped reference.
+    torch.manual_seed(2)
+    ref_model = Outer(TinyModel())
+    ref_manager = TTTReplayManager(ref_model, torch.device("cpu"))
+    ref_manager.activate(str(ckpt))
+    expected = ref_model(x)
+
+    # Same weights, block wrapped with AC.
+    torch.manual_seed(2)
+    model = Outer(checkpoint_wrapper(TinyModel()))
+    assert any("_checkpoint_wrapped_module" in name for name, _ in model.named_modules())
+    manager = TTTReplayManager(model, torch.device("cpu"))
+    manager.activate(str(ckpt))
+    assert torch.allclose(model(x), expected, atol=1e-6)
+
+
+def test_replay_hooks_survive_compile(tmp_path):
+    """Hooks installed BEFORE torch.compile stay live (dynamo skips guards on hooks added
+    later — the eager-install path is what makes replay correct under compile)."""
+    from prime_rl.trainer.ttt_replay import TTTReplayManager
+
+    torch.manual_seed(3)
+    model = TinyModel()
+    ckpt1 = tmp_path / "r1" / "v1"
+    ckpt2 = tmp_path / "r1" / "v2"
+    write_adapter(ckpt1, {"q_proj": (8, 8)})
+    write_adapter(ckpt2, {"q_proj": (8, 8)}, alpha=8.0)  # different scale -> different output
+
+    manager = TTTReplayManager(model, torch.device("cpu"))
+    manager.install_hooks_on_all_linears()
+    x = torch.randn(3, 8)
+    manager.activate(str(ckpt1))
+    eager_ref1 = model(x)
+    manager.activate(str(ckpt2))
+    eager_ref2 = model(x)
+    manager.activate(None)
+    base_ref = model(x)
+
+    compiled = torch.compile(model, backend="eager")
+    manager.activate(str(ckpt1))
+    assert torch.allclose(compiled(x), eager_ref1, atol=1e-6)
+    manager.activate(str(ckpt2))  # switching adapters must take effect under compile too
+    assert torch.allclose(compiled(x), eager_ref2, atol=1e-6)
+    assert not torch.allclose(eager_ref1, eager_ref2)
+    manager.activate(None)
+    assert torch.allclose(compiled(x), base_ref, atol=1e-6)
+
+
+def test_activate_failure_does_not_poison_current(tmp_path):
+    from prime_rl.trainer.ttt_replay import TTTReplayManager
+
+    manager = TTTReplayManager(TinyModel(), torch.device("cpu"))
+    missing = str(tmp_path / "nope" / "v1")
+    with pytest.raises(Exception):
+        manager.activate(missing)
+    # A failed activate must not record the path — retrying raises again instead of
+    # silently running the base model.
+    with pytest.raises(Exception):
+        manager.activate(missing)
+
+
+def test_load_rejects_rslora_dora_and_unknown_keys(tmp_path):
+    import json
+
+    import safetensors.torch
+
+    from prime_rl.trainer.ttt_replay import TTTReplayManager
+
+    manager = TTTReplayManager(TinyModel(), torch.device("cpu"))
+
+    rslora = tmp_path / "rslora" / "v1"
+    write_adapter(rslora, {"q_proj": (8, 8)})
+    config = json.loads((rslora / "adapter_config.json").read_text())
+    config["use_rslora"] = True
+    (rslora / "adapter_config.json").write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="use_rslora"):
+        manager.activate(str(rslora))
+
+    unknown = tmp_path / "unknown" / "v1"
+    write_adapter(unknown, {"q_proj": (8, 8)})
+    raw = safetensors.torch.load_file(unknown / "adapter_model.safetensors")
+    raw["base_model.model.q_proj.lora_magnitude_vector"] = torch.randn(8)
+    safetensors.torch.save_file(raw, unknown / "adapter_model.safetensors")
+    with pytest.raises(ValueError, match="unrecognized tensor keys"):
+        manager.activate(str(unknown))
 
 
 # -- trajectories: adapter path resolution + QA recycling ------------------------------------

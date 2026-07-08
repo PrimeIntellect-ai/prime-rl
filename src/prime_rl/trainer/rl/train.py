@@ -151,9 +151,18 @@ def train(config: TrainerConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     # TTT replay: run each micro batch's forward under the frozen adapter its tokens were
-    # sampled with (see prime_rl.trainer.ttt_replay). Armed lazily — the manager is inert
-    # until a micro batch carries a ``ttt_adapter_path``.
+    # sampled with (see prime_rl.trainer.ttt_replay). When TTT samples are expected the
+    # manager is built here — hooks must exist BEFORE torch.compile traces the blocks, or
+    # dynamo silently skips them (skip_nnmodule_hook_guards) and replay becomes a no-op.
     ttt_replay: TTTReplayManager | None = None
+    if config.ttt_replay:
+        if config.model.lora is not None:
+            raise RuntimeError(
+                "TTT replay samples cannot be trained with policy LoRA enabled — "
+                "train the policy full-weights (unset [trainer.model.lora])."
+            )
+        ttt_replay = TTTReplayManager(model, torch.device("cuda", world.local_rank))
+        ttt_replay.install_hooks_on_all_linears()
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
@@ -399,6 +408,14 @@ def train(config: TrainerConfig):
                     raise RuntimeError(
                         "TTT replay samples cannot be trained with policy LoRA enabled — "
                         "train the policy full-weights (unset [trainer.model.lora])."
+                    )
+                if config.model.compile is not None:
+                    # Hooks installed after compile are silently ignored by dynamo — the
+                    # forward would be base-model while we believe the adapter is active.
+                    raise RuntimeError(
+                        "TTT replay sample encountered but replay hooks were not installed "
+                        "before torch.compile — set [trainer] ttt_replay = true (or disable "
+                        "[trainer.model.compile])."
                     )
                 ttt_replay = TTTReplayManager(model, torch.device("cuda", world.local_rank))
             if ttt_replay is not None:

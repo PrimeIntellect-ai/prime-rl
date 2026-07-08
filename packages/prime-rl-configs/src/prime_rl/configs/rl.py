@@ -322,6 +322,8 @@ class RLConfig(BaseConfig):
                 "set [inference] enable_lora = true (and size max_loras / max_lora_rank for the "
                 "TTT service's adapters)."
             )
+        # The trainer must arm the replay hooks before ``torch.compile`` (see TrainerConfig.ttt_replay).
+        self.trainer.ttt_replay = True
         return self
 
     @model_validator(mode="after")

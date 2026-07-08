@@ -572,6 +572,9 @@ class TrainerConfig(BaseConfig):
     enable_token_export: bool = False
     """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
 
+    ttt_replay: bool = False
+    """Expect TTT frozen-adapter replay samples: install the replay hooks eagerly at model setup (required before ``torch.compile`` — hooks added afterwards are silently ignored by dynamo). Auto-set by ``RLConfig.validate_ttt`` when any train env has TTT enabled."""
+
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
 

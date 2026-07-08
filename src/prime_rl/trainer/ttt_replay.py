@@ -25,6 +25,7 @@ from pathlib import Path
 
 import torch
 from torch import nn
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import _CHECKPOINT_PREFIX
 
 from prime_rl.utils.logger import get_logger
 
@@ -44,6 +45,15 @@ def _module_path(key: str) -> tuple[str, str] | None:
     return None
 
 
+# Kept out of any compiled graph: the adapter tensors change per micro batch, and tracing
+# them into a compiled block would either bake them in or trigger recompiles.
+@torch._dynamo.disable
+def _adapter_delta(
+    x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, scale: float, out_dtype: torch.dtype
+) -> torch.Tensor:
+    return ((x.to(a.dtype) @ a.T @ b.T).to(out_dtype)) * scale
+
+
 class TTTReplayManager:
     """Owns the model's replay hooks and the active adapter.
 
@@ -57,7 +67,15 @@ class TTTReplayManager:
         self.model = model
         self.device = device
         self.cache_size = cache_size
-        self._modules: dict[str, nn.Module] = dict(model.named_modules())
+        # Strip AC wrapper segments so PEFT module paths resolve: checkpoint_wrapper renames
+        # e.g. "layers.0.self_attn.q_proj" to "layers.0._checkpoint_wrapped_module.self_attn.q_proj".
+        # named_modules yields the wrapper before the inner module, so on the (rare) collision
+        # of a wrapper path with its inner module the later — inner — entry wins, as it should.
+        self._modules: dict[str, nn.Module] = {
+            name.replace(_CHECKPOINT_PREFIX, ""): mod for name, mod in model.named_modules()
+        }
+        # Match the model's parameter dtype so the hook delta composes with mixed precision.
+        self._dtype = next(model.parameters(), torch.empty(0, dtype=torch.bfloat16)).dtype
         self._hooked: set[int] = set()
         # module -> (A [r,in], B [out,r], scale); consulted by the hooks each forward.
         self._active: dict[nn.Module, tuple[torch.Tensor, torch.Tensor, float]] = {}
@@ -68,11 +86,14 @@ class TTTReplayManager:
     def activate(self, path: str | None) -> None:
         if path == self._current:
             return
+        # Clear first, mutate last: a failed load/resolve must leave the manager disarmed
+        # (base model), never half-armed or pretending the previous adapter is active.
         self._active.clear()
-        self._current = path
+        self._current = None
         if path is None:
             return
         tensors, scale = self._load(path)
+        new_active: dict[nn.Module, tuple[torch.Tensor, torch.Tensor, float]] = {}
         for module_path, (a, b) in tensors.items():
             module = self._modules.get(module_path)
             if module is None:
@@ -82,7 +103,18 @@ class TTTReplayManager:
                     "must run the same architecture."
                 )
             self._ensure_hook(module)
-            self._active[module] = (a, b, scale)
+            new_active[module] = (a, b, scale)
+        self._active.update(new_active)
+        self._current = path
+
+    def install_hooks_on_all_linears(self) -> None:
+        """Eagerly hook every ``nn.Linear`` — required before ``torch.compile``: dynamo skips
+        guards on module hooks by default, so a hook installed after a block was compiled is
+        silently ignored (base-model forward with the trainer believing the adapter is on).
+        Unarmed hooks cost one dict lookup per linear per forward."""
+        for module in self.model.modules():
+            if isinstance(module, nn.Linear):
+                self._ensure_hook(module)
 
     def _ensure_hook(self, module: nn.Module) -> None:
         if id(module) in self._hooked:
@@ -93,8 +125,7 @@ class TTTReplayManager:
             if slot is None:
                 return output
             a, b, scale = slot
-            x = args[0]
-            return output + (x.to(a.dtype) @ a.T @ b.T).to(output.dtype) * scale
+            return output + _adapter_delta(args[0], a, b, scale, output.dtype)
 
         module.register_forward_hook(hook)
         self._hooked.add(id(module))
@@ -110,16 +141,36 @@ class TTTReplayManager:
         ckpt = Path(path)
         raw = safetensors.torch.load_file(ckpt / "adapter_model.safetensors")
         config = json.loads((ckpt / "adapter_config.json").read_text())
+        # The hook math only implements plain LoRA (scale * x A^T B^T): reject PEFT variants
+        # that would silently replay the wrong function.
+        problems = []
+        if config.get("peft_type") not in (None, "LORA"):
+            problems.append(f"peft_type={config['peft_type']!r} (only LORA is supported)")
+        for flag in ("use_rslora", "use_dora"):
+            if config.get(flag):
+                problems.append(f"{flag}=true")
+        for pattern in ("rank_pattern", "alpha_pattern"):
+            if config.get(pattern):
+                problems.append(f"non-empty {pattern}")
+        if config.get("modules_to_save") is not None:
+            problems.append("modules_to_save is set")
+        if problems:
+            raise ValueError(f"TTT replay: adapter {path} is not plain-LoRA replayable: {', '.join(problems)}")
         scale = float(config["lora_alpha"]) / float(config["r"])
         halves: dict[str, dict[str, torch.Tensor]] = {}
+        unknown_keys = []
         for key, tensor in raw.items():
             resolved = _module_path(key)
             if resolved is None:
+                unknown_keys.append(key)
                 continue
             module_path, which = resolved
             halves.setdefault(module_path, {})[which] = tensor.to(
-                self.device, dtype=torch.bfloat16, non_blocking=False
+                self.device, dtype=self._dtype, non_blocking=False
             ).requires_grad_(False)
+        if unknown_keys:
+            # A key we can't map would silently drop part of the adapter — fail instead.
+            raise ValueError(f"TTT replay: adapter {path} has unrecognized tensor keys: {unknown_keys}")
         tensors: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         for module_path, pair in halves.items():
             if "A" not in pair or "B" not in pair:
