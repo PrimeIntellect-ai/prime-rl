@@ -46,6 +46,15 @@ def rollout_ckpt_dirs(rollout: "Rollout") -> set[Path]:
     return dirs
 
 
+def dispose_eval_rollout_ckpts(rollout: "Rollout") -> None:
+    """Best-effort delete of an eval rollout's adapter checkpoint dirs. Eval rollouts do
+    TTT at inference time but their adapters are never replayed by the trainer — dismiss
+    immediately (the write-then-delete inefficiency is accepted; skipping the write needs
+    a wire-protocol change in the verifiers submodule)."""
+    for path in rollout_ckpt_dirs(rollout):
+        shutil.rmtree(path, ignore_errors=True)
+
+
 class TTTCheckpointGC:
     """Tracks shipped batches' adapter dirs and deletes them once consumed."""
 

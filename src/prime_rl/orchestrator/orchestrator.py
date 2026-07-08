@@ -52,7 +52,7 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
-from prime_rl.orchestrator.ttt_gc import TTTCheckpointGC
+from prime_rl.orchestrator.ttt_gc import TTTCheckpointGC, dispose_eval_rollout_ckpts
 from prime_rl.orchestrator.types import (
     EvalBatch,
     Policy,
@@ -469,6 +469,10 @@ class Orchestrator:
 
             if rollout.kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
+                # Eval rollouts do TTT at inference time but their adapters are never
+                # replayed by the trainer — dismiss the checkpoint dirs immediately.
+                if rollout.info.get("ttt"):
+                    dispose_eval_rollout_ckpts(rollout)
                 eval_batch = self.eval_sink.add(rollout)
                 if eval_batch is not None:
                     await self.finalize_eval_batch(eval_batch)

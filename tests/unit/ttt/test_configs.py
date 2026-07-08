@@ -85,6 +85,28 @@ def test_inflight_equal_to_max_loras_ok():
     RLConfig.model_validate(rl_payload({"base_url": "http://localhost:8092"}, max_loras=16))
 
 
+def eval_only_ttt_payload(**inference_overrides) -> dict:
+    """RLConfig payload where only the EVAL env carries a ``ttt`` block."""
+    payload = rl_payload(None, **inference_overrides)
+    payload["orchestrator"]["eval"] = {
+        "env": [{"id": "dummy-eval-env", "ttt": {"base_url": "http://localhost:8092"}}]
+    }
+    return payload
+
+
+def test_eval_env_ttt_requires_enable_lora():
+    """Eval envs run the identical TTT inference regime, so they impose the same
+    LoRA-serving requirement on inference as train envs."""
+    with pytest.raises(ValueError, match="enable_lora"):
+        RLConfig.model_validate(eval_only_ttt_payload(enable_lora=False))
+
+
+def test_eval_only_ttt_does_not_set_ttt_replay():
+    """Eval adapters are dismissed per rollout, never replayed — no trainer replay hooks."""
+    config = RLConfig.model_validate(eval_only_ttt_payload())
+    assert config.trainer.ttt_replay is False
+
+
 @pytest.mark.parametrize(
     "arm",
     [

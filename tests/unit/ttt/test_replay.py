@@ -471,6 +471,28 @@ def test_ttt_gc_carries_window_straddlers(tmp_path):
     assert not straddler_dir.exists()  # freed once consumed
 
 
+def test_eval_rollout_ckpt_disposal(tmp_path):
+    """Eval rollouts do TTT at inference time but never reach TrainSink/TTTCheckpointGC —
+    their adapter dirs are dismissed immediately when the rollout arrives."""
+    from dataclasses import dataclass, field
+
+    from prime_rl.orchestrator.ttt_gc import dispose_eval_rollout_ckpts
+
+    ckpt_dir = tmp_path / "ttt" / "r-eval"
+    (ckpt_dir / "v1").mkdir(parents=True)
+
+    @dataclass
+    class FakeRollout:
+        info: dict = field(default_factory=dict)
+
+    ttt_rollout = FakeRollout(info={"ttt": {"updates": [{"version": 1, "ckpt_path": str(ckpt_dir / "v1")}]}})
+    dispose_eval_rollout_ckpts(ttt_rollout)
+    assert not ckpt_dir.exists()
+
+    # No ttt info → no dirs, no error.
+    dispose_eval_rollout_ckpts(FakeRollout())
+
+
 def test_shared_sampled_prefix_trained_once():
     """Branches sharing a SAMPLED prefix (QA side-branches, subagent forks) grant each
     sampled node its mask exactly once — the first branch trains it, later branches carry

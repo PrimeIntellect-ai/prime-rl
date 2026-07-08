@@ -239,10 +239,11 @@ normal training batch, `rl_weights` zero — kept strictly disjoint in experimen
 ## 7. Experiments — RL-first on scaleswe (`configs/ttt/scaleswe/`)
 
 GLM-4.5-Air on `scaleswe-v1`, compacting harness on prime sandboxes, eval on SWE-Bench
-Verified under the same compaction regime as training (TTT itself is off during
-orchestrator evals — the eval path samples through the chat-relay client, which carries no
-token ids and is refused by the hook; TTT-on evals go through the env eval CLI with
-`--client.type train`). TTT arms:
+Verified under the identical inference regime as training — same compaction, same TTT
+updates, same QA generation. The dispatcher routes TTT eval envs through the renderer
+(train) client (TTT consumes exact token ids; the chat relay would refuse at the first
+compaction), and eval adapters/checkpoints are dismissed as each rollout finishes (no RL
+replay on eval). TTT arms:
 `compact_at_tokens = 16384` at 64k total; fsdp-engine service on its own 8-GPU node
 (torchrun); attention-only rank-16 adapters. Launch:
 `uv run rl @ scaleswe/base.toml @ scaleswe/arm_<X>.toml` (+ the service for TTT arms).

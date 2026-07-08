@@ -312,16 +312,26 @@ class RLConfig(BaseConfig):
         installs eager, dynamo-disabled hooks), so neither is rejected here."""
         # ``ttt.enabled`` is the master switch (verifiers TTTConfig.enabled): a disabled
         # block leaves rollouts untouched, so it must impose no constraints here either.
-        active_ttt_envs = [
+        # Eval envs run the identical inference regime as training (same TTT updates),
+        # so inference-side constraints apply to both; replay is train-only.
+        active_train_ttt_envs = [
             env for env in self.orchestrator.train.env if getattr(env, "ttt", None) is not None and env.ttt.enabled
         ]
+        eval_env_configs = self.orchestrator.eval.env if self.orchestrator.eval is not None else []
+        active_eval_ttt_envs = [
+            env for env in eval_env_configs if getattr(env, "ttt", None) is not None and env.ttt.enabled
+        ]
+        active_ttt_envs = active_train_ttt_envs + active_eval_ttt_envs
         ttt_envs = [env.resolved_name for env in active_ttt_envs]
         if not ttt_envs:
             return self
-        if self.trainer.model.lora is not None:
+        # Full-weight policy is a REPLAY constraint — only train-env TTT triggers replay
+        # (eval adapters are dismissed per rollout, never replayed by the trainer).
+        if active_train_ttt_envs and self.trainer.model.lora is not None:
             raise ValueError(
-                f"TTT env(s) {ttt_envs} require full-weight policy training: frozen TTT adapter "
-                "replay cannot be combined with a trainable policy LoRA — unset [trainer.model.lora]."
+                f"TTT env(s) {[e.resolved_name for e in active_train_ttt_envs]} require full-weight "
+                "policy training: frozen TTT adapter replay cannot be combined with a trainable "
+                "policy LoRA — unset [trainer.model.lora]."
             )
         if self.inference is not None and not self.inference.enable_lora:
             raise ValueError(
@@ -339,18 +349,24 @@ class RLConfig(BaseConfig):
                 )
         # Every in-flight rollout holds a vLLM adapter slot; the orchestrator resolves
         # ``max_inflight_rollouts`` in its own validators (from batch_size when unset), so
-        # read it defensively and only enforce when determinable.
+        # read it defensively and only enforce when determinable. Eval rollouts hold slots
+        # concurrently with train rollouts too; eval concurrency depends on eval scheduling
+        # and isn't computable here, so it's only surfaced in the error guidance.
         if self.inference is not None and self.inference.enable_lora:
             max_inflight = self.orchestrator.max_inflight_rollouts
             if max_inflight is not None and max_inflight > self.inference.max_loras:
                 raise ValueError(
                     f"TTT env(s) {ttt_envs}: orchestrator max_inflight_rollouts ({max_inflight}) exceeds "
                     f"[inference] max_loras ({self.inference.max_loras}) — every in-flight rollout holds a "
-                    "LoRA slot. Raise max_loras (and max_cpu_loras) or lower max_inflight_rollouts / "
-                    "oversampling_factor."
+                    "LoRA slot (TTT eval rollouts hold slots concurrently with train rollouts, so co-size "
+                    "max_loras with eval concurrency). Raise max_loras (and max_cpu_loras) or lower "
+                    "max_inflight_rollouts / oversampling_factor."
                 )
-        # The trainer must arm the replay hooks before ``torch.compile`` (see TrainerConfig.ttt_replay).
-        self.trainer.ttt_replay = True
+        # The trainer must arm the replay hooks before ``torch.compile`` (see
+        # TrainerConfig.ttt_replay). Keyed to TRAIN envs only: eval-only TTT never
+        # produces replay samples (eval adapters are dismissed per rollout).
+        if active_train_ttt_envs:
+            self.trainer.ttt_replay = True
         return self
 
     @model_validator(mode="after")

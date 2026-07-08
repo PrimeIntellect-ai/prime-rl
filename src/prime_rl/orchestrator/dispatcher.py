@@ -170,6 +170,21 @@ class RolloutDispatcher:
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
 
+    def _wants_train_client(self, group: GroupState) -> bool:
+        """Whether this group must sample through the renderer (train) client.
+
+        All train groups do. Eval groups normally use the chat-relay eval client,
+        but a TTT-enabled eval env must run the identical inference regime as
+        training: TTT consumes exact token ids, so it requires the renderer/token
+        client — the chat relay would refuse at the first compaction."""
+        if group.kind != "eval":
+            return True
+        if self.eval_envs is None:
+            return False
+        config = self.eval_envs.get(group.env_name).config
+        ttt = getattr(config, "ttt", None)
+        return ttt is not None and ttt.enabled
+
     def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
         """``(pool, model_name, is_live)`` for *train* rollouts of this env —
         the env sampler's pool. (Eval always uses the policy.)"""
@@ -402,7 +417,10 @@ class RolloutDispatcher:
         # Train rollouts use the env sampler's pool via the
         # renderer/token train client. Eval always evaluates the policy and
         # goes through the eval client (chat-completions) — the same path the
-        # legacy orchestrator used, so eval scores stay comparable.
+        # legacy orchestrator used, so eval scores stay comparable. TTT eval
+        # envs are the exception: TTT consumes exact token ids, so they need
+        # the renderer (train) client — the chat relay would refuse at the
+        # first compaction.
         if group.kind == "eval":
             pool, model_name = self.policy_pool, self.policy.model_name
             live_sourced = True
@@ -411,7 +429,7 @@ class RolloutDispatcher:
 
         # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
-            if group.kind == "eval":
+            if group.kind == "eval" and not self._wants_train_client(group):
                 client = await pool.get_eval_client()
             else:
                 load = Counter(

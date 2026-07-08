@@ -31,7 +31,9 @@ harness (compacting)          interception (verifiers.v1)         TTT service (t
 - **Exactness over latency**: the rollout blocks on each update (applied + adapter reloaded
   + prefix cache salted per version) before the next turn samples.
 - **TTT requires the renderer (train) client** — updates consume the engine's exact token
-  ids; the eval relay fails loudly.
+  ids; the eval relay fails loudly. The orchestrator routes TTT-enabled eval envs through
+  the renderer client too (evals run the identical inference regime as training); their
+  adapters/checkpoints are dismissed as each rollout finishes — no RL replay on eval.
 
 ## Configuration
 
