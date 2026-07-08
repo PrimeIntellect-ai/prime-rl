@@ -94,8 +94,17 @@ thinking_retention = "all"
 
 [orchestrator.prime_monitor]
 
-# --- Eval: SWE-Bench Verified, same compaction AND TTT regime as training (arm overlays
-# set both; TTT eval envs route through the renderer client, adapters dismissed per rollout) ---
+# --- Evals (arm overlays define the env blocks; all run the arm's own compaction+TTT
+# regime; TTT eval envs route through the renderer client, eval adapters/checkpoints
+# dismissed per rollout — no RL replay on eval). Three-eval panel per arm:
+#   swebench-verified (200 @ every 20) . primary in-domain score
+#   swebench-pro      (100 @ every 40) . within-domain generalization (different SWE
+#                                        dataset — separates improvement from Scale-SWE
+#                                        distribution overfit)
+#   deepdive          (50  @ every 20) . out-of-domain transfer (web research, highest
+#                                        context pressure; forgetting canary for A4/A5's
+#                                        permanent weight updates). Needs SERPER_API_KEY
+#                                        + OPENAI_API_KEY on the orchestrator. ---
 
 [orchestrator.eval]
 interval = 20

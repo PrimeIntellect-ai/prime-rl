@@ -46,4 +46,28 @@ name = "swebench-verified"
 taskset = { id = "swebench-verified-v1", use_prime_registry = true }
 harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
 ttt = { base_url = "auto", qa = { meta_lessons = true } }  # recycle/meta flags are inert on eval (consumed only by the train sink) — kept identical to training on purpose
+num_examples = 200  # fixed subset: comparable across steps/arms, keeps 6-arm eval load sane
+timeout = { rollout = 3600 }
+
+# Within-domain generalization: a DIFFERENT SWE dataset (SWE-bench Pro, SWEAP images —
+# no overlap with Scale-SWE). Same regime as training. Heavier tasks -> every 40 steps.
+[[orchestrator.eval.env]]
+name = "swebench-pro"
+taskset = { id = "swebench-pro-v1" }
+harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+ttt = { base_url = "auto", qa = { meta_lessons = true } }  # qa flags inert on eval (train-sink only); kept identical to training
+num_examples = 100
+interval = 40
+timeout = { rollout = 3600 }
+
+# Out-of-domain: deepdive (long-horizon web research) — does the method transfer beyond
+# SWE, and does compaction/TTT help where context pressure is highest? Needs
+# SERPER_API_KEY (search tool, forwarded from the orchestrator env) and OPENAI_API_KEY
+# (the taskset's gpt-5-mini judge) on the orchestrator node.
+[[orchestrator.eval.env]]
+name = "deepdive"
+taskset = { id = "deepdive-v1" }
+harness = { id = "compacting", compact_at_tokens = 16384, search = true, forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+ttt = { base_url = "auto", qa = { meta_lessons = true } }  # qa flags inert on eval (train-sink only); kept identical to training
+num_examples = 50
 timeout = { rollout = 3600 }
