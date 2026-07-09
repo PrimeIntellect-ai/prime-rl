@@ -181,6 +181,12 @@ DeploymentConfig: TypeAlias = Annotated[
 ]
 
 
+# Default top-k bound injected on truncated train sampling when mask replay is on:
+# large enough that a 0.95-0.99 nucleus rarely reaches it (the sampling policy is
+# essentially unchanged), small enough to bound the capture width and trainer masks.
+DEFAULT_REPLAY_TOP_K = 512
+
+
 class RLConfig(BaseConfig):
     trainer: TrainerConfig
 
@@ -526,6 +532,24 @@ class RLConfig(BaseConfig):
                 self.trainer.enable_sampling_mask_replay = True
 
         if self.trainer.enable_sampling_mask_replay:
+            # Force a top-k bound on every truncating sampling config: kept sets are then
+            # bounded by k and the capture width covers them exactly, so the overflow
+            # fallback (whose bias is unbounded when top-p isn't doing the trimming) is
+            # unreachable and replay is exact everywhere. An explicit top_k overrides.
+            if any(
+                sampling.truncates_distribution() and sampling.effective_top_k() is None
+                for sampling in sampling_configs
+            ):
+                warnings.warn(
+                    f"Sampling-mask replay: defaulting top_k = {DEFAULT_REPLAY_TOP_K} on truncated train "
+                    "sampling so every kept set is bounded and replay stays exact. Set top_k explicitly "
+                    "to override.",
+                    stacklevel=2,
+                )
+                for sampling in sampling_configs:
+                    if sampling.truncates_distribution() and sampling.effective_top_k() is None:
+                        sampling.top_k = DEFAULT_REPLAY_TOP_K
+
             if self.inference is not None:
                 if (
                     self.inference.enable_return_kept_tokens is False
@@ -536,18 +560,22 @@ class RLConfig(BaseConfig):
                         stacklevel=2,
                     )
                 self.inference.enable_return_kept_tokens = True
-                # With top-k, every kept set is bounded by k — but only if the capture cap
-                # covers it. A cap below k would overflow every truncated position into the
-                # full-vocab fallback, whose bias is NOT bounded by -log(top_p) when top-k
-                # does the trimming. Raise the cap so replay stays exact.
+                # The capture width is derived, not configured: exactly the largest top-k
+                # any train sampling config uses. An explicit kept_tokens_max is respected
+                # only when it doesn't break exactness (i.e. it is not below the top-k).
                 top_ks = [k for sampling in sampling_configs if (k := sampling.effective_top_k()) is not None]
-                if top_ks and max(top_ks) > self.inference.kept_tokens_max:
-                    warnings.warn(
-                        f"Raising inference.kept_tokens_max from {self.inference.kept_tokens_max} to "
-                        f"{max(top_ks)} to cover train sampling top_k (keeps sampling-mask replay exact).",
-                        stacklevel=2,
-                    )
-                    self.inference.kept_tokens_max = max(top_ks)
+                if top_ks:
+                    derived_cap = max(top_ks)
+                    explicit = "kept_tokens_max" in self.inference.model_fields_set
+                    if explicit and self.inference.kept_tokens_max < derived_cap:
+                        warnings.warn(
+                            f"Raising inference.kept_tokens_max from {self.inference.kept_tokens_max} to "
+                            f"{derived_cap} to cover train sampling top_k (keeps sampling-mask replay exact).",
+                            stacklevel=2,
+                        )
+                        self.inference.kept_tokens_max = derived_cap
+                    elif not explicit:
+                        self.inference.kept_tokens_max = derived_cap
             else:
                 warnings.warn(
                     "Sampling-mask replay is enabled, but inference is not configured. When manually starting the "

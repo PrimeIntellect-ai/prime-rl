@@ -61,10 +61,11 @@ class TrainSamplingConfig(BaseConfig):
     this is lowered."""
 
     top_k: int | None = Field(None, ge=1)
-    """Top-k sampling for train rollouts (None = disabled). Like ``top_p``, truncation
-    auto-enables sampling-mask replay. Setting it also bounds every kept set to k, making
-    replay exact everywhere: the ``rl`` entrypoint raises ``inference.kept_tokens_max`` to
-    cover it, so no position ever overflows into the full-vocab fallback."""
+    """Top-k sampling for train rollouts. Like ``top_p``, truncation auto-enables
+    sampling-mask replay; it also bounds every kept set to k, which is what keeps replay
+    exact — so when replay is on and only top-p/min-p truncate, the ``rl`` entrypoint
+    defaults this to 512 (rarely binding at typical top_p). ``inference.kept_tokens_max``
+    is derived from it."""
 
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
