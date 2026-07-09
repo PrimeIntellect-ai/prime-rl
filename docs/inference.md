@@ -292,9 +292,10 @@ Sampling mask replay fixes this by capturing the kept-set token ids at sampling 
 ```toml
 [orchestrator.train.sampling]
 top_p = 0.95
+top_k = 512   # optional — defaulted to 512 when truncation is on, since it bounds the kept sets
 ```
 
-That's all the `rl` entrypoint needs: truncated train sampling automatically enables `trainer.enable_sampling_mask_replay` and `inference.enable_return_kept_tokens`. Explicitly setting `trainer.enable_sampling_mask_replay = false` opts out (a naive-top-p baseline — expect collapse); when the inference server is launched separately from its own config, set `inference.enable_return_kept_tokens = true` there yourself.
+That's all the `rl` entrypoint needs: truncated train sampling (`top_p < 1` and/or `top_k`) automatically enables `trainer.enable_sampling_mask_replay` and `inference.enable_return_kept_tokens`. Explicitly setting `trainer.enable_sampling_mask_replay = false` opts out (a naive-top-p baseline — expect collapse); when the inference server is launched separately from its own config, set `inference.enable_return_kept_tokens = true` there yourself.
 
 Replay is exact by construction: when it's on, the `rl` entrypoint forces a top-k bound on truncated train sampling (`top_k` defaults to 512 if unset — rarely binding at typical top_p — and is respected if set; a config warning notes the injected default), so every kept set is bounded by k, and the capture width (`inference.kept_tokens_max`, derived as the largest configured top_k) always covers it. Larger top_k linearly grows the per-step device-to-host copy and the trainer's padded `[seq, max_kept]` mask tensor. Only standalone-launched inference servers need to set `kept_tokens_max` by hand, to cover their clients' top_k; positions whose kept set exceeds it ship no mask and the trainer falls back to full-vocab logprobs there. Like router replay, the kept sets ride the `/inference/v1/generate` response as base64 payloads (typically far smaller than routed experts). The capture is implemented as monkey-patches over vLLM's sampler and requires `logprobs_mode = "processed_logprobs"` (the default) — which also disables the fused FlashInfer sampler, so truncated sampling pays a small sampling-throughput cost either way.
 
