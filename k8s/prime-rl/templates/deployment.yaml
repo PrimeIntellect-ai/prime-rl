@@ -22,13 +22,19 @@ spec:
         {{- include "prime-rl.componentLabels" . | nindent 8 }}
         role: orchestrator
     spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
       {{- with .Values.orchestrator.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
       - name: prime-rl-orchestrator
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        image: {{ include "prime-rl.image" . | quote }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.orchestrator.autoStart }}
         command: ["/bin/bash", "-c"]
@@ -95,7 +101,7 @@ spec:
       volumes:
       - name: shared-data
         persistentVolumeClaim:
-          claimName: {{ .Release.Name }}-shared-data
+          claimName: {{ include "prime-rl.storageClaimName" . }}
       {{- end }}
 {{- end }}
 ---
@@ -124,12 +130,18 @@ spec:
         {{- include "prime-rl.componentLabels" . | nindent 8 }}
         role: inference
     spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
       {{- if .Values.inference.runtimeClassName }}
       runtimeClassName: {{ .Values.inference.runtimeClassName }}
       {{- end }}
       containers:
       - name: prime-rl-inference
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        image: {{ include "prime-rl.image" . | quote }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.inference.autoStart }}
         command: ["/bin/bash", "-c"]
@@ -224,7 +236,7 @@ spec:
       volumes:
       - name: shared-data
         persistentVolumeClaim:
-          claimName: {{ .Release.Name }}-shared-data
+          claimName: {{ include "prime-rl.storageClaimName" . }}
       {{- end }}
 {{- end }}
 ---
@@ -253,12 +265,18 @@ spec:
         {{- include "prime-rl.componentLabels" . | nindent 8 }}
         role: trainer
     spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
       {{- if .Values.trainer.runtimeClassName }}
       runtimeClassName: {{ .Values.trainer.runtimeClassName }}
       {{- end }}
       containers:
       - name: prime-rl-trainer
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        image: {{ include "prime-rl.image" . | quote }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.trainer.autoStart }}
         command: ["/bin/bash", "-c"]
@@ -365,6 +383,6 @@ spec:
       volumes:
       - name: shared-data
         persistentVolumeClaim:
-          claimName: {{ .Release.Name }}-shared-data
+          claimName: {{ include "prime-rl.storageClaimName" . }}
       {{- end }}
 {{- end }}

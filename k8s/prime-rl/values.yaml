@@ -10,11 +10,16 @@ image:
   repository: primeintellect/prime-rl
   pullPolicy: IfNotPresent
   tag: "main"
+  # Generated DGD values set the full reviewed repository:tag@sha256 reference.
+  reference: ""
+  pullSecrets: []
 
 # Shared storage configuration
 storage:
   enabled: true
-  # PVC name will be automatically set to {{ .Release.Name }}-shared-data
+  # Reuse an existing ReadWriteMany claim instead of creating a release-owned PVC.
+  existingClaim: ""
+  # A chart-managed PVC is named {{ .Release.Name }}-shared-data when existingClaim is empty.
   storageClassName: nfs
   accessModes:
     - ReadWriteMany

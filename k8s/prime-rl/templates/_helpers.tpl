@@ -5,6 +5,25 @@ Expand the name of the chart.
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{/*
+Resolve the immutable image reference generated for DGD, with the native chart
+repository/tag remaining as the fallback for statefulset mode.
+*/}}
+{{- define "prime-rl.image" -}}
+{{- if .Values.image.reference -}}
+{{- .Values.image.reference -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.repository .Values.image.tag -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Reuse a supplied shared claim or derive the chart-managed claim name.
+*/}}
+{{- define "prime-rl.storageClaimName" -}}
+{{- default (printf "%s-shared-data" .Release.Name) .Values.storage.existingClaim -}}
+{{- end }}
+
 {{- define "prime-rl.inferenceUrls" -}}
 {{- if eq .Values.inference.mode "dynamoGraph" -}}
 {{- printf "http://%s-frontend.%s.svc.cluster.local:8000/v1" .Release.Name .Values.namespace -}}

@@ -15,11 +15,11 @@ DYNAMO_SHA = "2" * 40
 IMAGE_DIGEST = f"sha256:{'3' * 64}"
 
 
-def inference_config() -> InferenceConfig:
+def inference_config(weight_broadcast: str = "nccl") -> InferenceConfig:
     return InferenceConfig.model_validate(
         {
             "backend": {"type": "dynamo"},
-            "weight_broadcast": {"type": "nccl"},
+            "weight_broadcast": {"type": weight_broadcast},
             "deployment": {
                 "type": "disaggregated",
                 "gpus_per_node": 1,
@@ -32,7 +32,7 @@ def inference_config() -> InferenceConfig:
     )
 
 
-def render_options(tmp_path: Path) -> DynamoGraphRenderOptions:
+def render_options(tmp_path: Path, *, shared_pvc: str | None = None) -> DynamoGraphRenderOptions:
     return DynamoGraphRenderOptions(
         release_name="p4-math",
         namespace="bis-vllm",
@@ -42,14 +42,16 @@ def render_options(tmp_path: Path) -> DynamoGraphRenderOptions:
         dynamo_sha=DYNAMO_SHA,
         image_digest=IMAGE_DIGEST,
         run_name="p4-run",
+        shared_pvc=shared_pvc,
+        image_pull_secrets=("nvcrimagepullsecret",),
     )
 
 
-def helm_template(*args: str) -> str:
+def helm_template(*args: str, release_name: str = "p4-math") -> str:
     if HELM is None:
         pytest.skip("helm is not installed")
     return subprocess.run(
-        [HELM, "template", "p4-math", str(CHART), *args],
+        [HELM, "template", release_name, str(CHART), *args],
         check=True,
         capture_output=True,
         text=True,
@@ -69,7 +71,8 @@ def test_chart_rejects_unknown_inference_mode():
 
 
 def test_dgd_chart_renders_generated_graph_without_inference_statefulset(tmp_path: Path):
-    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+    options = render_options(tmp_path)
+    paths = write_dgd_artifacts(inference_config(), options)
     rendered = helm_template("-f", str(paths["values"]))
     graph = json.loads(paths["resource"].read_text())
 
@@ -81,7 +84,57 @@ def test_dgd_chart_renders_generated_graph_without_inference_statefulset(tmp_pat
     assert "http://p4-math-frontend-rl.bis-vllm.svc.cluster.local:8001" in rendered
     assert graph["spec"]["services"]["VllmPrefillWorker"]["replicas"] == 2
     assert graph["spec"]["services"]["VllmDecodeWorker"]["replicas"] == 2
+    assert rendered.count(f'image: "{options.image}"') == 2
+    assert rendered.count(f"image: {options.image}") == 3
+    assert rendered.count("nvcrimagepullsecret") == 5
     assert not any(kind in rendered for kind in ("kind: ClusterRole", "kind: CustomResourceDefinition"))
+
+
+def test_dgd_chart_rejects_release_name_mismatch(tmp_path: Path):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template("-f", str(paths["values"]), release_name="other-release")
+
+    assert "must match embedded DynamoGraphDeployment metadata.name" in error.value.stderr
+
+
+def test_filesystem_broadcast_reuses_existing_claim_without_rendering_pvc(tmp_path: Path):
+    paths = write_dgd_artifacts(
+        inference_config("filesystem"),
+        render_options(tmp_path, shared_pvc="p4-shared-data"),
+    )
+    rendered = helm_template("-f", str(paths["values"]))
+
+    assert "kind: PersistentVolumeClaim" not in rendered
+    assert rendered.count("claimName: p4-shared-data") == 2
+
+
+def test_dgd_chart_rejects_mutable_prime_runtime_image(tmp_path: Path):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+
+    with pytest.raises(subprocess.CalledProcessError):
+        helm_template(
+            "-f",
+            str(paths["values"]),
+            "--set",
+            "image.reference=nvcr.io/example/prime:latest",
+        )
+
+
+def test_dgd_chart_rejects_runtime_image_that_differs_from_workers(tmp_path: Path):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+    other_digest = f"sha256:{'4' * 64}"
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template(
+            "-f",
+            str(paths["values"]),
+            "--set",
+            f"image.reference=nvcr.io/example/prime:reviewed@{other_digest}",
+        )
+
+    assert "must use the same image.reference" in error.value.stderr
 
 
 def test_dgd_rejects_image_without_matching_digest(tmp_path: Path):

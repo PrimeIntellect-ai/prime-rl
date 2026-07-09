@@ -1,3 +1,18 @@
 {{- if and .Values.inference.enabled (eq .Values.inference.mode "dynamoGraph") }}
-{{- toYaml (required "inference.dynamoGraph.resource is required" .Values.inference.dynamoGraph.resource) }}
+{{- $resource := required "inference.dynamoGraph.resource is required" .Values.inference.dynamoGraph.resource }}
+{{- $resourceName := required "inference.dynamoGraph.resource.metadata.name is required" $resource.metadata.name }}
+{{- if ne .Release.Name $resourceName }}
+{{- fail (printf "Helm Release.Name %q must match embedded DynamoGraphDeployment metadata.name %q" .Release.Name $resourceName) }}
+{{- end }}
+{{- $image := required "image.reference is required in dynamoGraph mode" .Values.image.reference }}
+{{- if not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $image) }}
+{{- fail "image.reference must be pinned to a full sha256 digest in dynamoGraph mode" }}
+{{- end }}
+{{- range $serviceName, $service := $resource.spec.services }}
+{{- $serviceImage := required (printf "DynamoGraphDeployment service %s image is required" $serviceName) $service.extraPodSpec.mainContainer.image }}
+{{- if ne $image $serviceImage }}
+{{- fail (printf "DynamoGraphDeployment service %s must use the same image.reference as orchestrator and trainer" $serviceName) }}
+{{- end }}
+{{- end }}
+{{- toYaml $resource }}
 {{- end }}

@@ -2,6 +2,22 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "reference": {
+          "type": "string"
+        },
+        "pullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
     "inference": {
       "type": "object",
       "properties": {
@@ -10,6 +26,44 @@
           "enum": ["statefulset", "dynamoGraph"]
         }
       }
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "existingClaim": {
+          "type": "string"
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "inference": {
+            "properties": {
+              "mode": {
+                "const": "dynamoGraph"
+              }
+            },
+            "required": ["mode"]
+          }
+        },
+        "required": ["inference"]
+      },
+      "then": {
+        "properties": {
+          "image": {
+            "properties": {
+              "reference": {
+                "pattern": "^.+@sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": ["reference"]
+          }
+        },
+        "required": ["image"]
+      }
+    }
+  ]
 }

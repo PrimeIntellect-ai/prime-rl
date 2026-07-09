@@ -20,6 +20,12 @@ from prime_rl.inference.dynamo import (
 from prime_rl.utils.config import cli
 
 ENGINE_MOUNT_PATH = "/etc/prime-rl/dynamo"
+MANIFEST_HASH_ANNOTATION = "prime-rl.nvidia.com/manifest-sha256"
+MANIFEST_HASH_SCOPE_ANNOTATION = "prime-rl.nvidia.com/manifest-sha256-scope"
+MANIFEST_HASH_SCOPE = (
+    "resource; json.dumps(sort_keys=true,indent=2)+newline; "
+    "exclude=/metadata/annotations/prime-rl.nvidia.com~1manifest-sha256"
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,19 @@ def _sha256_bytes(value: bytes) -> str:
 
 def _canonical_json(value: Any) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+
+
+def _resource_manifest_hash(resource: dict[str, Any]) -> str:
+    annotations = resource["metadata"]["annotations"]
+    scoped_annotations = {key: value for key, value in annotations.items() if key != MANIFEST_HASH_ANNOTATION}
+    scoped_resource = {
+        **resource,
+        "metadata": {
+            **resource["metadata"],
+            "annotations": scoped_annotations,
+        },
+    }
+    return _sha256_bytes(_canonical_json(scoped_resource))
 
 
 def _worker_env(process: DynamoProcessSpec) -> list[dict[str, Any]]:
@@ -166,6 +185,8 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         raise ValueError("DGD rendering currently requires one pod per prefill replica")
     if deployment.num_decode_nodes != deployment.num_decode_replicas:
         raise ValueError("DGD rendering currently requires one pod per decode replica")
+    if config.weight_broadcast.type == "filesystem" and not options.shared_pvc:
+        raise ValueError("Dynamo filesystem weight broadcast requires a shared existing PVC")
 
     engine_paths = write_role_engine_configs(config, options.output_dir)
     prefill_text = engine_paths["prefill"].read_text()
@@ -179,6 +200,7 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         "prime-rl.nvidia.com/image-digest": options.image_digest,
         "prime-rl.nvidia.com/prime-sha": options.prime_sha,
         "prime-rl.nvidia.com/run-name": options.run_name,
+        MANIFEST_HASH_SCOPE_ANNOTATION: MANIFEST_HASH_SCOPE,
     }
     frontend_process = build_frontend_process(config, host="0.0.0.0", port=8000)
     frontend_container = {
@@ -231,12 +253,26 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
     }
     for service in (frontend, prefill, decode):
         _add_pvc(resource, service, options.model_cache_pvc, "/model-cache")
-        _add_pvc(resource, service, options.shared_pvc, "/data")
+    if config.weight_broadcast.type == "filesystem":
+        for service in (prefill, decode):
+            _add_pvc(resource, service, options.shared_pvc, "/data")
 
-    manifest_hash = _sha256_bytes(_canonical_json(resource))
-    annotations["prime-rl.nvidia.com/manifest-sha256"] = manifest_hash
-    return {
+    manifest_hash = _resource_manifest_hash(resource)
+    annotations = {**annotations, MANIFEST_HASH_ANNOTATION: manifest_hash}
+    resource = {
+        **resource,
+        "metadata": {
+            **resource["metadata"],
+            "annotations": annotations,
+        },
+    }
+    values: dict[str, Any] = {
         "namespace": options.namespace,
+        "image": {
+            "reference": options.image,
+            "pullPolicy": "IfNotPresent",
+            "pullSecrets": list(options.image_pull_secrets),
+        },
         "inference": {
             "mode": "dynamoGraph",
             "dynamoGraph": {
@@ -253,6 +289,13 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
             },
         },
     }
+    if options.shared_pvc:
+        values["storage"] = {
+            "enabled": True,
+            "existingClaim": options.shared_pvc,
+            "mountPath": "/data",
+        }
+    return values
 
 
 def write_dgd_artifacts(config: InferenceConfig, options: DynamoGraphRenderOptions) -> dict[str, Path]:
