@@ -420,7 +420,7 @@ def train(config: TrainerConfig):
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
-                    seq_lens_are_global=cp_enabled,
+                    seq_lens_are_pre_shard=cp_enabled,
                     routed_experts=routed_experts,
                 )
 

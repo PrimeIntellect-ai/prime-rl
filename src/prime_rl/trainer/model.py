@@ -1386,7 +1386,7 @@ def forward(
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
-    seq_lens_are_global: bool = False,
+    seq_lens_are_pre_shard: bool = False,
 ) -> PrimeLmOutput:
     kwargs = {
         "input_ids": input_ids,
@@ -1408,7 +1408,7 @@ def forward(
 
     if isinstance(model, PreTrainedModelPrimeRL):
         kwargs["seq_lens"] = seq_lens
-        kwargs["seq_lens_are_global"] = seq_lens_are_global
+        kwargs["seq_lens_are_pre_shard"] = seq_lens_are_pre_shard
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
