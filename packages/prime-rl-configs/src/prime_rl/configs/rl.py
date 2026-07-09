@@ -529,20 +529,8 @@ class RLConfig(BaseConfig):
         collapse (DeepSeek V3.2 §3.1, Cognition SWE-1.7)."""
         if self.trainer.enable_sampling_mask_replay:
             return self
-
-        def truncates(sampling) -> bool:
-            # extra_body can smuggle top_k/min_p (resolve_env_config even stamps the
-            # disabled sentinels top_k=-1 / min_p=0.0 there for policy envs).
-            extra = sampling.extra_body
-            return (
-                sampling.top_p < 1.0
-                or extra.get("top_p", 1.0) < 1.0
-                or extra.get("top_k") not in (None, -1, 0)
-                or extra.get("min_p", 0.0) > 0.0
-            )
-
         sampling_configs = [self.orchestrator.train.sampling, *(env.sampling for env in self.orchestrator.train.env)]
-        if any(truncates(sampling) for sampling in sampling_configs):
+        if any(sampling.truncates_distribution() for sampling in sampling_configs):
             warnings.warn(
                 "Train sampling uses truncation (top_p/top_k/min_p) without trainer.enable_sampling_mask_replay: "
                 "trainer logprobs normalize over the full vocabulary while rollout logprobs are renormalized over "

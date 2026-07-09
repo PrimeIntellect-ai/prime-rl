@@ -45,10 +45,6 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
 _KEPT_ITEMSIZE = np.dtype(np.int32).itemsize
 
 
-def _copy_kept_tokens(kept_tokens: KeptTokens) -> KeptTokens:
-    return KeptTokens(ids=kept_tokens.ids, counts=kept_tokens.counts)
-
-
 def _empty_kept_tokens(num_tokens: int) -> KeptTokens:
     return KeptTokens(ids=b"", counts=b"\0" * (num_tokens * _KEPT_ITEMSIZE))
 
@@ -159,7 +155,10 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )
-    kept_tokens = _copy_kept_tokens(training_example.kept_tokens) if training_example.kept_tokens is not None else None
+    # No copy needed (unlike routed_experts): both KeptTokens fields are immutable
+    # bytes, and the only in-place mutation (_pad_kept_tokens) runs on
+    # _materialize_bin's own accumulator, never on a sample-held struct.
+    kept_tokens = training_example.kept_tokens
 
     if len(input_ids) > seq_len:
         # Multimodal: never split an image's placeholder block — cut to a whole-image boundary
@@ -312,6 +311,9 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     # A weight stream materializes as soon as one packed sample carries it; the
     # samples that lack it get the stream's identity fill (STREAM_FILL).
     has_stream = {name: any(getattr(s, name) is not None for _, s in bin_content.samples) for name in STREAM_FILL}
+    # Unlike routed_experts (all-or-nothing, so presence constrains packing in
+    # can_add), kept sets are per-token optional: samples without them are
+    # backfilled with zero counts and the trainer falls back per token.
     has_kept_tokens = any(sample.kept_tokens is not None for _, sample in bin_content.samples)
 
     input_ids: list[int] = []
@@ -569,6 +571,8 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.rl_weights = None
     dummy.ce_weights = None
     dummy.ref_kl_weights = None
+    # Fully loss-masked, so replaying sampling masks would be pure wasted work.
+    dummy.kept_tokens = None
     return dummy
 
 

@@ -365,17 +365,24 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
-            kept_tokens = micro_batch["kept_tokens"].to("cuda") if micro_batch["kept_tokens"] is not None else None
-            if kept_tokens is not None and not config.enable_sampling_mask_replay:
-                # kept sets arrived from the inference server, but replay is disabled
-                kept_tokens = None
+            # Kept sets the inference server sent are dropped (pre-H2D) unless replay is on.
+            kept_tokens = (
+                micro_batch["kept_tokens"].to("cuda")
+                if micro_batch["kept_tokens"] is not None and config.enable_sampling_mask_replay
+                else None
+            )
 
             if kept_tokens is None and config.enable_sampling_mask_replay:
                 # Only rl-member tokens need masks (pure-ce bins and dummy batches
                 # legitimately carry none) — for those, a missing mask means the
                 # inference server isn't returning kept sets and every importance
-                # ratio would silently revert to the biased full-vocab form.
-                has_rl_tokens = loss_mask.any() if rl_weights is None else (loss_mask & (rl_weights != 0)).any()
+                # ratio would silently revert to the biased full-vocab form. Checked
+                # on the CPU-side tensors to avoid a device sync per micro batch.
+                cpu_loss_mask = micro_batch["loss_mask"]
+                cpu_rl_weights = micro_batch["rl_weights"]
+                has_rl_tokens = (
+                    cpu_loss_mask.any() if cpu_rl_weights is None else (cpu_loss_mask & (cpu_rl_weights != 0)).any()
+                )
                 if bool(has_rl_tokens):
                     raise ValueError(
                         "Sampling-mask replay is enabled but the batch carries no kept sets. Set "
@@ -402,7 +409,7 @@ def train(config: TrainerConfig):
                 # Align each position's kept set with the label it predicts (the
                 # kept set rides at the sampled token's own position, like
                 # inference_logprobs); pad rows carry no mask.
-                kept_tokens = torch.cat([kept_tokens[:, 1:], torch.full_like(kept_tokens[:, :1], -1)], dim=1)
+                kept_tokens = shift_tensor_left(kept_tokens, pad_value=-1)
 
             # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
             if cp_enabled and mm_kwargs is not None:

@@ -69,6 +69,17 @@ class TrainSamplingConfig(BaseConfig):
     extra_body: dict[str, Any] = {}
     """Extra body forwarded with each request to the inference server."""
 
+    def truncates_distribution(self) -> bool:
+        """Whether this config samples from a truncated distribution (top-p/top-k/min-p),
+        including knobs smuggled via ``extra_body`` — ``resolve_env_config`` stamps the
+        disabled sentinels ``top_k = -1`` / ``min_p = 0.0`` there for policy envs."""
+        return (
+            self.top_p < 1.0
+            or self.extra_body.get("top_p", 1.0) < 1.0
+            or self.extra_body.get("top_k") not in (None, -1, 0)
+            or self.extra_body.get("min_p", 0.0) > 0.0
+        )
+
     def to_sampling_args(self) -> dict[str, Any]:
         """Convert to OAI-compatible sampling args dict, omitting None values."""
         args: dict[str, Any] = {

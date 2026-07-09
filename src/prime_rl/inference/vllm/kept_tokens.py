@@ -54,12 +54,16 @@ from vllm.outputs import RequestOutput
 
 KEPT_TOKENS_ENV = "PRIME_RETURN_KEPT_TOKENS"
 KEPT_TOKENS_MAX_ENV = "PRIME_KEPT_TOKENS_MAX"
+# Fallback only — setup_vllm_env always stamps the env var from
+# inference.kept_tokens_max (keep the config default in sync).
 KEPT_TOKENS_MAX_DEFAULT = 512
 
 # Separator/padding token id in the widened logprobs rows. Never a valid
 # vocab id, and stock vLLM never emits it (top-k indices and requested
 # logprob_token_ids are always >= 0).
 _SEPARATOR = -1
+
+_EMPTY_KEPT_ROW = np.empty(0, dtype=np.int32)
 
 
 def kept_tokens_enabled() -> bool:
@@ -147,7 +151,7 @@ def monkey_patch_kept_tokens_sampler():
     cap = int(os.environ.get(KEPT_TOKENS_MAX_ENV, str(KEPT_TOKENS_MAX_DEFAULT)))
     original_forward = Sampler.forward
 
-    def _forward(self, logits, sampling_metadata, *args, **kwargs):
+    def _forward(self, logits, sampling_metadata, predict_bonus_token=False, logprobs_mode_override=None):
         captured: dict[str, torch.Tensor | None] = {}
         original_sample = self.sample
 
@@ -160,14 +164,12 @@ def monkey_patch_kept_tokens_sampler():
         # the model runner drives the sampler single-threaded.
         self.sample = capturing_sample
         try:
-            output = original_forward(self, logits, sampling_metadata, *args, **kwargs)
+            output = original_forward(self, logits, sampling_metadata, predict_bonus_token, logprobs_mode_override)
         finally:
             del self.sample
 
         processed_logprobs = captured.get("processed_logprobs")
-        # (logits, sampling_metadata, predict_bonus_token, logprobs_mode_override)
-        override = kwargs.get("logprobs_mode_override") or (args[1] if len(args) > 1 else None)
-        logprobs_mode = override or self.logprobs_mode
+        logprobs_mode = logprobs_mode_override or self.logprobs_mode
         num_logprobs = sampling_metadata.max_num_logprobs
         if (
             processed_logprobs is None
@@ -199,17 +201,16 @@ def monkey_patch_kept_tokens_sampler():
         width = min(cap + 1, processed_logprobs.shape[-1])
         ext_logprobs, ext_ids = processed_logprobs.topk(width, dim=-1)
         finite = ext_logprobs > float("-inf")
-        overflow = finite[:, -1:]
-        valid = finite & ~overflow
-        padding_id = torch.tensor(_SEPARATOR, dtype=ids_dtype, device=device)
-        ext_ids = torch.where(valid, ext_ids.to(ids_dtype), padding_id)
-        ext_logprobs = torch.where(valid, ext_logprobs, torch.tensor(float("-inf"), device=device))
+        valid = finite & ~finite[:, -1:]
+        ext_ids = ext_ids.to(ids_dtype).masked_fill_(~valid, _SEPARATOR)
 
+        # The API-side splitter reads only the id columns; ship -inf for the
+        # separator + extension logprobs (shape parity with the ids).
         separator_ids = torch.full((num_rows, 1), _SEPARATOR, dtype=ids_dtype, device=device)
-        separator_logprobs = torch.full((num_rows, 1), float("-inf"), device=device)
+        extension_logprobs = torch.full((num_rows, width + 1), float("-inf"), device=device)
         output.logprobs_tensors = LogprobsTensors(
             logprob_token_ids=torch.cat([stock.logprob_token_ids, separator_ids, ext_ids], dim=1),
-            logprobs=torch.cat([stock.logprobs, separator_logprobs, ext_logprobs], dim=1),
+            logprobs=torch.cat([stock.logprobs, extension_logprobs], dim=1),
             selected_token_ranks=stock.selected_token_ranks,
             cu_num_generated_tokens=stock.cu_num_generated_tokens,
         )
@@ -245,43 +246,29 @@ def monkey_patch_kept_tokens_output_capture():
 
     def _update_sample_logprobs(self, logprobs_lists: LogprobsLists) -> None:
         token_ids, logprobs, ranks, cu_num_generated_tokens = logprobs_lists
-        # Track positions even on steps without extensions so a request whose
-        # rows only start (or stop) carrying separators stays position-aligned.
-        seen_positions = getattr(self, "_prime_kept_positions", 0)
-        self._prime_kept_positions = seen_positions + len(token_ids)
-
-        has_separator = token_ids.size > 0 and bool((token_ids == _SEPARATOR).any())
+        # One kept row per position, always — appending empties on steps
+        # without extensions keeps rows position-aligned even for requests
+        # whose steps only start (or stop) carrying separators.
         kept_rows: list[np.ndarray] | None = getattr(self, "_prime_kept_token_ids", None)
-        if not has_separator and kept_rows is None:
-            return original_update(self, logprobs_lists)
         if kept_rows is None:
-            # Extensions appeared mid-request: earlier positions carried none.
-            kept_rows = [np.empty(0, dtype=np.int32)] * seen_positions
-            self._prime_kept_token_ids = kept_rows
-        if not has_separator:
-            kept_rows.extend([np.empty(0, dtype=np.int32)] * len(token_ids))
+            kept_rows = self._prime_kept_token_ids = []
+
+        # Rows in one update come from a single step's batch tensor, so the
+        # separator sits at the same column in every row.
+        separators = np.nonzero(token_ids[0] == _SEPARATOR)[0] if token_ids.size else np.empty(0, dtype=np.int64)
+        if not separators.size:
+            kept_rows.extend([_EMPTY_KEPT_ROW] * len(token_ids))
             return original_update(self, logprobs_lists)
 
-        stock_token_ids = []
-        stock_logprobs = []
-        for row_ids, row_logprobs in zip(token_ids, logprobs):
-            separators = np.nonzero(row_ids == _SEPARATOR)[0]
-            if separators.size:
-                split = int(separators[0])
-                extension = row_ids[split + 1 :]
-                kept_rows.append(np.ascontiguousarray(extension[extension >= 0], dtype=np.int32))
-                stock_token_ids.append(row_ids[:split])
-                stock_logprobs.append(row_logprobs[:split])
-            else:
-                kept_rows.append(np.empty(0, dtype=np.int32))
-                stock_token_ids.append(row_ids)
-                stock_logprobs.append(row_logprobs)
+        split = int(separators[0])
+        for extension in token_ids[:, split + 1 :]:
+            kept_rows.append(np.ascontiguousarray(extension[extension >= 0], dtype=np.int32))
 
         return original_update(
             self,
             LogprobsLists(
-                np.stack(stock_token_ids),
-                np.stack(stock_logprobs),
+                token_ids[:, :split],
+                logprobs[:, :split],
                 ranks,
                 cu_num_generated_tokens,
             ),

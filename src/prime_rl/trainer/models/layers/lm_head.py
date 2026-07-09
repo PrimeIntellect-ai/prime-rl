@@ -94,26 +94,22 @@ def _online_logsumexp_and_weighted_update(
     return m_new, s_new, t_new
 
 
-def _online_logsumexp_update(
-    m: torch.Tensor, s: torch.Tensor, chunk_logits: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Online logsumexp accumulator tolerant of all--inf rows (a kept set with
-    no members in this vocab chunk): the shifted max keeps exp() at 0 instead
-    of producing -inf - -inf = nan."""
-    chunk_m = torch.amax(chunk_logits, dim=-1)
-    m_new = torch.maximum(m, chunk_m)
-    m_safe = torch.where(torch.isfinite(m_new), m_new, torch.zeros_like(m_new))
-    s_new = s * torch.exp(m - m_safe) + torch.exp(chunk_logits - m_safe.unsqueeze(-1)).sum(dim=-1)
-    return m_new, s_new
+def kept_replay_mask(kept_tokens: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    """Positions whose sampling mask is usable for replay: non-empty (-1 is
+    padding) and containing the label — a label outside its mask means
+    misaligned data, which falls back to full-vocab rather than emitting a
+    corrupt logprob. Shared by the fused and vanilla logprob paths so they
+    can't drift."""
+    return (kept_tokens >= 0).any(dim=-1) & (kept_tokens == labels.unsqueeze(-1)).any(dim=-1)
 
 
 def _kept_local_indices(
     kept_chunk: torch.Tensor, vocab_start: int, vocab_end: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Kept-set ids mapped into a vocab chunk: clamped local indices plus the
-    in-chunk validity mask (-1 entries are padding)."""
+    """Kept-set ids (int64) mapped into a vocab chunk: clamped local indices
+    plus the in-chunk validity mask (-1 entries are padding)."""
     in_range = (kept_chunk >= vocab_start) & (kept_chunk < vocab_end)
-    local = (kept_chunk - vocab_start).clamp(0, vocab_end - vocab_start - 1).to(torch.long)
+    local = (kept_chunk - vocab_start).clamp(0, vocab_end - vocab_start - 1)
     return local, in_range
 
 
@@ -173,11 +169,14 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             t = torch.zeros((token_count,), device=device, dtype=torch.float32)
             target_logits = torch.zeros((token_count,), device=device, dtype=torch.float32)
 
-            kept_chunk = kept_tokens[start:end] if kept_tokens is not None else None
+            kept_chunk = kept_tokens[start:end].to(torch.long) if kept_tokens is not None else None
             if kept_chunk is not None:
-                replay_chunk = (kept_chunk >= 0).any(dim=-1) & (kept_chunk == labels_chunk.unsqueeze(-1)).any(dim=-1)
-                m_kept = torch.full((token_count,), float("-inf"), device=device, dtype=torch.float32)
-                s_kept = torch.zeros((token_count,), device=device, dtype=torch.float32)
+                replay_chunk = kept_replay_mask(kept_chunk, labels_chunk)
+                # Each kept id lives in exactly one vocab chunk, so collecting
+                # its logit into a persistent [tokens, K] buffer and taking one
+                # logsumexp at the end beats an online accumulator (all--inf
+                # rows come out as -inf without NaN).
+                kept_logits = torch.full_like(kept_chunk, float("-inf"), dtype=torch.float32)
 
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
@@ -189,9 +188,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 
                 if kept_chunk is not None:
                     local, in_range = _kept_local_indices(kept_chunk, vocab_start, vocab_end)
-                    kept_logits = scaled_logits.gather(1, local)
-                    kept_logits = torch.where(in_range, kept_logits, float("-inf"))
-                    m_kept, s_kept = _online_logsumexp_update(m_kept, s_kept, kept_logits)
+                    kept_logits = torch.where(in_range, scaled_logits.gather(1, local), kept_logits)
 
                 mask = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
                 if torch.any(mask):
@@ -200,7 +197,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 
             logz_full = m + torch.log(s)
             if kept_chunk is not None:
-                logz_chunk = torch.where(replay_chunk, m_kept + torch.log(s_kept), logz_full)
+                logz_chunk = torch.where(replay_chunk, torch.logsumexp(kept_logits, dim=-1), logz_full)
                 replay[start:end] = replay_chunk
             else:
                 logz_chunk = logz_full
@@ -208,10 +205,6 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             logprobs[start:end] = target_logits - logz_chunk
             entropy[start:end] = logz_full - (t / s)
 
-        if kept_tokens is None:
-            # save_for_backward rejects None entries on some torch versions; use fixed empties.
-            kept_tokens = torch.empty((n, 0), device=device, dtype=torch.int32)
-            replay = torch.zeros((n,), device=device, dtype=torch.bool)
         ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, kept_tokens, replay)
         ctx.chunk_size = chunk_size
 
@@ -229,7 +222,6 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         n, _ = hidden.shape
         vocab = weight.shape[0]
         vocab_chunk_size = min(vocab, 8192)
-        has_kept = kept_tokens.shape[1] > 0
 
         needs_hidden, needs_weight = ctx.needs_input_grad[0], ctx.needs_input_grad[1]
         grad_hidden = torch.zeros_like(hidden) if needs_hidden else None
@@ -242,8 +234,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             grad_chunk = grad_logprobs[start:end].to(torch.float32)
             inv_t_chunk = inv_temperature[start:end].unsqueeze(-1)
             logz_chunk = logz[start:end]
-            kept_chunk = kept_tokens[start:end] if has_kept else None
-            replay_chunk = replay[start:end] if has_kept else None
+            kept_chunk = kept_tokens[start:end].to(torch.long) if kept_tokens is not None else None
+            replay_chunk = replay[start:end] if replay is not None else None
 
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
@@ -259,10 +251,10 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     # the kept-set logZ would overflow exp() to inf, and inf * 0 from an
                     # indicator multiply after the fact would poison grads with NaN.
                     local, in_range = _kept_local_indices(kept_chunk, vocab_start, vocab_end)
-                    kept_indicator = torch.zeros_like(scaled_logits)
-                    kept_indicator.scatter_add_(1, local, in_range.to(scaled_logits.dtype))
+                    kept_indicator = torch.zeros(scaled_logits.shape, dtype=torch.int8, device=scaled_logits.device)
+                    kept_indicator.scatter_add_(1, local, in_range.to(torch.int8))
                     non_kept = replay_chunk.unsqueeze(-1) & (kept_indicator == 0)
-                    scaled_logits = torch.where(non_kept, float("-inf"), scaled_logits)
+                    scaled_logits.masked_fill_(non_kept, float("-inf"))
                 probs = torch.exp(scaled_logits - logz_chunk.unsqueeze(-1))
 
                 grad_logits = (-grad_chunk).unsqueeze(-1) * probs
