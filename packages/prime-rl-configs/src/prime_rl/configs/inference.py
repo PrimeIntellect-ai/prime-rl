@@ -410,8 +410,8 @@ class InferenceConfig(BaseConfig):
     enable_return_kept_tokens: bool = False
     """Return per-token kept-set sampling masks (the token ids that survived top-p/top-k/min-p truncation) on ``/inference/v1/generate`` responses, for trainer-side sampling-mask replay. Implemented as monkey-patches over vLLM's sampler and output processor, activated via ``PRIME_RETURN_KEPT_TOKENS=1``. Requires ``logprobs_mode = "processed_logprobs"`` (the default)."""
 
-    kept_tokens_max: int = 2048
-    """Kept-set size cap per sampled token. Positions whose kept set exceeds the cap ship an empty mask and the trainer falls back to full-vocab logprobs there — the bias is bounded by ``-log(top_p)`` since the excluded tail mass is at most ``1 - top_p``."""
+    kept_tokens_max: int = Field(512, ge=1)
+    """Kept-set size cap per sampled token, and the fixed per-step width of the capture (the sampler ships ``cap + 1`` extension columns device-side so no host sync is needed). Positions whose kept set exceeds the cap ship an empty mask and the trainer falls back to full-vocab logprobs there — the bias is bounded by ``-log(top_p)`` since the excluded tail mass is at most ``1 - top_p``."""
 
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""

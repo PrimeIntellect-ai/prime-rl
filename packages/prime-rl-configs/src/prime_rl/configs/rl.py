@@ -524,17 +524,46 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def warn_truncated_sampling_without_mask_replay(self):
-        """Sampling with top_p < 1 renormalizes the rollout distribution over the kept set;
+        """Sampling with truncation renormalizes the rollout distribution over the kept set;
         without trainer-side mask replay the importance ratio is biased and runs are known to
         collapse (DeepSeek V3.2 §3.1, Cognition SWE-1.7)."""
         if self.trainer.enable_sampling_mask_replay:
             return self
+
+        def truncates(sampling) -> bool:
+            # extra_body can smuggle top_k/min_p (resolve_env_config even stamps the
+            # disabled sentinels top_k=-1 / min_p=0.0 there for policy envs).
+            extra = sampling.extra_body
+            return (
+                sampling.top_p < 1.0
+                or extra.get("top_p", 1.0) < 1.0
+                or extra.get("top_k") not in (None, -1, 0)
+                or extra.get("min_p", 0.0) > 0.0
+            )
+
         sampling_configs = [self.orchestrator.train.sampling, *(env.sampling for env in self.orchestrator.train.env)]
-        if any(sampling.top_p < 1.0 for sampling in sampling_configs):
+        if any(truncates(sampling) for sampling in sampling_configs):
             warnings.warn(
-                "Train sampling uses top_p < 1.0 without trainer.enable_sampling_mask_replay: trainer logprobs "
-                "normalize over the full vocabulary while rollout logprobs are renormalized over the top-p kept "
-                "set, biasing importance ratios. Enable trainer.enable_sampling_mask_replay.",
+                "Train sampling uses truncation (top_p/top_k/min_p) without trainer.enable_sampling_mask_replay: "
+                "trainer logprobs normalize over the full vocabulary while rollout logprobs are renormalized over "
+                "the kept set, biasing importance ratios. Enable trainer.enable_sampling_mask_replay.",
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
+    def warn_mask_replay_with_ref_kl(self):
+        """ref_logprobs are full-vocab prefill scores (vLLM prompt logprobs ignore
+        logprobs_mode), so with mask replay the ref_kl term ref_logprobs - trainer_logprobs
+        mixes normalizations — biased by up to -log(top_p) per masked token."""
+        if not self.trainer.enable_sampling_mask_replay:
+            return self
+        algos = [self.orchestrator.algo, *(env.algo for env in self.orchestrator.train.env if env.algo is not None)]
+        if any(algo.type in ("opd", "opsd") for algo in algos):
+            warnings.warn(
+                "Sampling-mask replay with opd/opsd: reference logprobs are full-vocab prefill scores while "
+                "trainer logprobs are renormalized over the kept set, biasing the ref_kl term by up to "
+                "-log(top_p) per masked token.",
                 stacklevel=2,
             )
         return self

@@ -241,6 +241,23 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
     assert args is not None
     validate_parsed_serve_args(args)
 
+    if config.enable_return_kept_tokens:
+        # Both would leave the sampler patch silently inert (no kept sets ever
+        # emitted) while the trainer keeps replaying nothing — exactly the
+        # top-p bias the feature exists to fix. Fail fast instead.
+        if getattr(args, "speculative_config", None):
+            raise ValueError(
+                "enable_return_kept_tokens is incompatible with speculative decoding: vLLM's "
+                "RejectionSampler builds logprobs via gather_logprobs, bypassing the patched "
+                "Sampler.forward. Disable speculative_config or sampling-mask replay."
+            )
+        if getattr(args, "logprobs_mode", None) != "processed_logprobs":
+            raise ValueError(
+                "enable_return_kept_tokens requires logprobs_mode='processed_logprobs' (the "
+                "default): the kept set is recovered from the truncation-masked logprobs. "
+                f"Got logprobs_mode={getattr(args, 'logprobs_mode', None)!r} (vllm_extra override?)."
+            )
+
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
 

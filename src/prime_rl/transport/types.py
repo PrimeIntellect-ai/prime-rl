@@ -55,8 +55,6 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
 
     routed_experts: RoutedExperts | None = None
 
-    kept_tokens: KeptTokens | None = None
-
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 
@@ -78,6 +76,11 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # scalar algorithms. ``None`` means no rl credit assigned — legal only for
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: list[float] | None = None
+
+    # Kept-set sampling masks for top-p/top-k replay. Last field on purpose:
+    # array_like structs encode positionally, so appending keeps the wire
+    # layout of every earlier field stable across versions.
+    kept_tokens: KeptTokens | None = None
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -104,7 +107,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     ref_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None
-    kept_tokens: KeptTokens | None = None
 
     # See TrainingSample.mm_kwargs.
     mm_kwargs: dict[str, EncodedTensor] | None = None
@@ -121,3 +123,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # Packer-derived metadata used for run-local token exports.
     run_id: str | None = None
     run_step: int | None = None
+
+    # Kept-set sampling masks (see TrainingSample.kept_tokens); appended last
+    # to keep the positional wire layout of earlier fields stable.
+    kept_tokens: KeptTokens | None = None

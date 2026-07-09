@@ -250,16 +250,20 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 weight_chunk = weight[vocab_start:vocab_end]
                 logits_chunk = hidden_chunk @ weight_chunk.t()
                 scaled_logits = logits_chunk.to(torch.float32) * inv_t_chunk
-                probs = torch.exp(scaled_logits - logz_chunk.unsqueeze(-1))
 
                 if kept_chunk is not None:
                     # Replayed rows renormalize over the kept set, so their softmax
                     # gradient term exists only on kept ids; scatter_add tolerates the
-                    # clamped indices of out-of-chunk entries (they add 0).
+                    # clamped indices of out-of-chunk entries (they add 0). Non-kept
+                    # logits are masked to -inf BEFORE the exp — a non-kept logit above
+                    # the kept-set logZ would overflow exp() to inf, and inf * 0 from an
+                    # indicator multiply after the fact would poison grads with NaN.
                     local, in_range = _kept_local_indices(kept_chunk, vocab_start, vocab_end)
-                    kept_indicator = torch.zeros_like(probs)
-                    kept_indicator.scatter_add_(1, local, in_range.to(probs.dtype))
-                    probs = torch.where(replay_chunk.unsqueeze(-1), probs * kept_indicator, probs)
+                    kept_indicator = torch.zeros_like(scaled_logits)
+                    kept_indicator.scatter_add_(1, local, in_range.to(scaled_logits.dtype))
+                    non_kept = replay_chunk.unsqueeze(-1) & (kept_indicator == 0)
+                    scaled_logits = torch.where(non_kept, float("-inf"), scaled_logits)
+                probs = torch.exp(scaled_logits - logz_chunk.unsqueeze(-1))
 
                 grad_logits = (-grad_chunk).unsqueeze(-1) * probs
                 mask = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)

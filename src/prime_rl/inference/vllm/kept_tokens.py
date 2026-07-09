@@ -54,7 +54,7 @@ from vllm.outputs import RequestOutput
 
 KEPT_TOKENS_ENV = "PRIME_RETURN_KEPT_TOKENS"
 KEPT_TOKENS_MAX_ENV = "PRIME_KEPT_TOKENS_MAX"
-KEPT_TOKENS_MAX_DEFAULT = 2048
+KEPT_TOKENS_MAX_DEFAULT = 512
 
 # Separator/padding token id in the widened logprobs rows. Never a valid
 # vocab id, and stock vLLM never emits it (top-k indices and requested
@@ -118,7 +118,10 @@ def monkey_patch_kept_tokens_sampler():
     row is the finite entries (non-kept tokens are exactly ``-inf`` after
     ``apply_top_k_top_p`` + log_softmax). Rows whose kept set exceeds
     ``PRIME_KEPT_TOKENS_MAX`` emit an empty extension (trainer falls back
-    to full-vocab logprobs there).
+    to full-vocab logprobs there). Speculative decoding is unsupported:
+    vLLM's RejectionSampler builds logprobs via ``gather_logprobs`` and
+    never calls the patched forward, so capture would be silently inert —
+    the server launcher rejects the combination up front.
 
     Only active with ``logprobs_mode="processed_logprobs"`` — that mode
     already forces the PyTorch-native sampling path (FlashInfer's fused
@@ -126,12 +129,17 @@ def monkey_patch_kept_tokens_sampler():
     guaranteed to reflect the truncation actually used for sampling.
     """
     import torch
+    from vllm import envs
     from vllm.logger import init_logger
     from vllm.v1.outputs import LogprobsTensors
     from vllm.v1.sample.sampler import Sampler
 
     if not kept_tokens_enabled():
         return
+    if envs.VLLM_USE_V2_MODEL_RUNNER:
+        # The V2 runner samples through a separate Sampler class this patch
+        # doesn't cover; capture would be silently inert and training biased.
+        raise ValueError("VLLM_USE_V2_MODEL_RUNNER does not yet support: kept-tokens capture")
     if getattr(Sampler.forward, "_prime_rl_kept_tokens", False):
         return
 
@@ -157,7 +165,9 @@ def monkey_patch_kept_tokens_sampler():
             del self.sample
 
         processed_logprobs = captured.get("processed_logprobs")
-        logprobs_mode = kwargs.get("logprobs_mode_override") or self.logprobs_mode
+        # (logits, sampling_metadata, predict_bonus_token, logprobs_mode_override)
+        override = kwargs.get("logprobs_mode_override") or (args[1] if len(args) > 1 else None)
+        logprobs_mode = override or self.logprobs_mode
         num_logprobs = sampling_metadata.max_num_logprobs
         if (
             processed_logprobs is None
@@ -176,33 +186,30 @@ def monkey_patch_kept_tokens_sampler():
         if processed_logprobs.shape[0] != num_rows:
             return output
 
-        # Every step emits at least the separator column, even when no row
-        # has a usable kept set (all above cap, or an all-greedy step) —
-        # the API-side accumulator counts one kept row per separator, so
-        # skipping a step would misalign kept rows with token positions.
-        kept_counts = (processed_logprobs > float("-inf")).sum(dim=-1)
-        eligible = kept_counts <= cap
-        width = int(kept_counts[eligible].max().item()) if bool(eligible.any()) else 0
-
+        # Fixed extension width `cap + 1`, fully device-side: the extra column
+        # detects overflow (a finite entry there means more than `cap` kept
+        # ids), so no host sync (`.item()`/`.any()`) stalls the engine loop.
+        # Finite entries all rank above -inf, so the top-`width` columns cover
+        # every kept id; surplus columns land on -inf and become padding.
+        # Overflow rows ship an empty extension (the trainer falls back to
+        # full-vocab logprobs there), which also covers untruncated rows
+        # (top_p = 1, all-greedy steps) — only the separator marks alignment.
         ids_dtype = stock.logprob_token_ids.dtype
         device = processed_logprobs.device
+        width = min(cap + 1, processed_logprobs.shape[-1])
+        ext_logprobs, ext_ids = processed_logprobs.topk(width, dim=-1)
+        finite = ext_logprobs > float("-inf")
+        overflow = finite[:, -1:]
+        valid = finite & ~overflow
+        padding_id = torch.tensor(_SEPARATOR, dtype=ids_dtype, device=device)
+        ext_ids = torch.where(valid, ext_ids.to(ids_dtype), padding_id)
+        ext_logprobs = torch.where(valid, ext_logprobs, torch.tensor(float("-inf"), device=device))
+
         separator_ids = torch.full((num_rows, 1), _SEPARATOR, dtype=ids_dtype, device=device)
         separator_logprobs = torch.full((num_rows, 1), float("-inf"), device=device)
-        id_columns = [stock.logprob_token_ids, separator_ids]
-        logprob_columns = [stock.logprobs, separator_logprobs]
-
-        if width > 0:
-            # Finite entries all rank above -inf, so top-`width` covers every
-            # kept id; surplus columns land on -inf and become padding.
-            ext_logprobs, ext_ids = processed_logprobs.topk(width, dim=-1)
-            valid = (ext_logprobs > float("-inf")) & eligible.unsqueeze(-1)
-            padding_id = torch.tensor(_SEPARATOR, dtype=ids_dtype, device=device)
-            id_columns.append(torch.where(valid, ext_ids.to(ids_dtype), padding_id))
-            logprob_columns.append(torch.where(valid, ext_logprobs, torch.tensor(float("-inf"), device=device)))
-
         output.logprobs_tensors = LogprobsTensors(
-            logprob_token_ids=torch.cat(id_columns, dim=1),
-            logprobs=torch.cat(logprob_columns, dim=1),
+            logprob_token_ids=torch.cat([stock.logprob_token_ids, separator_ids, ext_ids], dim=1),
+            logprobs=torch.cat([stock.logprobs, separator_logprobs, ext_logprobs], dim=1),
             selected_token_ranks=stock.selected_token_ranks,
             cu_num_generated_tokens=stock.cu_num_generated_tokens,
         )
