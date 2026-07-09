@@ -264,12 +264,6 @@ class Qwen3_5VLMModel(nn.Module):
                 raise ValueError("input_ids are required when inputs_embeds are not provided")
             inputs_embeds = self.language_model.embed_tokens(input_ids)
 
-        if image_grid_thw is not None and input_ids is None:
-            raise ValueError("input_ids are required to compute Qwen3.5 multimodal MRoPE positions")
-        if image_grid_thw is not None and mm_token_type_ids is None:
-            raise ValueError(
-                "Qwen3.5 multimodal forward requires mm_token_type_ids to compute MRoPE positions correctly"
-            )
         if image_grid_thw is not None and position_ids is not None and position_ids.ndim != 3:
             raise ValueError(
                 f"Qwen3.5 multimodal forward requires 3D MRoPE position_ids; got shape={tuple(position_ids.shape)}"
@@ -309,6 +303,12 @@ class Qwen3_5VLMModel(nn.Module):
 
         if position_ids is None:
             if image_grid_thw is not None:
+                if input_ids is None:
+                    raise ValueError("input_ids are required to compute Qwen3.5 multimodal MRoPE positions")
+                if mm_token_type_ids is None:
+                    raise ValueError(
+                        "Qwen3.5 multimodal forward requires mm_token_type_ids to compute MRoPE positions correctly"
+                    )
                 position_ids = build_qwen3_5_mrope_position_ids(
                     input_ids=input_ids,
                     mm_token_type_ids=mm_token_type_ids,

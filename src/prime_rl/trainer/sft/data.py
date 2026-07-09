@@ -473,8 +473,6 @@ class CatDataset(StatefulIterableDataset):
                 if packed_samples["mm_token_type_ids"] is not None:
                     packed_samples["mm_token_type_ids"].extend([0] * sample_len)
             else:
-                if sample_mm_type_ids is not None and len(sample_mm_type_ids) != sample_len:
-                    raise ValueError("mm_token_type_ids length must match input_ids length")
                 if packed_samples["mm_kwargs"] is not None and (
                     (packed_samples["mm_token_type_ids"] is None) != (sample_mm_type_ids is None)
                 ):
