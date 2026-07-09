@@ -316,8 +316,7 @@ class SFTConfig(BaseConfig):
             return self
         if self.model.optimization_dtype != "bfloat16" or self.model.reduce_dtype != "bfloat16":
             raise ValueError(
-                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' "
-                "to match vLLM inference."
+                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
         if self.model.cp > 1:
             raise ValueError("VLM SFT does not support context parallelism yet.")

@@ -33,11 +33,16 @@ class _ToyVLM(nn.Module):
         self.language_model.gate_proj = nn.Linear(4, 4)
 
 
-def test_frozen_vision_encoder_is_excluded_from_lora():
+def test_frozen_vision_encoder_is_excluded_from_lora(monkeypatch):
+    runs = SimpleNamespace(max_runs=1, register_module=lambda *args: None)
+    monkeypatch.setattr("prime_rl.trainer.lora.get_multi_run_manager", lambda: runs)
+    monkeypatch.setattr("prime_rl.trainer.models.layers.lora.base.LORA_NUM_TOKENS", torch.zeros(1, dtype=torch.int32))
+    monkeypatch.setattr("prime_rl.trainer.models.layers.lora.base.SCALING_FACTORS", torch.ones(1, dtype=torch.bfloat16))
     model = _ToyVLM()
     config = ModelConfig(
         vlm=VLMConfig(vision_encoder_attr="visual", language_model_attr="language_model"),
         lora=LoRAConfig(target_modules=["gate_proj"]),
+        moe_router_dtype="bfloat16",
     )
 
     configure_trainable_parameters(model, config, SimpleNamespace(ep_enabled=False))

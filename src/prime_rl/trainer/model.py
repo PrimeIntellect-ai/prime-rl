@@ -1307,7 +1307,7 @@ def forward(
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
     # for Gemma3). Passed straight through to ``model(**kwargs)`` so
     # the model's HF forward signature is the schema. ``mm_token_type_ids``
-    # is split out because it's prime-rl-computed (from token ids).
+    # is split out because it comes from the renderer rather than the processor.
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
 ) -> PrimeLmOutput:
