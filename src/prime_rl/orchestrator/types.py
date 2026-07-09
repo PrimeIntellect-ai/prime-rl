@@ -100,9 +100,9 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
 
     def to_record(self) -> dict:
         """The plain trace record plus the orchestration metadata (excluded from the pydantic
-        dump) needed to place a record without relying on its file path — the flat ``all``
-        streams span every step and env. ``eval_step`` is the eval trigger step (None for train
-        rollouts, whose batch step isn't known until their batch finalizes)."""
+        dump), so a record stays fully placeable — kind, env, policy — even when trace files
+        are merged or read away from their paths. ``eval_step`` is the eval trigger step (None
+        for train rollouts)."""
         return super().to_record() | {
             "kind": self.kind,
             "env_name": self.env_name,

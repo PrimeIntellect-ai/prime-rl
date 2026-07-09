@@ -466,11 +466,15 @@ class Orchestrator:
                 continue
 
             # Every completed rollout — errored, filtered, or never batched — lands in the
-            # ``all`` trace stream the moment it arrives, so it survives crashes and drains.
+            # ``all`` trace file the moment it arrives, so it survives crashes and drains.
+            # Train rollouts belong to the batch window currently collecting (``progress.step``),
+            # eval rollouts to the step whose eval triggered them.
+            step = rollout.eval_step if rollout.kind == "eval" else self.progress.step
+            assert step is not None
             await asyncio.to_thread(
                 save_rollouts,
                 [rollout.to_record()],
-                get_trace_path(self.config.output_dir, rollout.kind, "all"),
+                get_trace_path(self.config.output_dir, step, rollout.kind, "all"),
             )
 
             if rollout.kind == "eval":
@@ -538,7 +542,7 @@ class Orchestrator:
         # record, and can't round-trip json (raw numpy bytes).
         effective = batch.rollouts.effective
         records = [r.to_record() for r in effective]
-        await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, "train", "effective", step))
+        await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.progress.step += 1
@@ -754,7 +758,7 @@ class Orchestrator:
         # streamed into ``all`` on arrival.
         records = [r.to_record() for r in batch.rollouts.effective]
         await asyncio.to_thread(
-            save_rollouts, records, get_trace_path(self.config.output_dir, "eval", "effective", batch.step)
+            save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
         policy_versions = {r.policy_version for r in batch.rollouts}

@@ -77,14 +77,11 @@ def get_trace_dir(output_dir: Path) -> Path:
     return output_dir / "traces"
 
 
-def get_trace_path(output_dir: Path, kind: str, subset: str, step: int | None = None) -> Path:
-    """Where one trace file lives: ``traces/{train,eval}/{all,effective}/[step_{n}/]traces.jsonl``.
-    ``all`` is one flat stream appended per rollout as it completes (a rollout's batch step isn't
-    known when it lands); ``effective`` is written per finalized batch under its step."""
-    trace_dir = get_trace_dir(output_dir) / kind / subset
-    if step is not None:
-        trace_dir = get_step_path(trace_dir, step)
-    return trace_dir / "traces.jsonl"
+def get_trace_path(output_dir: Path, step: int, kind: str, subset: str) -> Path:
+    """Where one trace file lives: ``traces/step_{n}/{train,eval}/{all,effective}/traces.jsonl``.
+    ``all`` is appended per rollout the moment it completes; ``effective`` is written at once
+    per finalized train batch / eval epoch."""
+    return get_step_path(get_trace_dir(output_dir), step) / kind / subset / "traces.jsonl"
 
 
 def get_eval_dir(output_dir: Path) -> Path:
@@ -164,29 +161,18 @@ def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool, ckpt_o
 
 
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
-    """Remove stale rollouts and broadcasts past ``resume_step``.
+    """Remove stale rollouts, broadcasts, and traces past ``resume_step``.
 
     Pass ``resume_step=-1`` to wipe every step directory (fresh runs).
     """
     run_default = output_dir / "run_default"
-
-    # The ``all`` trace streams are flat run-level JSONL (no per-step layout), so they can't
-    # be rewound to ``resume_step`` — wipe them only when starting from scratch.
-    if resume_step == -1:
-        for trace_dir in (get_trace_dir(output_dir), get_trace_dir(run_default)):
-            if trace_dir.exists():
-                get_logger().info(f"Deleting stale trace directory {trace_dir}")
-                shutil.rmtree(trace_dir)
-
     dirs = [
         get_rollout_dir(output_dir),
         get_rollout_dir(run_default),
         get_broadcast_dir(run_default),
+        get_trace_dir(output_dir),
+        get_trace_dir(run_default),
     ]
-    # The ``effective`` trace streams are per-step, so they rewind like rollouts do.
-    for base in (output_dir, run_default):
-        for kind in ("train", "eval"):
-            dirs.append(get_trace_dir(base) / kind / "effective")
 
     for directory in dirs:
         steps_to_delete = [step for step in get_all_ckpt_steps(directory) if step > resume_step]
