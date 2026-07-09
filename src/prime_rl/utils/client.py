@@ -308,6 +308,7 @@ class DynamoInferencePool(_StaticClientPool):
         await check_health(
             self._frontend_admin_clients,
             timeout=_remaining_readiness_timeout(deadline, "frontend health"),
+            strict=True,
         )
         await maybe_check_has_model(
             self._frontend_admin_clients,
@@ -385,6 +386,9 @@ async def setup_inference_pool(
     pool_size: int | None = None,
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
+    if client_config.admin_api == "dynamo" and client_config.is_elastic:
+        raise ValueError("Dynamo admin API does not support elastic inference pools")
+
     if client_config.is_elastic:
         from prime_rl.utils.elastic import ElasticInferencePool
 
@@ -480,20 +484,42 @@ async def maybe_check_has_model(
     model_name: str,
     skip_model_check: bool = False,
     timeout: float = 1800,
+    interval: float = 1,
 ) -> None:
     if skip_model_check:
         return
     logger = get_logger()
+    deadline = _readiness_deadline(timeout)
     logger.debug(f"Checking if model {model_name} is in the inference pool")
-    async with asyncio.timeout(timeout):
-        results = await asyncio.gather(
-            *(admin_client.get("/v1/models", timeout=httpx.Timeout(timeout)) for admin_client in admin_clients)
+
+    async def _check_has_model(admin_client: AsyncClient) -> None:
+        last_error: Exception | None = None
+        loop = asyncio.get_running_loop()
+        while (remaining := deadline - loop.time()) > 0:
+            try:
+                async with asyncio.timeout(remaining):
+                    result = await admin_client.get(
+                        "/v1/models",
+                        timeout=httpx.Timeout(min(remaining, 10.0)),
+                    )
+                result.raise_for_status()
+                models = result.json()["data"]
+                if not any(model["id"] == model_name for model in models):
+                    raise ValueError(f"Model {model_name} is not registered")
+                return
+            except Exception as error:
+                last_error = error
+                remaining = deadline - loop.time()
+                if remaining > 0:
+                    await asyncio.sleep(min(interval, remaining))
+
+        message = (
+            f"Model {model_name} was not registered on {admin_client.base_url} "
+            f"before the {timeout}-second readiness deadline; last error: {last_error!r}"
         )
-    for admin_client, result in zip(admin_clients, results):
-        result.raise_for_status()
-        models = result.json()["data"]
-        if not any(model["id"] == model_name for model in models):
-            raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
+        raise TimeoutError(message) from last_error
+
+    await asyncio.gather(*(_check_has_model(admin_client) for admin_client in admin_clients))
     logger.debug(f"Model {model_name} was found in the inference pool")
 
 

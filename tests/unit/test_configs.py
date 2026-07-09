@@ -240,6 +240,76 @@ def test_dynamo_disaggregated_config_is_local_and_enables_prefix_caching():
     assert config.use_pd_kv_transfer is True
 
 
+@pytest.mark.parametrize(
+    "inference",
+    [
+        {"parallel": {"tp": 0}},
+        {"deployment": {"type": "single_node", "gpus_per_node": 0}},
+    ],
+)
+def test_inference_topology_rejects_non_positive_gpu_dimensions(inference: dict):
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        InferenceConfig.model_validate(inference)
+
+
+def test_dynamo_disaggregated_topology_requires_whole_tp_groups():
+    with pytest.raises(ValidationError, match="gpus_per_node must be divisible"):
+        InferenceConfig.model_validate(
+            {
+                "backend": {"type": "dynamo"},
+                "parallel": {"tp": 2},
+                "deployment": {
+                    "type": "disaggregated",
+                    "gpus_per_node": 3,
+                    "num_prefill_replicas": 1,
+                    "num_decode_replicas": 1,
+                },
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "inference_override",
+    [
+        {"parallel": {"tp": 2, "dp": 3}},
+        {"parallel": {"tp": 2}, "data_parallel_size_local": 1},
+    ],
+)
+def test_dynamo_disaggregated_topology_rejects_conflicting_dp(inference_override: dict):
+    inference = {
+        "backend": {"type": "dynamo"},
+        "deployment": {
+            "type": "disaggregated",
+            "gpus_per_node": 4,
+            "num_prefill_replicas": 1,
+            "num_decode_replicas": 1,
+        },
+        **inference_override,
+    }
+
+    with pytest.raises(ValidationError, match="must equal.*gpus_per_node / inference.parallel.tp"):
+        InferenceConfig.model_validate(inference)
+
+
+def test_dynamo_topology_is_derived_once_from_inference_config():
+    config = InferenceConfig.model_validate(
+        {
+            "backend": {"type": "dynamo"},
+            "parallel": {"tp": 2},
+            "deployment": {
+                "type": "disaggregated",
+                "gpus_per_node": 4,
+                "num_prefill_replicas": 2,
+                "num_decode_replicas": 1,
+            },
+        }
+    )
+
+    assert config.dynamo_worker_roles == ("prefill", "prefill", "decode")
+    assert config.dynamo_gpus_per_worker == 4
+    assert config.dynamo_local_dp == 2
+
+
 def test_dynamo_disaggregated_config_rejects_disabled_prefix_caching():
     with pytest.raises(ValidationError, match="requires prefix caching"):
         InferenceConfig.model_validate(

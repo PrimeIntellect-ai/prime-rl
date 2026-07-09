@@ -39,10 +39,16 @@ _ENGINE_CONFIG_EXCLUDED = frozenset(
 )
 _RESERVED_ENGINE_KEYS = frozenset(
     {
+        "data_parallel_rpc_port",
+        "data_parallel_size",
+        "data_parallel_size_local",
         "disaggregation_mode",
+        "enable_prefix_caching",
         "enable_rl",
         "kv_events_config",
         "kv_transfer_config",
+        "pipeline_parallel_size",
+        "tensor_parallel_size",
         "worker_extension_cls",
     }
 )
@@ -278,7 +284,7 @@ def build_engine_config(
     if config.deployment.type == "disaggregated":
         # Each generated worker is an independent vLLM server. Preserve local
         # DP within a worker, but never turn the P/D worker count into vLLM DP.
-        local_dp = config.deployment.gpus_per_node // config.parallel.tp
+        local_dp = config.dynamo_local_dp
         values["data_parallel_size"] = local_dp
         if local_dp == 1:
             values.pop("data_parallel_size_local", None)
@@ -356,11 +362,11 @@ def build_local_worker_specs(
             raise ValueError("Local Dynamo requires one prefill node per prefill replica")
         if deployment.num_decode_nodes != deployment.num_decode_replicas:
             raise ValueError("Local Dynamo requires one decode node per decode replica")
-        roles: list[Role] = ["decode"] * deployment.num_decode_replicas + ["prefill"] * deployment.num_prefill_replicas
-        gpus_per_worker = deployment.gpus_per_node
+        roles = list(config.dynamo_worker_roles)
+        gpus_per_worker = config.dynamo_gpus_per_worker
     else:
-        roles = ["agg"]
-        gpus_per_worker = config.parallel.tp * config.parallel.dp
+        roles = list(config.dynamo_worker_roles)
+        gpus_per_worker = config.dynamo_gpus_per_worker
 
     required = len(roles) * gpus_per_worker
     if len(available) < required:
@@ -404,10 +410,9 @@ def build_dry_run_worker_specs(
 ) -> list[DynamoWorkerSpec]:
     """Build local specs without consulting host GPU hardware."""
     if config.deployment.type == "disaggregated":
-        worker_count = config.deployment.num_prefill_replicas + config.deployment.num_decode_replicas
-        gpu_count = worker_count * config.deployment.gpus_per_node
+        gpu_count = len(config.dynamo_worker_roles) * config.dynamo_gpus_per_worker
     else:
-        gpu_count = config.parallel.tp * config.parallel.dp
+        gpu_count = config.dynamo_gpus_per_worker
     return build_local_worker_specs(
         config,
         output_dir=output_dir,

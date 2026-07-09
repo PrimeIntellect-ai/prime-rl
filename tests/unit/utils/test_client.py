@@ -1,18 +1,19 @@
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from verifiers.v1.clients.config import EvalClientConfig
 
-from prime_rl.configs.shared import ClientConfig
+from prime_rl.configs.shared import ClientConfig, ElasticConfig
 from prime_rl.inference.dynamo_admin import DynamoTopology, DynamoWorker
 from prime_rl.utils.client import (
     DynamoInferencePool,
     StaticInferencePool,
     _is_retryable_lora_error,
     load_lora_adapter,
+    maybe_check_has_model,
     setup_clients,
     setup_inference_pool,
 )
@@ -151,6 +152,58 @@ def test_setup_inference_pool_selects_dynamo_pool_once():
 
 
 @pytest.mark.asyncio
+async def test_setup_inference_pool_rejects_dynamo_elastic_before_pool_selection():
+    client_config = ClientConfig(
+        base_url=["http://frontend:8000/v1"],
+        admin_api="dynamo",
+        dynamo_worker_roles=("agg",),
+        dynamo_gpus_per_worker=1,
+        elastic=ElasticConfig(hostname="inference.example"),
+    )
+    original_config = client_config.model_copy(deep=True)
+
+    with patch("prime_rl.utils.elastic.ElasticInferencePool.from_config", new=AsyncMock()) as from_config:
+        with pytest.raises(ValueError, match="Dynamo admin API does not support elastic inference pools"):
+            await setup_inference_pool(client_config, model_name="test-model")
+
+    from_config.assert_not_awaited()
+    assert client_config == original_config
+
+
+@pytest.mark.asyncio
+async def test_model_registration_retries_transient_status_and_empty_models():
+    client = AsyncMock()
+    client.base_url = httpx.URL("http://frontend:8000")
+    request = httpx.Request("GET", "http://frontend:8000/v1/models")
+    unavailable = httpx.Response(
+        503,
+        request=request,
+    )
+    empty = httpx.Response(200, json={"data": []}, request=request)
+    ready = httpx.Response(200, json={"data": [{"id": "test-model"}]}, request=request)
+    client.get.side_effect = [unavailable, empty, ready]
+
+    await maybe_check_has_model([client], "test-model", timeout=1, interval=0)
+
+    assert client.get.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_model_registration_timeout_reports_last_error():
+    client = AsyncMock()
+    client.base_url = httpx.URL("http://frontend:8000")
+    client.get.return_value = httpx.Response(
+        503,
+        request=httpx.Request("GET", "http://frontend:8000/v1/models"),
+    )
+
+    with pytest.raises(TimeoutError, match=r"test-model.*frontend:8000.*503 Service Unavailable"):
+        await maybe_check_has_model([client], "test-model", timeout=0.02, interval=0.001)
+
+    assert client.get.await_count > 1
+
+
+@pytest.mark.asyncio
 async def test_dynamo_readiness_shares_one_monotonic_deadline(monkeypatch: pytest.MonkeyPatch):
     pool = DynamoInferencePool(
         ClientConfig(
@@ -179,7 +232,8 @@ async def test_dynamo_readiness_shares_one_monotonic_deadline(monkeypatch: pytes
         ),
     )
 
-    async def health(_clients, *, timeout, **_kwargs):
+    async def health(_clients, *, timeout, strict=False, **_kwargs):
+        assert strict is True
         observed_timeouts.append(timeout)
         await asyncio.sleep(0.01)
 

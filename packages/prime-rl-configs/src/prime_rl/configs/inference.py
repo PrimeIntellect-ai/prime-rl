@@ -24,7 +24,7 @@ class ServerConfig(BaseConfig):
 
 
 class ParallelConfig(BaseConfig):
-    tp: int = 1
+    tp: int = Field(1, ge=1)
     """Tensor parallel size. Forwarded to vLLM as ``--tensor-parallel-size``."""
 
     dp: int = Field(1, ge=1)
@@ -251,7 +251,7 @@ RouterConfig: TypeAlias = Annotated[VllmRouterConfig | LlmdRouterConfig, Field(d
 
 
 class BaseInferenceDeploymentConfig(BaseConfig):
-    gpus_per_node: int = 8
+    gpus_per_node: int = Field(8, ge=1)
     """GPUs per node."""
 
     backend_port: int = 8100
@@ -443,12 +443,58 @@ class InferenceConfig(BaseConfig):
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
 
+    @property
+    def dynamo_worker_roles(self) -> tuple[Literal["agg", "prefill", "decode"], ...]:
+        """Canonical admin and launch order for Dynamo worker groups."""
+        if self.deployment.type == "disaggregated":
+            return ("prefill",) * self.deployment.num_prefill_replicas + (
+                "decode",
+            ) * self.deployment.num_decode_replicas
+        return ("agg",)
+
+    @property
+    def dynamo_gpus_per_worker(self) -> int:
+        """GPU allocation owned by one independently administered Dynamo worker."""
+        if self.deployment.type == "disaggregated":
+            return self.deployment.gpus_per_node
+        return self.parallel.tp * self.parallel.dp
+
+    @property
+    def dynamo_local_dp(self) -> int:
+        """vLLM data-parallel ranks inside one Dynamo worker."""
+        if self.deployment.type == "disaggregated":
+            return self.deployment.gpus_per_node // self.parallel.tp
+        return self.parallel.dp
+
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
         if self.deployment.type == "disaggregated" and self.slurm is None and self.backend.type != "dynamo":
             raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_disaggregated_topology(self):
+        if self.deployment.type != "disaggregated":
+            return self
+        if self.deployment.gpus_per_node % self.parallel.tp != 0:
+            raise ValueError(
+                "inference.deployment.gpus_per_node must be divisible by inference.parallel.tp "
+                "so every worker contains whole tensor-parallel groups."
+            )
+        if self.backend.type == "dynamo":
+            local_dp = self.deployment.gpus_per_node // self.parallel.tp
+            if "dp" in self.parallel.model_fields_set and self.parallel.dp != local_dp:
+                raise ValueError(
+                    "inference.parallel.dp must equal inference.deployment.gpus_per_node / "
+                    "inference.parallel.tp for a Dynamo disaggregated worker."
+                )
+            if self.data_parallel_size_local is not None and self.data_parallel_size_local != local_dp:
+                raise ValueError(
+                    "inference.data_parallel_size_local must equal inference.deployment.gpus_per_node / "
+                    "inference.parallel.tp for a Dynamo disaggregated worker."
+                )
         return self
 
     @model_validator(mode="after")
@@ -503,9 +549,7 @@ class InferenceConfig(BaseConfig):
                 self.enable_expert_parallel = True
             if "enable_eplb" not in self.model_fields_set:
                 self.enable_eplb = False
-            gpus_per_node = self.deployment.gpus_per_node
-            tp = self.parallel.tp
-            dp_per_node = gpus_per_node // tp
+            dp_per_node = self.dynamo_local_dp
             if self.data_parallel_size_local is None:
                 self.data_parallel_size_local = dp_per_node
             if self.parallel.dp == 1:

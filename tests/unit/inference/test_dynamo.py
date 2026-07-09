@@ -69,17 +69,47 @@ def test_role_overrides_are_isolated():
     assert "max_num_seqs" not in prefill
 
 
-@pytest.mark.parametrize("key", ["kv_transfer_config", "kv_events_config", "worker_extension_cls"])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "data_parallel_rpc_port",
+        "data_parallel_size",
+        "data_parallel_size_local",
+        "disaggregation_mode",
+        "enable_prefix_caching",
+        "enable_rl",
+        "kv_transfer_config",
+        "kv_events_config",
+        "pipeline_parallel_size",
+        "tensor_parallel_size",
+        "worker_extension_cls",
+    ],
+)
 def test_reserved_engine_override_is_rejected(key: str):
     config = disaggregated_config(vllm_extra={key: {}})
     with pytest.raises(ValueError, match="Dynamo-managed"):
         build_engine_config(config, "prefill", kv_events_port=20080)
 
 
+def test_reserved_role_engine_override_is_rejected():
+    config = disaggregated_config(
+        deployment={
+            "type": "disaggregated",
+            "gpus_per_node": 1,
+            "num_prefill_replicas": 1,
+            "num_decode_replicas": 1,
+            "prefill_vllm_overrides": {"tensor_parallel_size": 2},
+        }
+    )
+
+    with pytest.raises(ValueError, match="prefill_vllm_overrides.*tensor_parallel_size"):
+        build_engine_config(config, "prefill", kv_events_port=20080)
+
+
 def test_local_specs_allocate_four_workers_and_unique_ports(tmp_path: Path):
     specs = build_local_worker_specs(disaggregated_config(), tmp_path, gpu_ids=["4", "5", "6", "7"])
 
-    assert [spec.role for spec in specs] == ["decode", "decode", "prefill", "prefill"]
+    assert [spec.role for spec in specs] == list(disaggregated_config().dynamo_worker_roles)
     assert [spec.gpu_ids for spec in specs] == [("4",), ("5",), ("6",), ("7",)]
     assert len({spec.system_port for spec in specs}) == 4
     assert len({spec.process.environment()["VLLM_NIXL_SIDE_CHANNEL_PORT"] for spec in specs}) == 4
@@ -221,15 +251,15 @@ def test_worker_environment_applies_only_matching_role_overrides(tmp_path: Path)
             "decode_env_vars": {"ROLE_SETTING": "decode"},
         }
     )
-    decode, prefill = build_local_worker_specs(config, tmp_path, gpu_ids=["3", "7"])
+    prefill, decode = build_local_worker_specs(config, tmp_path, gpu_ids=["3", "7"])
 
     decode_env = build_worker_environment(decode, {"COMMON": "value"})
     prefill_env = build_worker_environment(prefill, {"COMMON": "value"})
 
     assert decode_env["ROLE_SETTING"] == "decode"
     assert prefill_env["ROLE_SETTING"] == "prefill"
-    assert decode_env["CUDA_VISIBLE_DEVICES"] == "3"
-    assert prefill_env["CUDA_VISIBLE_DEVICES"] == "7"
+    assert prefill_env["CUDA_VISIBLE_DEVICES"] == "3"
+    assert decode_env["CUDA_VISIBLE_DEVICES"] == "7"
     assert decode_env["VLLM_PLUGINS"] == "prime_rl"
     assert decode_env["DYN_COMPONENT"] == "backend"
     assert prefill_env["DYN_COMPONENT"] == "prefill"

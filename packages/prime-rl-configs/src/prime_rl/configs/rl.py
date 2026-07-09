@@ -710,19 +710,9 @@ class RLConfig(BaseConfig):
             else:
                 client_updates["dp_rank_count"] = self.inference.data_parallel_size_local or self.inference.parallel.dp
         if self.inference.backend.type == "dynamo":
-            if self.inference.deployment.type == "disaggregated":
-                deployment = self.inference.deployment
-                expected_roles = ("prefill",) * deployment.num_prefill_replicas + (
-                    "decode",
-                ) * deployment.num_decode_replicas
-                expected_gpus_per_worker = deployment.gpus_per_node
-            else:
-                expected_roles = ("agg",)
-                expected_gpus_per_worker = self.inference.parallel.tp * self.inference.parallel.dp
-
             expected_topology = {
-                "dynamo_worker_roles": expected_roles,
-                "dynamo_gpus_per_worker": expected_gpus_per_worker,
+                "dynamo_worker_roles": self.inference.dynamo_worker_roles,
+                "dynamo_gpus_per_worker": self.inference.dynamo_gpus_per_worker,
             }
             for field, expected in expected_topology.items():
                 if field in client.model_fields_set and getattr(client, field) != expected:
