@@ -100,24 +100,6 @@ def _truncate_mm(
     return cut, sliced
 
 
-def _append_mm_kwargs(dst: dict[str, EncodedTensor], src: dict[str, EncodedTensor]) -> None:
-    for key in dst:
-        dst[key].data += src[key].data
-        dst[key].shape[0] += src[key].shape[0]
-
-
-def _can_pack_mm_kwargs(dst: dict[str, EncodedTensor] | None, src: dict[str, EncodedTensor] | None) -> bool:
-    if dst is None or src is None or set(dst) != set(src):
-        return False
-    return all(
-        dst[key].dtype == src[key].dtype
-        and len(dst[key].shape) > 0
-        and len(dst[key].shape) == len(src[key].shape)
-        and dst[key].shape[1:] == src[key].shape[1:]
-        for key in dst
-    )
-
-
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
@@ -284,7 +266,16 @@ class _MicroBatchBin:
         if self.first_lora_idx != lora_idx:
             return False
         if existing_mm_sample is not None and sample_is_mm:
-            return _can_pack_mm_kwargs(existing_mm_sample.mm_kwargs, sample.mm_kwargs)
+            dst = existing_mm_sample.mm_kwargs
+            src = sample.mm_kwargs
+            assert dst is not None and src is not None
+            return set(dst) == set(src) and all(
+                dst[key].dtype == src[key].dtype
+                and len(dst[key].shape) > 0
+                and len(dst[key].shape) == len(src[key].shape)
+                and dst[key].shape[1:] == src[key].shape[1:]
+                for key in dst
+            )
         return True
 
     def add(self, lora_idx: int, sample: MicroBatch) -> None:
@@ -368,7 +359,9 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
             if mm_kwargs is None:
                 mm_kwargs = copy.deepcopy(sample.mm_kwargs)
             else:
-                _append_mm_kwargs(mm_kwargs, sample.mm_kwargs)
+                for key in mm_kwargs:
+                    mm_kwargs[key].data += sample.mm_kwargs[key].data
+                    mm_kwargs[key].shape[0] += sample.mm_kwargs[key].shape[0]
         seq_lens.extend(sample.seq_lens if sample.seq_lens is not None else [sample_len])
         lora_num_tokens[lora_idx] += sample_len
 
@@ -404,7 +397,7 @@ def _expand_bins_by_splitting(
         candidates = [
             (bin_content.workload(bin_cost), idx)
             for idx, bin_content in enumerate(bins)
-            if len(bin_content.samples) > 1
+            if len(bin_content.samples) > 1 and bin_content.first_multimodal_sample is None
         ]
         if not candidates:
             break
