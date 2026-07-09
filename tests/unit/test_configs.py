@@ -263,7 +263,7 @@ def test_orchestrator_vlm_requires_renderer():
     assert config.renderer is not None
 
 
-def test_trainer_rejects_declared_vlm_cp():
+def test_trainer_rejects_vlm_cp_with_ring():
     config = {
         "model": {
             "cp": 2,
@@ -276,17 +276,16 @@ def test_trainer_rejects_declared_vlm_cp():
         },
     }
 
-    with pytest.raises(ValidationError, match="VLM models.*context parallelism"):
+    with pytest.raises(ValidationError, match="cp_style='ulysses'"):
         TrainerConfig.model_validate(config)
 
 
-def test_trainer_allows_vlm_cp_with_ulysses_custom_impl():
+def test_trainer_allows_vlm_cp_with_ulysses():
     config = TrainerConfig.model_validate(
         {
             "model": {
                 "cp": 2,
                 "cp_style": "ulysses",
-                "impl": "custom",
                 "optimization_dtype": "bfloat16",
                 "reduce_dtype": "bfloat16",
                 "vlm": {
@@ -299,25 +298,6 @@ def test_trainer_allows_vlm_cp_with_ulysses_custom_impl():
 
     assert config.model.vlm is not None
     assert config.model.cp == 2
-
-
-def test_trainer_rejects_vlm_cp_with_hf_impl():
-    with pytest.raises(ValidationError, match="custom model implementation"):
-        TrainerConfig.model_validate(
-            {
-                "model": {
-                    "cp": 2,
-                    "cp_style": "ulysses",
-                    "impl": "hf",
-                    "optimization_dtype": "bfloat16",
-                    "reduce_dtype": "bfloat16",
-                    "vlm": {
-                        "vision_encoder_attr": "model.visual",
-                        "language_model_attr": "model.language_model",
-                    },
-                },
-            }
-        )
 
 
 def test_trainer_allows_text_only_cp():

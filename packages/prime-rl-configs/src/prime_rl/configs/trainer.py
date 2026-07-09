@@ -603,13 +603,9 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def vlm_incompatible_with_cp(self):
-        if self.model.vlm is not None and self.model.cp > 1:
-            if self.model.cp_style != "ulysses":
-                raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
-            # impl="auto" passes here; get_model rejects it at load time if it resolves to hf.
-            if self.model.impl == "hf":
-                raise ValueError("VLM context parallelism requires the custom model implementation")
+    def validate_vlm_cp(self):
+        if self.model.vlm is not None and self.model.cp > 1 and self.model.cp_style != "ulysses":
+            raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
         return self
 
     @model_validator(mode="after")
