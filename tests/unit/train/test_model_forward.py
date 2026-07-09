@@ -33,8 +33,8 @@ class _PrimeCaptureModel(PreTrainedModelPrimeRL):
         super().__init__(PretrainedConfig())
         self.kwargs = None
 
-    def forward(self, seq_lens: torch.Tensor | None = None, seq_lens_are_global: bool = False, **kwargs):
-        self.kwargs = {**kwargs, "seq_lens": seq_lens, "seq_lens_are_global": seq_lens_are_global}
+    def forward(self, seq_lens: torch.Tensor | None = None, seq_lens_are_pre_shard: bool = False, **kwargs):
+        self.kwargs = {**kwargs, "seq_lens": seq_lens, "seq_lens_are_pre_shard": seq_lens_are_pre_shard}
         input_ids = kwargs["input_ids"]
         return {"logits": torch.zeros(*input_ids.shape, 4)}
 
@@ -143,7 +143,7 @@ def test_forward_does_not_leak_seq_lens_to_generic_text_models():
 
     assert model.kwargs is not None
     assert "seq_lens" not in model.kwargs
-    assert "seq_lens_are_global" not in model.kwargs
+    assert "seq_lens_are_pre_shard" not in model.kwargs
 
 
 def test_forward_passes_typed_seq_lens_to_custom_models():
@@ -152,11 +152,11 @@ def test_forward_passes_typed_seq_lens_to_custom_models():
     position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
     seq_lens = torch.tensor([2, 2])
 
-    forward(model, input_ids, position_ids, seq_lens=seq_lens, seq_lens_are_global=True)
+    forward(model, input_ids, position_ids, seq_lens=seq_lens, seq_lens_are_pre_shard=True)
 
     assert model.kwargs is not None
     torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
-    assert model.kwargs["seq_lens_are_global"] is True
+    assert model.kwargs["seq_lens_are_pre_shard"] is True
 
 
 def test_forward_omits_prime_only_kwargs_for_hf_mrope_vlm():

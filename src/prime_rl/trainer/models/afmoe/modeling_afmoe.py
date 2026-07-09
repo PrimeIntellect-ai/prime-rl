@@ -465,7 +465,7 @@ class AfmoeModel(AfmoePreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
-        seq_lens_are_global: bool = False,
+        seq_lens_are_pre_shard: bool = False,
     ) -> MoeModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
@@ -580,7 +580,7 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
-        seq_lens_are_global: bool = False,
+        seq_lens_are_pre_shard: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -602,7 +602,7 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
-            seq_lens_are_global=seq_lens_are_global,
+            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
         )
 
         hidden_states = outputs.last_hidden_state

@@ -214,7 +214,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
-        seq_lens_are_global: bool = False,
+        seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -227,7 +227,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
 
         flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
         if flash_attn_enabled:
-            if seq_lens_are_global and seq_lens is not None:
+            if seq_lens_are_pre_shard and seq_lens is not None:
                 cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens.to(device=inputs_embeds.device))
             elif position_ids.ndim == 3:
                 seq_len = inputs_embeds.shape[1]
@@ -250,7 +250,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
                 raise ValueError("Packed Qwen3.5 batches with full_attention layers require flash attention")
             cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
                 seq_lens,
-                total_tokens=None if seq_lens_are_global else inputs_embeds.shape[1],
+                total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
             )
         else:
             cu_seqlens = None
@@ -259,7 +259,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        cu_seqlens_are_global = seq_lens_are_global and seq_lens is not None
+        cu_seqlens_are_global = seq_lens_are_pre_shard and seq_lens is not None
 
         for decoder_layer in self.layers:
             hidden_states = decoder_layer(
@@ -382,7 +382,7 @@ class Qwen3_5VLMModel(nn.Module):
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
         seq_lens: torch.LongTensor | None = None,
-        seq_lens_are_global: bool = False,
+        seq_lens_are_pre_shard: bool = False,
         **kwargs,
     ) -> BaseModelOutputWithPast:
         inputs_embeds, position_ids = self.prepare_inputs_embeds_and_position_ids(
@@ -402,13 +402,13 @@ class Qwen3_5VLMModel(nn.Module):
             setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style="ulysses", seq_lens=seq_lens)
             inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=cp_rank, cp_world_size=cp_world_size)
             position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
-            seq_lens_are_global = True
+            seq_lens_are_pre_shard = True
 
         return self.language_model(
             inputs_embeds=inputs_embeds,
             position_ids=position_ids,
             seq_lens=seq_lens,
-            seq_lens_are_global=seq_lens_are_global,
+            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
         )
 
 
@@ -471,7 +471,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         image_grid_thw: Optional[torch.LongTensor] = None,
         mm_token_type_ids: Optional[torch.LongTensor] = None,
         seq_lens: Optional[torch.LongTensor] = None,
-        seq_lens_are_global: bool = False,
+        seq_lens_are_pre_shard: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5 for now"
@@ -493,7 +493,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
                 image_grid_thw=image_grid_thw,
                 mm_token_type_ids=mm_token_type_ids,
                 seq_lens=seq_lens,
-                seq_lens_are_global=seq_lens_are_global,
+                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
             )
         else:
             outputs = self.model(
@@ -501,7 +501,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
                 position_ids=position_ids,
                 inputs_embeds=inputs_embeds,
                 seq_lens=seq_lens,
-                seq_lens_are_global=seq_lens_are_global,
+                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
             )
 
         hidden_states = outputs.last_hidden_state

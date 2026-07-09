@@ -266,7 +266,7 @@ def train(config: SFTConfig):
         mm_type_ids = micro_batch.get("mm_token_type_ids")
         seq_lens = micro_batch.get("seq_lens")
 
-        seq_lens_are_global = False
+        seq_lens_are_pre_shard = False
 
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
@@ -278,7 +278,7 @@ def train(config: SFTConfig):
                 input_ids, position_ids = setup_cp_params(
                     input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
                 )
-            seq_lens_are_global = seq_lens is not None
+            seq_lens_are_pre_shard = seq_lens is not None
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
@@ -299,7 +299,7 @@ def train(config: SFTConfig):
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_type_ids,
                     seq_lens=seq_lens,
-                    seq_lens_are_global=seq_lens_are_global,
+                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                 )
                 loss_sum = out["loss"] * token_count
             else:
@@ -310,7 +310,7 @@ def train(config: SFTConfig):
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_type_ids,
                     seq_lens=seq_lens,
-                    seq_lens_are_global=seq_lens_are_global,
+                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                 )
                 logits = out["logits"]
                 B, L, V = logits.shape
