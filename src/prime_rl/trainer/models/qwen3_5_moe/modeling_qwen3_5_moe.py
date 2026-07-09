@@ -674,8 +674,6 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        if position_ids.ndim == 3 and inputs_embeds.shape[0] != 1:
-            raise ValueError("3D Qwen3.5 MRoPE positions require batch size 1 for varlen attention")
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
         )
