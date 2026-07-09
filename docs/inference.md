@@ -292,13 +292,9 @@ Sampling mask replay fixes this by capturing the kept-set token ids at sampling 
 ```toml
 [orchestrator.train.sampling]
 top_p = 0.95
-
-[trainer]
-enable_sampling_mask_replay = true # auto-sets inference.enable_return_kept_tokens = true
-
-[inference]
-enable_return_kept_tokens = true
 ```
+
+That's all the `rl` entrypoint needs: truncated train sampling automatically enables `trainer.enable_sampling_mask_replay` and `inference.enable_return_kept_tokens`. Explicitly setting `trainer.enable_sampling_mask_replay = false` opts out (a naive-top-p baseline — expect collapse); when the inference server is launched separately from its own config, set `inference.enable_return_kept_tokens = true` there yourself.
 
 Positions whose kept set exceeds `inference.kept_tokens_max` (default 512) ship no mask and the trainer falls back to full-vocab logprobs there; the resulting bias is bounded by `-log(top_p)` since the excluded tail mass is at most `1 - top_p`. The cap is also the fixed per-step capture width (chosen device-side, no host sync), so raising it linearly grows the per-step device-to-host copy and the trainer's padded `[seq, max_kept]` mask tensor. Like router replay, the kept sets ride the `/inference/v1/generate` response as base64 payloads (typically far smaller than routed experts). The capture is implemented as monkey-patches over vLLM's sampler and requires `logprobs_mode = "processed_logprobs"` (the default) — which also disables the fused FlashInfer sampler, so truncated sampling pays a small sampling-throughput cost either way.
 

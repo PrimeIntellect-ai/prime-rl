@@ -581,7 +581,7 @@ class TrainerConfig(BaseConfig):
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
 
     enable_sampling_mask_replay: bool = False
-    """Replay the rollout-time kept-set sampling masks (the token ids surviving top-p/top-k truncation) when computing trainer logprobs: masked positions renormalize over the kept set, matching the truncated distribution rollouts actually sampled from (DeepSeek V3.2 "Keep Sampling Mask"). Requires ``inference.enable_return_kept_tokens = true``; positions without a mask (contexts, kept sets above ``inference.kept_tokens_max``) fall back to full-vocab logprobs."""
+    """Replay the rollout-time kept-set sampling masks (the token ids surviving top-p/top-k truncation) when computing trainer logprobs: masked positions renormalize over the kept set, matching the truncated distribution rollouts actually sampled from (DeepSeek V3.2 "Keep Sampling Mask"). The ``rl`` entrypoint enables this automatically (along with ``inference.enable_return_kept_tokens``) whenever train sampling truncates (``top_p < 1`` etc.); set explicitly to ``false`` only to opt out (e.g. a naive-top-p baseline — expect collapse). Positions without a mask (contexts, kept sets above ``inference.kept_tokens_max``) fall back to full-vocab logprobs."""
 
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""

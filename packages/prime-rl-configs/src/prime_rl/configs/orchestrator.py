@@ -56,8 +56,9 @@ class TrainSamplingConfig(BaseConfig):
     top_p: float = Field(1.0, gt=0, le=1.0)
     """Nucleus (top-p) sampling for train rollouts. Values below 1.0 truncate the sampling
     distribution, which biases the trainer/inference importance ratio unless the trainer
-    renormalizes over the same kept set — enable ``trainer.enable_sampling_mask_replay`` (and
-    with it ``inference.enable_return_kept_tokens``) when lowering this."""
+    renormalizes over the same kept set — the ``rl`` entrypoint auto-enables
+    ``trainer.enable_sampling_mask_replay`` + ``inference.enable_return_kept_tokens`` when
+    this is lowered."""
 
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")

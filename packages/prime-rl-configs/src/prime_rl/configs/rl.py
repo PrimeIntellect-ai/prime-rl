@@ -506,9 +506,31 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_sampling_mask_replay(self):
+        """Truncated train sampling (top_p/top_k/min_p) renormalizes the rollout distribution
+        over the kept set; a trainer normalizing over the full vocabulary then computes biased
+        importance ratios and runs are known to collapse (DeepSeek V3.2 §3.1, Cognition
+        SWE-1.7). Replay is therefore implied by truncation — an explicit
+        ``enable_sampling_mask_replay = false`` opts out (e.g. for a naive-top-p baseline)."""
+        sampling_configs = [self.orchestrator.train.sampling, *(env.sampling for env in self.orchestrator.train.env)]
+        if any(sampling.truncates_distribution() for sampling in sampling_configs):
+            if self.trainer.enable_sampling_mask_replay:
+                pass
+            elif "enable_sampling_mask_replay" in self.trainer.model_fields_set:
+                warnings.warn(
+                    "Train sampling uses truncation (top_p/top_k/min_p) with sampling-mask replay explicitly "
+                    "disabled: trainer logprobs normalize over the full vocabulary while rollout logprobs are "
+                    "renormalized over the kept set, biasing importance ratios — expect collapse.",
+                    stacklevel=2,
+                )
+            else:
+                self.trainer.enable_sampling_mask_replay = True
+
         if self.trainer.enable_sampling_mask_replay:
             if self.inference is not None:
-                if self.inference.enable_return_kept_tokens is False:
+                if (
+                    self.inference.enable_return_kept_tokens is False
+                    and "enable_return_kept_tokens" in self.inference.model_fields_set
+                ):
                     warnings.warn(
                         "Sampling-mask replay is enabled, but inference.enable_return_kept_tokens is False. Setting to True.",
                         stacklevel=2,
@@ -520,23 +542,6 @@ class RLConfig(BaseConfig):
                     "inference server, make sure to set `enable_return_kept_tokens = true` in its config.",
                     stacklevel=2,
                 )
-        return self
-
-    @model_validator(mode="after")
-    def warn_truncated_sampling_without_mask_replay(self):
-        """Sampling with truncation renormalizes the rollout distribution over the kept set;
-        without trainer-side mask replay the importance ratio is biased and runs are known to
-        collapse (DeepSeek V3.2 §3.1, Cognition SWE-1.7)."""
-        if self.trainer.enable_sampling_mask_replay:
-            return self
-        sampling_configs = [self.orchestrator.train.sampling, *(env.sampling for env in self.orchestrator.train.env)]
-        if any(sampling.truncates_distribution() for sampling in sampling_configs):
-            warnings.warn(
-                "Train sampling uses truncation (top_p/top_k/min_p) without trainer.enable_sampling_mask_replay: "
-                "trainer logprobs normalize over the full vocabulary while rollout logprobs are renormalized over "
-                "the kept set, biasing importance ratios. Enable trainer.enable_sampling_mask_replay.",
-                stacklevel=2,
-            )
         return self
 
     @model_validator(mode="after")
