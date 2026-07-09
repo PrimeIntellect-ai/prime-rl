@@ -228,8 +228,8 @@ def test_dynamo_disaggregated_config_is_local_and_enables_prefix_caching():
             "deployment": {
                 "type": "disaggregated",
                 "gpus_per_node": 1,
-                "num_prefill_nodes": 2,
-                "num_decode_nodes": 2,
+                "prefill_nodes_per_replica": 1,
+                "decode_nodes_per_replica": 1,
                 "num_prefill_replicas": 2,
                 "num_decode_replicas": 2,
             },
@@ -267,8 +267,8 @@ def test_single_node_dynamo_disaggregated_keeps_per_worker_dp_and_sets_nccl_worl
                 "deployment": {
                     "type": "disaggregated",
                     "gpus_per_node": 1,
-                    "num_prefill_nodes": 2,
-                    "num_decode_nodes": 2,
+                    "prefill_nodes_per_replica": 1,
+                    "decode_nodes_per_replica": 1,
                     "num_prefill_replicas": 2,
                     "num_decode_replicas": 2,
                 },

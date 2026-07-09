@@ -22,8 +22,8 @@ def disaggregated_config(**overrides) -> InferenceConfig:
         "deployment": {
             "type": "disaggregated",
             "gpus_per_node": 1,
-            "num_prefill_nodes": 2,
-            "num_decode_nodes": 2,
+            "prefill_nodes_per_replica": 1,
+            "decode_nodes_per_replica": 1,
             "num_prefill_replicas": 2,
             "num_decode_replicas": 2,
         },
@@ -50,8 +50,8 @@ def test_role_overrides_are_isolated():
         deployment={
             "type": "disaggregated",
             "gpus_per_node": 1,
-            "num_prefill_nodes": 2,
-            "num_decode_nodes": 2,
+            "prefill_nodes_per_replica": 1,
+            "decode_nodes_per_replica": 1,
             "num_prefill_replicas": 2,
             "num_decode_replicas": 2,
             "prefill_vllm_overrides": {"max_num_batched_tokens": 8192},
@@ -104,8 +104,8 @@ def test_process_specs_own_canonical_commands_and_environment(tmp_path: Path):
         deployment={
             "type": "disaggregated",
             "gpus_per_node": 1,
-            "num_prefill_nodes": 1,
-            "num_decode_nodes": 1,
+            "prefill_nodes_per_replica": 1,
+            "decode_nodes_per_replica": 1,
             "num_prefill_replicas": 1,
             "num_decode_replicas": 1,
             "prefill_env_vars": {"ROLE": "prefill"},
@@ -136,8 +136,8 @@ def test_worker_environment_applies_only_matching_role_overrides(tmp_path: Path)
         deployment={
             "type": "disaggregated",
             "gpus_per_node": 1,
-            "num_prefill_nodes": 1,
-            "num_decode_nodes": 1,
+            "prefill_nodes_per_replica": 1,
+            "decode_nodes_per_replica": 1,
             "num_prefill_replicas": 1,
             "num_decode_replicas": 1,
             "prefill_env_vars": {"ROLE_SETTING": "prefill"},
