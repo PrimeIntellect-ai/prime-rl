@@ -23,8 +23,8 @@ def inference_config() -> InferenceConfig:
             "deployment": {
                 "type": "disaggregated",
                 "gpus_per_node": 1,
-                "num_prefill_nodes": 2,
-                "num_decode_nodes": 2,
+                "prefill_nodes_per_replica": 1,
+                "decode_nodes_per_replica": 1,
                 "num_prefill_replicas": 2,
                 "num_decode_replicas": 2,
             },
