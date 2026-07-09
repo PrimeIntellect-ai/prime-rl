@@ -190,7 +190,17 @@ srun --kill-on-bad-exit=1 bash -c '
     ulimit -l unlimited
 {%- endif %}
 {%- if kv_offload_mooncake %}
+{%- if is_disaggregated and kv_offload_roles and kv_offload_roles != "prefill decode" %}
+    # KV offload scoped to role(s): {{ kv_offload_roles }} — other roles skip the
+    # store client (no DRAM segment, no MOONCAKE_CONFIG_PATH; their vLLM config
+    # drops the store connector via the per-role kv_transfer_config override).
+    if [ $((INFER_NODE_RANK % NODES_PER_REPLICA)) -lt $NUM_PREFILL_NODES ]; then _MC_ROLE=prefill; else _MC_ROLE=decode; fi
+    if [[ " {{ kv_offload_roles }} " == *" $_MC_ROLE "* ]]; then
 {% include "_mooncake_store.sh.j2" %}
+    fi
+{%- else %}
+{% include "_mooncake_store.sh.j2" %}
+{%- endif %}
 {%- endif %}
 
 {% if is_disaggregated -%}

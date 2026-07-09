@@ -12,8 +12,9 @@
     mkdir -p "$MC_DIR"
     export PYTHONHASHSEED=0
     export MOONCAKE_CONFIG_PATH="$MC_DIR/config.json"
-    # The head inference node (first in the nodelist) hosts the one master + metadata server.
-    MC_HEAD=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -1)
+    # The master + metadata server run on the first inference node whose role is
+    # included in the offload scope (index 0 unless the store is decode-only).
+    MC_HEAD=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | sed -n "{{ (kv_offload_head_index | default(0, true)) + 1 }}p")
     MC_MASTER="$MC_HEAD:50051"
     MC_METADATA="http://$MC_HEAD:8080/metadata"
 {%- if kv_offload_disk_path %}
