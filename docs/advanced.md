@@ -106,7 +106,7 @@ dropout = 0.0
 
 `target_modules` defaults to a reasonable cross-family set (`q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`, `experts`, plus a few latent-projection names for Nemotron). Unknown names are silently ignored, so the defaults work across architectures. Add architecture-specific names to extend coverage (e.g. `in_proj` / `out_proj` for Mamba).
 
-LoRA is supported across SFT and RL. For RL, `weight_broadcast.type = "nccl"` is **not** supported with LoRA — use the default filesystem transport. To save the raw adapter alongside the merged HF weights:
+LoRA is supported across SFT and RL. For RL, NCCL weight broadcast is **not** supported with LoRA — the default NCCL transport automatically falls back to filesystem when LoRA is enabled. To save the raw adapter alongside the merged HF weights:
 
 ```toml
 [ckpt.weights]
