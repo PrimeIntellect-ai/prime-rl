@@ -213,8 +213,6 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
         if flash_attn_enabled:
             if position_ids.ndim == 3:
-                if inputs_embeds.shape[0] != 1:
-                    raise ValueError("3D Qwen3.5 MRoPE positions require batch size 1 for varlen attention")
                 seq_len = inputs_embeds.shape[1]
                 if seq_lens is None:
                     cu_seqlens = torch.tensor([0, seq_len], dtype=torch.int32, device=inputs_embeds.device)
