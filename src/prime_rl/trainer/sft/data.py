@@ -131,8 +131,7 @@ class SFTDataset(StatefulIterableDataset):
     def __init__(
         self,
         dataset: Dataset,
-        tokenizer: PreTrainedTokenizer | None,
-        renderer: Renderer | None = None,
+        renderer: Renderer,
         shuffle: bool = True,
         seed: int = 0,
         seq_len: int = 128,
@@ -142,21 +141,16 @@ class SFTDataset(StatefulIterableDataset):
         max_epochs: int | None = None,
     ):
         super().__init__()
-        # tokenizer=None puts the dataset in passthrough mode (no processing);
-        # with a tokenizer, a renderer is required.
-        if tokenizer is not None and renderer is None:
-            raise ValueError("SFTDataset requires a renderer when a tokenizer is provided.")
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
-        self.tokenizer = tokenizer
+        self.renderer = renderer
         self.shuffle = shuffle
         self.seed = seed
         self.seq_len = seq_len
         self.loss_mask_config = loss_mask_config
         self.max_examples = max_examples
         self.max_epochs = max_epochs
-        self.renderer = renderer
 
         # If specified, select a subset of the dataset
         if self.max_examples is not None:
@@ -174,9 +168,6 @@ class SFTDataset(StatefulIterableDataset):
         self.data_world_size = get_world().world_size // non_dp_size * num_workers
 
     def _process(self, example: dict) -> dict | None:
-        if self.tokenizer is None:
-            return example
-
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
             # as a whole-chat training sample with an empty prompt. Null-check rather
@@ -244,23 +235,13 @@ class SFTDataset(StatefulIterableDataset):
         # body-only path: the message content is trained, not the role
         # scaffolding (e.g. <|im_start|>assistant) the harness emits.
         content_sft_roles = {role for role in ("user", "system", "tool") if getattr(self.loss_mask_config, role)}
-        sample = build_training_sample(
+        input_ids, loss_mask = build_training_sample(
             self.renderer,
             messages,
             role_to_mask=should_mask,
             tools=tools,
             content_sft_roles=content_sft_roles or None,
         )
-        input_ids = list(sample.token_ids)
-        loss_mask = list(sample.loss_mask)
-
-        # If EOS token is not found, manually append it
-        if not self.tokenizer.eos_token_id in input_ids:
-            self.logger.warning(
-                f"Did not find EOS token ID {self.tokenizer.eos_token_id} in input_ids. Is something wrong with the chat template? Manually appending EOS token..."
-            )
-            input_ids.append(cast(int, self.tokenizer.eos_token_id))
-            loss_mask.append(True)
 
         # Causal shift: model predicts next token from current.
         target_ids = input_ids.copy()[1:]
@@ -277,7 +258,9 @@ class SFTDataset(StatefulIterableDataset):
             f"input_ids, loss_mask and target_ids must have the same length, but got {len(input_ids)=}, {len(loss_mask)=}, {len(target_ids)=}"
         )
         assert sum(loss_mask) > 0, "There are no tokens in this sample that contribute to the loss"
-        assert self.tokenizer.eos_token_id in target_ids, "EOS token ID must be present in target_ids"
+        assert set(self.renderer.get_stop_token_ids()) & set(target_ids), (
+            "A renderer stop token must be present in target_ids"
+        )
 
         return {
             "input_ids": input_ids,
@@ -584,8 +567,7 @@ def setup_dataset(
             raw_dataset = load_sft_dataset(config)
         return SFTDataset(
             raw_dataset,
-            tokenizer,
-            renderer=renderer,
+            renderer,
             shuffle=config.shuffle,
             seed=config.seed,
             seq_len=config.seq_len,
