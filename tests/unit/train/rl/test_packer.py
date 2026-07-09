@@ -182,6 +182,12 @@ def test_multipacker_pack_preserves_mm_kwargs_modality_and_run_tagging(tmp_path,
     from prime_rl.trainer.batch import _is_multimodal_sample
 
     manager, packer, sent = _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size=2, seq_len=5)
+    malformed = _mm_sample(0.0)
+    malformed.mm_token_type_ids = None
+    valid, reason = packer._validate_sample(malformed)
+    assert not valid
+    assert reason is not None and "without mm_token_type_ids" in reason
+
     a, b = manager.id_2_idx["run_a"], manager.id_2_idx["run_b"]
     for idx, value in ((a, 1.0), (b, 10.0)):
         packer.buffers[idx].append((_mm_sample(value), 0))

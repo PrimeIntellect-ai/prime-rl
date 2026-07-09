@@ -474,13 +474,15 @@ def test_prepare_batch_packs_multimodal_with_text():
     batches_per_gpu = prepare_batch(
         rollouts=[mm_sample, text_sample],
         seq_len=8,
-        num_train_workers=1,
+        num_train_workers=2,
         idxs=[0, 0],
         num_loras=1,
         bin_cost=build_bin_cost(None),
     )
 
-    batch = batches_per_gpu[0][0]
+    real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
+    assert len(real_batches) == 1
+    batch = real_batches[0]
     assert batch.seq_lens == [3, 2]
     assert batch.sequence_lengths == [3, 2]
     assert batch.position_ids == [0, 1, 2, 0, 1]

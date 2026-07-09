@@ -177,6 +177,14 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with ref logprobs length != sample length ({len(sample.ref_logprobs)} != {sample_length})",
             )
+        if sample.mm_token_type_ids is not None and len(sample.mm_token_type_ids) != sample_length:
+            return (
+                False,
+                "Run wrote a sample with mm_token_type_ids length != sample length "
+                f"({len(sample.mm_token_type_ids)} != {sample_length})",
+            )
+        if sample.mm_kwargs is not None and "image_grid_thw" in sample.mm_kwargs and sample.mm_token_type_ids is None:
+            return False, "Run wrote an image_grid_thw multimodal sample without mm_token_type_ids"
         return True, None
 
     def _get_batch(self) -> None:
