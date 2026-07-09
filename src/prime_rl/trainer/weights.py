@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 import warnings
 from pathlib import Path
 from typing import Literal, cast
@@ -103,6 +105,21 @@ def save_state_dict(
             save_file(state_dict, save_dir / weights_name, metadata={"format": "pt"})
         else:
             torch.save(state_dict, save_dir / weights_name)
+
+
+def atomic_save_state_dict(state_dict: dict[str, Tensor], save_dir: Path, **kwargs) -> None:
+    """save_state_dict into a temp sibling dir, then atomically rename into place.
+
+    A crash before the rename leaves only `<name>.tmp`, so `save_dir` is never
+    observed partially written (the failure mode that can poison a shared
+    weight cache). `save_dir` must not already exist.
+    """
+    save_dir = Path(save_dir)
+    tmp_dir = save_dir.parent / f"{save_dir.name}.tmp"
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    save_state_dict(state_dict, tmp_dir, **kwargs)
+    os.replace(tmp_dir, save_dir)
 
 
 def gather_weights_on_master(
