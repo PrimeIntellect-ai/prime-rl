@@ -11,6 +11,7 @@ from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, IPOLos
 from prime_rl.utils.utils import import_object
 
 REF_KL_IMPORTANCE_RATIO_MAX = 20.0
+MISMATCH_KL_LOG_RATIO_LIMIT = 20.0
 
 
 @dataclass
@@ -104,17 +105,25 @@ def _max_exp_input(tensor: Tensor) -> float:
     return math.log(torch.finfo(tensor.dtype).max) - 1.0
 
 
-def _clipped_importance_ratio(log_importance_ratio: Tensor, max_importance_ratio: float) -> tuple[Tensor, Tensor]:
+def _importance_sampling_surrogate(
+    trainer_logprobs: Tensor, log_importance_ratio: Tensor, max_importance_ratio: float
+) -> tuple[Tensor, Tensor]:
+    """Return ratio-valued outputs with truncated score-function gradients."""
     max_log_ratio = min(math.log(max_importance_ratio), _max_exp_input(log_importance_ratio))
     clipped = log_importance_ratio > max_log_ratio
-    return torch.exp(log_importance_ratio.clamp(max=max_log_ratio)), clipped
+    weight = torch.exp(log_importance_ratio.clamp(max=max_log_ratio)).detach()
+    surrogate = weight * (1 + trainer_logprobs - trainer_logprobs.detach())
+    return surrogate, clipped
 
 
 def compute_importance_ratio_and_mismatch_kl(
     trainer_logprobs: Tensor, inference_logprobs: Tensor
 ) -> tuple[Tensor, Tensor, Tensor]:
     log_importance_ratio = trainer_logprobs - inference_logprobs
-    safe_log_importance_ratio = log_importance_ratio.clamp(max=_max_exp_input(log_importance_ratio))
+    safe_log_importance_ratio = log_importance_ratio.float().clamp(
+        min=-MISMATCH_KL_LOG_RATIO_LIMIT,
+        max=MISMATCH_KL_LOG_RATIO_LIMIT,
+    )
     importance_ratio = torch.exp(safe_log_importance_ratio)
     mismatch_kl = importance_ratio - safe_log_importance_ratio - 1
     return log_importance_ratio, importance_ratio, mismatch_kl
@@ -140,8 +149,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
     )
-    pg_importance_ratio, importance_ratio_clipped = _clipped_importance_ratio(
-        log_importance_ratio, loss_config.importance_ratio_max
+    pg_importance_ratio, importance_ratio_clipped = _importance_sampling_surrogate(
+        trainer_logprobs, log_importance_ratio, loss_config.importance_ratio_max
     )
 
     probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
@@ -191,8 +200,8 @@ def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
     log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
     )
-    pg_importance_ratio, importance_ratio_clipped = _clipped_importance_ratio(
-        log_importance_ratio, loss_config.importance_ratio_max
+    pg_importance_ratio, importance_ratio_clipped = _importance_sampling_surrogate(
+        trainer_logprobs, log_importance_ratio, loss_config.importance_ratio_max
     )
 
     abs_probs_diff = torch.abs(torch.exp(trainer_logprobs) - torch.exp(inference_logprobs))
@@ -238,8 +247,8 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
     )
-    pg_importance_ratio, importance_ratio_clipped = _clipped_importance_ratio(
-        log_importance_ratio, REF_KL_IMPORTANCE_RATIO_MAX
+    pg_importance_ratio, importance_ratio_clipped = _importance_sampling_surrogate(
+        trainer_logprobs, log_importance_ratio, REF_KL_IMPORTANCE_RATIO_MAX
     )
 
     probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
