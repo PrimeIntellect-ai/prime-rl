@@ -15,10 +15,16 @@ DYNAMO_SHA = "2" * 40
 IMAGE_DIGEST = f"sha256:{'3' * 64}"
 
 
-def inference_config(weight_broadcast: str = "nccl") -> InferenceConfig:
+def inference_config(
+    weight_broadcast: str = "nccl",
+    *,
+    chat_template: str | None = None,
+) -> InferenceConfig:
+    model = {"chat_template": chat_template} if chat_template is not None else {}
     return InferenceConfig.model_validate(
         {
             "backend": {"type": "dynamo"},
+            "model": model,
             "weight_broadcast": {"type": weight_broadcast},
             "deployment": {
                 "type": "disaggregated",
@@ -88,6 +94,20 @@ def test_dgd_chart_renders_generated_graph_without_inference_statefulset(tmp_pat
     assert rendered.count(f"image: {options.image}") == 3
     assert rendered.count("nvcrimagepullsecret") == 5
     assert not any(kind in rendered for kind in ("kind: ClusterRole", "kind: CustomResourceDefinition"))
+
+
+def test_dgd_chart_renders_chat_template_configmap_and_frontend_mount(tmp_path: Path):
+    paths = write_dgd_artifacts(
+        inference_config(chat_template="template-marker: {{ messages }}"),
+        render_options(tmp_path),
+    )
+    rendered = helm_template("-f", str(paths["values"]))
+
+    assert "chat-template.jinja: |" in rendered
+    assert "template-marker: {{ messages }}" in rendered
+    assert "/etc/prime-rl/dynamo/chat-template.jinja" in rendered
+    assert "name: dynamo-chat-template" in rendered
+    assert "key: chat-template.jinja" in rendered
 
 
 def test_dgd_chart_rejects_release_name_mismatch(tmp_path: Path):

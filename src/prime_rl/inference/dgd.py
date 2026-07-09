@@ -12,9 +12,11 @@ from typing import Any
 
 from prime_rl.configs.inference import DisaggregatedInferenceDeploymentConfig, InferenceConfig
 from prime_rl.inference.dynamo import (
+    CHAT_TEMPLATE_ASSET,
     DynamoProcessSpec,
     build_frontend_process,
     build_worker_process,
+    resolve_chat_template_content,
     write_role_engine_configs,
 )
 from prime_rl.utils.config import cli
@@ -191,7 +193,14 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
     engine_paths = write_role_engine_configs(config, options.output_dir)
     prefill_text = engine_paths["prefill"].read_text()
     decode_text = engine_paths["decode"].read_text()
-    engine_hash = _sha256_bytes((prefill_text + decode_text).encode())
+    engine_data = {
+        "prefill-engine.json": prefill_text,
+        "decode-engine.json": decode_text,
+    }
+    chat_template_content = resolve_chat_template_content(config)
+    if chat_template_content is not None:
+        engine_data[CHAT_TEMPLATE_ASSET] = chat_template_content
+    engine_hash = _sha256_bytes(_canonical_json(engine_data))
     config_map_name = f"{options.release_name}-dynamo-engine-{engine_hash[:12]}"
 
     annotations = {
@@ -202,7 +211,15 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         "prime-rl.nvidia.com/run-name": options.run_name,
         MANIFEST_HASH_SCOPE_ANNOTATION: MANIFEST_HASH_SCOPE,
     }
-    frontend_process = build_frontend_process(config, host="0.0.0.0", port=8000)
+    runtime_chat_template_path = (
+        Path(ENGINE_MOUNT_PATH) / CHAT_TEMPLATE_ASSET if chat_template_content is not None else None
+    )
+    frontend_process = build_frontend_process(
+        config,
+        host="0.0.0.0",
+        port=8000,
+        runtime_chat_template_path=runtime_chat_template_path,
+    )
     frontend_container = {
         "image": options.image,
         "imagePullPolicy": "IfNotPresent",
@@ -212,6 +229,23 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         "ports": [{"containerPort": 8001, "name": "rl"}],
     }
     frontend_pod_spec = {"mainContainer": frontend_container}
+    if chat_template_content is not None:
+        frontend_container["volumeMounts"] = [
+            {
+                "name": "dynamo-chat-template",
+                "mountPath": ENGINE_MOUNT_PATH,
+                "readOnly": True,
+            }
+        ]
+        frontend_pod_spec["volumes"] = [
+            {
+                "name": "dynamo-chat-template",
+                "configMap": {
+                    "name": config_map_name,
+                    "items": [{"key": CHAT_TEMPLATE_ASSET, "path": CHAT_TEMPLATE_ASSET}],
+                },
+            }
+        ]
     _apply_pod_credentials(frontend_pod_spec, frontend_container, options)
     frontend = {
         "componentType": "frontend",
@@ -280,10 +314,7 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
                     "name": config_map_name,
                     "sha256": engine_hash,
                     "annotations": annotations,
-                    "data": {
-                        "prefill-engine.json": prefill_text,
-                        "decode-engine.json": decode_text,
-                    },
+                    "data": engine_data,
                 },
                 "resource": resource,
             },

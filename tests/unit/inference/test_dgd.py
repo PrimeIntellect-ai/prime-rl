@@ -15,11 +15,18 @@ DYNAMO_SHA = "2" * 40
 IMAGE_DIGEST = f"sha256:{'3' * 64}"
 
 
-def inference_config(weight_broadcast: str = "nccl") -> InferenceConfig:
+def inference_config(
+    weight_broadcast: str = "nccl",
+    *,
+    chat_template: str | None = None,
+) -> InferenceConfig:
+    model = {"name": "Qwen/Qwen3-30B-A3B-Thinking-2507"}
+    if chat_template is not None:
+        model["chat_template"] = chat_template
     return InferenceConfig.model_validate(
         {
             "backend": {"type": "dynamo"},
-            "model": {"name": "Qwen/Qwen3-30B-A3B-Thinking-2507"},
+            "model": model,
             "parallel": {"tp": 1},
             "weight_broadcast": {"type": weight_broadcast},
             "env_vars": {"HF_HOME": "/model-cache", "HF_HUB_OFFLINE": "1"},
@@ -156,6 +163,49 @@ def test_dgd_artifacts_are_deterministic_and_manifest_verifies(tmp_path: Path):
     del unhashed_resource["metadata"]["annotations"]["prime-rl.nvidia.com/manifest-sha256"]
     canonical_resource = (json.dumps(unhashed_resource, indent=2, sort_keys=True) + "\n").encode()
     assert hashlib.sha256(canonical_resource).hexdigest() == expected_manifest_hash
+
+
+def test_dgd_embeds_and_mounts_content_addressed_chat_template(tmp_path: Path):
+    first = build_dgd_values(
+        inference_config(chat_template="template-v1: {{ messages }}"),
+        render_options(tmp_path / "first"),
+    )
+    graph = first["inference"]["dynamoGraph"]
+    engine_config = graph["engineConfig"]
+    frontend = graph["resource"]["spec"]["services"]["Frontend"]["extraPodSpec"]
+
+    assert engine_config["data"]["chat-template.jinja"] == "template-v1: {{ messages }}"
+    expected_hash = hashlib.sha256(
+        (json.dumps(engine_config["data"], indent=2, sort_keys=True) + "\n").encode()
+    ).hexdigest()
+    assert engine_config["sha256"] == expected_hash
+    assert engine_config["name"].endswith(expected_hash[:12])
+    assert frontend["mainContainer"]["args"][-1] == "/etc/prime-rl/dynamo/chat-template.jinja"
+    assert frontend["mainContainer"]["volumeMounts"] == [
+        {
+            "name": "dynamo-chat-template",
+            "mountPath": "/etc/prime-rl/dynamo",
+            "readOnly": True,
+        }
+    ]
+    assert frontend["volumes"] == [
+        {
+            "name": "dynamo-chat-template",
+            "configMap": {
+                "name": engine_config["name"],
+                "items": [{"key": "chat-template.jinja", "path": "chat-template.jinja"}],
+            },
+        }
+    ]
+    assert not (tmp_path / "first" / "chat-template.jinja").exists()
+
+    second = build_dgd_values(
+        inference_config(chat_template="template-v2: {{ messages }}"),
+        render_options(tmp_path / "second"),
+    )
+    second_config = second["inference"]["dynamoGraph"]["engineConfig"]
+    assert second_config["name"] != engine_config["name"]
+    assert second_config["sha256"] != engine_config["sha256"]
 
 
 def test_filesystem_broadcast_requires_one_shared_existing_claim(tmp_path: Path):
