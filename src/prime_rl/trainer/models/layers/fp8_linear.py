@@ -4,10 +4,14 @@ import re
 
 try:
     import deep_gemm
-except ImportError:
+except ModuleNotFoundError:
     deep_gemm = None  # CPU-only environments don't ship deep_gemm; FP8 paths
     # are GPU-only at runtime, so leaving the symbol None is safe — only the
-    # autograd Function bodies below actually call into it.
+    # autograd Function bodies below actually call into it. A genuine load
+    # failure (deep_gemm installed but its CUDA libs unresolved, e.g. a missing
+    # libcudart.so) is NOT swallowed: it raises here with the real cause instead
+    # of resurfacing later as a cryptic 'NoneType has no attribute fp8_gemm_nt'
+    # in the first FP8 forward pass.
 import torch
 from torch import nn
 
