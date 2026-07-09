@@ -24,7 +24,8 @@ def _has_linear_attn_layer(model: nn.Module) -> bool:
     layers = getattr(inner, "layers", None)
     if layers is None:
         return False
-    for layer in layers:
+    layer_modules = layers.modules() if isinstance(layers, nn.Module) else layers
+    for layer in layer_modules:
         # Qwen3.5 hybrid DeltaNet
         if getattr(layer, "layer_type", None) == "linear_attention":
             return True
