@@ -302,11 +302,35 @@ class LagunaModel(LagunaPreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
-        )
-        torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)
+        flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
+        if seq_lens.numel() > 1 and not flash_attn_enabled:
+            # SDPA/eager attention has no varlen support and would attend across
+            # packed document boundaries.
+            raise ValueError("Packed Laguna batches require flash attention")
+        if flash_attn_enabled:
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                seq_lens.to(device=inputs_embeds.device),
+                total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+            )
+            torch._dynamo.mark_dynamic(cu_seqlens, 0)
+            causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)
+        else:
+            cu_seqlens = None
+            max_seqlen = None
+            if isinstance(attention_mask, dict):
+                causal_mask_mapping = attention_mask
+            else:
+                mask_kwargs = {
+                    "config": self.config,
+                    "inputs_embeds": inputs_embeds,
+                    "attention_mask": attention_mask,
+                    "past_key_values": None,
+                    "position_ids": position_ids,
+                }
+                causal_mask_mapping = {
+                    "full_attention": create_causal_mask(**mask_kwargs),
+                    "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
+                }
 
         hidden_states = inputs_embeds
         position_embeddings = {

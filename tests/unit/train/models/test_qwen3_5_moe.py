@@ -170,7 +170,7 @@ def test_qwen3_5_moe_context_parallel_setup_hook():
         linear_num_value_heads=8,
         use_grouped_mm=False,
     )
-    config._attn_implementation = "sdpa"
+    config._attn_implementation = "flash_attention_2"
     with torch.device("meta"):
         model = PrimeRLQwen3_5MoeForCausalLM(config)
 
