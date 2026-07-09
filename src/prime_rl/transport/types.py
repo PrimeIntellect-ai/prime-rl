@@ -18,10 +18,8 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
     dtype: str
 
 
-# Kept-set sampling masks for top-p/top-k replay: ragged per-token id lists as
-# flat int32 bytes plus an int32 count per token position (0 = no mask — the
-# trainer falls back to full-vocab logprobs there). counts covers the full
-# token sequence; len(ids) == 4 * counts.sum().
+# Kept-set sampling masks for top-p/top-k replay: flat int32 id bytes plus an
+# int32 count per token position (0 = no mask); len(ids) == 4 * counts.sum().
 class KeptTokens(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     ids: bytes
     counts: bytes
@@ -77,9 +75,8 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: list[float] | None = None
 
-    # Kept-set sampling masks for top-p/top-k replay. Last field on purpose:
-    # array_like structs encode positionally, so appending keeps the wire
-    # layout of every earlier field stable across versions.
+    # Last field on purpose: array_like structs encode positionally, so appending
+    # keeps the wire layout of earlier fields stable across versions.
     kept_tokens: KeptTokens | None = None
 
 
@@ -124,6 +121,5 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     run_id: str | None = None
     run_step: int | None = None
 
-    # Kept-set sampling masks (see TrainingSample.kept_tokens); appended last
-    # to keep the positional wire layout of earlier fields stable.
+    # See TrainingSample.kept_tokens; appended last for wire-layout stability.
     kept_tokens: KeptTokens | None = None

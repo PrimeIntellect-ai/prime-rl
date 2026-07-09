@@ -506,10 +506,8 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_kept_tokens_capture(self):
-        """Size the inference server's kept-set capture from the train sampling top-k.
-        OrchestratorConfig owns the truncation policy (every truncating policy config
-        gets a top-k), so any policy top_k here means truncated sampling; the capture
-        width must cover the largest one for replay to be exact."""
+        """Size the inference server's kept-set capture to cover the largest train
+        sampling top-k (OrchestratorConfig guarantees truncating configs have one)."""
         policy_samplings = [
             env.sampling
             for env in self.orchestrator.train.env

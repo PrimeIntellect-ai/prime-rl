@@ -95,11 +95,9 @@ def _online_logsumexp_and_weighted_update(
 
 
 def kept_replay_mask(kept_tokens: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    """Positions whose sampling mask is usable for replay: non-empty (-1 is
-    padding) and containing the label — a label outside its mask means
-    misaligned data, which falls back to full-vocab rather than emitting a
-    corrupt logprob. Shared by the fused and vanilla logprob paths so they
-    can't drift."""
+    """Positions replayable against their sampling mask: non-empty (-1 is padding)
+    and containing the label (a label outside its mask means misaligned data —
+    fall back to full-vocab rather than emit a corrupt logprob)."""
     return (kept_tokens >= 0).any(dim=-1) & (kept_tokens == labels.unsqueeze(-1)).any(dim=-1)
 
 
@@ -127,13 +125,10 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         """
         Returns per-token logprobs and entropy by chunking over flattened sequence tokens.
 
-        With ``kept_tokens``, positions carrying a sampling mask (any id >= 0, and the
-        label inside it) are renormalized over the kept set instead of the full vocab:
-        ``logprob = scaled_logits[label] - logsumexp(scaled_logits[kept])``, matching the
-        truncated distribution rollouts actually sampled from. Other positions (and
-        entropy, a full-distribution diagnostic) keep full-vocab normalization. A
-        position whose label fell outside its mask (misaligned data) falls back to
-        full-vocab rather than emitting a corrupt (possibly positive) logprob.
+        Positions with a usable ``kept_tokens`` mask (see ``kept_replay_mask``) are
+        renormalized over the kept set: ``logprob = scaled_logits[label] -
+        logsumexp(scaled_logits[kept])``. Other positions — and entropy, a
+        full-distribution diagnostic — keep full-vocab normalization.
         """
         assert hidden.dim() == 2, f"expected hidden [N,H], got {tuple(hidden.shape)}"
         assert weight.dim() == 2, f"expected weight [V,H], got {tuple(weight.shape)}"
@@ -172,10 +167,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             kept_chunk = kept_tokens[start:end].to(torch.long) if kept_tokens is not None else None
             if kept_chunk is not None:
                 replay_chunk = kept_replay_mask(kept_chunk, labels_chunk)
-                # Each kept id lives in exactly one vocab chunk, so collecting
-                # its logit into a persistent [tokens, K] buffer and taking one
-                # logsumexp at the end beats an online accumulator (all--inf
-                # rows come out as -inf without NaN).
+                # Each kept id lives in exactly one vocab chunk; collect its logit
+                # into a [tokens, K] buffer and logsumexp once after the loop.
                 kept_logits = torch.full_like(kept_chunk, float("-inf"), dtype=torch.float32)
 
             for vocab_start in range(0, vocab, vocab_chunk_size):
@@ -244,12 +237,9 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 scaled_logits = logits_chunk.to(torch.float32) * inv_t_chunk
 
                 if kept_chunk is not None:
-                    # Replayed rows renormalize over the kept set, so their softmax
-                    # gradient term exists only on kept ids; scatter_add tolerates the
-                    # clamped indices of out-of-chunk entries (they add 0). Non-kept
-                    # logits are masked to -inf BEFORE the exp — a non-kept logit above
-                    # the kept-set logZ would overflow exp() to inf, and inf * 0 from an
-                    # indicator multiply after the fact would poison grads with NaN.
+                    # Replayed rows get softmax gradient only on kept ids. Mask non-kept
+                    # logits to -inf BEFORE the exp: a non-kept logit above the kept-set
+                    # logZ would overflow exp() to inf (and inf * 0 = NaN in the grads).
                     local, in_range = _kept_local_indices(kept_chunk, vocab_start, vocab_end)
                     kept_indicator = torch.zeros(scaled_logits.shape, dtype=torch.int8, device=scaled_logits.device)
                     kept_indicator.scatter_add_(1, local, in_range.to(torch.int8))

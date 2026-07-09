@@ -219,9 +219,8 @@ class TrainSink:
             for sample in r.samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
                 if env.requires_kept_masks and sample.kept_tokens is None:
-                    # Without the masks the trainer would renormalize nothing while the
-                    # rollout logprobs are already kept-renormalized — silently biased
-                    # importance ratios on every token.
+                    # Rollout logprobs are kept-renormalized; training without the masks
+                    # silently biases every importance ratio.
                     raise RuntimeError(
                         f"env '{env_name}' samples with truncation (top_p/top_k/min_p) but its rollouts "
                         "carry no kept-set sampling masks. Set `kept_tokens` on the inference server "

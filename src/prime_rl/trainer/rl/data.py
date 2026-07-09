@@ -40,9 +40,8 @@ class TensorMicroBatch(TypedDict):
     # MoE router replay
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
 
-    # Kept-set sampling-mask replay: kept token ids per position, -1-padded to
-    # the micro batch's max kept-set size. A row of all -1 (count 0) means no
-    # mask — the trainer uses full-vocab logprobs there.
+    # Kept-set sampling masks: kept token ids per position, -1-padded to the
+    # micro batch's max kept-set size (an all--1 row means no mask).
     kept_tokens: Int[Tensor, "batch seq kept"] | None
 
     # Generic multimodal kwargs — flat dict matching the model's forward
@@ -259,8 +258,7 @@ class DataLoader:
         if packed_kept_tokens is not None:
             counts = np.frombuffer(packed_kept_tokens.counts, dtype=np.int32)
             ids = np.frombuffer(packed_kept_tokens.ids, dtype=np.int32)
-            # Pad the ragged kept sets to [seq, max_kept] with -1; boolean
-            # assignment fills row-major, matching the flat concat order.
+            # Boolean assignment fills row-major, matching the flat concat order.
             max_kept = max(int(counts.max()), 1) if counts.size else 1
             padded = np.full((len(counts), max_kept), -1, dtype=np.int32)
             padded[np.arange(max_kept)[None, :] < counts[:, None]] = ids

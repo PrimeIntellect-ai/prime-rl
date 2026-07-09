@@ -359,8 +359,6 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
-            # Sampling-mask replay is data-driven: batches carry kept sets exactly when
-            # rollouts sampled truncated (the orchestrator enforces their presence then).
             kept_tokens = micro_batch["kept_tokens"].to("cuda") if micro_batch["kept_tokens"] is not None else None
 
             # Multimodal kwargs are an opaque per-model dict (e.g.
@@ -379,9 +377,8 @@ def train(config: TrainerConfig):
 
             labels = shift_tensor_left(input_ids)
             if kept_tokens is not None:
-                # Align each position's kept set with the label it predicts (the
-                # kept set rides at the sampled token's own position, like
-                # inference_logprobs); pad rows carry no mask.
+                # Kept sets ride at the sampled token's own position (like inference
+                # logprobs); shift to align with the label each position predicts.
                 kept_tokens = shift_tensor_left(kept_tokens, pad_value=-1)
 
             # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence

@@ -1,45 +1,23 @@
 """Kept-token (sampling mask) capture for top-p/top-k replay training.
 
-When rollouts sample with truncation (top-p/top-k/min-p), the effective
-sampling distribution is renormalized over the surviving "kept set" of
-tokens. The trainer must renormalize its own logits over the same set or
-the importance ratio is biased (DeepSeek V3.2 "Keep Sampling Mask",
-arXiv:2512.02556 §3.1; Cognition SWE-1.7 "sampling distribution replay").
-The rollout-side logprobs are already correct: prime-rl runs vLLM with
-``logprobs_mode="processed_logprobs"``, whose values are log-softmax over
-the truncated logits. What's missing is the kept-set token IDs — vLLM
-computes the mask inside ``apply_top_k_top_p`` and discards it.
+Truncated sampling (top-p/top-k/min-p) renormalizes the sampling distribution
+over a per-token "kept set"; the trainer replays these sets to renormalize its
+own logprobs identically (DeepSeek V3.2 "Keep Sampling Mask", arXiv:2512.02556
+§3.1). vLLM materializes the mask (it's the finite entries of the processed
+logprobs) but never returns it, and its inter-process output structs are fixed
+msgspec/dataclass schemas — so the kept ids ride the existing logprobs channel:
 
-Capture rides the existing logprobs pipeline so no vLLM structs need new
-fields (``ModelRunnerOutput``/``EngineCoreOutput`` are fixed msgspec/
-dataclass schemas that cross process boundaries):
+1. Engine-core worker: append ``[-1 separator | kept ids, -1 padded]`` columns
+   to each ``LogprobsTensors`` row; everything downstream is width-agnostic.
+2. API process: split the extension back off before vLLM builds logprob dicts
+   (stock consumers see stock columns), accumulate the ragged rows per request,
+   attach to the finished ``CompletionOutput``.
+3. ``/inference/v1/generate``: serialize as base64
+   ``{"ids": int32 concat, "counts": int32 per completion token}``. Kept sets
+   are decode-only, so PD-disaggregated serving needs no router changes.
 
-1. Engine-core worker (``monkey_patch_kept_tokens_sampler``): after
-   ``Sampler.sample`` returns the processed (masked, renormalized)
-   logprobs, the kept set per position is exactly the finite entries.
-   Extract them via top-k and append to the step's ``LogprobsTensors``
-   rows as ``[stock columns | -1 separator | kept ids, -1 padded]``.
-   The downstream D2H, scheduler slicing, and msgspec transport are
-   width-agnostic, so the extension crosses to the API process untouched.
-
-2. API process (``monkey_patch_kept_tokens_output_capture``): split the
-   extension off each row before vLLM builds per-position logprob dicts
-   (stock consumers — chat completions, evals — see exactly the stock
-   columns), accumulate the ragged kept rows on the request's
-   ``LogprobsProcessor``, and attach them to the final
-   ``CompletionOutput`` as a dynamic ``kept_token_ids`` attribute.
-
-3. ``/inference/v1/generate`` (``KeptTokensCapture`` +
-   ``serialize_kept_tokens``): encode as compact base64 raw bytes
-   ``{"ids": int32 concat, "counts": int32 per completion token}``,
-   mirroring the routed_experts wire format. Kept sets are decode-only
-   (aligned to sampled tokens), so the PD router passes them through
-   unmodified — no router changes needed.
-
-A position's count of 0 means "no usable kept set" (kept set larger than
-``PRIME_KEPT_TOKENS_MAX``, i.e. barely-truncated). The trainer falls back
-to full-vocab logprobs there; the resulting bias is bounded by
-``-log(top_p)`` since the excluded tail mass is at most ``1 - top_p``.
+A count of 0 means no usable kept set (above the capture width, or the
+position wasn't truncated); the trainer falls back to full-vocab logprobs.
 """
 
 from __future__ import annotations
@@ -80,8 +58,7 @@ def serialize_kept_tokens(kept_token_ids: list[np.ndarray] | None, num_tokens: i
     if not kept_token_ids:
         return None
 
-    # The engine emits one row per sampled token; stop-token trimming can
-    # leave the response with fewer tokens than sampling steps.
+    # Stop-token trimming can leave fewer response tokens than sampling steps.
     rows = kept_token_ids[:num_tokens]
     if len(rows) < num_tokens:
         rows = rows + [np.empty(0, dtype=np.int32)] * (num_tokens - len(rows))
@@ -115,21 +92,12 @@ class KeptTokensCapture:
 def monkey_patch_kept_tokens_sampler():
     """Widen sampler logprobs rows with the kept-set extension (engine-core process).
 
-    Wraps ``Sampler.forward``, transiently intercepting ``self.sample`` to
-    capture the full ``[num_positions, vocab]`` processed logprobs that the
-    stock forward gathers top-k from and then discards. The kept set per
-    row is the finite entries (non-kept tokens are exactly ``-inf`` after
-    ``apply_top_k_top_p`` + log_softmax). Rows whose kept set exceeds
-    ``PRIME_KEPT_TOKENS_MAX`` emit an empty extension (trainer falls back
-    to full-vocab logprobs there). Speculative decoding is unsupported:
-    vLLM's RejectionSampler builds logprobs via ``gather_logprobs`` and
-    never calls the patched forward, so capture would be silently inert —
-    the server launcher rejects the combination up front.
-
-    Only active with ``logprobs_mode="processed_logprobs"`` — that mode
-    already forces the PyTorch-native sampling path (FlashInfer's fused
-    sampler never materializes the mask), so the processed logprobs are
-    guaranteed to reflect the truncation actually used for sampling.
+    Intercepts ``self.sample`` for the duration of ``Sampler.forward`` to grab
+    the full processed logprobs the stock forward discards; the kept set per
+    row is their finite entries. Requires ``logprobs_mode="processed_logprobs"``,
+    which also forces the sampling path that materializes the mask (FlashInfer's
+    fused sampler doesn't). Speculative decoding bypasses this patch entirely —
+    the server launcher rejects that combination.
     """
     import torch
     from vllm import envs
@@ -140,8 +108,7 @@ def monkey_patch_kept_tokens_sampler():
     if not kept_tokens_enabled():
         return
     if envs.VLLM_USE_V2_MODEL_RUNNER:
-        # The V2 runner samples through a separate Sampler class this patch
-        # doesn't cover; capture would be silently inert and training biased.
+        # The V2 runner samples through a separate Sampler class; capture would be inert.
         raise ValueError("VLLM_USE_V2_MODEL_RUNNER does not yet support: kept-tokens capture")
     if getattr(Sampler.forward, "_prime_rl_kept_tokens", False):
         return
@@ -174,8 +141,7 @@ def monkey_patch_kept_tokens_sampler():
             processed_logprobs is None
             or logprobs_mode != "processed_logprobs"
             or output.logprobs_tensors is None
-            # -1 already returns the full processed logprobs; scoring
-            # requests (logprob_token_ids) replace the whole tensors.
+            # logprobs=-1 (full vocab) and scoring requests need no extension
             or num_logprobs is None
             or num_logprobs < 0
             or sampling_metadata.logprob_token_ids
@@ -187,14 +153,10 @@ def monkey_patch_kept_tokens_sampler():
         if processed_logprobs.shape[0] != num_rows:
             return output
 
-        # Fixed extension width `cap + 1`, fully device-side: the extra column
-        # detects overflow (a finite entry there means more than `cap` kept
-        # ids), so no host sync (`.item()`/`.any()`) stalls the engine loop.
-        # Finite entries all rank above -inf, so the top-`width` columns cover
-        # every kept id; surplus columns land on -inf and become padding.
-        # Overflow rows ship an empty extension (the trainer falls back to
-        # full-vocab logprobs there), which also covers untruncated rows
-        # (top_p = 1, all-greedy steps) — only the separator marks alignment.
+        # Fixed width `cap + 1` keeps this device-side (no host sync to stall the
+        # engine loop): a finite entry in the extra column means the kept set
+        # exceeds the cap, and such rows — like untruncated/greedy ones — ship an
+        # empty extension with only the separator marking alignment.
         ids_dtype = stock.logprob_token_ids.dtype
         device = processed_logprobs.device
         width = min(cap + 1, processed_logprobs.shape[-1])
@@ -203,8 +165,7 @@ def monkey_patch_kept_tokens_sampler():
         valid = finite & ~finite[:, -1:]
         ext_ids = ext_ids.to(ids_dtype).masked_fill_(~valid, _SEPARATOR)
 
-        # The API-side splitter reads only the id columns; ship -inf for the
-        # separator + extension logprobs (shape parity with the ids).
+        # The splitter reads only id columns; the logprob extension is -inf filler.
         separator_ids = torch.full((num_rows, 1), _SEPARATOR, dtype=ids_dtype, device=device)
         extension_logprobs = torch.full((num_rows, width + 1), float("-inf"), device=device)
         output.logprobs_tensors = LogprobsTensors(
@@ -223,13 +184,10 @@ def monkey_patch_kept_tokens_sampler():
 def monkey_patch_kept_tokens_output_capture():
     """Split kept-set extensions off logprobs rows in the API process.
 
-    Patches ``LogprobsProcessor._update_sample_logprobs`` to strip the
-    ``-1``-separated extension before vLLM builds per-position logprob
-    dicts (stock logprobs stay byte-identical for every consumer) and to
-    accumulate the ragged kept rows, and ``RequestState._new_completion_output``
-    to attach them to the finished ``CompletionOutput``. Detection is
-    data-driven (the separator id), so this is a no-op for engines that
-    never widen rows.
+    Strips the extension before vLLM builds per-position logprob dicts and
+    attaches the accumulated rows to the finished ``CompletionOutput``.
+    Detection is data-driven (the separator id), so rows without extensions
+    pass through untouched.
     """
     from vllm.logger import init_logger
     from vllm.v1.engine.logprobs import LogprobsProcessor
@@ -245,15 +203,13 @@ def monkey_patch_kept_tokens_output_capture():
 
     def _update_sample_logprobs(self, logprobs_lists: LogprobsLists) -> None:
         token_ids, logprobs, ranks, cu_num_generated_tokens = logprobs_lists
-        # One kept row per position, always — appending empties on steps
-        # without extensions keeps rows position-aligned even for requests
-        # whose steps only start (or stop) carrying separators.
+        # Append one kept row per position even on extension-less steps, so rows
+        # stay position-aligned if steps start (or stop) carrying separators.
         kept_rows: list[np.ndarray] | None = getattr(self, "_prime_kept_token_ids", None)
         if kept_rows is None:
             kept_rows = self._prime_kept_token_ids = []
 
-        # Rows in one update come from a single step's batch tensor, so the
-        # separator sits at the same column in every row.
+        # Rows in one update come from one step's batch tensor: same separator column.
         separators = np.nonzero(token_ids[0] == _SEPARATOR)[0] if token_ids.size else np.empty(0, dtype=np.int64)
         if not separators.size:
             kept_rows.extend([_EMPTY_KEPT_ROW] * len(token_ids))

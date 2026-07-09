@@ -61,15 +61,10 @@ def selective_log_softmax_with_kept(
     index: Int[Tensor, "batch seq"],
     kept_tokens: Int[Tensor, "batch seq kept"],
 ) -> Float[Tensor, "batch seq"]:
-    """Per-token logprobs with kept-set (sampling-mask) replay.
-
-    Positions carrying a sampling mask (any kept id >= 0, -1 is padding) are
-    renormalized over the kept set — ``logits[index] - logsumexp(logits[kept])``
-    — matching the truncated distribution rollouts sampled from; other positions
-    get full-vocab logprobs. A position whose label fell outside its mask
-    (misaligned data) falls back to full-vocab rather than emitting a corrupt
-    logprob. Fully-masked rows are neutralized before the logsumexp so the
-    unselected branch can't poison gradients with NaNs.
+    """Per-token logprobs with kept-set (sampling-mask) replay: positions with a
+    usable mask (see ``kept_replay_mask``) get ``logits[index] -
+    logsumexp(logits[kept])``, others full-vocab. Non-replayed rows are zeroed
+    before the logsumexp so the unselected ``where`` branch can't emit NaN grads.
     """
     full_logprobs = selective_log_softmax(logits, index)
     replay = kept_replay_mask(kept_tokens, index)

@@ -155,9 +155,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )
-    # No copy needed (unlike routed_experts): both KeptTokens fields are immutable
-    # bytes, and the only in-place mutation (_pad_kept_tokens) runs on
-    # _materialize_bin's own accumulator, never on a sample-held struct.
+    # No copy needed: KeptTokens holds immutable bytes, and _pad_kept_tokens only
+    # ever mutates _materialize_bin's own accumulator.
     kept_tokens = training_example.kept_tokens
 
     if len(input_ids) > seq_len:
@@ -311,9 +310,8 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     # A weight stream materializes as soon as one packed sample carries it; the
     # samples that lack it get the stream's identity fill (STREAM_FILL).
     has_stream = {name: any(getattr(s, name) is not None for _, s in bin_content.samples) for name in STREAM_FILL}
-    # Unlike routed_experts (all-or-nothing, so presence constrains packing in
-    # can_add), kept sets are per-token optional: samples without them are
-    # backfilled with zero counts and the trainer falls back per token.
+    # Kept sets are per-token optional (unlike routed_experts): samples without
+    # them get zero-count backfill instead of constraining packing.
     has_kept_tokens = any(sample.kept_tokens is not None for _, sample in bin_content.samples)
 
     input_ids: list[int] = []

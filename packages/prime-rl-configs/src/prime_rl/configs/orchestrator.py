@@ -78,15 +78,13 @@ class TrainSamplingConfig(BaseConfig):
     """Extra body forwarded with each request to the inference server."""
 
     def truncates_distribution(self) -> bool:
-        """Whether this config samples from a truncated distribution (top-p/top-k/min-p)."""
         return self.top_p < 1.0 or self.top_k is not None or self.min_p > 0.0
 
     @model_validator(mode="after")
     def validate_no_extra_body_truncation(self):
-        """Truncation knobs must be the typed fields — the replay policy reads them, and
-        values smuggled through ``extra_body`` would truncate sampling invisibly.
-        (``resolve_env_config`` stamps disabled sentinels into ``extra_body`` for policy
-        envs after validation; those never truncate.)"""
+        """Truncation knobs must be the typed fields — the replay policy reads them.
+        (``resolve_env_config`` stamps disabled sentinels into ``extra_body`` post-
+        validation; those never truncate.)"""
         smuggled = [key for key in ("top_p", "top_k", "min_p") if key in self.extra_body]
         if smuggled:
             raise ValueError(
@@ -105,8 +103,7 @@ class TrainSamplingConfig(BaseConfig):
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens
 
-        # top_k/min_p ride extra_body (mirroring EvalSamplingConfig), overriding the
-        # disabled sentinels resolve_env_config stamps there for policy envs.
+        # top_k/min_p ride extra_body (like EvalSamplingConfig), overriding the sentinels.
         extra_body = dict(self.extra_body)
         if self.top_k is not None:
             extra_body["top_k"] = self.top_k
@@ -654,17 +651,13 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def setup_truncated_sampling(self):
-        """Truncated policy sampling (top-p/top-k/min-p) is trained with kept-set
-        sampling-mask replay (DeepSeek V3.2 §3.1, Cognition SWE-1.7): rollout logprobs
-        are renormalized over the kept set and the trainer replays the recorded masks.
-        Consequences owned here: every truncating config gets a top-k bound (so kept
-        sets are bounded and replay is exact); opd/opsd is rejected (reference logprobs
-        are full-vocab prefill scores and would mix normalizations); and the
-        gibberish/repetition filters — whose full-softmax thresholds misfire on
-        renormalized logprobs (singleton kept sets read as probability 1.0) — are
-        removed from the default lists and rejected when explicitly configured.
-        Frozen-source envs sample on external endpoints and never train importance
-        ratios, so they are exempt."""
+        """Truncated policy sampling trains with kept-set mask replay (rollout
+        logprobs are renormalized — see docs/inference.md, Sampling Mask Replay).
+        Owned here: every truncating config gets a top-k bound (bounds the kept
+        sets); opd/opsd is rejected (full-vocab prefill refs would mix
+        normalizations); the gibberish/repetition filters are pruned or rejected
+        (their full-softmax thresholds misfire on renormalized logprobs).
+        Frozen-source envs sample externally and are exempt."""
         policy_samplings = [
             env.sampling for env in self.train.env if env.algo is not None and env.algo.sampling.source == "policy"
         ] or ([self.train.sampling] if not self.train.env else [])
