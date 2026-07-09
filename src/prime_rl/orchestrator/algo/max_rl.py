@@ -19,13 +19,18 @@ class MaxRLAlgorithm(Algorithm):
     ~1/p weight; ``group_size`` interpolates REINFORCE at 1 → exact maximum
     likelihood as it grows).
 
-    Assumes non-negative (canonically binary) rewards; a group with mean reward
-    <= 0 carries no signal and gets zero advantages (the zero-advantage filter
-    drops it, matching the paper's no-success convention)."""
+    A singleton group uses its reward directly, recovering REINFORCE as the
+    paper requires. Assumes non-negative (canonically binary) rewards; larger
+    groups with mean reward <= 0 carry no signal and get zero advantages (the
+    zero-advantage filter drops them, matching the paper's no-success
+    convention)."""
 
     async def score_group(self, group: list[Rollout]) -> None:
         rewards = torch.tensor([rollout.reward for rollout in group], dtype=torch.float32)
-        mean = rewards.mean()
-        advantages = torch.zeros_like(rewards) if mean <= 0 else (rewards - mean) / mean
+        if len(group) == 1:
+            advantages = rewards
+        else:
+            mean = rewards.mean()
+            advantages = torch.zeros_like(rewards) if mean <= 0 else (rewards - mean) / mean
         for rollout, advantage in zip(group, advantages.tolist(), strict=True):
             rollout.assign_advantages(advantage)

@@ -219,15 +219,16 @@ class EchoAlgoConfig(GRPOAlgoConfig):
 
 class MaxRLAlgoConfig(BaseAlgoConfig):
     type: Literal["max_rl"] = "max_rl"
-    """MaxRL (arXiv:2602.02710): scalar advantage = (reward − group mean) /
-    group mean, consumed by the ``rl`` loss component. Normalizing by the
-    mean instead of GRPO's standard deviation makes the policy gradient
-    unbiased for the order-``group_size`` truncation of the maximum-likelihood
-    objective: low-pass-rate examples get ~1/p weight, and ``group_size`` is
-    the truncation order interpolating REINFORCE (1) → exact maximum
-    likelihood (∞). Designed for non-negative (canonically binary) rewards;
-    a group with mean reward 0 carries zero advantages everywhere (the
-    zero-advantage filter drops it, matching the paper's K=0 convention)."""
+    """MaxRL (arXiv:2602.02710): singleton groups use the raw reward, while
+    larger groups use scalar advantage = (reward − group mean) / group mean,
+    consumed by the ``rl`` loss component. Normalizing by the mean instead of
+    GRPO's standard deviation makes the policy gradient unbiased for the
+    order-``group_size`` truncation of the maximum-likelihood objective:
+    low-pass-rate examples get ~1/p weight, and ``group_size`` is the
+    truncation order interpolating REINFORCE (1) → exact maximum likelihood
+    (∞). Designed for non-negative (canonically binary) rewards; a group with
+    mean reward 0 carries zero advantages everywhere (the zero-advantage
+    filter drops it, matching the paper's K=0 convention)."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
