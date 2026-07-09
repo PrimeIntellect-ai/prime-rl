@@ -1,8 +1,6 @@
 # 2-GPU debug RL run for the multimodal (renderer) path: Qwen3.5-0.8B on
 # color-codeword. Sized to actually learn (reward should trend up) while
 # staying 2-GPU friendly. Exercises RendererClient + Qwen35Renderer end-to-end.
-# VLM training is custom-implementation-only, so this runs the custom Qwen3.5
-# VLM (Qwen3-VL has no custom implementation and can no longer be RL-trained).
 
 max_steps = 15
 seq_len = 4096

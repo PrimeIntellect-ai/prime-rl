@@ -32,20 +32,6 @@ from prime_rl.trainer.models.qwen3_5_moe.mrope import build_qwen3_5_mrope_positi
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 
-def _build_text_config(composite_config: PretrainedConfig) -> Qwen3_5TextConfig:
-    """Build dense Qwen3.5 text config from HF's composite VLM config."""
-    text_dict = composite_config.text_config.to_dict()
-    text_config = Qwen3_5TextConfig(**text_dict)
-    attn_impl = getattr(
-        composite_config.text_config,
-        "_attn_implementation",
-        getattr(composite_config, "_attn_implementation", None),
-    )
-    if attn_impl is not None:
-        text_config._attn_implementation = attn_impl
-    return text_config
-
-
 class Qwen3_5GatedSDPAAttention(Qwen3_5MoeGatedSDPAAttention):
     pass
 
@@ -274,7 +260,7 @@ class Qwen3_5VLMModel(nn.Module):
         super().__init__()
         self.config = config
         self.visual = Qwen3_5VisionModel._from_config(config.vision_config)
-        self.language_model = Qwen3_5Model(_build_text_config(config))
+        self.language_model = Qwen3_5Model(config.text_config)
 
     def get_input_embeddings(self):
         return self.language_model.embed_tokens
