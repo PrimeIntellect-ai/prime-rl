@@ -152,54 +152,6 @@ def _flatten_mm_items(
     return out
 
 
-def _new_pack() -> dict[str, Any]:
-    return {
-        "input_ids": [],
-        "position_ids": [],
-        "loss_mask": [],
-        "target_ids": [],
-        "seq_lens": [],
-        "mm_kwargs": None,
-        "mm_token_type_ids": None,
-    }
-
-
-def _append_sample_to_pack(pack: dict[str, Any], sample: dict[str, Any]) -> None:
-    existing_len = len(pack["input_ids"])
-    sample_len = len(sample["input_ids"])
-
-    for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
-        value = sample[key]
-        assert isinstance(value, list)
-        pack[key].extend(value)
-    pack["seq_lens"].append(sample_len)
-
-    sample_mm_kwargs = sample.get("mm_kwargs")
-    if sample_mm_kwargs is None:
-        if pack["mm_token_type_ids"] is not None:
-            pack["mm_token_type_ids"].extend([0] * sample_len)
-        return
-
-    sample_mm_type_ids = sample.get("mm_token_type_ids")
-    if sample_mm_type_ids is not None and len(sample_mm_type_ids) != sample_len:
-        raise ValueError("mm_token_type_ids length must match input_ids length")
-    if pack["mm_kwargs"] is not None and (pack["mm_token_type_ids"] is None) != (sample_mm_type_ids is None):
-        raise ValueError("Cannot pack multimodal samples with mixed mm_token_type_ids")
-
-    if pack["mm_kwargs"] is None:
-        pack["mm_kwargs"] = {key: value for key, value in sample_mm_kwargs.items()}
-    else:
-        if pack["mm_kwargs"].keys() != sample_mm_kwargs.keys():
-            raise ValueError("Cannot pack multimodal samples with different mm_kwargs keys")
-        for key, value in sample_mm_kwargs.items():
-            pack["mm_kwargs"][key] = torch.cat([pack["mm_kwargs"][key], value], dim=0)
-
-    if pack["mm_token_type_ids"] is None and sample_mm_type_ids is not None:
-        pack["mm_token_type_ids"] = [0] * existing_len
-    if pack["mm_token_type_ids"] is not None:
-        pack["mm_token_type_ids"].extend(sample_mm_type_ids or [0] * sample_len)
-
-
 def _drop_null_fields(value: Any) -> Any:
     """Recursively strip ``None``-valued keys from dict structures.
 
@@ -528,22 +480,62 @@ class CatDataset(StatefulIterableDataset):
         self.dataset.load_state_dict(state_dict["dataset"])
 
     def __iter__(self):
-        packed_samples = _new_pack()
+        packed_samples = defaultdict(list)
+        packed_samples["mm_kwargs"] = None
+        packed_samples["mm_token_type_ids"] = None
         seq_len = 0
         for sample in self.dataset:
             sample_len = len(sample["input_ids"])
             would_overflow = seq_len + sample_len > self.seq_len
             if seq_len > 0 and would_overflow:
                 yield self._finalize_pack(packed_samples, self.seq_len)
-                packed_samples = _new_pack()
+                packed_samples = defaultdict(list)
+                packed_samples["mm_kwargs"] = None
+                packed_samples["mm_token_type_ids"] = None
                 seq_len = 0
 
-            _append_sample_to_pack(packed_samples, sample)
+            existing_len = len(packed_samples["input_ids"])
+            for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
+                value = sample[key]
+                assert isinstance(value, list)
+                packed_samples[key].extend(value)
+            packed_samples["seq_lens"].append(sample_len)
+
+            sample_mm_kwargs = sample.get("mm_kwargs")
+            sample_mm_type_ids = sample.get("mm_token_type_ids")
+            if sample_mm_kwargs is None:
+                if packed_samples["mm_token_type_ids"] is not None:
+                    packed_samples["mm_token_type_ids"].extend([0] * sample_len)
+            else:
+                if sample_mm_type_ids is not None and len(sample_mm_type_ids) != sample_len:
+                    raise ValueError("mm_token_type_ids length must match input_ids length")
+                if packed_samples["mm_kwargs"] is not None and (
+                    (packed_samples["mm_token_type_ids"] is None) != (sample_mm_type_ids is None)
+                ):
+                    raise ValueError("Cannot pack multimodal samples with mixed mm_token_type_ids")
+
+                if packed_samples["mm_kwargs"] is None:
+                    packed_samples["mm_kwargs"] = dict(sample_mm_kwargs)
+                else:
+                    if packed_samples["mm_kwargs"].keys() != sample_mm_kwargs.keys():
+                        raise ValueError("Cannot pack multimodal samples with different mm_kwargs keys")
+                    for key, value in sample_mm_kwargs.items():
+                        packed_samples["mm_kwargs"][key] = torch.cat(
+                            [packed_samples["mm_kwargs"][key], value], dim=0
+                        )
+
+                if packed_samples["mm_token_type_ids"] is None and sample_mm_type_ids is not None:
+                    packed_samples["mm_token_type_ids"] = [0] * existing_len
+                if packed_samples["mm_token_type_ids"] is not None:
+                    packed_samples["mm_token_type_ids"].extend(sample_mm_type_ids or [0] * sample_len)
+
             seq_len += sample_len
 
             if seq_len >= self.seq_len:
                 yield self._finalize_pack(packed_samples, self.seq_len)
-                packed_samples = _new_pack()
+                packed_samples = defaultdict(list)
+                packed_samples["mm_kwargs"] = None
+                packed_samples["mm_token_type_ids"] = None
                 seq_len = 0
 
         if seq_len > 0:
@@ -706,10 +698,10 @@ class StackDataset(StatefulIterableDataset):
 
 
 def stack_collate(samples: list[Sample]) -> Batch:
-    sample = samples[0]
-    mm_kwargs = _move_mm_kwargs_to_cuda(sample.get("mm_kwargs"))
-    mm_type_ids = sample.get("mm_token_type_ids")
+    mm_kwargs = _move_mm_kwargs_to_cuda(samples[0].get("mm_kwargs"))
     if mm_kwargs is not None:
+        sample = samples[0]
+        mm_type_ids = sample.get("mm_token_type_ids")
         # Multimodal samples are emitted solo by StackDataset with 1-D fields; add
         # the batch dim the bucketed text path gets from its list-of-lists so the
         # trainer receives [batch, seq] like everywhere else.

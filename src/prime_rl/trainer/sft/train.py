@@ -190,10 +190,7 @@ def train(config: SFTConfig):
 
         if processor is not None and hasattr(renderer, "_processor"):
             renderer._processor = processor
-        logger.info(
-            f"Initialized {type(renderer).__name__} for {config.tokenizer.name} "
-            f"(multimodal_processor={processor is not None})"
-        )
+        logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
