@@ -1,0 +1,89 @@
+# GLM-5.2-FP8 RLM inference (rlm5 prod shape) + HiSparse decode — r2e A/B, hisparse arm.
+# Derived from rlm5/prod.toml [inference.*]. HiSparse deltas vs prod: decode
+# gpu_memory_utilization 0.9 + 256 GiB pinned host pool per DP rank, decode
+# seats 64 -> 96 (validated HiSparse seat count), mooncake store scoped to
+# roles=["prefill"] (decode-node RAM budget: 8 ranks x 256 GiB pinned leaves no
+# room for a 1 TB store segment; decode still receives KV via NIXL).
+# Launch: uv run inference @ configs/glm51_rlm_hisparse/inference.toml
+
+output_dir = "/beegfs/fares/outputs/r2e-ab-r15-hisparse"
+
+enable_expert_parallel = true
+gpu_memory_utilization = 0.75
+enable_eplb = false
+use_deep_gemm = true
+enable_fp32_lm_head = true
+
+[env_vars]
+HF_HOME = "/beegfs/fares/hf"
+HF_HUB_OFFLINE = "1"
+# User-scoped /tmp cache paths: the prod config's /tmp/.cache/* collides with
+# other users' cache dirs on shared nodes (PermissionError at model load).
+TRITON_CACHE_DIR = "/tmp/fares-cache/triton"
+DG_JIT_CACHE_DIR = "/tmp/.fares_deep_gemm"
+NVSHMEM_HCA_LIST = "mlx5_0,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_9,mlx5_10,mlx5_11"
+NVSHMEM_ENABLE_NIC_PE_MAPPING = "1"
+VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER = "0"
+VLLM_CACHE_ROOT = "/tmp/fares-cache/vllm"
+
+[log]
+level = "debug"
+
+[model]
+name = "/beegfs/fares/models/GLM-5.2-FP8"
+max_model_len = 131072
+tool_call_parser = "glm47"
+reasoning_parser = "glm45"
+
+[vllm_extra]
+enable_ep_weight_filter = true
+safetensors_load_strategy = "prefetch"
+# Graceful-shutdown grace: default 0 = the frontend SIGKILLs the engine tree
+# ~immediately on SIGTERM, truncating the in-process HiSparse host-pool unpin
+# (node drain). Healthy shutdowns finish as soon as procs exit; 600 is a cap.
+shutdown_timeout = 600
+
+[kv_cache_offload]
+type = "mooncake"
+device_name = "mlx5_0,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_9,mlx5_10,mlx5_11"
+roles = ["prefill"]
+
+[kv_cache_offload.cpu]
+num_bytes = 1_000_000_000_000
+
+[deployment]
+type = "disaggregated"
+num_prefill_nodes = 6
+num_prefill_replicas = 3
+num_decode_nodes = 4
+num_decode_replicas = 1
+prefill_env_vars = { "VLLM_ENABLE_MOE_DP_CHUNK" = "0", "VLLM_DEEP_GEMM_WARMUP" = "skip", "UCX_RCACHE_MAX_UNRELEASED" = "1024" }
+# Decode runs the template's auto-detected multi-rail UCX_NET_DEVICES, like
+# prefill: spreading NIXL RDMA into the pinned host pool across all IB rails
+# avoids single-HCA contention with DeepEP IBGDA (r8/r13/552 forensics).
+decode_env_vars = { "VLLM_DEEP_GEMM_WARMUP" = "skip", "UCX_RCACHE_MAX_UNRELEASED" = "1024" }
+prefill_vllm_overrides = { "enable_dbo" = false }
+# max_num_seqs bounds the eagerly-allocated hot buffers (~34 GiB/rank at 96)
+# and is the admission control under HiSparse. 256 GiB pool/rank = 3.06M bf16
+# tokens (78 layers x 1152 B x 64-token blocks) ~= 96 seats x ~32k avg
+# context — long-context tails funnel into preemption + slow decode-local
+# recompute, so decode preemptions are a first-class abort signal. Per-rank
+# RAM preflight fails fast.
+decode_vllm_overrides = { "max_num_batched_tokens" = 96, "max_num_seqs" = 96, "gpu_memory_utilization" = 0.9, "attention_config" = { "hisparse_config" = { "host_pool_gib" = 256 } } }
+
+[deployment.router]
+type = "llm-d"
+scorers = { "prefix-cache-scorer" = 3.0 }
+prefill_scorer_overrides = { "queue-scorer" = 4.0, "active-request-scorer" = 5.0 }
+decode_scorer_overrides = { "active-request-scorer" = 5.0, "kv-cache-utilization-scorer" = 4.0, "queue-scorer" = 3.0 }
+# 1 = always-split (prod uses 128): every request with a non-cached suffix
+# routes through a prefill node, so decode never runs shortcut local prefill.
+# Defense-in-depth while the mixed-batch device fault's root cause is only
+# fixed-by-strong-suspect (row-split); NEVER 0 — that disables the P/D split
+# entirely (EPP pd-decider semantics). Local prefill still covers
+# preemption-resume/recompute, now via the row-split path.
+non_cached_tokens = 1
+
+[slurm]
+job_name = "r2e-ab-hisparse"
+partition = "prod"

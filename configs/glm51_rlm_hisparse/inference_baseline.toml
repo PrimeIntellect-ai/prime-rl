@@ -1,0 +1,75 @@
+# GLM-5.2-FP8 RLM inference (rlm5 prod shape), plain decode — r2e A/B, baseline arm.
+# Prod config verbatim except fares-scoped paths/caches and the local model
+# path. Mooncake store on all roles (prod default): plain decode has no pinned
+# host pool, so the 1 TB segment fits on decode nodes too.
+# Launch: uv run inference @ configs/glm51_rlm_hisparse/inference_baseline.toml
+
+output_dir = "/beegfs/fares/outputs/r2e-ab-r15-baseline"
+
+enable_expert_parallel = true
+gpu_memory_utilization = 0.75
+enable_eplb = false
+use_deep_gemm = true
+enable_fp32_lm_head = true
+
+[env_vars]
+HF_HOME = "/beegfs/fares/hf"
+HF_HUB_OFFLINE = "1"
+# User-scoped /tmp cache paths: the prod config's /tmp/.cache/* collides with
+# other users' cache dirs on shared nodes (PermissionError at model load).
+TRITON_CACHE_DIR = "/tmp/fares-cache/triton"
+DG_JIT_CACHE_DIR = "/tmp/.fares_deep_gemm"
+NVSHMEM_HCA_LIST = "mlx5_0,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_9,mlx5_10,mlx5_11"
+NVSHMEM_ENABLE_NIC_PE_MAPPING = "1"
+VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER = "0"
+VLLM_CACHE_ROOT = "/tmp/fares-cache/vllm"
+
+[log]
+level = "debug"
+
+[model]
+name = "/beegfs/fares/models/GLM-5.2-FP8"
+max_model_len = 131072
+tool_call_parser = "glm47"
+reasoning_parser = "glm45"
+
+[vllm_extra]
+enable_ep_weight_filter = true
+safetensors_load_strategy = "prefetch"
+# Same graceful-shutdown cap as the hisparse arm (comparison-neutral; plain
+# decode has no pinned pool and exits well inside it).
+shutdown_timeout = 600
+
+[kv_cache_offload]
+type = "mooncake"
+device_name = "mlx5_0,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_9,mlx5_10,mlx5_11"
+
+[kv_cache_offload.cpu]
+num_bytes = 1_000_000_000_000
+
+[deployment]
+type = "disaggregated"
+num_prefill_nodes = 6
+num_prefill_replicas = 3
+num_decode_nodes = 4
+num_decode_replicas = 1
+prefill_env_vars = { "VLLM_ENABLE_MOE_DP_CHUNK" = "0", "VLLM_DEEP_GEMM_WARMUP" = "skip", "UCX_RCACHE_MAX_UNRELEASED" = "1024" }
+decode_env_vars = { "VLLM_DEEP_GEMM_WARMUP" = "skip", "UCX_RCACHE_MAX_UNRELEASED" = "1024" }
+prefill_vllm_overrides = { "enable_dbo" = false }
+# Seats raised 64 -> 96 for parity with the hisparse arm (the c=2000 capacity
+# comparison must bind baseline's KV ceiling, not its admission cap; prod runs
+# 64/64).
+decode_vllm_overrides = { "max_num_batched_tokens" = 96, "max_num_seqs" = 96 }
+
+[deployment.router]
+type = "llm-d"
+scorers = { "prefix-cache-scorer" = 3.0 }
+prefill_scorer_overrides = { "queue-scorer" = 4.0, "active-request-scorer" = 5.0 }
+decode_scorer_overrides = { "active-request-scorer" = 5.0, "kv-cache-utilization-scorer" = 4.0, "queue-scorer" = 3.0 }
+# 1 = always-split, matching the hisparse arm (comparison-neutral); prod
+# uses 128. NEVER 0 — that disables the P/D split entirely.
+non_cached_tokens = 1
+
+[slurm]
+job_name = "r2e-ab-baseline"
+partition = "prod"
