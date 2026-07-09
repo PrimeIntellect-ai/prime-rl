@@ -3,7 +3,10 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
-from prime_rl.trainer.model import forward
+from prime_rl.configs.shared import VLMConfig
+from prime_rl.configs.trainer import LoRAConfig, ModelConfig
+from prime_rl.trainer.model import configure_trainable_parameters, forward
+from prime_rl.trainer.models.layers.lora import MultiLoRALinear
 
 
 class _CaptureModel(nn.Module):
@@ -19,6 +22,35 @@ class _CaptureModel(nn.Module):
         else:
             shape = kwargs["inputs_embeds"].shape[:2]
         return {"logits": torch.zeros(*shape, 4)}
+
+
+class _ToyVLM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.visual = nn.Module()
+        self.visual.gate_proj = nn.Linear(4, 4)
+        self.language_model = nn.Module()
+        self.language_model.gate_proj = nn.Linear(4, 4)
+
+
+def test_frozen_vision_encoder_is_excluded_from_lora():
+    model = _ToyVLM()
+    config = ModelConfig(
+        vlm=VLMConfig(vision_encoder_attr="visual", language_model_attr="language_model"),
+        lora=LoRAConfig(target_modules=["gate_proj"]),
+    )
+
+    configure_trainable_parameters(model, config, SimpleNamespace(ep_enabled=False))
+
+    assert isinstance(model.visual.gate_proj, nn.Linear)
+    assert not isinstance(model.visual.gate_proj, MultiLoRALinear)
+    assert all(not parameter.requires_grad for parameter in model.visual.parameters())
+    assert isinstance(model.language_model.gate_proj, MultiLoRALinear)
+    lora_parameters = [
+        parameter for name, parameter in model.language_model.gate_proj.named_parameters() if "lora_" in name
+    ]
+    assert lora_parameters
+    assert all(parameter.requires_grad for parameter in lora_parameters)
 
 
 def test_forward_passes_renderer_mm_token_type_ids_through():
