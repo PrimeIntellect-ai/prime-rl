@@ -111,26 +111,6 @@ class FakeDataset(StatefulIterableDataset):
             yield fake_sample
 
 
-def _new_pack() -> dict[str, Any]:
-    return {
-        "input_ids": [],
-        "position_ids": [],
-        "loss_mask": [],
-        "target_ids": [],
-        "seq_lens": [],
-    }
-
-
-def _append_sample_to_pack(pack: dict[str, Any], sample: dict[str, Any]) -> None:
-    sample_len = len(sample["input_ids"])
-
-    for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
-        value = sample[key]
-        assert isinstance(value, list)
-        pack[key].extend(value)
-    pack["seq_lens"].append(sample_len)
-
-
 def _drop_null_fields(value: Any, path: tuple[str, ...] = ()) -> Any:
     """Recursively strip ``None``-valued keys from dict structures.
 
@@ -366,22 +346,26 @@ class CatDataset(StatefulIterableDataset):
         self.dataset.load_state_dict(state_dict["dataset"])
 
     def __iter__(self):
-        packed_samples = _new_pack()
+        packed_samples = defaultdict(list)
         seq_len = 0
         for sample in self.dataset:
             sample_len = len(sample["input_ids"])
             would_overflow = seq_len + sample_len > self.seq_len
             if seq_len > 0 and would_overflow:
                 yield self._finalize_pack(packed_samples, self.seq_len)
-                packed_samples = _new_pack()
+                packed_samples = defaultdict(list)
                 seq_len = 0
 
-            _append_sample_to_pack(packed_samples, sample)
+            for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
+                value = sample[key]
+                assert isinstance(value, list)
+                packed_samples[key].extend(value)
+            packed_samples["seq_lens"].append(sample_len)
             seq_len += sample_len
 
             if seq_len >= self.seq_len:
                 yield self._finalize_pack(packed_samples, self.seq_len)
-                packed_samples = _new_pack()
+                packed_samples = defaultdict(list)
                 seq_len = 0
 
         if seq_len > 0:
