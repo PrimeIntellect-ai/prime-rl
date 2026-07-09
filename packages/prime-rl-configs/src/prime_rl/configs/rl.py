@@ -507,11 +507,12 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_sampling_mask_replay(self):
         """Wire sampling-mask replay end to end (DeepSeek V3.2 §3.1 "Keep Sampling Mask",
-        Cognition SWE-1.7): truncated train sampling implies replay (an explicit
-        ``enable_sampling_mask_replay = false`` opts out, e.g. for a naive-top-p
-        baseline); replay forces a top-k bound on every truncating config so kept sets
-        stay bounded; and the inference server is told to return kept tokens, with its
-        capture width derived from the largest top-k so replay is exact everywhere."""
+        Cognition SWE-1.7): truncated train sampling requires replay — without it trainer
+        logprobs normalize over the full vocabulary while rollout logprobs are renormalized
+        over the kept set, biasing every importance ratio (runs collapse). Replay forces a
+        top-k bound on every truncating config so kept sets stay bounded, and the inference
+        server is told to return kept tokens, with its capture width derived from the
+        largest top-k so replay is exact everywhere."""
         # Per-env sampling is what rollouts run with (group values are merged into every
         # env by resolve_env_defaults); the group config only stands in when no envs exist.
         sampling_configs = [env.sampling for env in self.orchestrator.train.env] or [self.orchestrator.train.sampling]
@@ -519,14 +520,13 @@ class RLConfig(BaseConfig):
 
         if truncating and not self.trainer.enable_sampling_mask_replay:
             if "enable_sampling_mask_replay" in self.trainer.model_fields_set:
-                warnings.warn(
-                    "Train sampling uses truncation (top_p/top_k/min_p) with sampling-mask replay explicitly "
-                    "disabled: trainer logprobs normalize over the full vocabulary while rollout logprobs are "
-                    "renormalized over the kept set, biasing importance ratios — expect collapse.",
-                    stacklevel=2,
+                raise ValueError(
+                    "Train sampling uses truncation (top_p/top_k/min_p), which requires sampling-mask replay: "
+                    "trainer logprobs would normalize over the full vocabulary while rollout logprobs are "
+                    "renormalized over the kept set, biasing importance ratios (runs collapse). Remove "
+                    "`trainer.enable_sampling_mask_replay = false` or the truncation."
                 )
-            else:
-                self.trainer.enable_sampling_mask_replay = True
+            self.trainer.enable_sampling_mask_replay = True
 
         if not self.trainer.enable_sampling_mask_replay:
             return self
@@ -573,20 +573,41 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def warn_mask_replay_with_ref_kl(self):
-        """vLLM prompt logprobs ignore logprobs_mode, so reference logprobs stay full-vocab
-        while replayed trainer logprobs are kept-renormalized. Envs inherit the top-level
-        algo before this runs (``inherit_env_algorithms``)."""
+    def validate_sampling_mask_replay_consumers(self):
+        """Reject or remove consumers of rollout logprobs that break under kept-set
+        renormalization. opd/opsd is rejected: reference logprobs are full-vocab prefill
+        scores (vLLM prompt logprobs ignore logprobs_mode), so the ref_kl term would mix
+        normalizations. The gibberish/repetition filters read rollout logprobs against
+        full-softmax thresholds (renormalized probs are systematically higher — singleton
+        kept sets read as probability 1.0), so the default ones are removed and explicitly
+        configured ones are rejected."""
         if not self.trainer.enable_sampling_mask_replay:
             return self
-        algos = [env.algo for env in self.orchestrator.train.env if env.algo is not None]
+
+        # Envs inherit the top-level algo (inherit_env_algorithms); the top-level config
+        # only stands in when no envs exist.
+        algos = [env.algo for env in self.orchestrator.train.env if env.algo is not None] or [self.orchestrator.algo]
         if any(algo.type in ("opd", "opsd") for algo in algos):
-            warnings.warn(
-                "Sampling-mask replay with opd/opsd: reference logprobs are full-vocab prefill scores while "
-                "trainer logprobs are renormalized over the kept set, biasing the ref_kl term by up to "
-                "-log(top_p) per masked token.",
-                stacklevel=2,
+            raise ValueError(
+                "opd/opsd is not supported with sampling-mask replay: reference logprobs are full-vocab "
+                "prefill scores while trainer logprobs are renormalized over the kept set, biasing the "
+                "ref_kl term. Remove train sampling truncation (top_p/top_k/min_p) or the opd/opsd algo."
             )
+
+        logprob_filter_types = ("gibberish", "repetition")
+        for slot_name in ("pre_batch_filters", "post_batch_filters"):
+            filters = getattr(self.orchestrator, slot_name)
+            if not any(f.type in logprob_filter_types for f in filters):
+                continue
+            if slot_name in self.orchestrator.model_fields_set:
+                raise ValueError(
+                    f"orchestrator.{slot_name} contains logprob-based filters "
+                    f"({[f.type for f in filters if f.type in logprob_filter_types]}) which misfire under "
+                    "sampling-mask replay: rollout logprobs are renormalized over the kept set, so "
+                    "full-softmax thresholds over-detect repetition and under-detect gibberish. Remove them "
+                    "from the list (zero_advantage is unaffected)."
+                )
+            setattr(self.orchestrator, slot_name, [f for f in filters if f.type not in logprob_filter_types])
         return self
 
     @model_validator(mode="after")
