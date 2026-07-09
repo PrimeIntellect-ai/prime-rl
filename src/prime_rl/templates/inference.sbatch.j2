@@ -274,7 +274,9 @@ srun --kill-on-bad-exit=1 bash -c '
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
     else
         # ── Decode node ──
-        export UCX_NET_DEVICES=mlx5_0:1
+        # Decode inherits the auto-detected multi-rail UCX_NET_DEVICES from
+        # above, like prefill. Operators can still pin via decode_env_vars
+        # (exported below, so it overrides).
         ROLE="decode"
         RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
         SUB_REPLICA=$((RANK_IN_DECODE / NODES_PER_DECODE_REPLICA))
