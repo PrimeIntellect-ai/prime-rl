@@ -21,6 +21,9 @@ id = "reverse-text"
 interval = 10
 resume_step = -1
 
+[weight_broadcast]
+type = "filesystem"
+
 # Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
 [renderer]
 name = "default"

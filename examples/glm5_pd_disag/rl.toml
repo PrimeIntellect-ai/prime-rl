@@ -15,14 +15,13 @@ quantize_in_weight_transfer = true
 [deployment]
 type = "multi_node"
 num_train_nodes = 16
-num_infer_nodes = 8
 gpus_per_node = 8
 num_infer_replicas = 2
 
 [inference.deployment]
 type = "disaggregated"
-num_prefill_nodes = 4
-num_decode_nodes = 4
+prefill_nodes_per_replica = 4
+decode_nodes_per_replica = 4
 
 [slurm]
 job_name = "glm5-pd-disag"
