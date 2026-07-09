@@ -111,7 +111,7 @@ class SharedModelConfig(BaseConfig):
 
 
 class SharedWeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem"] = "filesystem"
+    type: Literal["nccl", "filesystem"] = "nccl"
     """Weight broadcast transport."""
 
     port: int = 29501
@@ -336,29 +336,38 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_weight_broadcast(self):
-        """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference."""
-        if self.weight_broadcast is not None:
-            if self.weight_broadcast.type == "nccl":
-                inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
-                self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
-                    type=self.weight_broadcast.type,
-                    inference_world_size=inference_world_size,
-                    port=self.weight_broadcast.port,
-                    timeout=self.weight_broadcast.timeout,
-                    quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
-                )
-                self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
-                    type=self.weight_broadcast.type,
-                    port=self.weight_broadcast.port,
-                    timeout=self.weight_broadcast.timeout,
-                    inference_world_size=inference_world_size,
-                    quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
-                )
-            elif self.weight_broadcast.type == "filesystem":
-                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
-                self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
-            if self.inference is not None:
-                self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+        """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference.
+
+        Defaults to NCCL broadcast when no ``weight_broadcast`` is configured. Falls back to
+        filesystem when LoRA is enabled (not yet supported with NCCL) or when no inference
+        server is configured (NCCL requires a running inference pool).
+        """
+        if self.weight_broadcast is None:
+            if self.trainer.model.lora is not None or self.inference is None:
+                self.weight_broadcast = SharedWeightBroadcastConfig(type="filesystem")
+            else:
+                self.weight_broadcast = SharedWeightBroadcastConfig()
+        if self.weight_broadcast.type == "nccl":
+            inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
+            self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
+                type=self.weight_broadcast.type,
+                inference_world_size=inference_world_size,
+                port=self.weight_broadcast.port,
+                timeout=self.weight_broadcast.timeout,
+                quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
+            )
+            self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
+                type=self.weight_broadcast.type,
+                port=self.weight_broadcast.port,
+                timeout=self.weight_broadcast.timeout,
+                inference_world_size=inference_world_size,
+                quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
+            )
+        elif self.weight_broadcast.type == "filesystem":
+            self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
+            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
+        if self.inference is not None:
+            self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
         validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
 
