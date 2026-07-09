@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.inference import DEFAULT_KEPT_TOKENS_MAX, InferenceConfig
+from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.orchestrator import (
     FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
@@ -505,109 +505,35 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_sampling_mask_replay(self):
-        """Wire sampling-mask replay end to end (DeepSeek V3.2 §3.1 "Keep Sampling Mask",
-        Cognition SWE-1.7): truncated train sampling requires replay — without it trainer
-        logprobs normalize over the full vocabulary while rollout logprobs are renormalized
-        over the kept set, biasing every importance ratio (runs collapse). Replay forces a
-        top-k bound on every truncating config so kept sets stay bounded, and the inference
-        server is told to return kept tokens, with its capture width derived from the
-        largest top-k so replay is exact everywhere."""
-        # Per-env sampling is what rollouts run with (group values are merged into every
-        # env by resolve_env_defaults); the group config only stands in when no envs exist.
-        sampling_configs = [env.sampling for env in self.orchestrator.train.env] or [self.orchestrator.train.sampling]
-        truncating = [sampling for sampling in sampling_configs if sampling.truncates_distribution()]
-
-        if truncating and not self.trainer.enable_sampling_mask_replay:
-            if "enable_sampling_mask_replay" in self.trainer.model_fields_set:
-                raise ValueError(
-                    "Train sampling uses truncation (top_p/top_k/min_p), which requires sampling-mask replay: "
-                    "trainer logprobs would normalize over the full vocabulary while rollout logprobs are "
-                    "renormalized over the kept set, biasing importance ratios (runs collapse). Remove "
-                    "`trainer.enable_sampling_mask_replay = false` or the truncation."
-                )
-            self.trainer.enable_sampling_mask_replay = True
-
-        if not self.trainer.enable_sampling_mask_replay:
+    def auto_setup_kept_tokens_capture(self):
+        """Size the inference server's kept-set capture from the train sampling top-k.
+        OrchestratorConfig owns the truncation policy (every truncating policy config
+        gets a top-k), so any policy top_k here means truncated sampling; the capture
+        width must cover the largest one for replay to be exact."""
+        policy_samplings = [
+            env.sampling
+            for env in self.orchestrator.train.env
+            if env.algo is not None and env.algo.sampling.source == "policy"
+        ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.env else [])
+        top_ks = [sampling.top_k for sampling in policy_samplings if sampling.top_k is not None]
+        if not top_ks:
             return self
-
-        unbounded = [sampling for sampling in truncating if sampling.effective_top_k() is None]
-        if unbounded:
-            warnings.warn(
-                f"Sampling-mask replay: defaulting top_k = {DEFAULT_KEPT_TOKENS_MAX} on truncated train "
-                "sampling so every kept set is bounded and replay stays exact. Set top_k explicitly to override.",
-                stacklevel=2,
-            )
-            for sampling in unbounded:
-                sampling.top_k = DEFAULT_KEPT_TOKENS_MAX
-
         if self.inference is None:
             warnings.warn(
-                "Sampling-mask replay is enabled, but inference is not configured. When manually starting the "
-                "inference server, make sure to set `enable_return_kept_tokens = true` in its config.",
+                "Truncated train sampling with no managed inference server: set "
+                f"`kept_tokens = {max(top_ks)}` on the standalone server's config so it returns "
+                "the sampling masks the trainer replays.",
                 stacklevel=2,
             )
             return self
-
-        if (
-            not self.inference.enable_return_kept_tokens
-            and "enable_return_kept_tokens" in self.inference.model_fields_set
-        ):
+        derived = max(top_ks)
+        if "kept_tokens" in self.inference.model_fields_set and self.inference.kept_tokens != derived:
             warnings.warn(
-                "Sampling-mask replay is enabled, but inference.enable_return_kept_tokens is False. Setting to True.",
+                f"Overriding inference.kept_tokens = {self.inference.kept_tokens} with {derived}, "
+                "derived from the largest train sampling top_k (keeps sampling-mask replay exact).",
                 stacklevel=2,
             )
-        self.inference.enable_return_kept_tokens = True
-
-        # The capture width is derived, not configured: exactly the largest top-k in use.
-        top_ks = [k for sampling in sampling_configs if (k := sampling.effective_top_k()) is not None]
-        if top_ks:
-            derived_cap = max(top_ks)
-            if "kept_tokens_max" in self.inference.model_fields_set and self.inference.kept_tokens_max != derived_cap:
-                warnings.warn(
-                    f"Overriding inference.kept_tokens_max = {self.inference.kept_tokens_max} with {derived_cap}, "
-                    "derived from the largest train sampling top_k (keeps sampling-mask replay exact).",
-                    stacklevel=2,
-                )
-            self.inference.kept_tokens_max = derived_cap
-        return self
-
-    @model_validator(mode="after")
-    def validate_sampling_mask_replay_consumers(self):
-        """Reject or remove consumers of rollout logprobs that break under kept-set
-        renormalization. opd/opsd is rejected: reference logprobs are full-vocab prefill
-        scores (vLLM prompt logprobs ignore logprobs_mode), so the ref_kl term would mix
-        normalizations. The gibberish/repetition filters read rollout logprobs against
-        full-softmax thresholds (renormalized probs are systematically higher — singleton
-        kept sets read as probability 1.0), so the default ones are removed and explicitly
-        configured ones are rejected."""
-        if not self.trainer.enable_sampling_mask_replay:
-            return self
-
-        # Envs inherit the top-level algo (inherit_env_algorithms); the top-level config
-        # only stands in when no envs exist.
-        algos = [env.algo for env in self.orchestrator.train.env if env.algo is not None] or [self.orchestrator.algo]
-        if any(algo.type in ("opd", "opsd") for algo in algos):
-            raise ValueError(
-                "opd/opsd is not supported with sampling-mask replay: reference logprobs are full-vocab "
-                "prefill scores while trainer logprobs are renormalized over the kept set, biasing the "
-                "ref_kl term. Remove train sampling truncation (top_p/top_k/min_p) or the opd/opsd algo."
-            )
-
-        logprob_filter_types = ("gibberish", "repetition")
-        for slot_name in ("pre_batch_filters", "post_batch_filters"):
-            filters = getattr(self.orchestrator, slot_name)
-            if not any(f.type in logprob_filter_types for f in filters):
-                continue
-            if slot_name in self.orchestrator.model_fields_set:
-                raise ValueError(
-                    f"orchestrator.{slot_name} contains logprob-based filters "
-                    f"({[f.type for f in filters if f.type in logprob_filter_types]}) which misfire under "
-                    "sampling-mask replay: rollout logprobs are renormalized over the kept set, so "
-                    "full-softmax thresholds over-detect repetition and under-detect gibberish. Remove them "
-                    "from the list (zero_advantage is unaffected)."
-                )
-            setattr(self.orchestrator, slot_name, [f for f in filters if f.type not in logprob_filter_types])
+        self.inference.kept_tokens = derived
         return self
 
     @model_validator(mode="after")

@@ -54,8 +54,7 @@ from vllm.outputs import RequestOutput
 
 KEPT_TOKENS_ENV = "PRIME_RETURN_KEPT_TOKENS"
 KEPT_TOKENS_MAX_ENV = "PRIME_KEPT_TOKENS_MAX"
-# Fallback only — setup_vllm_env always stamps the env var from
-# inference.kept_tokens_max (keep the config default in sync).
+# Fallback only — setup_vllm_env always stamps the env var from inference.kept_tokens.
 KEPT_TOKENS_MAX_DEFAULT = 512
 
 # Separator/padding token id in the widened logprobs rows. Never a valid

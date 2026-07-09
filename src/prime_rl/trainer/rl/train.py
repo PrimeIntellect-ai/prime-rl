@@ -26,7 +26,6 @@ from prime_rl.utils.cp import (
     shard_for_cp,
 )
 from prime_rl.utils.logger import format_time, setup_logger
-from prime_rl.utils.vlm import get_final_logit_softcapping
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
@@ -151,11 +150,6 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
-    if config.enable_sampling_mask_replay and get_final_logit_softcapping(model.config):
-        raise ValueError(
-            "enable_sampling_mask_replay is not supported for models with final_logit_softcapping "
-            "(Gemma-family lm_heads do not implement kept-set renormalization)."
-        )
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
@@ -365,30 +359,9 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
-            # Kept sets the inference server sent are dropped (pre-H2D) unless replay is on.
-            kept_tokens = (
-                micro_batch["kept_tokens"].to("cuda")
-                if micro_batch["kept_tokens"] is not None and config.enable_sampling_mask_replay
-                else None
-            )
-
-            if kept_tokens is None and config.enable_sampling_mask_replay:
-                # Only rl-member tokens need masks (pure-ce bins and dummy batches
-                # legitimately carry none) — for those, a missing mask means the
-                # inference server isn't returning kept sets and every importance
-                # ratio would silently revert to the biased full-vocab form. Checked
-                # on the CPU-side tensors to avoid a device sync per micro batch.
-                cpu_loss_mask = micro_batch["loss_mask"]
-                cpu_rl_weights = micro_batch["rl_weights"]
-                has_rl_tokens = (
-                    cpu_loss_mask.any() if cpu_rl_weights is None else (cpu_loss_mask & (cpu_rl_weights != 0)).any()
-                )
-                if bool(has_rl_tokens):
-                    raise ValueError(
-                        "Sampling-mask replay is enabled but the batch carries no kept sets. Set "
-                        "`enable_return_kept_tokens = true` on the inference config (the rl entrypoint "
-                        "auto-sets it) and make sure the server runs prime-rl's vLLM patches."
-                    )
+            # Sampling-mask replay is data-driven: batches carry kept sets exactly when
+            # rollouts sampled truncated (the orchestrator enforces their presence then).
+            kept_tokens = micro_batch["kept_tokens"].to("cuda") if micro_batch["kept_tokens"] is not None else None
 
             # Multimodal kwargs are an opaque per-model dict (e.g.
             # {"pixel_values": ..., "image_grid_thw": ...} for Qwen3-VL,

@@ -153,10 +153,6 @@ KVCacheOffloadConfig: TypeAlias = Annotated[
 ]
 
 
-# Default kept-set capture width. Also the top-k the rl entrypoint injects on truncated
-# train sampling for mask replay, so a default standalone server covers a default client.
-DEFAULT_KEPT_TOKENS_MAX = 512
-
 # Valid vLLM max_lora_rank values (from vllm/config/lora.py)
 # TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
@@ -411,11 +407,8 @@ class InferenceConfig(BaseConfig):
     enable_return_routed_experts: bool = False
     """Return routed experts in responses. Forwarded as ``--enable-return-routed-experts``."""
 
-    enable_return_kept_tokens: bool = False
-    """Return per-token kept-set sampling masks (the token ids that survived top-p/top-k/min-p truncation) on ``/inference/v1/generate`` responses, for trainer-side sampling-mask replay. Implemented as monkey-patches over vLLM's sampler and output processor, activated via ``PRIME_RETURN_KEPT_TOKENS=1``. Requires ``logprobs_mode = "processed_logprobs"`` (the default)."""
-
-    kept_tokens_max: int = Field(DEFAULT_KEPT_TOKENS_MAX, ge=1)
-    """Kept-set capture width per sampled token. Auto-derived by the ``rl`` entrypoint from the largest train-sampling ``top_k``; set by hand only when launching the inference server standalone, where it must cover the clients' top_k (positions whose kept set exceeds it ship no mask and the trainer falls back to full-vocab logprobs)."""
+    kept_tokens: int | None = Field(None, ge=1)
+    """Return per-token kept-set sampling masks (the token ids that survived top-p/top-k/min-p truncation) on ``/inference/v1/generate`` responses at this capture width, for trainer-side sampling-mask replay; ``None`` disables capture. Auto-derived by the ``rl`` entrypoint from the largest train-sampling ``top_k``; set by hand only for standalone-launched servers, where it must cover the clients' top_k (positions whose kept set exceeds it ship no mask and the trainer falls back to full-vocab logprobs). Implemented as monkey-patches over vLLM's sampler and output processor; requires ``logprobs_mode = "processed_logprobs"`` (the default)."""
 
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
