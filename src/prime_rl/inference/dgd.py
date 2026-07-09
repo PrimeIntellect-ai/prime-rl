@@ -8,7 +8,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from prime_rl.configs.inference import DisaggregatedInferenceDeploymentConfig, InferenceConfig
 from prime_rl.inference.dynamo import (
@@ -28,6 +28,85 @@ MANIFEST_HASH_SCOPE = (
     "resource; json.dumps(sort_keys=true,indent=2)+newline; "
     "exclude=/metadata/annotations/prime-rl.nvidia.com~1manifest-sha256"
 )
+_DGD_RESERVED_ENV_KEYS = frozenset(
+    {
+        "DYN_COMPONENT",
+        "DYN_DISCOVERY_BACKEND",
+        "DYN_ENABLE_RL",
+        "DYN_ENDPOINT",
+        "DYN_ETCD_ENDPOINTS",
+        "DYN_EVENT_PLANE",
+        "DYN_FILE_KV",
+        "DYN_NAMESPACE",
+        "DYN_RL_ENDPOINT",
+        "DYN_RL_PORT",
+        "DYN_SYSTEM_PORT",
+        "VLLM_NIXL_SIDE_CHANNEL_HOST",
+        "VLLM_NIXL_SIDE_CHANNEL_PORT",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class KubernetesToleration:
+    key: str
+    operator: Literal["Exists", "Equal"] = "Exists"
+    effect: Literal["NoSchedule", "PreferNoSchedule", "NoExecute"] | None = "NoSchedule"
+    value: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.key:
+            raise ValueError("Kubernetes toleration key must not be empty")
+        if self.operator == "Exists" and self.value is not None:
+            raise ValueError("An Exists toleration cannot define a value")
+        if self.operator == "Equal" and self.value is None:
+            raise ValueError("An Equal toleration requires a value")
+
+    def as_manifest(self) -> dict[str, str]:
+        return {
+            "key": self.key,
+            "operator": self.operator,
+            **({"value": self.value} if self.value is not None else {}),
+            **({"effect": self.effect} if self.effect is not None else {}),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class GPUSchedulingProfile:
+    """One image-compatible placement contract for every generated GPU pod."""
+
+    runtime_class_name: str
+    architecture: str
+    product: str
+    node_pool: str
+    node_pool_label: str = "cloud.google.com/gke-nodepool"
+    tolerations: tuple[KubernetesToleration, ...] = (KubernetesToleration(key="nvidia.com/gpu"),)
+
+    def __post_init__(self) -> None:
+        required = {
+            "runtime_class_name": self.runtime_class_name,
+            "architecture": self.architecture,
+            "product": self.product,
+            "node_pool": self.node_pool,
+            "node_pool_label": self.node_pool_label,
+        }
+        empty = [name for name, value in required.items() if not value]
+        if empty:
+            raise ValueError(f"GPU scheduling fields must not be empty: {empty}")
+        if not self.tolerations:
+            raise ValueError("GPU scheduling requires at least one toleration")
+
+    @property
+    def node_selector(self) -> dict[str, str]:
+        return {
+            "kubernetes.io/arch": self.architecture,
+            "nvidia.com/gpu.product": self.product,
+            self.node_pool_label: self.node_pool,
+        }
+
+    @property
+    def toleration_manifests(self) -> list[dict[str, str]]:
+        return [toleration.as_manifest() for toleration in self.tolerations]
 
 
 @dataclass(frozen=True)
@@ -40,6 +119,7 @@ class DynamoGraphRenderOptions:
     dynamo_sha: str
     image_digest: str
     run_name: str
+    gpu_scheduling: GPUSchedulingProfile
     model_cache_pvc: str | None = None
     shared_pvc: str | None = None
     image_pull_secrets: tuple[str, ...] = ()
@@ -99,6 +179,8 @@ def _apply_pod_credentials(
 ) -> None:
     if options.image_pull_secrets:
         pod_spec["imagePullSecrets"] = [{"name": name} for name in options.image_pull_secrets]
+    if options.model_cache_pvc and not any(item["name"] == "HF_HOME" for item in container.get("env", [])):
+        container.setdefault("env", []).append({"name": "HF_HOME", "value": "/model-cache"})
     if options.hf_token_secret and not any(item["name"] == "HF_TOKEN" for item in container.get("env", [])):
         container.setdefault("env", []).append(
             {
@@ -146,8 +228,9 @@ def _worker_service(
         ],
     }
     pod_spec = {
-        "runtimeClassName": "nvidia",
-        "tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}],
+        "runtimeClassName": options.gpu_scheduling.runtime_class_name,
+        "nodeSelector": options.gpu_scheduling.node_selector,
+        "tolerations": options.gpu_scheduling.toleration_manifests,
         "volumes": [
             {
                 "name": "dynamo-engine-config",
@@ -179,6 +262,21 @@ def _add_pvc(resource: dict[str, Any], service: dict[str, Any], name: str | None
     service.setdefault("volumeMounts", []).append({"name": name, "mountPoint": mount_point})
 
 
+def _validate_dgd_environment(config: InferenceConfig) -> None:
+    environment_sources = [("global", config.env_vars)]
+    if config.deployment.type == "disaggregated":
+        environment_sources.extend(
+            [
+                ("prefill", config.deployment.prefill_env_vars),
+                ("decode", config.deployment.decode_env_vars),
+            ]
+        )
+    for source, environment in environment_sources:
+        conflicts = sorted(_DGD_RESERVED_ENV_KEYS & environment.keys())
+        if conflicts:
+            raise ValueError(f"{source} env_vars contains {conflicts}; these DGD keys are operator-owned")
+
+
 def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions) -> dict[str, Any]:
     if config.backend.type != "dynamo" or config.deployment.type != "disaggregated":
         raise ValueError("DGD rendering requires a Dynamo disaggregated inference config")
@@ -189,6 +287,7 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         raise ValueError("DGD rendering currently requires one pod per decode replica")
     if config.weight_broadcast.type == "filesystem" and not options.shared_pvc:
         raise ValueError("Dynamo filesystem weight broadcast requires a shared existing PVC")
+    _validate_dgd_environment(config)
 
     engine_paths = write_role_engine_configs(config, options.output_dir)
     prefill_text = engine_paths["prefill"].read_text()
@@ -310,6 +409,18 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         "inference": {
             "mode": "dynamoGraph",
             "dynamoGraph": {
+                "clientTopology": {
+                    "schema_version": 1,
+                    "admin_api": "dynamo",
+                    "base_url": [
+                        f"http://{options.release_name}-frontend.{options.namespace}.svc.cluster.local:8000/v1"
+                    ],
+                    "rl_base_url": [
+                        f"http://{options.release_name}-frontend-rl.{options.namespace}.svc.cluster.local:8001"
+                    ],
+                    "dynamo_worker_roles": list(config.dynamo_worker_roles),
+                    "dynamo_gpus_per_worker": config.dynamo_gpus_per_worker,
+                },
                 "engineConfig": {
                     "name": config_map_name,
                     "sha256": engine_hash,
@@ -319,7 +430,23 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
                 "resource": resource,
             },
         },
+        "trainer": {
+            "runtimeClassName": options.gpu_scheduling.runtime_class_name,
+            "nodeSelector": options.gpu_scheduling.node_selector,
+            "tolerations": options.gpu_scheduling.toleration_manifests,
+        },
     }
+    if options.model_cache_pvc:
+        values["modelCache"] = {
+            "enabled": True,
+            "existingClaim": options.model_cache_pvc,
+            "mountPath": "/model-cache",
+        }
+    if options.hf_token_secret:
+        values["huggingFace"] = {
+            "tokenSecretName": options.hf_token_secret,
+            "tokenSecretKey": "HF_TOKEN",
+        }
     if options.shared_pvc:
         values["storage"] = {
             "enabled": True,
@@ -359,6 +486,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dynamo-sha", required=True)
     parser.add_argument("--image-digest", required=True)
     parser.add_argument("--run-name")
+    parser.add_argument("--gpu-runtime-class", default="nvidia")
+    parser.add_argument("--gpu-architecture", required=True)
+    parser.add_argument("--gpu-product", required=True)
+    parser.add_argument("--gpu-node-pool", required=True)
+    parser.add_argument("--gpu-node-pool-label", default="cloud.google.com/gke-nodepool")
     parser.add_argument("--model-cache-pvc")
     parser.add_argument("--shared-pvc")
     parser.add_argument("--image-pull-secret", action="append", default=[])
@@ -378,6 +510,13 @@ def main() -> None:
         dynamo_sha=args.dynamo_sha,
         image_digest=args.image_digest,
         run_name=args.run_name or args.release_name,
+        gpu_scheduling=GPUSchedulingProfile(
+            runtime_class_name=args.gpu_runtime_class,
+            architecture=args.gpu_architecture,
+            product=args.gpu_product,
+            node_pool=args.gpu_node_pool,
+            node_pool_label=args.gpu_node_pool_label,
+        ),
         model_cache_pvc=args.model_cache_pvc,
         shared_pvc=args.shared_pvc,
         image_pull_secrets=tuple(args.image_pull_secret),

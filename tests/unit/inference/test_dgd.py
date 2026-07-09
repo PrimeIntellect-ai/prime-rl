@@ -7,12 +7,23 @@ from pathlib import Path
 import pytest
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.inference.dgd import DynamoGraphRenderOptions, build_dgd_values, write_dgd_artifacts
+from prime_rl.inference.dgd import (
+    DynamoGraphRenderOptions,
+    GPUSchedulingProfile,
+    build_dgd_values,
+    write_dgd_artifacts,
+)
 from prime_rl.inference.dynamo import build_frontend_process, build_worker_process
 
 PRIME_SHA = "1" * 40
 DYNAMO_SHA = "2" * 40
 IMAGE_DIGEST = f"sha256:{'3' * 64}"
+GPU_SCHEDULING = GPUSchedulingProfile(
+    runtime_class_name="nvidia",
+    architecture="arm64",
+    product="NVIDIA-GB200",
+    node_pool="customer-gpu-o7v",
+)
 
 
 def inference_config(
@@ -52,6 +63,7 @@ def render_options(tmp_path: Path) -> DynamoGraphRenderOptions:
         dynamo_sha=DYNAMO_SHA,
         image_digest=IMAGE_DIGEST,
         run_name="p4-run",
+        gpu_scheduling=GPU_SCHEDULING,
         model_cache_pvc="model-cache",
         shared_pvc="p4-shared-data",
         image_pull_secrets=("nvcrimagepullsecret",),
@@ -85,6 +97,23 @@ def test_dgd_values_derive_topology_and_role_configs(tmp_path: Path):
         "existingClaim": "p4-shared-data",
         "mountPath": "/data",
     }
+    assert values["modelCache"] == {
+        "enabled": True,
+        "existingClaim": "model-cache",
+        "mountPath": "/model-cache",
+    }
+    assert values["huggingFace"] == {
+        "tokenSecretName": "hf-token-secret",
+        "tokenSecretKey": "HF_TOKEN",
+    }
+    assert values["inference"]["dynamoGraph"]["clientTopology"] == {
+        "schema_version": 1,
+        "admin_api": "dynamo",
+        "base_url": ["http://p4-math-frontend.bis-vllm.svc.cluster.local:8000/v1"],
+        "rl_base_url": ["http://p4-math-frontend-rl.bis-vllm.svc.cluster.local:8001"],
+        "dynamo_worker_roles": ["prefill", "prefill", "decode", "decode"],
+        "dynamo_gpus_per_worker": 1,
+    }
     for service in services.values():
         pod_spec = service["extraPodSpec"]
         assert pod_spec["mainContainer"]["image"] == options.image
@@ -95,8 +124,19 @@ def test_dgd_values_derive_topology_and_role_configs(tmp_path: Path):
         assert env["HF_HUB_OFFLINE"] == "1"
 
     gpu_toleration = {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
-    assert gpu_toleration in services["VllmPrefillWorker"]["extraPodSpec"]["tolerations"]
-    assert gpu_toleration in services["VllmDecodeWorker"]["extraPodSpec"]["tolerations"]
+    expected_selector = {
+        "kubernetes.io/arch": "arm64",
+        "nvidia.com/gpu.product": "NVIDIA-GB200",
+        "cloud.google.com/gke-nodepool": "customer-gpu-o7v",
+    }
+    for role in ("VllmPrefillWorker", "VllmDecodeWorker"):
+        worker_pod = services[role]["extraPodSpec"]
+        assert worker_pod["runtimeClassName"] == "nvidia"
+        assert worker_pod["nodeSelector"] == expected_selector
+        assert worker_pod["tolerations"] == [gpu_toleration]
+    assert values["trainer"]["runtimeClassName"] == "nvidia"
+    assert values["trainer"]["nodeSelector"] == expected_selector
+    assert values["trainer"]["tolerations"] == [gpu_toleration]
 
     prefill_args = services["VllmPrefillWorker"]["extraPodSpec"]["mainContainer"]["args"]
     decode_args = services["VllmDecodeWorker"]["extraPodSpec"]["mainContainer"]["args"]
@@ -233,6 +273,41 @@ def test_filesystem_broadcast_rejects_missing_shared_claim(tmp_path: Path):
 
     with pytest.raises(ValueError, match="shared existing PVC"):
         build_dgd_values(inference_config("filesystem"), options)
+
+
+@pytest.mark.parametrize(
+    ("scope", "key"),
+    [
+        ("global", "DYN_DISCOVERY_BACKEND"),
+        ("global", "DYN_NAMESPACE"),
+        ("prefill", "DYN_SYSTEM_PORT"),
+        ("decode", "DYN_ENDPOINT"),
+    ],
+)
+def test_dgd_rejects_operator_owned_environment(scope: str, key: str, tmp_path: Path):
+    config_data = inference_config().model_dump(mode="python")
+    if scope == "global":
+        config_data["env_vars"] = {key: "override"}
+    else:
+        config_data["deployment"][f"{scope}_env_vars"] = {key: "override"}
+    config = InferenceConfig.model_validate(config_data)
+
+    with pytest.raises(ValueError, match=rf"{scope}.*{key}.*operator-owned"):
+        build_dgd_values(config, render_options(tmp_path))
+
+
+def test_gpu_scheduling_changes_manifest_identity(tmp_path: Path):
+    first = build_dgd_values(inference_config(), render_options(tmp_path / "first"))
+    changed_profile = replace(GPU_SCHEDULING, node_pool="customer-gpu-alternate")
+    changed_options = replace(render_options(tmp_path / "second"), gpu_scheduling=changed_profile)
+    second = build_dgd_values(inference_config(), changed_options)
+
+    first_resource = first["inference"]["dynamoGraph"]["resource"]
+    second_resource = second["inference"]["dynamoGraph"]["resource"]
+    assert (
+        first_resource["metadata"]["annotations"]["prime-rl.nvidia.com/manifest-sha256"]
+        != (second_resource["metadata"]["annotations"]["prime-rl.nvidia.com/manifest-sha256"])
+    )
 
 
 def test_dgd_rejects_native_backend(tmp_path: Path):

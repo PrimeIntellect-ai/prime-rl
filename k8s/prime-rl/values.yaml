@@ -26,6 +26,17 @@ storage:
   size: 1Ti
   mountPath: /data
 
+# Existing model cache mounted consistently into generated runtime pods.
+modelCache:
+  enabled: false
+  existingClaim: ""
+  mountPath: /model-cache
+
+# Existing Hugging Face token secret. The secret value is never embedded in values.
+huggingFace:
+  tokenSecretName: ""
+  tokenSecretKey: HF_TOKEN
+
 # Orchestrator component
 orchestrator:
   enabled: true
@@ -133,6 +144,9 @@ trainer:
   env: []
 
   runtimeClassName: nvidia
+
+  nodeSelector: {}
+  tolerations: []
 
   # Health probes for trainer (requires metrics_server config)
   probes:

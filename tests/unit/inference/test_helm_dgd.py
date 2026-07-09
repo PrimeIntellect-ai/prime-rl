@@ -6,13 +6,19 @@ from pathlib import Path
 import pytest
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.inference.dgd import DynamoGraphRenderOptions, write_dgd_artifacts
+from prime_rl.inference.dgd import DynamoGraphRenderOptions, GPUSchedulingProfile, write_dgd_artifacts
 
 HELM = shutil.which("helm")
 CHART = Path(__file__).parents[3] / "k8s" / "prime-rl"
 PRIME_SHA = "1" * 40
 DYNAMO_SHA = "2" * 40
 IMAGE_DIGEST = f"sha256:{'3' * 64}"
+GPU_SCHEDULING = GPUSchedulingProfile(
+    runtime_class_name="nvidia",
+    architecture="arm64",
+    product="NVIDIA-GB200",
+    node_pool="customer-gpu-o7v",
+)
 
 
 def inference_config(
@@ -48,6 +54,9 @@ def render_options(tmp_path: Path, *, shared_pvc: str | None = None) -> DynamoGr
         dynamo_sha=DYNAMO_SHA,
         image_digest=IMAGE_DIGEST,
         run_name="p4-run",
+        gpu_scheduling=GPU_SCHEDULING,
+        model_cache_pvc="model-cache",
+        hf_token_secret="hf-token-secret",
         shared_pvc=shared_pvc,
         image_pull_secrets=("nvcrimagepullsecret",),
     )
@@ -93,6 +102,14 @@ def test_dgd_chart_renders_generated_graph_without_inference_statefulset(tmp_pat
     assert rendered.count(f'image: "{options.image}"') == 2
     assert rendered.count(f"image: {options.image}") == 3
     assert rendered.count("nvcrimagepullsecret") == 5
+    assert rendered.count("name: DYN_RL_TOPOLOGY") == 2
+    assert rendered.count("claimName: model-cache") == 2
+    assert rendered.count("name: HF_TOKEN") == 5
+    assert rendered.count("name: HF_HOME") == 5
+    assert rendered.count("cloud.google.com/gke-nodepool: customer-gpu-o7v") == 3
+    assert rendered.count("kubernetes.io/arch: arm64") == 3
+    assert rendered.count("nvidia.com/gpu.product: NVIDIA-GB200") == 3
+    assert rendered.count("key: nvidia.com/gpu") == 3
     assert not any(kind in rendered for kind in ("kind: ClusterRole", "kind: CustomResourceDefinition"))
 
 
@@ -168,6 +185,7 @@ def test_dgd_rejects_image_without_matching_digest(tmp_path: Path):
             dynamo_sha=DYNAMO_SHA,
             image_digest=IMAGE_DIGEST,
             run_name="p4-run",
+            gpu_scheduling=GPU_SCHEDULING,
         )
 
 
@@ -182,4 +200,5 @@ def test_dgd_rejects_image_without_commit_suffixes(tmp_path: Path):
             dynamo_sha=DYNAMO_SHA,
             image_digest=IMAGE_DIGEST,
             run_name="p4-run",
+            gpu_scheduling=GPU_SCHEDULING,
         )

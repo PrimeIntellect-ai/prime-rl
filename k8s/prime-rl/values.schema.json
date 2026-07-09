@@ -5,15 +5,10 @@
     "image": {
       "type": "object",
       "properties": {
-        "reference": {
-          "type": "string"
-        },
+        "reference": {"type": "string"},
         "pullSecrets": {
           "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
+          "items": {"type": "string", "minLength": 1},
           "uniqueItems": true
         }
       }
@@ -24,14 +19,93 @@
         "mode": {
           "type": "string",
           "enum": ["statefulset", "dynamoGraph"]
+        },
+        "dynamoGraph": {
+          "type": "object",
+          "properties": {
+            "clientTopology": {
+              "type": "object",
+              "properties": {
+                "schema_version": {"const": 1},
+                "admin_api": {"const": "dynamo"},
+                "base_url": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {"type": "string", "minLength": 1}
+                },
+                "rl_base_url": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {"type": "string", "minLength": 1}
+                },
+                "dynamo_worker_roles": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {"type": "string", "enum": ["agg", "prefill", "decode"]}
+                },
+                "dynamo_gpus_per_worker": {"type": "integer", "minimum": 1}
+              },
+              "required": [
+                "schema_version",
+                "admin_api",
+                "base_url",
+                "rl_base_url",
+                "dynamo_worker_roles",
+                "dynamo_gpus_per_worker"
+              ],
+              "additionalProperties": false
+            },
+            "engineConfig": {"type": "object"},
+            "resource": {"type": "object"}
+          }
         }
       }
     },
     "storage": {
       "type": "object",
       "properties": {
-        "existingClaim": {
-          "type": "string"
+        "existingClaim": {"type": "string"}
+      }
+    },
+    "modelCache": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "existingClaim": {"type": "string"},
+        "mountPath": {"type": "string", "minLength": 1}
+      }
+    },
+    "huggingFace": {
+      "type": "object",
+      "properties": {
+        "tokenSecretName": {"type": "string"},
+        "tokenSecretKey": {"type": "string", "minLength": 1}
+      }
+    },
+    "trainer": {
+      "type": "object",
+      "properties": {
+        "runtimeClassName": {"type": "string"},
+        "nodeSelector": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {"type": "string", "minLength": 1},
+              "operator": {"type": "string", "enum": ["Exists", "Equal"]},
+              "value": {"type": "string"},
+              "effect": {
+                "type": "string",
+                "enum": ["NoSchedule", "PreferNoSchedule", "NoExecute"]
+              }
+            },
+            "required": ["key", "operator"],
+            "additionalProperties": false
+          }
         }
       }
     }
@@ -41,11 +115,7 @@
       "if": {
         "properties": {
           "inference": {
-            "properties": {
-              "mode": {
-                "const": "dynamoGraph"
-              }
-            },
+            "properties": {"mode": {"const": "dynamoGraph"}},
             "required": ["mode"]
           }
         },
@@ -55,14 +125,39 @@
         "properties": {
           "image": {
             "properties": {
-              "reference": {
-                "pattern": "^.+@sha256:[0-9a-f]{64}$"
-              }
+              "reference": {"pattern": "^.+@sha256:[0-9a-f]{64}$"}
             },
             "required": ["reference"]
+          },
+          "inference": {
+            "properties": {
+              "dynamoGraph": {
+                "required": ["clientTopology", "engineConfig", "resource"]
+              }
+            },
+            "required": ["dynamoGraph"]
           }
         },
-        "required": ["image"]
+        "required": ["image", "inference"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "modelCache": {
+            "properties": {"enabled": {"const": true}},
+            "required": ["enabled"]
+          }
+        },
+        "required": ["modelCache"]
+      },
+      "then": {
+        "properties": {
+          "modelCache": {
+            "properties": {"existingClaim": {"minLength": 1}},
+            "required": ["existingClaim"]
+          }
+        }
       }
     }
   ]
