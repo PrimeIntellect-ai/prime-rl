@@ -1311,7 +1311,6 @@ def forward(
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
 ) -> PrimeLmOutput:
-    # Build kwargs for model forward
     kwargs = {
         "labels": labels,
         "temperature": temperature,

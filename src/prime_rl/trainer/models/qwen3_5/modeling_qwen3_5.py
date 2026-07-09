@@ -350,17 +350,6 @@ class Qwen3_5VLMModel(nn.Module):
         )
 
 
-def _has_vlm_keys(state_dict: dict[str, Tensor]) -> bool:
-    return any(k.startswith("model.language_model.") for k in state_dict)
-
-
-def _remap_lm_keys(state_dict: dict[str, Tensor], to_flat: bool = True) -> None:
-    src = "model.language_model." if to_flat else "model."
-    dst = "model." if to_flat else "model.language_model."
-    for k in [k for k in list(state_dict.keys()) if k.startswith(src) and not k.startswith("model.visual.")]:
-        state_dict[dst + k[len(src) :]] = state_dict.pop(k)
-
-
 class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
     """Unified dense Qwen3.5 model for both text-only and VLM configs."""
 
@@ -401,28 +390,6 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
 
     def get_decoder(self):
         return self.model
-
-    @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        if _has_vlm_keys(state_dict):
-            _remap_lm_keys(state_dict, to_flat=True)
-            _remap_lm_keys(state_dict, to_flat=False)
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        if _has_vlm_keys(state_dict):
-            _remap_lm_keys(state_dict, to_flat=True)
-            _remap_lm_keys(state_dict, to_flat=False)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        return cls.convert_to_hf(state_dict)
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        return cls.convert_to_prime(state_dict)
 
     def forward(
         self,
