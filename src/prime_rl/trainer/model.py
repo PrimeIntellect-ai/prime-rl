@@ -339,8 +339,8 @@ def freeze_moe_router(model: nn.Module) -> None:
             for param in mlp.router.parameters():
                 param.requires_grad = False
                 num_frozen += 1
-        # HuggingFace implementation: gate attribute (nn.Linear)
-        elif hasattr(mlp, "gate") and isinstance(mlp.gate, nn.Linear):
+        # HuggingFace implementation: gate may have been wrapped with LoRA.
+        elif hasattr(mlp, "gate") and isinstance(mlp.gate, nn.Module):
             for param in mlp.gate.parameters():
                 param.requires_grad = False
                 num_frozen += 1
@@ -619,16 +619,6 @@ def get_model(
                 **dtype_kwarg,
             )
         logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
-
-    # For VLM models, optionally freeze the vision encoder
-    if is_vlm_training and config.vlm.freeze_vision_encoder:
-        freeze_vision_encoder(model, override_attr=config.vlm.vision_encoder_attr)
-    elif config.vlm is None and custom_vlm_cls is not None and model_cls is custom_vlm_cls:
-        # Text-only training of a VLM checkpoint: the vision tower still runs
-        # (dummy input for collective symmetry), so its params get zero — not
-        # None — grads and AdamW weight decay would silently shrink them.
-        logger.info("Training a VLM checkpoint on text-only data; freezing the vision encoder")
-        freeze_vision_encoder(model)
 
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
@@ -1039,6 +1029,37 @@ def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims)
             )
 
 
+def configure_trainable_parameters(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
+    """Apply parameter transforms, then enforce the final trainability policy."""
+    frozen_vision_encoder = None
+    if config.vlm is not None and config.vlm.freeze_vision_encoder:
+        frozen_vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
+    elif config.vlm is None:
+        frozen_vision_encoder = get_vision_encoder(model)
+        if frozen_vision_encoder is not None:
+            get_logger().info("Training a VLM checkpoint on text-only data; freezing the vision encoder")
+
+    if config.lora is not None:
+        excluded_modules = (frozen_vision_encoder,) if frozen_vision_encoder is not None else ()
+        apply_lora_to_model(model, config.lora, excluded_modules=excluded_modules)
+
+    if parallel_dims.ep_enabled:
+        apply_ep(model, config, parallel_dims)
+        if config.lora is not None:
+            # EP replaces parameters with DTensors that default to trainable.
+            freeze_all_except_lora_and_specified(model, config.lora)
+
+    # Explicit freezes take precedence over LoRA modules_to_save and EP replacements.
+    if config.freeze_moe_router:
+        freeze_moe_router(model)
+    freeze_sparse_indexer(model)
+    if frozen_vision_encoder is not None:
+        freeze_vision_encoder(
+            model,
+            override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
+        )
+
+
 def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
     """FSDP CPU offloading only manages parameters, not buffers. Move buffers to CUDA."""
     if not config.fsdp_cpu_offload:
@@ -1133,27 +1154,10 @@ def setup_model(
     if config.fp8:
         replace_linear_with_fp8_blockwise_linear(model)
 
-    # Apply LoRA before FSDP setup
-    if config.lora is not None:
-        apply_lora_to_model(model, config.lora)
-
-    if config.freeze_moe_router:
-        freeze_moe_router(model)
-
-    # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
-    # never trainable. Freeze it so optimizer state stays symmetric across checkpoint
-    # save/resume. No-op for models without a sparse indexer.
-    freeze_sparse_indexer(model)
+    configure_trainable_parameters(model, config, parallel_dims)
 
     if config.debug.force_balanced_routing:
         apply_force_balanced_routing(model)
-
-    if parallel_dims.ep_enabled:
-        apply_ep(model, config, parallel_dims)
-        # EP replaces params with DTensors that default to requires_grad=True,
-        # re-freeze base params that LoRA froze earlier.
-        if config.lora is not None:
-            freeze_all_except_lora_and_specified(model, config.lora)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
