@@ -518,9 +518,7 @@ class CatDataset(StatefulIterableDataset):
                     if packed_samples["mm_kwargs"].keys() != sample_mm_kwargs.keys():
                         raise ValueError("Cannot pack multimodal samples with different mm_kwargs keys")
                     for key, value in sample_mm_kwargs.items():
-                        packed_samples["mm_kwargs"][key] = torch.cat(
-                            [packed_samples["mm_kwargs"][key], value], dim=0
-                        )
+                        packed_samples["mm_kwargs"][key] = torch.cat([packed_samples["mm_kwargs"][key], value], dim=0)
 
                 if packed_samples["mm_token_type_ids"] is None and sample_mm_type_ids is not None:
                     packed_samples["mm_token_type_ids"] = [0] * existing_len
