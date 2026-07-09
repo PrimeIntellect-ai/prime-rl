@@ -12,6 +12,7 @@ from prime_rl.utils.client import (
     DynamoInferencePool,
     StaticInferencePool,
     _is_retryable_lora_error,
+    check_health,
     load_lora_adapter,
     maybe_check_has_model,
     setup_clients,
@@ -175,17 +176,101 @@ async def test_model_registration_retries_transient_status_and_empty_models():
     client = AsyncMock()
     client.base_url = httpx.URL("http://frontend:8000")
     request = httpx.Request("GET", "http://frontend:8000/v1/models")
+    conflict = httpx.Response(409, request=request)
     unavailable = httpx.Response(
         503,
         request=request,
     )
     empty = httpx.Response(200, json={"data": []}, request=request)
     ready = httpx.Response(200, json={"data": [{"id": "test-model"}]}, request=request)
-    client.get.side_effect = [unavailable, empty, ready]
+    client.get.side_effect = [httpx.ConnectError("not listening", request=request), conflict, unavailable, empty, ready]
 
     await maybe_check_has_model([client], "test-model", timeout=1, interval=0)
 
-    assert client.get.await_count == 3
+    assert client.get.await_count == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 403, 404])
+async def test_model_registration_fails_permanent_http_status_immediately(status_code: int):
+    client = AsyncMock()
+    client.base_url = httpx.URL("http://frontend:8000")
+    client.get.return_value = httpx.Response(
+        status_code,
+        request=httpx.Request("GET", "http://frontend:8000/v1/models"),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await maybe_check_has_model([client], "test-model", timeout=1, interval=0)
+
+    client.get.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(
+            200,
+            content=b"not-json",
+            headers={"content-type": "application/json"},
+            request=httpx.Request("GET", "http://frontend:8000/v1/models"),
+        ),
+        httpx.Response(
+            200,
+            json={"data": {}},
+            request=httpx.Request("GET", "http://frontend:8000/v1/models"),
+        ),
+        httpx.Response(
+            200,
+            json={"data": [{"object": "model"}]},
+            request=httpx.Request("GET", "http://frontend:8000/v1/models"),
+        ),
+    ],
+    ids=["invalid-json", "data-not-list", "model-id-missing"],
+)
+async def test_model_registration_fails_invalid_response_immediately(response: httpx.Response):
+    client = AsyncMock()
+    client.base_url = httpx.URL("http://frontend:8000")
+    client.get.return_value = response
+
+    with pytest.raises(ValueError, match=r"Invalid /v1/models response"):
+        await maybe_check_has_model([client], "test-model", timeout=1, interval=0)
+
+    client.get.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_strict_health_retries_only_transient_failures():
+    client = AsyncMock()
+    client.base_url = httpx.URL("http://frontend:8000")
+    request = httpx.Request("GET", "http://frontend:8000/health")
+    client.get.side_effect = [
+        httpx.ConnectError("not listening", request=request),
+        httpx.Response(429, request=request),
+        httpx.Response(503, request=request),
+        httpx.Response(200, request=request),
+    ]
+
+    await check_health([client], timeout=1, interval=0, strict=True)
+
+    assert client.get.await_count == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 403, 404])
+async def test_strict_health_fails_permanent_http_status_immediately(status_code: int):
+    client = AsyncMock()
+    client.base_url = httpx.URL("http://frontend:8000")
+    client.get.return_value = httpx.Response(
+        status_code,
+        request=httpx.Request("GET", "http://frontend:8000/health"),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await check_health([client], timeout=1, interval=0, strict=True)
+
+    client.get.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@ from typing import Protocol, runtime_checkable
 import httpx
 import verifiers.v1 as vf
 from httpx import AsyncClient
-from openai import AsyncOpenAI, NotFoundError
+from openai import AsyncOpenAI
 from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig
@@ -147,8 +147,8 @@ class PrefillScorer:
         await asyncio.gather(*(c.close() for c in self._clients.values()))
 
 
-class _StaticClientPool:
-    """Shared request-client behavior for fixed inference pools."""
+class FixedInferencePool:
+    """Base capability for pools whose endpoint set is fixed for their lifetime."""
 
     def __init__(
         self,
@@ -203,7 +203,7 @@ class _StaticClientPool:
         return await self._scorer.score(self.train_clients, self.model_name, token_ids)
 
 
-class StaticInferencePool(_StaticClientPool):
+class StaticInferencePool(FixedInferencePool):
     """Static native-vLLM inference pool with fixed clients."""
 
     def __init__(
@@ -266,7 +266,7 @@ class StaticInferencePool(_StaticClientPool):
         await asyncio.gather(*(client.aclose() for client in clients))
 
 
-class DynamoInferencePool(_StaticClientPool):
+class DynamoInferencePool(FixedInferencePool):
     """Static Dynamo pool with worker discovery and Dynamo administration."""
 
     def __init__(
@@ -479,6 +479,43 @@ def setup_admin_clients(client_config: ClientConfig, urls: list[str] | None = No
     return [_setup_admin_client(base_url) for base_url in urls]
 
 
+_RETRYABLE_READINESS_STATUS_CODES = frozenset({408, 409, 429})
+
+
+def _is_retryable_readiness_error(error: BaseException) -> bool:
+    """Return whether a readiness request can plausibly succeed unchanged.
+
+    HTTP 408 and 429 are request/proxy backpressure. HTTP 409 is also transient
+    here because inference servers can report a state conflict while their model
+    lifecycle is transitioning. Other 4xx responses require a caller or routing
+    change and must fail immediately; server failures and transports are retried.
+    """
+    if isinstance(error, httpx.HTTPStatusError):
+        status_code = error.response.status_code
+        return status_code in _RETRYABLE_READINESS_STATUS_CODES or 500 <= status_code < 600
+    return isinstance(error, (httpx.TransportError, TimeoutError))
+
+
+def _model_ids(response: httpx.Response) -> frozenset[str]:
+    """Validate an OpenAI models response before interpreting model absence."""
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise ValueError("Invalid /v1/models response: expected valid JSON") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid /v1/models response: expected a JSON object")
+    models = payload.get("data")
+    if not isinstance(models, list):
+        raise ValueError("Invalid /v1/models response: 'data' must be a list")
+
+    model_ids: set[str] = set()
+    for index, model in enumerate(models):
+        if not isinstance(model, dict) or not isinstance(model.get("id"), str):
+            raise ValueError(f"Invalid /v1/models response: data[{index}].id must be a string")
+        model_ids.add(model["id"])
+    return frozenset(model_ids)
+
+
 async def maybe_check_has_model(
     admin_clients: list[AsyncClient],
     model_name: str,
@@ -503,15 +540,20 @@ async def maybe_check_has_model(
                         timeout=httpx.Timeout(min(remaining, 10.0)),
                     )
                 result.raise_for_status()
-                models = result.json()["data"]
-                if not any(model["id"] == model_name for model in models):
-                    raise ValueError(f"Model {model_name} is not registered")
-                return
             except Exception as error:
+                if not _is_retryable_readiness_error(error):
+                    raise
                 last_error = error
-                remaining = deadline - loop.time()
-                if remaining > 0:
-                    await asyncio.sleep(min(interval, remaining))
+            else:
+                if model_name in _model_ids(result):
+                    return
+                # A valid 200 response without the requested model is expected
+                # while registration is still in progress, so it is retryable.
+                last_error = RuntimeError(f"Model {model_name} is not registered")
+
+            remaining = deadline - loop.time()
+            if remaining > 0:
+                await asyncio.sleep(min(interval, remaining))
 
         message = (
             f"Model {model_name} was not registered on {admin_client.base_url} "
@@ -530,6 +572,12 @@ async def check_health(
     timeout: float = 1800,
     strict: bool = False,
 ) -> None:
+    """Wait for healthy endpoints, retrying only transient request failures.
+
+    Native endpoints may omit ``/health``; ``strict=True`` requires the route
+    and is used for Dynamo frontends and workers. All other non-success statuses
+    are classified by :func:`_is_retryable_readiness_error`.
+    """
     logger = get_logger()
 
     async def _check_health(admin_client: AsyncClient) -> None:
@@ -545,15 +593,16 @@ async def check_health(
                     "/health",
                     timeout=httpx.Timeout(min(remaining, 10.0)),
                 )
-                if strict:
-                    response.raise_for_status()
+                if not strict and response.status_code == 404:
+                    logger.warning("The route /health does not exist. Skipping health check.")
+                    return
+                response.raise_for_status()
                 elapsed = loop.time() - started
                 logger.debug(f"Inference pool is ready after {elapsed:.1f} seconds")
                 return
-            except NotFoundError:
-                logger.warning("The route /health does not exist. Skipping health check.")
-                return
             except Exception as e:
+                if not _is_retryable_readiness_error(e):
+                    raise
                 last_error = e
                 elapsed = loop.time() - started
                 if elapsed >= next_log_at:

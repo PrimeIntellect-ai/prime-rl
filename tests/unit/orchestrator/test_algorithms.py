@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pydantic
 import pytest
@@ -8,10 +8,12 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import EchoAlgorithm, OPDAlgorithm, stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.transport.types import TrainingSample
+from prime_rl.utils.client import DynamoInferencePool, StaticInferencePool
+from prime_rl.utils.elastic import ElasticInferencePool
 
 FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
 
@@ -76,6 +78,28 @@ def test_opd_teacher_must_be_a_frozen_endpoint():
         _build(type="opd")
     with pytest.raises(ValueError, match="FrozenModelConfig"):
         _build(type="opd", teacher="policy")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pool_type", [StaticInferencePool, DynamoInferencePool])
+async def test_opd_accepts_fixed_teacher_pools(pool_type):
+    pool = object.__new__(pool_type)
+    algo = OPDAlgorithm(_build(type="opd", teacher=FROZEN), MagicMock())
+    algo.connect = AsyncMock(return_value=pool)
+
+    await algo.setup()
+
+    assert algo.teacher_pool is pool
+
+
+@pytest.mark.asyncio
+async def test_opd_rejects_elastic_teacher_pool():
+    pool = object.__new__(ElasticInferencePool)
+    algo = OPDAlgorithm(_build(type="opd", teacher=FROZEN), MagicMock())
+    algo.connect = AsyncMock(return_value=pool)
+
+    with pytest.raises(TypeError, match="fixed endpoint"):
+        await algo.setup()
 
 
 def test_sft_requires_teacher():
