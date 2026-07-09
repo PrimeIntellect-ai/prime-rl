@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import DEFAULT_KEPT_TOKENS_MAX, InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.orchestrator import (
     FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
@@ -179,12 +179,6 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 DeploymentConfig: TypeAlias = Annotated[
     SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
 ]
-
-
-# Default top-k bound injected on truncated train sampling when mask replay is on:
-# large enough that a 0.95-0.99 nucleus rarely reaches it (the sampling policy is
-# essentially unchanged), small enough to bound the capture width and trainer masks.
-DEFAULT_REPLAY_TOP_K = 512
 
 
 class RLConfig(BaseConfig):
@@ -512,16 +506,19 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_sampling_mask_replay(self):
-        """Truncated train sampling (top_p/top_k/min_p) renormalizes the rollout distribution
-        over the kept set; a trainer normalizing over the full vocabulary then computes biased
-        importance ratios and runs are known to collapse (DeepSeek V3.2 §3.1, Cognition
-        SWE-1.7). Replay is therefore implied by truncation — an explicit
-        ``enable_sampling_mask_replay = false`` opts out (e.g. for a naive-top-p baseline)."""
-        sampling_configs = [self.orchestrator.train.sampling, *(env.sampling for env in self.orchestrator.train.env)]
-        if any(sampling.truncates_distribution() for sampling in sampling_configs):
-            if self.trainer.enable_sampling_mask_replay:
-                pass
-            elif "enable_sampling_mask_replay" in self.trainer.model_fields_set:
+        """Wire sampling-mask replay end to end (DeepSeek V3.2 §3.1 "Keep Sampling Mask",
+        Cognition SWE-1.7): truncated train sampling implies replay (an explicit
+        ``enable_sampling_mask_replay = false`` opts out, e.g. for a naive-top-p
+        baseline); replay forces a top-k bound on every truncating config so kept sets
+        stay bounded; and the inference server is told to return kept tokens, with its
+        capture width derived from the largest top-k so replay is exact everywhere."""
+        # Per-env sampling is what rollouts run with (group values are merged into every
+        # env by resolve_env_defaults); the group config only stands in when no envs exist.
+        sampling_configs = [env.sampling for env in self.orchestrator.train.env] or [self.orchestrator.train.sampling]
+        truncating = [sampling for sampling in sampling_configs if sampling.truncates_distribution()]
+
+        if truncating and not self.trainer.enable_sampling_mask_replay:
+            if "enable_sampling_mask_replay" in self.trainer.model_fields_set:
                 warnings.warn(
                     "Train sampling uses truncation (top_p/top_k/min_p) with sampling-mask replay explicitly "
                     "disabled: trainer logprobs normalize over the full vocabulary while rollout logprobs are "
@@ -531,67 +528,58 @@ class RLConfig(BaseConfig):
             else:
                 self.trainer.enable_sampling_mask_replay = True
 
-        if self.trainer.enable_sampling_mask_replay:
-            # Force a top-k bound on every truncating sampling config: kept sets are then
-            # bounded by k and the capture width covers them exactly, so the overflow
-            # fallback (whose bias is unbounded when top-p isn't doing the trimming) is
-            # unreachable and replay is exact everywhere. An explicit top_k overrides.
-            if any(
-                sampling.truncates_distribution() and sampling.effective_top_k() is None
-                for sampling in sampling_configs
-            ):
-                warnings.warn(
-                    f"Sampling-mask replay: defaulting top_k = {DEFAULT_REPLAY_TOP_K} on truncated train "
-                    "sampling so every kept set is bounded and replay stays exact. Set top_k explicitly "
-                    "to override.",
-                    stacklevel=2,
-                )
-                for sampling in sampling_configs:
-                    if sampling.truncates_distribution() and sampling.effective_top_k() is None:
-                        sampling.top_k = DEFAULT_REPLAY_TOP_K
+        if not self.trainer.enable_sampling_mask_replay:
+            return self
 
-            if self.inference is not None:
-                if (
-                    self.inference.enable_return_kept_tokens is False
-                    and "enable_return_kept_tokens" in self.inference.model_fields_set
-                ):
-                    warnings.warn(
-                        "Sampling-mask replay is enabled, but inference.enable_return_kept_tokens is False. Setting to True.",
-                        stacklevel=2,
-                    )
-                self.inference.enable_return_kept_tokens = True
-                # The capture width is derived, not configured: exactly the largest top-k
-                # any train sampling config uses. An explicit kept_tokens_max is respected
-                # only when it doesn't break exactness (i.e. it is not below the top-k).
-                top_ks = [k for sampling in sampling_configs if (k := sampling.effective_top_k()) is not None]
-                if top_ks:
-                    derived_cap = max(top_ks)
-                    explicit = "kept_tokens_max" in self.inference.model_fields_set
-                    if explicit and self.inference.kept_tokens_max < derived_cap:
-                        warnings.warn(
-                            f"Raising inference.kept_tokens_max from {self.inference.kept_tokens_max} to "
-                            f"{derived_cap} to cover train sampling top_k (keeps sampling-mask replay exact).",
-                            stacklevel=2,
-                        )
-                        self.inference.kept_tokens_max = derived_cap
-                    elif not explicit:
-                        self.inference.kept_tokens_max = derived_cap
-            else:
+        unbounded = [sampling for sampling in truncating if sampling.effective_top_k() is None]
+        if unbounded:
+            warnings.warn(
+                f"Sampling-mask replay: defaulting top_k = {DEFAULT_KEPT_TOKENS_MAX} on truncated train "
+                "sampling so every kept set is bounded and replay stays exact. Set top_k explicitly to override.",
+                stacklevel=2,
+            )
+            for sampling in unbounded:
+                sampling.top_k = DEFAULT_KEPT_TOKENS_MAX
+
+        if self.inference is None:
+            warnings.warn(
+                "Sampling-mask replay is enabled, but inference is not configured. When manually starting the "
+                "inference server, make sure to set `enable_return_kept_tokens = true` in its config.",
+                stacklevel=2,
+            )
+            return self
+
+        if (
+            not self.inference.enable_return_kept_tokens
+            and "enable_return_kept_tokens" in self.inference.model_fields_set
+        ):
+            warnings.warn(
+                "Sampling-mask replay is enabled, but inference.enable_return_kept_tokens is False. Setting to True.",
+                stacklevel=2,
+            )
+        self.inference.enable_return_kept_tokens = True
+
+        # The capture width is derived, not configured: exactly the largest top-k in use.
+        top_ks = [k for sampling in sampling_configs if (k := sampling.effective_top_k()) is not None]
+        if top_ks:
+            derived_cap = max(top_ks)
+            if "kept_tokens_max" in self.inference.model_fields_set and self.inference.kept_tokens_max != derived_cap:
                 warnings.warn(
-                    "Sampling-mask replay is enabled, but inference is not configured. When manually starting the "
-                    "inference server, make sure to set `enable_return_kept_tokens = true` in its config.",
+                    f"Overriding inference.kept_tokens_max = {self.inference.kept_tokens_max} with {derived_cap}, "
+                    "derived from the largest train sampling top_k (keeps sampling-mask replay exact).",
                     stacklevel=2,
                 )
+            self.inference.kept_tokens_max = derived_cap
         return self
 
     @model_validator(mode="after")
     def warn_mask_replay_with_ref_kl(self):
-        """ref_logprobs are full-vocab prefill scores (vLLM prompt logprobs ignore
-        logprobs_mode), so with mask replay the ref_kl term ref_logprobs - trainer_logprobs
-        mixes normalizations — biased by up to -log(top_p) per masked token."""
+        """vLLM prompt logprobs ignore logprobs_mode, so reference logprobs stay full-vocab
+        while replayed trainer logprobs are kept-renormalized. Envs inherit the top-level
+        algo before this runs (``inherit_env_algorithms``)."""
         if not self.trainer.enable_sampling_mask_replay:
             return self
-        algos = [self.orchestrator.algo, *(env.algo for env in self.orchestrator.train.env if env.algo is not None)]
+        algos = [env.algo for env in self.orchestrator.train.env if env.algo is not None]
         if any(algo.type in ("opd", "opsd") for algo in algos):
             warnings.warn(
                 "Sampling-mask replay with opd/opsd: reference logprobs are full-vocab prefill scores while "

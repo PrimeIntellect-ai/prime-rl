@@ -55,17 +55,13 @@ class TrainSamplingConfig(BaseConfig):
 
     top_p: float = Field(1.0, gt=0, le=1.0)
     """Nucleus (top-p) sampling for train rollouts. Values below 1.0 truncate the sampling
-    distribution, which biases the trainer/inference importance ratio unless the trainer
-    renormalizes over the same kept set — the ``rl`` entrypoint auto-enables
-    ``trainer.enable_sampling_mask_replay`` + ``inference.enable_return_kept_tokens`` when
-    this is lowered."""
+    distribution; the ``rl`` entrypoint auto-enables sampling-mask replay so trainer and
+    rollout distributions stay consistent — see docs/inference.md (Sampling Mask Replay)."""
 
     top_k: int | None = Field(None, ge=1)
-    """Top-k sampling for train rollouts. Like ``top_p``, truncation auto-enables
-    sampling-mask replay; it also bounds every kept set to k, which is what keeps replay
-    exact — so when replay is on and only top-p/min-p truncate, the ``rl`` entrypoint
-    defaults this to 512 (rarely binding at typical top_p). ``inference.kept_tokens_max``
-    is derived from it."""
+    """Top-k sampling for train rollouts. Truncation auto-enables sampling-mask replay,
+    and the ``rl`` entrypoint defaults this when only top-p/min-p truncate so kept sets
+    stay bounded — see docs/inference.md (Sampling Mask Replay)."""
 
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
@@ -83,17 +79,16 @@ class TrainSamplingConfig(BaseConfig):
         disabled sentinels ``top_k = -1`` / ``min_p = 0.0`` there for policy envs."""
         return (
             self.top_p < 1.0
-            or self.top_k is not None
             or self.extra_body.get("top_p", 1.0) < 1.0
-            or self.extra_body.get("top_k") not in (None, -1, 0)
             or self.extra_body.get("min_p", 0.0) > 0.0
+            or self.effective_top_k() is not None
         )
 
     def effective_top_k(self) -> int | None:
-        """The top-k bound this config samples with (field or extra_body), None if untruncated."""
-        extra_top_k = self.extra_body.get("top_k")
-        candidates = [k for k in (self.top_k, extra_top_k) if isinstance(k, int) and k > 0]
-        return max(candidates) if candidates else None
+        """The top-k bound this config samples with, None if top-k is disabled. The field
+        wins over ``extra_body`` (matching ``to_sampling_args``, which folds it in on top)."""
+        top_k = self.top_k if self.top_k is not None else self.extra_body.get("top_k")
+        return top_k if isinstance(top_k, int) and top_k > 0 else None
 
     def to_sampling_args(self) -> dict[str, Any]:
         """Convert to OAI-compatible sampling args dict, omitting None values."""
@@ -102,13 +97,16 @@ class TrainSamplingConfig(BaseConfig):
             "top_p": self.top_p,
             "logprobs": True,
         }
-        if self.top_k is not None:
-            args["top_k"] = self.top_k
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens
 
-        if self.extra_body:
-            args["extra_body"] = dict(self.extra_body)
+        # top_k rides extra_body (mirroring EvalSamplingConfig), overriding any smuggled
+        # value there, so every client type sees a single carrier with one precedence.
+        extra_body = dict(self.extra_body)
+        if self.top_k is not None:
+            extra_body["top_k"] = self.top_k
+        if extra_body:
+            args["extra_body"] = extra_body
 
         return args
 
