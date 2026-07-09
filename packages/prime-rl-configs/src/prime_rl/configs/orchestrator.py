@@ -458,12 +458,13 @@ class OrchestratorConfig(BaseConfig):
     pre_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(enforce=False),
         RepetitionFilterConfig(enforce=False),
-        ZeroAdvantageFilterConfig(enforce=False),
+        ZeroAdvantageFilterConfig(enforce=True),
     ]
     """Filters applied *before* a rollout enters the training batch buffer.
-    All three filter types are registered in monitor mode by default; flip ``enforce=true`` per type
-    to drop matching rollouts before they consume a slot in the batch (e.g. a zero-advantage group
-    never makes it into a training batch)."""
+    The zero-advantage filter is enforcing by default — rollouts whose advantage stream is all zero
+    (e.g. a GRPO group where every rollout earned the same reward) are dropped before they consume a
+    slot in the batch. The gibberish and repetition filters are in monitor mode by default; flip
+    ``enforce=true`` per type to drop matching rollouts as well."""
 
     post_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(),
