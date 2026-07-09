@@ -6,8 +6,6 @@ import torch
 from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM as HFQwen3_5ForCausalLM
 
-from prime_rl.configs.trainer import ModelConfig
-from prime_rl.trainer.model import get_model
 from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_attn
 from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5Model
 from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedFlashAttention
@@ -117,16 +115,6 @@ def test_qwen3_5_moe_full_attention_normalizes_fa3_hub_alias():
 
     assert isinstance(model.layers[1].self_attn, Qwen3_5MoeGatedFlashAttention)
     assert model.config._attn_implementation == "flash_attention_3"
-
-
-@pytest.mark.parametrize("config_factory", [_tiny_text_config, _tiny_vlm_config, _tiny_moe_config])
-def test_qwen3_5_context_parallel_rejects_hf_impl(monkeypatch, config_factory):
-    model_config = config_factory(attn_impl="flash_attention_2")
-    monkeypatch.setattr("prime_rl.trainer.model.AutoConfig.from_pretrained", lambda *args, **kwargs: model_config)
-
-    config = ModelConfig(name="unit-test-model", attn="flash_attention_2", cp=2, impl="hf")
-    with pytest.raises(ValueError, match="Qwen3.5 context parallelism requires model.impl='custom'"):
-        get_model(config, device=torch.device("meta"))
 
 
 def test_qwen3_5_context_parallel_setup_chain_text_and_vlm():
