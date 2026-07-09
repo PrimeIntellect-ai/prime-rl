@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from prime_rl.trainer.utils import balanced_partition
-from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transport.types import EncodedTensor, KeptTokens, MicroBatch, RoutedExperts, TrainingSample
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -40,6 +40,32 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     row_size = _routed_experts_row_size(routed_experts)
     routed_experts.data += b"\0" * (padding_size * row_size)
     routed_experts.shape[0] += padding_size
+
+
+_KEPT_ITEMSIZE = np.dtype(np.int32).itemsize
+
+
+def _copy_kept_tokens(kept_tokens: KeptTokens) -> KeptTokens:
+    return KeptTokens(ids=kept_tokens.ids, counts=kept_tokens.counts)
+
+
+def _empty_kept_tokens(num_tokens: int) -> KeptTokens:
+    return KeptTokens(ids=b"", counts=b"\0" * (num_tokens * _KEPT_ITEMSIZE))
+
+
+def _slice_kept_tokens(kept_tokens: KeptTokens, seq_len: int) -> KeptTokens:
+    counts = np.frombuffer(kept_tokens.counts, dtype=np.int32)[:seq_len]
+    return KeptTokens(
+        ids=kept_tokens.ids[: int(counts.sum()) * _KEPT_ITEMSIZE],
+        counts=counts.tobytes(),
+    )
+
+
+def _pad_kept_tokens(micro_batch: MicroBatch, padding_size: int) -> None:
+    kept_tokens = micro_batch.kept_tokens
+    assert kept_tokens is not None
+    # Padding tokens carry no sampling mask (count 0), so only counts grow.
+    kept_tokens.counts += b"\0" * (padding_size * _KEPT_ITEMSIZE)
 
 
 def _slice_encoded(tensor: EncodedTensor, n_rows: int) -> EncodedTensor:
@@ -133,6 +159,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )
+    kept_tokens = _copy_kept_tokens(training_example.kept_tokens) if training_example.kept_tokens is not None else None
 
     if len(input_ids) > seq_len:
         # Multimodal: never split an image's placeholder block — cut to a whole-image boundary
@@ -156,6 +183,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             ref_kl_weights = ref_kl_weights[:cut]
         if routed_experts is not None:
             routed_experts = _slice_routed_experts(routed_experts, cut)
+        if kept_tokens is not None:
+            kept_tokens = _slice_kept_tokens(kept_tokens, cut)
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:cut]
         env_names = env_names[:cut]
@@ -186,6 +215,13 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         )
         assert len(routed_experts.data) == len(input_ids) * _routed_experts_row_size(routed_experts)
 
+    if kept_tokens is not None:
+        kept_counts = np.frombuffer(kept_tokens.counts, dtype=np.int32)
+        assert len(kept_counts) == len(input_ids), (
+            f"kept_tokens counts: {len(kept_counts)}, input_ids: {len(input_ids)}"
+        )
+        assert len(kept_tokens.ids) == int(kept_counts.sum()) * _KEPT_ITEMSIZE
+
     if mm_token_type_ids is not None:
         assert len(mm_token_type_ids) == len(input_ids), (
             f"mm_token_type_ids: {len(mm_token_type_ids)}, input_ids: {len(input_ids)}"
@@ -202,6 +238,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         ref_logprobs=ref_logprobs,
         temperatures=temperatures,
         routed_experts=routed_experts,
+        kept_tokens=kept_tokens,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=mm_kwargs,
@@ -275,6 +312,7 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     # A weight stream materializes as soon as one packed sample carries it; the
     # samples that lack it get the stream's identity fill (STREAM_FILL).
     has_stream = {name: any(getattr(s, name) is not None for _, s in bin_content.samples) for name in STREAM_FILL}
+    has_kept_tokens = any(sample.kept_tokens is not None for _, sample in bin_content.samples)
 
     input_ids: list[int] = []
     loss_mask: list[bool] = []
@@ -288,6 +326,7 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
+    kept_tokens: KeptTokens | None = KeptTokens(ids=b"", counts=b"") if has_kept_tokens else None
     lora_num_tokens = [0] * num_loras
 
     for lora_idx, sample in bin_content.samples:
@@ -319,6 +358,10 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
                 routed_experts.data += sample.routed_experts.data
                 routed_experts.shape[0] += sample.routed_experts.shape[0]
         seq_lens.extend(sample.seq_lens)
+        if kept_tokens is not None:
+            sample_kept = sample.kept_tokens if sample.kept_tokens is not None else _empty_kept_tokens(sample_len)
+            kept_tokens.ids += sample_kept.ids
+            kept_tokens.counts += sample_kept.counts
         lora_num_tokens[lora_idx] += sample_len
 
     sequence_lengths = [len(sample.input_ids) for _, sample in bin_content.samples]
@@ -337,6 +380,7 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         temperatures=temperatures,
         lora_num_tokens=lora_num_tokens,
         routed_experts=routed_experts,
+        kept_tokens=kept_tokens,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=first_sample.mm_kwargs if _is_multimodal_sample(first_sample) else None,
@@ -466,6 +510,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
+    if micro_batch.kept_tokens is not None:
+        _pad_kept_tokens(micro_batch, padding_size)
     micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
@@ -501,6 +547,15 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
     if micro_batch.routed_experts is not None:
         assert micro_batch.routed_experts.shape[0] == num_tokens, (
             f"routed_experts misaligned after packing: {micro_batch.routed_experts.shape[0]} != {num_tokens} tokens"
+        )
+    if micro_batch.kept_tokens is not None:
+        kept_counts = np.frombuffer(micro_batch.kept_tokens.counts, dtype=np.int32)
+        assert len(kept_counts) == num_tokens, (
+            f"kept_tokens misaligned after packing: {len(kept_counts)} != {num_tokens} tokens"
+        )
+        assert len(micro_batch.kept_tokens.ids) == int(kept_counts.sum()) * _KEPT_ITEMSIZE, (
+            f"kept_tokens ids/counts inconsistent after packing: "
+            f"{len(micro_batch.kept_tokens.ids)} bytes != {int(kept_counts.sum())} ids"
         )
 
 

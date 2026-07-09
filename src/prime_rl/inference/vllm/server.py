@@ -27,6 +27,7 @@ from prime_rl.inference.patches import (
     monkey_patch_tokenize_params_validation,
     monkey_patch_vllm_padded_input_scrub,
 )
+from prime_rl.inference.vllm.kept_tokens import kept_tokens_enabled, monkey_patch_kept_tokens_output_capture
 
 # NOTE: Fix harmony stop token propagation for GPT-OSS models
 # Upstream issue still open: https://github.com/vllm-project/vllm/issues/22519
@@ -46,6 +47,12 @@ monkey_patch_vllm_padded_input_scrub()
 # routed_experts from chat responses since the server-wide enable flag has no
 # per-request toggle.
 monkey_patch_strip_routed_experts_from_chat()
+# NOTE: Kept-set sampling masks (top-p/top-k replay) ride the logprobs rows as a
+# -1-separated extension; split it off before vLLM builds per-position logprob
+# dicts and attach it to the finished CompletionOutput. No-op without
+# PRIME_RETURN_KEPT_TOKENS=1 (set by setup_vllm_env before this module loads).
+if kept_tokens_enabled():
+    monkey_patch_kept_tokens_output_capture()
 # NOTE: vLLM hard-codes a 120s DP coordinator startup timeout, which the rank-0
 # API server blows through when all engine-core ranks on the node are loading
 # weights concurrently (multi-node disaggregated deployments).

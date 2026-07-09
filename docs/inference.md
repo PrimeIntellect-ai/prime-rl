@@ -282,3 +282,22 @@ enable_return_routed_experts = true
 This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend increasing `orchestrator.*.env.num_workers` to allow for more parallelization on the verifiers side.
 
 Currently this feature is also not supported with CPU KV cache offload, which can have negative impact on the inference throughput.
+
+### Sampling Mask Replay
+
+Sampling with truncation (`top_p < 1.0`, top-k, min-p) renormalizes the sampling distribution over the surviving "kept set" of tokens. The rollout logprobs reflect that (we run vLLM with `logprobs_mode = "processed_logprobs"`), but a trainer normalizing over the full vocabulary then computes biased importance ratios — runs with truncated sampling are known to collapse without a correction (DeepSeek V3.2's "Keep Sampling Mask", [arXiv:2512.02556](https://arxiv.org/abs/2512.02556) §3.1; Cognition's [SWE-1.7 post](https://cognition.com/blog/swe-1-7)).
+
+Sampling mask replay fixes this by capturing the kept-set token ids at sampling time and shipping them to the trainer, which renormalizes its logprobs over the same set: `logprob = logits[token] - logsumexp(logits[kept])`. A byproduct: positions where a single token exceeds `top_p` get a kept set of size 1, so their renormalized logprob is exactly 0 and they contribute no gradient.
+
+```toml
+[orchestrator.train.sampling]
+top_p = 0.95
+
+[trainer]
+enable_sampling_mask_replay = true # auto-sets inference.enable_return_kept_tokens = true
+
+[inference]
+enable_return_kept_tokens = true
+```
+
+Positions whose kept set exceeds `inference.kept_tokens_max` (default 2048) ship no mask and the trainer falls back to full-vocab logprobs there; the resulting bias is bounded by `-log(top_p)` since the excluded tail mass is at most `1 - top_p`. Like router replay, the kept sets ride the `/inference/v1/generate` response as base64 payloads (typically far smaller than routed experts). The capture is implemented as monkey-patches over vLLM's sampler and requires `logprobs_mode = "processed_logprobs"` (the default) — which also disables the fused FlashInfer sampler, so truncated sampling pays a small sampling-throughput cost either way.

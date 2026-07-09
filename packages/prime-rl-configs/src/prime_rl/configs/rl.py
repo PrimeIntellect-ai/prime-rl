@@ -505,6 +505,41 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_sampling_mask_replay(self):
+        if self.trainer.enable_sampling_mask_replay:
+            if self.inference is not None:
+                if self.inference.enable_return_kept_tokens is False:
+                    warnings.warn(
+                        "Sampling-mask replay is enabled, but inference.enable_return_kept_tokens is False. Setting to True.",
+                        stacklevel=2,
+                    )
+                self.inference.enable_return_kept_tokens = True
+            else:
+                warnings.warn(
+                    "Sampling-mask replay is enabled, but inference is not configured. When manually starting the "
+                    "inference server, make sure to set `enable_return_kept_tokens = true` in its config.",
+                    stacklevel=2,
+                )
+        return self
+
+    @model_validator(mode="after")
+    def warn_truncated_sampling_without_mask_replay(self):
+        """Sampling with top_p < 1 renormalizes the rollout distribution over the kept set;
+        without trainer-side mask replay the importance ratio is biased and runs are known to
+        collapse (DeepSeek V3.2 §3.1, Cognition SWE-1.7)."""
+        if self.trainer.enable_sampling_mask_replay:
+            return self
+        sampling_configs = [self.orchestrator.train.sampling, *(env.sampling for env in self.orchestrator.train.env)]
+        if any(sampling.top_p < 1.0 for sampling in sampling_configs):
+            warnings.warn(
+                "Train sampling uses top_p < 1.0 without trainer.enable_sampling_mask_replay: trainer logprobs "
+                "normalize over the full vocabulary while rollout logprobs are renormalized over the top-p kept "
+                "set, biasing importance ratios. Enable trainer.enable_sampling_mask_replay.",
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_router_replay_without_kv_offload(self):
         if (
             self.trainer.enable_router_replay

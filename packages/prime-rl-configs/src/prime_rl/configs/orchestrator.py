@@ -53,6 +53,12 @@ class TrainSamplingConfig(BaseConfig):
     temperature: float = Field(1.0, ge=0, le=2.0)
     """Sampling temperature."""
 
+    top_p: float = Field(1.0, gt=0, le=1.0)
+    """Nucleus (top-p) sampling for train rollouts. Values below 1.0 truncate the sampling
+    distribution, which biases the trainer/inference importance ratio unless the trainer
+    renormalizes over the same kept set — enable ``trainer.enable_sampling_mask_replay`` (and
+    with it ``inference.enable_return_kept_tokens``) when lowering this."""
+
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
     )
@@ -67,7 +73,7 @@ class TrainSamplingConfig(BaseConfig):
         """Convert to OAI-compatible sampling args dict, omitting None values."""
         args: dict[str, Any] = {
             "temperature": self.temperature,
-            "top_p": 1.0,
+            "top_p": self.top_p,
             "logprobs": True,
         }
         if self.max_completion_tokens is not None:

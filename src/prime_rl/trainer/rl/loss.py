@@ -55,6 +55,33 @@ def selective_log_softmax(
 
 
 @jaxtyped(typechecker=typechecker)
+def selective_log_softmax_with_kept(
+    logits: Float[Tensor, "batch seq vocab"],
+    index: Int[Tensor, "batch seq"],
+    kept_tokens: Int[Tensor, "batch seq kept"],
+) -> Float[Tensor, "batch seq"]:
+    """Per-token logprobs with kept-set (sampling-mask) replay.
+
+    Positions carrying a sampling mask (any kept id >= 0, -1 is padding) are
+    renormalized over the kept set — ``logits[index] - logsumexp(logits[kept])``
+    — matching the truncated distribution rollouts sampled from; other positions
+    get full-vocab logprobs. A position whose label fell outside its mask
+    (misaligned data) falls back to full-vocab rather than emitting a corrupt
+    logprob. Fully-masked rows are neutralized before the logsumexp so the
+    unselected branch can't poison gradients with NaNs.
+    """
+    full_logprobs = selective_log_softmax(logits, index)
+    valid = kept_tokens >= 0
+    replay = valid.any(dim=-1) & (kept_tokens == index.unsqueeze(-1)).any(dim=-1)
+    kept_logits = torch.gather(logits, -1, kept_tokens.clamp_min(0).long())
+    kept_logits = torch.where(valid, kept_logits, float("-inf"))
+    kept_logits = torch.where(replay.unsqueeze(-1), kept_logits, torch.zeros_like(kept_logits))
+    logz_kept = torch.logsumexp(kept_logits, dim=-1)
+    target_logits = torch.gather(logits, -1, index.unsqueeze(-1)).squeeze(-1)
+    return torch.where(replay, target_logits - logz_kept, full_logprobs)
+
+
+@jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
 def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
     with torch.no_grad():

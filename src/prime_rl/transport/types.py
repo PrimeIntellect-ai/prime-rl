@@ -18,6 +18,15 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
     dtype: str
 
 
+# Kept-set sampling masks for top-p/top-k replay: ragged per-token id lists as
+# flat int32 bytes plus an int32 count per token position (0 = no mask — the
+# trainer falls back to full-vocab logprobs there). counts covers the full
+# token sequence; len(ids) == 4 * counts.sum().
+class KeptTokens(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    ids: bytes
+    counts: bytes
+
+
 # Orchestrator -> Packer
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A single training example — one branch of a rollout as a flat token sequence.
@@ -45,6 +54,8 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     mm_kwargs: dict[str, EncodedTensor] | None = None
 
     routed_experts: RoutedExperts | None = None
+
+    kept_tokens: KeptTokens | None = None
 
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
@@ -93,6 +104,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     ref_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None
+    kept_tokens: KeptTokens | None = None
 
     # See TrainingSample.mm_kwargs.
     mm_kwargs: dict[str, EncodedTensor] | None = None
