@@ -73,15 +73,11 @@ def get_rollout_dir(output_dir: Path) -> Path:
     return output_dir / "rollouts"
 
 
-def get_trace_dir(output_dir: Path) -> Path:
-    return output_dir / "traces"
-
-
 def get_trace_path(output_dir: Path, step: int, kind: str, subset: str) -> Path:
-    """Where one trace file lives: ``traces/step_{n}/{train,eval}/{all,effective}/traces.jsonl``.
+    """Where one trace file lives: ``rollouts/{train,eval}/step_{n}/{all,effective}/traces.jsonl``.
     ``all`` is appended per rollout the moment it completes; ``effective`` is written at once
     per finalized train batch / eval epoch."""
-    return get_step_path(get_trace_dir(output_dir), step) / kind / subset / "traces.jsonl"
+    return get_step_path(get_rollout_dir(output_dir) / kind, step) / subset / "traces.jsonl"
 
 
 def get_eval_dir(output_dir: Path) -> Path:
@@ -170,9 +166,12 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
         get_rollout_dir(output_dir),
         get_rollout_dir(run_default),
         get_broadcast_dir(run_default),
-        get_trace_dir(output_dir),
-        get_trace_dir(run_default),
     ]
+    # Trace files nest per-kind under the rollout dir (``rollouts/{train,eval}/step_N/…``),
+    # so their step directories rewind the same way.
+    for base in (output_dir, run_default):
+        for kind in ("train", "eval"):
+            dirs.append(get_rollout_dir(base) / kind)
 
     for directory in dirs:
         steps_to_delete = [step for step in get_all_ckpt_steps(directory) if step > resume_step]

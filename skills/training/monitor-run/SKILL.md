@@ -58,7 +58,7 @@ After a restart, verify all processes are back up and progress resumed before th
 - `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the output dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
 - `{output_dir}/configs/` — resolved TOMLs (`rl.toml` has the full picture).
 - `{output_dir}/logs/` — see below.
-- `{output_dir}/traces/` — saved rollout traces (see Traces below).
+- `{output_dir}/rollouts/{train,eval}/` — saved rollout traces (see Traces below).
 
 ### Logs
 
@@ -133,8 +133,8 @@ curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
 ### Traces
 
 ```
-{output_dir}/traces/step_N/{train,eval}/all/traces.jsonl        # appended per rollout as it completes
-{output_dir}/traces/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
+{output_dir}/rollouts/{train,eval}/step_N/all/traces.jsonl        # appended per rollout as it completes
+{output_dir}/rollouts/{train,eval}/step_N/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
 
 JSONL files of `vf.Trace` records (training tensors excluded). `all` gets every completed
@@ -145,9 +145,9 @@ the non-errored epoch cohort; multiple eval envs share the step file). Each reco
 provisioned resource id, e.g. the sandbox id).
 
 ```bash
-wc -l {output_dir}/traces/step_42/train/{all,effective}/traces.jsonl
-jq '.rewards' {output_dir}/traces/step_42/train/effective/traces.jsonl
-jq 'select(.errors != []) | {id, env_name, runtime}' {output_dir}/traces/step_*/train/all/traces.jsonl
+wc -l {output_dir}/rollouts/train/step_42/{all,effective}/traces.jsonl
+jq '.rewards' {output_dir}/rollouts/train/step_42/effective/traces.jsonl
+jq 'select(.errors != []) | {id, env_name, runtime}' {output_dir}/rollouts/train/step_*/all/traces.jsonl
 ```
 
 The binary batches consumed by the trainer still live at `{output_dir}/rollouts/step_N/train_rollouts.bin`.
