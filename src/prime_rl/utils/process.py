@@ -30,6 +30,11 @@ DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
     "VLLM_ENGINE_READY_TIMEOUT_S": "4200",
     "UCX_TLS": "all",
+    # Grace before vLLM SIGKILLs engine/worker procs at shutdown (read by
+    # both the MPClient engine manager and the multiproc executor). The 5s
+    # default truncates HiSparse decode ranks mid host-pool unpin, pushing
+    # the remainder into uninterruptible kernel exit (node drain).
+    "VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS": "600",
 }
 
 

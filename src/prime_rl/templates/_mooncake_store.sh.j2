@@ -6,7 +6,18 @@
     Requires shell vars: LOCAL_IP, INFER_NODE_RANK, OUTPUT_DIR (and SLURM env).
     Requires jinja vars: kv_offload_cpu_bytes, kv_offload_disk_path, kv_offload_device_name.
     Exports PYTHONHASHSEED + MOONCAKE_CONFIG_PATH for the vLLM process. (VLLM_RPC_BASE_PATH,
-    used by the mooncake-store lookup ipc socket, is set per-rank in _launch_rank.sh.j2.) -#}
+    used by the mooncake-store lookup ipc socket, is set per-rank in _launch_rank.sh.j2.)
+
+    Process management: the pip mooncake_client / mooncake_master entrypoints are python
+    shims (mooncake/cli_client.py) that run the native binary as a subprocess child, so the
+    $! captured here is the shim, not the server. Killing that PID orphans a live native
+    server that keeps port 50052 and the abstract IPC socket @mooncake_client_50052.sock,
+    and any relaunched client then dies on the bind collision and takes the job down via
+    wait -n (r11/463). So: never kill the shim by PID, never supervise/retry. setsid gives
+    shim + binary their own process group and the EXIT trap kills the whole group at
+    teardown. The native client never forks or daemonizes (real_client_main.cpp runs a
+    foreground coro_rpc server), so the shim exits iff the client dies: boot failures trip
+    the fail-loud port wait below, post-boot deaths reach the wait -n of the node script. -#}
     # ---- Mooncake distributed store (shared pool across inference nodes) ----
     MC_DIR="$OUTPUT_DIR/mooncake/node_${INFER_NODE_RANK}"
     mkdir -p "$MC_DIR"
@@ -17,6 +28,7 @@
     MC_HEAD=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | sed -n "{{ (kv_offload_head_index | default(0, true)) + 1 }}p")
     MC_MASTER="$MC_HEAD:50051"
     MC_METADATA="http://$MC_HEAD:8080/metadata"
+    MC_PGIDS=""
 {%- if kv_offload_disk_path %}
     mkdir -p "{{ kv_offload_disk_path }}"
     export MOONCAKE_OFFLOAD_FSDIR="{{ kv_offload_disk_path }}"
@@ -25,18 +37,40 @@
 {%- endif %}
     if [ "$SLURMD_NODENAME" = "$MC_HEAD" ]; then
 {%- if kv_offload_disk_path %}
-        mooncake_master -rpc_port=50051 -enable_http_metadata_server -http_metadata_server_host=0.0.0.0 -http_metadata_server_port=8080 -default_kv_lease_ttl=3600000 -enable_offload=true -root_fs_dir={{ kv_offload_disk_path }} > "$MC_DIR/master.log" 2>&1 &
+        setsid mooncake_master -rpc_port=50051 -enable_http_metadata_server -http_metadata_server_host=0.0.0.0 -http_metadata_server_port=8080 -default_kv_lease_ttl=3600000 -enable_offload=true -root_fs_dir={{ kv_offload_disk_path }} > "$MC_DIR/master.log" 2>&1 &
 {%- else %}
         # default_kv_lease_ttl raised from 5s: KV blocks were expiring before the decode side
         # reused them ("invalid KV blocks ... may have expired"), the real non-NIC config issue.
-        mooncake_master -rpc_port=50051 -enable_http_metadata_server -http_metadata_server_host=0.0.0.0 -http_metadata_server_port=8080 -default_kv_lease_ttl=3600000 > "$MC_DIR/master.log" 2>&1 &
+        setsid mooncake_master -rpc_port=50051 -enable_http_metadata_server -http_metadata_server_host=0.0.0.0 -http_metadata_server_port=8080 -default_kv_lease_ttl=3600000 > "$MC_DIR/master.log" 2>&1 &
 {%- endif %}
+        MC_PGIDS="$MC_PGIDS -$!"
     fi
     # Every node waits for the shared master + metadata, then contributes its segment.
+    # (Remote connect probes; if the master never serves, the client below fails its
+    # mount RPC and exits, which trips the fail-loud check on port 50052.)
     for _ in $(seq 1 120); do timeout 1 bash -c "echo > /dev/tcp/$MC_HEAD/50051" 2>/dev/null && break; sleep 1; done
     for _ in $(seq 1 120); do timeout 1 bash -c "echo > /dev/tcp/$MC_HEAD/8080" 2>/dev/null && break; sleep 1; done
-    mooncake_client -host=$LOCAL_IP -port=50052 -master_server_address=$MC_MASTER -metadata_server=$MC_METADATA -protocol=rdma -global_segment_size={{ kv_offload_cpu_bytes }}{% if kv_offload_device_name %} -device_names={{ kv_offload_device_name }}{% endif %}{% if kv_offload_disk_path %} -enable_offload=true{% endif %} > "$MC_DIR/client.log" 2>&1 &
-    for _ in $(seq 1 60); do timeout 1 bash -c "echo > /dev/tcp/$LOCAL_IP/50052" 2>/dev/null && break; sleep 1; done
+    setsid mooncake_client -host=$LOCAL_IP -port=50052 -master_server_address=$MC_MASTER -metadata_server=$MC_METADATA -protocol=rdma -global_segment_size={{ kv_offload_cpu_bytes }}{% if kv_offload_device_name %} -device_names={{ kv_offload_device_name }}{% endif %}{% if kv_offload_disk_path %} -enable_offload=true{% endif %} > "$MC_DIR/client.log" 2>&1 &
+    MC_CLIENT_PID=$!
+    MC_PGIDS="$MC_PGIDS -$MC_CLIENT_PID"
+    # Group-kill shim + native binary (and the master group on the head node) when the
+    # node script exits: the per-PID TERM loop after wait -n only reaches the shims.
+    trap "kill -9 -- $MC_PGIDS 2>/dev/null" EXIT
+    # Wait until the client actually serves: registering the pinned DRAM segment opens
+    # port 50052 only at the end and takes ~70s per TB (measured on H200), hence the
+    # 600s budget. Probe the kernel listen table (state 0A = LISTEN), not /dev/tcp:
+    # 50052 sits inside ip_local_port_range, so a connect probe can succeed against
+    # itself (TCP self-connect) and misreport a dead client as serving.
+    MC_PORT_HEX=$(printf "%04X" 50052)
+    for _ in $(seq 1 600); do
+        grep " 0A " /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$MC_PORT_HEX " && break
+        kill -0 $MC_CLIENT_PID 2>/dev/null || break
+        sleep 1
+    done
+    if ! kill -0 $MC_CLIENT_PID 2>/dev/null || ! grep " 0A " /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$MC_PORT_HEX "; then
+        echo "[mooncake] node ${INFER_NODE_RANK} ($SLURMD_NODENAME) mooncake_client is not serving on port 50052 - see $MC_DIR/client.log" >&2
+        exit 1
+    fi
     cat > "$MOONCAKE_CONFIG_PATH" <<MOONCAKE_JSON
 {"mode":"standalone-store","global_segment_size":0,"local_buffer_size":4294967296,"protocol":"rdma","device_name":"{{ kv_offload_device_name }}","master_server_address":"$MC_MASTER","metadata_server":"$MC_METADATA","enable_offload":{% if kv_offload_disk_path %}true{% else %}false{% endif %}}
 MOONCAKE_JSON

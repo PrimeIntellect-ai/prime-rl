@@ -70,6 +70,9 @@ source .venv/bin/activate
 srun --ntasks-per-node=1 bash -c 'cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras'
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
+# Per-rank launches use `uv run --no-sync`, so node starts are not staggered
+# by serialized re-syncs on the shared venv (vLLM's DP coordinator handshake
+# has a hard 5-minute deadline).
 uv sync --all-extras
 {% endif %}
 
@@ -163,6 +166,12 @@ CLEANUP_SH
 # --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other
 # tasks so a crashed router/engine terminates the SLURM job instead of leaving
 # the surviving ranks holding nodes.
+# Backgrounded with a TERM trap: `scancel --batch --signal=TERM` reaches only
+# this batch shell, and a foreground child would defer the trap until it
+# exits. Forwarding to srun (which propagates the signal to every task) opens
+# the graceful window in which vLLM drains its engines and HiSparse decode
+# ranks unpin their host pools in-process instead of in uninterruptible
+# kernel exit after SIGKILL.
 srun --kill-on-bad-exit=1 bash -c '
     # pipefail ensures `cmd | tee log` propagates `cmd` failures, and the
     # wait/cleanup block at the end of this script surfaces background
@@ -357,12 +366,59 @@ srun --kill-on-bad-exit=1 bash -c '
 # Wait for the first background job to exit and propagate its exit code. This
 # turns background process crashes (router) into task failures that
 # --kill-on-bad-exit=1 can broadcast to the other nodes so the whole job tears
-# down instead of leaving zombies holding the allocation.
+# down instead of leaving zombies holding the allocation. A trapped TERM
+# (plain scancel, or the batch shell forwarding scancel --batch --signal=TERM)
+# interrupts wait -n and lands in the same epilogue; TERMED distinguishes a
+# job-level cancel from a component crash.
+TERMED=0
+trap "TERMED=1; kill -TERM \$(jobs -p) 2>/dev/null || true" TERM
 wait -n
 EXIT_CODE=$?
 echo "[$(hostname)] component exited with code $EXIT_CODE - terminating remaining processes"
-for pid in $(jobs -p); do
-    kill -TERM $pid 2>/dev/null || true
+if [ "$TERMED" = "0" ]; then
+    # A component exiting without a job-level cancel is always a failure —
+    # including exit 0: an engine death makes the vLLM API server exit
+    # cleanly, which would otherwise never trip --kill-on-bad-exit and leave
+    # a silent job-wide wedge. Escalate to a job-level TERM so every node
+    # (including this one) runs the graceful drain instead of being
+    # SIGKILLed mid-unpin by the broadcast. The escalation makes every node
+    # exit 0 (job reads COMPLETED), so leave a crash marker for ops.
+    echo "component exit code $EXIT_CODE at $(date -u +%FT%TZ)" > "$OUTPUT_DIR/logs/CRASH_$(hostname)" 2>/dev/null || true
+    scancel --signal=TERM $SLURM_JOB_ID 2>/dev/null || true
+    for pid in $(jobs -p); do
+        kill -TERM $pid 2>/dev/null || true
+    done
+fi
+# Graceful drain window: vLLM frontends must stop their engines and HiSparse
+# decode ranks unpin multi-hundred-GiB host pools in-process. Exiting now
+# (letting slurmstepd SIGKILL the survivors) pushes that unpin into
+# uninterruptible kernel exit and drains the node ("Kill task failed"). On a
+# plain scancel SLURM caps this wait at KillWait; the two-step cancel
+# (scancel --batch --signal=TERM, wait, scancel) grants the full window.
+for _ in $(seq 1 900); do
+    [ -z "$(jobs -pr)" ] && break
+    sleep 1
 done
+# On a job-level cancel every node exits 0 after draining: prefill nodes (no
+# pinned pool) finish in seconds and a non-zero exit would make
+# --kill-on-bad-exit SIGKILL the decode nodes mid-unpin. Component crashes
+# keep their non-zero code so the broadcast teardown stays fail-loud.
+if [ "$TERMED" = "1" ]; then
+    EXIT_CODE=0
+fi
 exit $EXIT_CODE
-'
+' &
+SRUN_PID=$!
+trap "kill -TERM $SRUN_PID 2>/dev/null || true" TERM
+# `|| SRUN_EXIT=$?` keeps errexit (set -e) from killing the batch script when
+# the trapped TERM interrupts wait with status 143 — that would end the job
+# while the steps are still draining, collapsing the graceful window to
+# SLURM's KillWait.
+SRUN_EXIT=0
+wait $SRUN_PID || SRUN_EXIT=$?
+if [ $SRUN_EXIT -gt 128 ]; then
+    # wait was interrupted by the trapped TERM; wait again for the real code.
+    SRUN_EXIT=0
+    wait $SRUN_PID || SRUN_EXIT=$?
+fi
+exit $SRUN_EXIT
