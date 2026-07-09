@@ -78,15 +78,22 @@ class NCCLWeightBroadcastReceiver:
         self.communicator = PyNcclCommunicator(pg, device=device)
 
     @torch.no_grad()
-    def receive_state_dict(self):
-        """Receives the state dict of a model from the trainer master rank using NCCL communicator."""
+    def receive_state_dicts(
+        self,
+    ) -> Generator[Generator[tuple[str, torch.Tensor], None, None], None, None]:
+        """Receive each trainer-broadcast state dict as a separate stream."""
         logger.info("Receiving weights from trainer")
         num_state_dict_to_receive = receive_integer(self.communicator)
         logger.info(f"Receiving {num_state_dict_to_receive} layer state dicts")
         for layer_id in range(num_state_dict_to_receive):
             logger.info(f"Receiving state dict {layer_id + 1}/{num_state_dict_to_receive}")
-            for key, value in receive_state_dict(self.communicator):
-                yield key, value
+            yield receive_state_dict(self.communicator)
+
+    @torch.no_grad()
+    def receive_state_dict(self):
+        """Receive trainer weights as one flat stream for kernel-format loading."""
+        for state_dict in self.receive_state_dicts():
+            yield from state_dict
 
 
 class NCCLWeightUpdateWorker(Worker):
@@ -142,15 +149,16 @@ class NCCLWeightUpdateWorker(Worker):
             model = model_runner.model
         assert isinstance(model, Module)
 
-        state_iter = self.nccl_broadcast_receiver.receive_state_dict()
         if self.quantize_in_weight_transfer:
+            state_iter = self.nccl_broadcast_receiver.receive_state_dict()
             load_weights_kernel(model, state_iter)
             update_mla_absorbed_weights(model)
             return
 
-        load_weights_checkpoint_layerwise(
-            model,
-            state_iter,
-            self.model_runner.model_config,
-            self.vllm_config,
-        )
+        for state_iter in self.nccl_broadcast_receiver.receive_state_dicts():
+            load_weights_checkpoint_layerwise(
+                model,
+                state_iter,
+                self.model_runner.model_config,
+                self.vllm_config,
+            )
