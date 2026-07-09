@@ -79,7 +79,7 @@ def replace_linear_with_mxfp8_linear(model: nn.Module, recipe: MXFP8Recipe, igno
         if any(re.search(pattern, name) for pattern in ignore_modules):
             skipped_modules.append(name)
             continue
-        if (module.in_features % 32) != 0 or (module.out_features % 32) != 0:
+        if (module.in_features & 31) != 0 or (module.out_features & 31) != 0:
             skipped_unaligned.append(f"{name}({module.in_features}->{module.out_features})")
             continue
         parent_name, attr_name = name.rsplit(".", 1) if "." in name else ("", name)

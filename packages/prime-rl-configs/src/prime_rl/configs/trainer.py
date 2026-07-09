@@ -121,7 +121,6 @@ MXFP8Recipe: TypeAlias = Literal["mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp"]
 
 class FP8Config(BaseConfig):
     type: Literal["fp8"] = "fp8"
-    enable_gemm: bool = True
     enable_grouped_gemm: bool = True
     ignore_patterns: list[str] = []
 
@@ -129,7 +128,6 @@ class FP8Config(BaseConfig):
 class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
     recipe: MXFP8Recipe = "mxfp8_rceil"
-    enable_gemm: bool = True
     enable_grouped_gemm: bool = True
     enable_a2a: bool = True
     ignore_patterns: list[str] = []

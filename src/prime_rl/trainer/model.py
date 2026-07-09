@@ -34,7 +34,7 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
-from prime_rl.trainer.distributed import DeepEPExpertParallel, MXFP8ExpertParallel
+from prime_rl.trainer.distributed import DeepEPExpertParallel, MXFP8AllToAllExpertParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -1068,11 +1068,9 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         return
 
     if isinstance(quant, FP8Config):
-        if quant.enable_gemm:
-            replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
+        replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
     elif isinstance(quant, MXFP8Config):
-        if quant.enable_gemm:
-            replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
+        replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
         if quant.enable_grouped_gemm:
             apply_mxfp8_moe_grouped_gemm(model, recipe=quant.recipe)
 
@@ -1085,7 +1083,7 @@ def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims)
             if config.ep_comm_backend == "torch":
                 quant = config.quantization
                 if isinstance(quant, MXFP8Config) and quant.enable_a2a:
-                    parallelize_plan = MXFP8ExpertParallel()
+                    parallelize_plan = MXFP8AllToAllExpertParallel()
                 else:
                     parallelize_plan = ExpertParallel()
             else:

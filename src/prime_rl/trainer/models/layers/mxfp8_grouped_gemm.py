@@ -28,6 +28,9 @@ def _relax_torchao_mxfp8_version_gate() -> None:
 
 
 def _align_permute_indices_buffer() -> None:
+    """
+        Align the permuted index buffer to a multiple of alignment as the kernel requires rows % 32 = 0 and cols % 32 = 0.
+    """
     if getattr(tt_indices.generate_permute_indices, "_prime_rl_aligned", False):
         return
     original = tt_indices.generate_permute_indices
