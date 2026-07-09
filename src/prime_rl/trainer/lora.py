@@ -67,7 +67,11 @@ def _matches_pattern(name: str, pattern: str) -> bool:
         return pattern in name.split(".")
 
 
-def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[str]:
+def _find_target_modules(
+    model: nn.Module,
+    target_patterns: List[str],
+    excluded_modules: tuple[nn.Module, ...] = (),
+) -> List[str]:
     """Find all module names that match any of the target patterns.
 
     Patterns can be simple module names (e.g., "q_proj") or regex patterns
@@ -75,9 +79,12 @@ def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[s
 
     Supports both nn.Linear layers and GroupedExperts (MoE) modules.
     """
+    excluded_module_ids = {id(module) for excluded in excluded_modules for module in excluded.modules()}
     target_modules = []
 
     for name, module in model.named_modules():
+        if id(module) in excluded_module_ids:
+            continue
         # Check if module is Linear or one of the supported expert classes
         if not isinstance(module, (nn.Linear, GroupedExperts, NonGatedGroupedExperts, GptOssGroupedExperts)):
             continue
@@ -129,7 +136,12 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
             param.requires_grad = False
 
 
-def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
+def apply_lora_to_model(
+    model: nn.Module,
+    config: LoRAConfig,
+    *,
+    excluded_modules: tuple[nn.Module, ...] = (),
+) -> None:
     """
     Apply LoRA to target modules in the model and freeze non-LoRA parameters.
 
@@ -139,6 +151,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     Args:
         model: The model to apply LoRA to
         config: LoRA configuration
+        excluded_modules: Subtrees that must not receive LoRA adapters
     """
     logger = get_logger()
     from prime_rl.trainer.models import PreTrainedModelPrimeRL
@@ -156,7 +169,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         raise RuntimeError("Cannot apply LoRA to FSDP-wrapped model. Apply LoRA before setup_fsdp().")
 
     logger.debug(f"Applying LoRA to model: {model} for {config.target_modules}")
-    target_modules = _find_target_modules(model, config.target_modules)
+    target_modules = _find_target_modules(model, config.target_modules, excluded_modules)
     logger.debug(
         f"Found {len(target_modules)} target modules for LoRA: {target_modules[:10]} ... {target_modules[-10:]}"
     )
