@@ -149,9 +149,9 @@ def inference_local(config: InferenceConfig):
 
     if config.dry_run:
         if config.backend.type == "dynamo":
-            from prime_rl.inference.dynamo import build_frontend_process, build_local_worker_specs
+            from prime_rl.inference.dynamo import build_dry_run_worker_specs, build_frontend_process
 
-            specs = build_local_worker_specs(config)
+            specs = build_dry_run_worker_specs(config)
             logger.info(f"Dynamo frontend: {' '.join(build_frontend_process(config).command())}")
             for spec in specs:
                 logger.info(f"Dynamo {spec.name}: {' '.join(spec.process.command())}")

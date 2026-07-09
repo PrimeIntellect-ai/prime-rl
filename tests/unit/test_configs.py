@@ -251,6 +251,28 @@ def test_dynamo_disaggregated_config_rejects_disabled_prefix_caching():
         )
 
 
+def test_dynamo_backend_rejects_lora():
+    with pytest.raises(ValidationError, match="does not support LoRA"):
+        InferenceConfig.model_validate({"backend": {"type": "dynamo"}, "enable_lora": True})
+
+
+def test_rl_config_rejects_lora_auto_setup_for_dynamo_backend():
+    with pytest.raises(ValidationError, match="does not support LoRA"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"model": {"lora": {}}},
+                "orchestrator": {},
+                "inference": {"backend": {"type": "dynamo"}},
+                "deployment": {
+                    "type": "single_node",
+                    "gpus_per_node": 2,
+                    "num_train_gpus": 1,
+                    "num_infer_gpus": 1,
+                },
+            }
+        )
+
+
 def test_native_disaggregated_config_still_requires_slurm():
     with pytest.raises(ValidationError, match="Must use SLURM"):
         InferenceConfig.model_validate({"deployment": {"type": "disaggregated"}})
@@ -287,8 +309,54 @@ def test_single_node_dynamo_disaggregated_keeps_per_worker_dp_and_sets_nccl_worl
     assert config.inference.parallel.dp == 1
     assert config.orchestrator.model.client.admin_api == "dynamo"
     assert config.orchestrator.model.client.dp_rank_count == 1
+    assert config.orchestrator.model.client.dynamo_worker_roles == ("prefill", "prefill", "decode", "decode")
+    assert config.orchestrator.model.client.dynamo_gpus_per_worker == 1
     assert config.trainer.weight_broadcast.inference_world_size == 4
     assert config.orchestrator.weight_broadcast.inference_world_size == 4
+
+
+def test_single_node_dynamo_aggregated_derives_one_multi_gpu_worker():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"backend": {"type": "dynamo"}, "parallel": {"tp": 1}},
+            "deployment": {
+                "type": "single_node",
+                "gpus_per_node": 4,
+                "num_train_gpus": 2,
+                "num_infer_gpus": 2,
+            },
+        }
+    )
+
+    assert config.inference is not None
+    assert config.orchestrator.model.client.dynamo_worker_roles == ("agg",)
+    assert config.orchestrator.model.client.dynamo_gpus_per_worker == 2
+
+
+def test_dynamo_topology_metadata_cannot_conflict_with_inference_config():
+    with pytest.raises(ValidationError, match="dynamo_worker_roles conflicts"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "model": {
+                        "client": {
+                            "dynamo_worker_roles": ["decode"],
+                            "dynamo_gpus_per_worker": 1,
+                        }
+                    }
+                },
+                "inference": {"backend": {"type": "dynamo"}, "parallel": {"tp": 1}},
+                "deployment": {
+                    "type": "single_node",
+                    "gpus_per_node": 2,
+                    "num_train_gpus": 1,
+                    "num_infer_gpus": 1,
+                },
+            }
+        )
 
 
 def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():

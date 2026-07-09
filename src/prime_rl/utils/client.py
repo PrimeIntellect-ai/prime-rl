@@ -18,7 +18,9 @@ from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.inference.dynamo_admin import (
     DynamoAdminAPI,
-    discover_worker_urls,
+    DynamoTopology,
+    DynamoWorker,
+    discover_workers,
     discovery_urls,
     validate_worker_membership,
 )
@@ -33,6 +35,19 @@ ClientIdentity = tuple[str, str | None]
 def client_identity(client: vf.ClientConfig) -> ClientIdentity:
     """Stable identity for load balancing across inference clients."""
     return (client.base_url, client.headers.get("X-data-parallel-rank"))
+
+
+def _readiness_deadline(timeout: float) -> float:
+    if timeout <= 0:
+        raise TimeoutError("Inference readiness timeout must be greater than zero")
+    return asyncio.get_running_loop().time() + timeout
+
+
+def _remaining_readiness_timeout(deadline: float, phase: str) -> float:
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        raise TimeoutError(f"Inference readiness deadline expired before {phase}")
+    return remaining
 
 
 @runtime_checkable
@@ -213,14 +228,16 @@ class StaticInferencePool(_StaticClientPool):
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         ready_timeout = timeout if timeout is not None else self._wait_for_ready_timeout
+        deadline = _readiness_deadline(ready_timeout)
         await check_health(
             self._frontend_admin_clients,
-            timeout=ready_timeout,
+            timeout=_remaining_readiness_timeout(deadline, "frontend health"),
         )
         await maybe_check_has_model(
             self._frontend_admin_clients,
             model_name,
             skip_model_check=self._skip_model_check,
+            timeout=_remaining_readiness_timeout(deadline, "model registration"),
         )
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
@@ -261,6 +278,15 @@ class DynamoInferencePool(_StaticClientPool):
         renderer_config: RendererConfig | None = None,
         pool_size: int | None = None,
     ):
+        if client_config.dynamo_worker_roles is None or client_config.dynamo_gpus_per_worker is None:
+            raise ValueError(
+                "Dynamo clients require dynamo_worker_roles and dynamo_gpus_per_worker; "
+                "local RL configs derive them from the inference topology"
+            )
+        topology = DynamoTopology(
+            roles=client_config.dynamo_worker_roles,
+            gpus_per_worker=client_config.dynamo_gpus_per_worker,
+        )
         super().__init__(
             client_config,
             model_name,
@@ -272,25 +298,52 @@ class DynamoInferencePool(_StaticClientPool):
         self._frontend_admin_clients = setup_admin_clients(client_config, urls=client_config.base_url)
         self._discovery_clients = setup_admin_clients(client_config, urls=discovery_urls(client_config))
         self._admin_clients: list[AsyncClient] = []
-        self._worker_urls: tuple[str, ...] = ()
+        self._topology = topology
+        self._workers: tuple[DynamoWorker, ...] = ()
         self._admin = DynamoAdminAPI()
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         ready_timeout = timeout if timeout is not None else self._wait_for_ready_timeout
-        await check_health(self._frontend_admin_clients, timeout=ready_timeout)
+        deadline = _readiness_deadline(ready_timeout)
+        await check_health(
+            self._frontend_admin_clients,
+            timeout=_remaining_readiness_timeout(deadline, "frontend health"),
+        )
         await maybe_check_has_model(
             self._frontend_admin_clients,
             model_name,
             skip_model_check=self._skip_model_check,
+            timeout=_remaining_readiness_timeout(deadline, "model registration"),
         )
-        worker_urls = await discover_worker_urls(self._discovery_clients, ready_timeout, model_name=model_name)
-        self._worker_urls = tuple(worker_urls)
-        self._admin_clients = setup_admin_clients(self._client_config, urls=worker_urls)
-        await check_health(self._admin_clients, timeout=ready_timeout, strict=True)
+        workers = await discover_workers(
+            self._discovery_clients,
+            _remaining_readiness_timeout(deadline, "worker discovery"),
+            model_name=model_name,
+            topology=self._topology,
+        )
+        admin_clients = setup_admin_clients(self._client_config, urls=[worker.system_url for worker in workers])
+        try:
+            await check_health(
+                admin_clients,
+                timeout=_remaining_readiness_timeout(deadline, "worker health"),
+                strict=True,
+            )
+        except BaseException:
+            await asyncio.gather(*(client.aclose() for client in admin_clients))
+            raise
+        previous_clients = self._admin_clients
+        self._workers = workers
+        self._admin_clients = admin_clients
+        await asyncio.gather(*(client.aclose() for client in previous_clients))
 
     async def _validate_membership(self) -> None:
-        discovered = await discover_worker_urls(self._discovery_clients, 30, model_name=self.model_name)
-        validate_worker_membership(self._worker_urls, discovered)
+        discovered = await discover_workers(
+            self._discovery_clients,
+            30,
+            model_name=self.model_name,
+            topology=self._topology,
+        )
+        validate_worker_membership(self._workers, discovered)
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         if lora_name is not None:
@@ -313,6 +366,7 @@ class DynamoInferencePool(_StaticClientPool):
             port=port,
             timeout=timeout,
             inference_world_size=inference_world_size,
+            gpus_per_worker=self._topology.gpus_per_worker,
             quantize_in_weight_transfer=quantize_in_weight_transfer,
         )
 
@@ -422,14 +476,21 @@ def setup_admin_clients(client_config: ClientConfig, urls: list[str] | None = No
 
 
 async def maybe_check_has_model(
-    admin_clients: list[AsyncClient], model_name: str, skip_model_check: bool = False
+    admin_clients: list[AsyncClient],
+    model_name: str,
+    skip_model_check: bool = False,
+    timeout: float = 1800,
 ) -> None:
     if skip_model_check:
         return
     logger = get_logger()
     logger.debug(f"Checking if model {model_name} is in the inference pool")
-    results = await asyncio.gather(*[admin_client.get("/v1/models") for admin_client in admin_clients])
+    async with asyncio.timeout(timeout):
+        results = await asyncio.gather(
+            *(admin_client.get("/v1/models", timeout=httpx.Timeout(timeout)) for admin_client in admin_clients)
+        )
     for admin_client, result in zip(admin_clients, results):
+        result.raise_for_status()
         models = result.json()["data"]
         if not any(model["id"] == model_name for model in models):
             raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
@@ -438,34 +499,49 @@ async def maybe_check_has_model(
 
 async def check_health(
     admin_clients: list[AsyncClient],
-    interval: int = 1,
-    log_interval: int = 10,
-    timeout: int = 1800,
+    interval: float = 1,
+    log_interval: float = 10,
+    timeout: float = 1800,
     strict: bool = False,
 ) -> None:
     logger = get_logger()
 
     async def _check_health(admin_client: AsyncClient) -> None:
-        wait_time = 0
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        deadline = started + timeout
+        next_log_at = log_interval
+        last_error: Exception | None = None
         logger.debug("Starting pinging /health to check health")
-        while wait_time < timeout:
+        while (remaining := deadline - loop.time()) > 0:
             try:
-                response = await admin_client.get("/health")
+                response = await admin_client.get(
+                    "/health",
+                    timeout=httpx.Timeout(min(remaining, 10.0)),
+                )
                 if strict:
                     response.raise_for_status()
-                logger.debug(f"Inference pool is ready after {wait_time} seconds")
+                elapsed = loop.time() - started
+                logger.debug(f"Inference pool is ready after {elapsed:.1f} seconds")
                 return
             except NotFoundError:
                 logger.warning("The route /health does not exist. Skipping health check.")
                 return
             except Exception as e:
-                if wait_time % log_interval == 0 and wait_time > 0:
+                last_error = e
+                elapsed = loop.time() - started
+                if elapsed >= next_log_at:
                     logger.warning(
-                        f"Inference server was not reached after {wait_time} seconds (Error: {e}) on {admin_client.base_url}"
+                        f"Inference server was not reached after {elapsed:.1f} seconds "
+                        f"(Error: {e}) on {admin_client.base_url}"
                     )
-                await asyncio.sleep(interval)
-                wait_time += interval
-        msg = f"Inference server is not ready after {wait_time} (>{timeout}) seconds. Aborting..."
+                    next_log_at += log_interval
+                remaining = deadline - loop.time()
+                if remaining > 0:
+                    await asyncio.sleep(min(interval, remaining))
+        msg = (
+            f"Inference server {admin_client.base_url} is not ready after {timeout} seconds; last error: {last_error!r}"
+        )
         logger.error(msg)
         raise TimeoutError(msg)
 

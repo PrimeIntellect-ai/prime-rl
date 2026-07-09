@@ -461,6 +461,12 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_auto_setup_does_not_enable_dynamo_lora(self):
+        if self.inference is not None and self.inference.backend.type == "dynamo" and self.inference.enable_lora:
+            raise ValueError("The Dynamo backend does not support LoRA weight updates.")
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_router_replay(self):
         if self.trainer.enable_router_replay:
             if self.inference is not None:
@@ -691,21 +697,48 @@ class RLConfig(BaseConfig):
         if self.inference is None:
             return self
         client = self.orchestrator.model.client
+        client_updates: dict[str, Any] = {}
         if "admin_api" in client.model_fields_set and client.admin_api != self.inference.backend.type:
             raise ValueError(
                 "orchestrator.model.client.admin_api conflicts with inference.backend.type; "
                 "configure the backend only under inference."
             )
-        client.admin_api = self.inference.backend.type
+        client_updates["admin_api"] = self.inference.backend.type
         if "dp_rank_count" not in client.model_fields_set:
             if self.inference.backend.type == "dynamo" or self.deployment.type == "multi_node":
-                client.dp_rank_count = 1
+                client_updates["dp_rank_count"] = 1
             else:
-                client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
+                client_updates["dp_rank_count"] = self.inference.data_parallel_size_local or self.inference.parallel.dp
+        if self.inference.backend.type == "dynamo":
+            if self.inference.deployment.type == "disaggregated":
+                deployment = self.inference.deployment
+                expected_roles = ("prefill",) * deployment.num_prefill_replicas + (
+                    "decode",
+                ) * deployment.num_decode_replicas
+                expected_gpus_per_worker = deployment.gpus_per_node
+            else:
+                expected_roles = ("agg",)
+                expected_gpus_per_worker = self.inference.parallel.tp * self.inference.parallel.dp
+
+            expected_topology = {
+                "dynamo_worker_roles": expected_roles,
+                "dynamo_gpus_per_worker": expected_gpus_per_worker,
+            }
+            for field, expected in expected_topology.items():
+                if field in client.model_fields_set and getattr(client, field) != expected:
+                    raise ValueError(
+                        f"orchestrator.model.client.{field} conflicts with the inference topology; "
+                        "configure the topology only under inference."
+                    )
+            client_updates.update(expected_topology)
         if not self.orchestrator.any_policy_sourced and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
-            client.base_url = [f"http://{host}:{port}/v1"]
+            client_updates["base_url"] = [f"http://{host}:{port}/v1"]
+
+        updated_client = client.model_copy(update=client_updates)
+        updated_model = self.orchestrator.model.model_copy(update={"client": updated_client})
+        self.orchestrator = self.orchestrator.model_copy(update={"model": updated_model})
         return self
 
     @model_validator(mode="after")

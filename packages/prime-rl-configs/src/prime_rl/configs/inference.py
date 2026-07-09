@@ -461,6 +461,8 @@ class InferenceConfig(BaseConfig):
             )
         if self.deployment.type == "multi_node":
             raise ValueError("Dynamo multi-node inference must use a DynamoGraphDeployment.")
+        if self.enable_lora:
+            raise ValueError("The Dynamo backend does not support LoRA weight updates.")
         router = getattr(self.deployment, "router", None)
         if router is not None and router.type == "llm-d":
             raise ValueError("The Dynamo backend owns request routing and cannot use the llm-d router.")

@@ -153,6 +153,12 @@ class ClientConfig(BaseConfig):
     rl_base_url: list[str] | None = None
     """Dynamo RL worker-discovery URLs. When omitted, they are derived from the frontend URL or ``DYN_RL_DISCOVERY_URL``."""
 
+    dynamo_worker_roles: tuple[Literal["agg", "prefill", "decode"], ...] | None = None
+    """Exact Dynamo worker roles expected during readiness. Auto-derived from the local inference topology."""
+
+    dynamo_gpus_per_worker: int | None = Field(None, ge=1)
+    """GPUs owned by each discovered Dynamo worker. Auto-derived from the local inference topology."""
+
     elastic: ElasticConfig | None = None
     """Elastic inference pool config for DNS-based service discovery. When set, ``base_url`` is ignored and inference servers are discovered dynamically via DNS."""
 

@@ -23,6 +23,7 @@ ENGINE_CONFIG_DIR = "dynamo"
 PREFILL_ENGINE_CONFIG = "prefill-engine.json"
 DECODE_ENGINE_CONFIG = "decode-engine.json"
 AGG_ENGINE_CONFIG = "agg-engine.json"
+CHAT_TEMPLATE_ASSET = "chat-template.jinja"
 
 _ENGINE_CONFIG_EXCLUDED = frozenset(
     {
@@ -48,6 +49,11 @@ _RESERVED_ENGINE_KEYS = frozenset(
 _WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
+}
+_WORKER_COMPONENT = {
+    "agg": "backend",
+    "prefill": "prefill",
+    "decode": "backend",
 }
 
 
@@ -111,11 +117,61 @@ def _role_environment(config: InferenceConfig, role: Role) -> dict[str, str]:
     return {}
 
 
+def resolve_chat_template_content(config: InferenceConfig) -> str | None:
+    """Resolve a configured inline or file-backed chat template to immutable content."""
+    template = config.model.chat_template
+    if template is None:
+        return None
+    template_source = Path(os.path.expanduser(template))
+    return template_source.read_text(encoding="utf-8") if template_source.is_file() else template
+
+
+def _materialize_chat_template(
+    config: InferenceConfig,
+    template_content: str,
+    output_dir: Path | None,
+) -> Path:
+    config_dir = output_dir or (get_config_dir(config.output_dir) / ENGINE_CONFIG_DIR)
+    template_path = config_dir / CHAT_TEMPLATE_ASSET
+    template_path.parent.mkdir(parents=True, exist_ok=True)
+    template_path.write_text(template_content, encoding="utf-8")
+    return template_path
+
+
+def _frontend_model_arguments(
+    config: InferenceConfig,
+    output_dir: Path | None,
+    runtime_chat_template_path: Path | None,
+) -> tuple[str, ...]:
+    template_content = resolve_chat_template_content(config)
+    if template_content is None:
+        return ()
+    template_path = runtime_chat_template_path or _materialize_chat_template(config, template_content, output_dir)
+    tool_arguments = (
+        ("--enable-auto-tool-choice", "--tool-call-parser", config.model.tool_call_parser)
+        if config.model.tool_call_parser is not None
+        else ()
+    )
+    reasoning_arguments = (
+        ("--reasoning-parser", config.model.reasoning_parser) if config.model.reasoning_parser is not None else ()
+    )
+    return (
+        *tool_arguments,
+        *reasoning_arguments,
+        "--dyn-chat-processor",
+        "vllm",
+        "--chat-template",
+        str(template_path),
+    )
+
+
 def build_frontend_process(
     config: InferenceConfig,
     *,
     host: str | None = None,
     port: int | None = None,
+    output_dir: Path | None = None,
+    runtime_chat_template_path: Path | None = None,
 ) -> DynamoProcessSpec:
     """Build the canonical Dynamo frontend process contract."""
     environment = {
@@ -123,19 +179,43 @@ def build_frontend_process(
         "DYN_ENABLE_RL": "1",
         "DYN_RL_PORT": "8001",
     }
+    arguments = (
+        "--http-host",
+        host or config.server.host or "0.0.0.0",
+        "--http-port",
+        str(port or config.server.port),
+        "--router-mode",
+        "kv",
+        "--router-reset-states",
+        "--enable-engine-apis",
+        *_frontend_model_arguments(config, output_dir, runtime_chat_template_path),
+    )
     return DynamoProcessSpec(
         module="dynamo.frontend",
-        arguments=(
-            "--http-host",
-            host or config.server.host or "0.0.0.0",
-            "--http-port",
-            str(port or config.server.port),
-            "--router-mode",
-            "kv",
-            "--router-reset-states",
-            "--enable-engine-apis",
-        ),
+        arguments=arguments,
         environment_items=_environment_items(environment),
+    )
+
+
+def _worker_parser_arguments(config: InferenceConfig, role: Role) -> tuple[str, ...]:
+    if role == "prefill":
+        return ()
+    tool_arguments = (
+        ("--dyn-tool-call-parser", config.model.tool_call_parser) if config.model.tool_call_parser is not None else ()
+    )
+    reasoning_arguments = (
+        ("--dyn-reasoning-parser", config.model.reasoning_parser) if config.model.reasoning_parser is not None else ()
+    )
+    return (*tool_arguments, *reasoning_arguments)
+
+
+def _worker_endpoint_contract(namespace: str | None, component: str) -> tuple[dict[str, str], tuple[str, ...]]:
+    if namespace is None:
+        return {}, ()
+    endpoint = f"dyn://{namespace}.{component}.generate"
+    return (
+        {"DYN_NAMESPACE": namespace, "DYN_ENDPOINT": endpoint},
+        ("--endpoint", endpoint),
     )
 
 
@@ -146,26 +226,34 @@ def build_worker_process(
     *,
     nixl_host: str | None,
     nixl_port: int,
+    namespace: str | None = None,
 ) -> DynamoProcessSpec:
     """Build the canonical Dynamo vLLM worker process contract."""
+    resolved_namespace = namespace or config.env_vars.get("DYN_NAMESPACE")
+    component = _WORKER_COMPONENT[role]
+    endpoint_environment, endpoint_arguments = _worker_endpoint_contract(resolved_namespace, component)
     environment = {
         **config.env_vars,
-        "DYN_ENABLE_RL": "1",
-        "VLLM_NIXL_SIDE_CHANNEL_PORT": str(nixl_port),
-        "VLLM_PLUGINS": "prime_rl",
         **_role_environment(config, role),
+        "DYN_ENABLE_RL": "1",
+        "DYN_COMPONENT": component,
+        **endpoint_environment,
+        "VLLM_NIXL_SIDE_CHANNEL_PORT": str(nixl_port),
+        **({"VLLM_NIXL_SIDE_CHANNEL_HOST": nixl_host} if nixl_host is not None else {}),
+        "VLLM_PLUGINS": "prime_rl",
     }
-    if nixl_host is not None:
-        environment["VLLM_NIXL_SIDE_CHANNEL_HOST"] = nixl_host
+    arguments = (
+        "--engine-config-json",
+        str(engine_config),
+        *endpoint_arguments,
+        "--disaggregation-mode",
+        role,
+        "--enable-rl",
+        *_worker_parser_arguments(config, role),
+    )
     return DynamoProcessSpec(
         module="dynamo.vllm",
-        arguments=(
-            "--engine-config-json",
-            str(engine_config),
-            "--disaggregation-mode",
-            role,
-            "--enable-rl",
-        ),
+        arguments=arguments,
         environment_items=_environment_items(environment),
     )
 
@@ -255,10 +343,12 @@ def build_local_worker_specs(
     config: InferenceConfig,
     output_dir: Path | None = None,
     gpu_ids: list[str] | None = None,
+    namespace: str | None = None,
 ) -> list[DynamoWorkerSpec]:
     """Allocate local workers and write instance-specific engine configs."""
     config_dir = output_dir or (get_config_dir(config.output_dir) / ENGINE_CONFIG_DIR)
-    available = gpu_ids or _visible_gpu_ids()
+    available = gpu_ids if gpu_ids is not None else _visible_gpu_ids()
+    resolved_namespace = namespace or config.env_vars.get("DYN_NAMESPACE") or "dynamo"
 
     if config.deployment.type == "disaggregated":
         deployment: DisaggregatedInferenceDeploymentConfig = config.deployment
@@ -301,10 +391,29 @@ def build_local_worker_specs(
                     engine_path,
                     nixl_host="127.0.0.1",
                     nixl_port=20100 + worker_index,
+                    namespace=resolved_namespace,
                 ),
             )
         )
     return specs
+
+
+def build_dry_run_worker_specs(
+    config: InferenceConfig,
+    output_dir: Path | None = None,
+) -> list[DynamoWorkerSpec]:
+    """Build local specs without consulting host GPU hardware."""
+    if config.deployment.type == "disaggregated":
+        worker_count = config.deployment.num_prefill_replicas + config.deployment.num_decode_replicas
+        gpu_count = worker_count * config.deployment.gpus_per_node
+    else:
+        gpu_count = config.parallel.tp * config.parallel.dp
+    return build_local_worker_specs(
+        config,
+        output_dir=output_dir,
+        gpu_ids=[f"<gpu:{index}>" for index in range(gpu_count)],
+        namespace=config.env_vars.get("DYN_NAMESPACE") or "dynamo",
+    )
 
 
 def build_worker_environment(
@@ -333,13 +442,14 @@ def _terminate(process: subprocess.Popen) -> None:
 
 def run_dynamo_local(config: InferenceConfig) -> None:
     """Run a Dynamo frontend and all configured workers until one exits."""
-    specs = build_local_worker_specs(config)
     environment = os.environ.copy()
     environment.setdefault("DYN_DISCOVERY_BACKEND", "file")
     environment.setdefault("DYN_EVENT_PLANE", "zmq")
     environment.setdefault("DYN_FILE_KV_TTL_SECS", "1800")
-    environment.setdefault("DYN_NAMESPACE", f"prime-rl-{os.getpid()}")
+    namespace = config.env_vars.get("DYN_NAMESPACE") or environment.get("DYN_NAMESPACE") or f"prime-rl-{os.getpid()}"
+    environment["DYN_NAMESPACE"] = namespace
     environment.setdefault("PYTHONHASHSEED", "0")
+    specs = build_local_worker_specs(config, namespace=namespace)
 
     def request_stop(_signum, _frame):
         raise KeyboardInterrupt
@@ -358,9 +468,15 @@ def run_dynamo_local(config: InferenceConfig) -> None:
                 worker_env = build_worker_environment(spec, environment)
                 processes.append(subprocess.Popen(spec.process.command(), env=worker_env, start_new_session=True))
 
-            while all(process.poll() is None for process in processes):
+            exited_process = next((process for process in processes if process.poll() is not None), None)
+            while exited_process is None:
                 time.sleep(0.2)
-            raise SystemExit(next((process.returncode for process in processes if process.returncode), 1))
+                exited_process = next((process for process in processes if process.poll() is not None), None)
+            returncode = exited_process.returncode
+            if returncode is None:
+                raise RuntimeError("Dynamo child exit was observed without a return code")
+            # A clean child exit is still a service failure while its siblings are supervised.
+            raise SystemExit(returncode if returncode != 0 else 1)
         except KeyboardInterrupt:
             return
         finally:

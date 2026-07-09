@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.entrypoints import inference as inference_entrypoint
 from prime_rl.inference import dynamo
 from prime_rl.inference.dynamo import (
     build_engine_config,
@@ -131,6 +132,82 @@ def test_process_specs_own_canonical_commands_and_environment(tmp_path: Path):
     assert prefill.environment()["VLLM_NIXL_SIDE_CHANNEL_PORT"] == "20100"
 
 
+def test_process_specs_preserve_custom_chat_template_and_parsers(tmp_path: Path):
+    source = tmp_path / "source-template.jinja"
+    source.write_text("{{ messages | length }}")
+    config = disaggregated_config(
+        model={
+            "chat_template": str(source),
+            "tool_call_parser": "hermes",
+            "reasoning_parser": "qwen3",
+        }
+    )
+
+    frontend = build_frontend_process(config, output_dir=tmp_path / "generated")
+    worker = build_worker_process(
+        config,
+        "decode",
+        tmp_path / "decode.json",
+        nixl_host=None,
+        nixl_port=20100,
+    )
+
+    template_path = Path(frontend.arguments[frontend.arguments.index("--chat-template") + 1])
+    assert template_path == tmp_path / "generated" / "chat-template.jinja"
+    assert template_path.read_text() == source.read_text()
+    assert frontend.arguments[-4:-2] == ("--dyn-chat-processor", "vllm")
+    assert worker.arguments[-4:] == (
+        "--dyn-tool-call-parser",
+        "hermes",
+        "--dyn-reasoning-parser",
+        "qwen3",
+    )
+
+
+@pytest.mark.parametrize(
+    ("role", "component"),
+    [("prefill", "prefill"), ("decode", "backend"), ("agg", "backend")],
+)
+def test_worker_process_uses_deterministic_role_endpoint(tmp_path: Path, role: str, component: str):
+    process = build_worker_process(
+        disaggregated_config(env_vars={"DYN_NAMESPACE": "prime-test"}),
+        role,
+        tmp_path / f"{role}.json",
+        nixl_host=None,
+        nixl_port=20100,
+    )
+
+    endpoint = f"dyn://prime-test.{component}.generate"
+    assert process.environment()["DYN_NAMESPACE"] == "prime-test"
+    assert process.environment()["DYN_COMPONENT"] == component
+    assert process.environment()["DYN_ENDPOINT"] == endpoint
+    assert process.arguments[2:4] == ("--endpoint", endpoint)
+
+
+def test_inline_chat_template_is_materialized_verbatim(tmp_path: Path):
+    config = disaggregated_config(model={"chat_template": "{{ messages }}"})
+
+    frontend = build_frontend_process(config, output_dir=tmp_path)
+
+    template_path = Path(frontend.arguments[-1])
+    assert template_path.read_text() == "{{ messages }}"
+
+
+def test_frontend_runtime_chat_template_path_does_not_materialize_host_file(tmp_path: Path):
+    config = disaggregated_config(model={"chat_template": "{{ messages }}"})
+    output_dir = tmp_path / "render-host"
+    runtime_path = Path("/etc/prime-rl/dynamo/chat-template.jinja")
+
+    frontend = build_frontend_process(
+        config,
+        output_dir=output_dir,
+        runtime_chat_template_path=runtime_path,
+    )
+
+    assert frontend.arguments[-1] == str(runtime_path)
+    assert not output_dir.exists()
+
+
 def test_worker_environment_applies_only_matching_role_overrides(tmp_path: Path):
     config = disaggregated_config(
         deployment={
@@ -154,9 +231,49 @@ def test_worker_environment_applies_only_matching_role_overrides(tmp_path: Path)
     assert decode_env["CUDA_VISIBLE_DEVICES"] == "3"
     assert prefill_env["CUDA_VISIBLE_DEVICES"] == "7"
     assert decode_env["VLLM_PLUGINS"] == "prime_rl"
+    assert decode_env["DYN_COMPONENT"] == "backend"
+    assert prefill_env["DYN_COMPONENT"] == "prefill"
 
 
-def test_child_failure_tears_down_complete_process_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_aggregated_worker_uses_canonical_component_name(tmp_path: Path):
+    config = InferenceConfig.model_validate({"backend": {"type": "dynamo"}})
+    spec = build_local_worker_specs(config, tmp_path, gpu_ids=["0"])[0]
+
+    assert build_worker_environment(spec, {})["DYN_COMPONENT"] == "backend"
+
+
+def test_dynamo_dry_run_uses_symbolic_gpu_slots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config = disaggregated_config(output_dir=tmp_path, dry_run=True)
+    captured_gpu_ids = []
+    original_build_specs = dynamo.build_local_worker_specs
+
+    class FakeLogger:
+        def info(self, _message):
+            pass
+
+        def success(self, _message):
+            pass
+
+    def build_specs(config, output_dir=None, gpu_ids=None, namespace=None):
+        captured_gpu_ids.extend(gpu_ids or [])
+        return original_build_specs(config, output_dir=output_dir, gpu_ids=gpu_ids, namespace=namespace)
+
+    monkeypatch.setattr(dynamo, "_visible_gpu_ids", lambda: pytest.fail("dry-run queried physical GPUs"))
+    monkeypatch.setattr(dynamo, "build_local_worker_specs", build_specs)
+    monkeypatch.setattr(inference_entrypoint, "setup_logger", lambda *_args, **_kwargs: FakeLogger())
+
+    inference_entrypoint.inference_local(config)
+
+    assert captured_gpu_ids == ["<gpu:0>", "<gpu:1>", "<gpu:2>", "<gpu:3>"]
+
+
+@pytest.mark.parametrize(("child_code", "supervisor_code"), [(7, 7), (0, 1)])
+def test_child_exit_tears_down_complete_process_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    child_code: int,
+    supervisor_code: int,
+):
     config = disaggregated_config(output_dir=tmp_path)
     processes = []
     terminated = []
@@ -170,7 +287,7 @@ def test_child_failure_tears_down_complete_process_group(tmp_path: Path, monkeyp
             return self.returncode
 
     def popen(*_args, **_kwargs):
-        process = FakeProcess(7 if not processes else None)
+        process = FakeProcess(child_code if not processes else None)
         processes.append(process)
         return process
 
@@ -182,6 +299,6 @@ def test_child_failure_tears_down_complete_process_group(tmp_path: Path, monkeyp
     with pytest.raises(SystemExit) as exc:
         dynamo.run_dynamo_local(config)
 
-    assert exc.value.code == 7
+    assert exc.value.code == supervisor_code
     assert len(processes) == 5
     assert terminated == list(reversed(processes))

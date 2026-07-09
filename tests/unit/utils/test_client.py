@@ -3,9 +3,11 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
 from verifiers.v1.clients.config import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
+from prime_rl.inference.dynamo_admin import DynamoTopology, DynamoWorker
 from prime_rl.utils.client import (
     DynamoInferencePool,
     StaticInferencePool,
@@ -137,6 +139,8 @@ def test_setup_inference_pool_selects_dynamo_pool_once():
             ClientConfig(
                 base_url=["http://frontend:8000/v1"],
                 admin_api="dynamo",
+                dynamo_worker_roles=("agg",),
+                dynamo_gpus_per_worker=1,
             ),
             model_name="test-model",
         )
@@ -144,3 +148,60 @@ def test_setup_inference_pool_selects_dynamo_pool_once():
 
     assert isinstance(pool, DynamoInferencePool)
     asyncio.run(pool.stop())
+
+
+@pytest.mark.asyncio
+async def test_dynamo_readiness_shares_one_monotonic_deadline(monkeypatch: pytest.MonkeyPatch):
+    pool = DynamoInferencePool(
+        ClientConfig(
+            base_url=["http://frontend:8000/v1"],
+            admin_api="dynamo",
+            dynamo_worker_roles=("agg",),
+            dynamo_gpus_per_worker=2,
+        ),
+        model_name="test-model",
+    )
+    observed_timeouts: list[float] = []
+    worker = DynamoWorker(
+        instance_id=11,
+        component="backend",
+        role="agg",
+        system_url="http://worker:8081",
+        model="test-model",
+        routes=frozenset(
+            {
+                "init_weights_update_group",
+                "pause_generation",
+                "resume_generation",
+                "update_weights_from_disk",
+                "update_weights_from_distributed",
+            }
+        ),
+    )
+
+    async def health(_clients, *, timeout, **_kwargs):
+        observed_timeouts.append(timeout)
+        await asyncio.sleep(0.01)
+
+    async def models(_clients, _model_name, *, skip_model_check, timeout):
+        assert skip_model_check is False
+        observed_timeouts.append(timeout)
+        await asyncio.sleep(0.01)
+
+    async def discover(_clients, timeout, *, model_name, topology):
+        assert model_name == "test-model"
+        assert topology == DynamoTopology(roles=("agg",), gpus_per_worker=2)
+        observed_timeouts.append(timeout)
+        await asyncio.sleep(0.01)
+        return (worker,)
+
+    monkeypatch.setattr("prime_rl.utils.client.check_health", health)
+    monkeypatch.setattr("prime_rl.utils.client.maybe_check_has_model", models)
+    monkeypatch.setattr("prime_rl.utils.client.discover_workers", discover)
+    try:
+        await pool.wait_for_ready("test-model", timeout=1)
+    finally:
+        await pool.stop()
+
+    assert len(observed_timeouts) == 4
+    assert all(later < earlier for earlier, later in zip(observed_timeouts, observed_timeouts[1:]))
