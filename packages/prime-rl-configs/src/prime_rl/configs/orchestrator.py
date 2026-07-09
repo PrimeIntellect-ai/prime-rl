@@ -82,13 +82,21 @@ class TrainSamplingConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_no_extra_body_truncation(self):
-        """Truncation knobs must be the typed fields — the replay policy reads them.
-        (``resolve_env_config`` stamps disabled sentinels into ``extra_body`` post-
-        validation; those never truncate.)"""
-        smuggled = [key for key in ("top_p", "top_k", "min_p") if key in self.extra_body]
+        """Truncating values must come from the typed fields — the replay policy reads
+        them. Disabled values pass so resolved configs (where ``resolve_env_config``
+        stamped the ``top_k = -1`` / ``min_p = 0.0`` sentinels) re-validate cleanly."""
+        smuggled = [
+            key
+            for key, truncates in (
+                ("top_p", self.extra_body.get("top_p", 1.0) < 1.0),
+                ("top_k", self.extra_body.get("top_k") not in (None, -1, 0)),
+                ("min_p", self.extra_body.get("min_p", 0.0) > 0.0),
+            )
+            if truncates
+        ]
         if smuggled:
             raise ValueError(
-                f"extra_body carries truncation knobs {smuggled}; set them as fields on the train "
+                f"extra_body carries truncating {smuggled}; set them as fields on the train "
                 "sampling config instead (they drive sampling-mask replay)."
             )
         return self
