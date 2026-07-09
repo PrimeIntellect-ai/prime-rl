@@ -150,7 +150,7 @@ def substitute_ulysses_attn(
 
         flash_attn_version = 2
 
-    def _ulysses_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
+    def _ulysses_compute_attention(self, q, k, v, cu_seqlens, max_seqlen, softmax_scale=None):
         # cu_seqlens / max_seqlen passed in are for the *local* sharded sequence;
         # ulysses needs the *full* ones (each rank holds the full seq after a2a).
         cu_seqlens_full = ULYSSES_PARAMS["cu_seqlens"]
@@ -175,6 +175,7 @@ def substitute_ulysses_attn(
             cp_size=cp_size,
             flash_attn_version=flash_attn_version,
             window_size=window_size,
+            softmax_scale = softmax_scale
         )
 
     from prime_rl.trainer.models.layers.attn import FlashAttention
