@@ -225,20 +225,22 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
         routed_experts: torch.Tensor | None = None,
+        cu_seqlens_are_pre_shard: bool = False,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
 
         if self.cp_enabled:
-            # The local cu_seqlens cover only this shard; conv/scan need the full
-            # pre-shard document boundaries published by setup_cp_params.
+            global_cu_seqlens = (
+                cu_seqlens if cu_seqlens is not None and cu_seqlens_are_pre_shard else ULYSSES_PARAMS["cu_seqlens"]
+            )
             hidden_states = mamba_cp_forward(
                 self.mamba,
                 hidden_states,
                 self._cp_group,
                 self._cp_rank,
                 self._cp_world_size,
-                ULYSSES_PARAMS["cu_seqlens"],
+                global_cu_seqlens,
             )
         else:
             hidden_states = self.mamba(hidden_states, cu_seqlens=cu_seqlens)
@@ -275,6 +277,7 @@ class NemotronHMoELayer(GradientCheckpointingLayer):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
         routed_experts: torch.Tensor | None = None,
+        cu_seqlens_are_pre_shard: bool = False,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
@@ -308,6 +311,7 @@ class NemotronHAttentionLayer(GradientCheckpointingLayer):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
         routed_experts: torch.Tensor | None = None,
+        cu_seqlens_are_pre_shard: bool = False,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
@@ -533,10 +537,21 @@ class NemotronHModel(NemotronHPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
-        )
-        torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        # Compute cu_seqlens and max_seqlen for flash attention
+        flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
+        if seq_lens.numel() > 1 and not flash_attn_enabled:
+            # SDPA/eager attention has no varlen support and would attend across
+            # packed document boundaries.
+            raise ValueError("Packed NemotronH batches require flash attention")
+        if flash_attn_enabled:
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                seq_lens.to(device=inputs_embeds.device),
+                total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+            )
+            torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        else:
+            max_seqlen = None
+            cu_seqlens = None
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids) if self.rotary_emb is not None else None
@@ -550,6 +565,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
                 routed_experts=routed_experts_layer,
+                cu_seqlens_are_pre_shard=seq_lens_are_pre_shard,
             )
 
         hidden_states = self.norm(hidden_states)

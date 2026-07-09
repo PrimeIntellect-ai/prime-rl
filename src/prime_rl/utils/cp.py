@@ -158,7 +158,7 @@ def setup_cp_params(
     Returns the sequence-sharded input_ids and position_ids — the rest of the
     model still runs sequence-sharded; only attention sees the full sequence.
     """
-    setup_cp_attention_params(position_ids, cp_group=cp_group, seq_lens=seq_lens, cp_style=cp_style)
+    setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style=cp_style, seq_lens=seq_lens)
 
     input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
     position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
@@ -172,9 +172,10 @@ def setup_cp_attention_params(
     seq_lens: torch.Tensor,
     cp_style: CPStyle = "ring",
 ) -> None:
+    total_tokens = position_ids.shape[-1]
     cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
         seq_lens.to(device=position_ids.device),
-        total_tokens=position_ids.shape[-1],
+        total_tokens=total_tokens,
     )
 
     if cp_style == "ring":

@@ -43,6 +43,24 @@ from .mrope import build_qwen3_5_mrope_position_ids
 logger = logging.get_logger(__name__)
 
 
+@torch.compiler.disable
+def _fla_causal_conv1d_cp(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None,
+    activation: str,
+    cp_context: FLACPContext,
+) -> torch.Tensor:
+    output, _ = fla_causal_conv1d(
+        x=x,
+        weight=weight,
+        bias=bias,
+        activation=activation,
+        cp_context=cp_context,
+    )
+    return output
+
+
 # ---------------------------------------------------------------------------
 # RMSNorm variants
 # ---------------------------------------------------------------------------
@@ -153,14 +171,24 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
 
         # Causal conv1d — must reset at sequence boundaries for packed batches,
         # otherwise the kernel-1 left pad leaks state across sequences.
-        mixed_qkv, _ = fla_causal_conv1d(
-            x=mixed_qkv.transpose(1, 2),
-            weight=self.conv1d.weight.squeeze(1),
-            bias=self.conv1d.bias,
-            activation=self.activation,
-            cu_seqlens=cu_seqlens if cp_context is None else None,
-            cp_context=cp_context,
-        )
+        conv_input = mixed_qkv.transpose(1, 2)
+        conv_weight = self.conv1d.weight.squeeze(1)
+        if cp_context is None:
+            mixed_qkv, _ = fla_causal_conv1d(
+                x=conv_input,
+                weight=conv_weight,
+                bias=self.conv1d.bias,
+                activation=self.activation,
+                cu_seqlens=cu_seqlens,
+            )
+        else:
+            mixed_qkv = _fla_causal_conv1d_cp(
+                x=conv_input,
+                weight=conv_weight,
+                bias=self.conv1d.bias,
+                activation=self.activation,
+                cp_context=cp_context,
+            )
         query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
 
         query = query.reshape(batch_size, seq_len, -1, self.head_k_dim)
