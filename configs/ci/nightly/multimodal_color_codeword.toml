@@ -1,5 +1,4 @@
 # Based on configs/debug/multimodal.toml but tuned for CI.
-# Runs the custom Qwen3.5 VLM (VLM training is custom-implementation-only).
 max_steps = 25
 seq_len = 4096
 

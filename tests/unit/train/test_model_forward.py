@@ -121,8 +121,7 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
 
 
-def test_forward_strips_position_ids_without_leaking_seq_lens_for_mrope_vlm():
-    """Generic VLMs do not receive PrimeRL-only packed-boundary kwargs."""
+def test_forward_omits_prime_only_kwargs_for_hf_mrope_vlm():
     model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
     input_ids = torch.tensor([[1, 10, 10, 2, 20, 20]])
     position_ids = torch.tensor([[0, 1, 2, 0, 1, 2]])
