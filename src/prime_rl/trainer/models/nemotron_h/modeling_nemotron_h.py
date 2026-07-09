@@ -503,7 +503,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
         self.post_init()
 
     def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-        for layer in self.layers:
+        for layer in self.layers.modules():
             if isinstance(layer, NemotronHMambaLayer):
                 layer.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
 

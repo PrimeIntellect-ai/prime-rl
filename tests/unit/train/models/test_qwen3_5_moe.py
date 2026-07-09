@@ -174,14 +174,16 @@ def test_qwen3_5_moe_context_parallel_setup_hook():
     with torch.device("meta"):
         model = PrimeRLQwen3_5MoeForCausalLM(config)
 
+    linear_layer = model.model.layers[0]
+    model.model.layers[0] = torch.nn.Sequential(linear_layer)
     cp_group = MagicMock()
     setup_model_cp(model, cp_group, cp_rank=1, cp_world_size=2)
 
     assert model.model._cp_group is cp_group
     assert model.model._cp_rank == 1
     assert model.model._cp_world_size == 2
-    assert model.model.layers[0].linear_attn.cp_group is cp_group
-    assert model.model.layers[0].linear_attn.cp_world_size == 2
+    assert linear_layer.linear_attn.cp_group is cp_group
+    assert linear_layer.linear_attn.cp_world_size == 2
 
 
 if __name__ == "__main__":

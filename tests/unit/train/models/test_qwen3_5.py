@@ -134,11 +134,13 @@ def test_qwen3_5_context_parallel_setup_chain_text_and_vlm():
     cp_group = MagicMock()
 
     text_model = Qwen3_5ForCausalLM(_tiny_text_config())
+    linear_layer = text_model.model.layers[0]
+    text_model.model.layers[0] = torch.nn.Sequential(linear_layer)
     setup_model_cp(text_model, cp_group, cp_rank=1, cp_world_size=2)
     assert text_model.model._cp_group is cp_group
     assert text_model.model._cp_rank == 1
     assert text_model.model._cp_world_size == 2
-    assert text_model.model.layers[0].linear_attn.cp_group is cp_group
+    assert linear_layer.linear_attn.cp_group is cp_group
 
     with torch.device("meta"):
         vlm_model = Qwen3_5ForCausalLM(_tiny_vlm_config())
@@ -148,11 +150,11 @@ def test_qwen3_5_context_parallel_setup_chain_text_and_vlm():
 
 
 def test_setup_model_cp_requires_hook_only_for_hybrid_models():
-    class HybridLayer:
+    class HybridLayer(torch.nn.Module):
         layer_type = "linear_attention"
 
     class Inner:
-        layers = [HybridLayer()]
+        layers = torch.nn.Sequential(torch.nn.Sequential(HybridLayer()))
 
     class HybridNoHookModel:
         model = Inner()

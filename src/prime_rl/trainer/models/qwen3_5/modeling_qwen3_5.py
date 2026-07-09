@@ -100,14 +100,14 @@ class Qwen3_5DecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
-        cu_seqlens_are_global: bool = False,
+        cu_seqlens_are_pre_shard: bool = False,
     ) -> torch.FloatTensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 
         if self.layer_type == "linear_attention":
             hidden_states = self.linear_attn(
-                hidden_states, cu_seqlens=cu_seqlens, cu_seqlens_are_global=cu_seqlens_are_global
+                hidden_states, cu_seqlens=cu_seqlens, cu_seqlens_are_pre_shard=cu_seqlens_are_pre_shard
             )
         else:
             hidden_states, _ = self.self_attn(
@@ -196,7 +196,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         self._cp_group = cp_group
         self._cp_rank = cp_rank
         self._cp_world_size = cp_world_size
-        for layer in self.layers:
+        for layer in self.layers.modules():
             if getattr(layer, "layer_type", None) == "linear_attention":
                 layer.linear_attn.cp_group = cp_group
                 layer.linear_attn.cp_rank = cp_rank
@@ -238,7 +238,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        cu_seqlens_are_global = seq_lens_are_pre_shard
+        cu_seqlens_are_pre_shard = seq_lens_are_pre_shard
 
         for decoder_layer in self.layers:
             hidden_states = decoder_layer(
@@ -246,7 +246,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
-                cu_seqlens_are_global=cu_seqlens_are_global,
+                cu_seqlens_are_pre_shard=cu_seqlens_are_pre_shard,
             )
 
         hidden_states = self.norm(hidden_states)
