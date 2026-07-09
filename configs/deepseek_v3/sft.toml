@@ -1,0 +1,56 @@
+max_steps = 300
+output_dir = "./output/deepseek_v3"
+loss_impl = "liger_fused"
+
+[wandb]
+project = "prime-rl"
+name = "deepseek_v3"
+offline = true
+
+[ckpt]
+interval = 300
+keep_last = 5
+resume_step = -1
+
+[ckpt.weights]
+save_format = "safetensors"
+
+[model]
+moe_use_grouped_mm = true
+name = "v2ray/DeepSeek-V3-1B-Test"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+trust_remote_code = false
+seq_len = 1024
+ep = 1
+cp = 1
+dp_replicate = 1
+attn = "sdpa"
+fsdp_cpu_offload = false
+reshard_after_forward = true
+impl = "custom"
+
+[model.ac]
+
+[model.compile]
+
+[optim]
+type = "adamw"
+lr = 9e-5
+weight_decay = 0.01
+
+[scheduler]
+
+[data]
+type = "sft"
+name = "PrimeIntellect/Reverse-Text-SFT"
+batch_size = 32
+# micro_batch_size = 1
+seq_len = 1024
+pack_function = "stack"
+shuffle = true
+seed = 42
+
+[deployment]
+type = "single_node"
+num_gpus = 2

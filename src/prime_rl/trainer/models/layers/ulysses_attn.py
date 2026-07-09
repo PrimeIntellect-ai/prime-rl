@@ -189,6 +189,9 @@ def substitute_ulysses_attn(
 
     Qwen3_5MoeGatedFlashAttention._compute_attention = _ulysses_compute_attention
 
+    from prime_rl.trainer.models.deepseek_v3.attention_deepseek_v3 import DeepSeekAttentionCore
+
+    DeepSeekAttentionCore._compute_attention = _ulysses_compute_attention
 
 def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
     """Patch HF's `_flash_attention_forward` to use Ulysses all-to-all + local FA2.
