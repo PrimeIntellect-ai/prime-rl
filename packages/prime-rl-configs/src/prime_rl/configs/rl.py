@@ -536,6 +536,18 @@ class RLConfig(BaseConfig):
                         stacklevel=2,
                     )
                 self.inference.enable_return_kept_tokens = True
+                # With top-k, every kept set is bounded by k — but only if the capture cap
+                # covers it. A cap below k would overflow every truncated position into the
+                # full-vocab fallback, whose bias is NOT bounded by -log(top_p) when top-k
+                # does the trimming. Raise the cap so replay stays exact.
+                top_ks = [k for sampling in sampling_configs if (k := sampling.effective_top_k()) is not None]
+                if top_ks and max(top_ks) > self.inference.kept_tokens_max:
+                    warnings.warn(
+                        f"Raising inference.kept_tokens_max from {self.inference.kept_tokens_max} to "
+                        f"{max(top_ks)} to cover train sampling top_k (keeps sampling-mask replay exact).",
+                        stacklevel=2,
+                    )
+                    self.inference.kept_tokens_max = max(top_ks)
             else:
                 warnings.warn(
                     "Sampling-mask replay is enabled, but inference is not configured. When manually starting the "

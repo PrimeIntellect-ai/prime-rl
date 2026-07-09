@@ -60,6 +60,12 @@ class TrainSamplingConfig(BaseConfig):
     ``trainer.enable_sampling_mask_replay`` + ``inference.enable_return_kept_tokens`` when
     this is lowered."""
 
+    top_k: int | None = Field(None, ge=1)
+    """Top-k sampling for train rollouts (None = disabled). Like ``top_p``, truncation
+    auto-enables sampling-mask replay. Setting it also bounds every kept set to k, making
+    replay exact everywhere: the ``rl`` entrypoint raises ``inference.kept_tokens_max`` to
+    cover it, so no position ever overflows into the full-vocab fallback."""
+
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
     )
@@ -76,10 +82,17 @@ class TrainSamplingConfig(BaseConfig):
         disabled sentinels ``top_k = -1`` / ``min_p = 0.0`` there for policy envs."""
         return (
             self.top_p < 1.0
+            or self.top_k is not None
             or self.extra_body.get("top_p", 1.0) < 1.0
             or self.extra_body.get("top_k") not in (None, -1, 0)
             or self.extra_body.get("min_p", 0.0) > 0.0
         )
+
+    def effective_top_k(self) -> int | None:
+        """The top-k bound this config samples with (field or extra_body), None if untruncated."""
+        extra_top_k = self.extra_body.get("top_k")
+        candidates = [k for k in (self.top_k, extra_top_k) if isinstance(k, int) and k > 0]
+        return max(candidates) if candidates else None
 
     def to_sampling_args(self) -> dict[str, Any]:
         """Convert to OAI-compatible sampling args dict, omitting None values."""
@@ -88,6 +101,8 @@ class TrainSamplingConfig(BaseConfig):
             "top_p": self.top_p,
             "logprobs": True,
         }
+        if self.top_k is not None:
+            args["top_k"] = self.top_k
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens
 
