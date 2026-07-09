@@ -78,6 +78,36 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
+### Multi-node SLURM bring-up gotchas
+
+- **Cache paths must be user-scoped.** On shared clusters `/tmp/.cache/*` may be
+  owned by another user; set `TRITON_CACHE_DIR` / `VLLM_CACHE_ROOT` /
+  `DG_JIT_CACHE_DIR` under a per-user path (e.g. `/tmp/<user>-cache/...`) in
+  `[env_vars]`. Triton JIT failures from EACCES are fatal mid-run.
+- **Node starts must be near-simultaneous for DP groups.** vLLM's DP
+  coordinator handshake has a hard 5-minute deadline
+  (`HANDSHAKE_TIMEOUT_MINS`, not env-tunable): if setup staggers nodes by more
+  than ~5 min, the early nodes' engines die waiting for the last node's
+  front-end. The sbatch template syncs the venv once at the batch level and
+  launches all nodes with a single srun for this reason.
+- **Don't let ranks re-sync uv concurrently.** Per-rank `uv run` without
+  `--no-sync` re-resolves the project; on a shared checkout the ranks race on
+  `~/.cache/uv` ("Text file busy" → exit 2 kills the job) and add ~30-60 s of
+  stagger per rank. The launch helper uses `uv run --no-sync`.
+- **Per-role vLLM overrides accept nested dicts.** `decode_vllm_overrides` /
+  `prefill_vllm_overrides` are JSON-serialized into the per-rank engine args
+  and applied after the base config (last key wins), so e.g.
+  `decode_vllm_overrides = { gpu_memory_utilization = 0.9, attention_config = { hisparse_config = { host_pool_gib = 256 } } }`
+  works as-is (see `configs/glm51_rlm_hisparse/`).
+- **HiSparse + llm-d routing**: set `non_cached_tokens = 1` (always route
+  prefills to prefill nodes). Decode-local prefill concurrent with NIXL
+  context arrivals can hit a device-side fault in HiSparse's mixed-batch
+  path (open follow-up in the HiSparse PR); do not enable the short-suffix
+  shortcut (e.g. 128) until that lands. Note `non_cached_tokens = 0`
+  disables P/D splitting entirely (everything decodes locally) — never use
+  0 with HiSparse. MTP on HiSparse is rolled back pending a sanitizer-clean
+  wheel; do not set `speculative_config` with the pinned HiSparse wheel.
+
 ## Summary
 
 | Command | Purpose | Typical use |
