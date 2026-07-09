@@ -3933,7 +3933,7 @@ dependencies = [
     { name = "uvloop" },
     { name = "verifiers", extra = ["harbor"] },
     { name = "vllm", version = "0.24.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
-    { name = "vllm", version = "0.24.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
+    { name = "vllm", version = "0.24.1.dev0+hisparse.c6f204424.cu129", source = { url = "https://github.com/faresobeid/vllm/releases/download/hisparse-c6f2044/vllm-0.24.1.dev0+hisparse.c6f204424.cu129-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "wandb" },
     { name = "wandb-workspaces" },
 ]
@@ -4168,7 +4168,7 @@ requires-dist = [
     { name = "verifiers", extras = ["harbor"], editable = "deps/verifiers" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.24.0" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl" },
-    { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/faresobeid/vllm/releases/download/hisparse-c6f2044/vllm-0.24.1.dev0+hisparse.c6f204424.cu129-cp312-cp312-linux_x86_64.whl" },
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wandb-workspaces", specifier = ">=0.4.3" },
@@ -6396,8 +6396,8 @@ provides-extras = ["zen", "bench", "tensorizer", "fastsafetensors", "instanttens
 
 [[package]]
 name = "vllm"
-version = "0.24.0+cu129"
-source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" }
+version = "0.24.1.dev0+hisparse.c6f204424.cu129"
+source = { url = "https://github.com/faresobeid/vllm/releases/download/hisparse-c6f2044/vllm-0.24.1.dev0+hisparse.c6f204424.cu129-cp312-cp312-linux_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -6476,7 +6476,7 @@ dependencies = [
     { name = "xgrammar" },
 ]
 wheels = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:597949743f2a00c0539d9e2ff0f67b32c608a378e973f99e7529fd6fa9445f70" },
+    { url = "https://github.com/faresobeid/vllm/releases/download/hisparse-c6f2044/vllm-0.24.1.dev0+hisparse.c6f204424.cu129-cp312-cp312-linux_x86_64.whl", hash = "sha256:978fc4f95e5b31e5b45b32136c7b8e36bf9f46736da05849d2a11325dd5d25da" },
 ]
 
 [package.metadata]
