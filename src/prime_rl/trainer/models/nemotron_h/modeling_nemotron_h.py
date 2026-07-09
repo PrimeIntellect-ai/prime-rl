@@ -516,7 +516,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
         routed_experts: Optional[torch.LongTensor] = None,
         *,
         seq_lens: torch.LongTensor,
-        seq_lens_are_global: bool = False,
+        seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
@@ -524,7 +524,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
             for non-MoE (Mamba/attention) layers are ignored.
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
-        seq_lens_are_global (`bool`, *optional*, defaults to `False`):
+        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -584,7 +584,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
         routed_experts: Optional[torch.LongTensor] = None,
         *,
         seq_lens: torch.LongTensor,
-        seq_lens_are_global: bool = False,
+        seq_lens_are_pre_shard: bool = False,
         **kwargs,
     ) -> PrimeLmOutput:
         if position_ids is None:
@@ -599,7 +599,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
-            seq_lens_are_global=seq_lens_are_global,
+            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
         )
 
         hidden_states = outputs.last_hidden_state

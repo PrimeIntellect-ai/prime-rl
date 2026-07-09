@@ -687,7 +687,7 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         routed_experts: Optional[torch.LongTensor] = None,
         *,
         seq_lens: torch.LongTensor,
-        seq_lens_are_global: bool = False,
+        seq_lens_are_pre_shard: bool = False,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -702,7 +702,7 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         if flash_attn_enabled:
             cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
                 seq_lens.to(device=inputs_embeds.device),
-                total_tokens=None if seq_lens_are_global else inputs_embeds.shape[1],
+                total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
             )
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
@@ -711,12 +711,12 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
                 raise ValueError("Packed Qwen3.5 batches with full_attention layers require flash attention")
             cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
                 seq_lens,
-                total_tokens=None if seq_lens_are_global else inputs_embeds.shape[1],
+                total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
             )
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        cu_seqlens_are_global = seq_lens_are_global
+        cu_seqlens_are_global = seq_lens_are_pre_shard
 
         for layer_idx, decoder_layer in enumerate(self.layers):
             routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
@@ -869,7 +869,7 @@ class Qwen3_5MoeVLMModel(nn.Module):
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
-        seq_lens_are_global: bool = False,
+        seq_lens_are_pre_shard: bool = False,
         **kwargs,
     ) -> MoeModelOutputWithPast:
         inputs_embeds, position_ids = self.prepare_inputs_embeds_and_position_ids(
@@ -891,14 +891,14 @@ class Qwen3_5MoeVLMModel(nn.Module):
             position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
             if routed_experts is not None:
                 routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_world_size)
-            seq_lens_are_global = True
+            seq_lens_are_pre_shard = True
 
         return self.language_model(
             inputs_embeds=inputs_embeds,
             position_ids=position_ids,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
-            seq_lens_are_global=seq_lens_are_global,
+            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
         )
 
 
@@ -1051,7 +1051,7 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         mm_token_type_ids: Optional[torch.LongTensor] = None,
         *,
         seq_lens: torch.LongTensor,
-        seq_lens_are_global: bool = False,
+        seq_lens_are_pre_shard: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5_moe for now"
@@ -1074,7 +1074,7 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
                 mm_token_type_ids=mm_token_type_ids,
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
-                seq_lens_are_global=seq_lens_are_global,
+                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
             )
         else:
             outputs = self.model(
@@ -1083,7 +1083,7 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
                 inputs_embeds=inputs_embeds,
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
-                seq_lens_are_global=seq_lens_are_global,
+                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
             )
 
         hidden_states = outputs.last_hidden_state
