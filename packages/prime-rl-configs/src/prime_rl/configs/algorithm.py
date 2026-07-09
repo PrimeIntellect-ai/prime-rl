@@ -10,9 +10,9 @@ assembly. There is no separate ``advantage`` sub-component and no preset layer.
 
 Each algorithm fixes two things:
 
-1. **Sampling** — which model generates train rollouts. ``sampling.source`` is
-   a model reference: ``"policy"`` (the live policy) or an inline frozen hosted
-   model.
+1. **Sampling** — where train rollouts come from. ``sampling.source`` is
+   ``"policy"`` (the live policy), an inline frozen hosted model, or a static
+   supervised dataset.
 2. **The per-token training signal** — credit assignment and loss routing,
    fused: one mapping from a finalized rollout to per-token ``(loss component,
    weight)``. Group-relative algorithms compute scalars on the orchestrator and
@@ -70,6 +70,49 @@ ModelReference: TypeAlias = Literal["policy"] | FrozenModelConfig
 version, sampling logprobs carried, rollouts age off-policy) or an inline
 externally-hosted frozen model."""
 
+
+class StaticDatasetConfig(BaseConfig):
+    """A Hugging Face dataset used as precomputed supervised trajectories."""
+
+    type: Literal["dataset"]
+    """Required (no default): the ``SamplingSource`` union is undiscriminated, so
+    without an explicit tag a frozen-model table that merely forgot ``base_url``
+    would silently validate as a dataset instead of raising the endpoint error."""
+
+    name: str
+    """Dataset path accepted by ``datasets.load_dataset``."""
+
+    split: str = "train"
+    """Dataset split to load."""
+
+    subset: str | None = None
+    """Optional dataset subset/config name."""
+
+    messages_column: str = "messages"
+    """Whole-chat messages column. Takes precedence when present."""
+
+    prompt_column: str = "prompt"
+    """Prompt column used with ``completion_column`` when no messages column is present."""
+
+    completion_column: str = "completion"
+    """Completion column used with ``prompt_column`` when no messages column is present."""
+
+    tools_column: str = "tools"
+    """Optional column of OpenAI-style tool definitions rendered into the prompt."""
+
+    max_examples: int | None = Field(None, ge=1)
+    """Optional cap on loaded examples for smoke tests and small runs."""
+
+
+SamplingSource: TypeAlias = ModelReference | StaticDatasetConfig
+
+SourceKind: TypeAlias = Literal["policy", "frozen_model", "dataset"]
+"""Which kind of source generates an env's train rollouts. ``"policy"`` is the
+live policy (client + env, sampling logprobs, version-salted prefix caches,
+off-policy aging). ``"frozen_model"`` is an externally hosted model (client +
+env, stable prefix cache, no staleness). ``"dataset"`` is local supervised
+trace replay (no client or env)."""
+
 ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
 
 
@@ -79,11 +122,13 @@ ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
 
 
 class SamplingConfig(BaseConfig):
-    source: ModelReference = "policy"
-    """Model reference for train rollout generation: ``"policy"`` (the live
-    policy — prefix caches salted per version, sampling logprobs requested,
-    rollouts age off-policy) or an inline frozen hosted model (stable prefix
-    cache, no sampling logprobs, rollouts never go stale)."""
+    source: SamplingSource = "policy"
+    """Train rollout source: ``"policy"`` (the live policy — prefix caches
+    salted per version, sampling logprobs requested, rollouts age off-policy),
+    an inline frozen hosted model (stable prefix cache, no sampling logprobs,
+    rollouts never go stale — hard distillation), or a static Hugging Face
+    dataset of supervised messages (no client, env, sampling logprobs, or
+    staleness)."""
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +217,7 @@ class BaseAlgoConfig(BaseConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     sampling: SamplingConfig = SamplingConfig()
-    """Sampling component: which model generates train rollouts."""
+    """Sampling component: where train rollouts come from."""
 
     @model_validator(mode="after")
     def validate_sampling_source(self):
@@ -182,9 +227,9 @@ class BaseAlgoConfig(BaseConfig):
         if self.action_loss_type in ("rl", "ref_kl") and self.sampling.source != "policy":
             raise ValueError(
                 f"algorithm '{self.type}' trains with the "
-                f"{self.action_loss_type} loss type but sampling.source is a frozen model — "
+                f"{self.action_loss_type} loss type but sampling.source is not the policy — "
                 "the importance ratio and trust region need the live policy's own sampling logprobs. "
-                "Use the 'sft' algorithm to distill frozen-model tokens."
+                "Use the 'sft' algorithm to train on a frozen model's or dataset's tokens."
             )
         return self
 
@@ -283,23 +328,26 @@ class OPSDAlgoConfig(BaseAlgoConfig):
 
 class SFTAlgoConfig(BaseAlgoConfig):
     type: Literal["sft"] = "sft"
-    """SFT distillation: cross-entropy on the sampled tokens. The ``ce`` loss
-    ignores advantages and SFT assigns none — it trains on every sampled token.
-    Reward-based filtering, if wanted, is an explicit filter, not smuggled
-    through an unused advantage stream."""
+    """Supervised fine-tuning: cross-entropy on the source's target tokens. The
+    ``ce`` loss ignores advantages and SFT assigns none — it trains on every
+    target token. The source decides the flavor: a frozen hosted model
+    (``sampling.source`` an inline hosted model) is distillation on freshly
+    sampled teacher tokens; a static dataset (``sampling.source.type =
+    "dataset"``) is replay of stored supervised traces. The policy's own
+    samples are rejected — CE on them is not a supervision target."""
 
     action_loss_type: ClassVar[ActionLossType] = "ce"
 
     @model_validator(mode="after")
     def require_frozen_source(self):
-        """sft's teacher is the model it samples from — ``sampling.source`` must
-        be a frozen hosted model, not the policy (CE on the policy's own tokens
-        is not a distillation target)."""
+        """sft trains on its source's target tokens — ``sampling.source`` must
+        be a frozen hosted model or a static dataset, not the policy (CE on the
+        policy's own tokens is not a supervision target)."""
         if self.sampling.source == "policy":
             raise ValueError(
                 f"algorithm '{self.type}' needs a teacher to sample rollouts from — "
-                "CE on the policy's own tokens is not a distillation target. Set "
-                "sampling.source to an inline hosted model (name + base_url)."
+                "CE on the policy's own tokens is not a distillation target. Set sampling.source "
+                "to an inline hosted model (name + base_url) or a static dataset (type = 'dataset')."
             )
         return self
 
@@ -316,7 +364,7 @@ its class defaults are the vetted setting.
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
-- ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
+- ``sft`` — CE on supervised target tokens from a non-policy source: a frozen ``sampling.source`` model (distillation) or a static HF ``dataset`` (replay of stored traces).
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
 
 A new credit-assignment scheme is a new named algorithm in code (subclass
