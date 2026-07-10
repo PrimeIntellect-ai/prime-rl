@@ -54,7 +54,11 @@ def save_state_dict(
     save_sharded: bool = True,
     adapter: bool = False,
 ):
-    """Save a state dict to a local directory in safetensors or torch format."""
+    """Save a state dict to a local directory in safetensors or torch format.
+
+    Sharded saves consume ``state_dict`` as shards are written to keep peak memory
+    bounded. Callers that need the mapping afterward must pass a copy.
+    """
     logger = get_logger()
     if adapter:
         weights_name = ADAPTER_SAFE_WEIGHTS_NAME if save_format == "safetensors" else ADAPTER_WEIGHTS_NAME
@@ -112,7 +116,8 @@ def atomic_save_state_dict(state_dict: dict[str, Tensor], save_dir: Path, **kwar
 
     A crash before the rename leaves only `<name>.tmp`, so `save_dir` is never
     observed partially written (the failure mode that can poison a shared
-    weight cache). `save_dir` must not already exist.
+    weight cache). `save_dir` must not already exist. Like ``save_state_dict``,
+    sharded saves consume ``state_dict``.
     """
     save_dir = Path(save_dir)
     tmp_dir = save_dir.parent / f"{save_dir.name}.tmp"

@@ -9,6 +9,7 @@ from prime_rl.trainer.weights import atomic_save_state_dict, load_state_dict
 def test_atomic_save_roundtrips(tmp_path):
     save_dir = tmp_path / "out"
     state_dict = {"a": torch.arange(4, dtype=torch.float32), "b": torch.ones(2, 2)}
+    expected = {key: tensor.clone() for key, tensor in state_dict.items()}
 
     atomic_save_state_dict(state_dict, save_dir)
 
@@ -16,8 +17,8 @@ def test_atomic_save_roundtrips(tmp_path):
     # No temp sibling left behind after a clean run.
     assert not (tmp_path / "out.tmp").exists()
     loaded = load_state_dict(save_dir)
-    assert set(loaded) == set(state_dict)
-    for key, tensor in state_dict.items():
+    assert set(loaded) == set(expected)
+    for key, tensor in expected.items():
         assert torch.equal(loaded[key], tensor)
 
 
