@@ -302,6 +302,12 @@ class ModelConfig(BaseModelConfig):
 
         return self
 
+    @model_validator(mode="after")
+    def mxfp8_only_with_torch_ep_backend(self):
+        if isinstance(self.quantization, MXFP8Config) and self.ep_comm_backend != "torch":
+            raise ValueError("MXFP8 quantization requires model.ep_comm_backend='torch'.")
+        return self
+
 
 class TokenizerConfig(BaseConfig):
     name: str | None = None
