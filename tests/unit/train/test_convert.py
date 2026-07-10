@@ -77,7 +77,7 @@ class _FakeCausalLM:
         return state_dict
 
 
-def _patch_common(monkeypatch, *, cls, keys, save_calls=None):
+def _patch_common(monkeypatch, *, cls, keys, save_calls=None, published=True):
     monkeypatch.setattr("transformers.AutoConfig.from_pretrained", lambda *a, **k: _FakeConfig(), raising=False)
     # convert.py imports these lazily from their source modules, so patch there.
     monkeypatch.setattr("prime_rl.trainer.models.get_custom_causal_lm_cls", lambda config: cls)
@@ -88,7 +88,7 @@ def _patch_common(monkeypatch, *, cls, keys, save_calls=None):
     def stream_convert(source_dir, save_dir, convert_layer, is_converted, **kwargs):
         state_dict = convert_layer({"w": torch.zeros(1)}, 0)
         recorded.append((state_dict, save_dir))
-        return True
+        return published
 
     monkeypatch.setattr(
         "prime_rl.trainer.weights.stream_convert_state_dict",
@@ -157,6 +157,13 @@ def test_incomplete_prime_is_rebuilt(tmp_path, monkeypatch):
     assert len(save_calls) == 1
 
 
+def test_concurrent_prime_winner_returns_exists(tmp_path, monkeypatch):
+    cls = type("HfCls", (_FakeCausalLM,), {"prime": False, "hf": True, "converted": False})
+    _patch_common(monkeypatch, cls=cls, keys=["x"], published=False)
+
+    assert convert_snapshot_to_prime(tmp_path) == "exists"
+
+
 def test_stream_convert_state_dict_roundtrips_by_layer(tmp_path):
     source_dir = tmp_path / "source"
     save_dir = tmp_path / "prime"
@@ -175,7 +182,7 @@ def test_stream_convert_state_dict_roundtrips_by_layer(tmp_path):
             state_dict[f"model.layers.{layer_idx}.mlp.experts.w1"] = state_dict.pop(gate_key)
         return state_dict
 
-    stream_convert_state_dict(
+    published = stream_convert_state_dict(
         source_dir,
         save_dir,
         convert_layer,
@@ -190,3 +197,14 @@ def test_stream_convert_state_dict_roundtrips_by_layer(tmp_path):
         "model.layers.0.mlp.experts.w1",
         "model.layers.1.self_attn.weight",
     }
+    assert published is True
+
+    published = stream_convert_state_dict(
+        source_dir,
+        save_dir,
+        convert_layer,
+        lambda keys: "model.layers.0.mlp.experts.w1" in keys,
+        overwrite=True,
+        max_shard_size=8,
+    )
+    assert published is False

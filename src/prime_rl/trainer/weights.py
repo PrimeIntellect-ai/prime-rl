@@ -164,7 +164,19 @@ def stream_convert_state_dict(
         writer.finish()
         if not is_converted(dict.fromkeys(writer.keys)):
             raise ValueError("streaming conversion did not produce the expected state-dict format")
-        return atomic_publish_state_dict_dir(staged_dir, save_dir, overwrite=overwrite)
+
+        def existing_is_converted(path: Path) -> bool:
+            if not is_state_dict_complete(path):
+                return False
+            keys = dict.fromkeys(load_state_dict_keys(path))
+            return is_converted(keys)
+
+        return atomic_publish_state_dict_dir(
+            staged_dir,
+            save_dir,
+            overwrite=overwrite,
+            existing_is_valid=existing_is_converted,
+        )
     finally:
         if staged_dir.exists():
             shutil.rmtree(staged_dir)
@@ -308,7 +320,13 @@ def _remove_path(path: Path) -> None:
         path.unlink()
 
 
-def atomic_publish_state_dict_dir(staged_dir: Path, save_dir: Path, *, overwrite: bool = False) -> bool:
+def atomic_publish_state_dict_dir(
+    staged_dir: Path,
+    save_dir: Path,
+    *,
+    overwrite: bool = False,
+    existing_is_valid: Callable[[Path], bool] | None = None,
+) -> bool:
     """Atomically publish a complete staged state-dict directory."""
     staged_dir = Path(staged_dir)
     save_dir = Path(save_dir)
@@ -318,13 +336,18 @@ def atomic_publish_state_dict_dir(staged_dir: Path, save_dir: Path, *, overwrite
     save_dir.parent.mkdir(parents=True, exist_ok=True)
     with _lock_save_dir(save_dir):
         if save_dir.exists():
-            if not overwrite and is_state_dict_complete(save_dir):
+            if existing_is_valid is not None:
+                if existing_is_valid(save_dir):
+                    return False
+            elif not overwrite and is_state_dict_complete(save_dir):
                 return False
             _remove_path(save_dir)
         try:
             os.rename(staged_dir, save_dir)
         except OSError:
-            if not overwrite and is_state_dict_complete(save_dir):
+            if existing_is_valid is not None and existing_is_valid(save_dir):
+                return False
+            if existing_is_valid is None and not overwrite and is_state_dict_complete(save_dir):
                 return False
             raise
         return True

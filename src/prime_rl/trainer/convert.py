@@ -76,13 +76,16 @@ def convert_snapshot_to_prime(
         return "not-hf"
 
     logger.info(f"converting HF -> PrimeRL with {model_cls.__name__}")
-    stream_convert_state_dict(
+    published = stream_convert_state_dict(
         snapshot,
         prime,
         model_cls.convert_layer_to_prime,
         model_cls.is_prime_state_dict,
         overwrite=prime.exists(),
     )
+    if not published:
+        logger.info(f"complete prime/ was published concurrently at {prime}")
+        return "exists"
     logger.info(f"wrote {prime}")
     return "converted"
 
