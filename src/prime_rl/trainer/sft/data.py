@@ -235,13 +235,15 @@ class SFTDataset(StatefulIterableDataset):
         # body-only path: the message content is trained, not the role
         # scaffolding (e.g. <|im_start|>assistant) the harness emits.
         content_sft_roles = {role for role in ("user", "system", "tool") if getattr(self.loss_mask_config, role)}
-        input_ids, loss_mask = build_training_sample(
+        sample = build_training_sample(
             self.renderer,
             messages,
             role_to_mask=should_mask,
             tools=tools,
             content_sft_roles=content_sft_roles or None,
         )
+        input_ids = list(sample.token_ids)
+        loss_mask = list(sample.loss_mask)
 
         # Causal shift: model predicts next token from current.
         target_ids = input_ids.copy()[1:]
