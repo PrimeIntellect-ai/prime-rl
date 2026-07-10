@@ -130,7 +130,7 @@ def _unique_tolerations(
 class GPUSchedulingProfile:
     """Image placement plus the stricter placement required by GPU consumers."""
 
-    runtime_class_name: str
+    runtime_class_name: str | None
     architecture: str
     product: str
     node_pool: str
@@ -141,7 +141,6 @@ class GPUSchedulingProfile:
 
     def __post_init__(self) -> None:
         required = {
-            "runtime_class_name": self.runtime_class_name,
             "architecture": self.architecture,
             "product": self.product,
             "node_pool": self.node_pool,
@@ -150,6 +149,8 @@ class GPUSchedulingProfile:
         empty = [name for name, value in required.items() if not value]
         if empty:
             raise ValueError(f"GPU scheduling fields must not be empty: {empty}")
+        if self.runtime_class_name == "":
+            raise ValueError("runtime_class_name must be non-empty or None")
         if not self.tolerations:
             raise ValueError("GPU scheduling requires at least one toleration")
         required_gpu_toleration = KubernetesToleration(key="nvidia.com/gpu")
@@ -188,12 +189,29 @@ class GPUSchedulingProfile:
         return [toleration.as_manifest() for toleration in self.image_tolerations]
 
     @property
+    def image_placement(self) -> dict[str, Any]:
+        return {
+            "nodeSelector": self.image_node_selector,
+            "tolerations": self.image_toleration_manifests,
+        }
+
+    @property
     def gpu_tolerations(self) -> tuple[KubernetesToleration, ...]:
         return _unique_tolerations((*self.image_tolerations, *self.tolerations, *self.additional_gpu_tolerations))
 
     @property
     def toleration_manifests(self) -> list[dict[str, str]]:
         return [toleration.as_manifest() for toleration in self.gpu_tolerations]
+
+    @property
+    def gpu_placement(self) -> dict[str, Any]:
+        placement = {
+            "nodeSelector": self.node_selector,
+            "tolerations": self.toleration_manifests,
+        }
+        if self.runtime_class_name is not None:
+            placement["runtimeClassName"] = self.runtime_class_name
+        return placement
 
 
 @dataclass(frozen=True)
@@ -362,9 +380,7 @@ def _worker_service(
         ],
     }
     pod_spec = {
-        "runtimeClassName": options.gpu_scheduling.runtime_class_name,
-        "nodeSelector": options.gpu_scheduling.node_selector,
-        "tolerations": options.gpu_scheduling.toleration_manifests,
+        **options.gpu_scheduling.gpu_placement,
         "volumes": [
             {
                 "name": "dynamo-engine-config",
@@ -492,8 +508,7 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         ],
     }
     frontend_pod_spec = {
-        "nodeSelector": options.gpu_scheduling.image_node_selector,
-        "tolerations": options.gpu_scheduling.image_toleration_manifests,
+        **options.gpu_scheduling.image_placement,
         "mainContainer": frontend_container,
     }
     if chat_template_content is not None:
@@ -564,15 +579,8 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         orchestrator_command=options.orchestrator_command,
         trainer_command=options.trainer_command,
         trainer_gpu_count=options.trainer_gpu_count,
-        orchestrator_placement={
-            "nodeSelector": options.gpu_scheduling.image_node_selector,
-            "tolerations": options.gpu_scheduling.image_toleration_manifests,
-        },
-        trainer_placement={
-            "runtimeClassName": options.gpu_scheduling.runtime_class_name,
-            "nodeSelector": options.gpu_scheduling.node_selector,
-            "tolerations": options.gpu_scheduling.toleration_manifests,
-        },
+        orchestrator_placement=options.gpu_scheduling.image_placement,
+        trainer_placement=options.gpu_scheduling.gpu_placement,
         shared_pvc=options.shared_pvc,
         model_cache_pvc=options.model_cache_pvc,
         hf_token_secret=options.hf_token_secret,

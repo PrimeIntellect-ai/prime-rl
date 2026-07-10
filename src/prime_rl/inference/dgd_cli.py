@@ -24,7 +24,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dynamo-sha", required=True)
     parser.add_argument("--image-digest", required=True)
     parser.add_argument("--run-name")
-    parser.add_argument("--gpu-runtime-class", default="nvidia")
+    runtime_class = parser.add_mutually_exclusive_group()
+    runtime_class.add_argument("--gpu-runtime-class", default="nvidia")
+    runtime_class.add_argument(
+        "--no-gpu-runtime-class",
+        action="store_true",
+        help="Request nvidia.com/gpu resources without setting a Kubernetes RuntimeClass",
+    )
     parser.add_argument("--gpu-architecture", required=True)
     parser.add_argument("--gpu-product", required=True)
     parser.add_argument("--gpu-node-pool", required=True)
@@ -84,7 +90,7 @@ def main() -> None:
         image_digest=args.image_digest,
         run_name=args.run_name or args.release_name,
         gpu_scheduling=GPUSchedulingProfile(
-            runtime_class_name=args.gpu_runtime_class,
+            runtime_class_name=None if args.no_gpu_runtime_class else args.gpu_runtime_class,
             architecture=args.gpu_architecture,
             product=args.gpu_product,
             node_pool=args.gpu_node_pool,

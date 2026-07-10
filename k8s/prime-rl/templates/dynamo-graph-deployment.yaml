@@ -255,9 +255,11 @@
 {{- range $serviceName, $service := dict "VllmDecodeWorker" $decode "VllmPrefillWorker" $prefill }}
 {{- $workerPod := required (printf "%s extraPodSpec is required" $serviceName) $service.extraPodSpec }}
 {{- $expectedTrainerPlacement := dict
-      "runtimeClassName" (required (printf "%s runtimeClassName is required" $serviceName) $workerPod.runtimeClassName)
       "nodeSelector" (required (printf "%s nodeSelector is required" $serviceName) $workerPod.nodeSelector)
       "tolerations" (required (printf "%s tolerations are required" $serviceName) $workerPod.tolerations) }}
+{{- if hasKey $workerPod "runtimeClassName" }}
+{{- $_ := set $expectedTrainerPlacement "runtimeClassName" (required (printf "%s runtimeClassName must not be empty" $serviceName) $workerPod.runtimeClassName) }}
+{{- end }}
 {{- if ne (toJson $trainerPlacement) (toJson $expectedTrainerPlacement) }}
 {{- fail "trainer placement must match every manifest-bound DGD worker placement" }}
 {{- end }}

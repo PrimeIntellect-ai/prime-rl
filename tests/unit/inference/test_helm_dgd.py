@@ -1,6 +1,7 @@
 import hashlib
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -144,6 +145,34 @@ def test_external_controller_mode_renders_only_five_dgd_inference_pods(tmp_path:
     assert sum(service["replicas"] for service in graph["spec"]["services"].values()) == 5
     assert rendered.count("kind: DynamoGraphDeployment") == 1
     assert rendered.count("name: p4-math-frontend-rl") == 1
+
+
+@pytest.mark.parametrize("external_controller", [False, True])
+def test_dgd_chart_renders_without_gpu_runtime_class(
+    tmp_path: Path,
+    external_controller: bool,
+):
+    options = render_options(tmp_path, external_controller=external_controller)
+    options = replace(
+        options,
+        gpu_scheduling=replace(options.gpu_scheduling, runtime_class_name=None),
+    )
+    paths = write_dgd_artifacts(inference_config(), options)
+
+    rendered = helm_template("-f", str(paths["values"]))
+    graph = rendered_resource(rendered, "DynamoGraphDeployment", "p4-math")
+    workload = json.loads(
+        json.loads(paths["values"].read_text())["inference"]["dynamoGraph"]["workloadBinding"]["canonical"]
+    )
+
+    assert "runtimeClassName" not in workload["trainer"]["placement"]
+    for role in ("VllmPrefillWorker", "VllmDecodeWorker"):
+        assert "runtimeClassName" not in graph["spec"]["services"][role]["extraPodSpec"]
+    if external_controller:
+        assert "kind: StatefulSet" not in rendered
+    else:
+        trainer = rendered_resource(rendered, "StatefulSet", "p4-math-trainer")
+        assert "runtimeClassName" not in trainer["spec"]["template"]["spec"]
 
 
 def test_chart_managed_trainer_uses_exact_bound_gpu_resources(tmp_path: Path):

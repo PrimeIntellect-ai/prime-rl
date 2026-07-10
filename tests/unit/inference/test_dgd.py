@@ -525,6 +525,7 @@ def test_cli_accepts_typed_additional_image_and_gpu_tolerations(monkeypatch: pyt
             "NVIDIA-GB200",
             "--gpu-node-pool",
             "customer-gpu-o7v",
+            "--no-gpu-runtime-class",
             "--external-controller",
             "--trainer-gpus",
             "4",
@@ -540,6 +541,7 @@ def test_cli_accepts_typed_additional_image_and_gpu_tolerations(monkeypatch: pyt
     assert args.image_toleration == [KubernetesToleration(key="image-extra")]
     assert args.gpu_toleration == [KubernetesToleration(key="gpu-extra", operator="Equal", value="true")]
     assert args.external_controller is True
+    assert args.no_gpu_runtime_class is True
     assert args.trainer_gpus == 4
 
 
@@ -555,6 +557,18 @@ def test_gpu_scheduling_changes_manifest_identity(tmp_path: Path):
         first_resource["metadata"]["annotations"]["prime-rl.nvidia.com/manifest-sha256"]
         != (second_resource["metadata"]["annotations"]["prime-rl.nvidia.com/manifest-sha256"])
     )
+
+
+def test_gpu_runtime_class_can_be_explicitly_omitted(tmp_path: Path):
+    scheduling = replace(GPU_SCHEDULING, runtime_class_name=None)
+    options = replace(render_options(tmp_path), gpu_scheduling=scheduling)
+
+    values = build_dgd_values(inference_config(), options)
+    services = values["inference"]["dynamoGraph"]["resource"]["spec"]["services"]
+
+    assert "runtimeClassName" not in services["Frontend"]["extraPodSpec"]
+    assert "runtimeClassName" not in services["VllmPrefillWorker"]["extraPodSpec"]
+    assert "runtimeClassName" not in services["VllmDecodeWorker"]["extraPodSpec"]
 
 
 def test_external_controller_binding_disables_chart_workloads(tmp_path: Path):
