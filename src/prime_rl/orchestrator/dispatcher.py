@@ -11,13 +11,8 @@
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight rollouts of the opposite kind drain
   naturally on either side of an eval boundary.
-- ``on_version_pending`` (called by the watcher before the engines pause for
-  the weight update) bumps ``off_policy_steps`` on in-flight train rollouts and
-  drops groups past ``max_off_policy_steps``.
-  Eval rollouts are measurements for the policy version they started with,
-  so they are allowed to finish even if training advances. Train rollouts
-  sampled from a frozen model never age — their sampler doesn't change
-  with policy updates.
+- Dynamo fences and settles eval/live-policy work before worker pause; other
+  backends retain the off-policy window. Frozen-pool rollouts survive.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
   count-to-``group_size`` finalization still fires.
 """
@@ -27,15 +22,16 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
 
+from prime_rl.orchestrator.dispatcher_metrics import DispatcherMetrics
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
+from prime_rl.orchestrator.policy_gate import MutablePolicyGate
+from prime_rl.orchestrator.pool_identity import pools_may_alias
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     GroupState,
@@ -44,7 +40,7 @@ from prime_rl.orchestrator.types import (
     Rollout,
     RolloutKind,
 )
-from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
+from prime_rl.utils.async_utils import gather_shielded, safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool, client_identity
 from prime_rl.utils.logger import get_logger
 
@@ -56,69 +52,12 @@ class DispatcherMode(Enum):
     PREFER_EVAL = auto()
 
 
-@dataclass
-class DispatcherMetrics:
-    """Per-tick drain counters for the orchestrator's periodic log.
-    ``drained()`` returns the current values and clears them; point-in-time
-    gauges live on ``RolloutDispatcher.gauges`` instead."""
-
-    cancelled_by_kind_env: dict[tuple[Literal["train", "eval"], str], int] = field(
-        default_factory=lambda: defaultdict(int)
-    )
-    errored_by_kind_env: dict[tuple[Literal["train", "eval"], str], int] = field(
-        default_factory=lambda: defaultdict(int)
-    )
-
-    def record_cancellation(self, *, kind: Literal["train", "eval"], env_name: str, n: int = 1) -> None:
-        self.cancelled_by_kind_env[(kind, env_name)] += n
-
-    def record_error(self, *, kind: Literal["train", "eval"], env_name: str) -> None:
-        self.errored_by_kind_env[(kind, env_name)] += 1
-
-    def drained(self, *, train_envs: set[str], eval_envs: set[str]) -> dict[str, float]:
-        """Return per-tick counters and clear them. Emits the full pre-
-        registered key set every tick (zero when no activity) so the wandb
-        time axis stays dense and ``define_metric`` lines up."""
-        out: dict[str, float] = {}
-        for kind in ("train", "eval"):
-            envs = train_envs if kind == "train" else eval_envs
-            cancelled_total = sum(self.cancelled_by_kind_env.get((kind, e), 0) for e in envs)
-            errored_total = sum(self.errored_by_kind_env.get((kind, e), 0) for e in envs)
-            out[f"dispatcher/cancelled/{kind}"] = float(cancelled_total)
-            out[f"dispatcher/errored/{kind}"] = float(errored_total)
-        for env in train_envs | eval_envs:
-            out[f"dispatcher/cancelled/{env}"] = float(
-                self.cancelled_by_kind_env.get(("train", env), 0) + self.cancelled_by_kind_env.get(("eval", env), 0)
-            )
-            out[f"dispatcher/errored/{env}"] = float(
-                self.errored_by_kind_env.get(("train", env), 0) + self.errored_by_kind_env.get(("eval", env), 0)
-            )
-        self.cancelled_by_kind_env.clear()
-        self.errored_by_kind_env.clear()
-        return out
-
-    @staticmethod
-    def drain_keys(*, train_envs: set[str], eval_envs: set[str]) -> list[str]:
-        """Full set of keys ``drained`` may emit; used by the periodic
-        logger for ``wandb.define_metric``."""
-        keys = [
-            "dispatcher/cancelled/train",
-            "dispatcher/cancelled/eval",
-            "dispatcher/errored/train",
-            "dispatcher/errored/eval",
-        ]
-        for env in train_envs | eval_envs:
-            keys.append(f"dispatcher/cancelled/{env}")
-            keys.append(f"dispatcher/errored/{env}")
-        return keys
-
-
 class RolloutDispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules
     rollouts under shared capacity, and emits ``Rollout``\\ s to
-    ``out_q``. The watcher drives ``on_version_pending`` for off-policy
-    cancellation; the orchestrator triggers eval epochs."""
+    ``out_q``. The watcher drives ``on_version_pending`` for the policy-update
+    barrier; the orchestrator triggers eval epochs."""
 
     def __init__(
         self,
@@ -132,6 +71,8 @@ class RolloutDispatcher:
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
+        enforce_policy_update_barrier: bool,
+        policy_gate: MutablePolicyGate | None = None,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -142,6 +83,8 @@ class RolloutDispatcher:
         self.train_source = train_source
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
+        self.enforce_policy_update_barrier = enforce_policy_update_barrier
+        self.policy_gate = policy_gate or MutablePolicyGate(policy, enabled=enforce_policy_update_barrier)
 
         self.max_inflight = max_inflight_rollouts
         self.inflight_permits = 0
@@ -156,14 +99,11 @@ class RolloutDispatcher:
         self.out_q: asyncio.Queue[Rollout] = asyncio.Queue(maxsize=max(8, self.max_inflight))
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
-        # Set by the orchestrator after the final train step; pipeline then
-        # winds down without scheduling new train rollouts
+        # Set after the final train step to wind down new scheduling.
         self.train_scheduling_disabled: bool = False
         self.metrics = DispatcherMetrics()
 
-        # Orchestrator-owned gate. When clear, ``fill_inflight`` returns
-        # without scheduling new groups. The dispatcher itself doesn't know
-        # *why* — the orchestrator toggles this based on step / policy lead.
+        # Orchestrator-owned step/policy-lead gate.
         self.dispatch_allowed = asyncio.Event()
         self.dispatch_allowed.set()
 
@@ -267,40 +207,181 @@ class RolloutDispatcher:
             self.task = None
 
     async def on_version_pending(self, step: int) -> None:
-        """Bump off-policy counters and drop groups past
-        ``max_off_policy_steps`` (drop_group emits ``Cancelled`` markers so
-        the sink still finalizes the partial group). Eval rollouts are not
-        aged because they are tied to their start-time policy version.
+        """Prepare for mutation: Dynamo fences/drains mutable-policy requests
+        before worker pause; other backends retain their off-policy window.
+        Pre-pause cancellation lets P/D abort and connector cleanup settle."""
+        if not self.enforce_policy_update_barrier:
+            await self._advance_off_policy_window()
+            return
 
-        Runs *before* the inference engines are paused for the weight update so
-        the resulting aborts are processed while the engine is still stepping —
-        otherwise the orphaned KV transfers crash the decode engine on resume
-        (see ``WeightWatcher.apply_policy_update``)."""
+        await self.policy_gate.begin_update(step=step)
+        claimed_groups, claimed_tasks = self._claim_mutable_policy_work()
+        results, cancellation = await gather_shielded(
+            self._settle_policy_requests(claimed_groups, claimed_tasks),
+            self.policy_gate.wait_idle(),
+        )
+        failures = [result for result in results if isinstance(result, BaseException)]
+        primary: BaseException | None = cancellation or (failures[0] if failures else None)
+        if primary is not None:
+            siblings = failures if cancellation is not None else failures[1:]
+            for sibling in siblings:
+                primary.add_note(f"Another policy barrier drain failed: {sibling!r}")
+            raise primary
+
+    async def on_new_version(self, step: int) -> None:
+        """Reopen admission after the new policy is live."""
+        if self.enforce_policy_update_barrier:
+            await self._reopen_policy_admission()
+
+    async def on_version_update_failed(self, step: int, error: BaseException) -> None:
+        """Roll back only the transition fence; the policy stays unchanged."""
+        if self.enforce_policy_update_barrier:
+            await self._reopen_policy_admission()
+
+    @property
+    def policy_update_pending(self) -> bool:
+        return self.policy_gate.pending
+
+    async def _reopen_policy_admission(self) -> None:
+        await self.policy_gate.finish_update()
+
+    async def _advance_off_policy_window(self) -> None:
+        """Retain the established non-Dynamo in-flight tolerance policy."""
         stale_groups: set[uuid.UUID] = set()
-        cancelled = 0
         for meta in self.inflight.values():
             if meta.kind != "train":
                 continue
-            # Frozen-sourced rollouts never go stale — their sampler doesn't
-            # change with policy updates.
             if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
                 continue
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:
                 stale_groups.add(meta.group_id)
 
-        for gid in stale_groups:
-            removed = await self.drop_group(gid)
-            cancelled += removed
-
+        cancelled = 0
+        for group_id in stale_groups:
+            cancelled += await self.drop_group(group_id)
         if cancelled:
             get_logger().warning(
                 f"Cancelled {cancelled} train rollouts past max_off_policy_steps={self.max_off_policy_steps}. "
                 "Consider increasing it to avoid this."
             )
 
-    async def on_new_version(self, step: int) -> None:
-        """No-op: the dispatcher drains in ``on_version_pending`` (pre-pause)."""
+    def _uses_mutable_policy(self, kind: RolloutKind, env_name: str) -> bool:
+        if kind == "eval":
+            return True
+        pool, _model_name, samples_from_live_policy = self._train_pool_for(env_name)
+        # A separately-constructed "frozen" pool is safe only when its model
+        # and request/admin endpoints do not alias the mutable policy service.
+        return samples_from_live_policy or pools_may_alias(pool, self.policy_pool)
+
+    def _claim_mutable_policy_work(
+        self,
+    ) -> tuple[dict[uuid.UUID, GroupState], list[tuple[asyncio.Task, InflightRollout]]]:
+        group_ids = {
+            group_id for group_id, group in self.groups.items() if self._uses_mutable_policy(group.kind, group.env_name)
+        }
+        group_ids.update(
+            meta.group_id for meta in self.inflight.values() if self._uses_mutable_policy(meta.kind, meta.env_name)
+        )
+
+        claimed_groups = {
+            group_id: group for group_id in group_ids if (group := self.groups.pop(group_id, None)) is not None
+        }
+        claimed_tasks: list[tuple[asyncio.Task, InflightRollout]] = []
+        for task, meta in list(self.inflight.items()):
+            if meta.group_id not in group_ids:
+                continue
+            del self.inflight[task]
+            self.release(meta.rollout_count)
+            claimed_tasks.append((task, meta))
+        return claimed_groups, claimed_tasks
+
+    async def _settle_policy_requests(
+        self,
+        groups: dict[uuid.UUID, GroupState],
+        claimed: list[tuple[asyncio.Task, InflightRollout]],
+    ) -> None:
+        tasks = [task for task, _meta in claimed]
+        already_settled = {task for task in tasks if task.done()}
+        for task in tasks:
+            task.cancel()
+
+        results: list[object] = []
+        cancellation: asyncio.CancelledError | None = None
+        if tasks:
+            results, cancellation = await gather_shielded(*tasks)
+
+        metadata_by_group: dict[uuid.UUID, InflightRollout] = {}
+        for _task, meta in claimed:
+            metadata_by_group.setdefault(meta.group_id, meta)
+
+        marker_results, marker_cancellation = await gather_shielded(
+            self._emit_policy_cancellation_markers(groups, metadata_by_group)
+        )
+
+        failures = [
+            result
+            for task, result in zip(tasks, results, strict=True)
+            if task not in already_settled
+            and isinstance(result, BaseException)
+            and not isinstance(result, asyncio.CancelledError)
+        ]
+        failures.extend(result for result in marker_results if isinstance(result, BaseException))
+        primary: BaseException | None = cancellation or marker_cancellation or (failures[0] if failures else None)
+        if primary is not None:
+            siblings = failures if cancellation is not None or marker_cancellation is not None else failures[1:]
+            for sibling in siblings:
+                primary.add_note(f"Another policy barrier cleanup failed: {sibling!r}")
+            raise primary
+
+    async def _emit_policy_cancellation_markers(
+        self,
+        groups: dict[uuid.UUID, GroupState],
+        metadata_by_group: dict[uuid.UUID, InflightRollout],
+    ) -> None:
+        """Finish every claimed group; cancellation cannot interrupt this transaction."""
+        cancelled = 0
+        for group_id, group in groups.items():
+            owed = max(0, group.target_rollouts - group.emitted)
+            if owed == 0:
+                continue
+            meta = metadata_by_group.get(group_id) or InflightRollout(
+                kind=group.kind,
+                env_name=group.env_name,
+                group_id=group_id,
+                policy_version=group.policy_version_at_start,
+                rollout_count=1,
+                eval_step=group.eval_step,
+            )
+            for _ in range(owed):
+                trace = Rollout(
+                    task=vf.Task(idx=group.task_idx, prompt=None),
+                    errors=[vf.Error(type="Cancelled", message="Policy update barrier")],
+                    stop_condition="error",
+                )
+                await self._emit_claimed_rollout(meta, group, trace)
+            self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name, n=owed)
+            cancelled += owed
+        if cancelled:
+            get_logger().debug(f"Policy update barrier cancelled {cancelled} mutable-policy rollout(s)")
+
+    async def _emit_claimed_rollout(
+        self,
+        meta: InflightRollout,
+        group: GroupState,
+        rollout: Rollout,
+    ) -> None:
+        """Enqueue a barrier-owned marker before committing group accounting."""
+        rollout.kind = meta.kind
+        rollout.env_name = meta.env_name
+        rollout.group_id = meta.group_id
+        rollout.policy_version = group.policy_version_at_start
+        rollout.off_policy_steps = meta.off_policy_steps
+        if meta.kind == "eval":
+            assert group.eval_step is not None, "eval rollout missing eval_step"
+            rollout.eval_step = group.eval_step
+        await self.out_q.put(rollout)
+        group.emitted += 1
 
     async def fill_inflight(self) -> None:
         """Schedule new rollouts up to ``max_inflight``, honoring
@@ -309,28 +390,26 @@ class RolloutDispatcher:
         respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
         ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
         while True:
-            if self.available_permits <= 0:
-                return
+            async with self.policy_gate.scheduling_admission() as admitted:
+                if not admitted or self.available_permits <= 0:
+                    return
 
-            if self.mode == DispatcherMode.PREFER_EVAL:
-                # PREFER_EVAL is only entered when the orchestrator triggers
-                # eval, which requires ``eval_source`` to be configured
-                assert self.eval_source is not None
-                if not self.eval_has_work:
-                    # Eval source + all eval groups fully dispatched. Flip
-                    # to PREFER_TRAIN so any remaining permits go to train
-                    # while the in-flight eval tail completes naturally
-                    self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
-                    continue
-                scheduled = await self.try_schedule("eval")
-                if not scheduled:
-                    return
-            else:  # PREFER_TRAIN — respects the orchestrator's dispatch gate
-                if not self.dispatch_allowed.is_set():
-                    return
-                scheduled = await self.try_schedule("train")
-                if not scheduled:
-                    return
+                if self.mode == DispatcherMode.PREFER_EVAL:
+                    # PREFER_EVAL implies a configured eval source.
+                    assert self.eval_source is not None
+                    if not self.eval_has_work:
+                        # Fill remaining permits with train while eval drains.
+                        self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
+                        continue
+                    scheduled = await self.try_schedule("eval")
+                    if not scheduled:
+                        return
+                else:  # PREFER_TRAIN — respects the orchestrator's dispatch gate
+                    if not self.dispatch_allowed.is_set():
+                        return
+                    scheduled = await self.try_schedule("train")
+                    if not scheduled:
+                        return
 
     def switch_mode(self, new_mode: DispatcherMode, *, reason: str) -> None:
         if new_mode == self.mode:

@@ -107,6 +107,9 @@ def _validate_overrides(source: str, values: dict[str, Any]) -> None:
     conflicts = sorted(_RESERVED_ENGINE_KEYS & values.keys())
     if conflicts:
         raise ValueError(f"{source} cannot override Dynamo-managed engine keys: {conflicts}")
+    wrapper_only = sorted(_ENGINE_CONFIG_EXCLUDED & values.keys())
+    if wrapper_only:
+        raise ValueError(f"{source} keys {wrapper_only} are wrapper/server-only and cannot enter a vLLM engine config")
 
 
 def _environment_items(values: dict[str, str]) -> tuple[tuple[str, str], ...]:

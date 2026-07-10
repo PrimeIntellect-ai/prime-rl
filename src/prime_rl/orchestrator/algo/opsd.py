@@ -9,6 +9,7 @@ from prime_rl.orchestrator.algo.base import Algorithm
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
+    from prime_rl.orchestrator.policy_gate import MutablePolicyGate
     from prime_rl.orchestrator.types import Rollout
     from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
@@ -30,8 +31,14 @@ class OPSDAlgorithm(Algorithm):
 
     action_loss_type = "ref_kl"
 
-    def __init__(self, config: OPSDAlgoConfig, policy_pool: InferencePool):
-        super().__init__(config, policy_pool)
+    def __init__(
+        self,
+        config: OPSDAlgoConfig,
+        policy_pool: InferencePool,
+        *,
+        policy_gate: MutablePolicyGate | None = None,
+    ):
+        super().__init__(config, policy_pool, policy_gate=policy_gate)
         self.demo_key = config.demo_key
         self.template = config.template
         self.renderer_config = config.renderer
@@ -74,4 +81,8 @@ class OPSDAlgorithm(Algorithm):
             # sample.token_ids (demo-conditioned, the trainer's ref_kl target).
             sample.ref_logprobs = full_logprobs[len(hint_block) :]
 
-        await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))
+        if self.policy_gate is None:
+            await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))
+            return
+        async with self.policy_gate.request(expected_version=rollout.policy_version):
+            await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))

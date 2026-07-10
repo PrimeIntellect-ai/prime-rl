@@ -8,9 +8,10 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, OPDAlgorithm, stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import EchoAlgorithm, OPDAlgorithm, OPSDAlgorithm, stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.policy_gate import MutablePolicyGate
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import Policy, Rollout
 from prime_rl.transport.types import TrainingSample
 from prime_rl.utils.client import DynamoInferencePool, StaticInferencePool
 from prime_rl.utils.elastic import ElasticInferencePool
@@ -100,6 +101,27 @@ async def test_opd_rejects_elastic_teacher_pool():
 
     with pytest.raises(TypeError, match="fixed endpoint"):
         await algo.setup()
+
+
+@pytest.mark.asyncio
+async def test_opsd_rejects_late_live_policy_score_as_rollout_error():
+    policy = Policy(version=0, model_name="policy")
+    gate = MutablePolicyGate(policy, enabled=True)
+    pool = MagicMock(model_name="policy")
+    pool.score = AsyncMock(return_value=[0.0, -0.1])
+    algo = OPSDAlgorithm(_build(type="opsd"), pool, policy_gate=gate)
+    algo.renderer = MagicMock()
+    algo.renderer.render_ids.return_value = [999]
+    rollout = _make_rollout([_make_sample()])
+    rollout.info["demonstration"] = "expert answer"
+    rollout.policy_version = 0
+
+    await gate.begin_update(step=1)
+    await algo.finalize_rollout(rollout)
+
+    assert rollout.has_error
+    assert rollout.error.type == "PolicyRequestRejected"
+    pool.score.assert_not_awaited()
 
 
 def test_sft_requires_teacher():

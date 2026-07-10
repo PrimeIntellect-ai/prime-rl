@@ -106,6 +106,30 @@ def test_reserved_role_engine_override_is_rejected():
         build_engine_config(config, "prefill", kv_events_port=20080)
 
 
+@pytest.mark.parametrize("key", sorted(dynamo._ENGINE_CONFIG_EXCLUDED))
+def test_wrapper_only_global_engine_override_is_rejected(key: str):
+    config = disaggregated_config(vllm_extra={key: "invalid"})
+
+    with pytest.raises(ValueError, match=rf"vllm_extra.*{key}.*wrapper/server-only"):
+        build_engine_config(config, "prefill", kv_events_port=20080)
+
+
+@pytest.mark.parametrize("key", sorted(dynamo._ENGINE_CONFIG_EXCLUDED))
+def test_wrapper_only_role_engine_override_is_rejected(key: str):
+    config = disaggregated_config(
+        deployment={
+            "type": "disaggregated",
+            "gpus_per_node": 1,
+            "num_prefill_replicas": 1,
+            "num_decode_replicas": 1,
+            "decode_vllm_overrides": {key: "invalid"},
+        }
+    )
+
+    with pytest.raises(ValueError, match=rf"decode_vllm_overrides.*{key}.*wrapper/server-only"):
+        build_engine_config(config, "decode")
+
+
 def test_local_specs_allocate_four_workers_and_unique_ports(tmp_path: Path):
     specs = build_local_worker_specs(disaggregated_config(), tmp_path, gpu_ids=["4", "5", "6", "7"])
 

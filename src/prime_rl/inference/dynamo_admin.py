@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
@@ -16,6 +16,7 @@ from httpx import AsyncClient
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 
 from prime_rl.configs.shared import ClientConfig
+from prime_rl.utils.async_utils import gather_shielded
 from prime_rl.utils.logger import get_logger
 
 NCCL_READY_MARKER = "NCCL_READY"
@@ -278,6 +279,20 @@ class DynamoAdminAPI:
 
     def __init__(self) -> None:
         self._distributed_updates = False
+        self._distributed_initialization_indeterminate = False
+        self._weight_update_indeterminate = False
+
+    def _require_unambiguous_admin_state(self) -> None:
+        if self._distributed_initialization_indeterminate:
+            raise RuntimeError(
+                "Dynamo distributed weight-group initialization is indeterminate after a prior failure or "
+                "cancellation; refusing further admin mutation"
+            )
+        if self._weight_update_indeterminate:
+            raise RuntimeError(
+                "Dynamo worker weight state is indeterminate after a prior update or resume failure; refusing "
+                "further admin mutation"
+            )
 
     @staticmethod
     def _retryable(exception: BaseException) -> bool:
@@ -321,6 +336,23 @@ class DynamoAdminAPI:
                 return await post_once()
         raise AssertionError("unreachable")
 
+    @staticmethod
+    async def _settle_fanout(awaitables: Iterable[Awaitable[dict]], operation: str) -> None:
+        """Await every sibling even when one fails or the caller is cancelled."""
+        tasks = [asyncio.create_task(awaitable) for awaitable in awaitables]
+        if not tasks:
+            return
+        results, cancellation = await gather_shielded(*tasks)
+
+        failures = [result for result in results if isinstance(result, BaseException)]
+        primary: BaseException | None = cancellation or (failures[0] if failures else None)
+        if primary is None:
+            return
+        siblings = failures if cancellation is not None else failures[1:]
+        for sibling in siblings:
+            primary.add_note(f"Dynamo {operation} sibling also failed: {sibling!r}")
+        raise primary
+
     async def initialize_nccl(
         self,
         clients: list[AsyncClient],
@@ -332,6 +364,7 @@ class DynamoAdminAPI:
         gpus_per_worker: int,
         quantize_in_weight_transfer: bool,
     ) -> None:
+        self._require_unambiguous_admin_state()
         if not clients:
             raise ValueError("Cannot initialize NCCL without Dynamo workers")
         if isinstance(gpus_per_worker, bool) or gpus_per_worker < 1:
@@ -343,39 +376,49 @@ class DynamoAdminAPI:
                 f"inference_world_size={world_size} does not match {len(clients)} Dynamo workers "
                 f"with {gpus_per_worker} GPUs each ({expected_world_size})"
             )
-        await asyncio.gather(
-            *(
-                self._post(
-                    client,
-                    "init_weights_update_group",
-                    {
-                        "host": host,
-                        "port": port,
-                        "rank_offset": index * gpus_per_worker,
-                        "inference_world_size": world_size,
-                        "timeout": timeout,
-                        "quantize_in_weight_transfer": quantize_in_weight_transfer,
-                        "engine_rpc": "init_broadcaster",
-                    },
-                )
-                for index, client in enumerate(clients)
+        try:
+            await self._settle_fanout(
+                (
+                    self._post(
+                        client,
+                        "init_weights_update_group",
+                        {
+                            "host": host,
+                            "port": port,
+                            "rank_offset": index * gpus_per_worker,
+                            "inference_world_size": world_size,
+                            "timeout": timeout,
+                            "quantize_in_weight_transfer": quantize_in_weight_transfer,
+                            "engine_rpc": "init_broadcaster",
+                        },
+                    )
+                    for index, client in enumerate(clients)
+                ),
+                "init_weights_update_group",
             )
-        )
+        except BaseException:
+            # A lost response or one failed sibling cannot prove whether every
+            # rank committed the collective group. This object must not choose
+            # the filesystem path or retry into that ambiguous state.
+            self._distributed_initialization_indeterminate = True
+            raise
         self._distributed_updates = True
 
     async def update_weights(self, clients: list[AsyncClient], weight_dir: Path | None, step: int) -> None:
+        self._require_unambiguous_admin_state()
         primary_error: BaseException | None = None
         try:
-            await asyncio.gather(
-                *(
+            await self._settle_fanout(
+                (
                     self._post(
                         client,
                         "pause_generation",
-                        {"mode": "keep", "clear_cache": False},
+                        {"mode": "wait", "clear_cache": False},
                         retry_transient=True,
                     )
                     for client in clients
-                )
+                ),
+                "pause_generation",
             )
             if weight_dir is not None:
                 marker = weight_dir / NCCL_READY_MARKER
@@ -399,18 +442,22 @@ class DynamoAdminAPI:
                 }
                 method = "update_weights_from_disk"
 
-            await asyncio.gather(
-                *(self._post(client, method, body, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S) for client in clients)
+            await self._settle_fanout(
+                (self._post(client, method, body, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S) for client in clients),
+                method,
             )
         except BaseException as exc:
             primary_error = exc
+            self._weight_update_indeterminate = True
             raise
         finally:
             try:
-                await asyncio.gather(
-                    *(self._post(client, "resume_generation", retry_transient=True) for client in clients)
+                await self._settle_fanout(
+                    (self._post(client, "resume_generation", retry_transient=True) for client in clients),
+                    "resume_generation",
                 )
             except BaseException as exc:
+                self._weight_update_indeterminate = True
                 if primary_error is None:
                     raise
                 primary_error.add_note(f"Dynamo resume_generation cleanup also failed: {exc!r}")

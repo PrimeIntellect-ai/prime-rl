@@ -39,7 +39,9 @@ if TYPE_CHECKING:
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
+from prime_rl.orchestrator.component_supervision import raise_if_component_failed
+from prime_rl.orchestrator.dispatcher import DispatcherMode, RolloutDispatcher
+from prime_rl.orchestrator.dispatcher_metrics import DispatcherMetrics
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -50,6 +52,7 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
+from prime_rl.orchestrator.policy_gate import MutablePolicyGate
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
@@ -154,6 +157,10 @@ class Orchestrator:
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
         self.policy = Policy(version=0, model_name="")
+        self.policy_gate = MutablePolicyGate(
+            self.policy,
+            enabled=config.model.client.admin_api == "dynamo",
+        )
         self.stopped = asyncio.Event()
         # True after the final train step ships — pipeline winds down without
         # scheduling new train rollouts
@@ -241,7 +248,10 @@ class Orchestrator:
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
-            config.train.env, policy_pool=self.policy_inference, renderer_config=config.renderer
+            config.train.env,
+            policy_pool=self.policy_inference,
+            renderer_config=config.renderer,
+            policy_gate=self.policy_gate,
         )
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
@@ -349,6 +359,8 @@ class Orchestrator:
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
+            enforce_policy_update_barrier=config.model.client.admin_api == "dynamo",
+            policy_gate=self.policy_gate,
         )
         self.train_sink = TrainSink(
             config,
@@ -453,6 +465,7 @@ class Orchestrator:
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
+            raise_if_component_failed(self.component_tasks)
             if self.draining and self.dispatcher.is_idle:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
@@ -846,6 +859,9 @@ class Orchestrator:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""
         self.update_dispatch_gate()
+
+    async def on_version_update_failed(self, step: int, error: BaseException) -> None:
+        """No transition state is owned here; the policy version is unchanged."""
 
     async def stop(self) -> None:
         """Bounded best-effort teardown of all components. Has a global

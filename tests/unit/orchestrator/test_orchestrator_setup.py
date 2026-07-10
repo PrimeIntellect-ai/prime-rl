@@ -2,9 +2,24 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from renderers import Qwen3VLRendererConfig
 
+from prime_rl.orchestrator.component_supervision import raise_if_component_failed
 from prime_rl.orchestrator.utils import setup_policy_inference_pool
+
+
+def test_component_failure_is_raised_into_main_loop():
+    async def run() -> None:
+        async def failed_watcher() -> None:
+            raise RuntimeError("indeterminate policy update")
+
+        watcher = asyncio.create_task(failed_watcher(), name="watcher")
+        await asyncio.wait({watcher})
+        with pytest.raises(RuntimeError, match="indeterminate policy update"):
+            raise_if_component_failed([watcher])
+
+    asyncio.run(run())
 
 
 def test_setup_policy_inference_pool_uses_renderer_when_enabled():

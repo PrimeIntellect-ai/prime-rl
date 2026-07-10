@@ -529,7 +529,9 @@ class OrchestratorConfig(BaseConfig):
     """Maximum training steps. If None, runs indefinitely."""
 
     max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
+    """Maximum policies allowed to generate one rollout on the vLLM admin backend. Dynamo uses a strict
+    application drain before every weight mutation, so live-policy and eval requests never span versions and
+    this tolerance does not apply there."""
 
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""

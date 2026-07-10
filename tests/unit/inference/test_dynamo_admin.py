@@ -468,6 +468,8 @@ async def test_nccl_initialization_and_update_use_engine_routes(tmp_path: Path):
     paths = [path for path, _body in requests]
     assert paths.count("/engine/pause_generation") == 2
     assert paths.count("/engine/resume_generation") == 2
+    pause_bodies = [body for path, body in requests if path.endswith("/pause_generation")]
+    assert pause_bodies == [{"mode": "wait", "clear_cache": False}] * 2
 
 
 @pytest.mark.asyncio
