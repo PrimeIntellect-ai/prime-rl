@@ -31,7 +31,7 @@ class BaseDataConfig(BaseConfig):
     batch_size: int = Field(128, ge=1)
     """Global batch size."""
 
-    seq_len: int = Field(256, ge=1)
+    seq_len: int = Field(128, ge=1)
     """Sequence length."""
 
     pack_function: Literal["cat", "stack"] = "cat"
@@ -51,12 +51,6 @@ class BaseDataConfig(BaseConfig):
 
 class FakeDataConfig(BaseDataConfig):
     type: Literal["fake"] = "fake"
-
-    seq_len: int = Field(128, ge=1)
-    """Sequence length."""
-
-    pack_function: Literal["cat", "stack"] = "cat"
-    """Sample packing strategy."""
 
     length: Literal["fixed", "variable"] = "fixed"
     """Use fixed-length samples or variable-length samples."""
@@ -227,8 +221,8 @@ class SFTConfig(BaseConfig):
     dist_timeout_seconds: int = 3600
     """Timeout in seconds for torch distributed ops."""
 
-    loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "liger_fused"
-    """Cross-entropy loss implementation. Defaults to fused Liger loss to avoid materializing full logits."""
+    loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "torch"
+    """Cross-entropy loss implementation. ``liger_fused`` fuses the lm_head projection with the CE loss to avoid materializing full logits. ``quack_fused`` uses quack-kernels for chunked linear + CE with CuTe DSL CUDA kernels."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
