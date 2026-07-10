@@ -1,18 +1,39 @@
 from __future__ import annotations
 
+import torch
 from torch import nn
 
 from prime_rl.configs.trainer import MXFP8Recipe
 from prime_rl.trainer.models.layers.moe import GroupedExperts, NonGatedGroupedExperts
 from prime_rl.utils.logger import get_logger
 from torchao.prototype.moe_training import conversion_utils as cu
+from torchao.prototype.moe_training import mxfp8_grouped_mm as tao_mxfp8_gmm
 from torchao.prototype.moe_training.config import MXFP8TrainingOpConfig, MXFP8TrainingRecipe
+from torchao.prototype.moe_training.kernels.mxfp8 import triton_mx_block_rearrange_2d_M_groups
 from torchao.prototype.moe_training.tensor import MXFP8TrainingWeightWrapperTensor
 from torchtitan.experiments.kernels.moe import indices as tt_indices
 from torchao.quantization.quant_api import quantize_
 from torchtitan.distributed.expert_parallel import set_token_group_alignment_size_m
 
 _MXFP8_TOKEN_GROUP_ALIGN: int = 32
+# torchao CUDA scale rearrange kernel supports at most 32 token groups,
+# the Triton variant has no such cap and produces the same swizzled layout, so fall back to it for wider MoEs
+_CUDA_REARRANGE_MAX_GROUPS: int = 32
+
+def _fallback_to_triton_rearrange_for_wide_moes() -> None:
+    if getattr(tao_mxfp8_gmm.mx_block_rearrange_2d_M_groups_cuda, "_prime_rl_wide_moe", False):
+        return
+    original = tao_mxfp8_gmm.mx_block_rearrange_2d_M_groups_cuda
+
+    def mx_block_rearrange_2d_M_groups(
+        scales_tensor: torch.Tensor, input_group_end_offsets: torch.Tensor, chunks_per_tb: int = 4
+    ) -> torch.Tensor:
+        if input_group_end_offsets.shape[0] > _CUDA_REARRANGE_MAX_GROUPS:
+            return triton_mx_block_rearrange_2d_M_groups(scales_tensor, input_group_end_offsets)
+        return original(scales_tensor, input_group_end_offsets, chunks_per_tb)
+
+    mx_block_rearrange_2d_M_groups._prime_rl_wide_moe = True
+    tao_mxfp8_gmm.mx_block_rearrange_2d_M_groups_cuda = mx_block_rearrange_2d_M_groups
 
 
 def _relax_torchao_mxfp8_version_gate() -> None:
@@ -52,6 +73,7 @@ def _align_permute_indices_buffer() -> None:
 def apply_mxfp8_moe_grouped_gemm(model: nn.Module, recipe: MXFP8Recipe) -> None:
     _relax_torchao_mxfp8_version_gate()
     _align_permute_indices_buffer()
+    _fallback_to_triton_rearrange_for_wide_moes()
     set_token_group_alignment_size_m(_MXFP8_TOKEN_GROUP_ALIGN)
     op_config = MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe(recipe))
 
