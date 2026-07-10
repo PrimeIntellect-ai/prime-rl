@@ -82,7 +82,7 @@ def test_dgd_chart_renders_generated_graph_without_inference_statefulset(tmp_pat
     assert rendered.count(f"image: {options.image}") == 3
     assert rendered.count("nvcrimagepullsecret") == 5
     assert rendered.count("name: DYN_RL_TOPOLOGY") == 2
-    assert rendered.count("claimName: model-cache") == 2
+    assert rendered.count("claimName: model-cache") == 5
     assert rendered.count("name: HF_TOKEN") == 5
     assert rendered.count("name: HF_HOME") == 5
     chart_pods = {
@@ -173,6 +173,24 @@ def test_dgd_chart_renders_without_gpu_runtime_class(
     else:
         trainer = rendered_resource(rendered, "StatefulSet", "p4-math-trainer")
         assert "runtimeClassName" not in trainer["spec"]["template"]["spec"]
+
+
+def test_dgd_chart_projects_model_cache_once_into_operator_pod_specs(tmp_path: Path):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+
+    rendered = helm_template("-f", str(paths["values"]))
+    graph = rendered_resource(rendered, "DynamoGraphDeployment", "p4-math")
+    expected_mount = {"name": "model-cache", "mountPath": "/model-cache"}
+    expected_volume = {
+        "name": "model-cache",
+        "persistentVolumeClaim": {"claimName": "model-cache"},
+    }
+
+    for service in graph["spec"]["services"].values():
+        assert "volumeMounts" not in service
+        pod_spec = service["extraPodSpec"]
+        assert pod_spec["mainContainer"].get("volumeMounts", []).count(expected_mount) == 1
+        assert pod_spec.get("volumes", []).count(expected_volume) == 1
 
 
 def test_chart_managed_trainer_uses_exact_bound_gpu_resources(tmp_path: Path):
@@ -425,7 +443,7 @@ def test_filesystem_broadcast_reuses_existing_claim_without_rendering_pvc(tmp_pa
     rendered = helm_template("-f", str(paths["values"]))
 
     assert "kind: PersistentVolumeClaim" not in rendered
-    assert rendered.count("claimName: p4-shared-data") == 2
+    assert rendered.count("claimName: p4-shared-data") == 4
 
 
 def test_external_filesystem_broadcast_binds_existing_claim_without_rendering_pvc(tmp_path: Path):
@@ -456,8 +474,19 @@ def test_external_filesystem_broadcast_binds_existing_claim_without_rendering_pv
         {"create": False, "name": "model-cache"},
         {"create": False, "name": "p4-shared-data"},
     ]
+    assert all("volumeMounts" not in service for service in services.values())
     for role in ("VllmPrefillWorker", "VllmDecodeWorker"):
-        assert {"name": "p4-shared-data", "mountPoint": "/data"} in services[role]["volumeMounts"]
+        pod_spec = services[role]["extraPodSpec"]
+        assert pod_spec["mainContainer"]["volumeMounts"].count({"name": "p4-shared-data", "mountPath": "/data"}) == 1
+        assert (
+            pod_spec["volumes"].count(
+                {
+                    "name": "p4-shared-data",
+                    "persistentVolumeClaim": {"claimName": "p4-shared-data"},
+                }
+            )
+            == 1
+        )
 
 
 def test_dgd_chart_rejects_mutable_prime_runtime_image(tmp_path: Path):

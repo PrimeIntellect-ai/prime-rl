@@ -410,7 +410,26 @@ def _add_pvc(resource: dict[str, Any], service: dict[str, Any], name: str | None
     pvcs = resource["spec"].setdefault("pvcs", [])
     if not any(pvc["name"] == name for pvc in pvcs):
         pvcs.append({"name": name, "create": False})
-    service.setdefault("volumeMounts", []).append({"name": name, "mountPoint": mount_point})
+    # Keep PodSpec projection as the single mount source. Older alpha operators
+    # do not realize service.volumeMounts, while current alpha-to-beta conversion
+    # appends those mounts to extraPodSpec and would otherwise create duplicates.
+    pod_spec = service["extraPodSpec"]
+    container_mount = {"name": name, "mountPath": mount_point}
+    container_mounts = pod_spec["mainContainer"].setdefault("volumeMounts", [])
+    if container_mount not in container_mounts:
+        if any(mount["mountPath"] == mount_point for mount in container_mounts):
+            raise ValueError(f"PVC {name!r} conflicts with an existing container mount at {mount_point!r}")
+        container_mounts.append(container_mount)
+
+    pod_volume = {
+        "name": name,
+        "persistentVolumeClaim": {"claimName": name},
+    }
+    pod_volumes = pod_spec.setdefault("volumes", [])
+    if pod_volume not in pod_volumes:
+        if any(volume["name"] == name for volume in pod_volumes):
+            raise ValueError(f"PVC {name!r} conflicts with an existing pod volume")
+        pod_volumes.append(pod_volume)
 
 
 def _validate_dgd_environment(config: InferenceConfig) -> None:

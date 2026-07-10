@@ -12,6 +12,7 @@ from prime_rl.inference.dgd import (
     DynamoGraphRenderOptions,
     GPUSchedulingProfile,
     KubernetesToleration,
+    _add_pvc,
     _parse_args,
     _parse_kubernetes_toleration,
     build_dgd_values,
@@ -134,6 +135,16 @@ def test_dgd_values_derive_topology_and_role_configs(tmp_path: Path):
         "dynamo_worker_roles": ["prefill", "prefill", "decode", "decode"],
         "dynamo_gpus_per_worker": 1,
     }
+    expected_cache_mount = {"name": "model-cache", "mountPath": "/model-cache"}
+    expected_cache_volume = {
+        "name": "model-cache",
+        "persistentVolumeClaim": {"claimName": "model-cache"},
+    }
+    for service in services.values():
+        assert "volumeMounts" not in service
+        pod_spec = service["extraPodSpec"]
+        assert pod_spec["mainContainer"].get("volumeMounts", []).count(expected_cache_mount) == 1
+        assert pod_spec.get("volumes", []).count(expected_cache_volume) == 1
     topology_binding = graph["topologyBinding"]
     assert hashlib.sha256(topology_binding["canonical"].encode()).hexdigest() == topology_binding["sha256"]
     assert json.loads(topology_binding["canonical"])["clientTopology"] == graph["clientTopology"]
@@ -262,9 +273,7 @@ def test_dgd_values_derive_topology_and_role_configs(tmp_path: Path):
     assert {key: prefill_env[key] for key in prefill_process.environment()} == prefill_process.environment()
     assert {key: frontend_env[key] for key in frontend_process.environment()} == frontend_process.environment()
 
-    assert {mount["name"] for mount in services["Frontend"]["volumeMounts"]} == {"model-cache"}
-    for role in ("VllmPrefillWorker", "VllmDecodeWorker"):
-        assert not any(mount["name"] == "p4-shared-data" for mount in services[role]["volumeMounts"])
+    assert all("volumeMounts" not in service for service in services.values())
 
     prefill = json.loads(graph["engineConfig"]["data"]["prefill-engine.json"])
     decode = json.loads(graph["engineConfig"]["data"]["decode-engine.json"])
@@ -322,7 +331,8 @@ def test_dgd_embeds_and_mounts_content_addressed_chat_template(tmp_path: Path):
             "name": "dynamo-chat-template",
             "mountPath": "/etc/prime-rl/dynamo",
             "readOnly": True,
-        }
+        },
+        {"name": "model-cache", "mountPath": "/model-cache"},
     ]
     assert frontend["volumes"] == [
         {
@@ -331,7 +341,11 @@ def test_dgd_embeds_and_mounts_content_addressed_chat_template(tmp_path: Path):
                 "name": engine_config["name"],
                 "items": [{"key": "chat-template.jinja", "path": "chat-template.jinja"}],
             },
-        }
+        },
+        {
+            "name": "model-cache",
+            "persistentVolumeClaim": {"claimName": "model-cache"},
+        },
     ]
     assert not (tmp_path / "first" / "chat-template.jinja").exists()
 
@@ -362,9 +376,19 @@ def test_filesystem_broadcast_requires_one_shared_existing_claim(tmp_path: Path)
         {"name": "model-cache", "create": False},
         {"name": "p4-shared-data", "create": False},
     ]
-    assert not any(mount["name"] == "p4-shared-data" for mount in services["Frontend"]["volumeMounts"])
+    assert all("volumeMounts" not in service for service in services.values())
     for role in ("VllmPrefillWorker", "VllmDecodeWorker"):
-        assert {"name": "p4-shared-data", "mountPoint": "/data"} in services[role]["volumeMounts"]
+        pod_spec = services[role]["extraPodSpec"]
+        assert pod_spec["mainContainer"]["volumeMounts"].count({"name": "p4-shared-data", "mountPath": "/data"}) == 1
+        assert (
+            pod_spec["volumes"].count(
+                {
+                    "name": "p4-shared-data",
+                    "persistentVolumeClaim": {"claimName": "p4-shared-data"},
+                }
+            )
+            == 1
+        )
 
 
 def test_filesystem_broadcast_rejects_missing_shared_claim(tmp_path: Path):
@@ -372,6 +396,64 @@ def test_filesystem_broadcast_rejects_missing_shared_claim(tmp_path: Path):
 
     with pytest.raises(ValueError, match="shared existing PVC"):
         build_dgd_values(inference_config("filesystem"), options)
+
+
+@pytest.mark.parametrize(
+    "existing_mount",
+    [
+        ({"name": "other", "mountPath": "/model-cache"}, "existing container mount"),
+    ],
+)
+def test_add_pvc_rejects_container_mount_path_collision(existing_mount: tuple[dict[str, str], str]):
+    mount, message = existing_mount
+    resource = {"spec": {}}
+    service = {
+        "extraPodSpec": {
+            "mainContainer": {"volumeMounts": [mount]},
+            "volumes": [],
+        }
+    }
+
+    with pytest.raises(ValueError, match=message):
+        _add_pvc(resource, service, "model-cache", "/model-cache")
+
+
+def test_filesystem_broadcast_can_reuse_model_cache_claim(tmp_path: Path):
+    options = replace(render_options(tmp_path), shared_pvc="model-cache")
+    values = build_dgd_values(inference_config("filesystem"), options)
+    resource = values["inference"]["dynamoGraph"]["resource"]
+    services = resource["spec"]["services"]
+
+    assert resource["spec"]["pvcs"] == [{"name": "model-cache", "create": False}]
+    for role in ("VllmPrefillWorker", "VllmDecodeWorker"):
+        pod_spec = services[role]["extraPodSpec"]
+        mounts = pod_spec["mainContainer"]["volumeMounts"]
+        assert mounts.count({"name": "model-cache", "mountPath": "/model-cache"}) == 1
+        assert mounts.count({"name": "model-cache", "mountPath": "/data"}) == 1
+        assert (
+            pod_spec["volumes"].count(
+                {
+                    "name": "model-cache",
+                    "persistentVolumeClaim": {"claimName": "model-cache"},
+                }
+            )
+            == 1
+        )
+
+
+def test_add_pvc_rejects_pod_volume_collision():
+    resource = {"spec": {}}
+    service = {
+        "extraPodSpec": {
+            "mainContainer": {
+                "volumeMounts": [{"name": "model-cache", "mountPath": "/model-cache"}],
+            },
+            "volumes": [{"name": "model-cache", "emptyDir": {}}],
+        }
+    }
+
+    with pytest.raises(ValueError, match="existing pod volume"):
+        _add_pvc(resource, service, "model-cache", "/model-cache")
 
 
 @pytest.mark.parametrize(
