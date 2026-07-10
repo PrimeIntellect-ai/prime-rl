@@ -69,10 +69,10 @@ type = "muon"
 # --- Orchestrator ---
 
 [orchestrator]
-batch_size = 512
+batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
-max_inflight_rollouts = 768
+max_inflight_rollouts = 512
 
 [orchestrator.renderer]
 name = "glm-4.5"
@@ -93,7 +93,7 @@ num_turns_weight = 0.1
 
 [[orchestrator.train.env]]
 name = "tmax"
-harness = { id = "rlm", runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
+harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
 
 [orchestrator.train.env.taskset]
 id = "tmax-v1"
@@ -120,7 +120,7 @@ interval = 20
 
 [[orchestrator.eval.env]]
 name = "swebench-verified"
-harness = { id = "rlm", runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
+harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
 timeout = { rollout = 3600 }
 
 [orchestrator.eval.env.taskset]
@@ -144,7 +144,7 @@ use_prime_registry = true
 [[orchestrator.eval.env]]
 name = "terminal-bench-2"
 group_size = 4 # avg@4
-harness = { id = "rlm", runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
+harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
 timeout = { rollout = 3600 }
 
 [orchestrator.eval.env.taskset]

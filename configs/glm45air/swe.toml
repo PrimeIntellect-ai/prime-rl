@@ -3,9 +3,9 @@
 # the routed-expert decisions returned by inference via enable_return_routed_experts) — GLM-4.5-Air is
 # a glm4_moe model, which supports routed_experts.
 #
-# GRPO uses the linear length penalty with the output-token, input-token, and turns coefficients all
-# set to 0.1. Each term is pass_rate-scaled and normalized by the group's own max before the GRPO
-# baseline subtraction.
+# GRPO uses the linear length penalty with the input-token and turns coefficients set to 0.1. Each
+# term is pass_rate-scaled and normalized by the group's own max before the GRPO baseline
+# subtraction.
 #
 # 2 train + 4 infer nodes. Trainer uses cp=8 (ulysses) plus
 # the memory improvements from the GLM-5.1 prod run (research-prod rlm5/prod.toml): LM-head token
@@ -88,9 +88,9 @@ max_inflight_rollouts = 512
 [orchestrator.algo]
 type = "grpo"
 
-# Linear length penalty at coef 0.1 on all three terms (output tokens, input tokens, turns).
 [orchestrator.algo.length_penalty]
-num_output_tokens_weight = 0.1
+type = "linear"
+num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1
 num_turns_weight = 0.1
 
@@ -101,7 +101,7 @@ thinking_retention = "all"
 [[orchestrator.train.env]]
 name = "scaleswe"
 taskset = { id = "scaleswe-v1", use_prime_registry = true }
-harness = { id = "rlm", runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] } }
+harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] } }
 
 [orchestrator.prime_monitor]
 
@@ -113,7 +113,7 @@ interval = 20
 [[orchestrator.eval.env]]
 name = "swebench-verified"
 taskset = { id = "swebench-verified-v1", use_prime_registry = true }
-harness = { id = "rlm", runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] } }
+harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] } }
 timeout = { rollout = 3600 }
 
 # --- Inference ---
