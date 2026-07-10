@@ -187,20 +187,238 @@ async def test_worker_discovery_bounds_each_get_by_remaining_deadline():
 
 @pytest.mark.asyncio
 async def test_worker_discovery_rejects_incomplete_admin_surface():
+    calls = 0
+
     def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
         return httpx.Response(200, json={"namespace": "test", "workers": [worker(1, routes=frozenset())]})
 
     client = async_client(handler, "http://frontend:8001")
     try:
-        with pytest.raises(TimeoutError, match="missing RL routes"):
+        with pytest.raises(ValueError, match="missing RL routes"):
             await discover_workers(
                 [client],
-                timeout=0.01,
+                timeout=1,
                 model_name="test-model",
                 topology=DynamoTopology(roles=("agg",), gpus_per_worker=1),
             )
     finally:
         await client.aclose()
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_discovery_rejects_model_mismatch_without_retry(monkeypatch: pytest.MonkeyPatch):
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"namespace": "test", "workers": [worker(1, model="other-model")]})
+
+    monkeypatch.setattr("prime_rl.inference.dynamo_admin.DISCOVERY_POLL_INTERVAL_S", 0)
+    client = async_client(handler, "http://frontend:8001")
+    try:
+        with pytest.raises(ValueError, match="serves 'other-model', expected 'test-model'"):
+            await discover_workers(
+                [client],
+                timeout=1,
+                model_name="test-model",
+                topology=DynamoTopology(roles=("agg",), gpus_per_worker=1),
+            )
+    finally:
+        await client.aclose()
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404])
+async def test_worker_discovery_rejects_permanent_http_errors_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+):
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(status_code)
+
+    monkeypatch.setattr("prime_rl.inference.dynamo_admin.DISCOVERY_POLL_INTERVAL_S", 0)
+    client = async_client(handler, "http://frontend:8001")
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await discover_workers(
+                [client],
+                timeout=1,
+                model_name="test-model",
+                topology=DynamoTopology(roles=("agg",), gpus_per_worker=1),
+            )
+    finally:
+        await client.aclose()
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [408, 409, 429, 500])
+async def test_worker_discovery_retries_transient_http_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+):
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(status_code)
+        return httpx.Response(200, json={"namespace": "test", "workers": [worker(1)]})
+
+    monkeypatch.setattr("prime_rl.inference.dynamo_admin.DISCOVERY_POLL_INTERVAL_S", 0)
+    client = async_client(handler, "http://frontend:8001")
+    try:
+        discovered = await discover_workers(
+            [client],
+            timeout=1,
+            model_name="test-model",
+            topology=DynamoTopology(roles=("agg",), gpus_per_worker=1),
+        )
+    finally:
+        await client.aclose()
+
+    assert calls == 2
+    assert discovered[0].instance_id == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_discovery_retries_transport_errors(monkeypatch: pytest.MonkeyPatch):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectError("frontend is starting", request=request)
+        return httpx.Response(200, json={"namespace": "test", "workers": [worker(1)]})
+
+    monkeypatch.setattr("prime_rl.inference.dynamo_admin.DISCOVERY_POLL_INTERVAL_S", 0)
+    client = async_client(handler, "http://frontend:8001")
+    try:
+        discovered = await discover_workers(
+            [client],
+            timeout=1,
+            model_name="test-model",
+            topology=DynamoTopology(roles=("agg",), gpus_per_worker=1),
+        )
+    finally:
+        await client.aclose()
+
+    assert calls == 2
+    assert discovered[0].instance_id == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_discovery_retries_request_timeouts(monkeypatch: pytest.MonkeyPatch):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadTimeout("frontend response timed out", request=request)
+        return httpx.Response(200, json={"namespace": "test", "workers": [worker(1)]})
+
+    monkeypatch.setattr("prime_rl.inference.dynamo_admin.DISCOVERY_POLL_INTERVAL_S", 0)
+    client = async_client(handler, "http://frontend:8001")
+    try:
+        discovered = await discover_workers(
+            [client],
+            timeout=1,
+            model_name="test-model",
+            topology=DynamoTopology(roles=("agg",), gpus_per_worker=1),
+        )
+    finally:
+        await client.aclose()
+
+    assert calls == 2
+    assert discovered[0].instance_id == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_discovery_retries_transient_worker_probe_errors(monkeypatch: pytest.MonkeyPatch):
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        discovered_worker = worker(1)
+        if calls == 1:
+            discovered_worker["error"] = "worker endpoint has not converged"
+        return httpx.Response(200, json={"namespace": "test", "workers": [discovered_worker]})
+
+    monkeypatch.setattr("prime_rl.inference.dynamo_admin.DISCOVERY_POLL_INTERVAL_S", 0)
+    client = async_client(handler, "http://frontend:8001")
+    try:
+        discovered = await discover_workers(
+            [client],
+            timeout=1,
+            model_name="test-model",
+            topology=DynamoTopology(roles=("agg",), gpus_per_worker=1),
+        )
+    finally:
+        await client.aclose()
+
+    assert calls == 2
+    assert discovered[0].instance_id == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "error_type", "match"),
+    [
+        (httpx.Response(200, content=b"{"), json.JSONDecodeError, "Expecting property name"),
+        (httpx.Response(200, json={"namespace": "test"}), ValueError, "invalid response"),
+        (
+            httpx.Response(
+                200,
+                json={"namespace": "test", "workers": [{**worker(1), "error": 123}]},
+            ),
+            ValueError,
+            "invalid error",
+        ),
+    ],
+)
+async def test_worker_discovery_rejects_invalid_payload_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    response: httpx.Response,
+    error_type: type[Exception],
+    match: str,
+):
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return response
+
+    monkeypatch.setattr("prime_rl.inference.dynamo_admin.DISCOVERY_POLL_INTERVAL_S", 0)
+    client = async_client(handler, "http://frontend:8001")
+    try:
+        with pytest.raises(error_type, match=match):
+            await discover_workers(
+                [client],
+                timeout=1,
+                model_name="test-model",
+                topology=DynamoTopology(roles=("agg",), gpus_per_worker=1),
+            )
+    finally:
+        await client.aclose()
+
+    assert calls == 1
 
 
 def test_worker_membership_change_is_rejected():

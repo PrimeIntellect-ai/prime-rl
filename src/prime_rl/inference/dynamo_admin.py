@@ -23,6 +23,7 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 DISCOVERY_REQUEST_TIMEOUT_S = 10.0
 DISCOVERY_POLL_INTERVAL_S = 1.0
+_RETRYABLE_DISCOVERY_HTTP_STATUS_CODES = frozenset({408, 409, 429})
 _REQUIRED_ROUTES = frozenset(
     {
         "init_weights_update_group",
@@ -34,6 +35,10 @@ _REQUIRED_ROUTES = frozenset(
 )
 
 WorkerRole: TypeAlias = Literal["agg", "prefill", "decode"]
+
+
+class _DiscoveryConvergenceError(RuntimeError):
+    """A structurally valid discovery state that may converge during startup."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,8 +136,11 @@ def _parse_worker(value: object, model_name: str, topology: DynamoTopology) -> D
         raise ValueError("Dynamo worker discovery response is missing component")
     if not isinstance(instance_id, int) or isinstance(instance_id, bool) or instance_id < 0:
         raise ValueError(f"Dynamo worker {component!r} has an invalid instance_id")
-    if value.get("error"):
-        raise RuntimeError(f"Dynamo worker {component}[{instance_id}] is unhealthy: {value['error']}")
+    error = value.get("error")
+    if error is not None:
+        if not isinstance(error, str) or not error:
+            raise ValueError(f"Dynamo worker {component}[{instance_id}] has an invalid error")
+        raise _DiscoveryConvergenceError(f"Dynamo worker {component}[{instance_id}] is unhealthy: {error}")
     if not isinstance(system_url, str) or not system_url:
         raise ValueError(f"Dynamo worker {component}[{instance_id}] is missing system_url")
     if model != model_name:
@@ -179,6 +187,21 @@ def _parse_snapshot(
     return namespace, workers
 
 
+def _retryable_discovery_error(error: Exception) -> bool:
+    if isinstance(error, httpx.HTTPStatusError):
+        status_code = error.response.status_code
+        return status_code in _RETRYABLE_DISCOVERY_HTTP_STATUS_CODES or status_code >= 500
+    return isinstance(
+        error,
+        (
+            _DiscoveryConvergenceError,
+            httpx.TimeoutException,
+            httpx.TransportError,
+            TimeoutError,
+        ),
+    )
+
+
 async def discover_workers(
     discovery_clients: list[AsyncClient],
     timeout: float,
@@ -186,7 +209,13 @@ async def discover_workers(
     model_name: str,
     topology: DynamoTopology,
 ) -> tuple[DynamoWorker, ...]:
-    """Wait for all frontends to report one identical, complete worker set."""
+    """Wait for all frontends to report one identical, complete worker set.
+
+    Incomplete membership, inconsistent valid snapshots, and worker probe errors
+    are startup convergence states. A model mismatch or missing RL route is an
+    incompatible deployment contract and fails immediately, as do malformed
+    payloads and permanent HTTP errors.
+    """
     if not discovery_clients:
         raise ValueError("Dynamo worker discovery requires at least one frontend")
     if timeout <= 0:
@@ -212,12 +241,17 @@ async def discover_workers(
                 snapshots.append(_parse_snapshot(response.json(), model_name, topology))
             first = snapshots[0]
             if any(snapshot != first for snapshot in snapshots[1:]):
-                raise ValueError("Dynamo discovery frontends returned inconsistent worker snapshots")
+                raise _DiscoveryConvergenceError("Dynamo discovery frontends returned inconsistent worker snapshots")
             workers = first[1]
-            topology.validate(workers)
+            try:
+                topology.validate(workers)
+            except ValueError as exc:
+                raise _DiscoveryConvergenceError(str(exc)) from exc
             logger.info(f"Discovered {len(workers)} Dynamo inference worker(s)")
             return workers
         except Exception as exc:
+            if not _retryable_discovery_error(exc):
+                raise
             last_error = exc
         remaining = deadline - loop.time()
         if remaining > 0:
