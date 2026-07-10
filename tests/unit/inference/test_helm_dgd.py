@@ -1,104 +1,25 @@
 import hashlib
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
-from prime_rl.configs.inference import InferenceConfig
-from prime_rl.inference.dgd import DynamoGraphRenderOptions, GPUSchedulingProfile, write_dgd_artifacts
-
-HELM = shutil.which("helm")
-CHART = Path(__file__).parents[3] / "k8s" / "prime-rl"
-PRIME_SHA = "1" * 40
-DYNAMO_SHA = "2" * 40
-IMAGE_DIGEST = f"sha256:{'3' * 64}"
-GPU_SCHEDULING = GPUSchedulingProfile(
-    runtime_class_name="nvidia",
-    architecture="arm64",
-    product="NVIDIA-GB200",
-    node_pool="customer-gpu-o7v",
+from prime_rl.inference.dgd import DynamoGraphRenderOptions, write_dgd_artifacts
+from tests.unit.inference.helm_dgd_test_utils import (
+    DYNAMO_SHA,
+    GPU_SCHEDULING,
+    IMAGE_DIGEST,
+    PRIME_SHA,
+    helm_template,
+    inference_config,
+    labels_match,
+    render_options,
+    rendered_documents,
+    rendered_resource,
+    rewrite_valid_integrity,
+    toleration_identity,
 )
-
-
-def inference_config(
-    weight_broadcast: str = "nccl",
-    *,
-    chat_template: str | None = None,
-) -> InferenceConfig:
-    model = {"chat_template": chat_template} if chat_template is not None else {}
-    return InferenceConfig.model_validate(
-        {
-            "backend": {"type": "dynamo"},
-            "model": model,
-            "weight_broadcast": {"type": weight_broadcast},
-            "deployment": {
-                "type": "disaggregated",
-                "gpus_per_node": 1,
-                "prefill_nodes_per_replica": 1,
-                "decode_nodes_per_replica": 1,
-                "num_prefill_replicas": 2,
-                "num_decode_replicas": 2,
-            },
-        }
-    )
-
-
-def render_options(tmp_path: Path, *, shared_pvc: str | None = None) -> DynamoGraphRenderOptions:
-    return DynamoGraphRenderOptions(
-        release_name="p4-math",
-        namespace="bis-vllm",
-        image=f"nvcr.io/example/prime:prime-{PRIME_SHA[:12]}-dynamo-{DYNAMO_SHA[:12]}@{IMAGE_DIGEST}",
-        output_dir=tmp_path,
-        prime_sha=PRIME_SHA,
-        dynamo_sha=DYNAMO_SHA,
-        image_digest=IMAGE_DIGEST,
-        run_name="p4-run",
-        gpu_scheduling=GPU_SCHEDULING,
-        model_cache_pvc="model-cache",
-        hf_token_secret="hf-token-secret",
-        shared_pvc=shared_pvc,
-        image_pull_secrets=("nvcrimagepullsecret",),
-    )
-
-
-def helm_template(*args: str, release_name: str = "p4-math") -> str:
-    if HELM is None:
-        pytest.skip("helm is not installed")
-    return subprocess.run(
-        [HELM, "template", release_name, str(CHART), *args],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-
-
-def rendered_documents(rendered: str) -> list[dict]:
-    return [document for document in yaml.safe_load_all(rendered) if document]
-
-
-def rendered_resource(rendered: str, kind: str, name: str) -> dict:
-    return next(
-        document
-        for document in rendered_documents(rendered)
-        if document.get("kind") == kind and document.get("metadata", {}).get("name") == name
-    )
-
-
-def write_values_mutation(
-    source: Path,
-    target: Path,
-    path: tuple[str, ...],
-    replacement: object,
-) -> None:
-    values = json.loads(source.read_text())
-    parent = values
-    for key in path[:-1]:
-        parent = parent[key]
-    parent[path[-1]] = replacement
-    target.write_text(json.dumps(values))
 
 
 def test_native_chart_still_renders_inference_statefulset():
@@ -139,14 +60,137 @@ def test_dgd_chart_renders_generated_graph_without_inference_statefulset(tmp_pat
     assert rendered.count("claimName: model-cache") == 2
     assert rendered.count("name: HF_TOKEN") == 5
     assert rendered.count("name: HF_HOME") == 5
-    assert rendered.count("cloud.google.com/gke-nodepool: customer-gpu-o7v") == 5
-    assert rendered.count("kubernetes.io/arch: arm64") == 5
-    assert rendered.count("nvidia.com/gpu.product: NVIDIA-GB200") == 3
-    assert rendered.count("runtimeClassName: nvidia") == 3
-    assert rendered.count("key: kubernetes.io/arch") == 5
-    assert rendered.count("key: nvidia.com/gpu") == 3
-    assert rendered.count("key: prime-rl") == 5
+    chart_pods = {
+        component: rendered_resource(rendered, "StatefulSet", f"p4-math-{component}")["spec"]["template"]["spec"]
+        for component in ("orchestrator", "trainer")
+    }
+    dgd_pods = {
+        component: rendered_graph["spec"]["services"][service]["extraPodSpec"]
+        for component, service in {
+            "frontend": "Frontend",
+            "prefill": "VllmPrefillWorker",
+            "decode": "VllmDecodeWorker",
+        }.items()
+    }
+    pods = {**chart_pods, **dgd_pods}
+    image_selector = {
+        "cloud.google.com/gke-nodepool": "customer-gpu-o7v",
+        "kubernetes.io/arch": "arm64",
+    }
+    gpu_selector = {**image_selector, "nvidia.com/gpu.product": "NVIDIA-GB200"}
+    required_tolerations = {
+        ("kubernetes.io/arch", "Equal", "arm64", "NoSchedule"),
+        ("nvidia.com/gpu", "Exists", None, "NoSchedule"),
+        ("prime-rl", "Equal", "true", "NoSchedule"),
+    }
+
+    assert set(pods) == {"orchestrator", "trainer", "frontend", "prefill", "decode"}
+    for component, pod in pods.items():
+        assert {toleration_identity(item) for item in pod["tolerations"]} == required_tolerations
+        if component in {"trainer", "prefill", "decode"}:
+            assert pod["nodeSelector"] == gpu_selector
+            assert pod["runtimeClassName"] == "nvidia"
+        else:
+            assert pod["nodeSelector"] == image_selector
+            assert "runtimeClassName" not in pod
+
+    assert "nvidia.com/gpu" not in chart_pods["orchestrator"]["containers"][0]["resources"].get("requests", {})
+    assert chart_pods["trainer"]["containers"][0]["resources"]["requests"]["nvidia.com/gpu"] == 1
     assert not any(kind in rendered for kind in ("kind: ClusterRole", "kind: CustomResourceDefinition"))
+
+
+def test_external_controller_mode_renders_only_five_dgd_inference_pods(tmp_path: Path):
+    paths = write_dgd_artifacts(
+        inference_config(),
+        render_options(tmp_path, external_controller=True),
+    )
+    rendered = helm_template("-f", str(paths["values"]))
+    graph = rendered_resource(rendered, "DynamoGraphDeployment", "p4-math")
+
+    assert "kind: StatefulSet" not in rendered
+    assert "kind: PersistentVolumeClaim" not in rendered
+    assert "p4-math-shared-data" not in rendered
+    assert sum(service["replicas"] for service in graph["spec"]["services"].values()) == 5
+    assert rendered.count("kind: DynamoGraphDeployment") == 1
+    assert rendered.count("name: p4-math-frontend-rl") == 1
+
+
+def test_chart_managed_trainer_uses_exact_bound_gpu_resources(tmp_path: Path):
+    paths = write_dgd_artifacts(
+        inference_config(),
+        render_options(tmp_path, trainer_gpu_count=4),
+    )
+    values = json.loads(paths["values"].read_text())
+    rendered = helm_template("-f", str(paths["values"]))
+    trainer = rendered_resource(rendered, "StatefulSet", "p4-math-trainer")
+    resources = trainer["spec"]["template"]["spec"]["containers"][0]["resources"]
+    workload = json.loads(values["inference"]["dynamoGraph"]["workloadBinding"]["canonical"])
+
+    assert workload["trainer"]["gpu"] == {"enabled": True, "count": 4}
+    assert resources["requests"]["nvidia.com/gpu"] == 4
+    assert resources["limits"]["nvidia.com/gpu"] == 4
+
+
+def test_legacy_statefulset_selectors_remain_upgrade_compatible():
+    documents = rendered_documents(helm_template())
+    controllers = [document for document in documents if document["kind"] == "StatefulSet"]
+
+    assert len(controllers) == 3
+    for controller in controllers:
+        role = controller["metadata"]["labels"]["role"]
+        assert controller["spec"]["selector"]["matchLabels"] == {
+            "app": "prime-rl",
+            "example": "reverse-text",
+            "role": role,
+        }
+        assert controller["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/instance"] == "p4-math"
+
+
+def test_chart_service_selectors_are_release_disjoint():
+    releases = {release: rendered_documents(helm_template(release_name=release)) for release in ("alpha", "beta")}
+    pod_labels = {
+        release: [
+            document["spec"]["template"]["metadata"]["labels"]
+            for document in documents
+            if document["kind"] == "StatefulSet"
+        ]
+        for release, documents in releases.items()
+    }
+
+    for release, documents in releases.items():
+        other_release = "beta" if release == "alpha" else "alpha"
+        services = [document for document in documents if document["kind"] == "Service"]
+        assert len(services) == 6
+
+        for service in services:
+            selector = service["spec"]["selector"]
+            assert selector["app.kubernetes.io/instance"] == release
+            assert any(labels_match(selector, labels) for labels in pod_labels[release])
+            assert not any(labels_match(selector, labels) for labels in pod_labels[other_release])
+
+
+def test_dgd_rl_service_selector_is_release_disjoint(tmp_path: Path):
+    release_pods: dict[str, dict[str, str]] = {}
+    release_services: dict[str, dict[str, str]] = {}
+    for release in ("alpha", "beta"):
+        output_dir = tmp_path / release
+        paths = write_dgd_artifacts(inference_config(), render_options(output_dir, release_name=release))
+        rendered = helm_template("-f", str(paths["values"]), release_name=release)
+        graph = rendered_resource(rendered, "DynamoGraphDeployment", release)
+        release_pods[release] = {
+            **graph["spec"]["services"]["Frontend"]["extraPodMetadata"]["labels"],
+            "nvidia.com/dynamo-graph-deployment-name": release,
+            "nvidia.com/dynamo-component": "Frontend",
+            "nvidia.com/dynamo-component-type": "frontend",
+        }
+        release_services[release] = rendered_resource(rendered, "Service", f"{release}-frontend-rl")["spec"]["selector"]
+
+    for release in ("alpha", "beta"):
+        other_release = "beta" if release == "alpha" else "alpha"
+        selector = release_services[release]
+        assert selector["app.kubernetes.io/instance"] == release
+        assert labels_match(selector, release_pods[release])
+        assert not labels_match(selector, release_pods[other_release])
 
 
 def test_dgd_chart_renders_chat_template_configmap_and_frontend_mount(tmp_path: Path):
@@ -185,170 +229,178 @@ def test_dgd_chart_preserves_exact_content_addressed_configmap_bytes(tmp_path: P
     assert hashlib.sha256(canonical_data).hexdigest() == expected_hash
 
 
-@pytest.mark.parametrize(
-    ("case", "path", "replacement", "error_fragment"),
-    [
-        (
-            "engine-data",
-            ("inference", "dynamoGraph", "engineConfig", "data", "prefill-engine.json"),
-            "tampered",
-            "engineConfig.data must match its canonical payload",
-        ),
-        (
-            "engine-sha",
-            ("inference", "dynamoGraph", "engineConfig", "sha256"),
-            "0" * 64,
-            "engineConfig.sha256 must match its canonical payload",
-        ),
-        (
-            "engine-name",
-            ("inference", "dynamoGraph", "engineConfig", "name"),
-            "p4-math-dynamo-engine-000000000000",
-            "engineConfig.name must be content-addressed",
-        ),
-        (
-            "dgd-config-sha",
-            (
-                "inference",
-                "dynamoGraph",
-                "resource",
-                "metadata",
-                "annotations",
-                "prime-rl.nvidia.com/config-sha256",
-            ),
-            "0" * 64,
-            "DynamoGraphDeployment config-sha256 must match engineConfig.sha256",
-        ),
-        (
-            "manifest-sha",
-            (
-                "inference",
-                "dynamoGraph",
-                "resource",
-                "metadata",
-                "annotations",
-                "prime-rl.nvidia.com/manifest-sha256",
-            ),
-            "0" * 64,
-            "manifest-sha256 must match its canonical payload",
-        ),
-    ],
-)
-def test_dgd_chart_rejects_content_identity_mutations(
-    case: str,
-    path: tuple[str, ...],
-    replacement: object,
-    error_fragment: str,
-    tmp_path: Path,
-):
+def test_dgd_chart_uses_canonical_workload_contract_as_sole_authority(tmp_path: Path):
     paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
-    mutation = tmp_path / f"{case}.json"
-    write_values_mutation(paths["values"], mutation, path, replacement)
+    values = json.loads(paths["values"].read_text())
+    workload_binding = values["inference"]["dynamoGraph"]["workloadBinding"]
+    workload = json.loads(workload_binding["canonical"])
 
-    with pytest.raises(subprocess.CalledProcessError) as error:
-        helm_template("-f", str(mutation))
-
-    assert error_fragment in error.value.stderr
-
-
-@pytest.mark.parametrize(
-    ("case", "path", "replacement"),
-    [
-        (
-            "client-roles",
-            ("inference", "dynamoGraph", "clientTopology", "dynamo_worker_roles"),
-            ["prefill", "decode", "decode", "decode"],
-        ),
-        (
-            "client-gpus",
-            ("inference", "dynamoGraph", "clientTopology", "dynamo_gpus_per_worker"),
-            2,
-        ),
-        (
-            "worker-replicas",
-            (
-                "inference",
-                "dynamoGraph",
-                "resource",
-                "spec",
-                "services",
-                "VllmDecodeWorker",
-                "replicas",
-            ),
-            3,
-        ),
-        (
-            "worker-gpus",
-            (
-                "inference",
-                "dynamoGraph",
-                "resource",
-                "spec",
-                "services",
-                "VllmPrefillWorker",
-                "resources",
-                "limits",
-                "gpu",
-            ),
-            "2",
-        ),
-    ],
-)
-def test_dgd_chart_rejects_topology_mutations(
-    case: str,
-    path: tuple[str, ...],
-    replacement: object,
-    tmp_path: Path,
-):
-    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
-    mutation = tmp_path / f"{case}.json"
-    write_values_mutation(paths["values"], mutation, path, replacement)
-
-    with pytest.raises(subprocess.CalledProcessError) as error:
-        helm_template("-f", str(mutation))
-
-    assert "topology binding" in error.value.stderr
-
-
-def test_dgd_chart_rejects_release_name_mismatch(tmp_path: Path):
-    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
-
-    with pytest.raises(subprocess.CalledProcessError) as error:
-        helm_template("-f", str(paths["values"]), release_name="other-release")
-
-    assert "must match embedded DynamoGraphDeployment metadata.name" in error.value.stderr
-
-
-def test_dgd_chart_rejects_namespace_mismatch(tmp_path: Path):
-    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
-
-    with pytest.raises(subprocess.CalledProcessError) as error:
-        helm_template("-f", str(paths["values"]), "--set", "namespace=other-namespace")
-
-    assert "must match embedded DynamoGraphDeployment metadata.namespace" in error.value.stderr
+    assert hashlib.sha256(workload_binding["canonical"].encode()).hexdigest() == workload_binding["sha256"]
+    assert values["orchestrator"] == {"enabled": True}
+    assert values["trainer"] == {"enabled": True, "gpu": {"enabled": True, "count": 1}}
+    assert workload == {
+        "controllerMode": "chartManaged",
+        "orchestrator": {
+            "enabled": True,
+            "gpu": {"enabled": False},
+            "placement": {
+                "nodeSelector": {
+                    "cloud.google.com/gke-nodepool": "customer-gpu-o7v",
+                    "kubernetes.io/arch": "arm64",
+                },
+                "tolerations": [
+                    {
+                        "effect": "NoSchedule",
+                        "key": "kubernetes.io/arch",
+                        "operator": "Equal",
+                        "value": "arm64",
+                    },
+                    {"effect": "NoSchedule", "key": "nvidia.com/gpu", "operator": "Exists"},
+                    {
+                        "effect": "NoSchedule",
+                        "key": "prime-rl",
+                        "operator": "Equal",
+                        "value": "true",
+                    },
+                ],
+            },
+        },
+        "trainer": {
+            "enabled": True,
+            "gpu": {"count": 1, "enabled": True},
+            "placement": {
+                "nodeSelector": {
+                    "cloud.google.com/gke-nodepool": "customer-gpu-o7v",
+                    "kubernetes.io/arch": "arm64",
+                    "nvidia.com/gpu.product": "NVIDIA-GB200",
+                },
+                "runtimeClassName": "nvidia",
+                "tolerations": [
+                    {
+                        "effect": "NoSchedule",
+                        "key": "kubernetes.io/arch",
+                        "operator": "Equal",
+                        "value": "arm64",
+                    },
+                    {"effect": "NoSchedule", "key": "nvidia.com/gpu", "operator": "Exists"},
+                    {
+                        "effect": "NoSchedule",
+                        "key": "prime-rl",
+                        "operator": "Equal",
+                        "value": "true",
+                    },
+                ],
+            },
+        },
+        "storage": {
+            "enabled": True,
+            "existingClaim": "",
+            "mountPath": "/data",
+        },
+    }
 
 
 @pytest.mark.parametrize(
-    ("component", "name"),
+    ("component", "selector_key"),
     [
-        ("orchestrator", "DYN_RL_TOPOLOGY"),
-        ("orchestrator", "HF_TOKEN"),
-        ("trainer", "HF_HOME"),
+        ("orchestrator", "kubernetes.io/arch"),
+        ("orchestrator", "cloud.google.com/gke-nodepool"),
+        ("trainer", "kubernetes.io/arch"),
+        ("trainer", "cloud.google.com/gke-nodepool"),
+        ("trainer", "nvidia.com/gpu.product"),
     ],
 )
-def test_dgd_chart_rejects_raw_env_that_overrides_typed_contract(
+def test_dgd_chart_rejects_rehashed_chart_selector_mutations(
     component: str,
-    name: str,
+    selector_key: str,
     tmp_path: Path,
 ):
     paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
-    overlay = tmp_path / f"{component}-{name}.json"
-    overlay.write_text(json.dumps({component: {"env": [{"name": name, "value": "override"}]}}))
+    values = json.loads(paths["values"].read_text())
+    workload = json.loads(values["inference"]["dynamoGraph"]["workloadBinding"]["canonical"])
+    selector = workload[component]["placement"]["nodeSelector"]
+    selector[f"tampered.example/{selector_key.rsplit('/', 1)[-1]}"] = selector.pop(selector_key)
+    rewrite_valid_integrity(values, workload)
+    mutation = tmp_path / f"{component}-selector.json"
+    mutation.write_text(json.dumps(values))
 
     with pytest.raises(subprocess.CalledProcessError) as error:
-        helm_template("-f", str(paths["values"]), "-f", str(overlay))
+        helm_template("-f", str(mutation))
 
-    assert f"{component}.env cannot override generated {name}" in error.value.stderr
+    assert f"{component} placement must match" in error.value.stderr
+
+
+def test_dgd_chart_rejects_rehashed_runtime_class_mutation(tmp_path: Path):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+    values = json.loads(paths["values"].read_text())
+    workload = json.loads(values["inference"]["dynamoGraph"]["workloadBinding"]["canonical"])
+    workload["trainer"]["placement"]["runtimeClassName"] = "tampered"
+    rewrite_valid_integrity(values, workload)
+    mutation = tmp_path / "runtime-class.json"
+    mutation.write_text(json.dumps(values))
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template("-f", str(mutation))
+
+    assert "trainer placement must match" in error.value.stderr
+
+
+@pytest.mark.parametrize("component", ["orchestrator", "trainer"])
+@pytest.mark.parametrize("toleration_key", ["kubernetes.io/arch", "nvidia.com/gpu", "prime-rl"])
+def test_dgd_chart_rejects_every_rehashed_required_toleration_mutation(
+    component: str,
+    toleration_key: str,
+    tmp_path: Path,
+):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+    values = json.loads(paths["values"].read_text())
+    workload = json.loads(values["inference"]["dynamoGraph"]["workloadBinding"]["canonical"])
+    toleration = next(item for item in workload[component]["placement"]["tolerations"] if item["key"] == toleration_key)
+    toleration["effect"] = "NoExecute"
+    rewrite_valid_integrity(values, workload)
+    mutation = tmp_path / f"{component}-{toleration_key.replace('/', '-')}.json"
+    mutation.write_text(json.dumps(values))
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template("-f", str(mutation))
+
+    assert f"{component} placement must match" in error.value.stderr
+
+
+def test_dgd_chart_ignores_legacy_component_placement_overlays(tmp_path: Path):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+    overlay = tmp_path / "legacy-placement.json"
+    overlay.write_text(
+        json.dumps(
+            {
+                "orchestrator": {
+                    "nodeSelector": {"tampered": "true"},
+                    "runtimeClassName": "tampered",
+                    "tolerations": [{"key": "tampered", "operator": "Exists"}],
+                },
+                "trainer": {
+                    "nodeSelector": {"tampered": "true"},
+                    "runtimeClassName": "tampered",
+                    "tolerations": [{"key": "tampered", "operator": "Exists"}],
+                },
+            }
+        )
+    )
+    rendered = helm_template("-f", str(paths["values"]), "-f", str(overlay))
+
+    orchestrator = rendered_resource(rendered, "StatefulSet", "p4-math-orchestrator")["spec"]["template"]["spec"]
+    trainer = rendered_resource(rendered, "StatefulSet", "p4-math-trainer")["spec"]["template"]["spec"]
+    assert orchestrator["nodeSelector"] == {
+        "cloud.google.com/gke-nodepool": "customer-gpu-o7v",
+        "kubernetes.io/arch": "arm64",
+    }
+    assert "runtimeClassName" not in orchestrator
+    assert trainer["nodeSelector"] == {
+        "cloud.google.com/gke-nodepool": "customer-gpu-o7v",
+        "kubernetes.io/arch": "arm64",
+        "nvidia.com/gpu.product": "NVIDIA-GB200",
+    }
+    assert trainer["runtimeClassName"] == "nvidia"
 
 
 def test_filesystem_broadcast_reuses_existing_claim_without_rendering_pvc(tmp_path: Path):
@@ -360,6 +412,35 @@ def test_filesystem_broadcast_reuses_existing_claim_without_rendering_pvc(tmp_pa
 
     assert "kind: PersistentVolumeClaim" not in rendered
     assert rendered.count("claimName: p4-shared-data") == 2
+
+
+def test_external_filesystem_broadcast_binds_existing_claim_without_rendering_pvc(tmp_path: Path):
+    paths = write_dgd_artifacts(
+        inference_config("filesystem"),
+        render_options(
+            tmp_path,
+            external_controller=True,
+            shared_pvc="p4-shared-data",
+        ),
+    )
+    rendered = helm_template("-f", str(paths["values"]))
+    values = json.loads(paths["values"].read_text())
+    graph = rendered_resource(rendered, "DynamoGraphDeployment", "p4-math")
+    services = graph["spec"]["services"]
+    workload = json.loads(values["inference"]["dynamoGraph"]["workloadBinding"]["canonical"])
+
+    assert "kind: PersistentVolumeClaim" not in rendered
+    assert workload["storage"] == {
+        "enabled": True,
+        "existingClaim": "p4-shared-data",
+        "mountPath": "/data",
+    }
+    assert graph["spec"]["pvcs"] == [
+        {"create": False, "name": "model-cache"},
+        {"create": False, "name": "p4-shared-data"},
+    ]
+    for role in ("VllmPrefillWorker", "VllmDecodeWorker"):
+        assert {"name": "p4-shared-data", "mountPoint": "/data"} in services[role]["volumeMounts"]
 
 
 def test_dgd_chart_rejects_mutable_prime_runtime_image(tmp_path: Path):

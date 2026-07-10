@@ -1,4 +1,15 @@
+{{- $dgdWorkload := dict }}
+{{- if eq .Values.inference.mode "dynamoGraph" }}
+{{- $workloadBinding := required "inference.dynamoGraph.workloadBinding is required" .Values.inference.dynamoGraph.workloadBinding }}
+{{- $workloadCanonical := required "inference.dynamoGraph.workloadBinding.canonical is required" $workloadBinding.canonical }}
+{{- $dgdWorkload = mustFromJson $workloadCanonical }}
+{{- end }}
 {{- if .Values.orchestrator.enabled }}
+{{- $orchestratorPlacement := .Values.orchestrator }}
+{{- if eq .Values.inference.mode "dynamoGraph" }}
+{{- $orchestratorWorkload := required "canonical orchestrator workload is required" (index $dgdWorkload "orchestrator") }}
+{{- $orchestratorPlacement = required "canonical orchestrator placement is required" (index $orchestratorWorkload "placement") }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -28,14 +39,14 @@ spec:
         - name: {{ . | quote }}
         {{- end }}
       {{- end }}
-      {{- with .Values.orchestrator.nodeSelector }}
+      {{- with $orchestratorPlacement.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.orchestrator.runtimeClassName }}
-      runtimeClassName: {{ .Values.orchestrator.runtimeClassName }}
+      {{- if $orchestratorPlacement.runtimeClassName }}
+      runtimeClassName: {{ $orchestratorPlacement.runtimeClassName }}
       {{- end }}
-      {{- with .Values.orchestrator.tolerations }}
+      {{- with $orchestratorPlacement.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -302,6 +313,11 @@ spec:
 {{- end }}
 ---
 {{- if .Values.trainer.enabled }}
+{{- $trainerPlacement := .Values.trainer }}
+{{- if eq .Values.inference.mode "dynamoGraph" }}
+{{- $trainerWorkload := required "canonical trainer workload is required" (index $dgdWorkload "trainer") }}
+{{- $trainerPlacement = required "canonical trainer placement is required" (index $trainerWorkload "placement") }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -332,14 +348,14 @@ spec:
         - name: {{ . | quote }}
         {{- end }}
       {{- end }}
-      {{- if .Values.trainer.runtimeClassName }}
-      runtimeClassName: {{ .Values.trainer.runtimeClassName }}
+      {{- if $trainerPlacement.runtimeClassName }}
+      runtimeClassName: {{ $trainerPlacement.runtimeClassName }}
       {{- end }}
-      {{- with .Values.trainer.nodeSelector }}
+      {{- with $trainerPlacement.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.trainer.tolerations }}
+      {{- with $trainerPlacement.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

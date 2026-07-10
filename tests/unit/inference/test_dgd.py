@@ -57,7 +57,13 @@ def inference_config(
     )
 
 
-def render_options(tmp_path: Path) -> DynamoGraphRenderOptions:
+def render_options(
+    tmp_path: Path,
+    *,
+    external_controller: bool = False,
+    shared_pvc: str | None = "p4-shared-data",
+    trainer_gpu_count: int = 1,
+) -> DynamoGraphRenderOptions:
     return DynamoGraphRenderOptions(
         release_name="p4-math",
         namespace="bis-vllm",
@@ -68,8 +74,10 @@ def render_options(tmp_path: Path) -> DynamoGraphRenderOptions:
         image_digest=IMAGE_DIGEST,
         run_name="p4-run",
         gpu_scheduling=GPU_SCHEDULING,
+        external_controller=external_controller,
+        trainer_gpu_count=trainer_gpu_count,
         model_cache_pvc="model-cache",
-        shared_pvc="p4-shared-data",
+        shared_pvc=shared_pvc,
         image_pull_secrets=("nvcrimagepullsecret",),
         hf_token_secret="hf-token-secret",
     )
@@ -136,6 +144,9 @@ def test_dgd_values_derive_topology_and_role_configs(tmp_path: Path):
         },
     }
     assert resource["metadata"]["annotations"]["prime-rl.nvidia.com/topology-sha256"] == topology_binding["sha256"]
+    workload_binding = graph["workloadBinding"]
+    assert hashlib.sha256(workload_binding["canonical"].encode()).hexdigest() == workload_binding["sha256"]
+    assert resource["metadata"]["annotations"]["prime-rl.nvidia.com/workload-sha256"] == workload_binding["sha256"]
     for service in services.values():
         pod_spec = service["extraPodSpec"]
         assert pod_spec["mainContainer"]["image"] == options.image
@@ -153,22 +164,28 @@ def test_dgd_values_derive_topology_and_role_configs(tmp_path: Path):
             "effect": "NoSchedule",
         },
         {
+            "key": "nvidia.com/gpu",
+            "operator": "Exists",
+            "effect": "NoSchedule",
+        },
+        {
             "key": "prime-rl",
             "operator": "Equal",
             "value": "true",
             "effect": "NoSchedule",
         },
     ]
-    gpu_tolerations = [
-        *image_tolerations,
-        {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"},
-    ]
+    gpu_tolerations = image_tolerations
     image_selector = {
         "kubernetes.io/arch": "arm64",
         "cloud.google.com/gke-nodepool": "customer-gpu-o7v",
     }
     gpu_selector = {**image_selector, "nvidia.com/gpu.product": "NVIDIA-GB200"}
     frontend_pod = services["Frontend"]["extraPodSpec"]
+    assert services["Frontend"]["extraPodMetadata"]["labels"] == {
+        "app.kubernetes.io/name": "prime-rl",
+        "app.kubernetes.io/instance": "p4-math",
+    }
     assert frontend_pod["nodeSelector"] == image_selector
     assert frontend_pod["tolerations"] == image_tolerations
     assert "runtimeClassName" not in frontend_pod
@@ -181,13 +198,32 @@ def test_dgd_values_derive_topology_and_role_configs(tmp_path: Path):
         assert worker_pod["runtimeClassName"] == "nvidia"
         assert worker_pod["nodeSelector"] == gpu_selector
         assert worker_pod["tolerations"] == gpu_tolerations
-    assert values["orchestrator"] == {
-        "nodeSelector": image_selector,
-        "tolerations": image_tolerations,
+    workload = json.loads(workload_binding["canonical"])
+    assert workload["controllerMode"] == "chartManaged"
+    assert workload["storage"] == {
+        "enabled": True,
+        "existingClaim": "p4-shared-data",
+        "mountPath": "/data",
     }
-    assert values["trainer"]["runtimeClassName"] == "nvidia"
-    assert values["trainer"]["nodeSelector"] == gpu_selector
-    assert values["trainer"]["tolerations"] == gpu_tolerations
+    assert workload["orchestrator"] == {
+        "enabled": True,
+        "gpu": {"enabled": False},
+        "placement": {
+            "nodeSelector": image_selector,
+            "tolerations": image_tolerations,
+        },
+    }
+    assert workload["trainer"] == {
+        "enabled": True,
+        "gpu": {"enabled": True, "count": 1},
+        "placement": {
+            "runtimeClassName": "nvidia",
+            "nodeSelector": gpu_selector,
+            "tolerations": gpu_tolerations,
+        },
+    }
+    assert values["orchestrator"] == {"enabled": True}
+    assert values["trainer"] == {"enabled": True, "gpu": {"enabled": True, "count": 1}}
 
     prefill_args = services["VllmPrefillWorker"]["extraPodSpec"]["mainContainer"]["args"]
     decode_args = services["VllmDecodeWorker"]["extraPodSpec"]["mainContainer"]["args"]
@@ -422,6 +458,26 @@ def test_cli_toleration_parser_is_typed_and_rejects_unknown_fields():
         _parse_kubernetes_toleration('{"key":"dedicated","operator":"NotARealOperator"}')
 
 
+@pytest.mark.parametrize(
+    "toleration",
+    [
+        KubernetesToleration(key="nvidia.com/gpu", effect="NoExecute"),
+        KubernetesToleration(key="nvidia.com/gpu", operator="Equal", value="true"),
+    ],
+)
+def test_gpu_scheduling_requires_exact_nodepool_access_toleration(
+    toleration: KubernetesToleration,
+):
+    with pytest.raises(ValueError, match="nvidia.com/gpu Exists NoSchedule"):
+        GPUSchedulingProfile(
+            runtime_class_name="nvidia",
+            architecture="arm64",
+            product="NVIDIA-GB200",
+            node_pool="customer-gpu-o7v",
+            tolerations=(toleration,),
+        )
+
+
 def test_cli_accepts_typed_additional_image_and_gpu_tolerations(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         sys,
@@ -449,6 +505,9 @@ def test_cli_accepts_typed_additional_image_and_gpu_tolerations(monkeypatch: pyt
             "NVIDIA-GB200",
             "--gpu-node-pool",
             "customer-gpu-o7v",
+            "--external-controller",
+            "--trainer-gpus",
+            "4",
             "--image-toleration",
             '{"key":"image-extra","operator":"Exists"}',
             "--gpu-toleration",
@@ -460,6 +519,8 @@ def test_cli_accepts_typed_additional_image_and_gpu_tolerations(monkeypatch: pyt
 
     assert args.image_toleration == [KubernetesToleration(key="image-extra")]
     assert args.gpu_toleration == [KubernetesToleration(key="gpu-extra", operator="Equal", value="true")]
+    assert args.external_controller is True
+    assert args.trainer_gpus == 4
 
 
 def test_gpu_scheduling_changes_manifest_identity(tmp_path: Path):
@@ -474,6 +535,35 @@ def test_gpu_scheduling_changes_manifest_identity(tmp_path: Path):
         first_resource["metadata"]["annotations"]["prime-rl.nvidia.com/manifest-sha256"]
         != (second_resource["metadata"]["annotations"]["prime-rl.nvidia.com/manifest-sha256"])
     )
+
+
+def test_external_controller_binding_disables_chart_workloads(tmp_path: Path):
+    values = build_dgd_values(
+        inference_config(),
+        render_options(tmp_path, external_controller=True, shared_pvc=None),
+    )
+    graph = values["inference"]["dynamoGraph"]
+    workload = json.loads(graph["workloadBinding"]["canonical"])
+
+    assert graph["controllerMode"] == "external"
+    assert workload["controllerMode"] == "external"
+    assert workload["orchestrator"]["enabled"] is False
+    assert workload["orchestrator"]["gpu"] == {"enabled": False}
+    assert workload["trainer"]["enabled"] is False
+    assert workload["trainer"]["gpu"] == {"enabled": False, "count": 0}
+    assert workload["storage"] == {
+        "enabled": False,
+        "existingClaim": "",
+        "mountPath": "/data",
+    }
+    assert values["orchestrator"] == {"enabled": False}
+    assert values["trainer"] == {"enabled": False, "gpu": {"enabled": False, "count": 0}}
+    assert values["storage"] == {"enabled": False}
+
+
+def test_trainer_gpu_count_must_be_positive():
+    with pytest.raises(ValueError, match="trainer_gpu_count"):
+        replace(render_options(Path("/tmp/not-written")), trainer_gpu_count=0)
 
 
 def test_dgd_rejects_native_backend(tmp_path: Path):

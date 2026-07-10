@@ -26,6 +26,7 @@ ENGINE_CONFIG_HASH_ANNOTATION = "prime-rl.nvidia.com/config-sha256"
 MANIFEST_HASH_ANNOTATION = "prime-rl.nvidia.com/manifest-sha256"
 MANIFEST_HASH_SCOPE_ANNOTATION = "prime-rl.nvidia.com/manifest-sha256-scope"
 TOPOLOGY_HASH_ANNOTATION = "prime-rl.nvidia.com/topology-sha256"
+WORKLOAD_HASH_ANNOTATION = "prime-rl.nvidia.com/workload-sha256"
 MANIFEST_HASH_SCOPE = (
     "resource; json.dumps(sort_keys=true,indent=2)+newline; "
     "exclude=/metadata/annotations/prime-rl.nvidia.com~1manifest-sha256"
@@ -148,8 +149,9 @@ class GPUSchedulingProfile:
             raise ValueError(f"GPU scheduling fields must not be empty: {empty}")
         if not self.tolerations:
             raise ValueError("GPU scheduling requires at least one toleration")
-        if not any(toleration.key == "nvidia.com/gpu" for toleration in self.tolerations):
-            raise ValueError("GPU scheduling must tolerate the nvidia.com/gpu taint")
+        required_gpu_toleration = KubernetesToleration(key="nvidia.com/gpu")
+        if required_gpu_toleration not in self.tolerations:
+            raise ValueError("GPU scheduling requires nvidia.com/gpu Exists NoSchedule")
 
     @property
     def image_node_selector(self) -> dict[str, str]:
@@ -173,6 +175,7 @@ class GPUSchedulingProfile:
                 operator="Equal",
                 value=self.architecture,
             ),
+            KubernetesToleration(key="nvidia.com/gpu"),
             KubernetesToleration(key="prime-rl", operator="Equal", value="true"),
         )
         return _unique_tolerations((*required, *self.additional_image_tolerations))
@@ -201,6 +204,8 @@ class DynamoGraphRenderOptions:
     image_digest: str
     run_name: str
     gpu_scheduling: GPUSchedulingProfile
+    external_controller: bool = False
+    trainer_gpu_count: int = 1
     model_cache_pvc: str | None = None
     shared_pvc: str | None = None
     image_pull_secrets: tuple[str, ...] = ()
@@ -217,6 +222,8 @@ class DynamoGraphRenderOptions:
         image_tag = self.image.rsplit("@", 1)[0]
         if self.prime_sha[:12] not in image_tag or self.dynamo_sha[:12] not in image_tag:
             raise ValueError("DGD image tag must include the Prime and Dynamo commit suffixes")
+        if self.trainer_gpu_count < 1:
+            raise ValueError("trainer_gpu_count must be at least one")
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -250,6 +257,13 @@ def _worker_topology_binding(services: dict[str, Any]) -> dict[str, Any]:
         }
         for service_name, service in sorted(services.items())
         if service["componentType"] == "worker"
+    }
+
+
+def _release_pod_labels(options: DynamoGraphRenderOptions) -> dict[str, str]:
+    return {
+        "app.kubernetes.io/name": "prime-rl",
+        "app.kubernetes.io/instance": options.release_name,
     }
 
 
@@ -338,6 +352,7 @@ def _worker_service(
         "componentType": "worker",
         "subComponentType": role,
         "replicas": replicas,
+        "extraPodMetadata": {"labels": _release_pod_labels(options)},
         "sharedMemory": {"size": "64Gi"},
         "resources": {
             "requests": {"gpu": str(config.deployment.gpus_per_node)},
@@ -474,6 +489,7 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
     frontend = {
         "componentType": "frontend",
         "replicas": 1,
+        "extraPodMetadata": {"labels": _release_pod_labels(options)},
         "extraPodSpec": frontend_pod_spec,
     }
     prefill = _worker_service(
@@ -510,6 +526,39 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
     }
     topology_canonical = _canonical_json(topology_binding)
     topology_hash = _sha256_bytes(topology_canonical)
+    chart_controller_enabled = not options.external_controller
+    controller_mode = "external" if options.external_controller else "chartManaged"
+    storage_enabled = chart_controller_enabled or options.shared_pvc is not None
+    workload = {
+        "controllerMode": controller_mode,
+        "orchestrator": {
+            "enabled": chart_controller_enabled,
+            "gpu": {"enabled": False},
+            "placement": {
+                "nodeSelector": options.gpu_scheduling.image_node_selector,
+                "tolerations": options.gpu_scheduling.image_toleration_manifests,
+            },
+        },
+        "trainer": {
+            "enabled": chart_controller_enabled,
+            "gpu": {
+                "enabled": chart_controller_enabled,
+                "count": options.trainer_gpu_count if chart_controller_enabled else 0,
+            },
+            "placement": {
+                "runtimeClassName": options.gpu_scheduling.runtime_class_name,
+                "nodeSelector": options.gpu_scheduling.node_selector,
+                "tolerations": options.gpu_scheduling.toleration_manifests,
+            },
+        },
+        "storage": {
+            "enabled": storage_enabled,
+            "existingClaim": options.shared_pvc or "",
+            "mountPath": "/data",
+        },
+    }
+    workload_canonical = _canonical_json(workload)
+    workload_hash = _sha256_bytes(workload_canonical)
     annotations = {
         ENGINE_CONFIG_HASH_ANNOTATION: engine_hash,
         "prime-rl.nvidia.com/dynamo-sha": options.dynamo_sha,
@@ -518,6 +567,7 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         "prime-rl.nvidia.com/run-name": options.run_name,
         MANIFEST_HASH_SCOPE_ANNOTATION: MANIFEST_HASH_SCOPE,
         TOPOLOGY_HASH_ANNOTATION: topology_hash,
+        WORKLOAD_HASH_ANNOTATION: workload_hash,
     }
     resource: dict[str, Any] = {
         "apiVersion": "nvidia.com/v1alpha1",
@@ -560,8 +610,10 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
             "pullSecrets": list(options.image_pull_secrets),
         },
         "inference": {
+            "enabled": True,
             "mode": "dynamoGraph",
             "dynamoGraph": {
+                "controllerMode": controller_mode,
                 "clientTopology": client_topology,
                 "engineConfig": {
                     "name": config_map_name,
@@ -574,20 +626,25 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
                     "sha256": topology_hash,
                     "canonical": topology_canonical.decode(),
                 },
+                "workloadBinding": {
+                    "sha256": workload_hash,
+                    "canonical": workload_canonical.decode(),
+                },
                 "manifestCanonical": manifest_canonical.decode(),
                 "resource": resource,
             },
         },
+        "orchestrator": {"enabled": chart_controller_enabled},
         "trainer": {
-            "runtimeClassName": options.gpu_scheduling.runtime_class_name,
-            "nodeSelector": options.gpu_scheduling.node_selector,
-            "tolerations": options.gpu_scheduling.toleration_manifests,
-        },
-        "orchestrator": {
-            "nodeSelector": options.gpu_scheduling.image_node_selector,
-            "tolerations": options.gpu_scheduling.image_toleration_manifests,
+            "enabled": chart_controller_enabled,
+            "gpu": {
+                "enabled": chart_controller_enabled,
+                "count": options.trainer_gpu_count if chart_controller_enabled else 0,
+            },
         },
     }
+    if options.external_controller:
+        values["storage"] = {"enabled": False}
     if options.model_cache_pvc:
         values["modelCache"] = {
             "enabled": True,
@@ -644,6 +701,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-node-pool", required=True)
     parser.add_argument("--gpu-node-pool-label", default="cloud.google.com/gke-nodepool")
     parser.add_argument(
+        "--external-controller",
+        action="store_true",
+        help="Render only DGD inference workloads; an external controller owns orchestration and training",
+    )
+    parser.add_argument(
+        "--trainer-gpus",
+        type=int,
+        default=1,
+        help="Exact GPU request and limit for the chart-managed trainer",
+    )
+    parser.add_argument(
         "--image-toleration",
         action="append",
         default=[],
@@ -685,6 +753,8 @@ def main() -> None:
             additional_image_tolerations=tuple(args.image_toleration),
             additional_gpu_tolerations=tuple(args.gpu_toleration),
         ),
+        external_controller=args.external_controller,
+        trainer_gpu_count=args.trainer_gpus,
         model_cache_pvc=args.model_cache_pvc,
         shared_pvc=args.shared_pvc,
         image_pull_secrets=tuple(args.image_pull_secret),

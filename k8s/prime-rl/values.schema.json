@@ -81,12 +81,17 @@
                     "prime-rl.nvidia.com/topology-sha256": {
                       "type": "string",
                       "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "prime-rl.nvidia.com/workload-sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
                     }
                   },
                   "required": [
                     "prime-rl.nvidia.com/config-sha256",
                     "prime-rl.nvidia.com/manifest-sha256",
-                    "prime-rl.nvidia.com/topology-sha256"
+                    "prime-rl.nvidia.com/topology-sha256",
+                    "prime-rl.nvidia.com/workload-sha256"
                   ],
                   "additionalProperties": {"type": "string"}
                 },
@@ -103,6 +108,22 @@
               "additionalProperties": false
             },
             "topologyBinding": {
+              "type": "object",
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "canonical": {"type": "string", "minLength": 1}
+              },
+              "required": ["sha256", "canonical"],
+              "additionalProperties": false
+            },
+            "controllerMode": {
+              "type": "string",
+              "enum": ["chartManaged", "external"]
+            },
+            "workloadBinding": {
               "type": "object",
               "properties": {
                 "sha256": {
@@ -145,6 +166,7 @@
     "orchestrator": {
       "type": "object",
       "properties": {
+        "enabled": {"type": "boolean"},
         "runtimeClassName": {"type": "string"},
         "nodeSelector": {
           "type": "object",
@@ -172,6 +194,15 @@
     "trainer": {
       "type": "object",
       "properties": {
+        "enabled": {"type": "boolean"},
+        "gpu": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "count": {"type": "integer", "minimum": 0}
+          },
+          "required": ["enabled", "count"]
+        },
         "runtimeClassName": {"type": "string"},
         "nodeSelector": {
           "type": "object",
@@ -218,6 +249,7 @@
           },
           "inference": {
             "properties": {
+              "enabled": {"const": true},
               "dynamoGraph": {
                 "properties": {
                   "engineConfig": {"minProperties": 5},
@@ -227,28 +259,72 @@
                   "clientTopology",
                   "engineConfig",
                   "topologyBinding",
+                  "controllerMode",
+                  "workloadBinding",
                   "manifestCanonical",
                   "resource"
                 ]
               }
             },
-            "required": ["dynamoGraph"]
-          },
-          "orchestrator": {
-            "properties": {
-              "nodeSelector": {"minProperties": 2},
-              "tolerations": {"minItems": 2}
-            },
-            "required": ["nodeSelector", "tolerations"]
-          },
-          "trainer": {
-            "properties": {
-              "nodeSelector": {"minProperties": 3},
-              "tolerations": {"minItems": 3}
-            },
-            "required": ["runtimeClassName", "nodeSelector", "tolerations"]
+            "required": ["enabled", "dynamoGraph"]
           }
         },
+        "oneOf": [
+          {
+            "properties": {
+              "inference": {
+                "properties": {
+                  "dynamoGraph": {
+                    "properties": {"controllerMode": {"const": "chartManaged"}}
+                  }
+                }
+              },
+              "orchestrator": {
+                "properties": {"enabled": {"const": true}},
+                "required": ["enabled"]
+              },
+              "trainer": {
+                "properties": {
+                  "enabled": {"const": true},
+                  "gpu": {
+                    "properties": {
+                      "enabled": {"const": true},
+                      "count": {"minimum": 1}
+                    }
+                  }
+                },
+                "required": ["enabled", "gpu"]
+              }
+            }
+          },
+          {
+            "properties": {
+              "inference": {
+                "properties": {
+                  "dynamoGraph": {
+                    "properties": {"controllerMode": {"const": "external"}}
+                  }
+                }
+              },
+              "orchestrator": {
+                "properties": {"enabled": {"const": false}},
+                "required": ["enabled"]
+              },
+              "trainer": {
+                "properties": {
+                  "enabled": {"const": false},
+                  "gpu": {
+                    "properties": {
+                      "enabled": {"const": false},
+                      "count": {"const": 0}
+                    }
+                  }
+                },
+                "required": ["enabled", "gpu"]
+              }
+            }
+          }
+        ],
         "required": ["image", "inference", "orchestrator", "trainer"]
       }
     },

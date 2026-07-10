@@ -1,4 +1,14 @@
-{{- if and .Values.inference.enabled (eq .Values.inference.mode "dynamoGraph") }}
+{{- $candidateGraph := default (dict) .Values.inference.dynamoGraph }}
+{{- if and (hasKey $candidateGraph "workloadBinding") (ne .Values.inference.mode "dynamoGraph") }}
+{{- fail "generated DynamoGraph contract requires dynamoGraph mode" }}
+{{- end }}
+{{- if eq .Values.inference.mode "dynamoGraph" }}
+{{- if not (kindIs "bool" .Values.inference.enabled) }}
+{{- fail "inference.enabled must be boolean true in dynamoGraph mode" }}
+{{- end }}
+{{- if not .Values.inference.enabled }}
+{{- fail "inference.enabled must be boolean true in dynamoGraph mode" }}
+{{- end }}
 {{- $graph := required "inference.dynamoGraph is required" .Values.inference.dynamoGraph }}
 {{- $resource := required "inference.dynamoGraph.resource is required" $graph.resource }}
 {{- $resourceName := required "inference.dynamoGraph.resource.metadata.name is required" $resource.metadata.name }}
@@ -91,6 +101,115 @@
 {{- fail (printf "DynamoGraphDeployment service %s GPU resources must match the client topology binding" $serviceName) }}
 {{- end }}
 {{- end }}
+{{- $workloadBinding := required "inference.dynamoGraph.workloadBinding is required" $graph.workloadBinding }}
+{{- $workloadCanonical := required "inference.dynamoGraph.workloadBinding.canonical is required" $workloadBinding.canonical }}
+{{- $workloadHash := required "inference.dynamoGraph.workloadBinding.sha256 is required" $workloadBinding.sha256 }}
+{{- if ne (sha256sum $workloadCanonical) $workloadHash }}
+{{- fail "workload binding sha256 must match its canonical payload" }}
+{{- end }}
+{{- if ne (required "DynamoGraphDeployment workload-sha256 annotation is required" (index $resourceAnnotations "prime-rl.nvidia.com/workload-sha256")) $workloadHash }}
+{{- fail "DynamoGraphDeployment workload binding annotation must match workloadBinding.sha256" }}
+{{- end }}
+{{- $workload := mustFromJson $workloadCanonical }}
+{{- if ne (len $workload) 4 }}
+{{- fail "workload binding must contain only controllerMode, orchestrator, storage, and trainer" }}
+{{- end }}
+{{- $controllerMode := required "canonical controllerMode is required" (index $workload "controllerMode") }}
+{{- if and (ne $controllerMode "chartManaged") (ne $controllerMode "external") }}
+{{- fail "canonical controllerMode must be chartManaged or external" }}
+{{- end }}
+{{- if ne (required "inference.dynamoGraph.controllerMode is required" $graph.controllerMode) $controllerMode }}
+{{- fail "inference.dynamoGraph.controllerMode must match the workload binding" }}
+{{- end }}
+{{- $frontend := required "DynamoGraphDeployment Frontend is required" (index $services "Frontend") }}
+{{- $frontendPod := required "DynamoGraphDeployment Frontend extraPodSpec is required" $frontend.extraPodSpec }}
+{{- $orchestratorWorkload := required "canonical orchestrator workload is required" (index $workload "orchestrator") }}
+{{- $trainerWorkload := required "canonical trainer workload is required" (index $workload "trainer") }}
+{{- $storageWorkload := required "canonical storage workload is required" (index $workload "storage") }}
+{{- if or (not (hasKey $orchestratorWorkload "enabled")) (not (hasKey $trainerWorkload "enabled")) }}
+{{- fail "canonical controller workloads must define enabled" }}
+{{- end }}
+{{- $orchestratorEnabled := index $orchestratorWorkload "enabled" }}
+{{- $trainerEnabled := index $trainerWorkload "enabled" }}
+{{- if ne $orchestratorEnabled .Values.orchestrator.enabled }}
+{{- fail "orchestrator.enabled must match the workload binding" }}
+{{- end }}
+{{- if ne $trainerEnabled .Values.trainer.enabled }}
+{{- fail "trainer.enabled must match the workload binding" }}
+{{- end }}
+{{- $orchestratorGPU := required "canonical orchestrator gpu contract is required" (index $orchestratorWorkload "gpu") }}
+{{- if not (hasKey $orchestratorGPU "enabled") }}
+{{- fail "canonical orchestrator gpu contract must define enabled" }}
+{{- end }}
+{{- if index $orchestratorGPU "enabled" }}
+{{- fail "canonical orchestrator GPU capability must be disabled" }}
+{{- end }}
+{{- range $componentName, $resources := dict "orchestrator" .Values.orchestrator.resources "trainer" .Values.trainer.resources }}
+{{- range $resourceScope, $entries := dict "limits" (default (dict) $resources.limits) "requests" (default (dict) $resources.requests) }}
+{{- range $resourceName, $_ := $entries }}
+{{- if hasPrefix "nvidia.com/" $resourceName }}
+{{- fail (printf "%s resources cannot set NVIDIA extended resource %s in %s" $componentName $resourceName $resourceScope) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $trainerGPU := required "canonical trainer gpu contract is required" (index $trainerWorkload "gpu") }}
+{{- if or (not (hasKey $trainerGPU "enabled")) (not (hasKey $trainerGPU "count")) }}
+{{- fail "canonical trainer gpu contract must define enabled and count" }}
+{{- end }}
+{{- $trainerGPUEnabled := index $trainerGPU "enabled" }}
+{{- $trainerGPUCount := int (index $trainerGPU "count") }}
+{{- if eq $controllerMode "chartManaged" }}
+{{- if or (not $orchestratorEnabled) (not $trainerEnabled) (not $trainerGPUEnabled) (lt $trainerGPUCount 1) }}
+{{- fail "chartManaged mode requires orchestrator, trainer, and trainer GPU capability" }}
+{{- end }}
+{{- else }}
+{{- if or $orchestratorEnabled $trainerEnabled $trainerGPUEnabled (ne $trainerGPUCount 0) }}
+{{- fail "external mode forbids chart-managed controller workloads and trainer GPU capability" }}
+{{- end }}
+{{- end }}
+{{- $actualTrainerGPU := dict "enabled" .Values.trainer.gpu.enabled "count" (int .Values.trainer.gpu.count) }}
+{{- if ne (toJson $trainerGPU) (toJson $actualTrainerGPU) }}
+{{- fail "trainer GPU configuration must match the workload binding" }}
+{{- end }}
+{{- if or (not (hasKey $storageWorkload "enabled")) (not (hasKey $storageWorkload "existingClaim")) (not (hasKey $storageWorkload "mountPath")) }}
+{{- fail "canonical storage workload must define enabled, existingClaim, and mountPath" }}
+{{- end }}
+{{- $storageEnabled := index $storageWorkload "enabled" }}
+{{- $storageClaim := index $storageWorkload "existingClaim" }}
+{{- if and (eq $controllerMode "chartManaged") (not $storageEnabled) }}
+{{- fail "chartManaged mode requires chart storage" }}
+{{- end }}
+{{- if and (eq $controllerMode "external") $storageEnabled (empty $storageClaim) }}
+{{- fail "external mode requires an existing claim when chart storage is enabled" }}
+{{- end }}
+{{- $actualStorage := dict "enabled" .Values.storage.enabled "existingClaim" .Values.storage.existingClaim "mountPath" .Values.storage.mountPath }}
+{{- if ne (toJson $storageWorkload) (toJson $actualStorage) }}
+{{- fail "storage configuration must match the workload binding" }}
+{{- end }}
+{{- $orchestratorPlacement := required "canonical orchestrator placement is required" (index $orchestratorWorkload "placement") }}
+{{- $expectedOrchestratorPlacement := dict
+      "nodeSelector" (required "Frontend nodeSelector is required" $frontendPod.nodeSelector)
+      "tolerations" (required "Frontend tolerations are required" $frontendPod.tolerations) }}
+{{- if ne (toJson $orchestratorPlacement) (toJson $expectedOrchestratorPlacement) }}
+{{- fail "orchestrator placement must match the manifest-bound DGD frontend placement" }}
+{{- end }}
+{{- $trainerPlacement := required "canonical trainer placement is required" (index $trainerWorkload "placement") }}
+{{- range $serviceName, $service := dict "VllmDecodeWorker" $decode "VllmPrefillWorker" $prefill }}
+{{- $workerPod := required (printf "%s extraPodSpec is required" $serviceName) $service.extraPodSpec }}
+{{- $expectedTrainerPlacement := dict
+      "runtimeClassName" (required (printf "%s runtimeClassName is required" $serviceName) $workerPod.runtimeClassName)
+      "nodeSelector" (required (printf "%s nodeSelector is required" $serviceName) $workerPod.nodeSelector)
+      "tolerations" (required (printf "%s tolerations are required" $serviceName) $workerPod.tolerations) }}
+{{- if ne (toJson $trainerPlacement) (toJson $expectedTrainerPlacement) }}
+{{- fail "trainer placement must match every manifest-bound DGD worker placement" }}
+{{- end }}
+{{- end }}
+{{- $frontendLabels := required "DynamoGraphDeployment Frontend extraPodMetadata.labels is required" $frontend.extraPodMetadata.labels }}
+{{- $expectedFrontendLabels := dict "app.kubernetes.io/name" (include "prime-rl.name" .) "app.kubernetes.io/instance" .Release.Name }}
+{{- if ne (toJson $frontendLabels) (toJson $expectedFrontendLabels) }}
+{{- fail "DynamoGraphDeployment Frontend labels must match the chart selector labels" }}
+{{- end }}
 {{- $manifestCanonical := required "inference.dynamoGraph.manifestCanonical is required" $graph.manifestCanonical }}
 {{- $manifestHash := required "DynamoGraphDeployment manifest-sha256 annotation is required" (index $resourceAnnotations "prime-rl.nvidia.com/manifest-sha256") }}
 {{- if ne (sha256sum $manifestCanonical) $manifestHash }}
@@ -101,6 +220,9 @@
 {{- end }}
 {{- if ne (required "engineConfig topology-sha256 annotation is required" (index $engineAnnotations "prime-rl.nvidia.com/topology-sha256")) $topologyHash }}
 {{- fail "engineConfig topology-sha256 annotation must match topologyBinding.sha256" }}
+{{- end }}
+{{- if ne (required "engineConfig workload-sha256 annotation is required" (index $engineAnnotations "prime-rl.nvidia.com/workload-sha256")) $workloadHash }}
+{{- fail "engineConfig workload-sha256 annotation must match workloadBinding.sha256" }}
 {{- end }}
 {{- if ne (toJson $engineAnnotations) (toJson $resourceAnnotations) }}
 {{- fail "engineConfig annotations must match DynamoGraphDeployment identity annotations" }}
