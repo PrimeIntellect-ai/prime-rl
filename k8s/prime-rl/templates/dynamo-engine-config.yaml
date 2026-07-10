@@ -12,7 +12,6 @@ metadata:
 immutable: true
 data:
   {{- range $name, $content := .Values.inference.dynamoGraph.engineConfig.data }}
-  {{ $name }}: |
-{{ $content | nindent 4 }}
+  {{ $name }}: {{ $content | toJson }}
   {{- end }}
 {{- end }}

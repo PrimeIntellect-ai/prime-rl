@@ -1,8 +1,29 @@
 {{- if and .Values.inference.enabled (eq .Values.inference.mode "dynamoGraph") }}
 {{- $resource := required "inference.dynamoGraph.resource is required" .Values.inference.dynamoGraph.resource }}
 {{- $resourceName := required "inference.dynamoGraph.resource.metadata.name is required" $resource.metadata.name }}
+{{- $resourceNamespace := required "inference.dynamoGraph.resource.metadata.namespace is required" $resource.metadata.namespace }}
 {{- if ne .Release.Name $resourceName }}
 {{- fail (printf "Helm Release.Name %q must match embedded DynamoGraphDeployment metadata.name %q" .Release.Name $resourceName) }}
+{{- end }}
+{{- if ne .Values.namespace $resourceNamespace }}
+{{- fail (printf "values namespace %q must match embedded DynamoGraphDeployment metadata.namespace %q" .Values.namespace $resourceNamespace) }}
+{{- end }}
+{{- $topology := required "inference.dynamoGraph.clientTopology is required" .Values.inference.dynamoGraph.clientTopology }}
+{{- $baseURLs := required "inference.dynamoGraph.clientTopology.base_url is required" $topology.base_url }}
+{{- $rlBaseURLs := required "inference.dynamoGraph.clientTopology.rl_base_url is required" $topology.rl_base_url }}
+{{- if or (ne (len $baseURLs) 1) (ne (index $baseURLs 0) (printf "http://%s-frontend.%s.svc.cluster.local:8000/v1" .Release.Name .Values.namespace)) }}
+{{- fail "inference.dynamoGraph.clientTopology.base_url must match the generated release frontend URL" }}
+{{- end }}
+{{- if or (ne (len $rlBaseURLs) 1) (ne (index $rlBaseURLs 0) (printf "http://%s-frontend-rl.%s.svc.cluster.local:8001" .Release.Name .Values.namespace)) }}
+{{- fail "inference.dynamoGraph.clientTopology.rl_base_url must match the generated release RL discovery URL" }}
+{{- end }}
+{{- $protectedEnv := dict "DYN_RL_DISCOVERY_URL" true "DYN_RL_TOPOLOGY" true "INFERENCE_URL" true "HF_HOME" true "HF_TOKEN" true "HUGGING_FACE_HUB_TOKEN" true }}
+{{- range $componentName, $component := dict "orchestrator" .Values.orchestrator "trainer" .Values.trainer }}
+{{- range $entry := $component.env }}
+{{- if hasKey $protectedEnv $entry.name }}
+{{- fail (printf "%s.env cannot override generated %s" $componentName $entry.name) }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- $image := required "image.reference is required in dynamoGraph mode" .Values.image.reference }}
 {{- if not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $image) }}

@@ -65,6 +65,8 @@ orchestrator:
 
   nodeSelector: {}
     # nvidia.com/gpu.present: "true"  # Orchestrator doesn't need GPUs
+  runtimeClassName: ""
+  tolerations: []
 
 # Inference component
 inference:

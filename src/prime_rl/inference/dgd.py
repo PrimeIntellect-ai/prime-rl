@@ -30,21 +30,36 @@ MANIFEST_HASH_SCOPE = (
 )
 _DGD_RESERVED_ENV_KEYS = frozenset(
     {
+        "CONTAINER_NAME",
+        "DYNAMO_PORT",
         "DYN_COMPONENT",
         "DYN_DISCOVERY_BACKEND",
         "DYN_ENABLE_RL",
         "DYN_ENDPOINT",
+        "DYN_ENDPOINT_TYPES",
         "DYN_ETCD_ENDPOINTS",
         "DYN_EVENT_PLANE",
         "DYN_FILE_KV",
+        "DYN_HEALTH_CHECK_ENABLED",
+        "DYN_HTTP_PORT",
+        "DYN_KUBE_DISCOVERY_MODE",
         "DYN_NAMESPACE",
+        "DYN_NAMESPACE_PREFIX",
+        "DYN_NAMESPACE_WORKER_SUFFIX",
+        "DYN_PARENT_DGD_K8S_NAME",
+        "DYN_PARENT_DGD_K8S_NAMESPACE",
         "DYN_RL_ENDPOINT",
         "DYN_RL_PORT",
-        "DYN_SYSTEM_PORT",
+        "POD_NAME",
+        "POD_NAMESPACE",
+        "POD_UID",
         "VLLM_NIXL_SIDE_CHANNEL_HOST",
         "VLLM_NIXL_SIDE_CHANNEL_PORT",
     }
 )
+_DGD_RESERVED_ENV_PREFIXES = ("DYN_HEALTH_CHECK_", "DYN_SYSTEM_")
+_RAW_HUGGING_FACE_TOKEN_KEYS = frozenset({"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"})
+_MODEL_CACHE_MOUNT_PATH = "/model-cache"
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +72,10 @@ class KubernetesToleration:
     def __post_init__(self) -> None:
         if not self.key:
             raise ValueError("Kubernetes toleration key must not be empty")
+        if self.operator not in ("Exists", "Equal"):
+            raise ValueError(f"Unsupported Kubernetes toleration operator: {self.operator!r}")
+        if self.effect not in (None, "NoSchedule", "PreferNoSchedule", "NoExecute"):
+            raise ValueError(f"Unsupported Kubernetes toleration effect: {self.effect!r}")
         if self.operator == "Exists" and self.value is not None:
             raise ValueError("An Exists toleration cannot define a value")
         if self.operator == "Equal" and self.value is None:
@@ -71,9 +90,39 @@ class KubernetesToleration:
         }
 
 
+def _parse_kubernetes_toleration(value: str) -> KubernetesToleration:
+    """Parse one CLI toleration from JSON without evaluating shell-like input."""
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"Kubernetes toleration must be a JSON object: {error.msg}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Kubernetes toleration must be a JSON object")
+    supported = {"key", "operator", "effect", "value"}
+    unknown = sorted(payload.keys() - supported)
+    if unknown:
+        raise ValueError(f"Kubernetes toleration has unsupported fields: {unknown}")
+    if "key" not in payload:
+        raise ValueError("Kubernetes toleration requires a key")
+    return KubernetesToleration(**payload)
+
+
+def _unique_tolerations(
+    tolerations: tuple[KubernetesToleration, ...],
+) -> tuple[KubernetesToleration, ...]:
+    unique: list[KubernetesToleration] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for toleration in tolerations:
+        identity = tuple(sorted(toleration.as_manifest().items()))
+        if identity not in seen:
+            unique.append(toleration)
+            seen.add(identity)
+    return tuple(unique)
+
+
 @dataclass(frozen=True, slots=True)
 class GPUSchedulingProfile:
-    """One image-compatible placement contract for every generated GPU pod."""
+    """Image placement plus the stricter placement required by GPU consumers."""
 
     runtime_class_name: str
     architecture: str
@@ -81,6 +130,8 @@ class GPUSchedulingProfile:
     node_pool: str
     node_pool_label: str = "cloud.google.com/gke-nodepool"
     tolerations: tuple[KubernetesToleration, ...] = (KubernetesToleration(key="nvidia.com/gpu"),)
+    additional_image_tolerations: tuple[KubernetesToleration, ...] = ()
+    additional_gpu_tolerations: tuple[KubernetesToleration, ...] = ()
 
     def __post_init__(self) -> None:
         required = {
@@ -95,18 +146,46 @@ class GPUSchedulingProfile:
             raise ValueError(f"GPU scheduling fields must not be empty: {empty}")
         if not self.tolerations:
             raise ValueError("GPU scheduling requires at least one toleration")
+        if not any(toleration.key == "nvidia.com/gpu" for toleration in self.tolerations):
+            raise ValueError("GPU scheduling must tolerate the nvidia.com/gpu taint")
 
     @property
-    def node_selector(self) -> dict[str, str]:
+    def image_node_selector(self) -> dict[str, str]:
         return {
             "kubernetes.io/arch": self.architecture,
-            "nvidia.com/gpu.product": self.product,
             self.node_pool_label: self.node_pool,
         }
 
     @property
+    def node_selector(self) -> dict[str, str]:
+        return {
+            **self.image_node_selector,
+            "nvidia.com/gpu.product": self.product,
+        }
+
+    @property
+    def image_tolerations(self) -> tuple[KubernetesToleration, ...]:
+        required = (
+            KubernetesToleration(
+                key="kubernetes.io/arch",
+                operator="Equal",
+                value=self.architecture,
+            ),
+            KubernetesToleration(key="prime-rl", operator="Equal", value="true"),
+        )
+        return _unique_tolerations((*required, *self.additional_image_tolerations))
+
+    @property
+    def image_toleration_manifests(self) -> list[dict[str, str]]:
+        return [toleration.as_manifest() for toleration in self.image_tolerations]
+
+    @property
+    def gpu_tolerations(self) -> tuple[KubernetesToleration, ...]:
+        return _unique_tolerations((*self.image_tolerations, *self.tolerations, *self.additional_gpu_tolerations))
+
+    @property
     def toleration_manifests(self) -> list[dict[str, str]]:
-        return [toleration.as_manifest() for toleration in self.tolerations]
+        return [toleration.as_manifest() for toleration in self.gpu_tolerations]
 
 
 @dataclass(frozen=True)
@@ -272,9 +351,40 @@ def _validate_dgd_environment(config: InferenceConfig) -> None:
             ]
         )
     for source, environment in environment_sources:
-        conflicts = sorted(_DGD_RESERVED_ENV_KEYS & environment.keys())
+        conflicts = sorted(
+            key
+            for key in environment
+            if key in _DGD_RESERVED_ENV_KEYS or any(key.startswith(prefix) for prefix in _DGD_RESERVED_ENV_PREFIXES)
+        )
         if conflicts:
             raise ValueError(f"{source} env_vars contains {conflicts}; these DGD keys are operator-owned")
+
+
+def _validate_typed_credentials(
+    config: InferenceConfig,
+    options: DynamoGraphRenderOptions,
+) -> None:
+    environment_sources = [("global", config.env_vars)]
+    if config.deployment.type == "disaggregated":
+        environment_sources.extend(
+            [
+                ("prefill", config.deployment.prefill_env_vars),
+                ("decode", config.deployment.decode_env_vars),
+            ]
+        )
+    for source, environment in environment_sources:
+        token_conflicts = sorted(_RAW_HUGGING_FACE_TOKEN_KEYS & environment.keys())
+        if token_conflicts:
+            raise ValueError(
+                f"{source} env_vars contains raw Hugging Face credentials {token_conflicts}; "
+                "use DynamoGraphRenderOptions.hf_token_secret"
+            )
+        hf_home = environment.get("HF_HOME")
+        if options.model_cache_pvc and hf_home is not None and hf_home != _MODEL_CACHE_MOUNT_PATH:
+            raise ValueError(
+                f"{source} env_vars sets HF_HOME={hf_home!r}, but the typed model cache mount "
+                f"requires {_MODEL_CACHE_MOUNT_PATH!r}"
+            )
 
 
 def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions) -> dict[str, Any]:
@@ -288,6 +398,7 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
     if config.weight_broadcast.type == "filesystem" and not options.shared_pvc:
         raise ValueError("Dynamo filesystem weight broadcast requires a shared existing PVC")
     _validate_dgd_environment(config)
+    _validate_typed_credentials(config, options)
 
     engine_paths = write_role_engine_configs(config, options.output_dir)
     prefill_text = engine_paths["prefill"].read_text()
@@ -325,9 +436,16 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         "command": ["python3", "-m", frontend_process.module],
         "args": list(frontend_process.arguments),
         "env": [{"name": name, "value": value} for name, value in sorted(frontend_process.environment().items())],
-        "ports": [{"containerPort": 8001, "name": "rl"}],
+        "ports": [
+            {"containerPort": 8000, "name": "http"},
+            {"containerPort": 8001, "name": "rl"},
+        ],
     }
-    frontend_pod_spec = {"mainContainer": frontend_container}
+    frontend_pod_spec = {
+        "nodeSelector": options.gpu_scheduling.image_node_selector,
+        "tolerations": options.gpu_scheduling.image_toleration_manifests,
+        "mainContainer": frontend_container,
+    }
     if chat_template_content is not None:
         frontend_container["volumeMounts"] = [
             {
@@ -435,6 +553,10 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
             "nodeSelector": options.gpu_scheduling.node_selector,
             "tolerations": options.gpu_scheduling.toleration_manifests,
         },
+        "orchestrator": {
+            "nodeSelector": options.gpu_scheduling.image_node_selector,
+            "tolerations": options.gpu_scheduling.image_toleration_manifests,
+        },
     }
     if options.model_cache_pvc:
         values["modelCache"] = {
@@ -491,6 +613,20 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-product", required=True)
     parser.add_argument("--gpu-node-pool", required=True)
     parser.add_argument("--gpu-node-pool-label", default="cloud.google.com/gke-nodepool")
+    parser.add_argument(
+        "--image-toleration",
+        action="append",
+        default=[],
+        type=_parse_kubernetes_toleration,
+        help='Additional image-pod toleration as JSON, e.g. \'{"key":"dedicated","operator":"Exists"}\'',
+    )
+    parser.add_argument(
+        "--gpu-toleration",
+        action="append",
+        default=[],
+        type=_parse_kubernetes_toleration,
+        help='Additional GPU-pod toleration as JSON, e.g. \'{"key":"capacity","operator":"Exists"}\'',
+    )
     parser.add_argument("--model-cache-pvc")
     parser.add_argument("--shared-pvc")
     parser.add_argument("--image-pull-secret", action="append", default=[])
@@ -516,6 +652,8 @@ def main() -> None:
             product=args.gpu_product,
             node_pool=args.gpu_node_pool,
             node_pool_label=args.gpu_node_pool_label,
+            additional_image_tolerations=tuple(args.image_toleration),
+            additional_gpu_tolerations=tuple(args.gpu_toleration),
         ),
         model_cache_pvc=args.model_cache_pvc,
         shared_pvc=args.shared_pvc,

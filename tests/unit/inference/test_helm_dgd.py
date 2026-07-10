@@ -1,9 +1,11 @@
+import hashlib
 import json
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.inference.dgd import DynamoGraphRenderOptions, GPUSchedulingProfile, write_dgd_artifacts
@@ -73,6 +75,18 @@ def helm_template(*args: str, release_name: str = "p4-math") -> str:
     ).stdout
 
 
+def rendered_documents(rendered: str) -> list[dict]:
+    return [document for document in yaml.safe_load_all(rendered) if document]
+
+
+def rendered_resource(rendered: str, kind: str, name: str) -> dict:
+    return next(
+        document
+        for document in rendered_documents(rendered)
+        if document.get("kind") == kind and document.get("metadata", {}).get("name") == name
+    )
+
+
 def test_native_chart_still_renders_inference_statefulset():
     rendered = helm_template()
     assert "name: p4-math-inference\n" in rendered
@@ -90,6 +104,7 @@ def test_dgd_chart_renders_generated_graph_without_inference_statefulset(tmp_pat
     paths = write_dgd_artifacts(inference_config(), options)
     rendered = helm_template("-f", str(paths["values"]))
     graph = json.loads(paths["resource"].read_text())
+    rendered_graph = rendered_resource(rendered, "DynamoGraphDeployment", "p4-math")
 
     assert rendered.count("kind: DynamoGraphDeployment") == 1
     assert rendered.count("kind: ConfigMap") == 1
@@ -99,6 +114,10 @@ def test_dgd_chart_renders_generated_graph_without_inference_statefulset(tmp_pat
     assert "http://p4-math-frontend-rl.bis-vllm.svc.cluster.local:8001" in rendered
     assert graph["spec"]["services"]["VllmPrefillWorker"]["replicas"] == 2
     assert graph["spec"]["services"]["VllmDecodeWorker"]["replicas"] == 2
+    assert rendered_graph["spec"]["services"]["Frontend"]["extraPodSpec"]["mainContainer"]["ports"] == [
+        {"containerPort": 8000, "name": "http"},
+        {"containerPort": 8001, "name": "rl"},
+    ]
     assert rendered.count(f'image: "{options.image}"') == 2
     assert rendered.count(f"image: {options.image}") == 3
     assert rendered.count("nvcrimagepullsecret") == 5
@@ -106,10 +125,13 @@ def test_dgd_chart_renders_generated_graph_without_inference_statefulset(tmp_pat
     assert rendered.count("claimName: model-cache") == 2
     assert rendered.count("name: HF_TOKEN") == 5
     assert rendered.count("name: HF_HOME") == 5
-    assert rendered.count("cloud.google.com/gke-nodepool: customer-gpu-o7v") == 3
-    assert rendered.count("kubernetes.io/arch: arm64") == 3
+    assert rendered.count("cloud.google.com/gke-nodepool: customer-gpu-o7v") == 5
+    assert rendered.count("kubernetes.io/arch: arm64") == 5
     assert rendered.count("nvidia.com/gpu.product: NVIDIA-GB200") == 3
+    assert rendered.count("runtimeClassName: nvidia") == 3
+    assert rendered.count("key: kubernetes.io/arch") == 5
     assert rendered.count("key: nvidia.com/gpu") == 3
+    assert rendered.count("key: prime-rl") == 5
     assert not any(kind in rendered for kind in ("kind: ClusterRole", "kind: CustomResourceDefinition"))
 
 
@@ -119,12 +141,34 @@ def test_dgd_chart_renders_chat_template_configmap_and_frontend_mount(tmp_path: 
         render_options(tmp_path),
     )
     rendered = helm_template("-f", str(paths["values"]))
+    values = json.loads(paths["values"].read_text())
+    config_map = rendered_resource(
+        rendered,
+        "ConfigMap",
+        values["inference"]["dynamoGraph"]["engineConfig"]["name"],
+    )
 
-    assert "chat-template.jinja: |" in rendered
-    assert "template-marker: {{ messages }}" in rendered
+    assert config_map["data"]["chat-template.jinja"] == "template-marker: {{ messages }}"
     assert "/etc/prime-rl/dynamo/chat-template.jinja" in rendered
     assert "name: dynamo-chat-template" in rendered
     assert "key: chat-template.jinja" in rendered
+
+
+def test_dgd_chart_preserves_exact_content_addressed_configmap_bytes(tmp_path: Path):
+    paths = write_dgd_artifacts(
+        inference_config(chat_template="EXACT: {{ messages }}"),
+        render_options(tmp_path),
+    )
+    values = json.loads(paths["values"].read_text())
+    rendered = helm_template("-f", str(paths["values"]))
+    config_map_name = values["inference"]["dynamoGraph"]["engineConfig"]["name"]
+    config_map = rendered_resource(rendered, "ConfigMap", config_map_name)
+    expected_data = values["inference"]["dynamoGraph"]["engineConfig"]["data"]
+
+    assert config_map["data"] == expected_data
+    expected_hash = values["inference"]["dynamoGraph"]["engineConfig"]["sha256"]
+    canonical_data = (json.dumps(config_map["data"], indent=2, sort_keys=True) + "\n").encode()
+    assert hashlib.sha256(canonical_data).hexdigest() == expected_hash
 
 
 def test_dgd_chart_rejects_release_name_mismatch(tmp_path: Path):
@@ -134,6 +178,38 @@ def test_dgd_chart_rejects_release_name_mismatch(tmp_path: Path):
         helm_template("-f", str(paths["values"]), release_name="other-release")
 
     assert "must match embedded DynamoGraphDeployment metadata.name" in error.value.stderr
+
+
+def test_dgd_chart_rejects_namespace_mismatch(tmp_path: Path):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template("-f", str(paths["values"]), "--set", "namespace=other-namespace")
+
+    assert "must match embedded DynamoGraphDeployment metadata.namespace" in error.value.stderr
+
+
+@pytest.mark.parametrize(
+    ("component", "name"),
+    [
+        ("orchestrator", "DYN_RL_TOPOLOGY"),
+        ("orchestrator", "HF_TOKEN"),
+        ("trainer", "HF_HOME"),
+    ],
+)
+def test_dgd_chart_rejects_raw_env_that_overrides_typed_contract(
+    component: str,
+    name: str,
+    tmp_path: Path,
+):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+    overlay = tmp_path / f"{component}-{name}.json"
+    overlay.write_text(json.dumps({component: {"env": [{"name": name, "value": "override"}]}}))
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template("-f", str(paths["values"]), "-f", str(overlay))
+
+    assert f"{component}.env cannot override generated {name}" in error.value.stderr
 
 
 def test_filesystem_broadcast_reuses_existing_claim_without_rendering_pvc(tmp_path: Path):

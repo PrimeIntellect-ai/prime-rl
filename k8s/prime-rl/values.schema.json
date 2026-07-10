@@ -82,6 +82,33 @@
         "tokenSecretKey": {"type": "string", "minLength": 1}
       }
     },
+    "orchestrator": {
+      "type": "object",
+      "properties": {
+        "runtimeClassName": {"type": "string"},
+        "nodeSelector": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {"type": "string", "minLength": 1},
+              "operator": {"type": "string", "enum": ["Exists", "Equal"]},
+              "value": {"type": "string"},
+              "effect": {
+                "type": "string",
+                "enum": ["NoSchedule", "PreferNoSchedule", "NoExecute"]
+              }
+            },
+            "required": ["key", "operator"],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
     "trainer": {
       "type": "object",
       "properties": {
@@ -136,9 +163,23 @@
               }
             },
             "required": ["dynamoGraph"]
+          },
+          "orchestrator": {
+            "properties": {
+              "nodeSelector": {"minProperties": 2},
+              "tolerations": {"minItems": 2}
+            },
+            "required": ["nodeSelector", "tolerations"]
+          },
+          "trainer": {
+            "properties": {
+              "nodeSelector": {"minProperties": 3},
+              "tolerations": {"minItems": 3}
+            },
+            "required": ["runtimeClassName", "nodeSelector", "tolerations"]
           }
         },
-        "required": ["image", "inference"]
+        "required": ["image", "inference", "orchestrator", "trainer"]
       }
     },
     {

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sys
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +11,9 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.inference.dgd import (
     DynamoGraphRenderOptions,
     GPUSchedulingProfile,
+    KubernetesToleration,
+    _parse_args,
+    _parse_kubernetes_toleration,
     build_dgd_values,
     write_dgd_artifacts,
 )
@@ -123,20 +127,49 @@ def test_dgd_values_derive_topology_and_role_configs(tmp_path: Path):
         assert env["HF_HOME"] == "/model-cache"
         assert env["HF_HUB_OFFLINE"] == "1"
 
-    gpu_toleration = {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
-    expected_selector = {
+    image_tolerations = [
+        {
+            "key": "kubernetes.io/arch",
+            "operator": "Equal",
+            "value": "arm64",
+            "effect": "NoSchedule",
+        },
+        {
+            "key": "prime-rl",
+            "operator": "Equal",
+            "value": "true",
+            "effect": "NoSchedule",
+        },
+    ]
+    gpu_tolerations = [
+        *image_tolerations,
+        {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"},
+    ]
+    image_selector = {
         "kubernetes.io/arch": "arm64",
-        "nvidia.com/gpu.product": "NVIDIA-GB200",
         "cloud.google.com/gke-nodepool": "customer-gpu-o7v",
     }
+    gpu_selector = {**image_selector, "nvidia.com/gpu.product": "NVIDIA-GB200"}
+    frontend_pod = services["Frontend"]["extraPodSpec"]
+    assert frontend_pod["nodeSelector"] == image_selector
+    assert frontend_pod["tolerations"] == image_tolerations
+    assert "runtimeClassName" not in frontend_pod
+    assert frontend_pod["mainContainer"]["ports"] == [
+        {"containerPort": 8000, "name": "http"},
+        {"containerPort": 8001, "name": "rl"},
+    ]
     for role in ("VllmPrefillWorker", "VllmDecodeWorker"):
         worker_pod = services[role]["extraPodSpec"]
         assert worker_pod["runtimeClassName"] == "nvidia"
-        assert worker_pod["nodeSelector"] == expected_selector
-        assert worker_pod["tolerations"] == [gpu_toleration]
+        assert worker_pod["nodeSelector"] == gpu_selector
+        assert worker_pod["tolerations"] == gpu_tolerations
+    assert values["orchestrator"] == {
+        "nodeSelector": image_selector,
+        "tolerations": image_tolerations,
+    }
     assert values["trainer"]["runtimeClassName"] == "nvidia"
-    assert values["trainer"]["nodeSelector"] == expected_selector
-    assert values["trainer"]["tolerations"] == [gpu_toleration]
+    assert values["trainer"]["nodeSelector"] == gpu_selector
+    assert values["trainer"]["tolerations"] == gpu_tolerations
 
     prefill_args = services["VllmPrefillWorker"]["extraPodSpec"]["mainContainer"]["args"]
     decode_args = services["VllmDecodeWorker"]["extraPodSpec"]["mainContainer"]["args"]
@@ -280,7 +313,25 @@ def test_filesystem_broadcast_rejects_missing_shared_claim(tmp_path: Path):
     [
         ("global", "DYN_DISCOVERY_BACKEND"),
         ("global", "DYN_NAMESPACE"),
+        ("global", "DYN_NAMESPACE_PREFIX"),
+        ("global", "DYN_NAMESPACE_WORKER_SUFFIX"),
+        ("global", "DYN_PARENT_DGD_K8S_NAME"),
+        ("global", "DYN_PARENT_DGD_K8S_NAMESPACE"),
+        ("global", "DYN_KUBE_DISCOVERY_MODE"),
+        ("global", "DYN_ENDPOINT_TYPES"),
+        ("global", "DYN_SYSTEM_ENABLED"),
+        ("global", "DYN_SYSTEM_HOST"),
+        ("global", "DYN_SYSTEM_HEALTH_PATH"),
+        ("global", "DYN_SYSTEM_LIVE_PATH"),
+        ("global", "DYN_SYSTEM_STARTING_HEALTH_STATUS"),
+        ("global", "DYN_SYSTEM_USE_ENDPOINT_HEALTH_STATUS"),
+        ("global", "DYN_HEALTH_CHECK_ENABLED"),
+        ("global", "POD_NAME"),
+        ("global", "POD_NAMESPACE"),
+        ("global", "POD_UID"),
+        ("global", "CONTAINER_NAME"),
         ("prefill", "DYN_SYSTEM_PORT"),
+        ("prefill", "DYN_SYSTEM_PORT1"),
         ("decode", "DYN_ENDPOINT"),
     ],
 )
@@ -294,6 +345,100 @@ def test_dgd_rejects_operator_owned_environment(scope: str, key: str, tmp_path: 
 
     with pytest.raises(ValueError, match=rf"{scope}.*{key}.*operator-owned"):
         build_dgd_values(config, render_options(tmp_path))
+
+
+@pytest.mark.parametrize("scope", ["global", "prefill", "decode"])
+@pytest.mark.parametrize("key", ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"])
+def test_dgd_rejects_raw_hugging_face_credentials(scope: str, key: str, tmp_path: Path):
+    config_data = inference_config().model_dump(mode="python")
+    if scope == "global":
+        config_data["env_vars"][key] = "plaintext-secret"
+    else:
+        config_data["deployment"][f"{scope}_env_vars"] = {key: "plaintext-secret"}
+    config = InferenceConfig.model_validate(config_data)
+
+    with pytest.raises(ValueError, match=rf"{scope}.*{key}.*hf_token_secret"):
+        build_dgd_values(config, render_options(tmp_path))
+
+
+@pytest.mark.parametrize("scope", ["global", "prefill", "decode"])
+def test_dgd_rejects_hf_home_that_conflicts_with_typed_model_cache(scope: str, tmp_path: Path):
+    config_data = inference_config().model_dump(mode="python")
+    if scope == "global":
+        config_data["env_vars"]["HF_HOME"] = "/wrong-cache"
+    else:
+        config_data["deployment"][f"{scope}_env_vars"] = {"HF_HOME": "/wrong-cache"}
+    config = InferenceConfig.model_validate(config_data)
+
+    with pytest.raises(ValueError, match=rf"{scope}.*HF_HOME.*/model-cache"):
+        build_dgd_values(config, render_options(tmp_path))
+
+
+def test_dgd_allows_hf_home_matching_typed_model_cache(tmp_path: Path):
+    values = build_dgd_values(inference_config(), render_options(tmp_path))
+    services = values["inference"]["dynamoGraph"]["resource"]["spec"]["services"]
+
+    for service in services.values():
+        env = service["extraPodSpec"]["mainContainer"]["env"]
+        assert [item for item in env if item["name"] == "HF_HOME"] == [{"name": "HF_HOME", "value": "/model-cache"}]
+
+
+def test_cli_toleration_parser_is_typed_and_rejects_unknown_fields():
+    parsed = _parse_kubernetes_toleration(
+        '{"key":"dedicated","operator":"Equal","value":"prime","effect":"NoSchedule"}'
+    )
+    assert parsed == KubernetesToleration(
+        key="dedicated",
+        operator="Equal",
+        value="prime",
+        effect="NoSchedule",
+    )
+
+    with pytest.raises(ValueError, match="unsupported fields"):
+        _parse_kubernetes_toleration('{"key":"dedicated","command":"touch /tmp/pwned"}')
+
+    with pytest.raises(ValueError, match="operator"):
+        _parse_kubernetes_toleration('{"key":"dedicated","operator":"NotARealOperator"}')
+
+
+def test_cli_accepts_typed_additional_image_and_gpu_tolerations(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "dynamo-dgd",
+            "inference.toml",
+            "--release-name",
+            "p4-math",
+            "--namespace",
+            "bis-vllm",
+            "--image",
+            "registry/image@sha256:digest",
+            "--output-dir",
+            "/tmp/artifacts",
+            "--prime-sha",
+            PRIME_SHA,
+            "--dynamo-sha",
+            DYNAMO_SHA,
+            "--image-digest",
+            IMAGE_DIGEST,
+            "--gpu-architecture",
+            "arm64",
+            "--gpu-product",
+            "NVIDIA-GB200",
+            "--gpu-node-pool",
+            "customer-gpu-o7v",
+            "--image-toleration",
+            '{"key":"image-extra","operator":"Exists"}',
+            "--gpu-toleration",
+            '{"key":"gpu-extra","operator":"Equal","value":"true"}',
+        ],
+    )
+
+    args = _parse_args()
+
+    assert args.image_toleration == [KubernetesToleration(key="image-extra")]
+    assert args.gpu_toleration == [KubernetesToleration(key="gpu-extra", operator="Equal", value="true")]
 
 
 def test_gpu_scheduling_changes_manifest_identity(tmp_path: Path):

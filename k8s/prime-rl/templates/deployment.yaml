@@ -32,6 +32,13 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.orchestrator.runtimeClassName }}
+      runtimeClassName: {{ .Values.orchestrator.runtimeClassName }}
+      {{- end }}
+      {{- with .Values.orchestrator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: prime-rl-orchestrator
         image: {{ include "prime-rl.image" . | quote }}
