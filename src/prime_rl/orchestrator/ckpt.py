@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import tempfile
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -27,8 +30,17 @@ class CheckpointManager:
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
-        with open(ckpt_path / "progress.pt", "wb") as f:
-            torch.save({"progress": progress}, f)
+        # Save to a temporary file and do an atomic rename, to avoid corrupting the last
+        # file if the process gets killed while writing
+        fd, tmp_name = tempfile.mkstemp(dir=ckpt_path, prefix="progress.pt.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                torch.save({"progress": progress}, f)
+            os.replace(tmp_name, ckpt_path / "progress.pt")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
         get_logger().debug(
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
         )

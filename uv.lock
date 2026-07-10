@@ -76,7 +76,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -91,7 +91,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -106,7 +106,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -282,7 +282,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -306,7 +306,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -423,7 +423,7 @@ dependencies = [
 requires-dist = [
     { name = "httpx" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev422" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -929,7 +929,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev422" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -1357,7 +1357,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -1413,7 +1413,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "pydantic" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -1531,7 +1531,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev422" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -1546,7 +1546,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -1799,7 +1799,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "orjson" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -1814,7 +1814,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev422" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -1863,7 +1863,7 @@ requires-dist = [
     { name = "setuptools", specifier = "<78" },
     { name = "spacy" },
     { name = "syllapy" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -1884,7 +1884,7 @@ requires-dist = [
     { name = "immutabledict" },
     { name = "langdetect" },
     { name = "nltk" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -2276,7 +2276,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=2.0.0" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -2341,7 +2341,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -2395,7 +2395,7 @@ requires-dist = [
     { name = "markdown", specifier = ">=3.5.1" },
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "sympy", specifier = ">=1.12.0" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -2435,7 +2435,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "longcot", git = "https://github.com/LongHorizonReasoning/longcot.git?rev=6a569ab" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -2452,7 +2452,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "longcot", git = "https://github.com/LongHorizonReasoning/longcot.git?rev=6a569ab" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -2467,7 +2467,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -2537,7 +2537,7 @@ dependencies = [
 requires-dist = [
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "prime-sandboxes", specifier = ">=0.2.19" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -2552,7 +2552,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -2596,7 +2596,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -2739,7 +2739,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -2813,7 +2813,7 @@ dependencies = [
 requires-dist = [
     { name = "filelock" },
     { name = "httpx" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -3326,7 +3326,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -3343,7 +3343,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev422" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -3362,7 +3362,7 @@ requires-dist = [
     { name = "datasets" },
     { name = "openai" },
     { name = "python-dateutil" },
-    { name = "verifiers", specifier = ">=0.1.15.dev422" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -3444,7 +3444,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev422" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -3581,7 +3581,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev411" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev443" }]
 
 [[package]]
 name = "orderly-set"
@@ -3662,7 +3662,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev422" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -3704,7 +3704,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "nltk", specifier = ">=3.8" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -4257,7 +4257,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev411" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev443" }]
 
 [[package]]
 name = "prometheus-client"
@@ -4715,7 +4715,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev434" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -4766,7 +4766,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev422" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -4969,7 +4969,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.1.15.dev422" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -4996,7 +4996,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev434" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -5122,7 +5122,7 @@ wheels = [
 
 [[package]]
 name = "simpleqa-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/research-environments/environments/simpleqa_v1" }
 dependencies = [
     { name = "datasets" },
@@ -5134,12 +5134,12 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev422" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
 name = "simpleqa-verified-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/research-environments/environments/simpleqa_verified_v1" }
 dependencies = [
     { name = "datasets" },
@@ -5151,7 +5151,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev422" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -5386,7 +5386,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev434" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev443" }]
 
 [[package]]
 name = "swebench-verified-v1"
@@ -5397,7 +5397,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev434" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev443" }]
 
 [[package]]
 name = "swelego-v1"
@@ -5411,7 +5411,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev434" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -5479,7 +5479,7 @@ dependencies = [
 
 [[package]]
 name = "tau2-bench-v1"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "deps/research-environments/environments/tau2_bench_v1" }
 dependencies = [
     { name = "tau2" },
@@ -5490,7 +5490,7 @@ dependencies = [
 requires-dist = [
     { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
     { name = "tau2", git = "https://github.com/sierra-research/tau2-bench.git?rev=337326e" },
-    { name = "verifiers", specifier = ">=0.1.15.dev424" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -5540,7 +5540,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev411" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev443" }]
 
 [[package]]
 name = "textarena"
@@ -5686,7 +5686,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.1.15.dev434" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.1.15.dev443" }]
 
 [[package]]
 name = "tokenizers"
@@ -6009,7 +6009,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -6030,7 +6030,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev411" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev443" }]
 
 [[package]]
 name = "uvicorn"
@@ -6079,7 +6079,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "faker", specifier = ">=20.0.0" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -6767,7 +6767,7 @@ wheels = [
 
 [[package]]
 name = "wideseek-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/research-environments/environments/wideseek_v1" }
 dependencies = [
     { name = "datasets" },
@@ -6779,7 +6779,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.1.15.dev411" },
+    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -6836,7 +6836,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev411" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev443" }]
 
 [[package]]
 name = "wordle"

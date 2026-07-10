@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Generic, Literal, Protocol
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
-from verifiers.v1.task import TaskT
+from verifiers.v1.task import DataT
 
 from prime_rl.transport import TrainingSample
 
@@ -69,7 +69,7 @@ class GroupState:
     policy_version_at_start: int = 0
 
 
-class Rollout(vf.Trace[TaskT], Generic[TaskT]):
+class Rollout(vf.Trace[DataT], Generic[DataT]):
     """A completed rollout: the env's typed ``vf.Trace`` *is* the rollout — prime-rl's
     orchestration metadata lives on it directly (set by the dispatcher once the rollout
     returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata

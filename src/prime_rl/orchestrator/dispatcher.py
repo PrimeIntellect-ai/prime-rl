@@ -506,7 +506,10 @@ class RolloutDispatcher:
         except Exception as exc:
             get_logger().warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             task_idx = group.task_idx if group is not None else -1
-            rollouts = [Rollout(task=vf.Task(idx=task_idx, prompt=None)) for _ in range(meta.rollout_count)]
+            rollouts = [
+                Rollout(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)))
+                for _ in range(meta.rollout_count)
+            ]
             for r in rollouts:
                 r.capture_error(exc)
             is_synth_exception = True
@@ -574,7 +577,7 @@ class RolloutDispatcher:
         for _, meta in claimed:
             for _ in range(meta.rollout_count):
                 trace = Rollout(
-                    task=vf.Task(idx=task_idx, prompt=None),
+                    task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
                     stop_condition="error",
                 )
@@ -600,7 +603,7 @@ class RolloutDispatcher:
             unscheduled_cancelled = group.rollouts_to_schedule
             for _ in range(unscheduled_cancelled):
                 trace = Rollout(
-                    task=vf.Task(idx=task_idx, prompt=None),
+                    task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
                     stop_condition="error",
                 )
