@@ -234,6 +234,11 @@ class SFTDataset(StatefulIterableDataset):
                 case _:
                     raise ValueError(f"Invalid message role: {message['role']}")
 
+        # Defer to the renderer's sampled_mask by default: a role filter would
+        # drop sampled stop markers attributed to the next message (e.g. GLM's
+        # turn-closing <|user|> / <|observation|>).
+        role_to_mask = None if self.loss_mask_config.assistant else should_mask
+
         # Non-assistant roles are opted into the loss via the renderer's
         # body-only path: the message content is trained, not the role
         # scaffolding (e.g. <|im_start|>assistant) the harness emits.
@@ -241,12 +246,21 @@ class SFTDataset(StatefulIterableDataset):
         sample = build_training_sample(
             self.renderer,
             messages,
-            role_to_mask=should_mask,
+            role_to_mask=role_to_mask,
             tools=tools,
             content_sft_roles=content_sft_roles or None,
         )
         input_ids = list(sample.token_ids)
         loss_mask = list(sample.loss_mask)
+
+        # Some templates render no terminator after a final assistant turn
+        # (e.g. GLM); append the canonical stop token as a trainable target.
+        stop_token_ids = self.renderer.get_stop_token_ids()
+        last_trainable = next((i for i in range(len(loss_mask) - 1, -1, -1) if loss_mask[i]), None)
+        ends_with_stop = last_trainable is not None and input_ids[last_trainable] in set(stop_token_ids)
+        if messages[-1].get("role") == "assistant" and not ends_with_stop:
+            input_ids.append(stop_token_ids[0])
+            loss_mask.append(True)
 
         # Causal shift: model predicts next token from current.
         target_ids = input_ids.copy()[1:]
