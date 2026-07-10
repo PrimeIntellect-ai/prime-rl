@@ -16,3 +16,6 @@ freq = 1
 
 [model.compile]
 fullgraph = false
+
+[weight_broadcast]
+type = "filesystem"

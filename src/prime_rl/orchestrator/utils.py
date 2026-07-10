@@ -51,10 +51,12 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
 
 
 def save_rollouts(rollouts: list[dict], path: Path) -> None:
-    """Save rollouts (Trace dicts, already JSON-serializable) to a JSONL file."""
+    """Append rollouts (Trace record dicts, already JSON-serializable) to a JSONL file.
+    The trace streams are append-only: ``all`` grows one rollout at a time as they
+    complete, ``effective`` one batch at a time on finalize."""
     path.parent.mkdir(parents=True, exist_ok=True)
     opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
-    with open(path, "wb") as f:
+    with open(path, "ab") as f:
         for rollout in rollouts:
             f.write(orjson.dumps(rollout, default=str, option=opts))
 
