@@ -54,6 +54,7 @@ from prime_rl.trainer.utils import (
     filter_rl_trainer_tensor_stats_for_wandb,
     get_zero_gradient_ratio,
     get_ckpt_disk_metrics,
+    raise_if_nonfinite_gradients,
     setup_torch_distributed,
     print_benchmark,
 )
@@ -68,29 +69,6 @@ from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
-
-
-def _raise_if_nonfinite_gradients(model: torch.nn.Module) -> None:
-    grad_device = None
-    for param in model.parameters():
-        if param.grad is not None:
-            grad_device = param.grad.device
-            break
-    if grad_device is None:
-        return
-
-    gradients_are_finite = torch.ones((), device=grad_device, dtype=torch.int32)
-    for param in model.parameters():
-        if param.grad is not None:
-            gradients_are_finite = torch.minimum(
-                gradients_are_finite,
-                torch.isfinite(param.grad).to(torch.int32).amin(),
-            )
-
-    if dist.is_initialized():
-        dist.all_reduce(gradients_are_finite, op=dist.ReduceOp.MIN)
-    if not bool(gradients_are_finite.item()):
-        raise RuntimeError("Non-finite gradients detected before optimizer.step(); aborting to avoid corrupting weights.")
 
 
 @clean_exit
@@ -565,7 +543,7 @@ def train(config: TrainerConfig):
             if grad_norm.device.type == "cpu":
                 grad_norm = grad_norm.to(torch.device("cuda"))
         else:
-            _raise_if_nonfinite_gradients(model)
+            raise_if_nonfinite_gradients(model.parameters())
 
         zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
 

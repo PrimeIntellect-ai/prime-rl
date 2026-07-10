@@ -1,7 +1,12 @@
 import math
+from datetime import timedelta
 
 import pytest
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.tensor import DTensor, Shard
 
 from prime_rl.configs.trainer import DefaultLossConfig, IPOLossConfig
 from prime_rl.trainer.rl.loss import (
@@ -11,6 +16,50 @@ from prime_rl.trainer.rl.loss import (
     ipo_loss_fn,
     ref_kl_loss_fn,
 )
+from prime_rl.trainer.utils import raise_if_nonfinite_gradients
+
+
+def _assert_nonfinite_gradient_reaches_rank_without_grad(rank: int, world_size: int, init_file: str) -> None:
+    dist.init_process_group(
+        backend="gloo",
+        init_method=f"file://{init_file}",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=10),
+    )
+    try:
+        mesh = DeviceMesh("cpu", list(range(world_size)), mesh_dim_names=("dp",))
+        parameter = torch.nn.Parameter(
+            DTensor.from_local(
+                torch.ones(1),
+                device_mesh=mesh,
+                placements=[Shard(0)],
+                shape=torch.Size([world_size]),
+                stride=(1,),
+            )
+        )
+        if rank == 0:
+            parameter.grad = DTensor.from_local(
+                torch.full((1,), float("inf")),
+                device_mesh=mesh,
+                placements=[Shard(0)],
+                shape=parameter.shape,
+                stride=parameter.stride(),
+            )
+
+        with pytest.raises(RuntimeError, match="Non-finite gradients detected"):
+            raise_if_nonfinite_gradients([parameter])
+    finally:
+        dist.destroy_process_group()
+
+
+def test_nonfinite_gradient_check_synchronizes_ranks_without_local_grads(tmp_path):
+    mp.spawn(
+        _assert_nonfinite_gradient_reaches_rank_without_grad,
+        args=(2, str(tmp_path / "nonfinite_grad_store")),
+        nprocs=2,
+        join=True,
+    )
 
 
 def _inputs(
