@@ -249,18 +249,10 @@ class SFTDataset(StatefulIterableDataset):
             role_to_mask=role_to_mask,
             tools=tools,
             content_sft_roles=content_sft_roles or None,
+            ensure_final_stop=True,
         )
         input_ids = list(sample.token_ids)
         loss_mask = list(sample.loss_mask)
-
-        # Some templates render no terminator after a final assistant turn
-        # (e.g. GLM); append the canonical stop token as a trainable target.
-        stop_token_ids = self.renderer.get_stop_token_ids()
-        last_trainable = next((i for i in range(len(loss_mask) - 1, -1, -1) if loss_mask[i]), None)
-        ends_with_stop = last_trainable is not None and input_ids[last_trainable] in set(stop_token_ids)
-        if messages[-1].get("role") == "assistant" and not ends_with_stop:
-            input_ids.append(stop_token_ids[0])
-            loss_mask.append(True)
 
         # Causal shift: model predicts next token from current.
         target_ids = input_ids.copy()[1:]
