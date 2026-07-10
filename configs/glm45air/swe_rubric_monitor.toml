@@ -101,14 +101,14 @@ use_prime_registry = true
 id = "rubric"
 name = "rlm"
 path = "deps/research-environments/rubrics/rlm.toml"
-model = "zai-org/GLM-5.2"
+model = "research/glm-5.2"
 weight = 0.0
 
 [[orchestrator.train.env.taskset.judges]]
 id = "rubric"
 name = "swe"
 path = "deps/research-environments/rubrics/swe.toml"
-model = "zai-org/GLM-5.2"
+model = "research/glm-5.2"
 weight = 0.0
 
 [orchestrator.prime_monitor]
@@ -120,9 +120,27 @@ interval = 20
 
 [[orchestrator.eval.env]]
 name = "swebench-verified"
-taskset = { id = "swebench-verified-v1", use_prime_registry = true }
 harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe-rubric-monitor"] } }
 timeout = { rollout = 3600 }
+
+[orchestrator.eval.env.taskset]
+id = "swebench-verified-v1"
+use_prime_registry = true
+
+# rlm + swe rubric judges as metric-only monitors (weight 0) on eval too, judged by GLM-5.2.
+[[orchestrator.eval.env.taskset.judges]]
+id = "rubric"
+name = "rlm"
+path = "deps/research-environments/rubrics/rlm.toml"
+model = "research/glm-5.2"
+weight = 0.0
+
+[[orchestrator.eval.env.taskset.judges]]
+id = "rubric"
+name = "swe"
+path = "deps/research-environments/rubrics/swe.toml"
+model = "research/glm-5.2"
+weight = 0.0
 
 # --- Inference ---
 
