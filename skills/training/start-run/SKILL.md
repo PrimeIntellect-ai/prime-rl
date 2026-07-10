@@ -1,6 +1,6 @@
 ---
 name: start-run
-description: How to launch prime-rl training runs — the `rl`, `sft`, and `inference` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint.
+description: How to launch prime-rl training runs and prepare model weights — the `rl`, `sft`, `inference`, and `convert` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run, converting a model snapshot, or picking the right entrypoint.
 ---
 
 # Start a run
@@ -79,6 +79,23 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
+## `convert` — prepare PrimeRL model weights
+
+Converts supported Hugging Face safetensors snapshots to PrimeRL's grouped-MoE
+format under `<snapshot>/prime/`. Conversion runs on CPU, streams one layer at a
+time, and safely reuses or repairs shared-cache output.
+
+```bash
+uv run convert --model Qwen/Qwen3-30B-A3B
+uv run convert --model /path/to/local/snapshot
+```
+
+- Config: `ConvertConfig` (`packages/prime-rl-configs/src/prime_rl/configs/convert.py`)
+- Entrypoint: `src/prime_rl/entrypoints/convert.py`
+- Exit status: `0` for converted, existing, or already-compatible weights; `2`
+  for unsupported architectures; `3` when safetensors are absent; `4` when the
+  snapshot is not in Hugging Face format
+
 ## Summary
 
 | Command | Purpose | Typical use |
@@ -86,10 +103,11 @@ curl http://localhost:8000/v1/chat/completions \
 | `rl` | Full RL pipeline | Production RL training |
 | `sft` | Supervised fine-tuning | SFT and hard-distill |
 | `inference` | vLLM server | Standalone serving / debugging |
+| `convert` | HF → PrimeRL weight conversion | Pre-populating shared model caches |
 
 ## Key paths
 
-- `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference` (+ `trainer`, `orchestrator` for direct launches)
+- `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference`, `convert` (+ `trainer`, `orchestrator` for direct launches)
 - `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
 - `configs/debug/` — minimal debug configs
 - `examples/` — full example configs (e.g. `reverse_text/`)
