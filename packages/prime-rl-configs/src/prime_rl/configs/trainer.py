@@ -118,11 +118,26 @@ class DebugModelConfig(BaseConfig):
 
 MXFP8Recipe: TypeAlias = Literal["mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp"]
 
+_DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
+    "lm_head",
+    "router",
+    # Use escaped dots — re.search treats `.` as any-char, so the previous
+    # "mlp.gate." pattern was also matching dense MLP `mlp.gate_proj` (the
+    # trailing `.` was matching `_`). That left the dense MLP gate projection
+    # in BF16 on the trainer while inference quantized it to FP8, causing
+    # hidden-state drift before the MoE router.
+    r"mlp\.gate\.",
+    "shared_expert_gate",  # Qwen3.5 MoE: nn.Linear(hidden, 1, bias=False)
+    "eh_proj",
+    "weights_proj",
+    "in_proj_a",
+    "in_proj_b",
+]
 
 class FP8Config(BaseConfig):
     type: Literal["fp8"] = "fp8"
     enable_grouped_gemm: bool = True
-    ignore_patterns: list[str] = []
+    ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
 
 
 class MXFP8Config(BaseConfig):
@@ -130,7 +145,7 @@ class MXFP8Config(BaseConfig):
     recipe: MXFP8Recipe = "mxfp8_rceil"
     enable_grouped_gemm: bool = True
     enable_a2a: bool = True
-    ignore_patterns: list[str] = []
+    ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
 
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
