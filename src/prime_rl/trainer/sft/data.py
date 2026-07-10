@@ -108,7 +108,7 @@ class FakeDataset(StatefulIterableDataset):
             yield fake_sample
 
 
-def _drop_null_fields(value: Any) -> Any:
+def _drop_null_fields(value: Any, path: tuple[str, ...] = ()) -> Any:
     """Recursively strip ``None``-valued keys from dict structures.
 
     PyArrow's JSON loader unifies schemas across rows, so heterogeneous
@@ -116,12 +116,15 @@ def _drop_null_fields(value: Any) -> Any:
     filled with ``None`` where absent. That confuses permissive
     content-type predicates inside renderers (e.g. ``"image_url" in item``
     returns ``True`` even when the value is null). Strip the noise before
-    handing messages off to the renderer.
+    handing messages off to the renderer. Tool-call arguments are opaque
+    JSON payloads, so preserve their null values.
     """
+    if path[-3:] == ("tool_calls", "function", "arguments"):
+        return value
     if isinstance(value, dict):
-        return {k: _drop_null_fields(v) for k, v in value.items() if v is not None}
+        return {k: _drop_null_fields(v, (*path, k)) for k, v in value.items() if v is not None}
     if isinstance(value, list):
-        return [_drop_null_fields(v) for v in value]
+        return [_drop_null_fields(v, path) for v in value]
     return value
 
 

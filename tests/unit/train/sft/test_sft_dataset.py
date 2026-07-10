@@ -6,7 +6,7 @@ from renderers import create_renderer
 from renderers.base import RenderedTokens
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.sft.data import SFTDataset
+from prime_rl.trainer.sft.data import SFTDataset, _drop_null_fields
 from prime_rl.trainer.utils import print_sample
 
 _BOS_TOKEN_ID = 0
@@ -41,6 +41,28 @@ def build_dummy_dataset():
 @pytest.fixture
 def dummy_renderer():
     return _DummyRenderer()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param('{"reasoning_effort": null}', id="json-string"),
+        pytest.param({"reasoning_effort": None}, id="dict"),
+    ],
+)
+def test_drop_null_fields_preserves_tool_call_arguments(arguments):
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Calling a tool", "image_url": None}],
+        "tool_calls": [{"function": {"name": "listReasoningModels", "arguments": arguments}}],
+        "metadata": {"arguments": {"unrelated_null": None}},
+    }
+
+    cleaned = _drop_null_fields(message)
+
+    assert cleaned["tool_calls"][0]["function"]["arguments"] == arguments
+    assert cleaned["content"] == [{"type": "text", "text": "Calling a tool"}]
+    assert cleaned["metadata"] == {"arguments": {}}
 
 
 def test_init_sft_dataset(build_dummy_dataset, dummy_renderer):
