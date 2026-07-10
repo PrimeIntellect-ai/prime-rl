@@ -41,7 +41,7 @@ class _DequantMXGradInBwd(torch.autograd.Function):
         return grad_output, None
 
 
-class MXFP8ExpertParallel(ExpertParallel):
+class MXFP8AllToAllExpertParallel(ExpertParallel):
     def _token_dispatch(self, mod, inputs, device_mesh):
         routed_input, num_tokens_per_expert = inputs
         with torch.no_grad():
