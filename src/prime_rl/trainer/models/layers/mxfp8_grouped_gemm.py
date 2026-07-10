@@ -20,6 +20,7 @@ _MXFP8_TOKEN_GROUP_ALIGN: int = 32
 # the Triton variant has no such cap and produces the same swizzled layout, so fall back to it for wider MoEs
 _CUDA_REARRANGE_MAX_GROUPS: int = 32
 
+
 def _fallback_to_triton_rearrange_for_wide_moes() -> None:
     if getattr(tao_mxfp8_gmm.mx_block_rearrange_2d_M_groups_cuda, "_prime_rl_wide_moe", False):
         return
