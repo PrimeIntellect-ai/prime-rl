@@ -123,9 +123,13 @@ def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
                     pending.error = "job produced no result"
                     pending.error_status = 500
                 elif "error" in pending.result:
-                    # Per-job failure isolated inside update_batch (ValueError in prepare):
-                    # the job's own 409, not a batch failure.
+                    # Per-job failure isolated inside update_batch: a ValueError is a real
+                    # validation rejection (the job's own 409); anything else is a genuinely
+                    # unexpected fault — surface it as 500 so it's distinguishable in logs
+                    # (the hook retries neither status).
                     pending.error = pending.result["error"]
+                    if not pending.error.startswith("ValueError:"):
+                        pending.error_status = 500
                     pending.result = None
                 pending.done.set()
 
@@ -190,10 +194,16 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
     async def unload_adapter(adapter_name: str) -> None:
         for url in config.inference_admin_urls:
             try:
-                await app.state.http.post(
+                response = await app.state.http.post(
                     f"{url.rstrip('/')}/v1/unload_lora_adapter",
                     json={"lora_name": adapter_name},
                 )
+                if response.status_code // 100 != 2:
+                    # Best-effort: a not-loaded 4xx is expected on release retries — warn,
+                    # never raise (the slot is freed regardless).
+                    logger.warning(
+                        f"ttt: unload of {adapter_name} on {url} returned {response.status_code}: {response.text[:200]}"
+                    )
             except httpx.HTTPError:
                 logger.warning(f"ttt: unload of {adapter_name} failed on {url}")
 

@@ -120,9 +120,11 @@ enable_return_routed_experts = true
 # MoE expert FFNs); rank must cover the TTT service's [lora].rank.
 enable_lora = true
 max_lora_rank = 16
-max_loras = 256
+# Passive ceiling: > max_inflight_rollouts (256) so leaked adapters (failed releases)
+# are absorbed as headroom without over-admitting rollouts.
+max_loras = 272
 # vLLM requires max_cpu_loras >= max_loras (its default is 100).
-max_cpu_loras = 256
+max_cpu_loras = 272
 
 [inference.env_vars]
 VLLM_CACHE_ROOT = "/tmp/.vllm_cache_$(whoami)"

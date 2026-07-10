@@ -13,7 +13,7 @@ num_ttt_nodes = 1
 
 [ttt.engine]
 type = "fsdp"
-max_slots = 256                 # >= orchestrator.max_inflight_rollouts
+max_slots = 272                 # > max_inflight_rollouts (256): headroom for leaked slots
 max_tokens_per_forward = 65536
 max_batch_wait_seconds = 0.5
 

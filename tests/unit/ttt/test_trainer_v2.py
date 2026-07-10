@@ -191,11 +191,12 @@ def make_cpu_trainer(max_slots: int = 4, **engine_overrides):
     return trainer
 
 
-def test_update_batch_isolates_poisoned_job_and_rolls_back_slot():
+def test_update_batch_isolates_poisoned_job_and_never_claims_its_slot():
     trainer = make_cpu_trainer(max_slots=4)
     healthy = [job("r1"), job("r2")]
-    # Passes rank-0 validation (qa_pairs non-empty) but yields no sequences in prepare —
-    # the failure lands AFTER the slot claim, exercising the rollback path.
+    # Passes rank-0 validation (qa_pairs non-empty) but yields no sequences in prepare.
+    # Slot claims now happen AFTER the per-job error net, so the poisoned job never
+    # claims one — no rollback needed, isolation semantics unchanged.
     poisoned = UpdateJob(
         rollout_id="bad",
         adapter_name="ttt-bad",
@@ -208,9 +209,33 @@ def test_update_batch_isolates_poisoned_job_and_rolls_back_slot():
     results = trainer.update_batch([healthy[0], poisoned, healthy[1]])
     assert results["r1"]["version"] == 1 and results["r2"]["version"] == 1
     assert "no trainable sequences" in results["bad"]["error"]
-    # The poisoned job's slot claim was rolled back: only r1/r2 hold slots.
+    # The poisoned job never held a slot: only r1/r2 hold slots.
     assert set(trainer.slots) == {"r1", "r2"}
     assert trainer.free_idxs == {2, 3}
+
+
+def test_claim_time_fault_escapes_update_batch():
+    """A fault during the GPU-mutating slot claim (reset_run_parameters — CUDA territory)
+    must NOT be downgraded to a per-job error: it escapes update_batch so the work loop's
+    os._exit fail-fast preserves the rank-lockstep contract."""
+
+    def boom(idx):
+        raise RuntimeError("simulated CUDA fault in reset_run_parameters")
+
+    trainer = make_cpu_trainer(max_slots=2)
+    trainer.runs.reset_run_parameters = boom
+    with pytest.raises(RuntimeError, match="simulated CUDA fault"):
+        trainer.update_batch([job("r1")])
+
+
+def test_slot_exhaustion_within_one_batch_is_a_per_job_error():
+    """With the claim deferred past the error net, in-batch admissions must count against
+    the free-slot budget — otherwise the deferred _claim would raise past the net."""
+    trainer = make_cpu_trainer(max_slots=1)
+    results = trainer.update_batch([job("r1"), job("r2")])
+    assert results["r1"]["version"] == 1
+    assert "no free TTT adapter slots" in results["r2"]["error"]
+    assert set(trainer.slots) == {"r1"} and trainer.free_idxs == set()
 
 
 def test_update_batch_all_failed_returns_without_forward():
@@ -230,7 +255,7 @@ def test_update_batch_rejects_oversized_after_qa_tokenization():
     oversized = job("r1", n=8, qa_pairs=[{"question": "q", "answer": "a"}])
     results = trainer.update_batch([oversized])
     assert "job too large after QA tokenization" in results["r1"]["error"]
-    assert trainer.slots == {} and trainer.free_idxs == {0, 1}  # claim rolled back
+    assert trainer.slots == {} and trainer.free_idxs == {0, 1}  # never claimed
 
 
 def test_update_batch_asserts_unique_rollout_ids():

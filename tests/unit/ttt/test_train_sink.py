@@ -173,6 +173,8 @@ async def test_meta_lesson_failure_skips_group_not_run():
     sink.pre_filter_dropped_by_name = {}
     sink.pending_groups = {}
     sink._meta_clients = {}
+    sink.meta_groups_ok = 0
+    sink.meta_groups_dropped = 0
 
     group_id = uuid.uuid4()
     rollouts = []
@@ -185,6 +187,9 @@ async def test_meta_lesson_failure_skips_group_not_run():
     await sink.process_group(group_id)  # must not raise
     assert sink.pending_batch == rollouts  # the group still ships
     assert all(r.samples == [] for r in rollouts)  # no meta samples, no corruption
+    # The drop is counted (surfaced as ttt/meta_groups_dropped): a silently rising
+    # dropped rate is the arm quietly running without lessons.
+    assert (sink.meta_groups_ok, sink.meta_groups_dropped) == (0, 1)
 
 
 @pytest.mark.asyncio

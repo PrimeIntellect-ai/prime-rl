@@ -257,12 +257,12 @@ class TTTTrainerV2:
             # time, so an all-context mask 409s its caller before any slot claim.
             raise ValueError("loss mask selects no trainable target tokens")
 
-    def prepare_job(self, job: UpdateJob) -> SlotState:
-        """Claim the job's slot and materialize its training sequences. MUTATING — must run
-        identically on every rank (jobs arrive in the same order via broadcast, and slot
-        claim is deterministic: lowest free index)."""
+    def prepare_job(self, job: UpdateJob) -> None:
+        """Materialize the job's training sequences. PURE CPU work (validate + tokenize QA
+        + build sequences + oversize check), deterministic across ranks — the GPU-mutating
+        slot claim lives in `_claim`, called by `update_batch` AFTER the per-job error net
+        so a CUDA fault there fail-fasts instead of being swallowed as a per-job error."""
         self.validate_job(job)
-        state = self._claim(job.rollout_id, job.adapter_name)
         sequences: list[tuple[list[int], list[bool]]] = []
         if job.train_rollout:
             sequences.append((job.token_ids, job.loss_mask))
@@ -280,7 +280,6 @@ class TTTTrainerV2:
                 f"max_tokens_per_forward ({self.config.engine.max_tokens_per_forward})"
             )
         job.sequences = sequences
-        return state
 
     # -- the batched update ---------------------------------------------------------------------
 
@@ -315,14 +314,18 @@ class TTTTrainerV2:
         assert len({job.rollout_id for job in jobs}) == len(jobs), "duplicate rollout_ids in one batch"
         # Per-job isolation: any exception in prepare (validation, empty/oversized after QA
         # tokenization, a chat-template failure on odd tool schemas) fails ONLY that job.
-        # prepare is a pure function of the job payload + slot registry — identical on every
-        # rank — so catching broadly is safe here: the failed set and the slot-claim rollback
-        # stay deterministic across ranks. (Rank-local faults — OOM, NCCL — live in the
-        # forward/step below, which stays outside this net and fail-fasts loudly.)
-        states: dict[str, SlotState] = {}
+        # prepare is a pure CPU function of the job payload + slot registry — identical on
+        # every rank — so catching broadly is safe here: the failed set stays deterministic
+        # across ranks. The GPU-mutating slot claim happens AFTER this net, for survivors
+        # only: a CUDA fault during a claim then escapes to the work loop's os._exit
+        # fail-fast instead of being downgraded to a per-job error (rank-lockstep contract).
+        prepared: list[UpdateJob] = []
         results: dict[str, dict] = {}
+        # validate_job's free-slot check only sees already-claimed slots; with the claim
+        # deferred past this loop, new rollouts admitted earlier IN THIS BATCH must count
+        # against the budget too, or the deferred _claim would raise past the error net.
+        new_claims = 0
         for job in jobs:
-            had_slot = job.rollout_id in self.slots
             try:
                 cached = self.validate_job(job)
                 if cached is not None:
@@ -331,17 +334,24 @@ class TTTTrainerV2:
                     # every rank, so the short-circuit is deterministic across ranks.
                     results[job.rollout_id] = cached
                     continue
-                states[job.rollout_id] = self.prepare_job(job)
+                is_new = job.rollout_id not in self.slots
+                if is_new and new_claims >= len(self.free_idxs):
+                    raise ValueError(
+                        f"no free TTT adapter slots (max_slots={self.max_slots}); "
+                        "raise [engine].max_slots or lower rollout concurrency"
+                    )
+                self.prepare_job(job)
+                prepared.append(job)
+                new_claims += is_new  # only count jobs that will actually claim
             except Exception as e:
-                # Roll back a slot claim made BY THIS JOB (prepare can raise after _claim).
-                if not had_slot:
-                    claimed = self.slots.pop(job.rollout_id, None)
-                    if claimed is not None:
-                        self.free_idxs.add(claimed.idx)
                 results[job.rollout_id] = {"error": f"{type(e).__name__}: {e}"}
-        jobs = [job for job in jobs if job.rollout_id in states]
-        if not jobs:
+        if not prepared:
             return results  # everything failed validation: no forward to run
+        # Claim slots for the surviving jobs — outside any broad catch (see above).
+        states: dict[str, SlotState] = {
+            job.rollout_id: self._claim(job.rollout_id, job.adapter_name) for job in prepared
+        }
+        jobs = prepared
         for bin_jobs in self._pack(jobs):
             # Sort by slot: MultiLoRA's segment layout requires slot-ordered tokens.
             bin_jobs = sorted(bin_jobs, key=lambda j: states[j.rollout_id].idx)

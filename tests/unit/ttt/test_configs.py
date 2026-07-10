@@ -188,3 +188,73 @@ def test_orchestrator_ttt_base_url_fans_out():
     )
     assert config.train.env[0].ttt.base_url == "http://ttt-node:8092"
     assert getattr(config.train.env[1], "ttt", None) is None  # non-TTT env untouched
+
+
+def test_orchestrator_ttt_base_url_fanout_is_placeholder_only():
+    """An explicit per-env URL (external service mixed with the launcher-managed one)
+    must survive the fan-out; only the "auto" placeholder is overwritten."""
+    from prime_rl.configs.orchestrator import OrchestratorConfig
+
+    config = OrchestratorConfig.model_validate(
+        {
+            "batch_size": 8,
+            "group_size": 2,
+            "train": {
+                "env": [
+                    {"id": "dummy-env", "ttt": {"base_url": "auto"}},
+                    {"id": "dummy-env2", "ttt": {"base_url": "http://external:9000"}},
+                ]
+            },
+            "ttt_base_url": "http://ttt-node:8092",
+        }
+    )
+    assert config.train.env[0].ttt.base_url == "http://ttt-node:8092"
+    assert config.train.env[1].ttt.base_url == "http://external:9000"
+
+
+def test_orchestrator_leftover_auto_rejected_at_startup():
+    """A leftover "auto" placeholder without the launcher-injected URL must fail fast at
+    orchestrator startup (standalone eval-CLI / dumped-toml runs) — not POST to 'auto'.
+    Parse-time it stays legal (the SLURM template injects --ttt-base-url later)."""
+    from prime_rl.configs.orchestrator import OrchestratorConfig
+
+    config = OrchestratorConfig.model_validate(
+        {
+            "batch_size": 8,
+            "group_size": 2,
+            "train": {"env": [{"id": "dummy-env", "ttt": {"base_url": "auto"}}]},
+        }
+    )
+    with pytest.raises(ValueError, match='"auto" requires the launcher-managed'):
+        config.check_ttt_base_urls_resolved()
+    # With the URL injected the same config passes the startup check.
+    config.ttt_base_url = "http://ttt-node:8092"
+    config.apply_ttt_base_url()
+    config.check_ttt_base_urls_resolved()
+
+
+def test_ttt_service_without_ttt_envs_rejected():
+    """[ttt]/num_ttt_nodes with no env carrying an active ttt block is dead config —
+    reachable only now that the consistency checks precede the no-TTT-env early return."""
+    payload = rl_ttt_service_payload()
+    payload["orchestrator"]["train"]["env"] = [{"id": "dummy-env"}]  # no ttt block
+    with pytest.raises(ValueError, match="no train/eval env has ttt enabled"):
+        RLConfig.model_validate(payload)
+
+
+def test_ttt_nodes_without_ttt_envs_rejected():
+    """num_ttt_nodes > 0 without [ttt] fails even when no env has TTT (hoisted check)."""
+    payload = rl_ttt_service_payload()
+    del payload["ttt"]
+    payload["orchestrator"]["train"]["env"] = [{"id": "dummy-env"}]
+    with pytest.raises(ValueError, match="no \[ttt\] service config"):
+        RLConfig.model_validate(payload)
+
+
+def test_ttt_service_on_single_node_rejected():
+    """Non-multi_node deployments never start the service — [ttt] is meaningless there."""
+    payload = rl_ttt_service_payload()
+    del payload["deployment"]
+    del payload["slurm"]
+    with pytest.raises(ValueError, match="never start it"):
+        RLConfig.model_validate(payload)

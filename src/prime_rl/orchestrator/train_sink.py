@@ -80,6 +80,11 @@ class TrainSink:
         # env's calls to whichever pool triggered meta-lessons first).
         self._meta_clients: dict[str, object] = {}
 
+        # A5 meta-extraction outcome counters (reset with the pre-filter stats each ship):
+        # a silently rising dropped rate means the arm is quietly running without lessons.
+        self.meta_groups_ok = 0
+        self.meta_groups_dropped = 0
+
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
 
@@ -250,11 +255,13 @@ class TrainSink:
                     get_logger().debug(
                         f"TTT meta-lessons | env={env_name} task_idx={task_idx} | {len(items)} lesson(s) extracted"
                     )
+                self.meta_groups_ok += 1
             except Exception:
                 # Meta lessons are enrichment, never correctness — the same containment
                 # QA recycling gets above. extract_meta_lessons guards its own model call,
                 # but client construction and meta_lesson_samples' chat-template rendering
                 # (recorded tool schemas) can raise; a bad group must not kill the run.
+                self.meta_groups_dropped += 1
                 get_logger().warning(
                     f"Meta-lesson extraction failed | env={env_name} task_idx={task_idx}", exc_info=True
                 )
@@ -344,3 +351,5 @@ class TrainSink:
         self.pre_filter_seen = 0
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name.clear()
+        self.meta_groups_ok = 0
+        self.meta_groups_dropped = 0

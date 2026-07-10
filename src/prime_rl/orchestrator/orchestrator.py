@@ -603,6 +603,11 @@ class Orchestrator:
             )
             for name, count in self.train_sink.pre_filter_dropped_by_name.items():
                 metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
+        # A5 meta-extraction health: a rising dropped count means the arm silently runs
+        # without lessons — surface it next to the other sink counters.
+        if self.train_sink.meta_groups_ok or self.train_sink.meta_groups_dropped:
+            metrics["ttt/meta_groups_ok"] = self.train_sink.meta_groups_ok
+            metrics["ttt/meta_groups_dropped"] = self.train_sink.meta_groups_dropped
         self.monitor.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
         self.monitor.log_samples(effective.rollouts, step=step)
@@ -904,6 +909,9 @@ async def run_orchestrator(config: OrchestratorConfig) -> None:
     """Top-level entrypoint. Wrapped in ``@clean_exit`` so wandb is flushed
     on exit (success or crash); keeps that out of the class.
     """
+    # Startup-time (not parse-time) guard: at launcher-parse time an "auto" placeholder is
+    # legitimate — the SLURM template injects --ttt-base-url later. Here it isn't.
+    config.check_ttt_base_urls_resolved()
     await Orchestrator(config).start()
 
 

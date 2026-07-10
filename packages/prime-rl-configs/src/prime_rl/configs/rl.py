@@ -337,6 +337,31 @@ class RLConfig(BaseConfig):
         ]
         active_ttt_envs = active_train_ttt_envs + active_eval_ttt_envs
         ttt_envs = [env.resolved_name for env in active_ttt_envs]
+        # Launcher/service mutual consistency FIRST — these pairings are wrong regardless
+        # of whether any env has TTT enabled, so they must precede the early return below
+        # (otherwise a no-TTT-env config with stray [ttt]/num_ttt_nodes slips through).
+        num_ttt_nodes = getattr(self.deployment, "num_ttt_nodes", 0)
+        if num_ttt_nodes > 0 and self.ttt is None:
+            raise ValueError(
+                f"deployment.num_ttt_nodes = {num_ttt_nodes} but no [ttt] service config is set — "
+                "add a [ttt] section (engine, lora, optim) or set num_ttt_nodes = 0 and run the "
+                "service externally."
+            )
+        if self.ttt is not None and not ttt_envs:
+            raise ValueError(
+                "[ttt] service configured but no train/eval env has ttt enabled — "
+                "remove [ttt]/num_ttt_nodes or enable ttt on an env."
+            )
+        if self.ttt is not None and num_ttt_nodes == 0:
+            # Covers both multi_node with num_ttt_nodes = 0 and non-multi_node deployments
+            # (which have no num_ttt_nodes at all): the launcher only starts the service
+            # via write_slurm_script on multi_node, so [ttt] is dead config otherwise.
+            raise ValueError(
+                "[ttt] service config is set but the launcher would never start it "
+                "(deployment.num_ttt_nodes = 0 / single-node deployment). Set "
+                "deployment.num_ttt_nodes (>=1) on a multi_node deployment, or drop [ttt] "
+                "and run the service externally (env ttt.base_url pointing at it)."
+            )
         if not ttt_envs:
             return self
         # Full-weight policy is a REPLAY constraint — only train-env TTT triggers replay
@@ -382,21 +407,9 @@ class RLConfig(BaseConfig):
         if active_train_ttt_envs:
             self.trainer.ttt_replay = True
         # --- Launcher-managed TTT service (RLConfig.ttt + deployment.num_ttt_nodes) ---
-        num_ttt_nodes = getattr(self.deployment, "num_ttt_nodes", 0)
-        if num_ttt_nodes > 0 and self.ttt is None:
-            raise ValueError(
-                f"deployment.num_ttt_nodes = {num_ttt_nodes} but no [ttt] service config is set — "
-                "add a [ttt] section (engine, lora, optim) or set num_ttt_nodes = 0 and run the "
-                "service externally."
-            )
+        # Mutual [ttt]/num_ttt_nodes consistency is enforced above (before the early
+        # return), so reaching here with self.ttt set implies num_ttt_nodes > 0.
         if self.ttt is not None:
-            if num_ttt_nodes == 0:
-                raise ValueError(
-                    "[ttt] service config is set but the launcher would never start it "
-                    "(deployment.num_ttt_nodes = 0 / single-node deployment). Set "
-                    "deployment.num_ttt_nodes (>=1) on a multi_node deployment, or drop [ttt] "
-                    "and run the service externally (env ttt.base_url pointing at it)."
-                )
             # Auto-wire what the service must share with the run. Explicit values win.
             if "output_dir" not in self.ttt.model_fields_set:
                 self.ttt.output_dir = self.output_dir

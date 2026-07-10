@@ -546,15 +546,33 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def apply_ttt_base_url(self):
-        """Fan the launcher-injected ``ttt_base_url`` out to every TTT env (train + eval)."""
+        """Fan the launcher-injected ``ttt_base_url`` out to every TTT env (train + eval).
+        Placeholder-only: an explicit per-env URL is an external service the user mixes
+        with the launcher-managed one — preserve it."""
         if self.ttt_base_url is None:
             return self
         eval_envs = self.eval.env if self.eval is not None else []
         for env in [*self.train.env, *eval_envs]:
             ttt = getattr(env, "ttt", None)
-            if ttt is not None:
+            if ttt is not None and ttt.base_url == "auto":
                 ttt.base_url = self.ttt_base_url
         return self
+
+    def check_ttt_base_urls_resolved(self) -> None:
+        """Reject a leftover ``"auto"`` placeholder at orchestrator startup — the hook
+        would otherwise POST to the literal string 'auto'. NOT a model validator: at
+        launcher time the placeholder is legitimate (the SLURM template injects
+        ``--ttt-base-url`` only once the service node's hostname is known), so this only
+        runs in the orchestrator process (standalone eval-CLI / dumped-toml runs included,
+        which is exactly where the fail-fast matters)."""
+        eval_envs = self.eval.env if self.eval is not None else []
+        for env in [*self.train.env, *eval_envs]:
+            ttt = getattr(env, "ttt", None)
+            if ttt is not None and ttt.enabled and ttt.base_url == "auto":
+                raise ValueError(
+                    f"env '{env.resolved_name}': ttt.base_url \"auto\" requires the launcher-managed "
+                    "TTT service (deployment.num_ttt_nodes) or an explicit URL."
+                )
 
     @model_validator(mode="before")
     @classmethod
