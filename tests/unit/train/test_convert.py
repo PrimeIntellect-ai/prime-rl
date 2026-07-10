@@ -3,7 +3,7 @@
 import torch
 
 from prime_rl.trainer.convert import convert_snapshot_to_prime
-from prime_rl.trainer.weights import atomic_save_state_dict, load_state_dict
+from prime_rl.trainer.weights import atomic_save_state_dict, is_state_dict_complete, load_state_dict
 
 
 def test_atomic_save_roundtrips(tmp_path):
@@ -14,26 +14,33 @@ def test_atomic_save_roundtrips(tmp_path):
     atomic_save_state_dict(state_dict, save_dir)
 
     assert save_dir.is_dir()
-    # No temp sibling left behind after a clean run.
-    assert not (tmp_path / "out.tmp").exists()
+    assert not list(tmp_path.glob(".out.tmp-*"))
+    assert is_state_dict_complete(save_dir)
     loaded = load_state_dict(save_dir)
     assert set(loaded) == set(expected)
     for key, tensor in expected.items():
         assert torch.equal(loaded[key], tensor)
 
 
-def test_atomic_save_clears_stale_tmp(tmp_path):
+def test_atomic_save_repairs_incomplete_destination(tmp_path):
     save_dir = tmp_path / "out"
-    tmp_dir = tmp_path / "out.tmp"
-    # Simulate a previous crashed run: a leftover temp dir with junk in it.
-    tmp_dir.mkdir()
-    (tmp_dir / "partial.bin").write_text("junk")
+    save_dir.mkdir()
+    (save_dir / "partial.bin").write_text("junk")
 
     atomic_save_state_dict({"a": torch.zeros(1)}, save_dir)
 
-    assert save_dir.is_dir()
-    assert not tmp_dir.exists()
+    assert is_state_dict_complete(save_dir)
     assert not (save_dir / "partial.bin").exists()
+
+
+def test_atomic_save_accepts_complete_concurrent_winner(tmp_path):
+    save_dir = tmp_path / "out"
+    atomic_save_state_dict({"winner": torch.ones(1)}, save_dir)
+
+    published = atomic_save_state_dict({"loser": torch.zeros(1)}, save_dir)
+
+    assert published is False
+    assert set(load_state_dict(save_dir)) == {"winner"}
 
 
 class _FakeConfig:

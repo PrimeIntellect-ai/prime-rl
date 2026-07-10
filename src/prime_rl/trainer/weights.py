@@ -1,13 +1,16 @@
+import fcntl
 import json
 import os
 import shutil
+import tempfile
 import warnings
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal, cast
 
 import torch
 from huggingface_hub import split_torch_state_dict_into_shards
-from safetensors import safe_open
+from safetensors import SafetensorError, safe_open
 from safetensors.torch import save_file
 from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
@@ -111,20 +114,111 @@ def save_state_dict(
             torch.save(state_dict, save_dir / weights_name)
 
 
-def atomic_save_state_dict(state_dict: dict[str, Tensor], save_dir: Path, **kwargs) -> None:
-    """save_state_dict into a temp sibling dir, then atomically rename into place.
+def is_state_dict_complete(save_dir: Path) -> bool:
+    """Return whether ``save_dir`` contains a complete state-dict save."""
+    save_dir = Path(save_dir)
+    if not save_dir.is_dir():
+        return False
 
-    A crash before the rename leaves only `<name>.tmp`, so `save_dir` is never
-    observed partially written (the failure mode that can poison a shared
-    weight cache). `save_dir` must not already exist. Like ``save_state_dict``,
-    sharded saves consume ``state_dict``.
+    for index_name, is_safetensors in (
+        (SAFE_WEIGHTS_INDEX_NAME, True),
+        (WEIGHTS_INDEX_NAME, False),
+    ):
+        index_path = save_dir / index_name
+        if not index_path.is_file():
+            continue
+        try:
+            with open(index_path, encoding="utf-8") as f:
+                weight_map = json.load(f)["weight_map"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        if not isinstance(weight_map, dict) or not weight_map:
+            return False
+
+        shard_names = set(weight_map.values())
+        shard_paths = [save_dir / shard_name for shard_name in shard_names]
+        if not all(path.is_file() and path.stat().st_size > 0 for path in shard_paths):
+            return False
+        if not is_safetensors:
+            return True
+
+        actual_keys: set[str] = set()
+        try:
+            for shard_path in shard_paths:
+                with safe_open(shard_path, framework="pt", device="cpu") as f:
+                    actual_keys.update(f.keys())
+        except (OSError, SafetensorError):
+            return False
+        return actual_keys == set(weight_map)
+
+    for weights_name, is_safetensors in (
+        (SAFE_WEIGHTS_NAME, True),
+        (ADAPTER_SAFE_WEIGHTS_NAME, True),
+        (WEIGHTS_NAME, False),
+        (ADAPTER_WEIGHTS_NAME, False),
+    ):
+        weights_path = save_dir / weights_name
+        if not weights_path.is_file() or weights_path.stat().st_size == 0:
+            continue
+        if not is_safetensors:
+            return True
+        try:
+            with safe_open(weights_path, framework="pt", device="cpu") as f:
+                return bool(f.keys())
+        except (OSError, SafetensorError):
+            return False
+    return False
+
+
+@contextmanager
+def _lock_save_dir(save_dir: Path):
+    lock_path = save_dir.parent / f".{save_dir.name}.lock"
+    with open(lock_path, "a+b") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def atomic_save_state_dict(
+    state_dict: dict[str, Tensor], save_dir: Path, *, overwrite: bool = False, **kwargs
+) -> bool:
+    """Save into a unique temp sibling and atomically publish the directory.
+
+    Concurrent writers serialize publication with a file lock. A complete
+    destination written by another process wins unless ``overwrite`` is true;
+    an incomplete destination is repaired. Returns whether this writer
+    published its output. Like ``save_state_dict``, sharded saves consume
+    ``state_dict``.
     """
     save_dir = Path(save_dir)
-    tmp_dir = save_dir.parent / f"{save_dir.name}.tmp"
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir)
-    save_state_dict(state_dict, tmp_dir, **kwargs)
-    os.replace(tmp_dir, save_dir)
+    save_dir.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f".{save_dir.name}.tmp-", dir=save_dir.parent))
+    try:
+        save_state_dict(state_dict, tmp_dir, **kwargs)
+        with _lock_save_dir(save_dir):
+            if save_dir.exists():
+                if not overwrite and is_state_dict_complete(save_dir):
+                    return False
+                _remove_path(save_dir)
+            try:
+                os.rename(tmp_dir, save_dir)
+            except OSError:
+                if not overwrite and is_state_dict_complete(save_dir):
+                    return False
+                raise
+            return True
+    finally:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
 
 
 def gather_weights_on_master(
