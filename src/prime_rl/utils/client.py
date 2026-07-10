@@ -5,7 +5,7 @@ import os
 from collections.abc import Mapping
 from itertools import cycle
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 import httpx
 import verifiers.v1 as vf
@@ -57,6 +57,11 @@ class InferencePool(Protocol):
     @property
     def model_name(self) -> str:
         """Get current model name for inference requests."""
+        ...
+
+    @property
+    def admin_api(self) -> Literal["vllm", "dynamo"]:
+        """Administration protocol used by the resolved pool."""
         ...
 
     @property
@@ -178,6 +183,10 @@ class FixedInferencePool:
     @property
     def train_clients(self) -> list[vf.ClientConfig]:
         return self._train_clients
+
+    @property
+    def admin_api(self) -> Literal["vllm", "dynamo"]:
+        return self._client_config.admin_api
 
     @property
     def admin_clients(self) -> list[AsyncClient]:

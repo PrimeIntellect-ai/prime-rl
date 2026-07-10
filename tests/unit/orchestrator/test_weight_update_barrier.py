@@ -4,10 +4,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import verifiers.v1 as vf
 
 from prime_rl.orchestrator.dispatcher import DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.policy_gate import MutablePolicyGate, PolicyRequestRejected
-from prime_rl.orchestrator.types import GroupState, InflightRollout, Policy
+from prime_rl.orchestrator.types import GroupState, InflightRollout, Policy, Rollout
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.utils.pathing import get_broadcast_dir, get_step_path
 
@@ -63,47 +64,44 @@ def _dispatcher(
 
 
 @pytest.mark.asyncio
-async def test_policy_barrier_serializes_with_suspended_eval_scheduling():
+async def test_policy_barrier_invalidates_slow_scheduling_before_short_commit():
     dispatcher = _dispatcher()
     dispatcher.mode = DispatcherMode.PREFER_EVAL
     scheduling_started = asyncio.Event()
     allow_schedule_to_commit = asyncio.Event()
-    request_cleanup_finished = asyncio.Event()
+    request_started = asyncio.Event()
 
     async def active_request() -> None:
-        try:
-            await asyncio.Future()
-        finally:
-            # Represents the client/connector abort cleanup performed while
-            # unwinding a cancelled rollout request.
-            await asyncio.sleep(0)
-            request_cleanup_finished.set()
+        request_started.set()
+        await asyncio.Future()
 
-    async def schedule_one(_kind: str) -> bool:
+    async def schedule_one(_kind: str, *, epoch) -> bool:
         scheduling_started.set()
         await allow_schedule_to_commit.wait()
-        group_id = uuid.uuid4()
-        request = asyncio.create_task(active_request())
-        dispatcher.groups[group_id] = GroupState(
-            kind="eval",
-            env_name="eval",
-            task_idx=0,
-            rollouts_to_schedule=0,
-            target_rollouts=1,
-            eval_step=1,
-            policy_version_at_start=0,
-        )
-        dispatcher.inflight[request] = InflightRollout(
-            kind="eval",
-            env_name="eval",
-            group_id=group_id,
-            policy_version=0,
-            rollout_count=1,
-            eval_step=1,
-        )
-        dispatcher.inflight_permits += 1
-        await asyncio.sleep(0)
-        return True
+        async with dispatcher.policy_gate.scheduling_commit(epoch) as admitted:
+            if not admitted:
+                return False
+            group_id = uuid.uuid4()
+            request = asyncio.create_task(active_request())
+            dispatcher.groups[group_id] = GroupState(
+                kind="eval",
+                env_name="eval",
+                task_idx=0,
+                rollouts_to_schedule=0,
+                target_rollouts=1,
+                eval_step=1,
+                policy_version_at_start=0,
+            )
+            dispatcher.inflight[request] = InflightRollout(
+                kind="eval",
+                env_name="eval",
+                group_id=group_id,
+                policy_version=0,
+                rollout_count=1,
+                eval_step=1,
+            )
+            dispatcher.inflight_permits += 1
+            return True
 
     dispatcher.try_schedule = schedule_one  # type: ignore[method-assign]
 
@@ -112,17 +110,13 @@ async def test_policy_barrier_serializes_with_suspended_eval_scheduling():
     barrier = asyncio.create_task(dispatcher.on_version_pending(1))
     await asyncio.sleep(0)
 
-    # The barrier must serialize behind the scheduling commit. Otherwise it
-    # can take an empty snapshot and let an old-policy request escape.
-    assert not barrier.done()
+    await barrier
+    assert dispatcher.policy_update_pending
 
     allow_schedule_to_commit.set()
     await fill
-    await barrier
-
-    assert request_cleanup_finished.is_set()
+    assert not request_started.is_set()
     assert not dispatcher.inflight
-    assert dispatcher.policy_update_pending
 
     # The transition fence remains closed until the watcher reports either
     # success or failure.
@@ -336,7 +330,6 @@ async def test_policy_barrier_settles_cleanup_before_propagating_cancellation():
         await barrier
 
     assert cleanup_finished.is_set()
-    await dispatcher.on_version_update_failed(1, asyncio.CancelledError())
     assert not dispatcher.policy_update_pending
 
 
@@ -403,7 +396,113 @@ async def test_policy_barrier_shields_marker_enqueue_and_commits_accounting_afte
     assert not dispatcher.inflight
     assert dispatcher.inflight_permits == 0
 
-    await dispatcher.on_version_update_failed(1, asyncio.CancelledError())
+    assert not dispatcher.policy_update_pending
+
+
+@pytest.mark.asyncio
+async def test_policy_barrier_waits_for_completed_handler_before_computing_markers():
+    dispatcher = _dispatcher(max_inflight=2)
+    dispatcher.out_q = asyncio.Queue(maxsize=1)
+    group_id = uuid.uuid4()
+
+    async def completed_group() -> list[Rollout]:
+        return [
+            Rollout(
+                task=vf.Task(idx=0, prompt=None),
+                errors=[vf.Error(type="Existing", message="result")],
+                stop_condition="error",
+            )
+            for _ in range(2)
+        ]
+
+    task = asyncio.create_task(completed_group())
+    await task
+    group = GroupState(
+        kind="eval",
+        env_name="eval",
+        task_idx=0,
+        rollouts_to_schedule=0,
+        target_rollouts=2,
+        eval_step=1,
+        policy_version_at_start=0,
+        uses_mutable_policy=True,
+    )
+    dispatcher.groups[group_id] = group
+    dispatcher.inflight[task] = InflightRollout(
+        kind="eval",
+        env_name="eval",
+        group_id=group_id,
+        policy_version=0,
+        rollout_count=2,
+        eval_step=1,
+        uses_mutable_policy=True,
+    )
+    dispatcher.inflight_permits = 2
+
+    handler = asyncio.create_task(dispatcher.handle_completed_rollout(task))
+    while dispatcher.out_q.qsize() != 1:
+        await asyncio.sleep(0)
+    barrier = asyncio.create_task(dispatcher.on_version_pending(1))
+    await asyncio.sleep(0)
+
+    assert not barrier.done()
+
+    first = dispatcher.out_q.get_nowait()
+    await handler
+    await barrier
+    second = dispatcher.out_q.get_nowait()
+
+    assert [first.error.type, second.error.type] == ["Existing", "Existing"]
+    assert group.emitted == 2
+    await dispatcher.on_new_version(1)
+
+
+@pytest.mark.asyncio
+async def test_policy_barrier_marker_enqueue_aborts_promptly_on_dispatcher_stop():
+    dispatcher = _dispatcher()
+    marker_put_started = asyncio.Event()
+
+    class _ObservedQueue(asyncio.Queue):
+        async def put(self, item) -> None:
+            marker_put_started.set()
+            await super().put(item)
+
+    dispatcher.out_q = _ObservedQueue(maxsize=1)
+    dispatcher.out_q.put_nowait(object())
+    group_id = uuid.uuid4()
+
+    async def request() -> None:
+        await asyncio.Future()
+
+    task = asyncio.create_task(request())
+    await asyncio.sleep(0)
+    dispatcher.groups[group_id] = GroupState(
+        kind="eval",
+        env_name="eval",
+        task_idx=0,
+        rollouts_to_schedule=0,
+        target_rollouts=1,
+        eval_step=1,
+        policy_version_at_start=0,
+        uses_mutable_policy=True,
+    )
+    dispatcher.inflight[task] = InflightRollout(
+        kind="eval",
+        env_name="eval",
+        group_id=group_id,
+        policy_version=0,
+        rollout_count=1,
+        eval_step=1,
+        uses_mutable_policy=True,
+    )
+    dispatcher.inflight_permits = 1
+
+    barrier = asyncio.create_task(dispatcher.on_version_pending(1))
+    await marker_put_started.wait()
+    await dispatcher.stop()
+
+    with pytest.raises(RuntimeError, match="stopped while emitting policy barrier"):
+        await asyncio.wait_for(barrier, timeout=0.5)
     assert not dispatcher.policy_update_pending
 
 
@@ -518,6 +617,13 @@ async def test_indeterminate_engine_failure_keeps_admission_fail_closed_without_
         "Policy update 1 may have mutated inference workers; mutable-policy admission remains fail-closed"
     ]
 
+    second_weight_path = get_step_path(get_broadcast_dir(tmp_path), 2)
+    second_weight_path.mkdir(parents=True)
+    (second_weight_path / "STABLE").touch()
+    with pytest.raises(RuntimeError, match="already pending"):
+        await watcher.apply_policy_update(2)
+    assert dispatcher.policy_update_pending
+
 
 @pytest.mark.asyncio
 async def test_success_updates_lead_gate_before_reopening_transition_fence(tmp_path: Path):
@@ -566,7 +672,7 @@ async def test_success_updates_lead_gate_before_reopening_transition_fence(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_success_callback_cancellation_still_reopens_transition_fence(tmp_path: Path):
+async def test_success_callback_cancellation_propagates_and_keeps_transition_fence_closed(tmp_path: Path):
     dispatcher = _dispatcher()
     callback_started = asyncio.Event()
     weight_path = get_step_path(get_broadcast_dir(tmp_path), 1)
@@ -604,11 +710,11 @@ async def test_success_callback_cancellation_still_reopens_transition_fence(tmp_
 
     assert watcher.ckpt_step == 1
     assert dispatcher.policy.version == 1
-    assert not dispatcher.policy_update_pending
+    assert dispatcher.policy_update_pending
 
 
 @pytest.mark.asyncio
-async def test_success_callback_error_still_reopens_transition_fence(tmp_path: Path):
+async def test_success_callback_error_propagates_and_keeps_transition_fence_closed(tmp_path: Path):
     dispatcher = _dispatcher()
     weight_path = get_step_path(get_broadcast_dir(tmp_path), 1)
     weight_path.mkdir(parents=True)
@@ -636,8 +742,9 @@ async def test_success_callback_error_still_reopens_transition_fence(tmp_path: P
         lora_name=None,
     )
 
-    await watcher.apply_policy_update(1)
+    with pytest.raises(RuntimeError, match="lead gate callback failed"):
+        await watcher.apply_policy_update(1)
 
     assert watcher.ckpt_step == 1
     assert dispatcher.policy.version == 1
-    assert not dispatcher.policy_update_pending
+    assert dispatcher.policy_update_pending

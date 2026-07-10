@@ -406,7 +406,6 @@ class DynamoAdminAPI:
 
     async def update_weights(self, clients: list[AsyncClient], weight_dir: Path | None, step: int) -> None:
         self._require_unambiguous_admin_state()
-        primary_error: BaseException | None = None
         try:
             await self._settle_fanout(
                 (
@@ -420,6 +419,13 @@ class DynamoAdminAPI:
                 ),
                 "pause_generation",
             )
+        except BaseException as exc:
+            # Pausing cannot change weights. Settle the fanout, undo any
+            # successful pauses, and preserve the original pre-mutation error.
+            await self._resume_after_pre_mutation_failure(clients, exc)
+            raise
+
+        try:
             if weight_dir is not None:
                 marker = weight_dir / NCCL_READY_MARKER
                 marker.parent.mkdir(parents=True, exist_ok=True)
@@ -441,23 +447,43 @@ class DynamoAdminAPI:
                     "engine_rpc": "update_weights_from_path",
                 }
                 method = "update_weights_from_disk"
+        except BaseException as exc:
+            # Validation/filesystem preparation failed before any update RPC
+            # was issued, so generation can safely resume on the old weights.
+            await self._resume_after_pre_mutation_failure(clients, exc)
+            raise
 
+        try:
             await self._settle_fanout(
                 (self._post(client, method, body, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S) for client in clients),
                 method,
             )
-        except BaseException as exc:
-            primary_error = exc
+        except BaseException:
+            # At least one mutation RPC was issued. A failure or cancellation
+            # cannot prove which workers committed, so keep generation paused
+            # and permanently poison this admin object.
             self._weight_update_indeterminate = True
             raise
-        finally:
-            try:
-                await self._settle_fanout(
-                    (self._post(client, "resume_generation", retry_transient=True) for client in clients),
-                    "resume_generation",
-                )
-            except BaseException as exc:
-                self._weight_update_indeterminate = True
-                if primary_error is None:
-                    raise
-                primary_error.add_note(f"Dynamo resume_generation cleanup also failed: {exc!r}")
+
+        try:
+            await self._resume_generation(clients)
+        except BaseException:
+            self._weight_update_indeterminate = True
+            raise
+
+    async def _resume_generation(self, clients: list[AsyncClient]) -> None:
+        await self._settle_fanout(
+            (self._post(client, "resume_generation", retry_transient=True) for client in clients),
+            "resume_generation",
+        )
+
+    async def _resume_after_pre_mutation_failure(
+        self,
+        clients: list[AsyncClient],
+        primary_error: BaseException,
+    ) -> None:
+        try:
+            await self._resume_generation(clients)
+        except BaseException as resume_error:
+            self._weight_update_indeterminate = True
+            primary_error.add_note(f"Dynamo resume_generation cleanup also failed: {resume_error!r}")

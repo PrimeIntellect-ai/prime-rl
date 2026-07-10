@@ -140,11 +140,38 @@ def test_local_specs_allocate_four_workers_and_unique_ports(tmp_path: Path):
     prefill_configs = [
         json.loads(Path(spec.process.arguments[1]).read_text()) for spec in specs if spec.role == "prefill"
     ]
-    assert [config["kv_events_config"]["endpoint"] for config in prefill_configs] == [
-        "tcp://*:20080",
-        "tcp://*:20081",
-    ]
+    assert len({config["kv_events_config"]["endpoint"] for config in prefill_configs}) == 2
     assert all("--enable-rl" in spec.process.command() for spec in specs)
+
+
+def test_local_multi_gpu_workers_allocate_globally_unique_coordinator_ports(tmp_path: Path):
+    config = disaggregated_config(
+        parallel={"tp": 1},
+        deployment={
+            "type": "disaggregated",
+            "gpus_per_node": 2,
+            "prefill_nodes_per_replica": 1,
+            "decode_nodes_per_replica": 1,
+            "num_prefill_replicas": 1,
+            "num_decode_replicas": 1,
+        },
+    )
+
+    specs = build_local_worker_specs(config, tmp_path, gpu_ids=["0", "1", "2", "3"])
+    engine_configs = [json.loads(Path(spec.process.arguments[1]).read_text()) for spec in specs]
+    allocated_ports = [
+        *(spec.system_port for spec in specs),
+        *(int(spec.process.environment()["VLLM_NIXL_SIDE_CHANNEL_PORT"]) for spec in specs),
+        *(engine["data_parallel_rpc_port"] for engine in engine_configs),
+        *(
+            int(engine["kv_events_config"]["endpoint"].rsplit(":", 1)[1])
+            for engine in engine_configs
+            if "kv_events_config" in engine
+        ),
+    ]
+
+    assert len({engine["data_parallel_rpc_port"] for engine in engine_configs}) == len(specs)
+    assert len(allocated_ports) == len(set(allocated_ports))
 
 
 def test_wrapper_options_are_not_written_to_engine_json():

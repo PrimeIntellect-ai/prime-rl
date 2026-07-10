@@ -145,7 +145,9 @@ async def test_pause_fanout_settles_delayed_sibling_before_resume(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_collective_update_settles_delayed_sibling_before_resume(monkeypatch: pytest.MonkeyPatch):
+async def test_collective_update_settles_delayed_sibling_without_resuming_indeterminate_workers(
+    monkeypatch: pytest.MonkeyPatch,
+):
     admin = DynamoAdminAPI()
     delayed_started = asyncio.Event()
     release_delayed = asyncio.Event()
@@ -178,7 +180,9 @@ async def test_collective_update_settles_delayed_sibling_before_resume(monkeypat
     with pytest.raises(RuntimeError, match="collective failed"):
         await update
 
-    assert resume_started.is_set()
+    assert not resume_started.is_set()
+    with pytest.raises(RuntimeError, match="weight state is indeterminate"):
+        await admin.update_weights(["fast-failure", "delayed"], Path("weights"), step=2)
 
 
 @pytest.mark.asyncio
@@ -219,7 +223,9 @@ async def test_collective_update_is_settled_before_propagating_cancellation(monk
         await update
 
     assert update_finished.is_set()
-    assert resume_started.is_set()
+    assert not resume_started.is_set()
+    with pytest.raises(RuntimeError, match="weight state is indeterminate"):
+        await admin.update_weights(["worker"], Path("weights"), step=2)
 
 
 @pytest.mark.asyncio

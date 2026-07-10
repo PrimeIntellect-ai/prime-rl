@@ -545,7 +545,6 @@ async def test_weight_collective_does_not_replay_ambiguous_timeout(tmp_path: Pat
     assert paths == [
         "/engine/pause_generation",
         "/engine/update_weights_from_disk",
-        "/engine/resume_generation",
     ]
 
 

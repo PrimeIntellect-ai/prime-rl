@@ -85,6 +85,34 @@ class DynamoWorkerSpec:
     process: DynamoProcessSpec
 
 
+@dataclass(frozen=True)
+class DynamoWorkerPorts:
+    """Host-local ports reserved by one worker process."""
+
+    system: int
+    nixl: int
+    data_parallel_rpc: int
+    kv_events: int
+
+
+_LOCAL_WORKER_PORT_BASE = 18_000
+_LOCAL_WORKER_PORT_STRIDE = 4
+
+
+def _allocate_local_worker_ports(worker_index: int) -> DynamoWorkerPorts:
+    """Allocate one non-overlapping port block for a same-host worker."""
+    base = _LOCAL_WORKER_PORT_BASE + worker_index * _LOCAL_WORKER_PORT_STRIDE
+    ports = DynamoWorkerPorts(
+        system=base,
+        nixl=base + 1,
+        data_parallel_rpc=base + 2,
+        kv_events=base + 3,
+    )
+    if ports.kv_events > 65_535:
+        raise ValueError(f"Local Dynamo worker {worker_index} exceeds the available TCP port range")
+    return ports
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -272,6 +300,7 @@ def build_engine_config(
     role: Role,
     *,
     kv_events_port: int | None = None,
+    data_parallel_rpc_port: int | None = None,
 ) -> dict[str, Any]:
     """Build one deterministic vLLM ``AsyncEngineArgs`` object."""
     _validate_overrides("vllm_extra", config.vllm_extra)
@@ -294,6 +323,8 @@ def build_engine_config(
             values.pop("data_parallel_rpc_port", None)
         else:
             values["data_parallel_size_local"] = local_dp
+            if data_parallel_rpc_port is not None:
+                values["data_parallel_rpc_port"] = data_parallel_rpc_port
 
     if role in ("prefill", "agg") and kv_events_port is not None:
         values["kv_events_config"] = {
@@ -382,24 +413,30 @@ def build_local_worker_specs(
         role_indexes[role] += 1
         start = worker_index * gpus_per_worker
         worker_gpus = tuple(available[start : start + gpus_per_worker])
-        kv_events_port = 20080 + role_index if role in ("prefill", "agg") else None
+        ports = _allocate_local_worker_ports(worker_index)
+        kv_events_port = ports.kv_events if role in ("prefill", "agg") else None
         name = f"{role}-{role_index}"
         engine_path = _write_json(
             config_dir / f"{name}-engine.json",
-            build_engine_config(config, role, kv_events_port=kv_events_port),
+            build_engine_config(
+                config,
+                role,
+                kv_events_port=kv_events_port,
+                data_parallel_rpc_port=ports.data_parallel_rpc,
+            ),
         )
         specs.append(
             DynamoWorkerSpec(
                 name=name,
                 role=role,
                 gpu_ids=worker_gpus,
-                system_port=8081 + worker_index,
+                system_port=ports.system,
                 process=build_worker_process(
                     config,
                     role,
                     engine_path,
                     nixl_host="127.0.0.1",
-                    nixl_port=20100 + worker_index,
+                    nixl_port=ports.nixl,
                     namespace=resolved_namespace,
                 ),
             )

@@ -18,6 +18,7 @@ from prime_rl.utils.client import (
     setup_clients,
     setup_inference_pool,
 )
+from prime_rl.utils.policy_client_config import policy_client_config_from_environment
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -150,6 +151,36 @@ def test_setup_inference_pool_selects_dynamo_pool_once():
 
     assert isinstance(pool, DynamoInferencePool)
     asyncio.run(pool.stop())
+
+
+def test_generated_dgd_topology_selects_dynamo_pool_without_mutating_config(monkeypatch: pytest.MonkeyPatch):
+    client_config = ClientConfig()
+    original_config = client_config.model_copy(deep=True)
+    monkeypatch.setenv(
+        "DYN_RL_TOPOLOGY",
+        """{"schema_version":1,"admin_api":"dynamo","base_url":["http://frontend:8000/v1"],"rl_base_url":["http://frontend-rl:8001"],"dynamo_worker_roles":["prefill","decode"],"dynamo_gpus_per_worker":1}""",
+    )
+
+    resolved = policy_client_config_from_environment(client_config)
+    pool = asyncio.run(setup_inference_pool(resolved, model_name="test-model"))
+
+    assert isinstance(pool, DynamoInferencePool)
+    assert pool.admin_api == "dynamo"
+    assert resolved.base_url == ["http://frontend:8000/v1"]
+    assert resolved.rl_base_url == ["http://frontend-rl:8001"]
+    assert client_config == original_config
+    asyncio.run(pool.stop())
+
+
+def test_generated_dgd_topology_rejects_explicit_client_conflict(monkeypatch: pytest.MonkeyPatch):
+    client_config = ClientConfig(admin_api="vllm")
+    monkeypatch.setenv(
+        "DYN_RL_TOPOLOGY",
+        """{"schema_version":1,"admin_api":"dynamo","base_url":["http://frontend:8000/v1"],"rl_base_url":["http://frontend-rl:8001"],"dynamo_worker_roles":["agg"],"dynamo_gpus_per_worker":1}""",
+    )
+
+    with pytest.raises(ValueError, match="admin_api.*conflicts"):
+        policy_client_config_from_environment(client_config)
 
 
 @pytest.mark.asyncio

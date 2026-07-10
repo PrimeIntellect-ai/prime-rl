@@ -2,11 +2,8 @@
 
 - Capacity (``max_inflight_rollouts``) is shared across train + eval.
   A group-scoring task that runs N rollouts in one call reserves N permits.
-- Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
-- Emit-everything invariant: every dispatched rollout eventually reaches
-  ``out_q`` exactly once as a ``Rollout``. Failures
-  (env error, empty trajectory, task exception, off-policy cancel) carry
-  ``trace.error`` set; sinks decide drop / partial-train policy.
+- Emit-everything invariant: every dispatched rollout reaches ``out_q`` once.
+  Failures carry ``trace.error``; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight rollouts of the opposite kind drain
@@ -28,10 +25,16 @@ import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl.orchestrator.dispatcher_metrics import DispatcherMetrics
+from prime_rl.orchestrator.dispatcher_transactions import (
+    EmissionRecord,
+    EmissionTracker,
+    emit_policy_cancellation_markers,
+    settle_transaction_cleanup,
+)
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.policy_gate import MutablePolicyGate
-from prime_rl.orchestrator.pool_identity import pools_may_alias
+from prime_rl.orchestrator.policy_gate import MutablePolicyGate, PolicyUpdateToken, SchedulingEpoch
+from prime_rl.orchestrator.pool_identity import client_may_alias_pool, pools_may_alias
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     GroupState,
@@ -85,6 +88,7 @@ class RolloutDispatcher:
         self.max_off_policy_steps = max_off_policy_steps
         self.enforce_policy_update_barrier = enforce_policy_update_barrier
         self.policy_gate = policy_gate or MutablePolicyGate(policy, enabled=enforce_policy_update_barrier)
+        self._policy_update: tuple[int, PolicyUpdateToken] | None = None
 
         self.max_inflight = max_inflight_rollouts
         self.inflight_permits = 0
@@ -94,6 +98,7 @@ class RolloutDispatcher:
 
         self.inflight: dict[asyncio.Task, InflightRollout] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
+        self._emissions = EmissionTracker()
 
         # Bounded so the dispatcher backpressures on a slow sink
         self.out_q: asyncio.Queue[Rollout] = asyncio.Queue(maxsize=max(8, self.max_inflight))
@@ -214,36 +219,49 @@ class RolloutDispatcher:
             await self._advance_off_policy_window()
             return
 
-        await self.policy_gate.begin_update(step=step)
-        claimed_groups, claimed_tasks = self._claim_mutable_policy_work()
-        results, cancellation = await gather_shielded(
-            self._settle_policy_requests(claimed_groups, claimed_tasks),
-            self.policy_gate.wait_idle(),
-        )
-        failures = [result for result in results if isinstance(result, BaseException)]
-        primary: BaseException | None = cancellation or (failures[0] if failures else None)
-        if primary is not None:
-            siblings = failures if cancellation is not None else failures[1:]
-            for sibling in siblings:
-                primary.add_note(f"Another policy barrier drain failed: {sibling!r}")
-            raise primary
+        token = await self.policy_gate.begin_update(step=step)
+        self._policy_update = (step, token)
+        try:
+            claimed_groups, claimed_tasks, claimed_emissions = self._claim_mutable_policy_work()
+            results, cancellation = await gather_shielded(
+                self._settle_policy_requests(claimed_groups, claimed_tasks, claimed_emissions),
+                self.policy_gate.wait_idle(),
+            )
+            failures = [result for result in results if isinstance(result, BaseException)]
+            primary: BaseException | None = cancellation or (failures[0] if failures else None)
+            if primary is not None:
+                siblings = failures if cancellation is not None else failures[1:]
+                for sibling in siblings:
+                    primary.add_note(f"Another policy barrier drain failed: {sibling!r}")
+                raise primary
+        except BaseException as primary_error:
+            await settle_transaction_cleanup(
+                self._reopen_policy_admission(step, token),
+                primary_error,
+                "Policy transition rollback",
+            )
+            raise
 
     async def on_new_version(self, step: int) -> None:
         """Reopen admission after the new policy is live."""
         if self.enforce_policy_update_barrier:
-            await self._reopen_policy_admission()
+            await self._reopen_policy_admission(step)
 
     async def on_version_update_failed(self, step: int, error: BaseException) -> None:
         """Roll back only the transition fence; the policy stays unchanged."""
         if self.enforce_policy_update_barrier:
-            await self._reopen_policy_admission()
+            await self._reopen_policy_admission(step)
 
     @property
     def policy_update_pending(self) -> bool:
         return self.policy_gate.pending
 
-    async def _reopen_policy_admission(self) -> None:
-        await self.policy_gate.finish_update()
+    async def _reopen_policy_admission(self, step: int, token: PolicyUpdateToken | None = None) -> None:
+        owned = self._policy_update
+        if owned is None or owned[0] != step or (token is not None and owned[1] is not token):
+            raise RuntimeError(f"Dispatcher does not own the pending policy transition for step {step}")
+        await self.policy_gate.finish_update(owned[1])
+        self._policy_update = None
 
     async def _advance_off_policy_window(self) -> None:
         """Retain the established non-Dynamo in-flight tolerance policy."""
@@ -251,7 +269,8 @@ class RolloutDispatcher:
         for meta in self.inflight.values():
             if meta.kind != "train":
                 continue
-            if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
+            meta.uses_mutable_policy = meta.uses_mutable_policy or self._uses_mutable_policy(meta.kind, meta.env_name)
+            if not meta.uses_mutable_policy:
                 continue
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:
@@ -276,13 +295,22 @@ class RolloutDispatcher:
 
     def _claim_mutable_policy_work(
         self,
-    ) -> tuple[dict[uuid.UUID, GroupState], list[tuple[asyncio.Task, InflightRollout]]]:
-        group_ids = {
-            group_id for group_id, group in self.groups.items() if self._uses_mutable_policy(group.kind, group.env_name)
-        }
-        group_ids.update(
-            meta.group_id for meta in self.inflight.values() if self._uses_mutable_policy(meta.kind, meta.env_name)
-        )
+    ) -> tuple[
+        dict[uuid.UUID, GroupState],
+        list[tuple[asyncio.Task, InflightRollout]],
+        list[EmissionRecord],
+    ]:
+        group_ids: set[uuid.UUID] = set()
+        for group_id, group in self.groups.items():
+            group.uses_mutable_policy = group.uses_mutable_policy or self._uses_mutable_policy(
+                group.kind, group.env_name
+            )
+            if group.uses_mutable_policy:
+                group_ids.add(group_id)
+        for meta in self.inflight.values():
+            meta.uses_mutable_policy = meta.uses_mutable_policy or self._uses_mutable_policy(meta.kind, meta.env_name)
+            if meta.uses_mutable_policy:
+                group_ids.add(meta.group_id)
 
         claimed_groups = {
             group_id: group for group_id in group_ids if (group := self.groups.pop(group_id, None)) is not None
@@ -294,12 +322,14 @@ class RolloutDispatcher:
             del self.inflight[task]
             self.release(meta.rollout_count)
             claimed_tasks.append((task, meta))
-        return claimed_groups, claimed_tasks
+        claimed_emissions = self._emissions.claim(group_ids)
+        return claimed_groups, claimed_tasks, claimed_emissions
 
     async def _settle_policy_requests(
         self,
         groups: dict[uuid.UUID, GroupState],
         claimed: list[tuple[asyncio.Task, InflightRollout]],
+        emissions: list[EmissionRecord],
     ) -> None:
         tasks = [task for task, _meta in claimed]
         already_settled = {task for task in tasks if task.done()}
@@ -311,12 +341,25 @@ class RolloutDispatcher:
         if tasks:
             results, cancellation = await gather_shielded(*tasks)
 
+        emission_results: list[object] = []
+        emission_cancellation: asyncio.CancelledError | None = None
+        if emissions:
+            emission_results, emission_cancellation = await gather_shielded(
+                *(record.done.wait() for record in emissions)
+            )
+
         metadata_by_group: dict[uuid.UUID, InflightRollout] = {}
         for _task, meta in claimed:
             metadata_by_group.setdefault(meta.group_id, meta)
 
         marker_results, marker_cancellation = await gather_shielded(
-            self._emit_policy_cancellation_markers(groups, metadata_by_group)
+            emit_policy_cancellation_markers(
+                groups,
+                metadata_by_group,
+                out_q=self.out_q,
+                stopped=self.stopped,
+                metrics=self.metrics,
+            )
         )
 
         failures = [
@@ -327,61 +370,20 @@ class RolloutDispatcher:
             and not isinstance(result, asyncio.CancelledError)
         ]
         failures.extend(result for result in marker_results if isinstance(result, BaseException))
-        primary: BaseException | None = cancellation or marker_cancellation or (failures[0] if failures else None)
+        failures.extend(record.error for record in emissions if record.error is not None)
+        failures.extend(result for result in emission_results if isinstance(result, BaseException))
+        primary: BaseException | None = (
+            cancellation or emission_cancellation or marker_cancellation or (failures[0] if failures else None)
+        )
         if primary is not None:
-            siblings = failures if cancellation is not None or marker_cancellation is not None else failures[1:]
+            siblings = (
+                failures
+                if cancellation is not None or emission_cancellation is not None or marker_cancellation is not None
+                else failures[1:]
+            )
             for sibling in siblings:
                 primary.add_note(f"Another policy barrier cleanup failed: {sibling!r}")
             raise primary
-
-    async def _emit_policy_cancellation_markers(
-        self,
-        groups: dict[uuid.UUID, GroupState],
-        metadata_by_group: dict[uuid.UUID, InflightRollout],
-    ) -> None:
-        """Finish every claimed group; cancellation cannot interrupt this transaction."""
-        cancelled = 0
-        for group_id, group in groups.items():
-            owed = max(0, group.target_rollouts - group.emitted)
-            if owed == 0:
-                continue
-            meta = metadata_by_group.get(group_id) or InflightRollout(
-                kind=group.kind,
-                env_name=group.env_name,
-                group_id=group_id,
-                policy_version=group.policy_version_at_start,
-                rollout_count=1,
-                eval_step=group.eval_step,
-            )
-            for _ in range(owed):
-                trace = Rollout(
-                    task=vf.Task(idx=group.task_idx, prompt=None),
-                    errors=[vf.Error(type="Cancelled", message="Policy update barrier")],
-                    stop_condition="error",
-                )
-                await self._emit_claimed_rollout(meta, group, trace)
-            self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name, n=owed)
-            cancelled += owed
-        if cancelled:
-            get_logger().debug(f"Policy update barrier cancelled {cancelled} mutable-policy rollout(s)")
-
-    async def _emit_claimed_rollout(
-        self,
-        meta: InflightRollout,
-        group: GroupState,
-        rollout: Rollout,
-    ) -> None:
-        """Enqueue a barrier-owned marker before committing group accounting."""
-        rollout.kind = meta.kind
-        rollout.env_name = meta.env_name
-        rollout.group_id = meta.group_id
-        rollout.policy_version = group.policy_version_at_start
-        rollout.off_policy_steps = meta.off_policy_steps
-        if meta.kind == "eval":
-            assert group.eval_step is not None, "eval rollout missing eval_step"
-            rollout.eval_step = group.eval_step
-        await self.out_q.put(rollout)
-        group.emitted += 1
 
     async def fill_inflight(self) -> None:
         """Schedule new rollouts up to ``max_inflight``, honoring
@@ -390,26 +392,26 @@ class RolloutDispatcher:
         respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
         ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
         while True:
-            async with self.policy_gate.scheduling_admission() as admitted:
-                if not admitted or self.available_permits <= 0:
-                    return
+            epoch = await self.policy_gate.scheduling_epoch()
+            if epoch is None or self.available_permits <= 0:
+                return
 
-                if self.mode == DispatcherMode.PREFER_EVAL:
-                    # PREFER_EVAL implies a configured eval source.
-                    assert self.eval_source is not None
-                    if not self.eval_has_work:
-                        # Fill remaining permits with train while eval drains.
-                        self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
-                        continue
-                    scheduled = await self.try_schedule("eval")
-                    if not scheduled:
-                        return
-                else:  # PREFER_TRAIN — respects the orchestrator's dispatch gate
-                    if not self.dispatch_allowed.is_set():
-                        return
-                    scheduled = await self.try_schedule("train")
-                    if not scheduled:
-                        return
+            if self.mode == DispatcherMode.PREFER_EVAL:
+                # PREFER_EVAL implies a configured eval source.
+                assert self.eval_source is not None
+                if not self.eval_has_work:
+                    # Fill remaining permits with train while eval drains.
+                    self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
+                    continue
+                scheduled = await self.try_schedule("eval", epoch=epoch)
+                if not scheduled:
+                    return
+            else:  # PREFER_TRAIN — respects the orchestrator's dispatch gate
+                if not self.dispatch_allowed.is_set():
+                    return
+                scheduled = await self.try_schedule("train", epoch=epoch)
+                if not scheduled:
+                    return
 
     def switch_mode(self, new_mode: DispatcherMode, *, reason: str) -> None:
         if new_mode == self.mode:
@@ -418,7 +420,7 @@ class RolloutDispatcher:
         get_logger().info(f"Switching dispatcher mode to prefer {prefer} rollouts because {reason}")
         self.mode = new_mode
 
-    async def try_schedule(self, kind: RolloutKind) -> bool:
+    async def try_schedule(self, kind: RolloutKind, *, epoch: SchedulingEpoch) -> bool:
         """Schedule one rollout of ``kind``: prefer continuing an existing
         group (keeps prefix-cache hits); otherwise open a fresh group from
         the corresponding source. Returns False if nothing could be
@@ -435,14 +437,20 @@ class RolloutDispatcher:
             env = envs.get(group.env_name)
             cost = group.rollouts_to_schedule if env.requires_group_scoring else 1
             if cost <= self.available_permits:
-                return await self.schedule_group_rollout(gid, group)
+                return await self.schedule_group_rollout(gid, group, epoch=epoch)
 
-        fresh = self.next_fresh_group(kind, envs)
-        if fresh is None:
-            return False
-        gid = uuid.uuid4()
-        self.groups[gid] = fresh
-        return await self.schedule_group_rollout(gid, fresh)
+        # Pop and publish a fresh group inside the short scheduling commit.
+        # An update either sees the group in its claim snapshot or invalidates
+        # this epoch before the source is consumed.
+        async with self.policy_gate.scheduling_commit(epoch) as admitted:
+            if not admitted or self.available_permits <= 0:
+                return False
+            fresh = self.next_fresh_group(kind, envs)
+            if fresh is None:
+                return False
+            gid = uuid.uuid4()
+            self.groups[gid] = fresh
+        return await self.schedule_group_rollout(gid, fresh, epoch=epoch)
 
     def next_fresh_group(self, kind: RolloutKind, envs) -> GroupState | None:
         """Pop the next example from the corresponding source and wrap it in
@@ -469,9 +477,16 @@ class RolloutDispatcher:
             target_rollouts=group_size,
             eval_step=eval_step,
             policy_version_at_start=self.policy.version,
+            uses_mutable_policy=self._uses_mutable_policy(kind, env_name),
         )
 
-    async def schedule_group_rollout(self, group_id: uuid.UUID, group: GroupState) -> bool:
+    async def schedule_group_rollout(
+        self,
+        group_id: uuid.UUID,
+        group: GroupState,
+        *,
+        epoch: SchedulingEpoch,
+    ) -> bool:
         """Dispatch one ``run_rollout`` / ``run_group`` task for this group.
 
         Returns False only if we couldn't even schedule one rollout (no clients
@@ -488,7 +503,8 @@ class RolloutDispatcher:
         else:
             pool, model_name, live_sourced = self._train_pool_for(group.env_name)
 
-        # Pin a single client per group to keep prefix-cache hits
+        # Resolve a client and rate-limit outside the gate. Both operations may
+        # wait indefinitely for elastic discovery or quota replenishment.
         if group.pinned_client is None:
             if group.kind == "eval":
                 client = await pool.get_eval_client()
@@ -499,7 +515,6 @@ class RolloutDispatcher:
                 client = await pool.select_train_client(load)
             if group_id not in self.groups:
                 return False
-            group.pinned_client = client
         else:
             client = group.pinned_client
 
@@ -507,58 +522,70 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        # Frozen-sourced train rollouts hit a frozen pool; salting per policy
-        # version would invalidate its prefix cache every weight update for
-        # no reason.
-        if live_sourced:
-            cache_salt = str(group.policy_version_at_start)
-        else:
-            cache_salt = None
-
         if env.requires_group_scoring:
             permits = group.rollouts_to_schedule
-            group.rollouts_to_schedule = 0
-            await self.acquire(permits)
-            task: asyncio.Task = asyncio.create_task(
-                env.run_group(
-                    client=client,
-                    task_idx=group.task_idx,
-                    model_name=model_name,
-                    group_size=permits,
-                    cache_salt=cache_salt,
-                )
-            )
         else:
             permits = 1
-            group.rollouts_to_schedule -= 1
-            await self.acquire(permits)
-            task = asyncio.create_task(
-                env.run_rollout(
-                    client=client,
-                    task_idx=group.task_idx,
-                    model_name=model_name,
-                    cache_salt=cache_salt,
-                )
-            )
-
-        self.inflight[task] = InflightRollout(
-            kind=group.kind,
-            env_name=group.env_name,
-            group_id=group_id,
-            policy_version=group.policy_version_at_start,
-            rollout_count=permits,
-            client_config=client,
-            eval_step=group.eval_step,
+        # Snapshot selected identity before elastic churn can occur at the next await.
+        group.uses_mutable_policy = (
+            group.uses_mutable_policy
+            or live_sourced
+            or pools_may_alias(pool, self.policy_pool)
+            or client_may_alias_pool(client, self.policy_pool)
         )
-        return True
+        await self._wait_for_rate_limit(permits)
 
-    async def acquire(self, n: int) -> None:
-        """Reserve ``n`` permits + rate-limit each one. Caller must precheck
-        ``available_permits >= n``; this is not a blocking acquire."""
+        async with self.policy_gate.scheduling_commit(epoch) as admitted:
+            if (
+                not admitted
+                or self.groups.get(group_id) is not group
+                or permits > self.available_permits
+                or group.rollouts_to_schedule < permits
+                or (group.kind == "train" and (self.train_scheduling_disabled or not self.dispatch_allowed.is_set()))
+            ):
+                return False
+
+            group.pinned_client = client
+            cache_salt = str(group.policy_version_at_start) if group.uses_mutable_policy else None
+            if env.requires_group_scoring:
+                group.rollouts_to_schedule = 0
+                task: asyncio.Task = asyncio.create_task(
+                    env.run_group(
+                        client=client,
+                        task_idx=group.task_idx,
+                        model_name=model_name,
+                        group_size=permits,
+                        cache_salt=cache_salt,
+                    )
+                )
+            else:
+                group.rollouts_to_schedule -= 1
+                task = asyncio.create_task(
+                    env.run_rollout(
+                        client=client,
+                        task_idx=group.task_idx,
+                        model_name=model_name,
+                        cache_salt=cache_salt,
+                    )
+                )
+
+            self.inflight_permits += permits
+            self.inflight[task] = InflightRollout(
+                kind=group.kind,
+                env_name=group.env_name,
+                group_id=group_id,
+                policy_version=group.policy_version_at_start,
+                rollout_count=permits,
+                client_config=client,
+                eval_step=group.eval_step,
+                uses_mutable_policy=group.uses_mutable_policy,
+            )
+            return True
+
+    async def _wait_for_rate_limit(self, n: int) -> None:
         for _ in range(n):
             if self.rate_limiter is not None:
                 await self.rate_limiter.acquire()
-            self.inflight_permits += 1
 
     def release(self, n: int) -> None:
         self.inflight_permits -= n
@@ -575,6 +602,16 @@ class RolloutDispatcher:
             return  # already handled by drop_group / cancel_inflight_rollouts
         self.release(meta.rollout_count)
         group = self.groups.get(meta.group_id)
+        async with self._emissions.track(meta.group_id):
+            await self._emit_completed_task(task, meta, group)
+
+    async def _emit_completed_task(
+        self,
+        task: asyncio.Task,
+        meta: InflightRollout,
+        group: GroupState | None,
+    ) -> None:
+        """Convert one settled task into its complete output transaction."""
 
         is_synth_exception = False
         try:
@@ -615,9 +652,6 @@ class RolloutDispatcher:
         if group is not None:
             eval_step = group.eval_step
             policy_version = group.policy_version_at_start
-            group.emitted += 1
-            if group.emitted >= group.target_rollouts:
-                self.groups.pop(meta.group_id, None)
 
         rollout.kind = meta.kind
         rollout.env_name = meta.env_name
@@ -628,6 +662,10 @@ class RolloutDispatcher:
             assert eval_step is not None, "eval rollout missing eval_step"
             rollout.eval_step = eval_step
         await self.out_q.put(rollout)
+        if group is not None:
+            group.emitted += 1
+            if group.emitted >= group.target_rollouts:
+                self.groups.pop(meta.group_id, None)
 
     async def drop_group(self, group_id: uuid.UUID) -> int:
         """Cancel remaining in-flight tasks for this group and emit a
@@ -678,6 +716,7 @@ class RolloutDispatcher:
                 policy_version=group.policy_version_at_start,
                 rollout_count=1,
                 eval_step=group.eval_step,
+                uses_mutable_policy=group.uses_mutable_policy,
             )
             unscheduled_cancelled = group.rollouts_to_schedule
             for _ in range(unscheduled_cancelled):
@@ -698,6 +737,7 @@ class RolloutDispatcher:
                     policy_version=group.policy_version_at_start if group else 0,
                     rollout_count=1,
                     eval_step=group.eval_step,
+                    uses_mutable_policy=group.uses_mutable_policy,
                 )
                 if group is not None
                 else None

@@ -267,7 +267,8 @@ class MetricsServerConfig(BaseConfig):
 
 
 class BaseTransportConfig(BaseConfig):
-    pass
+    send_timeout_seconds: float = Field(300.0, gt=0, allow_inf_nan=False)
+    """Maximum time to ship one rollout batch before the orchestrator fails closed."""
 
 
 class FileSystemTransportConfig(BaseTransportConfig):

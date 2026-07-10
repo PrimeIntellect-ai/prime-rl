@@ -108,10 +108,10 @@ class WeightWatcher:
             entered_observers: list[VersionObserver] = []
             try:
                 for observer in self.observers:
-                    # Include the observer before entry so a partially-applied
-                    # barrier gets its failure rollback hook.
-                    entered_observers.append(observer)
                     await observer.on_version_pending(next_step)
+                    # A hook owns its own partial-entry rollback. Only a fully
+                    # entered observer may receive a later transition cleanup.
+                    entered_observers.append(observer)
             except BaseException as exc:
                 await self._notify_update_failed(entered_observers, next_step, exc)
                 raise
@@ -145,39 +145,13 @@ class WeightWatcher:
 
     @staticmethod
     async def _notify_update_succeeded(observers: list[VersionObserver], step: int) -> None:
-        """Notify every observer, preserving cancellation until fences reopen."""
-        fatal_error: BaseException | None = None
+        """Notify observers in dependency order and fail closed on any error."""
         # Complete observers in reverse order: the orchestrator first
         # re-evaluates its long-lived lead gate while the dispatcher's short
         # transition fence remains closed, then the dispatcher reopens
         # admission on the new version.
         for observer in reversed(observers):
-            try:
-                await observer.on_new_version(step)
-            except BaseException as exc:
-                # A success callback may have partially applied transition
-                # state before failing. Its failure hook is also the idempotent
-                # release fallback; continue through the remaining observers.
-                try:
-                    await observer.on_version_update_failed(step, exc)
-                except BaseException as cleanup_error:
-                    exc.add_note(
-                        f"Observer {type(observer).__name__}.on_version_update_failed({step}) also failed: "
-                        f"{cleanup_error!r}"
-                    )
-                    if not isinstance(cleanup_error, Exception) and fatal_error is None:
-                        fatal_error = cleanup_error
-                if isinstance(exc, Exception):
-                    get_logger().warning(f"Observer {type(observer).__name__}.on_new_version({step}) raised: {exc!r}")
-                elif fatal_error is None:
-                    fatal_error = exc
-                else:
-                    fatal_error.add_note(
-                        f"Observer {type(observer).__name__}.on_new_version({step}) also failed: {exc!r}"
-                    )
-        if fatal_error is not None:
-            await WeightWatcher._notify_update_failed(observers, step, fatal_error)
-            raise fatal_error
+            await observer.on_new_version(step)
 
     @staticmethod
     async def _notify_update_failed(

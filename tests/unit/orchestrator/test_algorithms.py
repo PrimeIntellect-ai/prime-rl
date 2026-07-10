@@ -124,6 +124,48 @@ async def test_opsd_rejects_late_live_policy_score_as_rollout_error():
     pool.score.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_opsd_settles_every_score_sibling_before_releasing_policy_gate():
+    policy = Policy(version=0, model_name="policy")
+    gate = MutablePolicyGate(policy, enabled=True)
+    sibling_started = asyncio.Event()
+    release_sibling = asyncio.Event()
+    calls = 0
+
+    async def score(_token_ids: list[int]) -> list[float]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("score failed")
+        sibling_started.set()
+        await release_sibling.wait()
+        return [0.0] * 7
+
+    pool = MagicMock(model_name="policy")
+    pool.score = score
+    algo = OPSDAlgorithm(_build(type="opsd"), pool, policy_gate=gate)
+    algo.renderer = MagicMock()
+    algo.renderer.render_ids.return_value = [999]
+    rollout = _make_rollout([_make_sample(), _make_sample()])
+    rollout.info["demonstration"] = "expert answer"
+    rollout.policy_version = 0
+
+    scoring = asyncio.create_task(algo.score_rollout(rollout))
+    await sibling_started.wait()
+    update_token = await gate.begin_update(step=1)
+    idle = asyncio.create_task(gate.wait_idle())
+    await asyncio.sleep(0)
+
+    assert not scoring.done()
+    assert not idle.done()
+
+    release_sibling.set()
+    with pytest.raises(RuntimeError, match="score failed"):
+        await scoring
+    await idle
+    await gate.finish_update(update_token)
+
+
 def test_sft_requires_teacher():
     with pytest.raises(ValueError, match="needs a teacher to sample rollouts from"):
         _build(type="sft")

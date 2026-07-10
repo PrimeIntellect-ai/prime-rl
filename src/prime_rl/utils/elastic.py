@@ -226,6 +226,10 @@ class ElasticInferencePool:
         return self._train_clients
 
     @property
+    def admin_api(self) -> Literal["vllm", "dynamo"]:
+        return self.client_config.admin_api
+
+    @property
     def eval_clients(self) -> list[vf.ClientConfig]:
         self._rebuild_clients()
         return self._eval_clients

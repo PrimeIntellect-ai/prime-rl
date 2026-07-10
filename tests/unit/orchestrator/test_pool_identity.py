@@ -33,8 +33,8 @@ def _pool(model: str, request: str | None, admin: str | None):
         ),
         (
             _pool("policy", "http://frontend/v1", "http://worker:8081"),
-            _pool("other-model", "http://frontend/v1", "http://worker:8081"),
-            False,
+            _pool("other-model", "http://other-frontend/v1", "http://worker:8081"),
+            True,
         ),
         (
             _pool("policy", None, None),
