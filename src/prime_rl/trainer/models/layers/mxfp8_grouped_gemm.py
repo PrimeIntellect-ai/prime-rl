@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-
-from prime_rl.configs.trainer import MXFP8Recipe
-from prime_rl.trainer.models.layers.moe import GroupedExperts, NonGatedGroupedExperts
-from prime_rl.utils.logger import get_logger
 from torchao.prototype.moe_training import conversion_utils as cu
 from torchao.prototype.moe_training import mxfp8_grouped_mm as tao_mxfp8_gmm
 from torchao.prototype.moe_training.config import MXFP8TrainingOpConfig, MXFP8TrainingRecipe
 from torchao.prototype.moe_training.kernels.mxfp8 import triton_mx_block_rearrange_2d_M_groups
 from torchao.prototype.moe_training.tensor import MXFP8TrainingWeightWrapperTensor
-from torchtitan.experiments.kernels.moe import indices as tt_indices
 from torchao.quantization.quant_api import quantize_
 from torchtitan.distributed.expert_parallel import set_token_group_alignment_size_m
+from torchtitan.experiments.kernels.moe import indices as tt_indices
+
+from prime_rl.configs.trainer import MXFP8Recipe
+from prime_rl.trainer.models.layers.moe import GroupedExperts, NonGatedGroupedExperts
+from prime_rl.utils.logger import get_logger
 
 _MXFP8_TOKEN_GROUP_ALIGN: int = 32
 # torchao CUDA scale rearrange kernel supports at most 32 token groups,

@@ -51,10 +51,10 @@ from prime_rl.trainer.models.layers.checkpointing import (
     supports_selective_activation_checkpointing,
 )
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
-from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
-from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
+from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,

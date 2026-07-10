@@ -4,7 +4,6 @@ import re
 
 import torch
 from torch import nn
-
 from torchao.prototype.mx_formats import ScaleCalculationMode
 from torchao.prototype.mx_formats.mx_linear import _to_mxfp8_then_scaled_mm
 from torchao.quantization.quantize_.common import KernelPreference
