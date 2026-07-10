@@ -202,7 +202,17 @@ vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 vllm = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    # HiSparse fork wheel (faresobeid/vllm feat/hisparse-mla-decode @ c6f2044,
+    # sm90a, cp312). Host-resident sparse-MLA decode hot-buffering for
+    # GLM-5.x PD decode instances (vllm-project/vllm#46326). c6f2044 adds the
+    # mixed-batch row-split (decode rows no longer staged during local
+    # prefill), the DP-pad backup clamp, deterministic pinned-pool teardown
+    # (cudaHostRegister/Unregister, ~12-15s per 256 GiB rank in-process — no
+    # more "Kill task failed" drains on graceful cancels), top-k tie-overflow
+    # padding, and NIXL/mooncake shutdown hardening.
+    # Setting attention_config.hisparse_config (with a required host_pool_gib)
+    # is what enables HiSparse. Mooncake-store offload via MultiConnector.
+    { url = "https://github.com/faresobeid/vllm/releases/download/hisparse-c6f2044/vllm-0.24.1.dev0+hisparse.c6f204424.cu129-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = [
