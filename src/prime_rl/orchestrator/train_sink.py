@@ -160,7 +160,7 @@ class TrainSink:
         if not group:
             return
         env_name = group[0].env_name
-        task_idx = group[0].task.idx
+        task_idx = group[0].task.data.idx
         survivors = [r for r in group if not r.has_error]
         num_errored = len(group) - len(survivors)
 

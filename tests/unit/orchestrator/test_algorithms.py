@@ -161,7 +161,9 @@ def _make_rollout(
     samples: list[TrainingSample],
     advantages: list[float] | None = None,
 ) -> Rollout:
-    rollout = Rollout(task=vf.TaskData(idx=0, prompt=None), nodes=[], rewards={}, env_name="test-env")
+    rollout = Rollout(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)), nodes=[], rewards={}, env_name="test-env"
+    )
     rollout.samples = samples
     rollout.advantages = advantages
     return rollout
@@ -253,7 +255,12 @@ def _two_turn_rollout(observation_role: str = "tool") -> Rollout:
         _node(obs_message, parent=1, sampled=False, token_ids=[5, 6]),
         _node(AssistantMessage(content="A2"), parent=2, sampled=True, token_ids=[7, 8], logprobs=[-0.3, -0.4]),
     ]
-    rollout = Rollout(task=vf.TaskData(idx=0, prompt=None), nodes=nodes, rewards={"r": 1.0}, env_name="test-env")
+    rollout = Rollout(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        nodes=nodes,
+        rewards={"r": 1.0},
+        env_name="test-env",
+    )
     rollout.samples = trace_to_samples(rollout, env_name="test-env")
     return rollout
 
@@ -299,7 +306,12 @@ def test_echo_weights_only_content_tokens_when_is_content_present():
         ),
         _node(AssistantMessage(content="A2"), parent=2, sampled=True, token_ids=[7, 8], logprobs=[-0.3, -0.4]),
     ]
-    rollout = Rollout(task=vf.TaskData(idx=0, prompt=None), nodes=nodes, rewards={"r": 1.0}, env_name="test-env")
+    rollout = Rollout(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        nodes=nodes,
+        rewards={"r": 1.0},
+        env_name="test-env",
+    )
     rollout.samples = trace_to_samples(rollout, env_name="test-env")
     algo = _echo_algorithm()  # tool bodies at 0.1
     asyncio.run(algo.score_rollout(rollout))
