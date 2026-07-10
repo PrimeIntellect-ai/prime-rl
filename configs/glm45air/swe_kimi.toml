@@ -1,0 +1,135 @@
+# Loss ablation (based on configs/glm45air/swe.toml): Kimi k1.5 loss.
+#
+# ⚠️ NOT RUNNABLE YET — the Kimi k1.5 loss is NOT implemented in prime-rl (only a
+# "Kimi-K2.5 KL" term is referenced inside the default/DPPO loss). This config wires it
+# via the `custom` loss type, but the referenced loss fn must be ADDED first:
+#   1. implement `kimi_k15_loss(inputs: LossInputs, loss_config) -> LossOutputs`
+#      (see src/prime_rl/trainer/rl/loss.py for the LossInputs/LossOutputs contract),
+#      e.g. in src/prime_rl/trainer/rl/custom_losses.py
+#   2. set `import_path` below to it and fill `kwargs` with the k1.5 hyperparameters.
+# Until then this config will fail config validation (import_path won't resolve).
+
+max_steps = 1000
+seq_len = 131072
+
+# Redirect compile/JIT caches to node-local /tmp (per user + job) to avoid
+# slow/contended shared-FS caches and FS lock deadlocks.
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/.triton-cache"
+
+[slurm]
+job_name = "glm45air-swe-kimi"
+partition = "all"
+# Clean up this run's orphaned prime sandboxes before launch (hardcoded label, matches the harness labels below).
+pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-swe-kimi" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 4
+
+[wandb]
+project = "loss-ablations"
+name = "glm45air-swe-kimi"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[ckpt]
+interval = 50
+keep_last = 1
+resume_step = -1
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+
+# --- Trainer ---
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+# Loss ablation: Kimi k1.5 loss (CUSTOM — implement + point import_path at it first).
+[trainer.loss]
+type = "custom"
+import_path = "prime_rl.trainer.rl.custom_losses.kimi_k15_loss"  # TODO: add this loss fn
+# kwargs = { }  # TODO: k1.5 hyperparameters once the loss is implemented
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 8
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.ckpt]
+skip_gather_master_weights = true
+skip_optimizer = true
+
+[trainer.optim]
+type = "muon"
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 256
+group_size = 16
+max_off_policy_steps = 32
+max_inflight_rollouts = 512
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.renderer]
+name = "glm-4.5"
+thinking_retention = "all"
+
+[[orchestrator.train.env]]
+name = "scaleswe"
+taskset = { id = "scaleswe-v1", use_prime_registry = true }
+harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe-kimi"] } }
+
+[orchestrator.prime_monitor]
+
+# --- Eval: SWE-Bench Verified at step 0 + every 20 steps, rlm harness on prime ---
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+taskset = { id = "swebench-verified-v1", use_prime_registry = true }
+harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe-kimi"] } }
+timeout = { rollout = 3600 }
+
+# --- Inference ---
+
+[inference]
+enable_return_routed_experts = true
+
+# vLLM + FlashInfer caches on node-local /tmp (see [env_vars]).
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
+
+[inference.model]
+max_model_len = 131072
+
+[inference.parallel]
+tp = 8
