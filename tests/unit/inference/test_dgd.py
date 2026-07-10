@@ -22,6 +22,8 @@ from prime_rl.inference.dynamo import build_frontend_process, build_worker_proce
 PRIME_SHA = "1" * 40
 DYNAMO_SHA = "2" * 40
 IMAGE_DIGEST = f"sha256:{'3' * 64}"
+ORCHESTRATOR_COMMAND = "uv run orchestrator @ /app/configs/debug/orch.toml --output-dir /data/outputs"
+TRAINER_COMMAND = "uv run trainer @ /app/configs/debug/rl/train.toml --output-dir /data/outputs"
 GPU_SCHEDULING = GPUSchedulingProfile(
     runtime_class_name="nvidia",
     architecture="arm64",
@@ -61,11 +63,12 @@ def render_options(
     tmp_path: Path,
     *,
     external_controller: bool = False,
+    release_name: str = "p4-math",
     shared_pvc: str | None = "p4-shared-data",
     trainer_gpu_count: int = 1,
 ) -> DynamoGraphRenderOptions:
     return DynamoGraphRenderOptions(
-        release_name="p4-math",
+        release_name=release_name,
         namespace="bis-vllm",
         image=f"nvcr.io/example/prime:prime-{PRIME_SHA[:12]}-dynamo-{DYNAMO_SHA[:12]}@{IMAGE_DIGEST}",
         output_dir=tmp_path,
@@ -76,6 +79,8 @@ def render_options(
         gpu_scheduling=GPU_SCHEDULING,
         external_controller=external_controller,
         trainer_gpu_count=trainer_gpu_count,
+        orchestrator_command=None if external_controller else ORCHESTRATOR_COMMAND,
+        trainer_command=None if external_controller else TRAINER_COMMAND,
         model_cache_pvc="model-cache",
         shared_pvc=shared_pvc,
         image_pull_secrets=("nvcrimagepullsecret",),
@@ -107,6 +112,9 @@ def test_dgd_values_derive_topology_and_role_configs(tmp_path: Path):
     assert values["storage"] == {
         "enabled": True,
         "existingClaim": "p4-shared-data",
+        "storageClassName": "nfs",
+        "accessModes": ["ReadWriteMany"],
+        "size": "1Ti",
         "mountPath": "/data",
     }
     assert values["modelCache"] == {
@@ -203,27 +211,25 @@ def test_dgd_values_derive_topology_and_role_configs(tmp_path: Path):
     assert workload["storage"] == {
         "enabled": True,
         "existingClaim": "p4-shared-data",
+        "storageClassName": "nfs",
+        "accessModes": ["ReadWriteMany"],
+        "size": "1Ti",
         "mountPath": "/data",
     }
-    assert workload["orchestrator"] == {
-        "enabled": True,
-        "gpu": {"enabled": False},
-        "placement": {
-            "nodeSelector": image_selector,
-            "tolerations": image_tolerations,
-        },
+    assert workload["orchestrator"]["gpu"] == {"enabled": False}
+    assert workload["orchestrator"]["placement"] == {
+        "nodeSelector": image_selector,
+        "tolerations": image_tolerations,
     }
-    assert workload["trainer"] == {
-        "enabled": True,
-        "gpu": {"enabled": True, "count": 1},
-        "placement": {
-            "runtimeClassName": "nvidia",
-            "nodeSelector": gpu_selector,
-            "tolerations": gpu_tolerations,
-        },
+    assert workload["trainer"]["placement"] == {
+        "runtimeClassName": "nvidia",
+        "nodeSelector": gpu_selector,
+        "tolerations": gpu_tolerations,
     }
-    assert values["orchestrator"] == {"enabled": True}
-    assert values["trainer"] == {"enabled": True, "gpu": {"enabled": True, "count": 1}}
+    assert values["orchestrator"] == {
+        key: value for key, value in workload["orchestrator"].items() if key not in {"gpu", "placement"}
+    }
+    assert values["trainer"] == {key: value for key, value in workload["trainer"].items() if key != "placement"}
 
     prefill_args = services["VllmPrefillWorker"]["extraPodSpec"]["mainContainer"]["args"]
     decode_args = services["VllmDecodeWorker"]["extraPodSpec"]["mainContainer"]["args"]
@@ -347,6 +353,9 @@ def test_filesystem_broadcast_requires_one_shared_existing_claim(tmp_path: Path)
     assert values["storage"] == {
         "enabled": True,
         "existingClaim": "p4-shared-data",
+        "storageClassName": "nfs",
+        "accessModes": ["ReadWriteMany"],
+        "size": "1Ti",
         "mountPath": "/data",
     }
     assert resource["spec"]["pvcs"] == [
@@ -405,8 +414,19 @@ def test_dgd_rejects_operator_owned_environment(scope: str, key: str, tmp_path: 
 
 
 @pytest.mark.parametrize("scope", ["global", "prefill", "decode"])
-@pytest.mark.parametrize("key", ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"])
-def test_dgd_rejects_raw_hugging_face_credentials(scope: str, key: str, tmp_path: Path):
+@pytest.mark.parametrize(
+    "key",
+    [
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+        "NVIDIA_API_KEY",
+        "WANDB_API_KEY",
+        "MODEL_REGISTRY_PASSWORD",
+        "OIDC_CLIENT_SECRET",
+    ],
+)
+def test_dgd_rejects_raw_credentials(scope: str, key: str, tmp_path: Path):
     config_data = inference_config().model_dump(mode="python")
     if scope == "global":
         config_data["env_vars"][key] = "plaintext-secret"
@@ -414,7 +434,7 @@ def test_dgd_rejects_raw_hugging_face_credentials(scope: str, key: str, tmp_path
         config_data["deployment"][f"{scope}_env_vars"] = {key: "plaintext-secret"}
     config = InferenceConfig.model_validate(config_data)
 
-    with pytest.raises(ValueError, match=rf"{scope}.*{key}.*hf_token_secret"):
+    with pytest.raises(ValueError, match=rf"{scope}.*{key}.*SecretKeyRef"):
         build_dgd_values(config, render_options(tmp_path))
 
 
@@ -548,22 +568,118 @@ def test_external_controller_binding_disables_chart_workloads(tmp_path: Path):
     assert graph["controllerMode"] == "external"
     assert workload["controllerMode"] == "external"
     assert workload["orchestrator"]["enabled"] is False
+    assert workload["orchestrator"]["replicas"] == 0
+    assert workload["orchestrator"]["autoStart"] is False
+    assert workload["orchestrator"]["command"] == ""
     assert workload["orchestrator"]["gpu"] == {"enabled": False}
     assert workload["trainer"]["enabled"] is False
+    assert workload["trainer"]["replicas"] == 0
+    assert workload["trainer"]["autoStart"] is False
+    assert workload["trainer"]["command"] == ""
     assert workload["trainer"]["gpu"] == {"enabled": False, "count": 0}
     assert workload["storage"] == {
         "enabled": False,
         "existingClaim": "",
+        "storageClassName": "nfs",
+        "accessModes": ["ReadWriteMany"],
+        "size": "1Ti",
         "mountPath": "/data",
     }
-    assert values["orchestrator"] == {"enabled": False}
-    assert values["trainer"] == {"enabled": False, "gpu": {"enabled": False, "count": 0}}
-    assert values["storage"] == {"enabled": False}
+    assert values["orchestrator"] == {
+        key: value for key, value in workload["orchestrator"].items() if key not in {"gpu", "placement"}
+    }
+    assert values["trainer"] == {key: value for key, value in workload["trainer"].items() if key != "placement"}
+    assert values["storage"] == workload["storage"]
 
 
 def test_trainer_gpu_count_must_be_positive():
     with pytest.raises(ValueError, match="trainer_gpu_count"):
         replace(render_options(Path("/tmp/not-written")), trainer_gpu_count=0)
+
+
+@pytest.mark.parametrize(
+    ("change", "error"),
+    [
+        ({"orchestrator_replicas": 0}, "orchestrator_replicas"),
+        ({"trainer_replicas": 0}, "trainer_replicas"),
+        ({"orchestrator_command": None}, "orchestrator_command"),
+        ({"trainer_command": "sleep infinity"}, "trainer_command"),
+        ({"trainer_command": "uv run trainer-impersonator"}, "trainer_command"),
+    ],
+)
+def test_chart_managed_controller_execution_must_be_runnable(change: dict[str, object], error: str):
+    with pytest.raises(ValueError, match=error):
+        replace(render_options(Path("/tmp/not-written")), **change)
+
+
+def test_external_controller_rejects_ignored_chart_commands():
+    with pytest.raises(ValueError, match="external_controller.*commands"):
+        replace(render_options(Path("/tmp/not-written")), external_controller=True)
+
+
+def test_release_name_boundary_preserves_generated_service_names():
+    boundary = "a" * 41
+
+    assert replace(render_options(Path("/tmp/not-written")), release_name=boundary).release_name == boundary
+
+    with pytest.raises(ValueError, match="at most 41 characters"):
+        replace(render_options(Path("/tmp/not-written")), release_name="a" * 42)
+
+
+def test_image_commit_suffixes_must_be_in_the_image_tag(tmp_path: Path):
+    with pytest.raises(ValueError, match="commit suffixes"):
+        replace(
+            render_options(tmp_path, external_controller=True),
+            image=(f"nvcr.io/prime-{PRIME_SHA[:12]}/dynamo-{DYNAMO_SHA[:12]}/runtime:reviewed@{IMAGE_DIGEST}"),
+        )
+
+
+def test_chart_runtime_binding_covers_every_rendered_controller_input(tmp_path: Path):
+    values = build_dgd_values(inference_config(), render_options(tmp_path))
+    workload = json.loads(values["inference"]["dynamoGraph"]["workloadBinding"]["canonical"])
+
+    assert set(workload) == {
+        "config",
+        "controllerMode",
+        "huggingFace",
+        "image",
+        "modelCache",
+        "orchestrator",
+        "storage",
+        "trainer",
+    }
+    assert workload["image"] == {
+        "reference": values["image"]["reference"],
+        "pullPolicy": values["image"]["pullPolicy"],
+        "pullSecrets": values["image"]["pullSecrets"],
+    }
+    assert workload["storage"] == values["storage"]
+    assert workload["modelCache"] == values["modelCache"]
+    assert workload["huggingFace"] == values["huggingFace"]
+    assert workload["config"] == values["config"]
+    assert workload["orchestrator"] | {"placement": None, "gpu": None} == (
+        values["orchestrator"] | {"placement": None, "gpu": None}
+    )
+    assert workload["trainer"] | {"placement": None} == values["trainer"] | {"placement": None}
+
+
+def test_explicit_hf_secret_references_are_required(tmp_path: Path):
+    values = build_dgd_values(inference_config(), render_options(tmp_path))
+    services = values["inference"]["dynamoGraph"]["resource"]["spec"]["services"]
+
+    for service in services.values():
+        hf_token = next(item for item in service["extraPodSpec"]["mainContainer"]["env"] if item["name"] == "HF_TOKEN")
+        assert hf_token["valueFrom"]["secretKeyRef"]["optional"] is False
+
+
+def test_dgd_readme_uses_runtime_image_config_paths_and_states_trust_boundary():
+    repository = Path(__file__).parents[3]
+    readme = (repository / "k8s" / "README.md").read_text()
+
+    for runtime_path in ("/app/configs/debug/orch.toml", "/app/configs/debug/rl/train.toml"):
+        assert runtime_path in readme
+        assert (repository / runtime_path.removeprefix("/app/")).is_file()
+    assert "does not authenticate source or image provenance" in readme
 
 
 def test_dgd_rejects_native_backend(tmp_path: Path):

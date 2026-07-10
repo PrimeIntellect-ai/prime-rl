@@ -10,7 +10,9 @@ from tests.unit.inference.helm_dgd_test_utils import (
     DYNAMO_SHA,
     GPU_SCHEDULING,
     IMAGE_DIGEST,
+    ORCHESTRATOR_COMMAND,
     PRIME_SHA,
+    TRAINER_COMMAND,
     helm_template,
     inference_config,
     labels_match,
@@ -32,6 +34,28 @@ def test_native_chart_still_renders_inference_statefulset():
 def test_chart_rejects_unknown_inference_mode():
     with pytest.raises(subprocess.CalledProcessError):
         helm_template("--set", "inference.mode=typo")
+
+
+def test_native_chart_rejects_invalid_image_pull_policy():
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template("--set", "image.pullPolicy=Sometimes")
+
+    assert "image/pullPolicy" in error.value.stderr
+    assert "'Always', 'IfNotPresent', 'Never'" in error.value.stderr
+
+
+def test_chart_release_name_boundary_keeps_every_resource_name_valid():
+    release_name = "a" * 41
+    rendered = helm_template(release_name=release_name, release_namespace="default")
+
+    assert all(len(document["metadata"]["name"]) <= 63 for document in rendered_documents(rendered))
+
+
+def test_chart_rejects_release_name_that_would_overflow_service_names():
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template(release_name="a" * 42, release_namespace="default")
+
+    assert "at most 41 characters" in error.value.stderr
 
 
 def test_dgd_chart_renders_generated_graph_without_inference_statefulset(tmp_path: Path):
@@ -87,6 +111,9 @@ def test_dgd_chart_renders_generated_graph_without_inference_statefulset(tmp_pat
     assert set(pods) == {"orchestrator", "trainer", "frontend", "prefill", "decode"}
     for component, pod in pods.items():
         assert {toleration_identity(item) for item in pod["tolerations"]} == required_tolerations
+        container = pod["containers"][0] if component in chart_pods else pod["mainContainer"]
+        hf_token = next(item for item in container["env"] if item["name"] == "HF_TOKEN")
+        assert hf_token["valueFrom"]["secretKeyRef"]["optional"] is False
         if component in {"trainer", "prefill", "decode"}:
             assert pod["nodeSelector"] == gpu_selector
             assert pod["runtimeClassName"] == "nvidia"
@@ -96,6 +123,10 @@ def test_dgd_chart_renders_generated_graph_without_inference_statefulset(tmp_pat
 
     assert "nvidia.com/gpu" not in chart_pods["orchestrator"]["containers"][0]["resources"].get("requests", {})
     assert chart_pods["trainer"]["containers"][0]["resources"]["requests"]["nvidia.com/gpu"] == 1
+    assert chart_pods["orchestrator"]["containers"][0]["args"] == [ORCHESTRATOR_COMMAND]
+    assert chart_pods["trainer"]["containers"][0]["args"] == [TRAINER_COMMAND]
+    assert rendered_resource(rendered, "StatefulSet", "p4-math-orchestrator")["spec"]["replicas"] == 1
+    assert rendered_resource(rendered, "StatefulSet", "p4-math-trainer")["spec"]["replicas"] == 1
     assert not any(kind in rendered for kind in ("kind: ClusterRole", "kind: CustomResourceDefinition"))
 
 
@@ -236,67 +267,21 @@ def test_dgd_chart_uses_canonical_workload_contract_as_sole_authority(tmp_path: 
     workload = json.loads(workload_binding["canonical"])
 
     assert hashlib.sha256(workload_binding["canonical"].encode()).hexdigest() == workload_binding["sha256"]
-    assert values["orchestrator"] == {"enabled": True}
-    assert values["trainer"] == {"enabled": True, "gpu": {"enabled": True, "count": 1}}
-    assert workload == {
-        "controllerMode": "chartManaged",
-        "orchestrator": {
-            "enabled": True,
-            "gpu": {"enabled": False},
-            "placement": {
-                "nodeSelector": {
-                    "cloud.google.com/gke-nodepool": "customer-gpu-o7v",
-                    "kubernetes.io/arch": "arm64",
-                },
-                "tolerations": [
-                    {
-                        "effect": "NoSchedule",
-                        "key": "kubernetes.io/arch",
-                        "operator": "Equal",
-                        "value": "arm64",
-                    },
-                    {"effect": "NoSchedule", "key": "nvidia.com/gpu", "operator": "Exists"},
-                    {
-                        "effect": "NoSchedule",
-                        "key": "prime-rl",
-                        "operator": "Equal",
-                        "value": "true",
-                    },
-                ],
-            },
-        },
-        "trainer": {
-            "enabled": True,
-            "gpu": {"count": 1, "enabled": True},
-            "placement": {
-                "nodeSelector": {
-                    "cloud.google.com/gke-nodepool": "customer-gpu-o7v",
-                    "kubernetes.io/arch": "arm64",
-                    "nvidia.com/gpu.product": "NVIDIA-GB200",
-                },
-                "runtimeClassName": "nvidia",
-                "tolerations": [
-                    {
-                        "effect": "NoSchedule",
-                        "key": "kubernetes.io/arch",
-                        "operator": "Equal",
-                        "value": "arm64",
-                    },
-                    {"effect": "NoSchedule", "key": "nvidia.com/gpu", "operator": "Exists"},
-                    {
-                        "effect": "NoSchedule",
-                        "key": "prime-rl",
-                        "operator": "Equal",
-                        "value": "true",
-                    },
-                ],
-            },
-        },
-        "storage": {
-            "enabled": True,
-            "existingClaim": "",
-            "mountPath": "/data",
-        },
+    assert workload["controllerMode"] == "chartManaged"
+    for key in ("config", "huggingFace", "image", "modelCache", "storage"):
+        assert workload[key] == values[key]
+    assert values["orchestrator"] == {
+        key: value for key, value in workload["orchestrator"].items() if key not in {"gpu", "placement"}
+    }
+    assert values["trainer"] == {key: value for key, value in workload["trainer"].items() if key != "placement"}
+    assert workload["orchestrator"]["placement"]["nodeSelector"] == {
+        "cloud.google.com/gke-nodepool": "customer-gpu-o7v",
+        "kubernetes.io/arch": "arm64",
+    }
+    assert workload["trainer"]["placement"]["nodeSelector"] == {
+        "cloud.google.com/gke-nodepool": "customer-gpu-o7v",
+        "kubernetes.io/arch": "arm64",
+        "nvidia.com/gpu.product": "NVIDIA-GB200",
     }
 
 
@@ -433,6 +418,9 @@ def test_external_filesystem_broadcast_binds_existing_claim_without_rendering_pv
     assert workload["storage"] == {
         "enabled": True,
         "existingClaim": "p4-shared-data",
+        "storageClassName": "nfs",
+        "accessModes": ["ReadWriteMany"],
+        "size": "1Ti",
         "mountPath": "/data",
     }
     assert graph["spec"]["pvcs"] == [
@@ -467,7 +455,7 @@ def test_dgd_chart_rejects_runtime_image_that_differs_from_workers(tmp_path: Pat
             f"image.reference=nvcr.io/example/prime:reviewed@{other_digest}",
         )
 
-    assert "must use the same image.reference" in error.value.stderr
+    assert "image configuration must match the workload binding" in error.value.stderr
 
 
 def test_dgd_rejects_image_without_matching_digest(tmp_path: Path):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import re
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from prime_rl.configs.inference import DisaggregatedInferenceDeploymentConfig, InferenceConfig
+from prime_rl.inference.dgd_controller_contract import build_chart_runtime_contract
 from prime_rl.inference.dynamo import (
     CHAT_TEMPLATE_ASSET,
     DynamoProcessSpec,
@@ -19,7 +19,6 @@ from prime_rl.inference.dynamo import (
     resolve_chat_template_content,
     write_role_engine_configs,
 )
-from prime_rl.utils.config import cli
 
 ENGINE_MOUNT_PATH = "/etc/prime-rl/dynamo"
 ENGINE_CONFIG_HASH_ANNOTATION = "prime-rl.nvidia.com/config-sha256"
@@ -61,8 +60,12 @@ _DGD_RESERVED_ENV_KEYS = frozenset(
     }
 )
 _DGD_RESERVED_ENV_PREFIXES = ("DYN_HEALTH_CHECK_", "DYN_SYSTEM_")
-_RAW_HUGGING_FACE_TOKEN_KEYS = frozenset({"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"})
 _MODEL_CACHE_MOUNT_PATH = "/model-cache"
+_CREDENTIAL_ENV_KEY_PATTERNS = (
+    re.compile(r"(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(?:_|$)"),
+    re.compile(r"(?:^|_)(?:API|ACCESS|PRIVATE|SECRET)_KEY(?:_|$)"),
+)
+MAX_RELEASE_NAME_LENGTH = 41
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,12 +209,22 @@ class DynamoGraphRenderOptions:
     gpu_scheduling: GPUSchedulingProfile
     external_controller: bool = False
     trainer_gpu_count: int = 1
+    orchestrator_replicas: int = 1
+    trainer_replicas: int = 1
+    orchestrator_command: str | None = None
+    trainer_command: str | None = None
     model_cache_pvc: str | None = None
     shared_pvc: str | None = None
     image_pull_secrets: tuple[str, ...] = ()
     hf_token_secret: str | None = None
 
     def __post_init__(self) -> None:
+        if re.fullmatch(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?", self.release_name) is None:
+            raise ValueError("release_name must be a lowercase Kubernetes DNS label")
+        if len(self.release_name) > MAX_RELEASE_NAME_LENGTH:
+            raise ValueError(
+                f"release_name must be at most {MAX_RELEASE_NAME_LENGTH} characters so generated Service names are valid"
+            )
         for name, value in (("prime_sha", self.prime_sha), ("dynamo_sha", self.dynamo_sha)):
             if re.fullmatch(r"[0-9a-f]{40}", value) is None:
                 raise ValueError(f"{name} must be a full 40-character Git commit SHA")
@@ -219,11 +232,24 @@ class DynamoGraphRenderOptions:
             raise ValueError("image_digest must be a full sha256 digest")
         if not self.image.endswith(f"@{self.image_digest}"):
             raise ValueError("DGD image must be pinned to image_digest")
-        image_tag = self.image.rsplit("@", 1)[0]
+        image_name = self.image.rsplit("@", 1)[0]
+        image_tag = image_name.rsplit("/", 1)[-1].partition(":")[2]
         if self.prime_sha[:12] not in image_tag or self.dynamo_sha[:12] not in image_tag:
             raise ValueError("DGD image tag must include the Prime and Dynamo commit suffixes")
         if self.trainer_gpu_count < 1:
             raise ValueError("trainer_gpu_count must be at least one")
+        if not self.external_controller:
+            for component, replicas, command in (
+                ("orchestrator", self.orchestrator_replicas, self.orchestrator_command),
+                ("trainer", self.trainer_replicas, self.trainer_command),
+            ):
+                if replicas < 1:
+                    raise ValueError(f"{component}_replicas must be at least one in chart-managed mode")
+                expected_prefix = f"uv run {component}"
+                if command is None or re.match(rf"^uv\s+run\s+{component}(?:\s|$)", command) is None:
+                    raise ValueError(f"{component}_command must start with {expected_prefix!r} in chart-managed mode")
+        elif self.orchestrator_command is not None or self.trainer_command is not None:
+            raise ValueError("external_controller cannot define chart-managed controller commands")
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -297,7 +323,7 @@ def _apply_pod_credentials(
                     "secretKeyRef": {
                         "name": options.hf_token_secret,
                         "key": "HF_TOKEN",
-                        "optional": True,
+                        "optional": False,
                     }
                 },
             }
@@ -403,11 +429,13 @@ def _validate_typed_credentials(
             ]
         )
     for source, environment in environment_sources:
-        token_conflicts = sorted(_RAW_HUGGING_FACE_TOKEN_KEYS & environment.keys())
-        if token_conflicts:
+        credential_conflicts = sorted(
+            key for key in environment if any(pattern.search(key.upper()) for pattern in _CREDENTIAL_ENV_KEY_PATTERNS)
+        )
+        if credential_conflicts:
             raise ValueError(
-                f"{source} env_vars contains raw Hugging Face credentials {token_conflicts}; "
-                "use DynamoGraphRenderOptions.hf_token_secret"
+                f"{source} env_vars contains raw credentials {credential_conflicts}; "
+                "use a typed Kubernetes SecretKeyRef instead"
             )
         hf_home = environment.get("HF_HOME")
         if options.model_cache_pvc and hf_home is not None and hf_home != _MODEL_CACHE_MOUNT_PATH:
@@ -526,37 +554,29 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
     }
     topology_canonical = _canonical_json(topology_binding)
     topology_hash = _sha256_bytes(topology_canonical)
-    chart_controller_enabled = not options.external_controller
     controller_mode = "external" if options.external_controller else "chartManaged"
-    storage_enabled = chart_controller_enabled or options.shared_pvc is not None
-    workload = {
-        "controllerMode": controller_mode,
-        "orchestrator": {
-            "enabled": chart_controller_enabled,
-            "gpu": {"enabled": False},
-            "placement": {
-                "nodeSelector": options.gpu_scheduling.image_node_selector,
-                "tolerations": options.gpu_scheduling.image_toleration_manifests,
-            },
+    workload, chart_values = build_chart_runtime_contract(
+        controller_mode=controller_mode,
+        image_reference=options.image,
+        image_pull_secrets=options.image_pull_secrets,
+        orchestrator_replicas=options.orchestrator_replicas,
+        trainer_replicas=options.trainer_replicas,
+        orchestrator_command=options.orchestrator_command,
+        trainer_command=options.trainer_command,
+        trainer_gpu_count=options.trainer_gpu_count,
+        orchestrator_placement={
+            "nodeSelector": options.gpu_scheduling.image_node_selector,
+            "tolerations": options.gpu_scheduling.image_toleration_manifests,
         },
-        "trainer": {
-            "enabled": chart_controller_enabled,
-            "gpu": {
-                "enabled": chart_controller_enabled,
-                "count": options.trainer_gpu_count if chart_controller_enabled else 0,
-            },
-            "placement": {
-                "runtimeClassName": options.gpu_scheduling.runtime_class_name,
-                "nodeSelector": options.gpu_scheduling.node_selector,
-                "tolerations": options.gpu_scheduling.toleration_manifests,
-            },
+        trainer_placement={
+            "runtimeClassName": options.gpu_scheduling.runtime_class_name,
+            "nodeSelector": options.gpu_scheduling.node_selector,
+            "tolerations": options.gpu_scheduling.toleration_manifests,
         },
-        "storage": {
-            "enabled": storage_enabled,
-            "existingClaim": options.shared_pvc or "",
-            "mountPath": "/data",
-        },
-    }
+        shared_pvc=options.shared_pvc,
+        model_cache_pvc=options.model_cache_pvc,
+        hf_token_secret=options.hf_token_secret,
+    )
     workload_canonical = _canonical_json(workload)
     workload_hash = _sha256_bytes(workload_canonical)
     annotations = {
@@ -604,11 +624,7 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
     }
     values: dict[str, Any] = {
         "namespace": options.namespace,
-        "image": {
-            "reference": options.image,
-            "pullPolicy": "IfNotPresent",
-            "pullSecrets": list(options.image_pull_secrets),
-        },
+        **chart_values,
         "inference": {
             "enabled": True,
             "mode": "dynamoGraph",
@@ -634,34 +650,7 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
                 "resource": resource,
             },
         },
-        "orchestrator": {"enabled": chart_controller_enabled},
-        "trainer": {
-            "enabled": chart_controller_enabled,
-            "gpu": {
-                "enabled": chart_controller_enabled,
-                "count": options.trainer_gpu_count if chart_controller_enabled else 0,
-            },
-        },
     }
-    if options.external_controller:
-        values["storage"] = {"enabled": False}
-    if options.model_cache_pvc:
-        values["modelCache"] = {
-            "enabled": True,
-            "existingClaim": options.model_cache_pvc,
-            "mountPath": "/model-cache",
-        }
-    if options.hf_token_secret:
-        values["huggingFace"] = {
-            "tokenSecretName": options.hf_token_secret,
-            "tokenSecretKey": "HF_TOKEN",
-        }
-    if options.shared_pvc:
-        values["storage"] = {
-            "enabled": True,
-            "existingClaim": options.shared_pvc,
-            "mountPath": "/data",
-        }
     return values
 
 
@@ -684,84 +673,16 @@ def write_dgd_artifacts(config: InferenceConfig, options: DynamoGraphRenderOptio
     return paths
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("inference_config", type=Path)
-    parser.add_argument("--release-name", required=True)
-    parser.add_argument("--namespace", required=True)
-    parser.add_argument("--image", required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--prime-sha", required=True)
-    parser.add_argument("--dynamo-sha", required=True)
-    parser.add_argument("--image-digest", required=True)
-    parser.add_argument("--run-name")
-    parser.add_argument("--gpu-runtime-class", default="nvidia")
-    parser.add_argument("--gpu-architecture", required=True)
-    parser.add_argument("--gpu-product", required=True)
-    parser.add_argument("--gpu-node-pool", required=True)
-    parser.add_argument("--gpu-node-pool-label", default="cloud.google.com/gke-nodepool")
-    parser.add_argument(
-        "--external-controller",
-        action="store_true",
-        help="Render only DGD inference workloads; an external controller owns orchestration and training",
-    )
-    parser.add_argument(
-        "--trainer-gpus",
-        type=int,
-        default=1,
-        help="Exact GPU request and limit for the chart-managed trainer",
-    )
-    parser.add_argument(
-        "--image-toleration",
-        action="append",
-        default=[],
-        type=_parse_kubernetes_toleration,
-        help='Additional image-pod toleration as JSON, e.g. \'{"key":"dedicated","operator":"Exists"}\'',
-    )
-    parser.add_argument(
-        "--gpu-toleration",
-        action="append",
-        default=[],
-        type=_parse_kubernetes_toleration,
-        help='Additional GPU-pod toleration as JSON, e.g. \'{"key":"capacity","operator":"Exists"}\'',
-    )
-    parser.add_argument("--model-cache-pvc")
-    parser.add_argument("--shared-pvc")
-    parser.add_argument("--image-pull-secret", action="append", default=[])
-    parser.add_argument("--hf-token-secret")
-    return parser.parse_args()
+def _parse_args():
+    from prime_rl.inference.dgd_cli import parse_args
+
+    return parse_args()
 
 
 def main() -> None:
-    args = _parse_args()
-    config = cli(InferenceConfig, args=["@", str(args.inference_config)])
-    options = DynamoGraphRenderOptions(
-        release_name=args.release_name,
-        namespace=args.namespace,
-        image=args.image,
-        output_dir=args.output_dir,
-        prime_sha=args.prime_sha,
-        dynamo_sha=args.dynamo_sha,
-        image_digest=args.image_digest,
-        run_name=args.run_name or args.release_name,
-        gpu_scheduling=GPUSchedulingProfile(
-            runtime_class_name=args.gpu_runtime_class,
-            architecture=args.gpu_architecture,
-            product=args.gpu_product,
-            node_pool=args.gpu_node_pool,
-            node_pool_label=args.gpu_node_pool_label,
-            additional_image_tolerations=tuple(args.image_toleration),
-            additional_gpu_tolerations=tuple(args.gpu_toleration),
-        ),
-        external_controller=args.external_controller,
-        trainer_gpu_count=args.trainer_gpus,
-        model_cache_pvc=args.model_cache_pvc,
-        shared_pvc=args.shared_pvc,
-        image_pull_secrets=tuple(args.image_pull_secret),
-        hf_token_secret=args.hf_token_secret,
-    )
-    for path in write_dgd_artifacts(config, options).values():
-        print(path)
+    from prime_rl.inference.dgd_cli import main as cli_main
+
+    cli_main()
 
 
 if __name__ == "__main__":

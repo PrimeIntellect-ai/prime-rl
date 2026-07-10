@@ -6,6 +6,10 @@
       "type": "object",
       "properties": {
         "reference": {"type": "string"},
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        },
         "pullSecrets": {
           "type": "array",
           "items": {"type": "string", "minLength": 1},
@@ -167,6 +171,9 @@
       "type": "object",
       "properties": {
         "enabled": {"type": "boolean"},
+        "replicas": {"type": "integer", "minimum": 0},
+        "autoStart": {"type": "boolean"},
+        "command": {"type": "string"},
         "runtimeClassName": {"type": "string"},
         "nodeSelector": {
           "type": "object",
@@ -195,6 +202,9 @@
       "type": "object",
       "properties": {
         "enabled": {"type": "boolean"},
+        "replicas": {"type": "integer", "minimum": 0},
+        "autoStart": {"type": "boolean"},
+        "command": {"type": "string"},
         "gpu": {
           "type": "object",
           "properties": {
@@ -280,12 +290,24 @@
                 }
               },
               "orchestrator": {
-                "properties": {"enabled": {"const": true}},
-                "required": ["enabled"]
+                "properties": {
+                  "enabled": {"const": true},
+                  "replicas": {"minimum": 1},
+                  "autoStart": {"const": true},
+                  "command": {
+                    "pattern": "^uv[ \\t]+run[ \\t]+orchestrator([ \\t]|$)"
+                  }
+                },
+                "required": ["enabled", "replicas", "autoStart", "command"]
               },
               "trainer": {
                 "properties": {
                   "enabled": {"const": true},
+                  "replicas": {"minimum": 1},
+                  "autoStart": {"const": true},
+                  "command": {
+                    "pattern": "^uv[ \\t]+run[ \\t]+trainer([ \\t]|$)"
+                  },
                   "gpu": {
                     "properties": {
                       "enabled": {"const": true},
@@ -293,7 +315,7 @@
                     }
                   }
                 },
-                "required": ["enabled", "gpu"]
+                "required": ["enabled", "replicas", "autoStart", "command", "gpu"]
               }
             }
           },
@@ -307,12 +329,20 @@
                 }
               },
               "orchestrator": {
-                "properties": {"enabled": {"const": false}},
-                "required": ["enabled"]
+                "properties": {
+                  "enabled": {"const": false},
+                  "replicas": {"const": 0},
+                  "autoStart": {"const": false},
+                  "command": {"const": ""}
+                },
+                "required": ["enabled", "replicas", "autoStart", "command"]
               },
               "trainer": {
                 "properties": {
                   "enabled": {"const": false},
+                  "replicas": {"const": 0},
+                  "autoStart": {"const": false},
+                  "command": {"const": ""},
                   "gpu": {
                     "properties": {
                       "enabled": {"const": false},
@@ -320,12 +350,21 @@
                     }
                   }
                 },
-                "required": ["enabled", "gpu"]
+                "required": ["enabled", "replicas", "autoStart", "command", "gpu"]
               }
             }
           }
         ],
         "required": ["image", "inference", "orchestrator", "trainer"]
+      },
+      "else": {
+        "properties": {
+          "inference": {
+            "properties": {
+              "dynamoGraph": {"maxProperties": 0}
+            }
+          }
+        }
       }
     },
     {

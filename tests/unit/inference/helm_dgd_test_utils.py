@@ -15,6 +15,8 @@ CHART = Path(__file__).parents[3] / "k8s" / "prime-rl"
 PRIME_SHA = "1" * 40
 DYNAMO_SHA = "2" * 40
 IMAGE_DIGEST = f"sha256:{'3' * 64}"
+ORCHESTRATOR_COMMAND = "uv run orchestrator @ /app/configs/debug/orch.toml --output-dir /data/outputs"
+TRAINER_COMMAND = "uv run trainer @ /app/configs/debug/rl/train.toml --output-dir /data/outputs"
 GPU_SCHEDULING = GPUSchedulingProfile(
     runtime_class_name="nvidia",
     architecture="arm64",
@@ -66,6 +68,8 @@ def render_options(
         gpu_scheduling=GPU_SCHEDULING,
         external_controller=external_controller,
         trainer_gpu_count=trainer_gpu_count,
+        orchestrator_command=None if external_controller else ORCHESTRATOR_COMMAND,
+        trainer_command=None if external_controller else TRAINER_COMMAND,
         model_cache_pvc="model-cache",
         hf_token_secret="hf-token-secret",
         shared_pvc=shared_pvc,
@@ -73,11 +77,15 @@ def render_options(
     )
 
 
-def helm_template(*args: str, release_name: str = "p4-math") -> str:
+def helm_template(
+    *args: str,
+    release_name: str = "p4-math",
+    release_namespace: str = "bis-vllm",
+) -> str:
     if HELM is None:
         pytest.skip("helm is not installed")
     return subprocess.run(
-        [HELM, "template", release_name, str(CHART), *args],
+        [HELM, "template", release_name, str(CHART), "--namespace", release_namespace, *args],
         check=True,
         capture_output=True,
         text=True,

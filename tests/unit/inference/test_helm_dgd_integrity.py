@@ -176,6 +176,67 @@ def test_dgd_chart_rejects_namespace_mismatch(tmp_path: Path):
     assert "must match embedded DynamoGraphDeployment metadata.namespace" in error.value.stderr
 
 
+def test_dgd_chart_rejects_consistently_rehashed_image_digest_drift(tmp_path: Path):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+    values = json.loads(paths["values"].read_text())
+    graph = values["inference"]["dynamoGraph"]
+    workload = json.loads(graph["workloadBinding"]["canonical"])
+    drifted_image = values["image"]["reference"].rsplit("@", 1)[0] + f"@sha256:{'4' * 64}"
+    values["image"]["reference"] = drifted_image
+    workload["image"]["reference"] = drifted_image
+    for service in graph["resource"]["spec"]["services"].values():
+        service["extraPodSpec"]["mainContainer"]["image"] = drifted_image
+    rewrite_valid_integrity(values, workload)
+    mutation = tmp_path / "rehashed-image-drift.json"
+    mutation.write_text(json.dumps(values))
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template("-f", str(mutation))
+
+    assert "image-digest annotation" in error.value.stderr
+
+
+@pytest.mark.parametrize(
+    ("annotation", "label"),
+    [
+        ("prime-rl.nvidia.com/prime-sha", "Prime"),
+        ("prime-rl.nvidia.com/dynamo-sha", "Dynamo"),
+    ],
+)
+def test_dgd_chart_rejects_rehashed_source_sha_not_present_in_image_tag(
+    annotation: str,
+    label: str,
+    tmp_path: Path,
+):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+    values = json.loads(paths["values"].read_text())
+    graph = values["inference"]["dynamoGraph"]
+    workload = json.loads(graph["workloadBinding"]["canonical"])
+    graph["resource"]["metadata"]["annotations"][annotation] = "4" * 40
+    graph["engineConfig"]["annotations"][annotation] = "4" * 40
+    rewrite_valid_integrity(values, workload)
+    mutation = tmp_path / f"rehashed-{label.lower()}-sha.json"
+    mutation.write_text(json.dumps(values))
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template("-f", str(mutation))
+
+    assert f"{label} SHA annotation" in error.value.stderr
+
+
+def test_dgd_chart_rejects_release_namespace_mismatch(tmp_path: Path):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template(
+            "-f",
+            str(paths["values"]),
+            release_namespace="other-namespace",
+        )
+
+    assert "Helm Release.Namespace" in error.value.stderr
+
+
 @pytest.mark.parametrize(
     ("override_flag", "enabled_value"),
     [
@@ -218,6 +279,28 @@ def test_dgd_chart_cannot_switch_mode_and_skip_integrity_validation(tmp_path: Pa
     assert "generated DynamoGraph contract requires dynamoGraph mode" in error.value.stderr
 
 
+@pytest.mark.parametrize("skip_schema", [False, True])
+def test_dgd_chart_cannot_delete_workload_sentinel_and_switch_mode(
+    skip_schema: bool,
+    tmp_path: Path,
+):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+    values = json.loads(paths["values"].read_text())
+    values["inference"]["mode"] = "statefulset"
+    del values["inference"]["dynamoGraph"]["workloadBinding"]
+    mutation = tmp_path / "deleted-sentinel-mode-switch.json"
+    mutation.write_text(json.dumps(values))
+    args = ["-f", str(mutation)]
+    if skip_schema:
+        args.insert(0, "--skip-schema-validation")
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template(*args)
+
+    expected = "DynamoGraph contract requires dynamoGraph mode" if skip_schema else "maxProperties"
+    assert expected in error.value.stderr
+
+
 @pytest.mark.parametrize(
     ("external_controller", "overrides", "error_fragment"),
     [
@@ -225,6 +308,12 @@ def test_dgd_chart_cannot_switch_mode_and_skip_integrity_validation(tmp_path: Pa
         (False, ("--set", "trainer.enabled=false"), "trainer.enabled must match"),
         (False, ("--set", "trainer.gpu.enabled=false"), "trainer GPU configuration must match"),
         (False, ("--set", "trainer.gpu.count=2"), "trainer GPU configuration must match"),
+        (False, ("--set", "orchestrator.replicas=0"), "orchestrator execution must match"),
+        (False, ("--set", "trainer.replicas=0"), "trainer execution must match"),
+        (False, ("--set", "orchestrator.autoStart=false"), "orchestrator execution must match"),
+        (False, ("--set", "trainer.autoStart=false"), "trainer execution must match"),
+        (False, ("--set-string", "orchestrator.command=sleep infinity"), "orchestrator execution must match"),
+        (False, ("--set-string", "trainer.command=sleep infinity"), "trainer execution must match"),
         (
             False,
             ("--set", r"orchestrator.resources.requests.nvidia\.com/gpu=1"),
@@ -280,7 +369,13 @@ def test_dgd_chart_rejects_workload_contract_overlays_with_schema_skipped(
             *overrides,
         )
 
-    assert error_fragment in error.value.stderr
+    root = overrides[1].split(".", 1)[0]
+    complete_contract_error = (
+        f"{root} configuration must match the workload binding"
+        if root in {"orchestrator", "storage", "trainer"}
+        else ""
+    )
+    assert error_fragment in error.value.stderr or complete_contract_error in error.value.stderr
 
 
 @pytest.mark.parametrize("external_controller", [False, True])
@@ -299,7 +394,11 @@ def test_dgd_chart_rejects_rehashed_workload_mode_contradictions(
     if external_controller:
         workload["trainer"]["enabled"] = True
         workload["trainer"]["gpu"] = {"enabled": True, "count": 1}
-        values["trainer"] = {"enabled": True, "gpu": {"enabled": True, "count": 1}}
+        values["trainer"] = {
+            **values["trainer"],
+            "enabled": True,
+            "gpu": {"enabled": True, "count": 1},
+        }
         error_fragment = "external mode forbids chart-managed controller workloads"
     else:
         workload["orchestrator"]["enabled"] = False
@@ -314,6 +413,39 @@ def test_dgd_chart_rejects_rehashed_workload_mode_contradictions(
         helm_template("--skip-schema-validation", "-f", str(mutation))
 
     assert error_fragment in error.value.stderr
+
+
+@pytest.mark.parametrize(
+    ("component", "field", "replacement"),
+    [
+        ("orchestrator", "replicas", 0),
+        ("trainer", "replicas", 0),
+        ("orchestrator", "autoStart", False),
+        ("trainer", "autoStart", False),
+        ("orchestrator", "command", "sleep infinity"),
+        ("trainer", "command", "sleep infinity"),
+    ],
+)
+def test_dgd_chart_rejects_rehashed_non_runnable_controller_execution(
+    component: str,
+    field: str,
+    replacement: object,
+    tmp_path: Path,
+):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+    values = json.loads(paths["values"].read_text())
+    graph = values["inference"]["dynamoGraph"]
+    workload = json.loads(graph["workloadBinding"]["canonical"])
+    workload[component][field] = replacement
+    values[component][field] = replacement
+    rewrite_valid_integrity(values, workload)
+    mutation = tmp_path / f"rehashed-{component}-{field}.json"
+    mutation.write_text(json.dumps(values))
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template("--skip-schema-validation", "-f", str(mutation))
+
+    assert f"chartManaged {component} execution requires" in error.value.stderr
 
 
 @pytest.mark.parametrize(
@@ -336,4 +468,37 @@ def test_dgd_chart_rejects_raw_env_that_overrides_typed_contract(
     with pytest.raises(subprocess.CalledProcessError) as error:
         helm_template("-f", str(paths["values"]), "-f", str(overlay))
 
-    assert f"{component}.env cannot override generated {name}" in error.value.stderr
+    assert f"{component} configuration must match the workload binding" in error.value.stderr
+
+
+@pytest.mark.parametrize(
+    ("overrides", "contract"),
+    [
+        (("--set", "image.pullPolicy=Never"), "image"),
+        (("--set-json", "image.pullSecrets=[]"), "image"),
+        (("--set", "storage.storageClassName=other"), "storage"),
+        (("--set", "storage.size=1Gi"), "storage"),
+        (("--set", "modelCache.enabled=false"), "modelCache"),
+        (("--set", "huggingFace.tokenSecretName=other"), "huggingFace"),
+        (("--set", "config.example=other"), "config"),
+        (("--set", "config.secrets.enabled=true"), "config"),
+        (("--set", "orchestrator.resources.requests.memory=1Mi"), "orchestrator"),
+        (("--set", "orchestrator.service.port=9000"), "orchestrator"),
+        (("--set-json", 'orchestrator.env=[{"name":"PYTHONPATH","value":"/data/other"}]'), "orchestrator"),
+        (("--set", "trainer.resources.requests.memory=1Mi"), "trainer"),
+        (("--set", "trainer.service.ncclPort=9001"), "trainer"),
+        (("--set", "trainer.probes.enabled=true"), "trainer"),
+        (("--set", "trainer.pytorchCudaAllocConf=max_split_size_mb:64"), "trainer"),
+    ],
+)
+def test_dgd_chart_rejects_complete_controller_contract_drift(
+    overrides: tuple[str, str],
+    contract: str,
+    tmp_path: Path,
+):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template("-f", str(paths["values"]), *overrides)
+
+    assert f"{contract} configuration must match the workload binding" in error.value.stderr

@@ -57,7 +57,7 @@ spec:
         {{- if .Values.orchestrator.autoStart }}
         command: ["/bin/bash", "-c"]
         args:
-          - {{ .Values.orchestrator.command }}
+          - {{ .Values.orchestrator.command | quote }}
         {{- else }}
         command: ["sleep", "infinity"]
         {{- end }}
@@ -114,7 +114,7 @@ spec:
             secretKeyRef:
               name: {{ .Values.huggingFace.tokenSecretName }}
               key: {{ .Values.huggingFace.tokenSecretKey }}
-              optional: true
+              optional: false
         {{- else if .Values.config.secrets.enabled }}
         - name: HF_TOKEN
           valueFrom:
@@ -239,7 +239,7 @@ spec:
             secretKeyRef:
               name: {{ .Values.huggingFace.tokenSecretName }}
               key: {{ .Values.huggingFace.tokenSecretKey }}
-              optional: true
+              optional: false
         {{- else if .Values.config.secrets.enabled }}
         - name: HF_TOKEN
           valueFrom:
@@ -366,7 +366,7 @@ spec:
         {{- if .Values.trainer.autoStart }}
         command: ["/bin/bash", "-c"]
         args:
-          - {{ .Values.trainer.command }}
+          - {{ .Values.trainer.command | quote }}
         {{- else }}
         command: ["sleep", "infinity"]
         {{- end }}
@@ -427,7 +427,7 @@ spec:
             secretKeyRef:
               name: {{ .Values.huggingFace.tokenSecretName }}
               key: {{ .Values.huggingFace.tokenSecretKey }}
-              optional: true
+              optional: false
         {{- else if .Values.config.secrets.enabled }}
         - name: HF_TOKEN
           valueFrom:
