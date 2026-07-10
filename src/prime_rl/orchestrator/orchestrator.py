@@ -814,9 +814,18 @@ class Orchestrator:
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
         count is ``progress.step - 1``."""
         lead = (self.progress.step - 1) - self.policy.version
+        # The trainer skips the final NCCL weight broadcast (inference group is
+        # torn down), so policy.version never reaches the last step. Without this
+        # the gate deadlocks waiting for a version that will never be published.
+        # The last batch uses the penultimate policy anyway, so let it through.
+        building_final_batch_nccl = (
+            self.config.weight_broadcast.type == "nccl"
+            and self.config.max_steps is not None
+            and self.progress.step >= self.config.max_steps - 1
+        )
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG:
+        if lead > TARGET_LAG and not building_final_batch_nccl:
             if was_set:
                 get_logger().info(
                     "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."
