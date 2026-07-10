@@ -120,12 +120,13 @@ def compute_importance_ratio_and_mismatch_kl(
     trainer_logprobs: Tensor, inference_logprobs: Tensor
 ) -> tuple[Tensor, Tensor, Tensor]:
     log_importance_ratio = trainer_logprobs - inference_logprobs
-    safe_log_importance_ratio = log_importance_ratio.float().clamp(
+    importance_ratio = torch.exp(log_importance_ratio)
+    diagnostic_log_importance_ratio = log_importance_ratio.float().clamp(
         min=-MISMATCH_KL_LOG_RATIO_LIMIT,
         max=MISMATCH_KL_LOG_RATIO_LIMIT,
     )
-    importance_ratio = torch.exp(safe_log_importance_ratio)
-    mismatch_kl = importance_ratio - safe_log_importance_ratio - 1
+    diagnostic_importance_ratio = torch.exp(diagnostic_log_importance_ratio)
+    mismatch_kl = diagnostic_importance_ratio - diagnostic_log_importance_ratio - 1
     return log_importance_ratio, importance_ratio, mismatch_kl
 
 

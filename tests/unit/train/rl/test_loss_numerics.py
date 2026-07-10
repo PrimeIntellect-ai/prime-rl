@@ -16,6 +16,7 @@ from prime_rl.trainer.rl.loss import (
     ipo_loss_fn,
     ref_kl_loss_fn,
 )
+from prime_rl.trainer.rl.token_export import _export_columns
 from prime_rl.trainer.utils import raise_if_nonfinite_gradients
 
 
@@ -84,14 +85,14 @@ def _assert_finite_output(loss, metrics):
         assert torch.isfinite(value).all()
 
 
-def test_mismatch_kl_stays_finite_for_overflow_log_ratio():
+def test_mismatch_kl_stays_finite_without_saturating_raw_ratio():
     log_ratio, ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         torch.tensor([-2.0], dtype=torch.float32),
         torch.tensor([-91.0], dtype=torch.float32),
     )
 
     assert log_ratio.item() == pytest.approx(89.0)
-    assert torch.isfinite(ratio).all()
+    assert torch.isinf(ratio).all()
     assert torch.isfinite(mismatch_kl).all()
     assert (mismatch_kl >= 0).all()
 
@@ -114,13 +115,35 @@ def test_mismatch_kl_reduction_stays_finite_for_many_overflow_ratios():
 
 def test_mismatch_kl_reduction_stays_finite_for_float16_ratios():
     num_tokens = 1024
-    _, ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+    _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         torch.full((num_tokens,), -2.0, dtype=torch.float16),
         torch.full((num_tokens,), -91.0, dtype=torch.float16),
     )
 
-    assert torch.isfinite(ratio.sum())
     assert torch.isfinite(mismatch_kl.sum())
+
+
+def test_token_export_preserves_raw_importance_ratio_semantics():
+    columns = _export_columns(
+        {
+            "input_ids": torch.tensor([1, 2]),
+            "position_ids": torch.tensor([0, 1]),
+            "loss_mask": torch.tensor([True, True]),
+            "advantages": torch.ones(2),
+            "inference_logprobs": torch.tensor([-3.0, -91.0]),
+            "env_names": ["test", "test"],
+        },
+        {
+            "logprobs": torch.tensor([-2.0, -2.0]),
+            "entropy": torch.zeros(2),
+        },
+        DefaultLossConfig(),
+    )
+
+    assert columns["log_importance_ratio"] == pytest.approx([1.0, 89.0])
+    assert columns["importance_ratio"][0] == pytest.approx(math.e)
+    assert columns["importance_ratio"][1] is None
+    assert all(value is not None and math.isfinite(value) for value in columns["mismatch_kl"])
 
 
 def test_default_loss_clips_unmasked_overflow_ratio():

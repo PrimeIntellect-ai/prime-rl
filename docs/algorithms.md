@@ -203,7 +203,7 @@ $\mu$ is the policy that generated the rollout (inference), $\pi$ is the current
 
 The capped ratio is used as a detached score-function weight. A straight-through surrogate preserves the displayed loss value while producing the truncated-importance-sampling gradient $\min(\pi/\mu, \delta)\hat{A}\nabla\log\pi$; differentiating through `clamp` directly would instead give clipped tokens zero gradient.
 
-The trainer also reports `mismatch_kl` from the trainer/inference log-ratio as an off-policy diagnostic. It is evaluated in float32 with its log-ratio numerically saturated to $[-20, 20]$ before exponentiation, so both individual values and token reductions remain finite even when training uses float16. This diagnostic limit is independent of `importance_ratio_max`; the raw log-ratio remains available to the KL loss and token exports.
+The trainer also reports `mismatch_kl` from the trainer/inference log-ratio as an off-policy diagnostic. It is evaluated in float32 with its log-ratio numerically saturated to $[-20, 20]$ before exponentiation, so both individual values and token reductions remain finite even when training uses float16. This diagnostic limit is independent of `importance_ratio_max`; the raw log-ratio remains available to the KL loss. Token exports retain the raw log-ratio and corresponding importance ratio, serializing non-finite ratios as `null`.
 
 The knobs (under `[trainer.loss]` with `type = "default"`):
 
