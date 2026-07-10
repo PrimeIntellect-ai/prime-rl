@@ -28,6 +28,22 @@ def vllm_overrides_fragment(overrides: dict[str, Any]) -> str:
     return ", " + json.dumps(overrides)[1:-1].replace('"', '\\"')
 
 
+def role_kv_overrides_for(config):
+    """Per-role ``kv_transfer_config`` override when the KV offload is scoped by role.
+
+    Roles outside ``kv_cache_offload.roles`` get a kv_transfer_config without the
+    offload connector (overriding the unscoped one from ``to_vllm()``).
+    """
+
+    def overrides(role: str) -> dict[str, Any]:
+        offload = config.kv_cache_offload
+        if offload is None or role in offload.roles:
+            return {}
+        return {"kv_transfer_config": config.build_kv_transfer_config(role=role)}
+
+    return overrides
+
+
 def write_config(config: InferenceConfig, output_dir: Path, exclude: set[str] | None = None) -> Path:
     """Write resolved config to disk."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -49,9 +65,11 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
 
     is_disaggregated = config.deployment.type == "disaggregated"
     dp_per_node = config.deployment.gpus_per_node // config.parallel.tp
+    role_kv_overrides = role_kv_overrides_for(config)
 
     offload = config.kv_cache_offload
     is_mooncake = offload is not None and offload.type == "mooncake"
+    offload_roles = list(offload.roles) if offload is not None else []
 
     template_vars = dict(
         **config.slurm.template_vars,
@@ -67,6 +85,12 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if is_mooncake else 0,
         kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
         kv_offload_device_name=offload.device_name if is_mooncake else "",
+        kv_offload_roles=" ".join(offload_roles),
+        kv_offload_head_index=(
+            config.deployment.num_prefill_nodes
+            if (is_mooncake and is_disaggregated and "prefill" not in offload_roles)
+            else 0
+        ),
         inference_env_vars={**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars},
     )
 
@@ -87,8 +111,12 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             use_deep_gemm=config.use_deep_gemm,
             prefill_env_vars=config.deployment.prefill_env_vars,
             decode_env_vars=config.deployment.decode_env_vars,
-            prefill_vllm_extra_json=vllm_overrides_fragment(config.deployment.prefill_vllm_overrides),
-            decode_vllm_extra_json=vllm_overrides_fragment(config.deployment.decode_vllm_overrides),
+            prefill_vllm_extra_json=vllm_overrides_fragment(
+                {**role_kv_overrides("prefill"), **config.deployment.prefill_vllm_overrides}
+            ),
+            decode_vllm_extra_json=vllm_overrides_fragment(
+                {**role_kv_overrides("decode"), **config.deployment.decode_vllm_overrides}
+            ),
         )
     elif is_multi_node:
         template_vars.update(

@@ -234,7 +234,17 @@ num_bytes = 128_000_000_000
 path = "/scratch/kv"
 ```
 
-For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
+For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #contributing-nodes`); the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
+
+For disaggregated deployments, `roles` scopes the offload to a subset of instance roles. Nodes outside the scope skip the store client (contributing no DRAM segment) and their vLLM config drops the offload connector. This frees decode-node RAM — e.g. for HiSparse host pools, which need `ranks × host_pool_gib` on each decode node:
+
+```toml
+[inference.kv_cache_offload]
+type = "mooncake"
+roles = ["prefill"]   # decode nodes keep their RAM; prefill nodes share prefixes
+[inference.kv_cache_offload.cpu]
+num_bytes = 128_000_000_000
+```
 
 
 ### Optimized P/D disaggregation deployment
