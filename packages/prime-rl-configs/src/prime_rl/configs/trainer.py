@@ -134,6 +134,7 @@ _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "in_proj_b",
 ]
 
+
 class FP8Config(BaseConfig):
     type: Literal["fp8"] = "fp8"
     enable_grouped_gemm: bool = True

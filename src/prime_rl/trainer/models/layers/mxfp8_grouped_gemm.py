@@ -19,28 +19,32 @@ def _relax_torchao_mxfp8_version_gate() -> None:
     if getattr(cu._get_tensor_cls_for_config, "_prime_rl_relaxed", False):
         return
     original = cu._get_tensor_cls_for_config
+
     def _get_tensor_cls_for_config(config):
         if isinstance(config, MXFP8TrainingOpConfig):
             return MXFP8TrainingWeightWrapperTensor
         return original(config)
+
     _get_tensor_cls_for_config._prime_rl_relaxed = True
     cu._get_tensor_cls_for_config = _get_tensor_cls_for_config
 
 
 def _align_permute_indices_buffer() -> None:
     """
-        Align the permuted index buffer to a multiple of alignment as the kernel requires rows % 32 = 0 and cols % 32 = 0.
+    Align the permuted index buffer to a multiple of alignment as the kernel requires rows % 32 = 0 and cols % 32 = 0.
     """
     if getattr(tt_indices.generate_permute_indices, "_prime_rl_aligned", False):
         return
     original = tt_indices.generate_permute_indices
+
     def generate_permute_indices(
         tokens_per_expert_group, experts_per_rank, num_ranks, max_len, alignment, use_cpu=False
     ):
-        al_mask = alignment-1
+        al_mask = alignment - 1
         assert alignment > 0 and (alignment & al_mask) == 0
-        max_len = (max_len + al_mask)&~al_mask
+        max_len = (max_len + al_mask) & ~al_mask
         return original(tokens_per_expert_group, experts_per_rank, num_ranks, max_len, alignment, use_cpu=use_cpu)
+
     generate_permute_indices._prime_rl_aligned = True
     tt_indices.generate_permute_indices = generate_permute_indices
 
