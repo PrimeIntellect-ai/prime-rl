@@ -598,3 +598,15 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.model.tool_call_parser == "hermes"
+
+
+def test_orchestrator_target_lag_default_is_one():
+    """Default ``target_lag`` of 1 preserves the standard one-step-ahead pipelining."""
+    config = OrchestratorConfig.model_validate({"model": {"name": "Qwen/Qwen3-0.6B"}})
+    assert config.target_lag == 1
+
+
+def test_orchestrator_target_lag_rejects_below_one():
+    """``target_lag`` must be >= 1; 0 would pause the dispatcher forever (deadlock)."""
+    with pytest.raises(ValidationError, match="target_lag"):
+        OrchestratorConfig.model_validate({"model": {"name": "Qwen/Qwen3-0.6B"}, "target_lag": 0})
