@@ -8,10 +8,6 @@ save_adapter_separately = true
 [model]
 name = "PrimeIntellect/Qwen3-0.6B"
 
-# PrimeIntellect/Qwen3-0.6B ships its own chat template (distinct from Qwen3's)
-[renderer]
-name = "prime-qwen3"
-
 [model.lora]
 rank = 8
 target_modules = [

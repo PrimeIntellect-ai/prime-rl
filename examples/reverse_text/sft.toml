@@ -5,10 +5,6 @@ max_steps = 100
 [model]
 name = "PrimeIntellect/Qwen3-0.6B"
 
-# PrimeIntellect/Qwen3-0.6B ships its own chat template (distinct from Qwen3's)
-[renderer]
-name = "prime-qwen3"
-
 [data]
 name = "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"
 seq_len = 4096
