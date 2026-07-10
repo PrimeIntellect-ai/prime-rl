@@ -3,7 +3,12 @@
 import torch
 
 from prime_rl.trainer.convert import convert_snapshot_to_prime
-from prime_rl.trainer.weights import atomic_save_state_dict, is_state_dict_complete, load_state_dict
+from prime_rl.trainer.weights import (
+    atomic_save_state_dict,
+    is_state_dict_complete,
+    load_state_dict,
+    stream_convert_state_dict,
+)
 
 
 def test_atomic_save_roundtrips(tmp_path):
@@ -66,6 +71,11 @@ class _FakeCausalLM:
     def convert_to_prime(cls, state_dict):
         cls.converted = True
 
+    @classmethod
+    def convert_layer_to_prime(cls, state_dict, layer_idx):
+        cls.converted = True
+        return state_dict
+
 
 def _patch_common(monkeypatch, *, cls, keys, save_calls=None):
     monkeypatch.setattr("transformers.AutoConfig.from_pretrained", lambda *a, **k: _FakeConfig(), raising=False)
@@ -73,11 +83,16 @@ def _patch_common(monkeypatch, *, cls, keys, save_calls=None):
     monkeypatch.setattr("prime_rl.trainer.models.get_custom_causal_lm_cls", lambda config: cls)
     monkeypatch.setattr("prime_rl.trainer.models.get_custom_vlm_cls", lambda config: None)
     monkeypatch.setattr("prime_rl.trainer.weights.load_state_dict_keys", lambda snapshot: keys)
-    monkeypatch.setattr("prime_rl.trainer.weights.load_state_dict", lambda snapshot: {"w": torch.zeros(1)})
     recorded = save_calls if save_calls is not None else []
+
+    def stream_convert(source_dir, save_dir, convert_layer, is_converted, **kwargs):
+        state_dict = convert_layer({"w": torch.zeros(1)}, 0)
+        recorded.append((state_dict, save_dir))
+        return True
+
     monkeypatch.setattr(
-        "prime_rl.trainer.weights.atomic_save_state_dict",
-        lambda state_dict, save_dir, **kw: recorded.append((state_dict, save_dir)),
+        "prime_rl.trainer.weights.stream_convert_state_dict",
+        stream_convert,
     )
 
 
@@ -140,3 +155,38 @@ def test_incomplete_prime_is_rebuilt(tmp_path, monkeypatch):
 
     assert convert_snapshot_to_prime(tmp_path) == "converted"
     assert len(save_calls) == 1
+
+
+def test_stream_convert_state_dict_roundtrips_by_layer(tmp_path):
+    source_dir = tmp_path / "source"
+    save_dir = tmp_path / "prime"
+    atomic_save_state_dict(
+        {
+            "model.embed_tokens.weight": torch.arange(4),
+            "model.layers.0.mlp.experts.gate": torch.ones(2, 2),
+            "model.layers.1.self_attn.weight": torch.full((2, 2), 2),
+        },
+        source_dir,
+    )
+
+    def convert_layer(state_dict, layer_idx):
+        gate_key = f"model.layers.{layer_idx}.mlp.experts.gate"
+        if gate_key in state_dict:
+            state_dict[f"model.layers.{layer_idx}.mlp.experts.w1"] = state_dict.pop(gate_key)
+        return state_dict
+
+    stream_convert_state_dict(
+        source_dir,
+        save_dir,
+        convert_layer,
+        lambda keys: "model.layers.0.mlp.experts.w1" in keys,
+        max_shard_size=8,
+    )
+
+    loaded = load_state_dict(save_dir)
+    assert is_state_dict_complete(save_dir)
+    assert set(loaded) == {
+        "model.embed_tokens.weight",
+        "model.layers.0.mlp.experts.w1",
+        "model.layers.1.self_attn.weight",
+    }

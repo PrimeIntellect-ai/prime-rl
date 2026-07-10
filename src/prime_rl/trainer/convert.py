@@ -38,10 +38,9 @@ def convert_snapshot_to_prime(
 
     from prime_rl.trainer.models import get_custom_causal_lm_cls, get_custom_vlm_cls
     from prime_rl.trainer.weights import (
-        atomic_save_state_dict,
         is_state_dict_complete,
-        load_state_dict,
         load_state_dict_keys,
+        stream_convert_state_dict,
     )
 
     logger = get_logger()
@@ -77,9 +76,13 @@ def convert_snapshot_to_prime(
         return "not-hf"
 
     logger.info(f"converting HF -> PrimeRL with {model_cls.__name__}")
-    state_dict = load_state_dict(snapshot)
-    model_cls.convert_to_prime(state_dict)
-    atomic_save_state_dict(state_dict, prime, overwrite=prime.exists())
+    stream_convert_state_dict(
+        snapshot,
+        prime,
+        model_cls.convert_layer_to_prime,
+        model_cls.is_prime_state_dict,
+        overwrite=prime.exists(),
+    )
     logger.info(f"wrote {prime}")
     return "converted"
 

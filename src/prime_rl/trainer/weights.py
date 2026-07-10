@@ -1,9 +1,12 @@
 import fcntl
 import json
 import os
+import re
 import shutil
 import tempfile
 import warnings
+from collections import defaultdict
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal, cast
@@ -29,6 +32,9 @@ from prime_rl.trainer.lora import (
 )
 from prime_rl.utils.logger import get_logger
 
+STREAMING_SHARD_SIZE = 512 * 1024**2
+_LAYER_KEY_PATTERN = re.compile(r"(?:^|\.)layers\.(\d+)\.")
+
 
 def load_state_dict_keys(save_dir: Path) -> list[str]:
     """Load only the key names from safetensor files without reading tensor data."""
@@ -48,6 +54,120 @@ def load_state_dict(save_dir: Path) -> dict[str, Tensor]:
             for key in f.keys():
                 state_dict[key] = f.get_tensor(key)
     return state_dict
+
+
+def _group_safetensor_keys(save_dir: Path) -> dict[int, list[tuple[Path, str]]]:
+    groups: dict[int, list[tuple[Path, str]]] = defaultdict(list)
+    seen_keys: set[str] = set()
+    for safetensor_path in sorted(save_dir.glob("*.safetensors")):
+        with safe_open(safetensor_path, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                if key in seen_keys:
+                    raise ValueError(f"duplicate tensor key {key!r} in {save_dir}")
+                seen_keys.add(key)
+                match = _LAYER_KEY_PATTERN.search(key)
+                layer_idx = int(match.group(1)) if match else -1
+                groups[layer_idx].append((safetensor_path, key))
+    return groups
+
+
+def _load_safetensor_group(entries: list[tuple[Path, str]]) -> dict[str, Tensor]:
+    entries_by_path: dict[Path, list[str]] = defaultdict(list)
+    for path, key in entries:
+        entries_by_path[path].append(key)
+
+    state_dict: dict[str, Tensor] = {}
+    for path, keys in entries_by_path.items():
+        with safe_open(path, framework="pt", device="cpu") as f:
+            for key in keys:
+                state_dict[key] = f.get_tensor(key)
+    return state_dict
+
+
+class _StreamingSafetensorsWriter:
+    def __init__(self, save_dir: Path, max_shard_size: int):
+        self.save_dir = save_dir
+        self.max_shard_size = max_shard_size
+        self.buffer: dict[str, Tensor] = {}
+        self.buffer_size = 0
+        self.total_size = 0
+        self.shards: list[tuple[Path, list[str]]] = []
+        self.keys: set[str] = set()
+
+    def add(self, key: str, tensor: Tensor) -> None:
+        if key in self.keys:
+            raise ValueError(f"conversion produced duplicate tensor key {key!r}")
+        self.keys.add(key)
+
+        tensor = tensor.contiguous()
+        tensor_size = tensor.numel() * tensor.element_size()
+        if self.buffer and self.buffer_size + tensor_size > self.max_shard_size:
+            self.flush()
+        self.buffer[key] = tensor
+        self.buffer_size += tensor_size
+        self.total_size += tensor_size
+        if self.buffer_size >= self.max_shard_size:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self.buffer:
+            return
+        shard_path = self.save_dir / f".model-{len(self.shards) + 1:05d}.safetensors"
+        shard_keys = list(self.buffer)
+        save_file(self.buffer, shard_path, metadata={"format": "pt"})
+        self.shards.append((shard_path, shard_keys))
+        self.buffer = {}
+        self.buffer_size = 0
+
+    def finish(self) -> None:
+        self.flush()
+        if not self.shards:
+            raise ValueError("conversion produced an empty state dict")
+        if len(self.shards) == 1:
+            self.shards[0][0].rename(self.save_dir / SAFE_WEIGHTS_NAME)
+            return
+
+        weight_map: dict[str, str] = {}
+        shard_count = len(self.shards)
+        for shard_idx, (provisional_path, shard_keys) in enumerate(self.shards, start=1):
+            shard_name = f"model-{shard_idx:05d}-of-{shard_count:05d}.safetensors"
+            provisional_path.rename(self.save_dir / shard_name)
+            weight_map.update(dict.fromkeys(shard_keys, shard_name))
+        index = {"metadata": {"total_size": self.total_size}, "weight_map": weight_map}
+        with open(self.save_dir / SAFE_WEIGHTS_INDEX_NAME, "w", encoding="utf-8") as f:
+            f.write(json.dumps(index, indent=2, sort_keys=True) + "\n")
+
+
+def stream_convert_state_dict(
+    source_dir: Path,
+    save_dir: Path,
+    convert_layer: Callable[[dict[str, Tensor], int], dict[str, Tensor] | None],
+    is_converted: Callable[[dict[str, None]], bool],
+    *,
+    overwrite: bool = False,
+    max_shard_size: int = STREAMING_SHARD_SIZE,
+) -> bool:
+    """Convert safetensors one layer group at a time and atomically publish them."""
+    save_dir = Path(save_dir)
+    save_dir.parent.mkdir(parents=True, exist_ok=True)
+    staged_dir = Path(tempfile.mkdtemp(prefix=f".{save_dir.name}.tmp-", dir=save_dir.parent))
+    try:
+        writer = _StreamingSafetensorsWriter(staged_dir, max_shard_size)
+        groups = _group_safetensor_keys(Path(source_dir))
+        for layer_idx in sorted(groups):
+            state_dict = _load_safetensor_group(groups[layer_idx])
+            converted = convert_layer(state_dict, layer_idx)
+            if converted is not None:
+                state_dict = converted
+            for key in list(state_dict):
+                writer.add(key, state_dict.pop(key))
+        writer.finish()
+        if not is_converted(dict.fromkeys(writer.keys)):
+            raise ValueError("streaming conversion did not produce the expected state-dict format")
+        return atomic_publish_state_dict_dir(staged_dir, save_dir, overwrite=overwrite)
+    finally:
+        if staged_dir.exists():
+            shutil.rmtree(staged_dir)
 
 
 def save_state_dict(
@@ -188,9 +308,29 @@ def _remove_path(path: Path) -> None:
         path.unlink()
 
 
-def atomic_save_state_dict(
-    state_dict: dict[str, Tensor], save_dir: Path, *, overwrite: bool = False, **kwargs
-) -> bool:
+def atomic_publish_state_dict_dir(staged_dir: Path, save_dir: Path, *, overwrite: bool = False) -> bool:
+    """Atomically publish a complete staged state-dict directory."""
+    staged_dir = Path(staged_dir)
+    save_dir = Path(save_dir)
+    if not is_state_dict_complete(staged_dir):
+        raise ValueError(f"staged state dict is incomplete: {staged_dir}")
+
+    save_dir.parent.mkdir(parents=True, exist_ok=True)
+    with _lock_save_dir(save_dir):
+        if save_dir.exists():
+            if not overwrite and is_state_dict_complete(save_dir):
+                return False
+            _remove_path(save_dir)
+        try:
+            os.rename(staged_dir, save_dir)
+        except OSError:
+            if not overwrite and is_state_dict_complete(save_dir):
+                return False
+            raise
+        return True
+
+
+def atomic_save_state_dict(state_dict: dict[str, Tensor], save_dir: Path, *, overwrite: bool = False, **kwargs) -> bool:
     """Save into a unique temp sibling and atomically publish the directory.
 
     Concurrent writers serialize publication with a file lock. A complete
@@ -204,18 +344,7 @@ def atomic_save_state_dict(
     tmp_dir = Path(tempfile.mkdtemp(prefix=f".{save_dir.name}.tmp-", dir=save_dir.parent))
     try:
         save_state_dict(state_dict, tmp_dir, **kwargs)
-        with _lock_save_dir(save_dir):
-            if save_dir.exists():
-                if not overwrite and is_state_dict_complete(save_dir):
-                    return False
-                _remove_path(save_dir)
-            try:
-                os.rename(tmp_dir, save_dir)
-            except OSError:
-                if not overwrite and is_state_dict_complete(save_dir):
-                    return False
-                raise
-            return True
+        return atomic_publish_state_dict_dir(tmp_dir, save_dir, overwrite=overwrite)
     finally:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir)
