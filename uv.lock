@@ -26,10 +26,12 @@ flash-attn-3 = false
 prime-tunnel = false
 deep-gemm = false
 prime-evals = false
+tasksets = "2099-12-31T23:00:00Z"
 tokenspeed-mla = false
 deep-ep = false
 prime-sandboxes = false
 renderers = false
+harnesses = "2099-12-31T23:00:00Z"
 prime = false
 
 [manifest]
@@ -3894,7 +3896,7 @@ dev = [
 
 [[package]]
 name = "prime-rl"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiolimiter" },
