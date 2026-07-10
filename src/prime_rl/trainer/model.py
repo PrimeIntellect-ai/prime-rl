@@ -838,22 +838,27 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         convert_dir = config.conversion_dir or source_path
         snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
         model_keys = dict.fromkeys(model.state_dict().keys())
+        snapshot_is_hf = model.is_hf_state_dict(snapshot_keys)
+        snapshot_is_prime = model.is_prime_state_dict(snapshot_keys)
+        model_is_hf = model.is_hf_state_dict(model_keys)
+        model_is_prime = model.is_prime_state_dict(model_keys)
 
-        if model.is_hf_state_dict(snapshot_keys) and model.is_prime_state_dict(model_keys):
+        if snapshot_is_hf and not snapshot_is_prime and model_is_prime:
             logger.warning(
                 "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
             )
             snapshot_path = convert_dir / "prime"
-            if not snapshot_path.exists() and get_world().is_master:
+            if get_world().is_master:
                 logger.debug(
                     f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
                 )
-                snapshot_state_dict = load_state_dict(source_path)
-                model.convert_to_prime(snapshot_state_dict)
-                atomic_save_state_dict(snapshot_state_dict, snapshot_path)
-                del snapshot_state_dict
+                from prime_rl.trainer.convert import convert_snapshot_to_prime
 
-        elif model.is_prime_state_dict(snapshot_keys) and model.is_hf_state_dict(model_keys):
+                status = convert_snapshot_to_prime(source_path, type(model), conversion_dir=convert_dir)
+                if status not in ("converted", "exists"):
+                    raise RuntimeError(f"HF to PrimeRL conversion failed with status: {status}")
+
+        elif snapshot_is_prime and not snapshot_is_hf and model_is_hf:
             logger.warning(
                 "Found PrimeRL weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
             )

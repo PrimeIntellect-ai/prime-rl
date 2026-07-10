@@ -28,39 +28,58 @@ def resolve_snapshot(model: str) -> Path:
     return Path(snapshot_download(repo_id=model, repo_type="model"))
 
 
-def convert_snapshot_to_prime(snapshot: Path) -> ConvertStatus:
+def convert_snapshot_to_prime(
+    snapshot: Path,
+    model_cls: type | None = None,
+    conversion_dir: Path | None = None,
+) -> ConvertStatus:
     """Write `<snapshot>/prime/` if the snapshot is a convertible HF model."""
     from transformers import AutoConfig
 
-    from prime_rl.trainer.models import get_custom_causal_lm_cls
-    from prime_rl.trainer.weights import atomic_save_state_dict, load_state_dict, load_state_dict_keys
+    from prime_rl.trainer.models import get_custom_causal_lm_cls, get_custom_vlm_cls
+    from prime_rl.trainer.weights import (
+        atomic_save_state_dict,
+        is_state_dict_complete,
+        load_state_dict,
+        load_state_dict_keys,
+    )
 
     logger = get_logger()
-    prime = snapshot / "prime"
-    if prime.exists():
-        logger.info(f"prime/ already present at {prime}, nothing to do")
-        return "exists"
+    prime = (conversion_dir or snapshot) / "prime"
+    if model_cls is None:
+        try:
+            model_config = AutoConfig.from_pretrained(snapshot, trust_remote_code=False)
+        except ValueError as exc:
+            logger.warning(f"unsupported model configuration: {exc}")
+            return "unsupported"
+        model_cls = get_custom_vlm_cls(model_config) or get_custom_causal_lm_cls(model_config)
 
-    cls = get_custom_causal_lm_cls(AutoConfig.from_pretrained(snapshot, trust_remote_code=False))
-    if cls is None:
+    if model_cls is None:
         logger.warning("no PrimeRL custom model for this architecture; nothing to convert")
         return "unsupported"
+
+    if prime.exists():
+        prime_keys = dict.fromkeys(load_state_dict_keys(prime))
+        if is_state_dict_complete(prime) and model_cls.is_prime_state_dict(prime_keys):
+            logger.info(f"complete prime/ already present at {prime}, nothing to do")
+            return "exists"
+        logger.warning(f"existing prime/ at {prime} is incomplete or invalid; rebuilding it")
 
     keys = dict.fromkeys(load_state_dict_keys(snapshot))
     if not keys:
         logger.warning("no safetensors weights in snapshot; conversion needs safetensors (bin format?)")
         return "no-safetensors"
-    if cls.is_prime_state_dict(keys):
+    if model_cls.is_prime_state_dict(keys):
         logger.info("snapshot already in PrimeRL format; trainers load it directly")
         return "already-prime"
-    if not cls.is_hf_state_dict(keys):
+    if not model_cls.is_hf_state_dict(keys):
         logger.info("snapshot not in HF format; nothing to convert")
         return "not-hf"
 
-    logger.info(f"converting HF -> PrimeRL with {cls.__name__}")
+    logger.info(f"converting HF -> PrimeRL with {model_cls.__name__}")
     state_dict = load_state_dict(snapshot)
-    cls.convert_to_prime(state_dict)
-    atomic_save_state_dict(state_dict, prime)
+    model_cls.convert_to_prime(state_dict)
+    atomic_save_state_dict(state_dict, prime, overwrite=prime.exists())
     logger.info(f"wrote {prime}")
     return "converted"
 

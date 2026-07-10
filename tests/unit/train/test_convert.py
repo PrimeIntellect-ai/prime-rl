@@ -71,6 +71,7 @@ def _patch_common(monkeypatch, *, cls, keys, save_calls=None):
     monkeypatch.setattr("transformers.AutoConfig.from_pretrained", lambda *a, **k: _FakeConfig(), raising=False)
     # convert.py imports these lazily from their source modules, so patch there.
     monkeypatch.setattr("prime_rl.trainer.models.get_custom_causal_lm_cls", lambda config: cls)
+    monkeypatch.setattr("prime_rl.trainer.models.get_custom_vlm_cls", lambda config: None)
     monkeypatch.setattr("prime_rl.trainer.weights.load_state_dict_keys", lambda snapshot: keys)
     monkeypatch.setattr("prime_rl.trainer.weights.load_state_dict", lambda snapshot: {"w": torch.zeros(1)})
     recorded = save_calls if save_calls is not None else []
@@ -80,13 +81,23 @@ def _patch_common(monkeypatch, *, cls, keys, save_calls=None):
     )
 
 
-def test_exists_short_circuits(tmp_path):
-    (tmp_path / "prime").mkdir()
+def test_exists_short_circuits(tmp_path, monkeypatch):
+    atomic_save_state_dict({"w": torch.zeros(1)}, tmp_path / "prime")
+    cls = type("PrimeCls", (_FakeCausalLM,), {"prime": True})
+    _patch_common(monkeypatch, cls=cls, keys=["w"])
     assert convert_snapshot_to_prime(tmp_path) == "exists"
 
 
 def test_unsupported_architecture(tmp_path, monkeypatch):
     _patch_common(monkeypatch, cls=None, keys=["x"])
+    assert convert_snapshot_to_prime(tmp_path) == "unsupported"
+
+
+def test_unsupported_remote_config(tmp_path, monkeypatch):
+    def raise_unsupported(*args, **kwargs):
+        raise ValueError("remote code required")
+
+    monkeypatch.setattr("transformers.AutoConfig.from_pretrained", raise_unsupported)
     assert convert_snapshot_to_prime(tmp_path) == "unsupported"
 
 
@@ -117,3 +128,15 @@ def test_converted_writes_prime(tmp_path, monkeypatch):
     assert len(save_calls) == 1
     _, save_dir = save_calls[0]
     assert save_dir == tmp_path / "prime"
+
+
+def test_incomplete_prime_is_rebuilt(tmp_path, monkeypatch):
+    prime = tmp_path / "prime"
+    prime.mkdir()
+    (prime / "partial.bin").write_text("junk")
+    cls = type("HfCls", (_FakeCausalLM,), {"prime": False, "hf": True, "converted": False})
+    save_calls: list = []
+    _patch_common(monkeypatch, cls=cls, keys=["x"], save_calls=save_calls)
+
+    assert convert_snapshot_to_prime(tmp_path) == "converted"
+    assert len(save_calls) == 1
