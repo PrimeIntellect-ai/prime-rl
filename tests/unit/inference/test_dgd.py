@@ -118,6 +118,24 @@ def test_dgd_values_derive_topology_and_role_configs(tmp_path: Path):
         "dynamo_worker_roles": ["prefill", "prefill", "decode", "decode"],
         "dynamo_gpus_per_worker": 1,
     }
+    topology_binding = graph["topologyBinding"]
+    assert hashlib.sha256(topology_binding["canonical"].encode()).hexdigest() == topology_binding["sha256"]
+    assert json.loads(topology_binding["canonical"])["clientTopology"] == graph["clientTopology"]
+    assert json.loads(topology_binding["canonical"])["workerServices"] == {
+        "VllmDecodeWorker": {
+            "limitsGpu": "1",
+            "replicas": 2,
+            "requestsGpu": "1",
+            "role": "decode",
+        },
+        "VllmPrefillWorker": {
+            "limitsGpu": "1",
+            "replicas": 2,
+            "requestsGpu": "1",
+            "role": "prefill",
+        },
+    }
+    assert resource["metadata"]["annotations"]["prime-rl.nvidia.com/topology-sha256"] == topology_binding["sha256"]
     for service in services.values():
         pod_spec = service["extraPodSpec"]
         assert pod_spec["mainContainer"]["image"] == options.image
@@ -235,6 +253,8 @@ def test_dgd_artifacts_are_deterministic_and_manifest_verifies(tmp_path: Path):
     unhashed_resource = deepcopy(resource)
     del unhashed_resource["metadata"]["annotations"]["prime-rl.nvidia.com/manifest-sha256"]
     canonical_resource = (json.dumps(unhashed_resource, indent=2, sort_keys=True) + "\n").encode()
+    values = json.loads(paths["values"].read_text())
+    assert values["inference"]["dynamoGraph"]["manifestCanonical"].encode() == canonical_resource
     assert hashlib.sha256(canonical_resource).hexdigest() == expected_manifest_hash
 
 
@@ -252,6 +272,7 @@ def test_dgd_embeds_and_mounts_content_addressed_chat_template(tmp_path: Path):
         (json.dumps(engine_config["data"], indent=2, sort_keys=True) + "\n").encode()
     ).hexdigest()
     assert engine_config["sha256"] == expected_hash
+    assert engine_config["canonicalData"] == json.dumps(engine_config["data"], indent=2, sort_keys=True) + "\n"
     assert engine_config["name"].endswith(expected_hash[:12])
     assert frontend["mainContainer"]["args"][-1] == "/etc/prime-rl/dynamo/chat-template.jinja"
     assert frontend["mainContainer"]["volumeMounts"] == [

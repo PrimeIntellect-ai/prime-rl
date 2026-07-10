@@ -87,6 +87,20 @@ def rendered_resource(rendered: str, kind: str, name: str) -> dict:
     )
 
 
+def write_values_mutation(
+    source: Path,
+    target: Path,
+    path: tuple[str, ...],
+    replacement: object,
+) -> None:
+    values = json.loads(source.read_text())
+    parent = values
+    for key in path[:-1]:
+        parent = parent[key]
+    parent[path[-1]] = replacement
+    target.write_text(json.dumps(values))
+
+
 def test_native_chart_still_renders_inference_statefulset():
     rendered = helm_template()
     assert "name: p4-math-inference\n" in rendered
@@ -169,6 +183,131 @@ def test_dgd_chart_preserves_exact_content_addressed_configmap_bytes(tmp_path: P
     expected_hash = values["inference"]["dynamoGraph"]["engineConfig"]["sha256"]
     canonical_data = (json.dumps(config_map["data"], indent=2, sort_keys=True) + "\n").encode()
     assert hashlib.sha256(canonical_data).hexdigest() == expected_hash
+
+
+@pytest.mark.parametrize(
+    ("case", "path", "replacement", "error_fragment"),
+    [
+        (
+            "engine-data",
+            ("inference", "dynamoGraph", "engineConfig", "data", "prefill-engine.json"),
+            "tampered",
+            "engineConfig.data must match its canonical payload",
+        ),
+        (
+            "engine-sha",
+            ("inference", "dynamoGraph", "engineConfig", "sha256"),
+            "0" * 64,
+            "engineConfig.sha256 must match its canonical payload",
+        ),
+        (
+            "engine-name",
+            ("inference", "dynamoGraph", "engineConfig", "name"),
+            "p4-math-dynamo-engine-000000000000",
+            "engineConfig.name must be content-addressed",
+        ),
+        (
+            "dgd-config-sha",
+            (
+                "inference",
+                "dynamoGraph",
+                "resource",
+                "metadata",
+                "annotations",
+                "prime-rl.nvidia.com/config-sha256",
+            ),
+            "0" * 64,
+            "DynamoGraphDeployment config-sha256 must match engineConfig.sha256",
+        ),
+        (
+            "manifest-sha",
+            (
+                "inference",
+                "dynamoGraph",
+                "resource",
+                "metadata",
+                "annotations",
+                "prime-rl.nvidia.com/manifest-sha256",
+            ),
+            "0" * 64,
+            "manifest-sha256 must match its canonical payload",
+        ),
+    ],
+)
+def test_dgd_chart_rejects_content_identity_mutations(
+    case: str,
+    path: tuple[str, ...],
+    replacement: object,
+    error_fragment: str,
+    tmp_path: Path,
+):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+    mutation = tmp_path / f"{case}.json"
+    write_values_mutation(paths["values"], mutation, path, replacement)
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template("-f", str(mutation))
+
+    assert error_fragment in error.value.stderr
+
+
+@pytest.mark.parametrize(
+    ("case", "path", "replacement"),
+    [
+        (
+            "client-roles",
+            ("inference", "dynamoGraph", "clientTopology", "dynamo_worker_roles"),
+            ["prefill", "decode", "decode", "decode"],
+        ),
+        (
+            "client-gpus",
+            ("inference", "dynamoGraph", "clientTopology", "dynamo_gpus_per_worker"),
+            2,
+        ),
+        (
+            "worker-replicas",
+            (
+                "inference",
+                "dynamoGraph",
+                "resource",
+                "spec",
+                "services",
+                "VllmDecodeWorker",
+                "replicas",
+            ),
+            3,
+        ),
+        (
+            "worker-gpus",
+            (
+                "inference",
+                "dynamoGraph",
+                "resource",
+                "spec",
+                "services",
+                "VllmPrefillWorker",
+                "resources",
+                "limits",
+                "gpu",
+            ),
+            "2",
+        ),
+    ],
+)
+def test_dgd_chart_rejects_topology_mutations(
+    case: str,
+    path: tuple[str, ...],
+    replacement: object,
+    tmp_path: Path,
+):
+    paths = write_dgd_artifacts(inference_config(), render_options(tmp_path))
+    mutation = tmp_path / f"{case}.json"
+    write_values_mutation(paths["values"], mutation, path, replacement)
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        helm_template("-f", str(mutation))
+
+    assert "topology binding" in error.value.stderr
 
 
 def test_dgd_chart_rejects_release_name_mismatch(tmp_path: Path):

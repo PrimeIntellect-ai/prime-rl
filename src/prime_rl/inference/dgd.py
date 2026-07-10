@@ -22,8 +22,10 @@ from prime_rl.inference.dynamo import (
 from prime_rl.utils.config import cli
 
 ENGINE_MOUNT_PATH = "/etc/prime-rl/dynamo"
+ENGINE_CONFIG_HASH_ANNOTATION = "prime-rl.nvidia.com/config-sha256"
 MANIFEST_HASH_ANNOTATION = "prime-rl.nvidia.com/manifest-sha256"
 MANIFEST_HASH_SCOPE_ANNOTATION = "prime-rl.nvidia.com/manifest-sha256-scope"
+TOPOLOGY_HASH_ANNOTATION = "prime-rl.nvidia.com/topology-sha256"
 MANIFEST_HASH_SCOPE = (
     "resource; json.dumps(sort_keys=true,indent=2)+newline; "
     "exclude=/metadata/annotations/prime-rl.nvidia.com~1manifest-sha256"
@@ -225,7 +227,7 @@ def _canonical_json(value: Any) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
 
 
-def _resource_manifest_hash(resource: dict[str, Any]) -> str:
+def _resource_manifest_canonical(resource: dict[str, Any]) -> bytes:
     annotations = resource["metadata"]["annotations"]
     scoped_annotations = {key: value for key, value in annotations.items() if key != MANIFEST_HASH_ANNOTATION}
     scoped_resource = {
@@ -235,7 +237,20 @@ def _resource_manifest_hash(resource: dict[str, Any]) -> str:
             "annotations": scoped_annotations,
         },
     }
-    return _sha256_bytes(_canonical_json(scoped_resource))
+    return _canonical_json(scoped_resource)
+
+
+def _worker_topology_binding(services: dict[str, Any]) -> dict[str, Any]:
+    return {
+        service_name: {
+            "role": service["subComponentType"],
+            "replicas": service["replicas"],
+            "requestsGpu": service["resources"]["requests"]["gpu"],
+            "limitsGpu": service["resources"]["limits"]["gpu"],
+        }
+        for service_name, service in sorted(services.items())
+        if service["componentType"] == "worker"
+    }
 
 
 def _worker_env(process: DynamoProcessSpec) -> list[dict[str, Any]]:
@@ -410,17 +425,9 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
     chat_template_content = resolve_chat_template_content(config)
     if chat_template_content is not None:
         engine_data[CHAT_TEMPLATE_ASSET] = chat_template_content
-    engine_hash = _sha256_bytes(_canonical_json(engine_data))
+    engine_canonical = _canonical_json(engine_data)
+    engine_hash = _sha256_bytes(engine_canonical)
     config_map_name = f"{options.release_name}-dynamo-engine-{engine_hash[:12]}"
-
-    annotations = {
-        "prime-rl.nvidia.com/config-sha256": engine_hash,
-        "prime-rl.nvidia.com/dynamo-sha": options.dynamo_sha,
-        "prime-rl.nvidia.com/image-digest": options.image_digest,
-        "prime-rl.nvidia.com/prime-sha": options.prime_sha,
-        "prime-rl.nvidia.com/run-name": options.run_name,
-        MANIFEST_HASH_SCOPE_ANNOTATION: MANIFEST_HASH_SCOPE,
-    }
     runtime_chat_template_path = (
         Path(ENGINE_MOUNT_PATH) / CHAT_TEMPLATE_ASSET if chat_template_content is not None else None
     )
@@ -485,6 +492,33 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         config_map_name=config_map_name,
         engine_file="decode-engine.json",
     )
+    client_topology = {
+        "schema_version": 1,
+        "admin_api": "dynamo",
+        "base_url": [f"http://{options.release_name}-frontend.{options.namespace}.svc.cluster.local:8000/v1"],
+        "rl_base_url": [f"http://{options.release_name}-frontend-rl.{options.namespace}.svc.cluster.local:8001"],
+        "dynamo_worker_roles": list(config.dynamo_worker_roles),
+        "dynamo_gpus_per_worker": config.dynamo_gpus_per_worker,
+    }
+    worker_services = {
+        "VllmDecodeWorker": decode,
+        "VllmPrefillWorker": prefill,
+    }
+    topology_binding = {
+        "clientTopology": client_topology,
+        "workerServices": _worker_topology_binding(worker_services),
+    }
+    topology_canonical = _canonical_json(topology_binding)
+    topology_hash = _sha256_bytes(topology_canonical)
+    annotations = {
+        ENGINE_CONFIG_HASH_ANNOTATION: engine_hash,
+        "prime-rl.nvidia.com/dynamo-sha": options.dynamo_sha,
+        "prime-rl.nvidia.com/image-digest": options.image_digest,
+        "prime-rl.nvidia.com/prime-sha": options.prime_sha,
+        "prime-rl.nvidia.com/run-name": options.run_name,
+        MANIFEST_HASH_SCOPE_ANNOTATION: MANIFEST_HASH_SCOPE,
+        TOPOLOGY_HASH_ANNOTATION: topology_hash,
+    }
     resource: dict[str, Any] = {
         "apiVersion": "nvidia.com/v1alpha1",
         "kind": "DynamoGraphDeployment",
@@ -508,7 +542,8 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         for service in (prefill, decode):
             _add_pvc(resource, service, options.shared_pvc, "/data")
 
-    manifest_hash = _resource_manifest_hash(resource)
+    manifest_canonical = _resource_manifest_canonical(resource)
+    manifest_hash = _sha256_bytes(manifest_canonical)
     annotations = {**annotations, MANIFEST_HASH_ANNOTATION: manifest_hash}
     resource = {
         **resource,
@@ -527,24 +562,19 @@ def build_dgd_values(config: InferenceConfig, options: DynamoGraphRenderOptions)
         "inference": {
             "mode": "dynamoGraph",
             "dynamoGraph": {
-                "clientTopology": {
-                    "schema_version": 1,
-                    "admin_api": "dynamo",
-                    "base_url": [
-                        f"http://{options.release_name}-frontend.{options.namespace}.svc.cluster.local:8000/v1"
-                    ],
-                    "rl_base_url": [
-                        f"http://{options.release_name}-frontend-rl.{options.namespace}.svc.cluster.local:8001"
-                    ],
-                    "dynamo_worker_roles": list(config.dynamo_worker_roles),
-                    "dynamo_gpus_per_worker": config.dynamo_gpus_per_worker,
-                },
+                "clientTopology": client_topology,
                 "engineConfig": {
                     "name": config_map_name,
                     "sha256": engine_hash,
+                    "canonicalData": engine_canonical.decode(),
                     "annotations": annotations,
                     "data": engine_data,
                 },
+                "topologyBinding": {
+                    "sha256": topology_hash,
+                    "canonical": topology_canonical.decode(),
+                },
+                "manifestCanonical": manifest_canonical.decode(),
                 "resource": resource,
             },
         },

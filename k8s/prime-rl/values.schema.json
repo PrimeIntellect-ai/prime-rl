@@ -55,9 +55,69 @@
               ],
               "additionalProperties": false
             },
-            "engineConfig": {"type": "object"},
+            "engineConfig": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^.+-dynamo-engine-[0-9a-f]{12}$"
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "canonicalData": {"type": "string", "minLength": 1},
+                "annotations": {
+                  "type": "object",
+                  "properties": {
+                    "prime-rl.nvidia.com/config-sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "prime-rl.nvidia.com/manifest-sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "prime-rl.nvidia.com/topology-sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  },
+                  "required": [
+                    "prime-rl.nvidia.com/config-sha256",
+                    "prime-rl.nvidia.com/manifest-sha256",
+                    "prime-rl.nvidia.com/topology-sha256"
+                  ],
+                  "additionalProperties": {"type": "string"}
+                },
+                "data": {
+                  "type": "object",
+                  "minProperties": 2,
+                  "additionalProperties": {"type": "string"}
+                }
+              },
+              "anyOf": [
+                {"maxProperties": 0},
+                {"required": ["name", "sha256", "canonicalData", "annotations", "data"]}
+              ],
+              "additionalProperties": false
+            },
+            "topologyBinding": {
+              "type": "object",
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "canonical": {"type": "string", "minLength": 1}
+              },
+              "required": ["sha256", "canonical"],
+              "additionalProperties": false
+            },
+            "manifestCanonical": {"type": "string", "minLength": 1},
             "resource": {"type": "object"}
-          }
+          },
+          "additionalProperties": false
         }
       }
     },
@@ -159,7 +219,17 @@
           "inference": {
             "properties": {
               "dynamoGraph": {
-                "required": ["clientTopology", "engineConfig", "resource"]
+                "properties": {
+                  "engineConfig": {"minProperties": 5},
+                  "resource": {"minProperties": 1}
+                },
+                "required": [
+                  "clientTopology",
+                  "engineConfig",
+                  "topologyBinding",
+                  "manifestCanonical",
+                  "resource"
+                ]
               }
             },
             "required": ["dynamoGraph"]
