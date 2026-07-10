@@ -12,7 +12,6 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    {{- include "prime-rl.selectorLabels" . | nindent 4 }}
     nvidia.com/dynamo-graph-deployment-name: {{ .Release.Name }}
     nvidia.com/dynamo-component: Frontend
     nvidia.com/dynamo-component-type: frontend

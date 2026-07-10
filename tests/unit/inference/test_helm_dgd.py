@@ -254,9 +254,10 @@ def test_dgd_rl_service_selector_is_release_disjoint(tmp_path: Path):
         output_dir = tmp_path / release
         paths = write_dgd_artifacts(inference_config(), render_options(output_dir, release_name=release))
         rendered = helm_template("-f", str(paths["values"]), release_name=release)
-        graph = rendered_resource(rendered, "DynamoGraphDeployment", release)
         release_pods[release] = {
-            **graph["spec"]["services"]["Frontend"]["extraPodMetadata"]["labels"],
+            # Grove owns and rewrites the conventional app labels on realized
+            # pods, but Dynamo's identity labels remain stable.
+            "app.kubernetes.io/name": f"{release}-0-frontend",
             "nvidia.com/dynamo-graph-deployment-name": release,
             "nvidia.com/dynamo-component": "Frontend",
             "nvidia.com/dynamo-component-type": "frontend",
@@ -266,7 +267,11 @@ def test_dgd_rl_service_selector_is_release_disjoint(tmp_path: Path):
     for release in ("alpha", "beta"):
         other_release = "beta" if release == "alpha" else "alpha"
         selector = release_services[release]
-        assert selector["app.kubernetes.io/instance"] == release
+        assert selector == {
+            "nvidia.com/dynamo-graph-deployment-name": release,
+            "nvidia.com/dynamo-component": "Frontend",
+            "nvidia.com/dynamo-component-type": "frontend",
+        }
         assert labels_match(selector, release_pods[release])
         assert not labels_match(selector, release_pods[other_release])
 
