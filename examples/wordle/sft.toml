@@ -7,7 +7,7 @@ name = "PrimeIntellect/Qwen3-1.7B"
 
 # PrimeIntellect/Qwen3-1.7B ships its own chat template (distinct from Qwen3's)
 [renderer]
-name = "default"
+name = "prime-qwen3"
 
 [data]
 name = "willcb/V3-wordle"

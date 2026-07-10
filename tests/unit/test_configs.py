@@ -531,6 +531,26 @@ def test_orchestrator_renderer_auto_accepts_mapped_model():
     assert config.renderer.name == "auto"
 
 
+def test_sft_renderer_auto_accepts_prime_qwen_model():
+    config = SFTConfig.model_validate({"model": {"name": "PrimeIntellect/Qwen3-0.6B"}})
+    assert config.renderer.name == "auto"
+
+
+def test_sft_rejects_default_renderer_for_real_data():
+    with pytest.raises(ValidationError, match="requires a typed renderer"):
+        SFTConfig.model_validate({"renderer": {"name": "default"}})
+
+
+def test_sft_allows_unused_default_renderer_for_fake_data():
+    config = SFTConfig.model_validate(
+        {
+            "data": {"type": "fake"},
+            "renderer": {"name": "default"},
+        }
+    )
+    assert config.renderer.name == "default"
+
+
 def test_orchestrator_explicit_renderer_skips_unmapped_check():
     """Explicit renderer.name bypasses the auto-resolution check — user opted in."""
     config = OrchestratorConfig.model_validate(

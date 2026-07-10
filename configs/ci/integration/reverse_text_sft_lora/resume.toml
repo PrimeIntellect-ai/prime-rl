@@ -11,7 +11,7 @@ name = "PrimeIntellect/Qwen3-0.6B"
 
 # PrimeIntellect/Qwen3-0.6B ships its own chat template (distinct from Qwen3's)
 [renderer]
-name = "default"
+name = "prime-qwen3"
 
 [model.lora]
 rank = 8

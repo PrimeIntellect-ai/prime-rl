@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
-from renderers import AutoRendererConfig, RendererConfig
+from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.shared import (
@@ -274,28 +274,25 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_auto_renderer_resolves(self):
-        """Reject renderer auto-resolution misses at config time (mirrors the
-        OrchestratorConfig validator). Resolution is an exact-name lookup, so
-        it is fully decidable here; fake-data runs without validation need no
-        renderer and are exempt.
-        """
-        if not isinstance(self.renderer, AutoRendererConfig):
-            return self
+    def validate_typed_renderer(self):
+        """Require a typed renderer whenever SFT renders real samples."""
         if self.data.type == "fake" and self.val is None:
             return self
+
         model_id = self.tokenizer.name or self.model.name
-        if model_id in MODEL_RENDERER_MAP:
+        if isinstance(self.renderer, AutoRendererConfig):
+            if model_id in MODEL_RENDERER_MAP:
+                return self
+            reason = f"no typed renderer is registered for {model_id!r}"
+        elif isinstance(self.renderer, DefaultRendererConfig):
+            reason = "renderer.name='default' selects DefaultRenderer"
+        else:
             return self
+
         raise ValueError(
-            f"renderer.name='auto' but {model_id!r} is not in "
-            f"renderers.base.MODEL_RENDERER_MAP, so it would silently fall back to "
-            f"DefaultRenderer. Pick one: "
-            f"(a) [renderer] name='default' — for fine-tunes / vendored mirrors with "
-            f"custom chat templates (DefaultRenderer calls apply_chat_template). "
-            f"(b) [renderer] name=<model-specific renderer> — if {model_id!r} is "
-            f"template-identical to a mapped family (and ideally also add it upstream "
-            f"to renderers.base.MODEL_RENDERER_MAP)."
+            f"SFT requires a typed renderer with sampled-token and content attribution, but {reason}. "
+            "Implement and register the renderer in the renderers package, or explicitly select an existing "
+            "typed renderer only when its template is verified to match."
         )
 
     @model_validator(mode="after")
