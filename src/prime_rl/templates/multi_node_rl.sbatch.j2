@@ -231,7 +231,17 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     ulimit -l unlimited
 {%- endif %}
 {%- if kv_offload_mooncake %}
+{%- if is_disaggregated and kv_offload_roles and kv_offload_roles != "prefill decode" %}
+    # KV offload scoped to role(s): {{ kv_offload_roles }} — other roles skip the
+    # store client (no DRAM segment, no MOONCAKE_CONFIG_PATH; their vLLM config
+    # drops the store connector via the per-role kv_transfer_config override).
+    if [ $((INFER_NODE_RANK % NODES_PER_INFER_REPLICA)) -lt $NUM_PREFILL_NODES ]; then _MC_ROLE=prefill; else _MC_ROLE=decode; fi
+    if [[ " {{ kv_offload_roles }} " == *" $_MC_ROLE "* ]]; then
 {% include "_mooncake_store.sh.j2" %}
+    fi
+{%- else %}
+{% include "_mooncake_store.sh.j2" %}
+{%- endif %}
 {%- endif %}
 
     REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_INFER_REPLICA))
@@ -292,7 +302,12 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {% endfor %}
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
     else
-        export UCX_NET_DEVICES=mlx5_0:1
+        # Decode inherits the auto-detected multi-rail UCX_NET_DEVICES (same
+        # as prefill): pinning every rank onto one HCA (the same device that
+        # leads NVSHMEM_HCA_LIST for DeepEP IBGDA) is the top suspect for
+        # one-node NIC-plane freezes under HiSparse host-pool RDMA. Operators
+        # can still pin via decode_env_vars (exported below). No apostrophes
+        # here: this text lives inside a single-quoted bash -c body.
         ROLE="decode"
         RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
         SUB_REPLICA=$((RANK_IN_DECODE / NODES_PER_DECODE_REPLICA))

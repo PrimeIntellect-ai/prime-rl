@@ -21,7 +21,9 @@ launch_inference_rank() {
     # rank on the node. Node-local /tmp also avoids inheriting an absent submit-node TMPDIR.
     local rpcbase="/tmp/vllm-rpc-$USER-$SLURM_JOB_ID-$port"
     mkdir -p "$rpcbase"
-    local -a cmd=(uv run inference @ "$CONFIG_PATH"
+    # --no-sync: the env was synced once during node setup; per-rank re-syncs
+    # race on the shared uv cache (Text file busy) and stagger rank starts.
+    local -a cmd=(uv run --no-sync inference @ "$CONFIG_PATH"
         --server.host 0.0.0.0 --server.port "$port"
         --parallel.dp "$dp" --data-parallel-size-local 1 --api-server-count 1)
     [ -n "$rpc" ] && cmd+=(--data-parallel-rpc-port "$rpc")
