@@ -408,7 +408,7 @@ async def test_policy_barrier_waits_for_completed_handler_before_computing_marke
     async def completed_group() -> list[Rollout]:
         return [
             Rollout(
-                task=vf.Task(idx=0, prompt=None),
+                task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
                 errors=[vf.Error(type="Existing", message="result")],
                 stop_condition="error",
             )

@@ -110,7 +110,7 @@ async def emit_policy_cancellation_markers(
         )
         for _ in range(owed):
             rollout = Rollout(
-                task=vf.Task(idx=group.task_idx, prompt=None),
+                task=vf.TraceTask(type="Task", data=vf.TaskData(idx=group.task_idx, prompt=None)),
                 errors=[vf.Error(type="Cancelled", message="Policy update barrier")],
                 stop_condition="error",
                 kind=meta.kind,
