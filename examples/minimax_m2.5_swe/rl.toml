@@ -59,7 +59,7 @@ interval = 25
 
 [[orchestrator.eval.env]]
 name = "swe-bench-verified-quick"
-taskset = { id = "r2e-gym-v1" }
+taskset = { id = "swebench-verified-v1" }
 harness = { id = "default", runtime = { type = "prime", labels = ["mini-swe-agent-plus"] } }
 
 [inference.parallel]
