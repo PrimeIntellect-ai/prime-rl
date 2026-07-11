@@ -72,7 +72,7 @@ name = "zai-org/GLM-5-FP8"
 interval = 20
 
 [[orchestrator.eval.env]]
-name = "swe-bench-verified-quick"
+name = "swe-bench-verified"
 taskset = { id = "swebench-verified-v1" }
 harness = { id = "default", runtime = { type = "prime", labels = ["mini-swe-agent-plus"] } }
 

@@ -58,7 +58,7 @@ harness = { id = "default", runtime = { type = "prime", labels = ["mini-swe-agen
 interval = 25
 
 [[orchestrator.eval.env]]
-name = "swe-bench-verified-quick"
+name = "swe-bench-verified"
 taskset = { id = "swebench-verified-v1" }
 harness = { id = "default", runtime = { type = "prime", labels = ["mini-swe-agent-plus"] } }
 
