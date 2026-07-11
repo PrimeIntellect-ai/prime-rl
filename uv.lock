@@ -2380,25 +2380,6 @@ wheels = [
 ]
 
 [[package]]
-name = "logic-env"
-version = "0.1.2"
-source = { editable = "deps/research-environments/environments/logic_env" }
-dependencies = [
-    { name = "markdown" },
-    { name = "math-verify" },
-    { name = "sympy" },
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "markdown", specifier = ">=3.5.1" },
-    { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "sympy", specifier = ">=1.12.0" },
-    { name = "verifiers", specifier = ">=0.1.15.dev443" },
-]
-
-[[package]]
 name = "loguru"
 version = "0.7.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2521,23 +2502,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/3c/2e/8d0c2ab90a8c1d9a24f0399058ab8519a3279d1bd4289511d74e909f060e/markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d6dd0be5b5b189d31db7cda48b91d7e0a9795f31430b7f271219ab30f1d3ac9d", size = 22947, upload-time = "2025-09-27T18:36:33.86Z" },
     { url = "https://files.pythonhosted.org/packages/c9/2f/336b8c7b6f4a4d95e91119dc8521402461b74a485558d8f238a68312f11c/markupsafe-3.0.3-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:be8813b57049a7dc738189df53d69395eba14fb99345e0a5994914a3864c8a4b", size = 23760, upload-time = "2025-09-27T18:36:36.001Z" },
     { url = "https://files.pythonhosted.org/packages/89/e0/4486f11e51bbba8b0c041098859e869e304d1c261e59244baa3d295d47b7/markupsafe-3.0.3-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:77f0643abe7495da77fb436f50f8dab76dbc6e5fd25d39589a0f1fe6548bfa2b", size = 23015, upload-time = "2025-09-27T18:36:37.868Z" },
-]
-
-[[package]]
-name = "math-env"
-version = "0.1.6"
-source = { editable = "deps/research-environments/environments/math_env" }
-dependencies = [
-    { name = "math-verify" },
-    { name = "prime-sandboxes" },
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "prime-sandboxes", specifier = ">=0.2.19" },
-    { name = "verifiers", specifier = ">=0.1.15.dev443" },
 ]
 
 [[package]]
@@ -3982,11 +3946,9 @@ envs = [
     { name = "ifeval-v1" },
     { name = "lean-v1" },
     { name = "livecodebench-v1" },
-    { name = "logic-env" },
     { name = "longcot-mini-v1" },
     { name = "longcot-v1" },
     { name = "longpdfs-v1" },
-    { name = "math-env" },
     { name = "math-env-v1" },
     { name = "math-python" },
     { name = "math500-v1" },
@@ -4095,12 +4057,10 @@ requires-dist = [
     { name = "lean-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/lean_v1" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "livecodebench-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/livecodebench_v1" },
-    { name = "logic-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/logic_env" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "longcot-mini-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/longcot_mini_v1" },
     { name = "longcot-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/longcot_v1" },
     { name = "longpdfs-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/longpdfs_v1" },
-    { name = "math-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math_env" },
     { name = "math-env-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math_env_v1" },
     { name = "math-python", marker = "extra == 'envs'", editable = "deps/verifiers/environments/math_python" },
     { name = "math500-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math500_v1" },

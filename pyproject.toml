@@ -91,11 +91,9 @@ envs = [
     "ifeval-v1",
     "lean-v1",
     "livecodebench-v1",
-    "logic-env",
     "longcot-mini-v1",
     "longcot-v1",
     "longpdfs-v1",
-    "math-env",
     "math-env-v1",
     "math-python",
     "math500-v1",
@@ -265,11 +263,9 @@ ifbench-v1 = { path = "deps/research-environments/environments/ifbench_v1", edit
 ifeval-v1 = { path = "deps/research-environments/environments/ifeval_v1", editable = true }
 lean-v1 = { path = "deps/research-environments/environments/lean_v1", editable = true }
 livecodebench-v1 = { path = "deps/research-environments/environments/livecodebench_v1", editable = true }
-logic-env = { path = "deps/research-environments/environments/logic_env", editable = true }
 longcot-mini-v1 = { path = "deps/research-environments/environments/longcot_mini_v1", editable = true }
 longcot-v1 = { path = "deps/research-environments/environments/longcot_v1", editable = true }
 longpdfs-v1 = { path = "deps/research-environments/environments/longpdfs_v1", editable = true }
-math-env = { path = "deps/research-environments/environments/math_env", editable = true }
 math-env-v1 = { path = "deps/research-environments/environments/math_env_v1", editable = true }
 math-python = { path = "deps/verifiers/environments/math_python", editable = true }
 math500-v1 = { path = "deps/research-environments/environments/math500_v1", editable = true }
