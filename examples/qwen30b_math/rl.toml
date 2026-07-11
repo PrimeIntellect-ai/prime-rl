@@ -49,8 +49,9 @@ max_off_policy_steps = 8
 max_completion_tokens = 32768
 
 [[orchestrator.train.env]]
-id = "math-env"
 name = "math"
+taskset = { id = "i3_math_v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
 interval = 25

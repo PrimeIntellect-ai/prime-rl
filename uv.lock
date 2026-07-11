@@ -1803,6 +1803,42 @@ requires-dist = [
 ]
 
 [[package]]
+name = "i3-logic-v1"
+version = "0.2.0"
+source = { editable = "deps/research-environments/environments/reasoning/i3_logic_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "markdown" },
+    { name = "math-verify" },
+    { name = "sympy" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "markdown", specifier = ">=3.5.1" },
+    { name = "math-verify", specifier = ">=0.8.0" },
+    { name = "sympy", specifier = ">=1.12.0" },
+    { name = "verifiers", specifier = ">=0.2.0" },
+]
+
+[[package]]
+name = "i3-math-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/math/i3_math_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers", specifier = ">=0.2.0" },
+]
+
+[[package]]
 name = "i3-science-v1"
 version = "0.1.0"
 source = { editable = "deps/research-environments/environments/science/i3_science_v1" }
@@ -3941,6 +3977,8 @@ envs = [
     { name = "graphwalks-v1" },
     { name = "gsm8k-v1" },
     { name = "i3-code-v1" },
+    { name = "i3-logic-v1" },
+    { name = "i3-math-v1" },
     { name = "i3-science-v1" },
     { name = "ifbench-v1" },
     { name = "ifeval-v1" },
@@ -4049,6 +4087,8 @@ requires-dist = [
     { name = "graphwalks-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/long_context/graphwalks_v1" },
     { name = "gsm8k-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/gsm8k_v1" },
     { name = "i3-code-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/code/i3_code_v1" },
+    { name = "i3-logic-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/reasoning/i3_logic_v1" },
+    { name = "i3-math-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math/i3_math_v1" },
     { name = "i3-science-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/science/i3_science_v1" },
     { name = "ifbench-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/if/ifbench_v1" },
     { name = "ifeval-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/if/ifeval_v1" },
