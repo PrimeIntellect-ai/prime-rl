@@ -94,10 +94,14 @@ jobs:
         run: |
           /tmp/slim/bin/python - <<'PY'
           from pydantic_config import cli
-          from prime_rl.configs.rl import RLConfig
-          rl = cli(RLConfig, args=["@", "examples/Intellect-3.1/rl.toml"])
-          assert rl.slurm is not None, "expected [slurm] in example config"
+          from prime_rl.configs.sft import SFTConfig
+          # Use an SFT config (no env/taskset sections) to verify [slurm] + template_path
+          # resolution on the slim install: RL configs are v1 and resolve/import their env
+          # taskset at parse time (vf.EnvServerConfig), and those env packages aren't installed
+          # in the slim (prime-rl-configs-only) environment.
+          cfg = cli(SFTConfig, args=["@", "examples/reverse_text/slurm_sft.toml"])
+          assert cfg.slurm is not None, "expected [slurm] in example config"
           # On slim, template_path can't be auto-resolved (heavy wheel absent) — must stay None.
-          assert rl.slurm.template_path is None, f"unexpected template_path on slim: {rl.slurm.template_path}"
+          assert cfg.slurm.template_path is None, f"unexpected template_path on slim: {cfg.slurm.template_path}"
           print("slim parse OK")
           PY
