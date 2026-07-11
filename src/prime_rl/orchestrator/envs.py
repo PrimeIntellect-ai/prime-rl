@@ -98,10 +98,21 @@ class Env:
             raise RuntimeError(f"Env {self.name} not started — call start() first.")
         return self._env_client
 
-    async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
-        """Spawn the env server (if needed), connect, and cache its ``info``."""
+    async def start(
+        self,
+        log_dir: Path,
+        log_level: str | None = None,
+        json_logging: bool = False,
+        spawn_timeout: float | None = None,
+    ) -> None:
+        """Spawn the env server (if needed), connect, and cache its ``info``.
+
+        ``spawn_timeout`` caps the wait for a spawned server to report its
+        address (default ``ENV_SERVER_SPAWN_TIMEOUT``)."""
         external = self.config.address is not None
-        address = self.config.address or await self._spawn(log_dir, log_level or "INFO", json_logging)
+        address = self.config.address or await self._spawn(
+            log_dir, log_level or "INFO", json_logging, spawn_timeout=spawn_timeout
+        )
         get_logger().debug(f"Connecting {self.name} to env server {address}")
         self._env_client = EnvClient(address=address)
         # A spawned server already reported its address *after* binding + loading,
@@ -116,7 +127,9 @@ class Env:
             f"Env {self.name} ready: num_tasks={self.num_tasks} group_scoring={self.requires_group_scoring}"
         )
 
-    async def _spawn(self, log_dir: Path, log_level: str, json_logging: bool) -> str:
+    async def _spawn(
+        self, log_dir: Path, log_level: str, json_logging: bool, spawn_timeout: float | None = None
+    ) -> str:
         """Spawn a v1 EnvServer child process (it loads the env; we never do).
         The server binds an OS-assigned port (``:0``) and reports the concrete
         address back over a queue — no free-port guess, no TOCTOU race. Its output
@@ -152,10 +165,11 @@ class Env:
         )
         process.start()
         self._env_server_process = process
+        timeout = spawn_timeout if spawn_timeout is not None else ENV_SERVER_SPAWN_TIMEOUT
         try:
-            address = await asyncio.to_thread(address_queue.get, timeout=ENV_SERVER_SPAWN_TIMEOUT)
+            address = await asyncio.to_thread(address_queue.get, timeout=timeout)
         except queue.Empty:
-            raise RuntimeError(f"Env server {self.name} did not report its address within {ENV_SERVER_SPAWN_TIMEOUT}s")
+            raise RuntimeError(f"Env server {self.name} did not report its address within {timeout}s")
         finally:
             address_queue.close()
             address_queue.join_thread()
@@ -194,9 +208,17 @@ class Env:
         return [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in wires]
 
     def shutdown(self) -> None:
+        """Terminate the spawned env server and reap it (terminate → join →
+        kill), mirroring ``Envs.shutdown``"""
         if self._env_server_process is None:
             return
-        self._env_server_process.terminate()
+        process = self._env_server_process
+        process.terminate()
+        process.join(timeout=25)
+        if process.is_alive():
+            get_logger().warning(f"Env server {process.pid} did not exit after 25s, force killing")
+            process.kill()
+            process.join(timeout=5)
         self._env_server_process = None
 
 
@@ -218,8 +240,16 @@ class EvalEnv(Env):
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples: list[dict] = []
 
-    async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
-        await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
+    async def start(
+        self,
+        log_dir: Path,
+        log_level: str | None = None,
+        json_logging: bool = False,
+        spawn_timeout: float | None = None,
+    ) -> None:
+        await super().start(
+            log_dir=log_dir, log_level=log_level, json_logging=json_logging, spawn_timeout=spawn_timeout
+        )
         n = self.num_tasks if self.config.num_examples < 0 else min(self.config.num_examples, self.num_tasks)
         self.examples = [{"task_idx": i} for i in range(n)]
 
