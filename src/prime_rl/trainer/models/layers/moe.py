@@ -4,9 +4,9 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import prime_moe
 import torch
 import torch.nn.functional as F
+import prime_moe
 
 from dataclasses import dataclass
 from typing import Literal
@@ -85,12 +85,14 @@ class BCFeedForward(nn.Module):
         nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
         nn.init.trunc_normal_(self.w3, mean=0.0, std=init_std)
 
+
 def _pack_gate_up_interleaved(w1: torch.Tensor, w3: torch.Tensor) -> torch.Tensor:
     E, H, D = w1.shape
     assert H % 128 == 0, f"moe_intermediate_size {H} must be a multiple of 128 for the fused MoE kernel"
     g = w1.reshape(E, H >> 7, 128, D)
     u = w3.reshape(E, H >> 7, 128, D)
     return torch.stack((g, u), dim=2).reshape(E, H << 1, D).contiguous()
+
 
 # TODO: keeping this for-loop implementation for comparison
 #       and readability, may remove later
@@ -127,29 +129,6 @@ def _run_experts_for_loop_impl(
     out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
 
     return out
-
-def moe_align_block_size_simple(topk_ids: torch.Tensor, block_size_m: int, num_experts: int):
-    assert topk_ids.dim() == 2
-    device = topk_ids.device
-    n = topk_ids.numel()
-    expert_flat = topk_ids.reshape(-1).to(torch.int32)
-    sort_idx = torch.argsort(expert_flat)
-    expert_sorted = expert_flat[sort_idx].to(torch.int64)
-    counts = torch.bincount(expert_flat.to(torch.int64), minlength=num_experts)
-    padded_counts = ((counts + block_size_m - 1) // block_size_m) * block_size_m
-    padded_offset = torch.cumsum(padded_counts, 0) - padded_counts
-    real_offset = torch.cumsum(counts, 0) - counts
-    total_padded = int(padded_counts.sum())  # single host sync (dynamic allocation size)
-    pos = torch.arange(n, device=device, dtype=torch.int64)
-    dest = padded_offset[expert_sorted] + (pos - real_offset[expert_sorted])
-    sorted_token_ids = torch.full((total_padded,), -1, device=device, dtype=torch.int32)
-    sorted_token_ids[dest] = sort_idx.to(torch.int32)
-    n_blocks = padded_counts // block_size_m
-    expert_ids = torch.repeat_interleave(
-        torch.arange(num_experts, device=device, dtype=torch.int32), n_blocks
-    )
-    num_tokens_post_padded = torch.tensor([total_padded], device=device, dtype=torch.int32)
-    return sorted_token_ids, expert_ids, num_tokens_post_padded
 
 
 def _to_local(t: torch.Tensor) -> torch.Tensor:
@@ -195,6 +174,12 @@ def _fused_moe_kernel_forward(
     return _fused_moe_kernel_call(x, w1_packed, w2, selected_experts_indices, top_scores, num_experts)
 
 
+def _fused_moe_launch_config(n_routed_rows: int, num_experts: int) -> tuple[int, int]:
+    if n_routed_rows >= 128 * num_experts:
+        return 3, 2
+    return 4, 1
+
+
 def _fused_moe_kernel_call(
     x: torch.Tensor,
     w1_packed: torch.Tensor,
@@ -202,12 +187,15 @@ def _fused_moe_kernel_call(
     selected_experts_indices: torch.Tensor,
     top_scores: torch.Tensor,
     num_experts: int,
+    stages: int | None = None,
+    blocks_per_cta: int | None = None,
 ) -> torch.Tensor:
-    # Low-level kernel invocation; w1_packed is the 128-row-block interleaved gate/up.
     top_k = selected_experts_indices.shape[1]
-    block_m, block_n, warp_n, stages = 128, 32, 8, 1
-    sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size_simple(
-        selected_experts_indices.to(torch.int32), block_m, num_experts
+    block_m, block_n, warp_n = 128, 64, 4
+    if stages is None or blocks_per_cta is None:
+        stages, blocks_per_cta = _fused_moe_launch_config(selected_experts_indices.numel(), num_experts)
+    sorted_token_ids, expert_ids, num_tokens_post_padded = torch.ops.prime_moe.moe_align(
+        selected_experts_indices.to(torch.int32).contiguous(), num_experts, block_m, blocks_per_cta
     )
     out = torch.zeros_like(x, dtype=torch.bfloat16)
     torch.ops.prime_moe.fused_moe_bf16(
@@ -224,6 +212,7 @@ def _fused_moe_kernel_call(
         block_n,
         warp_n,
         stages,
+        blocks_per_cta,
     )
     return out.type_as(x)
 
@@ -741,6 +730,8 @@ class MoE(nn.Module):
         )
         self.score_before_experts = moe_args.score_before_experts
         self.deepep_token_chunk_size: int | None = None
+        # Set routed experts run through the fused
+        self.fused_kernel = False
 
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert is accumulated in the model forward pass.
@@ -924,19 +915,40 @@ class MoE(nn.Module):
             routed_output = self._run_deepep_routed_experts(x, selected_experts_indices, top_scores)
             return routed_output.reshape(bs, slen, dim)
 
-        if self.score_before_experts:
-            raise RuntimeError(
-                "Fused kernel expects output weighting - Set score_before_experts=False or implement pre-score weighting inside the kernel"
+        if self.fused_kernel:
+            if self.score_before_experts:
+                raise RuntimeError(
+                    "Fused kernel expects output weighting - Set score_before_experts=False or implement pre-score weighting inside the kernel"
+                )
+            routed_output = self._run_fused_routed_experts(
+                x,
+                selected_experts_indices,
+                top_scores,
             )
-        routed_output = self._run_fused_routed_experts(
-            x,
-            selected_experts_indices,
-            top_scores,
+            if self.shared_expert is not None:
+                routed_output = routed_output + self.shared_expert(x)
+            return routed_output.reshape(bs, slen, dim)
 
+        (
+            top_scores_experts_sorted,
+            token_indices_experts_sorted,
+            num_tokens_per_expert,
+        ) = self.reorderer(top_scores, selected_experts_indices)
+
+        routed_output = self._run_routed_experts(
+            x,
+            token_indices_experts_sorted,
+            num_tokens_per_expert,
+            top_scores_experts_sorted,
         )
         if self.shared_expert is not None:
-            routed_output = routed_output + self.shared_expert(x)
-        return routed_output.reshape(bs, slen, dim)
+            out = self.shared_expert(x)
+        else:
+            out = torch.zeros_like(x)
+
+        routed_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
+        out = out.scatter_add(dim=0, index=routed_indices, src=routed_output)
+        return out.reshape(bs, slen, dim)
 
     def init_weights(
         self,

@@ -374,6 +374,29 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
         logger.info(f"Running {num_routers} MoE router gates in fp32")
 
 
+def apply_fused_moe_kernel(model: nn.Module) -> None:
+    """Route MoE routed-expert compute through the fused bf16 MoE CUDA kernel (prime_moe).
+
+    Forward runs the fused kernel; backward recomputes the reference grouped-mm path.
+    Requires Blackwell GPUs, ep=1 (the kernel indexes experts with global ids), and
+    MoE layers with ``score_before_experts=False``.
+    """
+    logger = get_logger()
+    language_model = get_language_model(model)
+    num_moe_layers = 0
+
+    for layer in language_model.layers:
+        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
+        if isinstance(mlp, MoE):
+            mlp.fused_kernel = True
+            num_moe_layers += 1
+
+    if num_moe_layers == 0:
+        raise ValueError("model.moe_fused_kernel=true but no MoE layers found. Is this a custom-impl MoE model?")
+
+    logger.info(f"Using the fused MoE kernel for {num_moe_layers} MoE layers")
+
+
 def freeze_sparse_indexer(model: nn.Module) -> None:
     """Freeze DSA sparse-attention indexer parameters.
 
@@ -1154,6 +1177,14 @@ def setup_model(
 
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
+
+    if config.moe_fused_kernel:
+        if parallel_dims.ep_enabled:
+            raise ValueError(
+                "model.moe_fused_kernel=true requires ep=1: the fused kernel bypasses the EP "
+                "all-to-all and indexes experts with global ids."
+            )
+        apply_fused_moe_kernel(model)
 
     # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
     # never trainable. Freeze it so optimizer state stays symmetric across checkpoint

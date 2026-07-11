@@ -177,6 +177,9 @@ class ModelConfig(BaseModelConfig):
     moe_use_grouped_mm: bool = True
     """Use grouped mm for MoE layers. Requires compute capability ≥ 9.0."""
 
+    moe_fused_kernel: bool = False
+    """Run MoE routed experts through the fused bf16 MoE CUDA kernel (prime_moe) in forward; backward recomputes the reference grouped-mm path. Requires Blackwell (SM100) GPUs, ``ep=1``, ``model.impl='custom'``, MoE layers with output-weighted scores (``score_before_experts=False``), and ``moe_intermediate_size`` divisible by 128."""
+
     fp8: bool = False
     """FP8 training via DeepGEMM. Replaces ``nn.Linear`` with FP8 blockwise linear and uses FP8 grouped GEMM for MoE experts. Requires SM90 (Hopper) GPUs and ``model.impl='custom'``."""
 
