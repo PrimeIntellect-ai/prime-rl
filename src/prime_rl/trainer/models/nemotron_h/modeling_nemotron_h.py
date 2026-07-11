@@ -229,9 +229,22 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
         hidden_states = self.norm(hidden_states)
 
         if self.cp_enabled:
-            # TODO: This path doesnt support cu_seqlens so packing makes it wrong
+            from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS
+
+            try:
+                full_cu_seqlens = ULYSSES_PARAMS["cu_seqlens"]
+            except KeyError as error:
+                raise RuntimeError(
+                    "Nemotron-H Ulysses CP requires full pre-shard cu_seqlens. "
+                    "Call setup_cp_params before the model forward."
+                ) from error
             hidden_states = mamba_cp_forward(
-                self.mamba, hidden_states, self._cp_group, self._cp_rank, self._cp_world_size
+                self.mamba,
+                hidden_states,
+                self._cp_group,
+                self._cp_rank,
+                self._cp_world_size,
+                full_cu_seqlens,
             )
         else:
             hidden_states = self.mamba(hidden_states, cu_seqlens=cu_seqlens)
