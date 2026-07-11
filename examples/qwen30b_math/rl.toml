@@ -57,7 +57,9 @@ harness = { id = "null", runtime = { type = "subprocess" } }
 interval = 25
 
 [[orchestrator.eval.env]]
-id = "aime2025"
+name = "aime2025"
+taskset = { id = "aime25-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [inference.parallel]
 tp = 8

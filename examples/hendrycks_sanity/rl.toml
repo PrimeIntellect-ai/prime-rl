@@ -25,8 +25,9 @@ harness = { id = "null", runtime = { type = "subprocess" } }
 interval = 50
 
 [[orchestrator.eval.env]]
-id = "primeintellect/aime2024"
 name = "aime2024"
+taskset = { id = "aime24-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
 group_size = 32
 
 [trainer.model]
