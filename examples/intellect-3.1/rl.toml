@@ -51,13 +51,13 @@ oversampling_factor = 2
 name = "swe"
 ratio = 0.3
 taskset = { id = "r2e-gym-v1" }
-harness = { id = "default", runtime = { type = "prime", labels = ["mini-swe-agent-plus"] } }
+harness = { id = "default", runtime = { type = "prime", labels = ["intellect-3.1"] } }
 
 [[orchestrator.train.env]]
 name = "deepdive"
 ratio = 0.2
 taskset = { id = "deepdive-v1" }
-harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["deepdive"] } }
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["intellect-3.1"] } }
 
 [[orchestrator.train.env]]
 name = "math"
@@ -87,7 +87,7 @@ interval = 25
 [[orchestrator.eval.env]]
 name = "swe-bench-verified"
 taskset = { id = "swebench-verified-v1" }
-harness = { id = "default", runtime = { type = "prime", labels = ["mini-swe-agent-plus"] } }
+harness = { id = "default", runtime = { type = "prime", labels = ["intellect-3.1"] } }
 
 [[orchestrator.eval.env]]
 name = "aime2025"
