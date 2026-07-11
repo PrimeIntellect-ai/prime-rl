@@ -67,7 +67,7 @@ wheels = [
 [[package]]
 name = "aime24-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/aime24_v1" }
+source = { editable = "deps/research-environments/environments/math/aime24_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -82,7 +82,7 @@ requires-dist = [
 [[package]]
 name = "aime25-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/aime25_v1" }
+source = { editable = "deps/research-environments/environments/math/aime25_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -97,7 +97,7 @@ requires-dist = [
 [[package]]
 name = "aime26-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/aime26_v1" }
+source = { editable = "deps/research-environments/environments/math/aime26_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -273,7 +273,7 @@ wheels = [
 [[package]]
 name = "apex-shortlist-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/apex_shortlist_v1" }
+source = { editable = "deps/research-environments/environments/math/apex_shortlist_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -297,7 +297,7 @@ wheels = [
 [[package]]
 name = "arxivmath-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/arxivmath_v1" }
+source = { editable = "deps/research-environments/environments/math/arxivmath_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -412,7 +412,7 @@ wheels = [
 [[package]]
 name = "browsecomp-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/browsecomp_v1" }
+source = { editable = "deps/research-environments/environments/search/browsecomp_v1" }
 dependencies = [
     { name = "httpx" },
     { name = "openai" },
@@ -918,7 +918,7 @@ wheels = [
 [[package]]
 name = "deepdive-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/deepdive_v1" }
+source = { editable = "deps/research-environments/environments/search/deepdive_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "openai" },
@@ -1348,7 +1348,7 @@ wheels = [
 [[package]]
 name = "forth-lang-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/forth_lang_v1" }
+source = { editable = "deps/research-environments/environments/code/forth_lang_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -1404,7 +1404,7 @@ http = [
 [[package]]
 name = "general-agent-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/general_agent_v1" }
+source = { editable = "deps/research-environments/environments/tool_use/general_agent_v1" }
 dependencies = [
     { name = "pydantic" },
     { name = "verifiers", extra = ["harbor"] },
@@ -1520,7 +1520,7 @@ wheels = [
 [[package]]
 name = "gpqa-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/gpqa_v1" }
+source = { editable = "deps/research-environments/environments/science/gpqa_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "openai" },
@@ -1537,7 +1537,7 @@ requires-dist = [
 [[package]]
 name = "graphwalks-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/graphwalks_v1" }
+source = { editable = "deps/research-environments/environments/long_context/graphwalks_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -1788,7 +1788,7 @@ wheels = [
 [[package]]
 name = "i3-code-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/i3_code_v1" }
+source = { editable = "deps/research-environments/environments/code/i3_code_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "orjson" },
@@ -1803,9 +1803,45 @@ requires-dist = [
 ]
 
 [[package]]
+name = "i3-logic-v1"
+version = "0.2.0"
+source = { editable = "deps/research-environments/environments/reasoning/i3_logic_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "markdown" },
+    { name = "math-verify" },
+    { name = "sympy" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "markdown", specifier = ">=3.5.1" },
+    { name = "math-verify", specifier = ">=0.8.0" },
+    { name = "sympy", specifier = ">=1.12.0" },
+    { name = "verifiers", specifier = ">=0.2.0" },
+]
+
+[[package]]
+name = "i3-math-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/math/i3_math_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers", specifier = ">=0.2.0" },
+]
+
+[[package]]
 name = "i3-science-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/i3_science_v1" }
+source = { editable = "deps/research-environments/environments/science/i3_science_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -1838,7 +1874,7 @@ wheels = [
 [[package]]
 name = "ifbench-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/ifbench_v1" }
+source = { editable = "deps/research-environments/environments/if/ifbench_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "emoji" },
@@ -1869,7 +1905,7 @@ requires-dist = [
 [[package]]
 name = "ifeval-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/ifeval_v1" }
+source = { editable = "deps/research-environments/environments/if/ifeval_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "immutabledict" },
@@ -2267,7 +2303,7 @@ wheels = [
 [[package]]
 name = "lean-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/lean_v1" }
+source = { editable = "deps/research-environments/environments/math/lean_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -2330,7 +2366,7 @@ wheels = [
 [[package]]
 name = "livecodebench-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/livecodebench_v1" }
+source = { editable = "deps/research-environments/environments/code/livecodebench_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "huggingface-hub" },
@@ -2380,25 +2416,6 @@ wheels = [
 ]
 
 [[package]]
-name = "logic-env"
-version = "0.1.2"
-source = { editable = "deps/research-environments/environments/logic_env" }
-dependencies = [
-    { name = "markdown" },
-    { name = "math-verify" },
-    { name = "sympy" },
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "markdown", specifier = ">=3.5.1" },
-    { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "sympy", specifier = ">=1.12.0" },
-    { name = "verifiers", specifier = ">=0.1.15.dev443" },
-]
-
-[[package]]
 name = "loguru"
 version = "0.7.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2424,7 +2441,7 @@ dependencies = [
 [[package]]
 name = "longcot-mini-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/longcot_mini_v1" }
+source = { editable = "deps/research-environments/environments/long_context/longcot_mini_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "longcot" },
@@ -2441,7 +2458,7 @@ requires-dist = [
 [[package]]
 name = "longcot-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/longcot_v1" }
+source = { editable = "deps/research-environments/environments/long_context/longcot_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "longcot" },
@@ -2458,7 +2475,7 @@ requires-dist = [
 [[package]]
 name = "longpdfs-v1"
 version = "0.0.1"
-source = { editable = "deps/research-environments/environments/longpdfs_v1" }
+source = { editable = "deps/research-environments/environments/long_context/longpdfs_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -2524,26 +2541,9 @@ wheels = [
 ]
 
 [[package]]
-name = "math-env"
-version = "0.1.6"
-source = { editable = "deps/research-environments/environments/math_env" }
-dependencies = [
-    { name = "math-verify" },
-    { name = "prime-sandboxes" },
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "prime-sandboxes", specifier = ">=0.2.19" },
-    { name = "verifiers", specifier = ">=0.1.15.dev443" },
-]
-
-[[package]]
 name = "math-env-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/math_env_v1" }
+source = { editable = "deps/research-environments/environments/math/math_env_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -2587,7 +2587,7 @@ wheels = [
 [[package]]
 name = "math500-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/math500_v1" }
+source = { editable = "deps/research-environments/environments/math/math500_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -2730,7 +2730,7 @@ wheels = [
 [[package]]
 name = "mmlu-pro-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/mmlu_pro_v1" }
+source = { editable = "deps/research-environments/environments/knowledge/mmlu_pro_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -2802,7 +2802,7 @@ wheels = [
 [[package]]
 name = "mrcr-v2-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/mrcr_v2_v1" }
+source = { editable = "deps/research-environments/environments/long_context/mrcr_v2_v1" }
 dependencies = [
     { name = "filelock" },
     { name = "httpx" },
@@ -3315,7 +3315,7 @@ wheels = [
 [[package]]
 name = "oolong-pairs-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/oolong_pairs_v1" }
+source = { editable = "deps/research-environments/environments/long_context/oolong_pairs_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "huggingface-hub" },
@@ -3332,7 +3332,7 @@ requires-dist = [
 [[package]]
 name = "oolong-real-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/oolong_real_v1" }
+source = { editable = "deps/research-environments/environments/long_context/oolong_real_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "openai" },
@@ -3349,7 +3349,7 @@ requires-dist = [
 [[package]]
 name = "oolong-synth-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/oolong_synth_v1" }
+source = { editable = "deps/research-environments/environments/long_context/oolong_synth_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "openai" },
@@ -3435,7 +3435,7 @@ wheels = [
 [[package]]
 name = "openseeker-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/openseeker_v1" }
+source = { editable = "deps/research-environments/environments/search/openseeker_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -3575,7 +3575,7 @@ wheels = [
 [[package]]
 name = "openthoughts-tblite-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/openthoughts_tblite_v1" }
+source = { editable = "deps/research-environments/environments/terminal/openthoughts_tblite_v1" }
 dependencies = [
     { name = "verifiers" },
 ]
@@ -3651,7 +3651,7 @@ wheels = [
 [[package]]
 name = "papersearchqa-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/papersearchqa_v1" }
+source = { editable = "deps/research-environments/environments/search/papersearchqa_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "openai" },
@@ -3695,7 +3695,7 @@ wheels = [
 [[package]]
 name = "patterned-needle-in-haystack-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/patterned_needle_in_haystack_v1" }
+source = { editable = "deps/research-environments/environments/long_context/patterned_needle_in_haystack_v1" }
 dependencies = [
     { name = "nltk" },
     { name = "verifiers" },
@@ -3977,16 +3977,16 @@ envs = [
     { name = "graphwalks-v1" },
     { name = "gsm8k-v1" },
     { name = "i3-code-v1" },
+    { name = "i3-logic-v1" },
+    { name = "i3-math-v1" },
     { name = "i3-science-v1" },
     { name = "ifbench-v1" },
     { name = "ifeval-v1" },
     { name = "lean-v1" },
     { name = "livecodebench-v1" },
-    { name = "logic-env" },
     { name = "longcot-mini-v1" },
     { name = "longcot-v1" },
     { name = "longpdfs-v1" },
-    { name = "math-env" },
     { name = "math-env-v1" },
     { name = "math-python" },
     { name = "math500-v1" },
@@ -4058,72 +4058,72 @@ mamba-ssm = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aime24-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime24_v1" },
-    { name = "aime25-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime25_v1" },
-    { name = "aime26-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime26_v1" },
+    { name = "aime24-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math/aime24_v1" },
+    { name = "aime25-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math/aime25_v1" },
+    { name = "aime26-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math/aime26_v1" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "alphabet-sort", marker = "extra == 'envs'", editable = "deps/verifiers/environments/alphabet_sort" },
     { name = "alphabet-sort-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/alphabet_sort_v1" },
-    { name = "apex-shortlist-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/apex_shortlist_v1" },
-    { name = "arxivmath-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/arxivmath_v1" },
+    { name = "apex-shortlist-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math/apex_shortlist_v1" },
+    { name = "arxivmath-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math/arxivmath_v1" },
     { name = "beartype", specifier = ">=0.21.0" },
-    { name = "browsecomp-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/browsecomp_v1" },
+    { name = "browsecomp-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/search/browsecomp_v1" },
     { name = "code-golf-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/code_golf_v1" },
     { name = "color-codeword-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/color_codeword_v1" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" },
-    { name = "deepdive-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/deepdive_v1" },
+    { name = "deepdive-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/search/deepdive_v1" },
     { name = "deepwiki-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/deepwiki_v1" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "flash-attn-4", marker = "extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151" },
     { name = "flash-linear-attention", git = "https://github.com/fla-org/flash-linear-attention" },
-    { name = "forth-lang-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/forth_lang_v1" },
-    { name = "general-agent-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/general_agent_v1" },
+    { name = "forth-lang-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/code/forth_lang_v1" },
+    { name = "general-agent-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/tool_use/general_agent_v1" },
     { name = "glossary-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/glossary_v1" },
-    { name = "gpqa-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/gpqa_v1" },
-    { name = "graphwalks-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/graphwalks_v1" },
+    { name = "gpqa-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/science/gpqa_v1" },
+    { name = "graphwalks-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/long_context/graphwalks_v1" },
     { name = "gsm8k-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/gsm8k_v1" },
-    { name = "i3-code-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/i3_code_v1" },
-    { name = "i3-science-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/i3_science_v1" },
-    { name = "ifbench-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/ifbench_v1" },
-    { name = "ifeval-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/ifeval_v1" },
+    { name = "i3-code-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/code/i3_code_v1" },
+    { name = "i3-logic-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/reasoning/i3_logic_v1" },
+    { name = "i3-math-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math/i3_math_v1" },
+    { name = "i3-science-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/science/i3_science_v1" },
+    { name = "ifbench-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/if/ifbench_v1" },
+    { name = "ifeval-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/if/ifeval_v1" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "kernels", marker = "extra == 'gpt-oss'" },
-    { name = "lean-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/lean_v1" },
+    { name = "lean-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math/lean_v1" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
-    { name = "livecodebench-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/livecodebench_v1" },
-    { name = "logic-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/logic_env" },
+    { name = "livecodebench-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/code/livecodebench_v1" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "longcot-mini-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/longcot_mini_v1" },
-    { name = "longcot-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/longcot_v1" },
-    { name = "longpdfs-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/longpdfs_v1" },
-    { name = "math-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math_env" },
-    { name = "math-env-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math_env_v1" },
+    { name = "longcot-mini-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/long_context/longcot_mini_v1" },
+    { name = "longcot-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/long_context/longcot_v1" },
+    { name = "longpdfs-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/long_context/longpdfs_v1" },
+    { name = "math-env-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math/math_env_v1" },
     { name = "math-python", marker = "extra == 'envs'", editable = "deps/verifiers/environments/math_python" },
-    { name = "math500-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math500_v1" },
-    { name = "mmlu-pro-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/mmlu_pro_v1" },
+    { name = "math500-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math/math500_v1" },
+    { name = "mmlu-pro-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/knowledge/mmlu_pro_v1" },
     { name = "modelexpress", marker = "extra == 'modelexpress'", specifier = "==0.3.0" },
     { name = "mooncake-transfer-engine", specifier = ">=0.3.10.post2" },
-    { name = "mrcr-v2-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/mrcr_v2_v1" },
+    { name = "mrcr-v2-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/long_context/mrcr_v2_v1" },
     { name = "msgspec", specifier = ">=0.18" },
     { name = "nixl", marker = "extra == 'disagg'" },
     { name = "nixl-cu12", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "nvidia-ml-py", specifier = ">=12.575.51" },
-    { name = "oolong-pairs-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/oolong_pairs_v1" },
-    { name = "oolong-real-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/oolong_real_v1" },
-    { name = "oolong-synth-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/oolong_synth_v1" },
+    { name = "oolong-pairs-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/long_context/oolong_pairs_v1" },
+    { name = "oolong-real-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/long_context/oolong_real_v1" },
+    { name = "oolong-synth-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/long_context/oolong_synth_v1" },
     { name = "openai", specifier = ">=1.106.1" },
-    { name = "openseeker-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/openseeker_v1" },
-    { name = "openthoughts-tblite-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/openthoughts_tblite_v1" },
+    { name = "openseeker-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/search/openseeker_v1" },
+    { name = "openthoughts-tblite-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/terminal/openthoughts_tblite_v1" },
     { name = "orjson", specifier = ">=3.10" },
     { name = "orjson", specifier = ">=3.11.0" },
     { name = "pandas", specifier = ">=2.0" },
-    { name = "papersearchqa-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/papersearchqa_v1" },
-    { name = "patterned-needle-in-haystack-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/patterned_needle_in_haystack_v1" },
+    { name = "papersearchqa-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/search/papersearchqa_v1" },
+    { name = "patterned-needle-in-haystack-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/long_context/patterned_needle_in_haystack_v1" },
     { name = "prime", specifier = ">=0.6.4" },
     { name = "prime-pydantic-config", editable = "deps/pydantic-config" },
     { name = "prime-rl", extras = ["disagg"], marker = "extra == 'all'" },
@@ -4132,41 +4132,41 @@ requires-dist = [
     { name = "prime-rl", extras = ["flash-attn-cute"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
-    { name = "prolog-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/prolog_v1" },
+    { name = "prolog-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/reasoning/prolog_v1" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.4.1" },
     { name = "r2e-gym-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/swe/r2e_gym_v1" },
-    { name = "redsearcher-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/redsearcher_v1" },
+    { name = "redsearcher-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/search/redsearcher_v1" },
     { name = "renderers", editable = "deps/renderers" },
     { name = "reverse-text", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text" },
     { name = "reverse-text-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text_v1" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
-    { name = "s1-deepresearch-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/s1_deepresearch_v1" },
+    { name = "s1-deepresearch-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/search/s1_deepresearch_v1" },
     { name = "scaleswe-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/swe/scaleswe_v1" },
     { name = "setproctitle", specifier = ">=1.3.0" },
-    { name = "simpleqa-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/simpleqa_v1" },
-    { name = "simpleqa-verified-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/simpleqa_verified_v1" },
+    { name = "simpleqa-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/knowledge/simpleqa_v1" },
+    { name = "simpleqa-verified-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/knowledge/simpleqa_verified_v1" },
     { name = "swebench-pro-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/swe/swebench_pro_v1" },
     { name = "swebench-verified-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/swe/swebench_verified_v1" },
     { name = "swelego-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/swe/swelego_v1" },
-    { name = "tau2-bench-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/tau2_bench_v1" },
+    { name = "tau2-bench-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/tool_use/tau2_bench_v1" },
     { name = "tenacity", specifier = ">=8.2.0" },
-    { name = "terminal-bench-2-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/terminal_bench_2_v1" },
+    { name = "terminal-bench-2-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/terminal/terminal_bench_2_v1" },
     { name = "tilelang", specifier = ">=0.1.8" },
-    { name = "tmax-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/tmax_v1" },
+    { name = "tmax-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/terminal/tmax_v1" },
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchaudio", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchdata", specifier = ">=0.11.0" },
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=23e4dfc" },
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", specifier = "==5.6.2" },
-    { name = "unscramble-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/unscramble_v1" },
-    { name = "uuid-ctf-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/uuid_ctf_v1" },
+    { name = "unscramble-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/reasoning/unscramble_v1" },
+    { name = "uuid-ctf-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/reasoning/uuid_ctf_v1" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verbatim-copy-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/verbatim_copy_v1" },
+    { name = "verbatim-copy-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/long_context/verbatim_copy_v1" },
     { name = "verifiers", extras = ["harbor"], editable = "deps/verifiers" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.24.0" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl" },
@@ -4174,10 +4174,10 @@ requires-dist = [
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wandb-workspaces", specifier = ">=0.4.3" },
-    { name = "wideseek-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/wideseek_v1" },
+    { name = "wideseek-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/search/wideseek_v1" },
     { name = "wiki-search", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wiki_search" },
     { name = "wiki-search-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wiki_search_v1" },
-    { name = "wikispeedia-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/wikispeedia_v1" },
+    { name = "wikispeedia-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/reasoning/wikispeedia_v1" },
     { name = "wordle", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wordle" },
     { name = "wordle-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wordle_v1" },
 ]
@@ -4251,7 +4251,7 @@ wheels = [
 [[package]]
 name = "prolog-v1"
 version = "0.4.0"
-source = { editable = "deps/research-environments/environments/prolog_v1" }
+source = { editable = "deps/research-environments/environments/reasoning/prolog_v1" }
 dependencies = [
     { name = "verifiers" },
 ]
@@ -4757,7 +4757,7 @@ wheels = [
 [[package]]
 name = "redsearcher-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/redsearcher_v1" }
+source = { editable = "deps/research-environments/environments/search/redsearcher_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -4960,7 +4960,7 @@ wheels = [
 [[package]]
 name = "s1-deepresearch-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/s1_deepresearch_v1" }
+source = { editable = "deps/research-environments/environments/search/s1_deepresearch_v1" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "verifiers" },
@@ -5123,7 +5123,7 @@ wheels = [
 [[package]]
 name = "simpleqa-v1"
 version = "0.2.0"
-source = { editable = "deps/research-environments/environments/simpleqa_v1" }
+source = { editable = "deps/research-environments/environments/knowledge/simpleqa_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "openai" },
@@ -5140,7 +5140,7 @@ requires-dist = [
 [[package]]
 name = "simpleqa-verified-v1"
 version = "0.2.0"
-source = { editable = "deps/research-environments/environments/simpleqa_verified_v1" }
+source = { editable = "deps/research-environments/environments/knowledge/simpleqa_verified_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "openai" },
@@ -5480,7 +5480,7 @@ dependencies = [
 [[package]]
 name = "tau2-bench-v1"
 version = "0.3.0"
-source = { editable = "deps/research-environments/environments/tau2_bench_v1" }
+source = { editable = "deps/research-environments/environments/tool_use/tau2_bench_v1" }
 dependencies = [
     { name = "tau2" },
     { name = "verifiers" },
@@ -5534,7 +5534,7 @@ wheels = [
 [[package]]
 name = "terminal-bench-2-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/terminal_bench_2_v1" }
+source = { editable = "deps/research-environments/environments/terminal/terminal_bench_2_v1" }
 dependencies = [
     { name = "verifiers" },
 ]
@@ -5680,7 +5680,7 @@ wheels = [
 [[package]]
 name = "tmax-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/tmax_v1" }
+source = { editable = "deps/research-environments/environments/terminal/tmax_v1" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
@@ -6000,7 +6000,7 @@ wheels = [
 [[package]]
 name = "unscramble-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/unscramble_v1" }
+source = { editable = "deps/research-environments/environments/reasoning/unscramble_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "verifiers" },
@@ -6024,7 +6024,7 @@ wheels = [
 [[package]]
 name = "uuid-ctf-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/uuid_ctf_v1" }
+source = { editable = "deps/research-environments/environments/reasoning/uuid_ctf_v1" }
 dependencies = [
     { name = "verifiers" },
 ]
@@ -6070,7 +6070,7 @@ wheels = [
 [[package]]
 name = "verbatim-copy-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/verbatim_copy_v1" }
+source = { editable = "deps/research-environments/environments/long_context/verbatim_copy_v1" }
 dependencies = [
     { name = "faker" },
     { name = "verifiers" },
@@ -6768,7 +6768,7 @@ wheels = [
 [[package]]
 name = "wideseek-v1"
 version = "0.2.0"
-source = { editable = "deps/research-environments/environments/wideseek_v1" }
+source = { editable = "deps/research-environments/environments/search/wideseek_v1" }
 dependencies = [
     { name = "datasets" },
     { name = "openai" },
@@ -6830,7 +6830,7 @@ requires-dist = [
 [[package]]
 name = "wikispeedia-v1"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/wikispeedia_v1" }
+source = { editable = "deps/research-environments/environments/reasoning/wikispeedia_v1" }
 dependencies = [
     { name = "verifiers" },
 ]
