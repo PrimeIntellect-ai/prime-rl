@@ -33,8 +33,9 @@ class _FakeMixer(torch.nn.Module):
 
 def _install_fake_scan(monkeypatch, seen_seq_idx: list[torch.Tensor]) -> None:
     def fake_scan(hidden_states, time_step, A, B, C, **kwargs):
+        assert kwargs["return_final_states"] is False
         seen_seq_idx.append(kwargs["seq_idx"].clone())
-        return hidden_states, None
+        return hidden_states
 
     ssd_combined = types.ModuleType("mamba_ssm.ops.triton.ssd_combined")
     ssd_combined.mamba_chunk_scan_combined = fake_scan

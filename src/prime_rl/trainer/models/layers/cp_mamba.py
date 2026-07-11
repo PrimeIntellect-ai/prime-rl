@@ -231,7 +231,7 @@ def mamba_cp_forward(
     # ── 5. SSM scan on full sequence, local heads ──
     dt_limit_kwargs = {} if mixer.time_step_limit is None else {"dt_limit": mixer.time_step_limit}
 
-    scan_output, _ = mamba_chunk_scan_combined(
+    scan_output = mamba_chunk_scan_combined(
         hidden_states_local.view(batch_size, full_seq_len, local_num_heads, mixer.head_dim),
         time_step,
         local_A,
@@ -241,7 +241,7 @@ def mamba_cp_forward(
         D=local_D,
         z=None,
         seq_idx=seq_idx,
-        return_final_states=True,
+        return_final_states=False,
         dt_bias=local_dt_bias,
         dt_softplus=True,
         **dt_limit_kwargs,
