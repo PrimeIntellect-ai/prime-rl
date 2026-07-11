@@ -226,6 +226,24 @@ def train(config: TrainerConfig):
         progress.step += 1
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
 
+        # Sync inference to the resumed policy (v{checkpoint_step}) BEFORE the loop. On resume the
+        # orchestrator advances to v{checkpoint_step} and pauses inference to receive those weights
+        # over NCCL. Since #2896 moved the in-loop broadcast to the END of a step, the trainer would
+        # otherwise wait for step {checkpoint_step+1} rollouts the paused engines cannot produce, so
+        # both sides deadlock. This one-shot broadcast restores the pre-#2896 top-of-loop sync.
+        if weight_broadcast is not None:
+            logger.info(f"Broadcasting resumed policy weights (v{checkpoint_step}) to inference engines")
+            # Runs are only registered during batch collection (packer.discover_runs), which hasn't
+            # happened yet before the loop. Discover run 0 now so used_idxs is populated (mirrors optim.py).
+            while 0 not in multi_run_manager.idx_2_id:
+                if world.is_master:
+                    multi_run_manager.discover_runs()
+                multi_run_manager.synchronize_state()
+                time.sleep(1)
+            for idx in multi_run_manager.used_idxs:
+                multi_run_manager.ready_to_update[idx] = True
+            weight_broadcast.broadcast_weights(model, step=checkpoint_step)
+
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
