@@ -340,3 +340,7 @@ def substitute_ring_attn(
     from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeGatedFlashAttention
 
     Qwen3_5MoeGatedFlashAttention._compute_attention = _ring_compute_attention
+
+    from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedFlashAttention
+
+    Qwen3_5GatedFlashAttention._compute_attention = _ring_compute_attention

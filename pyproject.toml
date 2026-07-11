@@ -34,7 +34,7 @@ dependencies = [
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
     "torchtitan",
-    "verifiers[harbor]>=0.1.15.dev411",
+    "verifiers[harbor]>=0.2.0",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
@@ -80,7 +80,6 @@ envs = [
     "deepdive-v1",
     "deepwiki-v1",
     "forth-lang-v1",
-    "general-agent",
     "general-agent-v1",
     "glossary-v1",
     "gpqa-v1",
@@ -114,7 +113,6 @@ envs = [
     "redsearcher-v1",
     "reverse-text",
     "reverse-text-v1",
-    "rlm-search",
     "s1-deepresearch-v1",
     "scaleswe-v1",
     "simpleqa-v1",
@@ -124,6 +122,7 @@ envs = [
     "swelego-v1",
     "tau2-bench-v1",
     "terminal-bench-2-v1",
+    "tmax-v1",
     "unscramble-v1",
     "uuid-ctf-v1",
     "verbatim-copy-v1",
@@ -255,7 +254,6 @@ color-codeword-v1 = { path = "deps/verifiers/environments/color_codeword_v1", ed
 deepdive-v1 = { path = "deps/research-environments/environments/deepdive_v1", editable = true }
 deepwiki-v1 = { path = "deps/verifiers/environments/deepwiki_v1", editable = true }
 forth-lang-v1 = { path = "deps/research-environments/environments/forth_lang_v1", editable = true }
-general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
 general-agent-v1 = { path = "deps/research-environments/environments/general_agent_v1", editable = true }
 glossary-v1 = { path = "deps/verifiers/environments/glossary_v1", editable = true }
 gpqa-v1 = { path = "deps/research-environments/environments/gpqa_v1", editable = true }
@@ -285,20 +283,20 @@ openthoughts-tblite-v1 = { path = "deps/research-environments/environments/opent
 papersearchqa-v1 = { path = "deps/research-environments/environments/papersearchqa_v1", editable = true }
 patterned-needle-in-haystack-v1 = { path = "deps/research-environments/environments/patterned_needle_in_haystack_v1", editable = true }
 prolog-v1 = { path = "deps/research-environments/environments/prolog_v1", editable = true }
-r2e-gym-v1 = { path = "deps/research-environments/environments/r2e_gym_v1", editable = true }
+r2e-gym-v1 = { path = "deps/research-environments/environments/swe/r2e_gym_v1", editable = true }
 redsearcher-v1 = { path = "deps/research-environments/environments/redsearcher_v1", editable = true }
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
 reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editable = true }
-rlm-search = { path = "deps/research-environments/environments/rlm_search", editable = true }
 s1-deepresearch-v1 = { path = "deps/research-environments/environments/s1_deepresearch_v1", editable = true }
-scaleswe-v1 = { path = "deps/research-environments/environments/scaleswe_v1", editable = true }
+scaleswe-v1 = { path = "deps/research-environments/environments/swe/scaleswe_v1", editable = true }
 simpleqa-v1 = { path = "deps/research-environments/environments/simpleqa_v1", editable = true }
 simpleqa-verified-v1 = { path = "deps/research-environments/environments/simpleqa_verified_v1", editable = true }
-swebench-pro-v1 = { path = "deps/research-environments/environments/swebench_pro_v1", editable = true }
-swebench-verified-v1 = { path = "deps/research-environments/environments/swebench_verified_v1", editable = true }
-swelego-v1 = { path = "deps/research-environments/environments/swelego_v1", editable = true }
+swebench-pro-v1 = { path = "deps/research-environments/environments/swe/swebench_pro_v1", editable = true }
+swebench-verified-v1 = { path = "deps/research-environments/environments/swe/swebench_verified_v1", editable = true }
+swelego-v1 = { path = "deps/research-environments/environments/swe/swelego_v1", editable = true }
 tau2-bench-v1 = { path = "deps/research-environments/environments/tau2_bench_v1", editable = true }
 terminal-bench-2-v1 = { path = "deps/research-environments/environments/terminal_bench_2_v1", editable = true }
+tmax-v1 = { path = "deps/research-environments/environments/tmax_v1", editable = true }
 unscramble-v1 = { path = "deps/research-environments/environments/unscramble_v1", editable = true }
 uuid-ctf-v1 = { path = "deps/research-environments/environments/uuid_ctf_v1", editable = true }
 verbatim-copy-v1 = { path = "deps/research-environments/environments/verbatim_copy_v1", editable = true }

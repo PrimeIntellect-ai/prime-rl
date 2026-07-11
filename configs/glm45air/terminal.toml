@@ -1,0 +1,181 @@
+# exp: GLM-4.5-Air (100B MoE) RL across our v1 TERMINAL-domain envs — agentic shell/sandbox tasks
+# run through the rlm harness (ipython-only) on a prime sandbox. Each task ships its own Docker image
+# (NEEDS_CONTAINER) injected into the sandbox; grading is host-side inside the container. GRPO +
+# linear length penalty. 2 train + 4 infer nodes. Single run label (glm45air-terminal) for all envs.
+
+max_steps = 1000
+seq_len = 131072
+
+# Redirect compile/JIT caches to node-local /tmp (per user + job) to avoid contended shared-FS caches.
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/.triton-cache"
+
+[slurm]
+job_name = "glm45air-terminal"
+partition = "all"
+# Clean up this run's orphaned prime sandboxes before launch (hardcoded label, matches the harness labels below).
+pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-terminal" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 4
+
+[wandb]
+project = "terminal-ablations"
+name = "glm45air-terminal"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[ckpt]
+interval = 50
+keep_last = 1
+resume_step = -1
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+
+# --- Trainer ---
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 8
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.ckpt]
+skip_gather_master_weights = true
+skip_optimizer = true
+
+[trainer.optim]
+type = "muon"
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 256
+group_size = 16
+max_off_policy_steps = 32
+max_inflight_rollouts = 512
+
+[orchestrator.renderer]
+name = "glm-4.5"
+thinking_retention = "all"
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.prime_monitor]
+
+# --- Train: tmax (per-task Docker image in a prime sandbox, rlm ipython) ---
+
+[[orchestrator.train.env]]
+name = "tmax"
+harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
+
+[orchestrator.train.env.taskset]
+id = "tmax-v1"
+
+# # Metric-only monitors (weight 0): rlm harness-mechanics + swe code-usage rubrics, judged by GLM-5.2.
+# [[orchestrator.train.env.taskset.judges]]
+# id = "rubric"
+# name = "rlm"
+# path = "deps/research-environments/rubrics/rlm.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
+
+# [[orchestrator.train.env.taskset.judges]]
+# id = "rubric"
+# name = "swe"
+# path = "deps/research-environments/rubrics/swe.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
+
+# --- Eval: swebench-verified (avg@1) + terminal-bench-2 (full, avg@4) every 20 steps, incl. step 0 ---
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
+timeout = { rollout = 3600 }
+
+[orchestrator.eval.env.taskset]
+id = "swebench-verified-v1"
+use_prime_registry = true
+
+# [[orchestrator.eval.env.taskset.judges]]
+# id = "rubric"
+# name = "rlm"
+# path = "deps/research-environments/rubrics/rlm.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
+
+# [[orchestrator.eval.env.taskset.judges]]
+# id = "rubric"
+# name = "swe"
+# path = "deps/research-environments/rubrics/swe.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
+
+[[orchestrator.eval.env]]
+name = "terminal-bench-2"
+group_size = 4 # avg@4
+harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
+timeout = { rollout = 3600 }
+
+[orchestrator.eval.env.taskset]
+id = "terminal-bench-2-v1"
+
+# [[orchestrator.eval.env.taskset.judges]]
+# id = "rubric"
+# name = "rlm"
+# path = "deps/research-environments/rubrics/rlm.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
+
+# [[orchestrator.eval.env.taskset.judges]]
+# id = "rubric"
+# name = "swe"
+# path = "deps/research-environments/rubrics/swe.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
+
+# --- Inference ---
+
+[inference]
+enable_return_routed_experts = true
+
+# vLLM + FlashInfer caches on node-local /tmp.
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
+
+[inference.model]
+max_model_len = 131072
+
+[inference.parallel]
+tp = 8

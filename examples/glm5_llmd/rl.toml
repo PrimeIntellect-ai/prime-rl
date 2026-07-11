@@ -19,15 +19,14 @@ quantize_in_weight_transfer = true
 [deployment]
 type = "multi_node"
 num_train_nodes = 16
-num_infer_nodes = 16
 gpus_per_node = 8
 num_infer_replicas = 1
 
 [inference.deployment]
 type = "disaggregated"
-num_prefill_nodes = 8
+prefill_nodes_per_replica = 2
 num_prefill_replicas = 4
-num_decode_nodes = 8
+decode_nodes_per_replica = 8
 num_decode_replicas = 1
 # skip warmup for faster start in cost of some jit overhead early
 # ucx needs to be set else random segfaults, vllm can't autoset before importing for some reason

@@ -1,0 +1,177 @@
+# exp: GLM-4.5-Air (100B MoE) RL across our v1 SEARCH-domain envs — bring-your-own-search QA, run
+# through the rlm harness (its built-in `search` skill) on a prime sandbox. GRPO + linear length
+# penalty. 2 train + 4 infer nodes. Single run label (glm45air-search) for all envs.
+
+max_steps = 1000
+seq_len = 131072
+
+# Redirect compile/JIT caches to node-local /tmp (per user + job) to avoid contended shared-FS caches.
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/.triton-cache"
+
+[slurm]
+job_name = "glm45air-search"
+partition = "all"
+# Clean up this run's orphaned prime sandboxes before launch (hardcoded label, matches the harness labels below).
+pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-search" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 4
+
+[wandb]
+project = "search-ablations"
+name = "glm45air-search"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[ckpt]
+interval = 50
+keep_last = 1
+resume_step = -1
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+
+# --- Trainer ---
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 8
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.ckpt]
+skip_gather_master_weights = true
+skip_optimizer = true
+
+[trainer.optim]
+type = "muon"
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 256
+group_size = 16
+max_off_policy_steps = 32
+max_inflight_rollouts = 512
+
+[orchestrator.renderer]
+name = "glm-4.5"
+thinking_retention = "all"
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.0
+
+[orchestrator.prime_monitor]
+
+# --- Train: the search envs with usable training data (rlm `search` skill, prime sandbox) ---
+
+# openseeker/redsearcher pre-plug a `reference` judge; declaring `judges` here replaces that
+# entry wholesale (keep `name`/`question_field`/`choices` in sync with the taskset defaults —
+# the plugged BC-style prompt is replaced by the reference judge's stock prompt).
+[[orchestrator.train.env]]
+name = "openseeker"
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-search"] } }
+
+[orchestrator.train.env.taskset]
+id = "openseeker-v1"
+
+[[orchestrator.train.env.taskset.task.judges]]
+id = "reference"
+name = "correct"
+model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+question_field = "question"
+choices = ["A", "B"]
+
+# # Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
+# [[orchestrator.train.env.taskset.task.judges]]
+# id = "rubric"
+# name = "rlm"
+# path = "deps/research-environments/rubrics/rlm.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
+
+[[orchestrator.train.env]]
+name = "redsearcher"
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-search"] } }
+
+[orchestrator.train.env.taskset]
+id = "redsearcher-v1" # optional `difficulty` filter (easy/medium/hard)
+
+[[orchestrator.train.env.taskset.task.judges]]
+id = "reference"
+name = "correct"
+model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+question_field = "question"
+choices = ["A", "B"]
+
+# # Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
+# [[orchestrator.train.env.taskset.task.judges]]
+# id = "rubric"
+# name = "rlm"
+# path = "deps/research-environments/rubrics/rlm.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
+
+# --- Eval: BrowseComp held-out test, every 20 steps (incl. step 0) ---
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.env]]
+name = "browsecomp"
+num_examples = 500 # full set is 1266; cap eval at 500
+harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-search"] } }
+timeout = { rollout = 3600 }
+
+[orchestrator.eval.env.taskset]
+id = "browsecomp-v1"
+task = { judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507" } }
+
+# # Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
+# [[orchestrator.eval.env.taskset.task.judges]]
+# id = "rubric"
+# name = "rlm"
+# path = "deps/research-environments/rubrics/rlm.toml"
+# model = "zai-org/GLM-5.2"
+# weight = 0.0
+
+# --- Inference ---
+
+[inference]
+enable_return_routed_experts = true
+
+# vLLM + FlashInfer caches on node-local /tmp.
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
+
+[inference.model]
+max_model_len = 131072
+
+[inference.parallel]
+tp = 8

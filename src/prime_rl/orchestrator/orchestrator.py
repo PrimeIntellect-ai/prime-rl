@@ -75,7 +75,7 @@ from prime_rl.utils.client import init_nccl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
+from prime_rl.utils.pathing import get_log_dir, get_trace_path
 from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
     clean_exit,
@@ -465,6 +465,18 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 continue
 
+            # Every completed rollout — errored, filtered, or never batched — lands in the
+            # ``all`` trace file the moment it arrives, so it survives crashes and drains.
+            # Train rollouts belong to the batch window currently collecting (``progress.step``),
+            # eval rollouts to the step whose eval triggered them.
+            step = rollout.eval_step if rollout.kind == "eval" else self.progress.step
+            assert step is not None
+            await asyncio.to_thread(
+                save_rollouts,
+                [rollout.to_record()],
+                get_trace_path(self.config.output_dir, step, rollout.kind, "all"),
+            )
+
             if rollout.kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(rollout)
@@ -524,12 +536,13 @@ class Orchestrator:
                 f"({n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
-        # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables); to_record
-        # drops the per-node training tensors — they're for training, not the rollout record, and
-        # can't round-trip json (raw numpy bytes).
-        rollout_dicts = [r.to_record() for r in batch.rollouts]
-        step_path = get_step_path(get_rollout_dir(config.output_dir), step)
-        await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
+        # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
+        # at ship time; the full arrival window already streamed into ``all`` on arrival.
+        # to_record drops the per-node training tensors — they're for training, not the rollout
+        # record, and can't round-trip json (raw numpy bytes).
+        effective = batch.rollouts.effective
+        records = [r.to_record() for r in effective]
+        await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.progress.step += 1
@@ -540,7 +553,6 @@ class Orchestrator:
 
         # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``batch.rollouts`` is the
         # full arrival window (errored + filtered included); ``.effective`` is the clean subset.
-        effective = batch.rollouts.effective
         metrics: dict[str, float] = {}
         for subset, pool in (("all", batch.rollouts), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
@@ -740,12 +752,13 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
             return
 
-        rollout_dicts = [r.to_record() for r in batch.rollouts]
-        step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
+        # The non-errored subset lands in the per-step ``effective`` trace file on epoch
+        # completion (multiple eval envs share the step file — each epoch appends its cohort
+        # once, and every record carries ``env_name``); the full returned cohort already
+        # streamed into ``all`` on arrival.
+        records = [r.to_record() for r in batch.rollouts.effective]
         await asyncio.to_thread(
-            save_rollouts,
-            rollout_dicts,
-            step_path / f"eval_rollouts_{batch.env_name}.jsonl",
+            save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
         policy_versions = {r.policy_version for r in batch.rollouts}
@@ -801,9 +814,18 @@ class Orchestrator:
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
         count is ``progress.step - 1``."""
         lead = (self.progress.step - 1) - self.policy.version
+        # The trainer skips the final NCCL weight broadcast (inference group is
+        # torn down), so policy.version never reaches the last step. Without this
+        # the gate deadlocks waiting for a version that will never be published.
+        # The last batch uses the penultimate policy anyway, so let it through.
+        building_final_batch_nccl = (
+            self.config.weight_broadcast.type == "nccl"
+            and self.config.max_steps is not None
+            and self.progress.step >= self.config.max_steps - 1
+        )
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG:
+        if lead > TARGET_LAG and not building_final_batch_nccl:
             if was_set:
                 get_logger().info(
                     "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."

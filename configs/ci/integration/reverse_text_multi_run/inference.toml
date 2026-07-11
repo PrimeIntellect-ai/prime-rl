@@ -8,3 +8,6 @@ gpu_memory_utilization = 0.7
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 max_model_len = 2048
 
+[weight_broadcast]
+type = "filesystem"
+

@@ -76,6 +76,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         template_vars.update(
             num_prefill_nodes=config.deployment.num_prefill_nodes,
             num_decode_nodes=config.deployment.num_decode_nodes,
+            prefill_nodes_per_replica=config.deployment.prefill_nodes_per_replica,
+            decode_nodes_per_replica=config.deployment.decode_nodes_per_replica,
             num_prefill_replicas=config.deployment.num_prefill_replicas,
             num_decode_replicas=config.deployment.num_decode_replicas,
             prefill_port=config.deployment.prefill_port,

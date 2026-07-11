@@ -82,8 +82,8 @@ def _build_rollout(
             )
             parent = len(nodes) - 1
 
-    rollout = Rollout[vf.Task](
-        task=vf.Task(idx=0, prompt=None),
+    rollout = Rollout[vf.TaskData](
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
         nodes=nodes,
         rewards={"reward": reward},
         metrics=metrics or {},
