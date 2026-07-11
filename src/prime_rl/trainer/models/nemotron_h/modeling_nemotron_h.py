@@ -23,6 +23,7 @@ from prime_rl.trainer.models.layers.cp_mamba import mamba_cp_forward
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import LatentMoE, NemotronHRouter, NonGatedGroupedExperts
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
+from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
 from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
     convert_hf_layer_to_prime,
@@ -229,22 +230,15 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
         hidden_states = self.norm(hidden_states)
 
         if self.cp_enabled:
-            from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS
-
-            try:
-                full_cu_seqlens = ULYSSES_PARAMS["cu_seqlens"]
-            except KeyError as error:
-                raise RuntimeError(
-                    "Nemotron-H Ulysses CP requires full pre-shard cu_seqlens. "
-                    "Call setup_cp_params before the model forward."
-                ) from error
+            # The local cu_seqlens cover only this shard; conv/scan need the full
+            # pre-shard document boundaries published by setup_cp_params.
             hidden_states = mamba_cp_forward(
                 self.mamba,
                 hidden_states,
                 self._cp_group,
                 self._cp_rank,
                 self._cp_world_size,
-                full_cu_seqlens,
+                ULYSSES_PARAMS["cu_seqlens"],
             )
         else:
             hidden_states = self.mamba(hidden_states, cu_seqlens=cu_seqlens)

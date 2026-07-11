@@ -1,16 +1,10 @@
-import importlib.util
 import sys
 import types
-from pathlib import Path
 
 import pytest
 import torch
 
-_SOURCE = Path(__file__).parents[4] / "src/prime_rl/trainer/models/layers/cp_mamba.py"
-_SPEC = importlib.util.spec_from_file_location("cp_mamba_under_test", _SOURCE)
-assert _SPEC is not None and _SPEC.loader is not None
-cp_mamba = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(cp_mamba)
+from prime_rl.trainer.models.layers import cp_mamba
 
 
 class _FakeMixer(torch.nn.Module):
@@ -73,4 +67,4 @@ def test_mamba_cp_forward_resets_conv_and_scan_at_packed_boundaries(monkeypatch)
 
 def test_mamba_cp_forward_rejects_local_boundaries():
     with pytest.raises(ValueError, match="full sequence length 4"):
-        cp_mamba._build_seq_idx(torch.tensor([0, 2], dtype=torch.int32), 4, torch.device("cpu"))
+        cp_mamba._build_seq_idx([0, 2], 4, torch.device("cpu"))
