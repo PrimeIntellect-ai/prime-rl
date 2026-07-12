@@ -566,10 +566,11 @@ class Orchestrator:
         records = [r.to_record() for r in effective]
         await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
 
-        await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         # TTT replay artifacts: defer shipped rollouts' adapter checkpoints until the
-        # trainer consumes this step; delete dropped rollouts' checkpoints now.
+        # trainer consumes this step; delete dropped rollouts' checkpoints now. Register
+        # before sending so a fast trainer broadcast cannot overtake GC bookkeeping.
         self.ttt_gc.track_batch(step, batch)
+        await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.progress.step += 1
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).

@@ -11,8 +11,9 @@ recycled pairs (`qa_recycle_samples`) — riding the same training batch, no rl 
 
 Runs in the train sink's group phase (the same scope as `Algorithm.score_group`: the
 cohort is complete, rewards are known, filtering hasn't happened). The call goes to the
-live policy through the env's sampler pool. Failures are logged and skipped — meta
-lessons are enrichment, not correctness; a failed extraction must not fail the group.
+live policy through the env's sampler pool. The train sink logs and skips failures —
+meta lessons are enrichment, not correctness; a failed extraction must not fail the
+group.
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ from typing import TYPE_CHECKING
 from verifiers.v1.ttt import QAConfig, dedup_items, parse_qa_items
 
 from prime_rl.transport import TrainingSample
-from prime_rl.utils.logger import get_logger
 from prime_rl.utils.qa_render import render_qa_pair
 
 if TYPE_CHECKING:
@@ -51,22 +51,22 @@ def format_attempts(group: list["Rollout"]) -> str:
 
 
 async def extract_meta_lessons(group: list["Rollout"], qa: QAConfig, openai: "AsyncOpenAI", model: str) -> list[dict]:
-    """One meta-extraction call over the group; returns the parsed, deduplicated items
-    (empty on any failure — enrichment, never a group error)."""
+    """One meta-extraction call over the group; return parsed, deduplicated items.
+
+    Provider failures intentionally propagate to the train sink, which contains them
+    and increments ``ttt/meta_groups_dropped``. Returning an empty list is reserved for
+    valid no-op outcomes such as a group with fewer than two pair-bearing rollouts.
+    """
     with_pairs = [r for r in group if any(u.get("qa_pairs") for u in r.info.get("ttt", {}).get("updates", []))]
     if len(with_pairs) < 2:
         return []  # nothing to contrast
     prompt = qa.meta_prompt.format(num_attempts=len(with_pairs), attempts=format_attempts(with_pairs))
-    try:
-        completion = await openai.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=qa.meta_max_tokens,
-        )
-        text = completion.choices[0].message.content or ""
-    except Exception:
-        get_logger().warning("ttt: meta-lesson extraction failed for a group", exc_info=True)
-        return []
+    completion = await openai.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=qa.meta_max_tokens,
+    )
+    text = completion.choices[0].message.content or ""
     items = parse_qa_items(text)
     if qa.dedup_threshold is not None:
         items = dedup_items(items, qa.dedup_threshold)
@@ -78,7 +78,7 @@ def meta_lesson_samples(items: list[dict], group: list["Rollout"], tokenizer, en
     system prompt + tools (read from any rollout's recorded QA conditioning) — the same
     frame `qa_recycle_samples` uses."""
     ttt_info = next(
-        (r.info["ttt"] for r in group if r.info.get("ttt", {}).get("system_prompt")),
+        (info for r in group if (info := r.info.get("ttt", {})).get("system_prompt") or info.get("tools")),
         {},
     )
     system_prompt = ttt_info.get("system_prompt")

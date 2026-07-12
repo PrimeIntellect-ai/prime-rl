@@ -20,8 +20,6 @@ import asyncio
 import uuid
 from collections import defaultdict
 
-import verifiers.v1 as vf
-
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
@@ -65,6 +63,11 @@ class TrainSink:
         self.pending_rollouts: TrainRollouts = TrainRollouts()
         self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
         self.pending_batch: list[Rollout] = []
+        # A5 lessons belong to the completed group, not to an arbitrary rollout.
+        # Keep them separate until a post-filter survivor from that group ships;
+        # otherwise filtering the first survivor or splitting the group across
+        # batches can silently lose the lessons.
+        self._group_meta_samples: dict[uuid.UUID, list[TrainingSample]] = {}
         # Running token total of ``pending_batch`` (token-batched runs), kept in
         # sync on append/pop so the readiness check never re-walks the uncached
         # ``Trace.num_total_tokens`` graph property per arrival.
@@ -84,6 +87,34 @@ class TrainSink:
         # a silently rising dropped rate means the arm is quietly running without lessons.
         self.meta_groups_ok = 0
         self.meta_groups_dropped = 0
+
+    def _rollout_batch_tokens(self, rollout: Rollout) -> int:
+        """Tokens this rollout contributes to the trainer payload.
+
+        Preserve Prime-RL's trace-token accounting for ordinary environments. TTT
+        rollouts can add recycled/meta CE samples, so their batching must use the
+        actual serialized samples.
+        """
+        ttt_config = getattr(self.train_envs.get(rollout.env_name).config, "ttt", None)
+        if ttt_config is not None and ttt_config.enabled:
+            return sum(len(sample.token_ids) for sample in rollout.samples)
+        return rollout.num_total_tokens
+
+    @staticmethod
+    def _sample_tokens(samples: list[TrainingSample]) -> int:
+        return sum(len(sample.token_ids) for sample in samples)
+
+    def _refresh_pending_tokens(self) -> None:
+        """Recompute token-batch progress after a cohort is removed."""
+        if self.token_batch_size is None:
+            return
+        self.pending_tokens = sum(self._rollout_batch_tokens(r) for r in self.pending_batch)
+        pending_group_ids = {r.group_id for r in self.pending_batch}
+        self.pending_tokens += sum(
+            self._sample_tokens(samples)
+            for group_id, samples in self._group_meta_samples.items()
+            if group_id in pending_group_ids
+        )
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -156,7 +187,8 @@ class TrainSink:
         # None = same as the rollout, so nothing to stamp).
         env = self.train_envs.get(rollout.env_name)
         ttt_config = getattr(env.config, "ttt", None)
-        qa_config = getattr(ttt_config, "qa", None)
+        active_ttt = ttt_config is not None and ttt_config.enabled
+        qa_config = getattr(ttt_config, "qa", None) if active_ttt else None
         qa_temperature = getattr(qa_config, "temperature", None)
         try:
             samples = await asyncio.to_thread(
@@ -168,9 +200,13 @@ class TrainSink:
                 rollout_temperature=env.sampling_args["temperature"],
             )
         except Exception as exc:
-            # Tokenization can raise (e.g. a stamped TTT branch with no recorded
-            # checkpoint path, or mixed ttt_version within a branch). Contain it as a
-            # per-rollout error so the group logic drops it instead of killing the run.
+            if not active_ttt:
+                # Preserve Prime-RL's existing fail-fast behavior outside the feature.
+                raise
+            # TTT checkpoint/version mapping can reject a malformed recorded branch.
+            # Contain that rollout so the group logic drops it instead of killing the run.
+            import verifiers.v1 as vf
+
             get_logger().warning(f"Tokenization failed for rollout in group {rollout.group_id}", exc_info=True)
             rollout.errors.append(vf.Error(type="TokenizationError", message=str(exc)))
             rollout.samples = []
@@ -232,9 +268,10 @@ class TrainSink:
 
         # TTT group-level meta-extraction: one call over the finished cohort (every
         # rollout's Q&A pairs + its reward) distills contrastive, general lessons —
-        # what the high-reward attempts did that the low-reward ones didn't — shipped
-        # as ce-routed samples on the group's first survivor. Enrichment: a failed
-        # extraction logs and skips, never fails the group.
+        # what the high-reward attempts did that the low-reward ones didn't. Keep the
+        # resulting ce-routed samples group-owned until a member survives both filter
+        # passes. Enrichment: a failed extraction logs and skips, never fails the group.
+        meta_samples: list[TrainingSample] = []
         if qa_config is not None and qa_config.meta_lessons and len(survivors) >= 2:
             from prime_rl.orchestrator.qa_meta import (
                 build_meta_client,
@@ -249,8 +286,8 @@ class TrainSink:
                     survivors, qa_config, self._meta_clients[env_name], env.sampler.pool.model_name
                 )
                 if items:
-                    survivors[0].samples.extend(
-                        await asyncio.to_thread(meta_lesson_samples, items, survivors, self.tokenizer, env_name)
+                    meta_samples = await asyncio.to_thread(
+                        meta_lesson_samples, items, survivors, self.tokenizer, env_name
                     )
                     get_logger().debug(
                         f"TTT meta-lessons | env={env_name} task_idx={task_idx} | {len(items)} lesson(s) extracted"
@@ -258,9 +295,9 @@ class TrainSink:
                 self.meta_groups_ok += 1
             except Exception:
                 # Meta lessons are enrichment, never correctness — the same containment
-                # QA recycling gets above. extract_meta_lessons guards its own model call,
-                # but client construction and meta_lesson_samples' chat-template rendering
-                # (recorded tool schemas) can raise; a bad group must not kill the run.
+                # QA recycling gets above. Client construction, the provider call, and
+                # meta_lesson_samples' chat-template rendering (recorded tool schemas)
+                # can raise; a bad group must not kill the run.
                 self.meta_groups_dropped += 1
                 get_logger().warning(
                     f"Meta-lesson extraction failed | env={env_name} task_idx={task_idx}", exc_info=True
@@ -271,6 +308,7 @@ class TrainSink:
         # Only fill unstamped samples: ce recycle/meta samples (T=1) and ttt_qa
         # branches (qa.temperature) already carry theirs.
         temperature = env.sampling_args["temperature"]
+        queued_group_member = False
         for r in survivors:
             for sample in r.samples:
                 if not sample.temperatures:
@@ -294,8 +332,14 @@ class TrainSink:
             r.filter_results = {}
             r.is_filtered = False
             self.pending_batch.append(r)
+            queued_group_member = True
             if self.token_batch_size is not None:
-                self.pending_tokens += r.num_total_tokens
+                self.pending_tokens += self._rollout_batch_tokens(r)
+
+        if meta_samples and queued_group_member:
+            self._group_meta_samples[group_id] = meta_samples
+            if self.token_batch_size is not None:
+                self.pending_tokens += self._sample_tokens(meta_samples)
 
         # Per-group summary. One line per finalized group; per-filter
         # detection breakdown lives at debug level in ``apply_filters``
@@ -321,14 +365,18 @@ class TrainSink:
             assert self.token_batch_size is not None
             cut = 0
             running = 0
+            counted_meta_groups: set[uuid.UUID] = set()
             for i, r in enumerate(self.pending_batch):
-                running += r.num_total_tokens
+                running += self._rollout_batch_tokens(r)
+                if r.group_id not in counted_meta_groups:
+                    running += self._sample_tokens(self._group_meta_samples.get(r.group_id, []))
+                    counted_meta_groups.add(r.group_id)
                 cut = i + 1
                 if running >= self.token_batch_size:
                     break
             cohort = self.pending_batch[:cut]
             self.pending_batch = self.pending_batch[cut:]
-            self.pending_tokens -= running
+            self._refresh_pending_tokens()
 
         if self.post_filters:
             apply_filters(self.post_filters, cohort)
@@ -336,6 +384,21 @@ class TrainSink:
         # Samples are pre-built by ``process_rollout``; ``process_group`` already stamped the
         # advantage stream and loss routing on each sample. Filtered rollouts don't ship.
         samples: list[TrainingSample] = [sample for r in cohort if not r.is_filtered for sample in r.samples]
+
+        # Deliver a group's meta lessons exactly once with its first post-filter
+        # survivor. If this cohort contains only filtered members but later members
+        # remain queued, retain the lessons for the later cohort.
+        remaining_group_ids = {r.group_id for r in self.pending_batch}
+        for group_id in dict.fromkeys(r.group_id for r in cohort):
+            meta_samples = self._group_meta_samples.get(group_id)
+            if not meta_samples:
+                continue
+            if any(r.group_id == group_id and not r.is_filtered for r in cohort):
+                samples.extend(meta_samples)
+                del self._group_meta_samples[group_id]
+            elif group_id not in remaining_group_ids:
+                del self._group_meta_samples[group_id]
+        self._refresh_pending_tokens()
 
         # ``rollouts`` is the whole arrival window (errored + filtered + survivors); ``samples`` is
         # the shipped cohort's trainable payload. ``rollouts.effective`` / ``rollouts.metrics`` derive

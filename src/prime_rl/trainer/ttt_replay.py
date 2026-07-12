@@ -51,7 +51,12 @@ def _module_path(key: str) -> tuple[str, str] | None:
 def _adapter_delta(
     x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, scale: float, out_dtype: torch.dtype
 ) -> torch.Tensor:
-    return ((x.to(a.dtype) @ a.T @ b.T).to(out_dtype)) * scale
+    # The trainer can keep FP32 master parameters outside an FSDP forward while FSDP (or
+    # autocast) actually executes the module in BF16. ``output.dtype`` is the observable
+    # compute dtype at the hook boundary; casting the frozen checkpoint tensors here
+    # matches the TTT MultiLoRA/vLLM forward instead of accidentally replaying in the
+    # first model parameter's storage dtype.
+    return (x.to(out_dtype) @ a.to(out_dtype).T @ b.to(out_dtype).T) * scale
 
 
 class TTTReplayManager:
@@ -74,8 +79,6 @@ class TTTReplayManager:
         self._modules: dict[str, nn.Module] = {
             name.replace(_CHECKPOINT_PREFIX, ""): mod for name, mod in model.named_modules()
         }
-        # Match the model's parameter dtype so the hook delta composes with mixed precision.
-        self._dtype = next(model.parameters(), torch.empty(0, dtype=torch.bfloat16)).dtype
         self._hooked: set[int] = set()
         # module -> (A [r,in], B [out,r], scale); consulted by the hooks each forward.
         self._active: dict[nn.Module, tuple[torch.Tensor, torch.Tensor, float]] = {}
@@ -101,6 +104,11 @@ class TTTReplayManager:
                     f"TTT replay: adapter {path} targets module {module_path!r}, which "
                     "does not exist on the trainer model — the TTT service and the trainer "
                     "must run the same architecture."
+                )
+            if not isinstance(module, nn.Linear):
+                raise ValueError(
+                    f"TTT replay: adapter {path} targets {module_path!r}, resolved as "
+                    f"{type(module).__name__}, but frozen replay only supports nn.Linear modules"
                 )
             self._ensure_hook(module)
             new_active[module] = (a, b, scale)
@@ -165,9 +173,7 @@ class TTTReplayManager:
                 unknown_keys.append(key)
                 continue
             module_path, which = resolved
-            halves.setdefault(module_path, {})[which] = tensor.to(
-                self.device, dtype=self._dtype, non_blocking=False
-            ).requires_grad_(False)
+            halves.setdefault(module_path, {})[which] = tensor.to(self.device, non_blocking=False).requires_grad_(False)
         if unknown_keys:
             # A key we can't map would silently drop part of the adapter — fail instead.
             raise ValueError(f"TTT replay: adapter {path} has unrecognized tensor keys: {unknown_keys}")

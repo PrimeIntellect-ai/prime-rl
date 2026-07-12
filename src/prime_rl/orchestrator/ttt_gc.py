@@ -84,6 +84,7 @@ class TTTCheckpointGC:
         dead_dirs -= shipped_dirs
         if dead_dirs:
             self._delete(dead_dirs, reason=f"dead rollouts of step {step}")
+        self._carry -= dead_dirs
         self._carry |= undecided_dirs - shipped_dirs
         self._carry -= shipped_dirs
         if shipped_dirs:

@@ -270,7 +270,7 @@ def make_trace(node_versions: list[int | None], info: dict | None = None):
     from verifiers.v1.graph import MessageNode
     from verifiers.v1.types import AssistantMessage, UserMessage
 
-    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    trace = vf.Trace(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="t")))
     parent = None
     for i, version in enumerate(node_versions):
         sampled = i % 2 == 1  # alternate user/assistant
@@ -383,7 +383,7 @@ def test_qa_temperature_is_node_granular_on_mixed_branches():
 
     from prime_rl.orchestrator.trajectories import trace_to_samples
 
-    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    trace = vf.Trace(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="t")))
 
     def add(parent, message, sampled, ttt_qa=False):
         trace.nodes.append(
@@ -549,7 +549,7 @@ def test_shared_sampled_prefix_trained_once():
 
     from prime_rl.orchestrator.trajectories import trace_to_samples
 
-    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    trace = vf.Trace(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="t")))
     # Shared trajectory: user -> assistant (sampled).
     trace.nodes.append(MessageNode(parent=None, message=UserMessage(content="u"), token_ids=[1], mask=[False]))
     trace.nodes.append(
@@ -705,7 +705,7 @@ async def test_meta_extraction_contrasts_rewards():
 
 
 @pytest.mark.asyncio
-async def test_meta_extraction_needs_two_with_pairs_and_fails_open():
+async def test_meta_extraction_needs_two_with_pairs_and_surfaces_provider_failure():
     from verifiers.v1.ttt import QAConfig
 
     from prime_rl.orchestrator.qa_meta import extract_meta_lessons
@@ -714,10 +714,11 @@ async def test_meta_extraction_needs_two_with_pairs_and_fails_open():
     empty = rollout_with_pairs(0.5, [])
     # Only one rollout has pairs -> nothing to contrast.
     assert await extract_meta_lessons([good, empty], QAConfig(), FakeChat("x"), "m") == []
-    # A failing model call is enrichment, not an error.
+    # Provider failures reach TrainSink so its containment path can count the drop.
     bad_chat = FakeChat("", fail=True)
     two = [good, rollout_with_pairs(0.0, [{"question": "q2", "answer": "a2"}])]
-    assert await extract_meta_lessons(two, QAConfig(), bad_chat, "m") == []
+    with pytest.raises(RuntimeError, match="model down"):
+        await extract_meta_lessons(two, QAConfig(), bad_chat, "m")
 
 
 def test_meta_lesson_samples_are_ce_routed_with_conditioning():
@@ -732,13 +733,16 @@ def test_meta_lesson_samples_are_ce_routed_with_conditioning():
             return list(range(2 * len(conversation) + (1 if add_generation_prompt else 0)))
 
     group = [rollout_with_pairs(1.0, [{"question": "q", "answer": "a"}])]
+    # Tool-only conditioning is valid. It used to be discarded because selection was
+    # incorrectly gated on a non-empty system prompt.
+    del group[0].info["ttt"]["system_prompt"]
     items = [
         {"type": "lesson", "question": "When X, do?", "answer": "Y"},
         {"type": "lesson", "question": "empty", "answer": "  "},  # skipped
     ]
     tokenizer = RecordingTokenizer()
     (sample,) = meta_lesson_samples(items, group, tokenizer, env_name="e")
-    assert all(c["roles"][0] == "system" for c in tokenizer.calls)  # group conditioning
+    assert all(c["roles"][0] == "user" for c in tokenizer.calls)
     assert all(c["tools"] is not None for c in tokenizer.calls)
     assert sample.rl_weights == [0.0] * len(sample.token_ids)
     assert sample.ce_weights[-1] == 1.0 and sample.ce_weights[0] == 0.0
