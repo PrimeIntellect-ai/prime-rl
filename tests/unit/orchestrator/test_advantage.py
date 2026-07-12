@@ -11,7 +11,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import AgentGraph, TrainingTrace
 
 
 def _build_rollout(
@@ -21,7 +21,7 @@ def _build_rollout(
     obs_lengths: list[int] | None = None,
     env_name: str = "test",
     metrics: dict | None = None,
-) -> Rollout:
+) -> AgentGraph:
     """Build a ``Rollout`` (a ``vf.Trace``) as an alternating message graph.
 
     ``sampled_lengths`` gives the token count of each model turn (a sampled
@@ -82,15 +82,14 @@ def _build_rollout(
             )
             parent = len(nodes) - 1
 
-    rollout = Rollout[vf.TaskData](
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+    trace = TrainingTrace(
+        task=vf.TraceTask(type="Task", data=vf.WireTaskData(idx=0, prompt=None)),
         nodes=nodes,
         rewards={"reward": reward},
         metrics=metrics or {},
     )
-    rollout.env_name = env_name
-    rollout.samples = trace_to_samples(rollout, env_name=env_name)
-    return rollout
+    trace.samples = trace_to_samples(trace, env_name=env_name)
+    return AgentGraph(task=trace.task, traces=[trace], env_name=env_name)
 
 
 def _make_rollout(
@@ -99,7 +98,7 @@ def _make_rollout(
     num_turns: int = 1,
     env_name: str = "test",
     metrics: dict | None = None,
-) -> Rollout:
+) -> AgentGraph:
     """Build a ``Rollout`` carrying ``completion_len`` model-sampled tokens split
     across ``num_turns`` sampled turns. Always carries at least one trainable
     token so credit broadcasts somewhere."""
@@ -110,7 +109,7 @@ def _make_rollout(
     return _build_rollout(reward, sampled_lengths=sampled_lengths, env_name=env_name, metrics=metrics)
 
 
-def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[Rollout]:
+def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[AgentGraph]:
     """Build one group of ``Rollout``\\ s from 1D arrays of rewards/lengths/turns —
     exactly what ``score_group`` sees."""
     rollouts = []
@@ -121,21 +120,22 @@ def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[Rollou
     return rollouts
 
 
-def _scalar(rollout: Rollout) -> float:
+def _scalar(graph: AgentGraph) -> float:
     """The per-rollout advantage scalar an algorithm assigned — broadcast over
     the rollout's trainable (mask-True) tokens, so any trainable position holds it."""
-    mask = [m for sample in rollout.samples for m in sample.mask]
-    return rollout.advantages[mask.index(True)]
+    trace = graph.training_trace
+    mask = [m for sample in trace.samples for m in sample.mask]
+    return trace.advantages[mask.index(True)]
 
 
-def _grpo(group: list[Rollout], length_penalty=None) -> list[float]:
+def _grpo(group: list[AgentGraph], length_penalty=None) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
     algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), policy_pool=None)
     asyncio.run(algo.score_group(group))
     return [_scalar(rollout) for rollout in group]
 
 
-def _max_rl(group: list[Rollout]) -> list[float]:
+def _max_rl(group: list[AgentGraph]) -> list[float]:
     """Drive ``MaxRLAlgorithm.score_group`` and read back each per-rollout scalar."""
     algo = MaxRLAlgorithm(MaxRLAlgoConfig(), policy_pool=None)
     asyncio.run(algo.score_group(group))
@@ -226,20 +226,20 @@ def test_assign_advantages_broadcasts_scalar():
     """A scalar broadcasts uniformly over the rollout's trainable (mask-True) tokens."""
     rollout = _build_rollout(0.0, sampled_lengths=[2])
     # one user prompt token (masked) + 2 sampled tokens (trainable)
-    rollout.assign_advantages(0.7)
-    assert rollout.advantages == [0.0, 0.7, 0.7]
+    rollout.training_trace.assign_advantages(0.7)
+    assert rollout.training_trace.advantages == [0.0, 0.7, 0.7]
 
 
 def test_assign_advantages_zeros_non_trainable():
     """Non-trainable (mask=False) positions stay 0.0 under scalar broadcast."""
     # prompt(1, masked) + sampled(1) + obs(1, masked): mask is [F, T, F]
     rollout = _build_rollout(0.0, sampled_lengths=[1], obs_lengths=[1])
-    rollout.assign_advantages(0.7)
-    assert rollout.advantages == [0.0, 0.7, 0.0]
+    rollout.training_trace.assign_advantages(0.7)
+    assert rollout.training_trace.advantages == [0.0, 0.7, 0.0]
 
 
 def test_assign_advantages_rejects_misaligned():
     rollout = _build_rollout(0.0, sampled_lengths=[2])
     # full length is 3 (prompt + 2 sampled); a 1-element list must be rejected
     with pytest.raises(ValueError, match="align"):
-        rollout.assign_advantages([0.5])
+        rollout.training_trace.assign_advantages([0.5])

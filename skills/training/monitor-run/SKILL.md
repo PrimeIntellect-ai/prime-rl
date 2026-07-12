@@ -58,7 +58,7 @@ After a restart, verify all processes are back up and progress resumed before th
 - `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the output dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
 - `{output_dir}/configs/` — resolved TOMLs (`rl.toml` has the full picture).
 - `{output_dir}/logs/` — see below.
-- `{output_dir}/rollouts/step_N/{train,eval}/` — saved rollout traces (see Traces below).
+- `{output_dir}/rollouts/step_N/{train,eval}/` — saved agent graphs (see Agent graphs below).
 
 ### Logs
 
@@ -130,24 +130,24 @@ curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
 # vllm:num_requests_running, vllm:num_requests_waiting, vllm:gpu_cache_usage_perc (→1.0 = KV cache saturated)
 ```
 
-### Traces
+### Agent graphs
 
 ```
-{output_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per rollout as it completes
+{output_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per graph as it completes
 {output_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
 
-JSONL files of `vf.Trace` records (training tensors excluded). `all` gets every completed
-rollout the moment it arrives — errored, filtered, and never-batched ones included — so it's
+JSONL files of `AgentGraph` records (training tensors excluded). `all` gets every completed
+graph the moment it arrives — errored, filtered, and never-batched ones included — so it's
 crash-durable; `effective` gets the clean subset that went into the step's train batch (eval:
 the non-errored epoch cohort; multiple eval envs share the step file). Each record carries
-`kind`, `env_name`, `group_id`, `policy_version`, and `eval_step`, plus `runtime` (config +
-provisioned resource id, e.g. the sandbox id).
+`kind`, `env_name`, `group_id`, `policy_version`, and `eval_step`; its `traces` retain agent,
+parent, reward, metric, timing, and runtime metadata.
 
 ```bash
 wc -l {output_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
-jq '.rewards' {output_dir}/rollouts/step_42/train/effective/traces.jsonl
-jq 'select(.errors != []) | {id, env_name, runtime}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
+jq '.traces[] | {agent, rewards}' {output_dir}/rollouts/step_42/train/effective/traces.jsonl
+jq 'select(.error != null or any(.traces[]; .errors != [])) | {id, env_name, error}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
 The binary batches consumed by the trainer still live at `{output_dir}/rollouts/step_N/train_rollouts.bin`, next to the trace subtrees.

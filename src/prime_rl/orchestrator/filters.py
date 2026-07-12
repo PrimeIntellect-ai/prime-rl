@@ -16,7 +16,7 @@ from prime_rl.configs.orchestrator import FilterConfig
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import AgentGraph, TrainingTrace
 
 
 @dataclass
@@ -24,11 +24,11 @@ class FilterResult:
     detected: bool
 
 
-class RolloutFilter(Protocol):
+class GraphFilter(Protocol):
     name: str
     enforce: bool
 
-    def check(self, rollout: Rollout) -> FilterResult: ...
+    def check(self, trace: TrainingTrace) -> FilterResult: ...
 
 
 @dataclass
@@ -48,8 +48,8 @@ class GibberishFilter:
     logprob_threshold: float
     enforce: bool = False
 
-    def check(self, rollout: Rollout) -> FilterResult:
-        for branch in rollout.branches:
+    def check(self, trace: TrainingTrace) -> FilterResult:
+        for branch in trace.branches:
             # branch.{token_ids,logprobs,sampled_mask} are flat and mutually aligned; the raw
             # node arrays are not (node.logprobs covers only the sampled suffix, not the
             # generation-prompt scaffold that token_ids/mask also span).
@@ -78,8 +78,8 @@ class RepetitionFilter:
     logprob_threshold: float
     enforce: bool = False
 
-    def check(self, rollout: Rollout) -> FilterResult:
-        for branch in rollout.branches:
+    def check(self, trace: TrainingTrace) -> FilterResult:
+        for branch in trace.branches:
             # Aligned branch streams (see GibberishFilter), and reset the streak per branch:
             # flat rollout.nodes interleaves distinct root->leaf paths (compaction/subagents),
             # so a per-node walk would run a streak across a branch boundary.
@@ -104,14 +104,14 @@ class ZeroAdvantageFilter:
     name: str
     enforce: bool = True
 
-    def check(self, rollout: Rollout) -> FilterResult:
-        if rollout.advantages is not None and all(a == 0.0 for a in rollout.advantages):
+    def check(self, trace: TrainingTrace) -> FilterResult:
+        if trace.advantages is not None and all(a == 0.0 for a in trace.advantages):
             return FilterResult(detected=True)
         return FilterResult(detected=False)
 
 
-def setup_filter(config: FilterConfig, vocab_size: int) -> RolloutFilter:
-    """Create a RolloutFilter from a filter config."""
+def setup_filter(config: FilterConfig, vocab_size: int) -> GraphFilter:
+    """Create a graph filter from a filter config."""
     if config.type == "gibberish":
         return GibberishFilter(
             name="gibberish",
@@ -134,8 +134,8 @@ def setup_filter(config: FilterConfig, vocab_size: int) -> RolloutFilter:
     raise ValueError(f"Unknown filter type: {config.type}")
 
 
-def setup_filters(configs: list[FilterConfig], vocab_size: int, *, kind: str) -> list[RolloutFilter]:
-    """Create RolloutFilters from a list of filter configs."""
+def setup_filters(configs: list[FilterConfig], vocab_size: int, *, kind: str) -> list[GraphFilter]:
+    """Create graph filters from filter configs."""
     filters = [setup_filter(config, vocab_size) for config in configs]
     if filters:
         get_logger().info(f"Configured {len(filters)} {kind} rollout filter(s):")
@@ -146,27 +146,28 @@ def setup_filters(configs: list[FilterConfig], vocab_size: int, *, kind: str) ->
     return filters
 
 
-def apply_filters(filters: list[RolloutFilter], rollouts: list[Rollout]) -> None:
-    """Flag ``Rollout``\\ s in place with per-filter detection + drop decision.
+def apply_filters(filters: list[GraphFilter], graphs: list[AgentGraph]) -> None:
+    """Flag graphs in place with per-filter detection and drop decisions.
 
-    Each rollout's ``filter_results`` dict records per-filter detection bools;
+    Each graph's ``filter_results`` dict records per-filter detection bools;
     ``is_filtered`` is True iff an enforcing filter detected it. First matching
     filter wins per rollout (no double-counting). Reward and trajectory tokens
     are left untouched so the rollout can still contribute to baseline
     calculations and metric aggregation.
     """
-    for rollout in rollouts:
-        rollout.filter_results = {f.name: False for f in filters}
-        rollout.is_filtered = False
+    for graph in graphs:
+        graph.filter_results = {f.name: False for f in filters}
+        graph.is_filtered = False
 
     if not filters:
         return
 
-    for rollout in rollouts:
+    for graph in graphs:
+        trace = graph.training_trace
         for filt in filters:
-            result = filt.check(rollout)
+            result = filt.check(trace)
             if result.detected:
-                rollout.filter_results[filt.name] = True
+                graph.filter_results[filt.name] = True
                 if filt.enforce:
-                    rollout.is_filtered = True
+                    graph.is_filtered = True
                 break

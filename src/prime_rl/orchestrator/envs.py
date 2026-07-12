@@ -1,16 +1,11 @@
-"""Env wrappers over a v1 env server.
+"""Topology-server wrappers.
 
 Each ``Env`` owns a v1 ``EnvServer`` (spawned as a child process, or an
 external one given by ``config.address``) and an ``EnvClient`` to drive it. The
 orchestrator never *runs* an environment: it asks the server for ``info``
-(``num_tasks`` + whether group scoring is needed), then runs rollouts purely by
-**task index**. The server returns a ``Trace`` (a plain ``model_dump`` — derived values are
-properties, not serialized) which we validate into a ``Trace[WireTaskData]`` — a real ``vf.Trace``
-(never a loose dict) whose task keeps the env's
-task-specific fields as extras (``WireTaskData`` allows them). The orchestrator never imports the
-env package: the env's *type* and *runtime* both live only in the server, and the orchestrator
-drives it purely by task index. (Nothing here reads typed env task fields — only ``task.idx``
-and a full ``task.model_dump``, both of which ``WireTaskData`` preserves.)
+(``num_tasks``), then invokes it purely by task index. Each request returns one
+``AgentGraph``. The orchestrator never imports the topology package: its type and runtime
+live only in the server.
 """
 
 from __future__ import annotations
@@ -32,13 +27,8 @@ from verifiers.v1.serve import EnvClient
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.sampler import Sampler
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import AgentGraph
 from prime_rl.utils.logger import get_logger
-
-# Every wire trace validates into this type. WireTaskData (extra="allow") keeps the env's task
-# fields without importing the env package — the orchestrator never reads them typed (only
-# task.idx + task.model_dump).
-ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 
 # Max wait for a spawned env server to bind and report its address. The child
 # loads the taskset (possibly downloading a dataset) before reporting, so this
@@ -51,7 +41,6 @@ def _run_env_server(
     log_file: str,
     log_level: str,
     json_logging: bool,
-    legacy: bool = False,
     **kwargs,
 ) -> None:
     """Spawned-process entry point: redirect this process's output to ``log_file`` (the
@@ -60,7 +49,7 @@ def _run_env_server(
     from the env's ``pool``). ``serve_env`` applies ``log_setup`` here and in every spawned
     worker; a worker inherits this process's redirected stdout/stderr, so its per-rollout
     logs reach ``log_file`` too. Top-level so it stays picklable for the ``spawn`` start
-    method. ``legacy`` picks the v0 bridge."""
+    method."""
     from functools import partial
 
     from verifiers.v1.serve import serve_env
@@ -71,7 +60,7 @@ def _run_env_server(
     os.dup2(fh.fileno(), sys.stdout.fileno())
     os.dup2(fh.fileno(), sys.stderr.fileno())
     serve_env(
-        legacy=legacy,
+        legacy=False,
         log_setup=partial(setup_env_server_logging, log_level, json_logging),
         **kwargs,
     )
@@ -84,7 +73,6 @@ class Env:
         self.config = config
         self.sampling_args: dict = {}
         self.num_tasks: int = 0
-        self.requires_group_scoring: bool = False
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
 
@@ -111,10 +99,7 @@ class Env:
             await self.env_client.wait_for_server_startup()
         info = await self.env_client.info()
         self.num_tasks = info.num_tasks
-        self.requires_group_scoring = info.requires_group_scoring
-        get_logger().info(
-            f"Env {self.name} ready: num_tasks={self.num_tasks} group_scoring={self.requires_group_scoring}"
-        )
+        get_logger().info(f"Topology {self.name} ready: num_tasks={self.num_tasks}")
 
     async def _spawn(self, log_dir: Path, log_level: str, json_logging: bool) -> str:
         """Spawn a v1 EnvServer child process (it loads the env; we never do).
@@ -126,17 +111,8 @@ class Env:
         address_queue: mp.Queue = ctx.Queue()
         log_file = log_dir / f"{self.name}.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        get_logger().debug(f"Spawning env server {self.name} (id={self.config.env_id}, log={log_file})")
-        server_kwargs = (
-            dict(
-                legacy=True,
-                env_id=self.config.env_id,
-                env_args=self.config.args,
-                extra_env_kwargs=self.config.extra_env_kwargs,
-            )
-            if self.config.is_legacy
-            else dict(legacy=False, config=self.config)
-        )
+        assert self.config.topology is not None
+        get_logger().debug(f"Spawning topology server {self.name} (id={self.config.topology.id}, log={log_file})")
         process = ctx.Process(
             target=_run_env_server,
             kwargs=dict(
@@ -146,7 +122,7 @@ class Env:
                 **vf.pool_serve_kwargs(self.config.pool),
                 address="tcp://127.0.0.1:0",
                 address_queue=address_queue,
-                **server_kwargs,
+                config=self.config,
             ),
             daemon=False,
         )
@@ -168,30 +144,17 @@ class Env:
             sampling["extra_body"] = {**sampling.get("extra_body", {}), "cache_salt": cache_salt}
         return vf.SamplingConfig(**sampling)
 
-    async def run_rollout(
+    async def run_graph(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
-    ) -> Rollout:
-        """Run a single rollout for ``task_idx``; return a typed Trace."""
-        wire = await self.env_client.run_rollout(
+    ) -> AgentGraph:
+        """Run one independent topology invocation for ``task_idx``."""
+        wire = await self.env_client.run(
             task_idx=task_idx,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return ROLLOUT_TYPE.model_construct(**dict(wire))
-
-    async def run_group(
-        self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
-    ) -> list[Rollout]:
-        """Run a group of rollouts for ``task_idx`` (group-scoring envs); return typed Traces."""
-        wires = await self.env_client.run_group(
-            task_idx=task_idx,
-            n=group_size,
-            client=client,
-            model=model_name,
-            sampling=self._sampling(cache_salt),
-        )
-        return [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in wires]
+        return AgentGraph.from_wire(wire)
 
     def shutdown(self) -> None:
         if self._env_server_process is None:

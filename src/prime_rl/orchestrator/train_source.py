@@ -24,9 +24,6 @@ class TrainSource:
 
         self.examples: dict[str, list[dict]] = {}
         self.cursors: dict[str, int] = {}
-        # Group-scoring envs reserve ``group_size`` permits up front;
-        # per-rollout envs need 1
-        self.env_costs: dict[str, int] = {}
         for env in self.envs:
             # The orchestrator never loads the env: sample over the task-index
             # range the server reported via info() (num_tasks).
@@ -34,14 +31,13 @@ class TrainSource:
             self.rng.shuffle(rows)
             self.examples[env.name] = rows
             self.cursors[env.name] = 0
-            self.env_costs[env.name] = env.config.group_size if env.requires_group_scoring else 1
 
         self.env_names = [e.name for e in self.envs]
         self.weights: list[float] = [float(e.config.ratio) for e in self.envs]
 
     def next_example(self, available_permits: int) -> dict | None:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
-        if self.env_costs[env_name] > available_permits:
+        if available_permits < 1:
             return None
         rows = self.examples[env_name]
         cursor = self.cursors[env_name]

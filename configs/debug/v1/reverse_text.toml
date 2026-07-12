@@ -1,7 +1,4 @@
-# Debug RL run on the v1 env server (reverse-text starter).
-# The orchestrator spawns a v1 EnvServer per env (it never loads the env
-# itself), dispatches rollouts by task index, and trains on the returned Traces
-# (renderer-tokenized). Light settings for a quick end-to-end smoke.
+# Debug RL run through the explicit built-in single-agent topology.
 
 max_steps = 20
 seq_len = 2048
@@ -24,10 +21,7 @@ name = "qwen3"
 max_completion_tokens = 128
 
 [[orchestrator.train.env]]
-taskset = { id = "reverse-text-v1" }
-# reverse-text is a pure-text single-turn env: disable the bash tool (the model answers
-# directly) and use the subprocess runtime (no docker).
-harness = { id = "null", runtime = { type = "subprocess" } }
+topology = { id = "single-agent", taskset = { id = "reverse-text-v1" }, agent = { harness = { id = "null", runtime = { type = "subprocess" } } } }
 
 # No eval block, mirroring examples/reverse_text/rl.toml — this is a train-only
 # smoke. Add an [orchestrator.eval] block (with an interval) to exercise eval.

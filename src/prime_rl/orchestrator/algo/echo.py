@@ -11,7 +11,7 @@ from prime_rl.utils.utils import import_object
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import AgentGraph, TrainingTrace
     from prime_rl.utils.client import InferencePool
 
 
@@ -34,12 +34,12 @@ class EchoAlgorithm(GRPOAlgorithm):
         if config.filter is not None:
             self.filter_fn = partial(import_object(config.filter.import_path), **config.filter.kwargs)
 
-    async def score_rollout(self, rollout: Rollout) -> None:
+    async def score_graph(self, graph: AgentGraph) -> None:
         # Observation weighting is rollout-local; the group-relative GRPO
         # baseline is inherited unchanged as ``score_group``.
-        self._weight_observations(rollout)
+        self._weight_observations(self.training_trace(graph))
 
-    def _weight_observations(self, rollout: Rollout) -> None:
+    def _weight_observations(self, rollout: TrainingTrace) -> None:
         """Write each sample's ``ce_weights`` stream over the env-provided
         observation tokens of later turns. Provenance is structural under v1:
         within a branch, the non-sampled nodes that follow the first model

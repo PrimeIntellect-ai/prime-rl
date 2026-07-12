@@ -1,0 +1,26 @@
+# Standalone Qwen3.5-4B policy server for the one-GPU topology smoke.
+# It shares GPU 0 with the LoRA trainer, so keep the vLLM allocation deliberately small.
+
+enable_lora = true
+max_lora_rank = 16
+max_loras = 4
+gpu_memory_utilization = 0.25
+enable_prefix_caching = true
+
+[server]
+port = 8000
+
+[model]
+name = "Qwen/Qwen3.5-4B"
+max_model_len = 16384
+enforce_eager = true
+
+[parallel]
+dp = 1
+tp = 1
+
+[weight_broadcast]
+type = "filesystem"
+
+[vllm_extra]
+language_model_only = true

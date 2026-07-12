@@ -78,6 +78,23 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
+## Single-GPU LoRA smoke
+
+On a large-memory single GPU, a debug-only RL smoke can share the device between a
+standalone policy server and the trainer:
+
+1. Start `uv run inference @ <inference.toml>` with LoRA enabled, a conservative
+   `gpu_memory_utilization`, and filesystem weight broadcast.
+2. In the RL config, omit `[inference]`, set `num_train_gpus = 1` and
+   `num_infer_gpus = 0`, point `orchestrator.model.client.base_url` at the standalone
+   server, and use matching LoRA rank and filesystem broadcast settings.
+3. Launch `uv run rl @ <rl.toml>`. Confirm the trainer step completes and the policy
+   server logs a successful `/load_lora_adapter` request.
+
+The standalone server is outside the RL launcher's lifecycle and must be stopped
+separately. This pattern is for small smoke runs only; normal training should allocate
+separate inference and training GPUs.
+
 ## Summary
 
 | Command | Purpose | Typical use |

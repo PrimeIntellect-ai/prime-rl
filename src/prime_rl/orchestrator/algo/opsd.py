@@ -9,7 +9,7 @@ from prime_rl.orchestrator.algo.base import Algorithm
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import AgentGraph, TrainingTrace
     from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
 
@@ -50,22 +50,23 @@ class OPSDAlgorithm(Algorithm):
 
         self.renderer = create_renderer(load_tokenizer(self.policy_pool.model_name), self.renderer_config)
 
-    def _demonstration(self, rollout: Rollout) -> str:
-        demonstration = rollout.info.get(self.demo_key)
+    def _demonstration(self, trace: TrainingTrace, env_name: str) -> str:
+        demonstration = trace.info.get(self.demo_key)
         if demonstration is None:
-            demonstration = getattr(rollout.task.data, self.demo_key, None)
+            demonstration = getattr(trace.task.data, self.demo_key, None)
         if demonstration is None:
             raise ValueError(
                 f"opsd requires '{self.demo_key}' in the trace info dict or on the task "
-                f"(env '{rollout.env_name}', task {rollout.task.data.idx})."
+                f"(env '{env_name}', task {trace.task.data.idx})."
             )
         return demonstration
 
-    async def score_rollout(self, rollout: Rollout) -> None:
+    async def score_graph(self, graph: AgentGraph) -> None:
         pool = self.teacher_pool
         renderer = self.renderer
         assert renderer is not None, "renderer not built — Algorithm.setup() must run first"
-        hint = self.template.format(demonstration=self._demonstration(rollout))
+        trace = self.training_trace(graph)
+        hint = self.template.format(demonstration=self._demonstration(trace, graph.env_name))
         hint_block = renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)
 
         async def score_sample(sample: TrainingSample) -> None:
@@ -74,4 +75,4 @@ class OPSDAlgorithm(Algorithm):
             # sample.token_ids (demo-conditioned, the trainer's ref_kl target).
             sample.ref_logprobs = full_logprobs[len(hint_block) :]
 
-        await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))
+        await asyncio.gather(*(score_sample(sample) for sample in trace.samples))

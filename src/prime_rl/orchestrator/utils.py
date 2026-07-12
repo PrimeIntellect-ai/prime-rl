@@ -50,15 +50,15 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     return renderer, inference_pool
 
 
-def save_rollouts(rollouts: list[dict], path: Path) -> None:
-    """Append rollouts (Trace record dicts, already JSON-serializable) to a JSONL file.
-    The trace streams are append-only: ``all`` grows one rollout at a time as they
+def save_graphs(graphs: list[dict], path: Path) -> None:
+    """Append graph records to a JSONL file.
+    The streams are append-only: ``all`` grows one graph at a time as they
     complete, ``effective`` one batch at a time on finalize."""
     path.parent.mkdir(parents=True, exist_ok=True)
     opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
     with open(path, "ab") as f:
-        for rollout in rollouts:
-            f.write(orjson.dumps(rollout, default=str, option=opts))
+        for graph in graphs:
+            f.write(orjson.dumps(graph, default=str, option=opts))
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):

@@ -1,10 +1,9 @@
-"""RolloutDispatcher: schedules rollouts under a shared permit counter.
+"""GraphDispatcher: schedules topology invocations under a shared permit counter.
 
 - Capacity (``max_inflight_rollouts``) is shared across train + eval.
-  A group-scoring task that runs N rollouts in one call reserves N permits.
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
-- Emit-everything invariant: every dispatched rollout eventually reaches
-  ``out_q`` exactly once as a ``Rollout``. Failures
+- Emit-everything invariant: every dispatched topology invocation eventually reaches
+  ``out_q`` exactly once as an ``AgentGraph``. Failures
   (env error, empty trajectory, task exception, off-policy cancel) carry
   ``trace.error`` set; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
@@ -38,11 +37,11 @@ from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
+    AgentGraph,
+    GraphKind,
     GroupState,
-    InflightRollout,
+    InflightGraph,
     Policy,
-    Rollout,
-    RolloutKind,
 )
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool, client_identity
@@ -60,7 +59,7 @@ class DispatcherMode(Enum):
 class DispatcherMetrics:
     """Per-tick drain counters for the orchestrator's periodic log.
     ``drained()`` returns the current values and clears them; point-in-time
-    gauges live on ``RolloutDispatcher.gauges`` instead."""
+    gauges live on ``GraphDispatcher.gauges`` instead."""
 
     cancelled_by_kind_env: dict[tuple[Literal["train", "eval"], str], int] = field(
         default_factory=lambda: defaultdict(int)
@@ -113,10 +112,10 @@ class DispatcherMetrics:
         return keys
 
 
-class RolloutDispatcher:
+class GraphDispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules
-    rollouts under shared capacity, and emits ``Rollout``\\ s to
+    topology invocations under shared capacity, and emits ``AgentGraph`` objects to
     ``out_q``. The watcher drives ``on_version_pending`` for off-policy
     cancellation; the orchestrator triggers eval epochs."""
 
@@ -149,11 +148,11 @@ class RolloutDispatcher:
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
         )
 
-        self.inflight: dict[asyncio.Task, InflightRollout] = {}
+        self.inflight: dict[asyncio.Task, InflightGraph] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
 
         # Bounded so the dispatcher backpressures on a slow sink
-        self.out_q: asyncio.Queue[Rollout] = asyncio.Queue(maxsize=max(8, self.max_inflight))
+        self.out_q: asyncio.Queue[AgentGraph] = asyncio.Queue(maxsize=max(8, self.max_inflight))
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -180,21 +179,21 @@ class RolloutDispatcher:
 
     @property
     def inflight_train_count(self) -> int:
-        return sum(m.rollout_count for m in self.inflight.values() if m.kind == "train")
+        return sum(1 for m in self.inflight.values() if m.kind == "train")
 
     @property
     def inflight_eval_count(self) -> int:
-        return sum(m.rollout_count for m in self.inflight.values() if m.kind == "eval")
+        return sum(1 for m in self.inflight.values() if m.kind == "eval")
 
     @property
     def available_permits(self) -> int:
         return self.max_inflight - self.inflight_permits
 
     @property
-    def inflight_by_env(self) -> dict[tuple[RolloutKind, str], int]:
-        counts: dict[tuple[RolloutKind, str], int] = defaultdict(int)
+    def inflight_by_env(self) -> dict[tuple[GraphKind, str], int]:
+        counts: dict[tuple[GraphKind, str], int] = defaultdict(int)
         for meta in self.inflight.values():
-            counts[(meta.kind, meta.env_name)] += meta.rollout_count
+            counts[(meta.kind, meta.env_name)] += 1
         return dict(counts)
 
     @property
@@ -208,7 +207,7 @@ class RolloutDispatcher:
         (``next_fresh_group``), but its ``group_size`` rollouts dispatch one at a time across
         ``fill_inflight`` passes — so the queue can be empty while a group is still mid-schedule."""
         return bool(self.eval_source) or any(
-            g.kind == "eval" and g.rollouts_to_schedule > 0 for g in self.groups.values()
+            g.kind == "eval" and g.graphs_to_schedule > 0 for g in self.groups.values()
         )
 
     @property
@@ -255,13 +254,13 @@ class RolloutDispatcher:
                     timeout=0.5,  # wake periodically to re-check fill (mode flips)
                 )
                 for task in done:
-                    await self.handle_completed_rollout(task)
+                    await self.handle_completed_graph(task)
         except asyncio.CancelledError:
             return
 
     async def stop(self) -> None:
         self.stopped.set()
-        await self.cancel_inflight_rollouts()
+        await self.cancel_inflight_graphs()
         if self.task is not None:
             await safe_cancel(self.task)
             self.task = None
@@ -339,7 +338,7 @@ class RolloutDispatcher:
         get_logger().info(f"Switching dispatcher mode to prefer {prefer} rollouts because {reason}")
         self.mode = new_mode
 
-    async def try_schedule(self, kind: RolloutKind) -> bool:
+    async def try_schedule(self, kind: GraphKind) -> bool:
         """Schedule one rollout of ``kind``: prefer continuing an existing
         group (keeps prefix-cache hits); otherwise open a fresh group from
         the corresponding source. Returns False if nothing could be
@@ -351,21 +350,18 @@ class RolloutDispatcher:
             return False
 
         for gid, group in list(self.groups.items()):
-            if group.kind != kind or group.rollouts_to_schedule <= 0:
+            if group.kind != kind or group.graphs_to_schedule <= 0:
                 continue
-            env = envs.get(group.env_name)
-            cost = group.rollouts_to_schedule if env.requires_group_scoring else 1
-            if cost <= self.available_permits:
-                return await self.schedule_group_rollout(gid, group)
+            return await self.schedule_group_graph(gid, group)
 
         fresh = self.next_fresh_group(kind, envs)
         if fresh is None:
             return False
         gid = uuid.uuid4()
         self.groups[gid] = fresh
-        return await self.schedule_group_rollout(gid, fresh)
+        return await self.schedule_group_graph(gid, fresh)
 
-    def next_fresh_group(self, kind: RolloutKind, envs) -> GroupState | None:
+    def next_fresh_group(self, kind: GraphKind, envs) -> GroupState | None:
         """Pop the next example from the corresponding source and wrap it in
         a ``GroupState``. Returns ``None`` if the source is empty or the
         picked env's permit cost doesn't fit."""
@@ -386,14 +382,14 @@ class RolloutDispatcher:
             kind=kind,
             env_name=env_name,
             task_idx=example["task_idx"],
-            rollouts_to_schedule=group_size,
-            target_rollouts=group_size,
+            graphs_to_schedule=group_size,
+            target_graphs=group_size,
             eval_step=eval_step,
             policy_version_at_start=self.policy.version,
         )
 
-    async def schedule_group_rollout(self, group_id: uuid.UUID, group: GroupState) -> bool:
-        """Dispatch one ``run_rollout`` / ``run_group`` task for this group.
+    async def schedule_group_graph(self, group_id: uuid.UUID, group: GroupState) -> bool:
+        """Dispatch one independent topology invocation for this algorithm group.
 
         Returns False only if we couldn't even schedule one rollout (no clients
         ready, no permits). Returns True after issuing one task — the caller
@@ -436,38 +432,22 @@ class RolloutDispatcher:
         else:
             cache_salt = None
 
-        if env.requires_group_scoring:
-            permits = group.rollouts_to_schedule
-            group.rollouts_to_schedule = 0
-            await self.acquire(permits)
-            task: asyncio.Task = asyncio.create_task(
-                env.run_group(
-                    client=client,
-                    task_idx=group.task_idx,
-                    model_name=model_name,
-                    group_size=permits,
-                    cache_salt=cache_salt,
-                )
+        group.graphs_to_schedule -= 1
+        await self.acquire(1)
+        task: asyncio.Task = asyncio.create_task(
+            env.run_graph(
+                client=client,
+                task_idx=group.task_idx,
+                model_name=model_name,
+                cache_salt=cache_salt,
             )
-        else:
-            permits = 1
-            group.rollouts_to_schedule -= 1
-            await self.acquire(permits)
-            task = asyncio.create_task(
-                env.run_rollout(
-                    client=client,
-                    task_idx=group.task_idx,
-                    model_name=model_name,
-                    cache_salt=cache_salt,
-                )
-            )
+        )
 
-        self.inflight[task] = InflightRollout(
+        self.inflight[task] = InflightGraph(
             kind=group.kind,
             env_name=group.env_name,
             group_id=group_id,
             policy_version=group.policy_version_at_start,
-            rollout_count=permits,
             client_config=client,
             eval_step=group.eval_step,
         )
@@ -484,9 +464,9 @@ class RolloutDispatcher:
     def release(self, n: int) -> None:
         self.inflight_permits -= n
 
-    async def handle_completed_rollout(self, task: asyncio.Task) -> None:
-        """Emit every dispatched rollout exactly once to ``out_q``. Task
-        exceptions synthesize ``meta.rollout_count`` error markers so the
+    async def handle_completed_graph(self, task: asyncio.Task) -> None:
+        """Emit every dispatched graph exactly once to ``out_q``. Task
+        exceptions synthesize an error graph so the
         sink's count-to-``group_size`` finalization still triggers.
         Cancelled tasks (popped by ``drop_group``) raise ``CancelledError``
         and are discarded — ``drop_group`` already emitted their markers.
@@ -494,42 +474,33 @@ class RolloutDispatcher:
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_rollouts
-        self.release(meta.rollout_count)
+        self.release(1)
         group = self.groups.get(meta.group_id)
 
         is_synth_exception = False
         try:
-            result = task.result()
-            rollouts: list[Rollout] = result if isinstance(result, list) else [result]
+            graph: AgentGraph = task.result()
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            get_logger().warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
+            get_logger().warning(f"Topology invocation failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             task_idx = group.task_idx if group is not None else -1
-            rollouts = [
-                Rollout(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)))
-                for _ in range(meta.rollout_count)
-            ]
-            for r in rollouts:
-                r.capture_error(exc)
+            graph = AgentGraph(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)))
+            graph.capture_error(exc)
             is_synth_exception = True
 
-        for r in rollouts:
-            if not r.has_error and r.num_turns == 0:
-                # Empty trajectory: promote to an explicit error so the sink
-                # treats it like any other failure
-                r.errors.append(vf.Error(type="EmptyTrajectory", message="Rollout returned with no trajectory steps"))
-                get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
-            if r.has_error:
-                self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
-                if not is_synth_exception:
-                    get_logger().warning(
-                        f"Rollout failed in group {meta.group_id} ({meta.env_name}) — {r.error.type}: {r.error.message}"
-                    )
-            await self.emit_rollout(meta, group, r)
+        if graph.has_error:
+            self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+            if not is_synth_exception:
+                error = graph.failure
+                assert error is not None
+                get_logger().warning(
+                    f"Topology graph failed in group {meta.group_id} ({meta.env_name}) — {error.type}: {error.message}"
+                )
+        await self.emit_graph(meta, group, graph)
 
-    async def emit_rollout(self, meta: InflightRollout, group: GroupState | None, rollout: Rollout) -> None:
-        """Stamp prime-rl metadata onto the completed rollout and put it on ``out_q``.
+    async def emit_graph(self, meta: InflightGraph, group: GroupState | None, graph: AgentGraph) -> None:
+        """Stamp Prime metadata onto a completed graph and put it on ``out_q``.
         Pops the group from ``self.groups`` once every member has been emitted."""
         eval_step = meta.eval_step
         policy_version = meta.policy_version
@@ -537,18 +508,18 @@ class RolloutDispatcher:
             eval_step = group.eval_step
             policy_version = group.policy_version_at_start
             group.emitted += 1
-            if group.emitted >= group.target_rollouts:
+            if group.emitted >= group.target_graphs:
                 self.groups.pop(meta.group_id, None)
 
-        rollout.kind = meta.kind
-        rollout.env_name = meta.env_name
-        rollout.group_id = meta.group_id
-        rollout.policy_version = policy_version
-        rollout.off_policy_steps = meta.off_policy_steps
+        graph.kind = meta.kind
+        graph.env_name = meta.env_name
+        graph.group_id = meta.group_id
+        graph.policy_version = policy_version
+        graph.off_policy_steps = meta.off_policy_steps
         if meta.kind == "eval":
             assert eval_step is not None, "eval rollout missing eval_step"
-            rollout.eval_step = eval_step
-        await self.out_q.put(rollout)
+            graph.eval_step = eval_step
+        await self.out_q.put(graph)
 
     async def drop_group(self, group_id: uuid.UUID) -> int:
         """Cancel remaining in-flight tasks for this group and emit a
@@ -563,61 +534,55 @@ class RolloutDispatcher:
         # the dropped tasks are no longer reachable from ``self.inflight``,
         # so ``handle_completed_rollout``'s existing None-guard makes the
         # subsequent async emit phase race-free.
-        claimed: list[tuple[asyncio.Task, InflightRollout]] = []
+        claimed: list[tuple[asyncio.Task, InflightGraph]] = []
         for task, meta in list(self.inflight.items()):
             if meta.group_id != group_id:
                 continue
             del self.inflight[task]
-            self.release(meta.rollout_count)
+            self.release(1)
             claimed.append((task, meta))
 
         tasks_to_cancel = [task for task, _ in claimed]
-        inflight_cancelled = sum(meta.rollout_count for _, meta in claimed)
-        last_meta: InflightRollout | None = claimed[-1][1] if claimed else None
+        inflight_cancelled = len(claimed)
+        last_meta: InflightGraph | None = claimed[-1][1] if claimed else None
         for _, meta in claimed:
-            for _ in range(meta.rollout_count):
-                trace = Rollout(
-                    task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
-                    errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
-                    stop_condition="error",
-                )
-                await self.emit_rollout(meta, group, trace)
+            graph = AgentGraph(
+                task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
+                error=vf.Error(type="Cancelled", message="Off-policy cancel"),
+            )
+            await self.emit_graph(meta, group, graph)
 
-        # For non-group-scoring envs, the group may have rollouts that
-        # were never dispatched (``rollouts_to_schedule > 0``). Emit
-        # markers for those too so the sink hits ``target_rollouts``
+        # The group may have graphs that were never dispatched. Emit markers for
+        # those too so the sink reaches its group-size barrier.
         #
         # ``last_meta`` can be ``None`` if the only inflight task for this
         # group completed naturally between ``on_version_pending``'s snapshot
         # and us reaching it — synthesize a stand-in from the group state
         unscheduled_cancelled = 0
-        if group is not None and group.rollouts_to_schedule > 0:
-            fallback_meta = last_meta or InflightRollout(
+        if group is not None and group.graphs_to_schedule > 0:
+            fallback_meta = last_meta or InflightGraph(
                 kind=group.kind,
                 env_name=group.env_name,
                 group_id=group_id,
                 policy_version=group.policy_version_at_start,
-                rollout_count=1,
                 eval_step=group.eval_step,
             )
-            unscheduled_cancelled = group.rollouts_to_schedule
+            unscheduled_cancelled = group.graphs_to_schedule
             for _ in range(unscheduled_cancelled):
-                trace = Rollout(
+                graph = AgentGraph(
                     task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
-                    errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
-                    stop_condition="error",
+                    error=vf.Error(type="Cancelled", message="Off-policy cancel"),
                 )
-                await self.emit_rollout(fallback_meta, group, trace)
+                await self.emit_graph(fallback_meta, group, graph)
 
         cancelled = inflight_cancelled + unscheduled_cancelled
         if cancelled > 0:
             meta_for_log = last_meta or (
-                InflightRollout(
+                InflightGraph(
                     kind=group.kind,
                     env_name=group.env_name,
                     group_id=group_id,
                     policy_version=group.policy_version_at_start if group else 0,
-                    rollout_count=1,
                     eval_step=group.eval_step,
                 )
                 if group is not None
@@ -634,19 +599,19 @@ class RolloutDispatcher:
             await safe_cancel_all(tasks_to_cancel)
         return cancelled
 
-    async def cancel_inflight_rollouts(self) -> None:
+    async def cancel_inflight_graphs(self) -> None:
         """Cancel all in-flight rollouts. Used on shutdown — doesn't emit
         markers since the sinks are being torn down anyway."""
         for meta in self.inflight.values():
-            self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name, n=meta.rollout_count)
-            self.release(meta.rollout_count)
+            self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name)
+            self.release(1)
         tasks = list(self.inflight.keys())
         self.inflight.clear()
         self.groups.clear()
         if tasks:
             await safe_cancel_all(tasks)
 
-    async def cancel_inflight_train_rollouts(self) -> int:
+    async def cancel_inflight_train_graphs(self) -> int:
         """Cancel in-flight train rollouts, leaving eval alone. Used by the
         orchestrator at ``max_steps`` so triggered eval can still complete
         through the pipeline while wasted train inference is short-circuited."""
@@ -657,9 +622,9 @@ class RolloutDispatcher:
             if meta.kind != "train":
                 continue
             self.inflight.pop(task, None)
-            self.release(meta.rollout_count)
-            self.metrics.record_cancellation(kind="train", env_name=meta.env_name, n=meta.rollout_count)
-            cancelled += meta.rollout_count
+            self.release(1)
+            self.metrics.record_cancellation(kind="train", env_name=meta.env_name)
+            cancelled += 1
             train_tasks.append(task)
             train_group_ids.add(meta.group_id)
         for gid in train_group_ids:

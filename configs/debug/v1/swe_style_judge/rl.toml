@@ -1,0 +1,79 @@
+# One-step, one-GPU end-to-end smoke for graph-native training.
+# Start inference.toml first; this launcher uses GPU 0 for the LoRA trainer and connects
+# to the already-running policy server on that same GPU.
+
+output_dir = "outputs/debug/swe-style-judge-qwen35-4b"
+max_steps = 1
+seq_len = 16384
+
+[deployment]
+type = "single_node"
+gpus_per_node = 1
+num_train_gpus = 1
+num_infer_gpus = 0
+
+[model]
+name = "Qwen/Qwen3.5-4B"
+
+[weight_broadcast]
+type = "filesystem"
+
+[ckpt]
+interval = 1
+keep_last = 1
+resume_step = -1
+
+[trainer.model]
+impl = "auto"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[trainer.model.lora]
+rank = 16
+alpha = 32
+
+[trainer.optim]
+lr = 1e-5
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[orchestrator]
+batch_size = 2
+group_size = 2
+max_inflight_rollouts = 2
+max_off_policy_steps = 0
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.model.client]
+base_url = ["http://localhost:8000/v1"]
+wait_for_ready_timeout = 1800
+
+[orchestrator.model.lora]
+name = "swe-style-judge-smoke"
+
+[orchestrator.renderer]
+name = "qwen3.5"
+enable_thinking = true
+
+[orchestrator.train.sampling]
+temperature = 1.0
+max_completion_tokens = 1024
+
+[[orchestrator.post_batch_filters]]
+type = "zero_advantage"
+enforce = false
+
+[[orchestrator.train.env]]
+name = "swe-style-judge"
+group_size = 2
+max_turns = 20
+max_total_tokens = 16384
+timeout = { setup = 900, rollout = 3600, finalize = 300, scoring = 1800 }
+pool = { type = "static", num_workers = 1 }
+topology = { id = "swe-style-judge", taskset = { id = "swebench-verified-v1", tasks = ["astropy__astropy-12907"], use_prime_registry = true }, solver = { harness = { id = "default", runtime = { type = "prime", labels = ["swe-style-judge-train-smoke"] } } }, judge = { model = "z-ai/glm-5.2", client = { type = "eval" }, sampling = { temperature = 0.0, max_tokens = 2048 }, harness = { id = "default", edit = false, runtime = { type = "prime", labels = ["swe-style-judge-train-smoke"] } } }, weight = 1.0 }

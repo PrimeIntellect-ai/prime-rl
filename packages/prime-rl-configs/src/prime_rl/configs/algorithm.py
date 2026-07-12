@@ -232,6 +232,14 @@ class MaxRLAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
 
+class ProposerSolverAlgoConfig(BaseAlgoConfig):
+    type: Literal["proposer_solver"] = "proposer_solver"
+    """Hierarchical GRPO for ``proposer-solver-v1``: center solver rewards within
+    each graph and proposer rewards across graph replicas."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+
 class OPDAlgoConfig(BaseAlgoConfig):
     type: Literal["opd"] = "opd"
     """On-policy distillation: the per-token signal is the reverse KL to
@@ -305,7 +313,13 @@ class SFTAlgoConfig(BaseAlgoConfig):
 
 
 AlgoConfig: TypeAlias = Annotated[
-    GRPOAlgoConfig | EchoAlgoConfig | MaxRLAlgoConfig | OPDAlgoConfig | OPSDAlgoConfig | SFTAlgoConfig,
+    GRPOAlgoConfig
+    | EchoAlgoConfig
+    | MaxRLAlgoConfig
+    | ProposerSolverAlgoConfig
+    | OPDAlgoConfig
+    | OPSDAlgoConfig
+    | SFTAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -314,6 +328,7 @@ its class defaults are the vetted setting.
 
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
+- ``proposer_solver`` — hierarchical GRPO over solver traces within a graph and proposer traces across graphs.
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.

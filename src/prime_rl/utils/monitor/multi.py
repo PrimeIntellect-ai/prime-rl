@@ -6,7 +6,7 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import AgentGraph
 
 
 class MultiMonitor(Monitor):
@@ -29,17 +29,17 @@ class MultiMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to log metrics to {monitor.__class__.__name__}: {e}")
 
-    def log_samples(self, rollouts: list[Rollout], step: int) -> None:
+    def log_samples(self, graphs: list[AgentGraph], step: int) -> None:
         for monitor in self.monitors:
             try:
-                monitor.log_samples(rollouts=rollouts, step=step)
+                monitor.log_samples(graphs=graphs, step=step)
             except Exception as e:
                 self.logger.warning(f"Failed to log samples to {monitor.__class__.__name__}: {e}")
 
-    def log_eval_samples(self, rollouts: list[Rollout], env_name: str, step: int) -> None:
+    def log_eval_samples(self, graphs: list[AgentGraph], env_name: str, step: int) -> None:
         for monitor in self.monitors:
             try:
-                monitor.log_eval_samples(rollouts=rollouts, env_name=env_name, step=step)
+                monitor.log_eval_samples(graphs=graphs, env_name=env_name, step=step)
             except Exception as e:
                 self.logger.warning(f"Failed to log eval samples to {monitor.__class__.__name__}: {e}")
 

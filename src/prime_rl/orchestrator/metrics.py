@@ -1,13 +1,13 @@
-"""Train and eval rollout metrics.
+"""Train and eval graph metrics.
 
-A rollout container (``TrainRollouts`` / ``EvalRollouts``) owns the rollout list and exposes
+A graph container (``TrainGraphs`` / ``EvalGraphs``) owns the graph list and exposes
 ``.effective`` (the clean subset, as the same container type) and ``.metrics`` (``TrainMetrics`` /
 ``EvalMetrics``). The metrics object exposes each distributional / rate metric as a ``Stat`` — so
-``rollouts.metrics.num_input_tokens.mean()`` works — and assembles the full
+``graphs.metrics.num_input_tokens.mean()`` works — and assembles the full
 ``{prefix}/{subset}/<metric>/<stat>`` wandb dict via ``.to_wandb(...)``.
 
-No I/O, no pandas — plain Python over the ``vf.Trace`` properties each rollout exposes. Aggregation
-is flat over the rollout list except the solve rates, which group by ``group_id``.
+No I/O, no pandas — plain Python over the sole trainable trace projected by each graph. Aggregation
+is flat over the graph list except the solve rates, which group by ``group_id``.
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ from typing import TYPE_CHECKING, Iterator, Literal
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import AgentGraph
 
 Subset = Literal["all", "effective"]
 
 
 class Stat:
-    """A distribution of per-rollout values with mean/max/min and p10/p90 accessors."""
+    """A distribution of per-graph values with mean/max/min and p10/p90 accessors."""
 
     def __init__(self, values: list[float]) -> None:
         self.values = values
@@ -70,8 +70,8 @@ class StatGroup:
     """A nested group of named ``Stat``s. ``to_dict`` emits ``{prefix}/<name>/<stat>`` for each
     distribution and ``group[name]`` returns one; subclasses supply the names via ``stats()``."""
 
-    def __init__(self, rollouts: list[Rollout]) -> None:
-        self.rollouts = rollouts
+    def __init__(self, graphs: list[AgentGraph]) -> None:
+        self.graphs = graphs
 
     def stats(self) -> dict[str, Stat]:
         raise NotImplementedError
@@ -87,133 +87,133 @@ class StatGroup:
 
 
 class TimingMetrics(StatGroup):
-    """Per-phase rollout durations, nested so ``metrics.timing.setup.mean()`` reads naturally.
-    ``total`` is the per-rollout sum across all phases."""
+    """Per-phase graph durations, nested so ``metrics.timing.setup.mean()`` reads naturally.
+    ``total`` is the per-graph sum across all phases."""
 
     PHASES = ("setup", "generation", "finalize", "scoring")
 
     @property
     def setup(self) -> Stat:
-        return Stat([r.timing.setup.duration for r in self.rollouts])
+        return Stat([r.timing.setup.duration for r in self.graphs])
 
     @property
     def generation(self) -> Stat:
-        return Stat([r.timing.generation.duration for r in self.rollouts])
+        return Stat([r.timing.generation.duration for r in self.graphs])
 
     @property
     def finalize(self) -> Stat:
-        return Stat([r.timing.finalize.duration for r in self.rollouts])
+        return Stat([r.timing.finalize.duration for r in self.graphs])
 
     @property
     def scoring(self) -> Stat:
-        return Stat([r.timing.scoring.duration for r in self.rollouts])
+        return Stat([r.timing.scoring.duration for r in self.graphs])
 
     @property
     def total(self) -> Stat:
-        return Stat([sum(getattr(r.timing, p).duration for p in self.PHASES) for r in self.rollouts])
+        return Stat([sum(getattr(r.timing, p).duration for p in self.PHASES) for r in self.graphs])
 
     def stats(self) -> dict[str, Stat]:
         return {**{phase: getattr(self, phase) for phase in self.PHASES}, "total": self.total}
 
 
 class CustomMetrics(StatGroup):
-    """Per-key ``Stat``s over a dynamic per-rollout dict attribute (env ``@metric``s or reward
-    components), each averaged over the rollouts that report the key."""
+    """Per-key ``Stat``s over a dynamic per-graph dict attribute (env ``@metric``s or reward
+    components), each averaged over the graphs that report the key."""
 
-    def __init__(self, rollouts: list[Rollout], attr: str) -> None:
-        super().__init__(rollouts)
+    def __init__(self, graphs: list[AgentGraph], attr: str) -> None:
+        super().__init__(graphs)
         self.attr = attr
 
     def stats(self) -> dict[str, Stat]:
-        names = sorted({name for r in self.rollouts for name in getattr(r, self.attr)})
+        names = sorted({name for r in self.graphs for name in getattr(r, self.attr)})
         return {
-            name: Stat([getattr(r, self.attr)[name] for r in self.rollouts if name in getattr(r, self.attr)])
+            name: Stat([getattr(r, self.attr)[name] for r in self.graphs if name in getattr(r, self.attr)])
             for name in names
         }
 
 
-class RolloutMetrics:
-    """Metrics shared by train and eval over a rollout list. Distributional metrics are ``Stat``s
+class GraphMetrics:
+    """Metrics shared by train and eval over a graph list. Distributional metrics are ``Stat``s
     (mean/max/min); boolean metrics are ``Stat``s of 0/1 (use ``.mean()`` for the rate). ``to_wandb``
     assembles the full ``{prefix}/{subset}/...`` dict; ``TrainMetrics`` / ``EvalMetrics`` extend it."""
 
-    def __init__(self, rollouts: list[Rollout]) -> None:
-        self.rollouts = rollouts
+    def __init__(self, graphs: list[AgentGraph]) -> None:
+        self.graphs = graphs
 
     # Distributional metrics
     @property
     def num_total_tokens(self) -> Stat:
-        return Stat([float(r.num_total_tokens) for r in self.rollouts])
+        return Stat([float(r.num_total_tokens) for r in self.graphs])
 
     @property
     def num_input_tokens(self) -> Stat:
-        return Stat([float(r.num_input_tokens) for r in self.rollouts])
+        return Stat([float(r.num_input_tokens) for r in self.graphs])
 
     @property
     def num_output_tokens(self) -> Stat:
-        return Stat([float(r.num_output_tokens) for r in self.rollouts])
+        return Stat([float(r.num_output_tokens) for r in self.graphs])
 
     @property
     def num_turns(self) -> Stat:
-        return Stat([float(r.num_turns) for r in self.rollouts])
+        return Stat([float(r.num_turns) for r in self.graphs])
 
     @property
     def num_branches(self) -> Stat:
-        return Stat([float(r.num_branches) for r in self.rollouts])
+        return Stat([float(r.num_branches) for r in self.graphs])
 
     @property
     def timing(self) -> TimingMetrics:
-        return TimingMetrics(self.rollouts)
+        return TimingMetrics(self.graphs)
 
     @property
     def metrics(self) -> CustomMetrics:
         """Env custom ``@metric`` outputs, keyed by name (``metrics.metrics["acc"].mean()``)."""
-        return CustomMetrics(self.rollouts, "metrics")
+        return CustomMetrics(self.graphs, "metrics")
 
     @property
     def rewards(self) -> CustomMetrics:
         """Per-component reward breakdown, keyed by name (summed into the scalar ``reward``)."""
-        return CustomMetrics(self.rollouts, "rewards")
+        return CustomMetrics(self.graphs, "rewards")
 
     # Boolean rate metrics (0/1 distributions — ``.mean()`` is the rate)
     @property
     def is_truncated(self) -> Stat:
-        return Stat([float(r.is_truncated) for r in self.rollouts])
+        return Stat([float(r.is_truncated) for r in self.graphs])
 
     @property
     def is_completed(self) -> Stat:
-        return Stat([float(r.is_completed) for r in self.rollouts])
+        return Stat([float(r.is_completed) for r in self.graphs])
 
     @property
     def has_error(self) -> Stat:
-        return Stat([float(r.has_error) for r in self.rollouts])
+        return Stat([float(r.has_error) for r in self.graphs])
 
     def stop_conditions(self) -> dict[str, float]:
-        """``generation_truncated`` over all rollouts, then each recorded ``stop_condition``'s rate
-        over the rollouts that recorded one."""
+        """``generation_truncated`` over all graphs, then each recorded ``stop_condition``'s rate
+        over the graphs that recorded one."""
         out = {
             "generation_truncated": sum(
-                1 for r in self.rollouts if r.is_truncated and r.stop_condition != "prompt_too_long"
+                1 for r in self.graphs if r.is_truncated and r.stop_condition != "prompt_too_long"
             )
-            / len(self.rollouts)
+            / len(self.graphs)
         }
-        conditions = [r.stop_condition for r in self.rollouts if r.stop_condition is not None]
+        conditions = [r.stop_condition for r in self.graphs if r.stop_condition is not None]
         for condition in sorted(set(conditions)):
             out[condition] = conditions.count(condition) / len(conditions)
         return out
 
     def error_types(self) -> dict[str, int]:
-        """Count of errored rollouts by error type (the rollout's last error — e.g. ``Cancelled``,
+        """Count of errored graphs by error type (the graph's failure — e.g. ``Cancelled``,
         ``ProviderError``)."""
-        types = [r.error.type for r in self.rollouts if r.has_error]
+        types = [r.failure.type for r in self.graphs if r.failure is not None]
         return {t: types.count(t) for t in sorted(set(types))}
 
     def solve_rates(self) -> dict[str, float]:
         """Per-group solve rates, assuming binary 0/1 rewards (unspecified for other reward ranges):
-        ``solved_none`` (the group earned no reward), ``solved_all`` (every rollout scored 1.0), and
+        ``solved_none`` (the group earned no reward), ``solved_all`` (every graph scored 1.0), and
         ``solved_some`` (the mixed remainder — the GRPO-signal groups)."""
         groups: dict = {}
-        for r in self.rollouts:
+        for r in self.graphs:
             groups.setdefault(r.group_id, []).append(r)
         n_groups = len(groups)
         solved_none = sum(1 for g in groups.values() if sum(r.reward for r in g) == 0)
@@ -226,7 +226,7 @@ class RolloutMetrics:
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         """The common metric dict for one ``{prefix}/{subset}`` slice. Empty input → ``{}``."""
-        if not self.rollouts:
+        if not self.graphs:
             return {}
         p = f"{prefix}/{subset}"
         out: dict[str, float] = {}
@@ -250,31 +250,29 @@ class RolloutMetrics:
         return out
 
 
-class TrainMetrics(RolloutMetrics):
+class TrainMetrics(GraphMetrics):
     """Common metrics plus the reward distribution and filter-pipeline rates."""
 
     @property
     def reward(self) -> Stat:
-        return Stat([float(r.reward) for r in self.rollouts])
+        return Stat([float(r.reward) for r in self.graphs])
 
     @property
     def is_trainable(self) -> Stat:
-        return Stat([float(r.is_trainable) for r in self.rollouts])
+        return Stat([float(r.is_trainable) for r in self.graphs])
 
     @property
     def is_filtered(self) -> Stat:
-        return Stat([float(r.is_filtered) for r in self.rollouts])
+        return Stat([float(r.is_filtered) for r in self.graphs])
 
     def filter_rates(self) -> dict[str, float]:
-        """Per-filter detection rate over all rollouts."""
-        names = sorted({name for r in self.rollouts for name in r.filter_results})
-        return {
-            name: sum(1 for r in self.rollouts if r.filter_results.get(name)) / len(self.rollouts) for name in names
-        }
+        """Per-filter detection rate over all graphs."""
+        names = sorted({name for r in self.graphs for name in r.filter_results})
+        return {name: sum(1 for r in self.graphs if r.filter_results.get(name)) / len(self.graphs) for name in names}
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
-        if not self.rollouts:
+        if not self.graphs:
             return out
         p = f"{prefix}/{subset}"
         out |= self.reward.to_dict(f"{p}/reward")
@@ -284,26 +282,26 @@ class TrainMetrics(RolloutMetrics):
         return out
 
 
-class EvalMetrics(RolloutMetrics):
+class EvalMetrics(GraphMetrics):
     """Common metrics plus the ``avg@<group_size>`` score and (on the effective subset, for
     binary-reward tasks) pass@k / pass^k. ``group_size`` (the ``avg@k`` k) is supplied by the
     container so the ``all`` and ``effective`` subsets share one stable key."""
 
-    def __init__(self, rollouts: list[Rollout], group_size: int) -> None:
-        super().__init__(rollouts)
+    def __init__(self, graphs: list[AgentGraph], group_size: int) -> None:
+        super().__init__(graphs)
         self.group_size = group_size
 
     @property
     def reward(self) -> Stat:
-        return Stat([float(r.reward) for r in self.rollouts])
+        return Stat([float(r.reward) for r in self.graphs])
 
     def pass_at_k(self) -> dict[str, float]:
         """pass@k / pass^k averaged over examples; ``{}`` for non-binary rewards."""
-        rewards = [r.reward for r in self.rollouts]
+        rewards = [r.reward for r in self.graphs]
         if not set(rewards).issubset({0.0, 1.0}):
             return {}
         by_example: dict = {}
-        for r in self.rollouts:
+        for r in self.graphs:
             by_example.setdefault(r.group_id, []).append(r.reward)
         per_example = [compute_pass_metrics(rs) for rs in by_example.values()]
         keys = sorted({k for d in per_example for k in d})
@@ -311,7 +309,7 @@ class EvalMetrics(RolloutMetrics):
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
-        if not self.rollouts:
+        if not self.graphs:
             return out
         p = f"{prefix}/{subset}"
         out[f"{p}/avg@{self.group_size}"] = self.reward.mean()
@@ -320,67 +318,64 @@ class EvalMetrics(RolloutMetrics):
         return out
 
 
-class TrainRollouts:
-    """A list of train rollouts (everything that came back, errored + filtered included). ``effective``
-    is the clean subset (a view of the same traces); ``metrics`` builds ``TrainMetrics`` over them."""
+class TrainGraphs:
+    """Training graphs returned during one batch window."""
 
-    def __init__(self, rollouts: list[Rollout] | None = None) -> None:
-        self.rollouts = rollouts if rollouts is not None else []
+    def __init__(self, graphs: list[AgentGraph] | None = None) -> None:
+        self.graphs = graphs if graphs is not None else []
 
-    def append(self, rollout: Rollout) -> None:
-        self.rollouts.append(rollout)
+    def append(self, graph: AgentGraph) -> None:
+        self.graphs.append(graph)
 
     def __len__(self) -> int:
-        return len(self.rollouts)
+        return len(self.graphs)
 
-    def __iter__(self) -> Iterator[Rollout]:
-        return iter(self.rollouts)
+    def __iter__(self) -> Iterator[AgentGraph]:
+        return iter(self.graphs)
 
     @property
-    def effective(self) -> TrainRollouts:
-        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered])
+    def effective(self) -> TrainGraphs:
+        return TrainGraphs([graph for graph in self.graphs if not graph.has_error and not graph.is_filtered])
 
-    def by_env(self) -> dict[str, TrainRollouts]:
-        grouped: dict[str, list[Rollout]] = {}
-        for r in self.rollouts:
-            grouped.setdefault(r.env_name, []).append(r)
-        return {env: TrainRollouts(rs) for env, rs in grouped.items()}
+    def by_env(self) -> dict[str, TrainGraphs]:
+        grouped: dict[str, list[AgentGraph]] = {}
+        for graph in self.graphs:
+            grouped.setdefault(graph.env_name, []).append(graph)
+        return {env: TrainGraphs(graphs) for env, graphs in grouped.items()}
 
     @property
     def metrics(self) -> TrainMetrics:
-        return TrainMetrics(self.rollouts)
+        return TrainMetrics(self.graphs)
 
 
-class EvalRollouts:
-    """A list of eval rollouts (errored included). ``effective`` is the non-errored subset (a view).
-    ``group_size`` (rollouts per example, the ``avg@k`` k) is derived from the full epoch and carried
-    onto ``effective`` so both subsets share one stable key; ``metrics`` builds ``EvalMetrics``."""
+class EvalGraphs:
+    """Evaluation graphs returned during one eval epoch."""
 
-    def __init__(self, rollouts: list[Rollout] | None = None, group_size: int | None = None) -> None:
-        self.rollouts = rollouts if rollouts is not None else []
+    def __init__(self, graphs: list[AgentGraph] | None = None, group_size: int | None = None) -> None:
+        self.graphs = graphs if graphs is not None else []
         self._group_size = group_size
 
     def __len__(self) -> int:
-        return len(self.rollouts)
+        return len(self.graphs)
 
-    def __iter__(self) -> Iterator[Rollout]:
-        return iter(self.rollouts)
+    def __iter__(self) -> Iterator[AgentGraph]:
+        return iter(self.graphs)
 
     @property
     def group_size(self) -> int:
         """The largest group (equals the configured group size whenever one example kept all its
-        rollouts); a subview carries its parent's value so ``avg@k`` doesn't drift across subsets."""
+        graphs); a subview carries its parent's value so ``avg@k`` doesn't drift across subsets."""
         if self._group_size is not None:
             return self._group_size
         counts: dict = {}
-        for r in self.rollouts:
-            counts[r.group_id] = counts.get(r.group_id, 0) + 1
+        for graph in self.graphs:
+            counts[graph.group_id] = counts.get(graph.group_id, 0) + 1
         return max(counts.values(), default=0)
 
     @property
-    def effective(self) -> EvalRollouts:
-        return EvalRollouts([r for r in self.rollouts if not r.has_error], group_size=self.group_size)
+    def effective(self) -> EvalGraphs:
+        return EvalGraphs([graph for graph in self.graphs if not graph.has_error], group_size=self.group_size)
 
     @property
     def metrics(self) -> EvalMetrics:
-        return EvalMetrics(self.rollouts, self.group_size)
+        return EvalMetrics(self.graphs, self.group_size)

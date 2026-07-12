@@ -8,9 +8,15 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import (
+    EchoAlgorithm,
+    ProposerSolverAlgorithm,
+    build_algorithm,
+    stamp_advantages,
+    stamp_loss_routing,
+)
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import AgentGraph, TrainingTrace
 from prime_rl.transport.types import TrainingSample
 
 FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
@@ -37,6 +43,7 @@ def _ref_kind(ref):
     [
         ("grpo", {}, "policy", "rl"),
         ("max_rl", {}, "policy", "rl"),
+        ("proposer_solver", {}, "policy", "rl"),
         ("opd", {"teacher": FROZEN}, "policy", "ref_kl"),
         ("sft", {"sampling": {"source": FROZEN}}, "frozen", "ce"),
         ("opsd", {}, "policy", "ref_kl"),
@@ -48,6 +55,10 @@ def test_type_defaults_are_the_vetted_algorithms(algorithm_type, build_kwargs, s
     assert algo.type == algorithm_type
     assert _ref_kind(algo.sampling.source) == source
     assert algo.action_loss_type == action_loss_type
+
+
+def test_proposer_solver_algorithm_is_registered():
+    assert isinstance(build_algorithm(_build(type="proposer_solver"), MagicMock()), ProposerSolverAlgorithm)
 
 
 def test_echo_role_table():
@@ -160,9 +171,9 @@ def test_stamp_loss_routing_merges_action_weights_into_ce_stream():
 def _make_rollout(
     samples: list[TrainingSample],
     advantages: list[float] | None = None,
-) -> Rollout:
-    rollout = Rollout(
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)), nodes=[], rewards={}, env_name="test-env"
+) -> TrainingTrace:
+    rollout = TrainingTrace(
+        task=vf.TraceTask(type="Task", data=vf.WireTaskData(idx=0, prompt=None)), nodes=[], rewards={}
     )
     rollout.samples = samples
     rollout.advantages = advantages
@@ -240,7 +251,7 @@ def _node(message, *, parent, sampled, token_ids, logprobs=None, is_content=None
     )
 
 
-def _two_turn_rollout(observation_role: str = "tool") -> Rollout:
+def _two_turn_rollout(observation_role: str = "tool") -> AgentGraph:
     """A single linear branch: user prompt, an assistant response, an
     env-provided observation (tool output / user feedback), then a second
     assistant response. Tokens: prompt [1,2], action [3,4], observation
@@ -255,14 +266,13 @@ def _two_turn_rollout(observation_role: str = "tool") -> Rollout:
         _node(obs_message, parent=1, sampled=False, token_ids=[5, 6]),
         _node(AssistantMessage(content="A2"), parent=2, sampled=True, token_ids=[7, 8], logprobs=[-0.3, -0.4]),
     ]
-    rollout = Rollout(
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+    trace = TrainingTrace(
+        task=vf.TraceTask(type="Task", data=vf.WireTaskData(idx=0, prompt=None)),
         nodes=nodes,
         rewards={"r": 1.0},
-        env_name="test-env",
     )
-    rollout.samples = trace_to_samples(rollout, env_name="test-env")
-    return rollout
+    trace.samples = trace_to_samples(trace, env_name="test-env")
+    return AgentGraph(task=trace.task, traces=[trace], env_name="test-env")
 
 
 def test_echo_weights_observations_by_role():
@@ -270,8 +280,8 @@ def test_echo_weights_observations_by_role():
     # weighted; the initial prompt [1,2] precedes it and is excluded.
     rollout = _two_turn_rollout()
     algo = _echo_algorithm()  # the default table: tool bodies at 0.1
-    asyncio.run(algo.score_rollout(rollout))
-    sample = rollout.samples[0]
+    asyncio.run(algo.score_graph(rollout))
+    sample = rollout.training_trace.samples[0]
     assert sample.token_ids == [1, 2, 3, 4, 5, 6, 7, 8]
     assert sample.mask == [False, False, True, True, False, False, True, True]
     # [3,4] step-1 action, [5,6] observation (weighted), [7,8] step-2 action
@@ -280,14 +290,14 @@ def test_echo_weights_observations_by_role():
     # A user-feedback observation under a role table that weights users.
     rollout = _two_turn_rollout(observation_role="user")
     algo = _echo_algorithm(roles={"tool": {"alpha": 0.1}, "user": {"alpha": 0.05}})
-    asyncio.run(algo.score_rollout(rollout))
-    assert rollout.samples[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.05, 0.05, 0.0, 0.0]
+    asyncio.run(algo.score_graph(rollout))
+    assert rollout.training_trace.samples[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.05, 0.05, 0.0, 0.0]
 
     # A role not in the table leaves the observation unweighted: no ce stream.
     rollout = _two_turn_rollout(observation_role="user")
     algo = _echo_algorithm()  # tool only
-    asyncio.run(algo.score_rollout(rollout))
-    assert rollout.samples[0].ce_weights is None
+    asyncio.run(algo.score_graph(rollout))
+    assert rollout.training_trace.samples[0].ce_weights is None
 
 
 def test_echo_weights_only_content_tokens_when_is_content_present():
@@ -306,17 +316,17 @@ def test_echo_weights_only_content_tokens_when_is_content_present():
         ),
         _node(AssistantMessage(content="A2"), parent=2, sampled=True, token_ids=[7, 8], logprobs=[-0.3, -0.4]),
     ]
-    rollout = Rollout(
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+    trace = TrainingTrace(
+        task=vf.TraceTask(type="Task", data=vf.WireTaskData(idx=0, prompt=None)),
         nodes=nodes,
         rewards={"r": 1.0},
-        env_name="test-env",
     )
-    rollout.samples = trace_to_samples(rollout, env_name="test-env")
+    trace.samples = trace_to_samples(trace, env_name="test-env")
+    rollout = AgentGraph(task=trace.task, traces=[trace], env_name="test-env")
     algo = _echo_algorithm()  # tool bodies at 0.1
-    asyncio.run(algo.score_rollout(rollout))
+    asyncio.run(algo.score_graph(rollout))
     # Only position 5 (the body token) is weighted; the scaffold token at position 4 is not.
-    assert rollout.samples[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
+    assert rollout.training_trace.samples[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
 
 
 def test_echo_filter_narrows_selection():
@@ -328,13 +338,13 @@ def test_echo_filter_narrows_selection():
 
     rollout = _two_turn_rollout()
     algo = _echo_algorithm(filter_fn=keep_drop_one)
-    asyncio.run(algo.score_rollout(rollout))
-    assert rollout.samples[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+    asyncio.run(algo.score_graph(rollout))
+    assert rollout.training_trace.samples[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
 
     # Shape violations fail loudly: wrong branch count, wrong per-branch length.
     rollout = _two_turn_rollout()
     with pytest.raises(ValueError, match="per trainable branch"):
-        asyncio.run(_echo_algorithm(filter_fn=lambda trace: []).score_rollout(rollout))
+        asyncio.run(_echo_algorithm(filter_fn=lambda trace: []).score_graph(rollout))
     rollout = _two_turn_rollout()
     with pytest.raises(ValueError, match="span the branch's tokens"):
-        asyncio.run(_echo_algorithm(filter_fn=lambda trace: [[True] * 6]).score_rollout(rollout))
+        asyncio.run(_echo_algorithm(filter_fn=lambda trace: [[True] * 6]).score_graph(rollout))

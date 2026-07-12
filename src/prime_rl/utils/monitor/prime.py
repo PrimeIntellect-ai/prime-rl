@@ -24,7 +24,7 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import AgentGraph
 
 
 _SAMPLE_SCHEMA = pa.schema(
@@ -282,7 +282,7 @@ class PrimeMonitor(Monitor):
             },
         )
 
-    def log_samples(self, rollouts: list[Rollout], step: int) -> None:
+    def log_samples(self, graphs: list[AgentGraph], step: int) -> None:
         """Logs rollouts to Prime Intellect API using presigned URLs for direct R2 upload."""
         if not self.is_master:
             return
@@ -296,21 +296,21 @@ class PrimeMonitor(Monitor):
         ):
             return
 
-        rollouts = sample_items_for_logging(
-            rollouts,
+        graphs = sample_items_for_logging(
+            graphs,
             self.config.log_extras.sample_ratio,
         )
-        if not rollouts:
+        if not graphs:
             return
 
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
         assert step not in self._pending_sample_steps, f"Step {step} upload already in progress"
         assert self.logger is not None, "Logger is required for sample logging"
 
-        self.logger.info(f"Logging {len(rollouts)} samples to Prime Intellect API at step {step}")
+        self.logger.info(f"Logging {len(graphs)} samples to Prime Intellect API at step {step}")
         start_time = time.perf_counter()
 
-        parquet_bytes = self._rollouts_to_parquet_bytes(rollouts, step)
+        parquet_bytes = self._graphs_to_parquet_bytes(graphs, step)
 
         if not parquet_bytes:
             self.logger.warning(f"No samples to log at step {step}")
@@ -325,8 +325,8 @@ class PrimeMonitor(Monitor):
             f"Initiated samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
-    def _rollouts_to_parquet_bytes(self, rollouts: list[Rollout], step: int) -> bytes | None:
-        """Convert rollouts to Parquet bytes for upload. One row per rollout. The conversation
+    def _graphs_to_parquet_bytes(self, graphs: list[AgentGraph], step: int) -> bytes | None:
+        """Convert graphs to Parquet bytes for upload. One row per trainable trace. The conversation
         is the unit (no prompt/completion split — meaningless mid-branch): `completion` is the
         last branch's messages and `trajectory` is one message list per branch. Shares
         `verifiers.v1.push.trace_to_sample` with verifiers' eval `--push`, so a training-run
@@ -335,43 +335,54 @@ class PrimeMonitor(Monitor):
         now = datetime.now(timezone.utc)
         rows = []
 
-        for sample_id, rollout in enumerate(rollouts):
-            sample = trace_to_sample(rollout, rollout_number=sample_id + 1)
-            trajectory = sample["trajectory"]
-            if not trajectory:  # no branches (e.g. a rollout that errored before any message)
-                continue
-            advantage = rollout.scalar_advantage()
-            trajectory = [{**branch, "advantage": advantage} for branch in trajectory]
+        for graph in graphs:
+            for trace in graph.trainable_traces:
+                if trace.has_error:
+                    continue
+                sample_id = len(rows)
+                sample = trace_to_sample(trace, rollout_number=sample_id + 1)
+                trajectory = sample["trajectory"]
+                if not trajectory:
+                    continue
+                advantage = trace.scalar_advantage()
+                trajectory = [{**branch, "advantage": advantage} for branch in trajectory]
 
-            example_id = sample["example_id"]
-            try:
-                problem_id = int(example_id) if example_id is not None else sample_id
-            except (TypeError, ValueError):
-                problem_id = sample_id
+                example_id = sample["example_id"]
+                try:
+                    problem_id = int(example_id) if example_id is not None else sample_id
+                except (TypeError, ValueError):
+                    problem_id = sample_id
 
-            rows.append(
-                {
-                    "run_id": self.run_id,
-                    "step": step,
-                    "tag": "",
-                    "problem_id": problem_id,
-                    "sample_id": sample_id,
-                    "prompt": "",
-                    "completion": json.dumps(sample["completion"]),
-                    "trajectory": json.dumps(trajectory),
-                    "answer": "",
-                    "env_name": rollout.env_name,
-                    "task": json.dumps(sample["task"]),
-                    "info": json.dumps(rollout.info),
-                    "reward": sample["reward"],
-                    "advantage": advantage,
-                    "metrics": json.dumps(sample["metrics"]),
-                    "timing": json.dumps(sample["timing"]),
-                    "num_input_tokens": trajectory[-1]["num_input_tokens"],
-                    "num_output_tokens": trajectory[-1]["num_output_tokens"],
-                    "created_at": now,
+                info = {
+                    **trace.info,
+                    "graph_id": graph.id,
+                    "topology": graph.topology,
+                    "agent": trace.agent,
+                    "parents": trace.parents,
                 }
-            )
+                rows.append(
+                    {
+                        "run_id": self.run_id,
+                        "step": step,
+                        "tag": "",
+                        "problem_id": problem_id,
+                        "sample_id": sample_id,
+                        "prompt": "",
+                        "completion": json.dumps(sample["completion"]),
+                        "trajectory": json.dumps(trajectory),
+                        "answer": "",
+                        "env_name": graph.env_name,
+                        "task": json.dumps(sample["task"]),
+                        "info": json.dumps(info),
+                        "reward": sample["reward"],
+                        "advantage": advantage,
+                        "metrics": json.dumps(sample["metrics"]),
+                        "timing": json.dumps(sample["timing"]),
+                        "num_input_tokens": trajectory[-1]["num_input_tokens"],
+                        "num_output_tokens": trajectory[-1]["num_output_tokens"],
+                        "created_at": now,
+                    }
+                )
 
         if not rows:
             return None
@@ -481,7 +492,7 @@ class PrimeMonitor(Monitor):
                 await asyncio.sleep(delay)
         return False
 
-    def log_eval_samples(self, rollouts: list[Rollout], env_name: str, step: int) -> None:
+    def log_eval_samples(self, graphs: list[AgentGraph], env_name: str, step: int) -> None:
         pass
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:

@@ -41,7 +41,7 @@ def create_run_with_config(
             "model": {"name": "test-model"},
             "batch_size": 32,
             "group_size": 4,
-            "env": [{"id": "test-env"}],
+            "env": [{"name": "test-env", "topology": {"id": "single-agent"}}],
             # test-model isn't in MODEL_RENDERER_MAP; use the explicit default renderer.
             "renderer": {"name": "default"},
         }
@@ -202,7 +202,7 @@ def test_config_loading(tmp_path: Path) -> None:
         "batch_size": 32,
         "max_steps": 1000,
         "group_size": 4,
-        "env": [{"id": "test-env"}],
+        "env": [{"name": "test-env", "topology": {"id": "single-agent"}}],
         "renderer": {"name": "default"},
     }
     create_run_with_config(tmp_path, "run_test123", config=test_config)
@@ -247,7 +247,7 @@ def test_config_cleanup_on_deletion(tmp_path: Path) -> None:
         "model": {"name": "test-model"},
         "batch_size": 16,
         "group_size": 4,
-        "env": [{"id": "test-env"}],
+        "env": [{"name": "test-env", "topology": {"id": "single-agent"}}],
         "renderer": {"name": "default"},
     }
     run_dir = create_run_with_config(tmp_path, "run_delete_me", config=test_config)
@@ -278,7 +278,7 @@ def test_config_invalid(tmp_path: Path) -> None:
         "model": {"name": "test-model"},
         "batch_size": "not-a-number",  # Invalid type
         "group_size": 4,
-        "env": [{"id": "test-env"}],
+        "env": [{"name": "test-env", "topology": {"id": "single-agent"}}],
     }
     run_dir = create_run_with_config(tmp_path, "run_invalid", config=invalid_config)
     config_dir = run_dir / "control"

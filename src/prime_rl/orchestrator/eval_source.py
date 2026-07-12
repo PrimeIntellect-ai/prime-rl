@@ -73,10 +73,7 @@ class EvalSource:
         ``available_permits``; otherwise leave it for a later call."""
         if not self.queue:
             return None
-        head = self.queue[0]
-        env = self.eval_envs.get(head["env_name"])
-        cost = env.config.group_size if env.requires_group_scoring else 1
-        if cost > available_permits:
+        if available_permits < 1:
             return None
         return self.queue.popleft()
 

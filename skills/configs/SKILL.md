@@ -41,17 +41,19 @@ Incompatible combinations (e.g. CP requires flash attention) must raise in a `mo
 **Lists** — TOML uses array of tables; later config files replace lists wholesale, so overlays must include the full desired list:
 
 ```toml
-[[orchestrator.env]]
-id = "reverse-text"
+[[orchestrator.train.env]]
+topology = { id = "single-agent", taskset = { id = "reverse-text-v1" }, agent = { harness = { id = "null" } } }
 ```
 
-CLI: `--env.0.id reverse-text --env.1.id math-env`.
+Prime-RL environments are topology-only. The built-in `single-agent` topology is the
+explicit form for a conventional one-agent task. CLI example:
+`--train.env.0.topology.id single-agent --train.env.0.topology.taskset.id reverse-text-v1`.
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--vllm-extra '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `algo`) reject JSON strings; use dotted keys (`--orchestrator.algo.type max_rl`) or a TOML overlay file.
 
 **Discriminated unions** — set the `type` field to pick the variant (`[orchestrator.algo] type = "max_rl"`). Omit `type` to keep the default variant.
 
-**Algorithms** — `[orchestrator.algo] type = "grpo" | "max_rl" | "opd" | "opsd" | "sft" | "echo"` — the type names the algorithm (credit assignment + loss routing, fused), and each type's class defaults are its vetted setting; any other key you set is your own assembly (e.g. `[orchestrator.algo.roles.user] alpha = 0.1` for echo — setting any echo role replaces the whole role table). There is no preset layer, and no config hook that points at user code — a new algorithm is a named class in the repo (subclass `Algorithm`, register it). Per-env override: `[orchestrator.train.env.algo] type = "opd"` (the env assembles its own algorithm). prime-rl only hosts the trainable policy; frozen models are inline external endpoints on the algorithm, named where the model is used — `[orchestrator.algo.teacher]` for opd (the frozen model scored against), `[orchestrator.algo.sampling.source]` for sft (the model it samples from), each with `name` + `base_url`. There is no shared `teacher` slot. opsd declares no model — it self-distills against the live policy. See `docs/algorithms.md`.
+**Algorithms** — `[orchestrator.algo] type = "grpo" | "max_rl" | "proposer_solver" | "opd" | "opsd" | "sft" | "echo"` — the type names the algorithm (credit assignment + loss routing, fused), and each type's class defaults are its vetted setting; any other key you set is your own assembly (e.g. `[orchestrator.algo.roles.user] alpha = 0.1` for echo — setting any echo role replaces the whole role table). There is no preset layer, and no config hook that points at user code — a new algorithm is a named class in the repo (subclass `Algorithm`, register it). Per-env override: `[orchestrator.train.env.algo] type = "opd"` (the env assembles its own algorithm). `proposer_solver` requires the `proposer-solver-v1` topology, graph-count batching, and empty pre/post filter lists. prime-rl only hosts the trainable policy; frozen models are inline external endpoints on the algorithm, named where the model is used — `[orchestrator.algo.teacher]` for opd (the frozen model scored against), `[orchestrator.algo.sampling.source]` for sft (the model it samples from), each with `name` + `base_url`. There is no shared `teacher` slot. opsd declares no model — it self-distills against the live policy. See `docs/algorithms.md`.
 
 **`BaseModel | None` fields** — bare flag enables defaults; nested override enables and sets:
 

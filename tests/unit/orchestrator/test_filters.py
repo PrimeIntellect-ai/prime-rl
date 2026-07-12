@@ -11,7 +11,7 @@ from prime_rl.orchestrator.filters import (
     setup_filter,
     setup_filters,
 )
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import AgentGraph, TrainingTrace
 
 
 def _assistant_node(token_ids: list[int], logprobs: list[float]) -> vf.MessageNode:
@@ -46,7 +46,7 @@ def _make_rollout(
     *,
     reward: float = 1.0,
     multi_step: bool = False,
-) -> Rollout:
+) -> AgentGraph:
     """Build a ``Rollout`` (a message-graph trace) carrying the completion tokens — enough for
     the filters to inspect each node's sampled tokens / logprobs."""
     if multi_step:
@@ -57,12 +57,10 @@ def _make_rollout(
         ]
     else:
         nodes = [_assistant_node(completion_ids, completion_logprobs)]
-    rollout = Rollout[vf.TaskData](
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="")), nodes=nodes, rewards={"reward": reward}
+    trace = TrainingTrace(
+        task=vf.TraceTask(type="Task", data=vf.WireTaskData(idx=0, prompt="")), nodes=nodes, rewards={"reward": reward}
     )
-    rollout.env_name = "test"
-    rollout.group_id = uuid.uuid4()
-    return rollout
+    return AgentGraph(task=trace.task, traces=[trace], env_name="test", group_id=uuid.uuid4())
 
 
 def _make_gibberish_filter(vocab_size=128_000, token_id_threshold=100_000, logprob_offset=2.0, enforce=False):
@@ -78,17 +76,22 @@ def _make_repetition_filter(window=5, prob_threshold=0.99, enforce=False):
     )
 
 
+def _check(filter_, graph: AgentGraph):
+    return filter_.check(graph.training_trace)
+
+
 # --- GibberishFilter tests ---
 
 
 def test_gibberish_detects_rare_low_prob_token():
     gibberish_filter = _make_gibberish_filter()
 
-    result = gibberish_filter.check(
+    result = _check(
+        gibberish_filter,
         _make_rollout(
             completion_ids=[50, 120_000, 80],
             completion_logprobs=[-1.0, gibberish_filter.logprob_threshold - 1.0, -0.5],
-        )
+        ),
     )
     assert result.detected is True
 
@@ -96,11 +99,12 @@ def test_gibberish_detects_rare_low_prob_token():
 def test_gibberish_ignores_normal_tokens():
     gibberish_filter = _make_gibberish_filter()
 
-    result = gibberish_filter.check(
+    result = _check(
+        gibberish_filter,
         _make_rollout(
             completion_ids=[10, 200, 5000],
             completion_logprobs=[-1.0, -2.0, -3.0],
-        )
+        ),
     )
     assert result.detected is False
 
@@ -108,11 +112,12 @@ def test_gibberish_ignores_normal_tokens():
 def test_gibberish_ignores_high_prob_rare_token():
     gibberish_filter = _make_gibberish_filter()
 
-    result = gibberish_filter.check(
+    result = _check(
+        gibberish_filter,
         _make_rollout(
             completion_ids=[120_000],
             completion_logprobs=[-0.5],
-        )
+        ),
     )
     assert result.detected is False
 
@@ -120,12 +125,13 @@ def test_gibberish_ignores_high_prob_rare_token():
 def test_gibberish_works_across_trajectory_steps():
     gibberish_filter = _make_gibberish_filter()
 
-    result = gibberish_filter.check(
+    result = _check(
+        gibberish_filter,
         _make_rollout(
             completion_ids=[50, 60, 120_000, 80],
             completion_logprobs=[-1.0, -0.5, gibberish_filter.logprob_threshold - 1.0, -0.5],
             multi_step=True,
-        )
+        ),
     )
     assert result.detected is True
 
@@ -137,8 +143,8 @@ def test_gibberish_aligns_logprobs_under_generation_prompt_scaffold():
     it; reading the aligned branch streams detects it."""
     gibberish_filter = _make_gibberish_filter()
 
-    rollout = Rollout[vf.TaskData](
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="")),
+    rollout = TrainingTrace(
+        task=vf.TraceTask(type="Task", data=vf.WireTaskData(idx=0, prompt="")),
         nodes=[_scaffold_assistant_node([50, 80, 120_000], [-1.0, -0.5, gibberish_filter.logprob_threshold - 1.0])],
         rewards={"reward": 1.0},
     )
@@ -153,11 +159,12 @@ def test_gibberish_aligns_logprobs_under_generation_prompt_scaffold():
 def test_repetition_triggers_after_window():
     repetition_filter = _make_repetition_filter(window=5)
 
-    result = repetition_filter.check(
+    result = _check(
+        repetition_filter,
         _make_rollout(
             completion_ids=list(range(5)),
             completion_logprobs=[-0.001] * 5,
-        )
+        ),
     )
     assert result.detected is True
 
@@ -165,11 +172,12 @@ def test_repetition_triggers_after_window():
 def test_repetition_no_trigger_below_window():
     repetition_filter = _make_repetition_filter(window=5)
 
-    result = repetition_filter.check(
+    result = _check(
+        repetition_filter,
         _make_rollout(
             completion_ids=list(range(4)),
             completion_logprobs=[-0.001] * 4,
-        )
+        ),
     )
     assert result.detected is False
 
@@ -178,11 +186,12 @@ def test_repetition_resets_on_low_prob():
     repetition_filter = _make_repetition_filter(window=5)
 
     logprobs = [-0.001] * 3 + [-2.0] + [-0.001] * 3
-    result = repetition_filter.check(
+    result = _check(
+        repetition_filter,
         _make_rollout(
             completion_ids=list(range(7)),
             completion_logprobs=logprobs,
-        )
+        ),
     )
     assert result.detected is False
 
@@ -190,11 +199,12 @@ def test_repetition_resets_on_low_prob():
 def test_repetition_varied_probs_no_trigger():
     repetition_filter = _make_repetition_filter(window=3)
 
-    result = repetition_filter.check(
+    result = _check(
+        repetition_filter,
         _make_rollout(
             completion_ids=list(range(6)),
             completion_logprobs=[-0.001, -3.0, -0.001, -3.0, -0.001, -3.0],
-        )
+        ),
     )
     assert result.detected is False
 
@@ -260,8 +270,8 @@ def test_apply_filters_enforced_flags_rollout():
     apply_filters([gibberish_filter], [rollout])
 
     assert rollout.reward == 1.0
-    assert rollout.nodes[0].token_ids == [120_000]
-    assert rollout.nodes[0].mask == [True]
+    assert rollout.training_trace.nodes[0].token_ids == [120_000]
+    assert rollout.training_trace.nodes[0].mask == [True]
     assert rollout.stop_condition is None
     assert rollout.filter_results == {"gibberish": True}
     assert rollout.is_filtered is True
@@ -279,8 +289,8 @@ def test_apply_filters_preserves_clean_rollouts():
     apply_filters([gibberish_filter], [rollout])
 
     assert rollout.reward == 1.0
-    assert rollout.nodes[0].token_ids == [50, 60, 70]
-    assert all(rollout.nodes[0].mask)
+    assert rollout.training_trace.nodes[0].token_ids == [50, 60, 70]
+    assert all(rollout.training_trace.nodes[0].mask)
     assert rollout.stop_condition is None
     assert rollout.filter_results == {"gibberish": False}
     assert rollout.is_filtered is False
@@ -341,13 +351,13 @@ def test_apply_filters_enforced_preserves_rollout_tokens():
 
     apply_filters([gibberish_filter], [rollout])
 
-    assert rollout.nodes[0].token_ids == [10, 120_000, 30]
-    assert rollout.nodes[0].logprobs == [
+    assert rollout.training_trace.nodes[0].token_ids == [10, 120_000, 30]
+    assert rollout.training_trace.nodes[0].logprobs == [
         -1.0,
         gibberish_filter.logprob_threshold - 1.0,
         -0.5,
     ]
-    assert rollout.nodes[0].mask == [True, True, True]
+    assert rollout.training_trace.nodes[0].mask == [True, True, True]
     assert rollout.is_filtered is True
 
 
@@ -359,7 +369,7 @@ def test_apply_filters_preserves_existing_stop_condition():
         completion_logprobs=[gibberish_filter.logprob_threshold - 1.0],
         reward=1.0,
     )
-    rollout.stop_condition = "generation_truncated"
+    rollout.training_trace.stop_condition = "generation_truncated"
 
     apply_filters([gibberish_filter], [rollout])
 
@@ -382,7 +392,7 @@ def test_apply_filters_monitor_only_tracks_detection():
     apply_filters([gibberish_filter], [rollout])
 
     assert rollout.reward == 1.0
-    assert all(rollout.nodes[0].mask)
+    assert all(rollout.training_trace.nodes[0].mask)
     assert rollout.stop_condition is None
     assert rollout.filter_results == {"gibberish": True}
     assert rollout.is_filtered is False

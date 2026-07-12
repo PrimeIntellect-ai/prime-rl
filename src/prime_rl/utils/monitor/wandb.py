@@ -23,7 +23,7 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import AgentGraph
 
 
 def _loggable_task(task) -> str:
@@ -188,7 +188,7 @@ class WandbMonitor(Monitor):
             return
         wandb.log({**metrics, "step": step})
 
-    def log_samples(self, rollouts: list[Rollout], step: int) -> None:
+    def log_samples(self, graphs: list[AgentGraph], step: int) -> None:
         """Logs rollouts to W&B table."""
         if not self.is_master:
             return
@@ -202,45 +202,47 @@ class WandbMonitor(Monitor):
             # Do not log samples if not enabled or not log interval step
             return
 
-        rollouts = sample_items_for_logging(
-            rollouts,
+        graphs = sample_items_for_logging(
+            graphs,
             self.config.log_extras.sample_ratio,
         )
-        if not rollouts:
+        if not graphs:
             return
 
         assert self.tokenizer is not None, "Tokenizer is required for sample logging"
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
         assert self.logger is not None, "Logger is required for sample logging"
 
-        self.logger.info(f"Logging {len(rollouts)} samples to W&B table at step {step}")
+        self.logger.info(f"Logging {len(graphs)} samples to W&B table at step {step}")
         start_time = time.perf_counter()
 
-        for rollout in rollouts:
-            trace = rollout
-            for branch in trace.branches:
-                token_ids = branch.token_ids
-                if not token_ids:
+        for graph in graphs:
+            for trace in graph.trainable_traces:
+                if trace.has_error:
                     continue
-                sample = {
-                    "step": step,
-                    "env_name": rollout.env_name,
-                    "task": _loggable_task(trace.task.data),
-                    "task_idx": trace.task.data.idx,
-                    "messages": self.tokenizer.decode(token_ids),
-                    "input_ids": str(token_ids),
-                    "reward": trace.reward,
-                }
-                assert list(sample.keys()) == self.samples_cols, (
-                    "Order of columns in the table must be the same as order of the keys here"
-                )
-                self.samples_table.add_data(*sample.values())
+                for branch in trace.branches:
+                    token_ids = branch.token_ids
+                    if not token_ids:
+                        continue
+                    sample = {
+                        "step": step,
+                        "env_name": graph.env_name,
+                        "task": _loggable_task(trace.task.data),
+                        "task_idx": trace.task.data.idx,
+                        "messages": self.tokenizer.decode(token_ids),
+                        "input_ids": str(token_ids),
+                        "reward": trace.reward,
+                    }
+                    assert list(sample.keys()) == self.samples_cols, (
+                        "Order of columns in the table must be the same as order of the keys here"
+                    )
+                    self.samples_table.add_data(*sample.values())
 
         wandb.log({"samples": self.samples_table, "step": step})
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
 
-    def log_eval_samples(self, rollouts: list[Rollout], env_name: str, step: int) -> None:
+    def log_eval_samples(self, graphs: list[AgentGraph], env_name: str, step: int) -> None:
         """Logs eval rollouts to a separate W&B table."""
         if not self.is_master:
             return
@@ -252,23 +254,25 @@ class WandbMonitor(Monitor):
         ):
             return
 
-        for rollout in rollouts:
-            trace = rollout
-            for branch in trace.branches:
-                # Eval runs the openai client (no token ids), so show the assistant message
-                # content rather than decoded tokens.
-                completion = "".join(m.content or "" for m in branch.messages if m.role == "assistant")
-                if not completion:
+        for graph in graphs:
+            for trace in graph.trainable_traces:
+                if trace.has_error:
                     continue
-                sample = {
-                    "step": step,
-                    "env": env_name,
-                    "task": _loggable_task(trace.task.data),
-                    "task_idx": trace.task.data.idx,
-                    "completion": completion,
-                    "reward": trace.reward,
-                }
-                self.eval_samples_table.add_data(*sample.values())
+                for branch in trace.branches:
+                    # Eval runs the openai client (no token ids), so show the assistant message
+                    # content rather than decoded tokens.
+                    completion = "".join(m.content or "" for m in branch.messages if m.role == "assistant")
+                    if not completion:
+                        continue
+                    sample = {
+                        "step": step,
+                        "env": env_name,
+                        "task": _loggable_task(trace.task.data),
+                        "task_idx": trace.task.data.idx,
+                        "completion": completion,
+                        "reward": trace.reward,
+                    }
+                    self.eval_samples_table.add_data(*sample.values())
 
         wandb.log({"eval/samples": self.eval_samples_table, "step": step})
 

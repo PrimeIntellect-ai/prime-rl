@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
+from prime_rl.orchestrator.metrics import EvalGraphs, Stat, TrainGraphs
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 
@@ -44,7 +44,7 @@ def mk(
         is_truncated=is_truncated,
         is_completed=is_completed,
         has_error=has_error,
-        error=SimpleNamespace(type=error_type) if has_error else None,
+        failure=SimpleNamespace(type=error_type) if has_error else None,
         stop_condition=stop_condition,
         metrics=metrics or {},
         env_name=env_name,
@@ -62,7 +62,7 @@ def mk(
 
 
 def train_wandb(rollouts, subset: str = "all") -> dict:
-    return TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset=subset)
+    return TrainGraphs(rollouts).metrics.to_wandb(prefix="train/agg", subset=subset)
 
 
 def test_stat():
@@ -74,21 +74,21 @@ def test_stat():
 
 
 def test_container_effective_by_env_and_listlike():
-    rc = TrainRollouts(
+    rc = TrainGraphs(
         [mk(env_name="a"), mk(env_name="a", has_error=True), mk(env_name="b", is_filtered=True), mk(env_name="b")]
     )
     assert len(rc) == 4 and [r.env_name for r in rc] == ["a", "a", "b", "b"]  # sized + iterable
     eff = rc.effective
-    assert isinstance(eff, TrainRollouts) and len(eff) == 2  # same type, errored + filtered dropped
-    assert all(not r.has_error and not r.is_filtered and r in rc.rollouts for r in eff)  # view of references
+    assert isinstance(eff, TrainGraphs) and len(eff) == 2  # same type, errored + filtered dropped
+    assert all(not r.has_error and not r.is_filtered and r in rc.graphs for r in eff)  # view of references
     by_env = rc.by_env()
-    assert set(by_env) == {"a", "b"} and len(by_env["a"]) == 2 and isinstance(by_env["a"], TrainRollouts)
+    assert set(by_env) == {"a", "b"} and len(by_env["a"]) == 2 and isinstance(by_env["a"], TrainGraphs)
     rc.append(mk())
     assert len(rc) == 5
 
 
 def test_to_wandb_distributions():
-    m = TrainRollouts(
+    m = TrainGraphs(
         [
             mk(reward=1.0, num_total_tokens=10, num_input_tokens=4),
             mk(reward=0.0, num_total_tokens=20, num_input_tokens=6),
@@ -104,7 +104,7 @@ def test_to_wandb_distributions():
 
 
 def test_boolean_rates_and_error_breakdown_all_only():
-    rc = TrainRollouts([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_filtered=True)])
+    rc = TrainGraphs([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_filtered=True)])
     out = rc.metrics.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/is_truncated/mean"] == 1 / 3
     assert out["train/agg/all/is_completed/mean"] == 1.0
@@ -136,7 +136,7 @@ def test_nested_metrics_and_rewards():
         mk(metrics={"acc": 1.0}, rewards={"correct": 1.0, "format": 0.0}),
         mk(metrics={"acc": 3.0, "fmt": 5.0}, rewards={"correct": 0.0, "format": 1.0}),
     ]
-    m = TrainRollouts(rollouts).metrics
+    m = TrainGraphs(rollouts).metrics
     assert m.metrics["acc"].mean() == 2.0 and m.rewards["correct"].mean() == 0.5  # nested group access
     out = m.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/metrics/acc/mean"] == 2.0  # averaged over reporters
@@ -145,7 +145,7 @@ def test_nested_metrics_and_rewards():
 
 
 def test_nested_timing():
-    m = TrainRollouts([mk(setup=1.0, generation=2.0, finalize=0.5, scoring=0.5)]).metrics
+    m = TrainGraphs([mk(setup=1.0, generation=2.0, finalize=0.5, scoring=0.5)]).metrics
     assert m.timing.setup.mean() == 1.0 and m.timing.total.mean() == 4.0  # total sums all four phases
     out = m.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/timing/setup/mean"] == 1.0
@@ -161,12 +161,12 @@ def test_train_only_metrics_absent_from_eval():
     assert out["train/agg/all/is_trainable/mean"] == 0.5
     assert out["train/agg/all/is_filtered/mean"] == 0.5
     assert out["train/agg/all/filters/gibberish/mean"] == 0.5
-    eval_out = EvalRollouts(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
+    eval_out = EvalGraphs(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
     assert not any("is_trainable" in k or "is_filtered" in k or "/filters/" in k for k in eval_out)
 
 
 def test_eval_avg_at_k_and_pass_k():
-    binary = EvalRollouts([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")])
+    binary = EvalGraphs([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")])
     eff = binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
     assert eff["eval/x/effective/avg@2"] == 0.5  # mean reward under avg@<k> (k derived from the groups)
     assert not any(k.startswith("eval/x/effective/reward") for k in eff)
@@ -174,7 +174,7 @@ def test_eval_avg_at_k_and_pass_k():
     all_out = binary.metrics.to_wandb(prefix="eval/x", subset="all")
     assert all_out["eval/x/all/avg@2"] == 0.5
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
-    non_binary = EvalRollouts([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
+    non_binary = EvalGraphs([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
 
 

@@ -17,7 +17,7 @@ from prime_rl.configs.algorithm import ActionLossType
 from prime_rl.transport import TrainingSample
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import TrainingTrace
 
 
 def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType) -> None:
@@ -51,7 +51,7 @@ def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType)
         sample.ref_kl_weights = action_weights
 
 
-def stamp_advantages(rollout: Rollout) -> None:
+def stamp_advantages(rollout: TrainingTrace) -> None:
     """Stamp the rollout's per-token advantage stream onto its samples' wire
     fields. The stream is full-length-N — aligned to the samples' ``token_ids``
     concatenated in order, 0.0 on non-trainable positions — and sliced across
@@ -65,7 +65,7 @@ def stamp_advantages(rollout: Rollout) -> None:
     if len(advantages) != total:
         raise ValueError(
             f"advantage stream must align with the rollout's tokens: "
-            f"got {len(advantages)}, expected {total} (env '{rollout.env_name}')."
+            f"got {len(advantages)}, expected {total} (trace '{rollout.id}')."
         )
     offset = 0
     for sample in rollout.samples:

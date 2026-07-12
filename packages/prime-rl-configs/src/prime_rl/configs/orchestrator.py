@@ -151,14 +151,32 @@ class EvalSamplingConfig(BaseConfig):
 
 
 class EnvConfig(vf.EnvServerConfig):
+    # Verifiers still carries compatibility fields on its shared server config. Prime's
+    # topology-only schema rejects them on input and omits their defaults on output.
+    taskset: vf.TasksetConfig = Field(default_factory=vf.TasksetConfig, exclude=True)
+    harness: vf.HarnessConfig = Field(default_factory=vf.HarnessConfig, exclude=True)
+    id: vf.ID | None = Field(default=None, exclude=True)
+    args: dict = Field(default_factory=dict, exclude=True)
+    extra_env_kwargs: dict = Field(default_factory=dict, exclude=True)
+
     name: str | None = None
-    """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
+    """Display name for this topology in logs, metrics, and buffer keys. Defaults to the topology id. Must be unique across all envs in the same group."""
 
     address: str | None = None
     """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically. The ``pool`` sizes the spawned server."""
 
     ratio: float = Field(1.0, gt=0)
     """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _topology_only(cls, data):
+        if not isinstance(data, dict):
+            return data
+        unsupported = [field for field in ("taskset", "harness", "id", "args", "extra_env_kwargs") if field in data]
+        if unsupported:
+            raise ValueError("Prime-RL environments are topology-only; remove " + ", ".join(unsupported))
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -173,40 +191,18 @@ class EnvConfig(vf.EnvServerConfig):
         return data
 
     @property
-    def is_legacy(self) -> bool:
-        """A v0/legacy env (run via the bridge): an ``id`` is set and no v1 ``taskset`` is."""
-        return not self.taskset.id
-
-    @property
-    def env_id(self) -> str:
-        """The env identifier — the v1 taskset id (v1) or the legacy env id (v0)."""
-        return self.taskset.id or self.id or ""
-
-    @property
     def resolved_name(self) -> str:
-        return self.name or self.env_id
+        assert self.topology is not None
+        return self.name or self.topology.id
 
     @model_validator(mode="after")
     def validate_env(self):
-        if not self.taskset.id and not self.id:
-            raise ValueError('no env configured — set taskset = { id = "<id>" } (v1) or id = "<id>" (v0/legacy)')
+        if self.topology is None:
+            raise ValueError('no topology configured — set topology = { id = "<id>" }')
         if self.resolved_name == "agg":
             raise ValueError(
                 'Environment name "agg" is reserved for cross-env metric aggregation. Use a different name or id.'
             )
-        return self
-
-    @model_validator(mode="after")
-    def resolve_legacy_env_kwargs(self):
-        """For a v0/legacy env, surface the v1 knobs the legacy bridge applies via
-        ``extra_env_kwargs`` (``env.set_kwargs(...)``): the per-rollout wall-clock timeout and
-        the multi-turn completion-token budget. (``max_seq_len`` is added per train run in
-        ``OrchestratorConfig.resolve_env_config``, which knows ``seq_len``.)"""
-        if self.is_legacy:
-            if self.timeout.rollout is not None:
-                self.extra_env_kwargs["timeout_seconds"] = self.timeout.rollout
-            if self.max_output_tokens is not None:
-                self.extra_env_kwargs["max_total_completion_tokens"] = self.max_output_tokens
         return self
 
 
@@ -720,7 +716,7 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_config(self):
-        """Set vLLM sampling defaults + legacy env kwargs on each train env from top-level fields."""
+        """Set vLLM sampling defaults on each train topology."""
         for env in self.train.env:
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
@@ -729,8 +725,4 @@ class OrchestratorConfig(BaseConfig):
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)
-            if env.is_legacy:
-                # v0 env: cap per-turn response tokens to the training budget (the legacy
-                # bridge applies extra_env_kwargs via env.set_kwargs).
-                env.extra_env_kwargs["max_seq_len"] = self.seq_len
         return self

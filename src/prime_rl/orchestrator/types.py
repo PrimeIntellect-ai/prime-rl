@@ -1,19 +1,19 @@
-"""Shared dataclasses for the orchestrator. Data carriers only; no behavior."""
+"""Shared graph-native data carriers for the orchestrator."""
 
 from __future__ import annotations
 
+import traceback
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import verifiers.v1 as vf
-from pydantic import ConfigDict, Field
-from verifiers.v1.task import DataT
+from pydantic import ConfigDict, Field, SerializeAsAny
 
 from prime_rl.transport import TrainingSample
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.metrics import EvalRollouts, TrainRollouts
+    from prime_rl.orchestrator.metrics import EvalGraphs, TrainGraphs
 
 
 @dataclass
@@ -35,19 +35,17 @@ class Progress:
     total_problems: int = 0
 
 
-RolloutKind = Literal["train", "eval"]
+GraphKind = Literal["train", "eval"]
 
 
 @dataclass
-class InflightRollout:
-    """Per-task scheduling state in the dispatcher; one entry per in-flight
-    ``run_rollout`` / ``run_group`` task."""
+class InflightGraph:
+    """Scheduling metadata for one in-flight topology invocation."""
 
-    kind: RolloutKind
+    kind: GraphKind
     env_name: str
     group_id: uuid.UUID
     policy_version: int
-    rollout_count: int
     client_config: vf.ClientConfig | None = None
     off_policy_steps: int = 0
     eval_step: int | None = None
@@ -58,64 +56,34 @@ class GroupState:
     """Per-group dispatcher state: what's left to schedule + the pinned
     client (for prefix-cache hits)."""
 
-    kind: RolloutKind
+    kind: GraphKind
     env_name: str
     task_idx: int
-    rollouts_to_schedule: int
-    target_rollouts: int
+    graphs_to_schedule: int
+    target_graphs: int
     emitted: int = 0
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None
     policy_version_at_start: int = 0
 
 
-class Rollout(vf.Trace[DataT], Generic[DataT]):
-    """A completed rollout: the env's typed ``vf.Trace`` *is* the rollout — prime-rl's
-    orchestration metadata lives on it directly (set by the dispatcher once the rollout
-    returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
-    fields are ``exclude=True``, so dumping a Rollout yields a plain trace on the wire;
-    :meth:`to_record` adds the small metadata fields back for the on-disk trace files.
-
-    It is also the single currency the scoring hooks receive: a hook reads the trace
-    directly (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``) and writes
-    credit through :meth:`assign_advantages` (scalar broadcast or per-token), which
-    spreads over the samples' trainable (mask-True) tokens."""
+class TrainingTrace(vf.WireTrace):
+    """A graph trace with Prime's transient training state."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)  # ``samples`` holds msgspec structs
 
-    kind: RolloutKind = Field(default="train", exclude=True)
-    env_name: str = Field(default="", exclude=True)
-    group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
-    policy_version: int = Field(default=0, exclude=True)
-    off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
     # Per-token rl advantage stream, full-length-N (= len(token_ids)) per
-    # sample, concatenated across the rollout's samples in order; 0.0 on
+    # sample, concatenated across the trace's samples in order; 0.0 on
     # non-trainable positions. None = no credit assigned (advantage-based
     # filters skip it; the wire ships no advantage stream).
     advantages: list[float] | None = Field(default=None, exclude=True)
-    is_filtered: bool = Field(default=False, exclude=True)
-    filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
-    eval_step: int | None = Field(default=None, exclude=True)
-
-    def to_record(self) -> dict:
-        """The plain trace record plus the orchestration metadata (excluded from the pydantic
-        dump), so a record stays fully placeable — kind, env, policy — even when trace files
-        are merged or read away from their paths. ``eval_step`` is the eval trigger step (None
-        for train rollouts)."""
-        return super().to_record() | {
-            "kind": self.kind,
-            "env_name": self.env_name,
-            "group_id": str(self.group_id),
-            "policy_version": self.policy_version,
-            "eval_step": self.eval_step,
-        }
 
     def assign_advantages(self, values: float | list[float]) -> None:
         """Write the rl advantage stream: a scalar broadcast over the
-        rollout's trainable (mask-True) tokens (0.0 elsewhere), or a per-token
+        trace's trainable (mask-True) tokens (0.0 elsewhere), or a per-token
         list already aligned full-length to the samples' concatenated
-        ``token_ids``. A rollout never assigned ships no advantage stream."""
+        ``token_ids``. A trace never assigned ships no advantage stream."""
         total = sum(len(sample.token_ids) for sample in self.samples)
         if isinstance(values, (int, float)):
             self.advantages = [
@@ -124,8 +92,8 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
             return
         if len(values) != total:
             raise ValueError(
-                f"per-token advantages must align with the rollout's tokens: "
-                f"got {len(values)}, expected {total} (env '{self.env_name}')."
+                f"per-token advantages must align with the trace's tokens: "
+                f"got {len(values)}, expected {total} (trace '{self.id}')."
             )
         self.advantages = [float(v) for v in values]
 
@@ -140,31 +108,169 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
 
     @property
     def is_trainable(self) -> bool:
-        """Whether the rollout carries a training signal — a nonzero advantage on some token. A
-        uniform-reward GRPO group (all-zero advantages) or an unscored rollout has no gradient."""
+        """Whether the trace carries a training signal — a nonzero advantage on some token. A
+        uniform-reward GRPO group (all-zero advantages) or an unscored trace has no gradient."""
         return bool(self.advantages) and any(a != 0.0 for a in self.advantages)
+
+
+class AgentGraph(vf.AgentGraph):
+    """One topology invocation plus Prime's transient orchestration state.
+
+    The first training contract intentionally supports exactly one trainable trace. The
+    graph remains the algorithm and persistence unit; supporting multiple trainable traces
+    later only requires algorithms that assign credit across those traces.
+    """
+
+    traces: list[SerializeAsAny[TrainingTrace]] = Field(default_factory=list)
+    kind: GraphKind = Field(default="train", exclude=True)
+    env_name: str = Field(default="", exclude=True)
+    group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
+    policy_version: int = Field(default=0, exclude=True)
+    off_policy_steps: int = Field(default=0, exclude=True)
+    is_filtered: bool = Field(default=False, exclude=True)
+    filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
+    eval_step: int | None = Field(default=None, exclude=True)
+
+    @classmethod
+    def from_wire(cls, graph: vf.AgentGraph) -> "AgentGraph":
+        return cls.model_validate(
+            {
+                **graph.model_dump(exclude={"task", "traces"}),
+                "task": graph.task,
+                "traces": [TrainingTrace.model_validate(trace.model_dump(mode="python")) for trace in graph.traces],
+            }
+        )
+
+    @property
+    def trainable_traces(self) -> list[TrainingTrace]:
+        return [trace for trace in self.traces if trace.trainable]
+
+    @property
+    def training_trace(self) -> TrainingTrace:
+        traces = self.trainable_traces
+        if len(traces) != 1:
+            raise ValueError(
+                f"topology graph {self.id!r} must contain exactly one trainable trace; found {len(traces)}"
+            )
+        return traces[0]
+
+    @property
+    def training_trace_or_none(self) -> TrainingTrace | None:
+        traces = self.trainable_traces
+        return traces[0] if len(traces) == 1 else None
+
+    @property
+    def has_error(self) -> bool:
+        traces = self.trainable_traces
+        return self.error is not None or (bool(traces) and all(trace.has_error for trace in traces))
+
+    @property
+    def failure(self) -> vf.Error | None:
+        if self.error is not None:
+            return self.error
+        traces = self.trainable_traces
+        failed = [trace.error for trace in traces if trace.error is not None]
+        return failed[0] if failed and len(failed) == len(traces) else None
+
+    def capture_error(self, error: Exception) -> None:
+        self.error = vf.Error(
+            type=type(error).__name__,
+            message=str(error),
+            traceback=traceback.format_exc(),
+        )
+
+    def to_record(self) -> dict:
+        return super().to_record() | {
+            "kind": self.kind,
+            "env_name": self.env_name,
+            "group_id": str(self.group_id),
+            "policy_version": self.policy_version,
+            "eval_step": self.eval_step,
+        }
+
+    @property
+    def reward(self) -> float:
+        trace = self.training_trace_or_none
+        return trace.reward if trace is not None else 0.0
+
+    @property
+    def rewards(self) -> dict[str, float]:
+        trace = self.training_trace_or_none
+        return trace.rewards if trace is not None else {}
+
+    @property
+    def metrics(self) -> dict[str, float]:
+        trace = self.training_trace_or_none
+        return trace.metrics if trace is not None else {}
+
+    @property
+    def timing(self) -> vf.Timing:
+        trace = self.training_trace_or_none
+        return trace.timing if trace is not None else vf.Timing()
+
+    @property
+    def num_input_tokens(self) -> int:
+        return sum(trace.num_input_tokens for trace in self.trainable_traces)
+
+    @property
+    def num_output_tokens(self) -> int:
+        return sum(trace.num_output_tokens for trace in self.trainable_traces)
+
+    @property
+    def num_total_tokens(self) -> int:
+        return sum(trace.num_total_tokens for trace in self.trainable_traces)
+
+    @property
+    def num_turns(self) -> int:
+        return sum(trace.num_turns for trace in self.trainable_traces)
+
+    @property
+    def num_branches(self) -> int:
+        return sum(trace.num_branches for trace in self.trainable_traces)
+
+    @property
+    def is_truncated(self) -> bool:
+        return any(trace.is_truncated for trace in self.trainable_traces)
+
+    @property
+    def is_completed(self) -> bool:
+        traces = self.trainable_traces
+        return bool(traces) and all(trace.is_completed for trace in traces)
+
+    @property
+    def stop_condition(self) -> str | None:
+        trace = self.training_trace_or_none
+        return trace.stop_condition if trace is not None else None
+
+    @property
+    def is_trainable(self) -> bool:
+        return any(trace.is_trainable for trace in self.trainable_traces)
+
+    def scalar_advantage(self) -> float | None:
+        trace = self.training_trace_or_none
+        return trace.scalar_advantage() if trace is not None else None
 
 
 @dataclass
 class TrainBatch:
-    """``rollouts`` is the full arrival window since the last ship (errored + filtered included; its
+    """``graphs`` is the full arrival window since the last ship (errored + filtered included; its
     ``.effective`` / ``.metrics`` views drive logging). ``samples`` is the trainer-bound payload (the
     shipped cohort's post-filter survivors) — an empty list means nothing ships, which would stall the
-    trainer. Trainable counts derive from ``rollouts`` (``r.is_trainable``) and token totals from
+    trainer. Trainable counts derive from ``graphs`` and token totals from
     ``samples``, so neither is carried as a field."""
 
-    rollouts: TrainRollouts
+    graphs: TrainGraphs
     samples: list[TrainingSample]
 
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch. ``rollouts`` is the full returned cohort (errored included); its
+    """One env's eval epoch. ``graphs`` is the full returned cohort (errored included); its
     ``.effective`` / ``.metrics`` views drive logging."""
 
     env_name: str
     step: int
-    rollouts: EvalRollouts
+    graphs: EvalGraphs
 
 
 class VersionObserver(Protocol):

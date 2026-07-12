@@ -172,7 +172,12 @@ def test_env_algo_overrides_top_level():
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
             "algo": {"type": "echo"},
-            "train": {"env": [{"id": "a", "algo": {"type": "grpo"}}, {"id": "b"}]},
+            "train": {
+                "env": [
+                    {"name": "a", "topology": {"id": "single-agent"}, "algo": {"type": "grpo"}},
+                    {"name": "b", "topology": {"id": "single-agent"}},
+                ]
+            },
         }
     )
     env_a, env_b = config.train.env
@@ -184,6 +189,13 @@ def test_env_algo_overrides_top_level():
     dumped = config.model_dump(exclude_none=True)
     reloaded = OrchestratorConfig.model_validate(dumped)
     assert reloaded.train.env[0].algo is not None and reloaded.train.env[0].algo.type == "grpo"
+
+
+def test_orchestrator_env_requires_explicit_topology():
+    with pytest.raises(ValidationError, match="topology-only"):
+        OrchestratorConfig.model_validate(
+            {"train": {"env": [{"taskset": {"id": "reverse-text-v1"}, "harness": {"id": "null"}}]}}
+        )
 
 
 def test_trainer_enable_token_export_cli_flag():

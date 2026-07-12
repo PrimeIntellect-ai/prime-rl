@@ -2,7 +2,7 @@
 
 Each named class in this package *is* one training algorithm, one module per
 algorithm: it owns the algorithm's two scoring hooks directly —
-``score_rollout`` (per arrival) and ``score_group`` (per group) — and declares
+``score_graph`` (per arrival) and ``score_group`` (per group) — and declares
 which loss component its action tokens feed (``action_loss_type``). Reading a
 module top to bottom reads the algorithm; writing your own is subclassing
 :class:`Algorithm` and overriding the hooks its signal needs. Shared math (group
@@ -14,7 +14,7 @@ The two hooks are one scope-and-timing ladder — the wider scope is unlocked by
 a later barrier, so the two axes coincide. Both are ``async`` (either may do
 I/O); a hook that only does advantage math never awaits:
 
-- ``score_rollout(rollout)`` — one rollout, on arrival: rollout-local signals
+- ``score_graph(graph)`` — one graph, on arrival: graph-local signals
   (raw reward, process rewards, echo's observation weighting) *and* per-rollout
   I/O against another model — an inference pool the algorithm connected in
   ``setup()`` (a frozen teacher) or the live policy (opsd's self-distillation),
@@ -28,7 +28,7 @@ How rollouts are *produced* is not the algorithm's concern: that is the env's
 attribution) is pure pipeline.
 
 The pipeline (train sink) drives each algorithm through its non-virtual
-:meth:`Algorithm.finalize_rollout` / :meth:`Algorithm.finalize_group` methods
+:meth:`Algorithm.finalize_graph` / :meth:`Algorithm.finalize_group` methods
 and reads the class declarations; it never branches on algorithm config fields
 or model roles — liveness of a reference is the only runtime distinction.
 prime-rl hosts exactly one model — the trainable policy, whose pool every
@@ -49,8 +49,12 @@ from prime_rl.utils.logger import get_logger
 if TYPE_CHECKING:
     from renderers import RendererConfig
 
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import AgentGraph
     from prime_rl.utils.client import InferencePool
+
+
+class AlgorithmCompatibilityError(ValueError):
+    """A deterministic mismatch between an algorithm and an agent graph."""
 
 
 async def connect_frozen_pool(
@@ -84,22 +88,21 @@ class Algorithm:
     interprets the ``sampling`` half).
 
     Everything on this class is yours to override; the pipeline drives the
-    compilation through the non-virtual :meth:`finalize_rollout` /
+    compilation through the non-virtual :meth:`finalize_graph` /
     :meth:`finalize_group` methods and never calls anything else. The surface is:
 
     - declarations — which loss component the action tokens feed
       (``action_loss_type``);
     - lifecycle — :meth:`setup` connects client pools to the frozen models
       the algorithm declares, resolving each reference via :meth:`connect`;
-    - the two scoring hooks, each ``async`` and given the :class:`Rollout`
-      directly — read the trace, write credit via
-      :meth:`Rollout.assign_advantages`. They are
+    - the two scoring hooks, each ``async`` and given an ``AgentGraph`` directly;
+      algorithms select traces and assign credit explicitly. They are
       async so either stage may do I/O — e.g. a process-reward model or a
       teacher at arrival, or a judge at group time whose signal a pre-batch
       filter then reads; a hook that only does advantage math simply never
       awaits.
 
-      - :meth:`score_rollout` — one rollout, on arrival: rollout-local credit,
+      - :meth:`score_graph` — one graph, on arrival: graph-local credit,
         observation ce weights, or per-token results from a model the algorithm
         connected in :meth:`setup` (e.g. teacher reference logprobs). Default:
         nothing.
@@ -107,7 +110,7 @@ class Algorithm:
         streams): group-relative credit. Default: nothing — rollouts keep
         ``advantages=None``, so advantage-based filters skip them.
 
-    Model I/O lives in :meth:`score_rollout`: it runs at arrival, *before* the
+    Model I/O lives in :meth:`score_graph`: it runs at arrival, *before* the
     pre-batch filters, so it pays compute on rollouts that may then be filtered
     out — accepted for the simpler one-rollout-at-a-time shape.
 
@@ -118,8 +121,10 @@ class Algorithm:
     renderer is not threaded in."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
+    supports_multiple_traces: ClassVar[bool] = False
 
     def __init__(self, config: AlgoConfig, policy_pool: InferencePool):
+        self.config = config
         self.policy_pool = policy_pool
         self.connected_pools: list[InferencePool] = []  # frozen pools connected in setup(); closed at shutdown
 
@@ -137,29 +142,58 @@ class Algorithm:
         self.connected_pools.append(pool)
         return pool
 
-    async def score_rollout(self, rollout: Rollout) -> None:
-        """Arrival phase, one rollout, before its group is complete: write
-        rollout-local credit (``rollout.assign_advantages``), observation ce
+    async def score_graph(self, graph: AgentGraph) -> None:
+        """Arrival phase, one graph, before its group is complete: write
+        graph-local credit, observation ce
         weights (echo), or per-token results from a model — an inference pool
         connected in :meth:`setup`, or the live policy (opsd). No siblings, no
         group stats."""
 
-    async def score_group(self, group: list[Rollout]) -> None:
+    async def score_group(self, group: list[AgentGraph]) -> None:
         """Group phase, the finalized cohort, before filtering: write
         group-relative credit."""
 
-    async def finalize_rollout(self, rollout: Rollout) -> None:
-        """Arrival phase (non-virtual): rollout-local scoring as each rollout is
-        tokenized."""
-        if rollout.samples:
-            await self.score_rollout(rollout)
+    def validate_graph(self, graph: AgentGraph) -> None:
+        """Fail on a graph shape this algorithm cannot interpret."""
+        traces = graph.trainable_traces
+        if len(traces) == 1:
+            return
+        counts: dict[str, int] = {}
+        for trace in traces:
+            agent = trace.agent or "<unnamed>"
+            counts[agent] = counts.get(agent, 0) + 1
+        layout = ", ".join(f"{agent}={count}" for agent, count in sorted(counts.items())) or "none"
+        raise AlgorithmCompatibilityError(
+            f"algorithm {self.config.type!r} requires exactly one trainable trace, "
+            f"but topology {graph.topology!r} returned {len(traces)} ({layout}); "
+            "mark all but one agent non-trainable or select a compatible algorithm"
+        )
 
-    async def finalize_group(self, rollouts: list[Rollout]) -> None:
+    def training_traces(self, graph: AgentGraph) -> list[TrainingTrace]:
+        """Successful traces this algorithm may train."""
+        return [trace for trace in graph.trainable_traces if not trace.has_error]
+
+    def training_trace(self, graph: AgentGraph) -> TrainingTrace:
+        """The sole successful trace used by the built-in single-trace algorithms."""
+        traces = self.training_traces(graph)
+        if len(traces) != 1:
+            raise RuntimeError(
+                f"algorithm {self.config.type!r} has no successful trainable trace in graph {graph.id!r}"
+            )
+        return traces[0]
+
+    async def finalize_graph(self, graph: AgentGraph) -> None:
+        """Arrival phase after the graph's existing tokens become trainer samples."""
+        if any(trace.samples for trace in self.training_traces(graph)):
+            await self.score_graph(graph)
+
+    async def finalize_group(self, graphs: list[AgentGraph]) -> None:
         """Group phase (non-virtual): group-relative scoring, then stamp each
         sample's wire fields (the advantage stream + loss routing). After this
         the records are frozen — groups die at stamping."""
-        await self.score_group(rollouts)
-        for rollout in rollouts:
-            stamp_advantages(rollout)
-            for sample in rollout.samples:
-                stamp_loss_routing(sample, self.action_loss_type)
+        await self.score_group(graphs)
+        for graph in graphs:
+            for trace in self.training_traces(graph):
+                stamp_advantages(trace)
+                for sample in trace.samples:
+                    stamp_loss_routing(sample, self.action_loss_type)
