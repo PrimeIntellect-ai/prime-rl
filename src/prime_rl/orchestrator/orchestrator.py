@@ -314,18 +314,25 @@ class Orchestrator:
             # trainer even when ``ckpt.skip_progress`` left the counter unrestored.
             self.progress.step = self.resume_step + 1
             get_logger().info(f"Resuming orchestrator from checkpoint step {self.resume_step}")
-            check_exists = config.weight_broadcast.type != "nccl"
-            wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
-            weights_path = get_weight_dir(
-                config.output_dir, self.resume_step, check_exists=check_exists, wait_timeout=wait_timeout
-            )
-            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=self.resume_step)
-            if self.lora_name is not None:
-                self.policy_inference.update_model_name(self.lora_name)
-                self.policy.model_name = self.lora_name
-            self.policy.version = self.resume_step
         else:
             get_logger().info("Training from scratch")
+
+        # Sync inference to the incoming policy before the first step, whether fresh (v0 = base) or
+        # resumed (v{resume_step}). This pauses inference and rendezvouses with the trainer's
+        # first-step broadcast (train.py), so inference serves the correct policy from step 1. Keeping
+        # it unconditional makes trainer/orchestrator startup symmetric and avoids the resume deadlock
+        # where inference waited for weights the trainer only sent at the end of a step.
+        sync_version = self.resume_step if self.resume_step is not None else 0
+        check_exists = config.weight_broadcast.type != "nccl"
+        wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
+        weights_path = get_weight_dir(
+            config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
+        )
+        await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
+        if self.lora_name is not None:
+            self.policy_inference.update_model_name(self.lora_name)
+            self.policy.model_name = self.lora_name
+        self.policy.version = sync_version
 
         self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source: EvalSource | None = (

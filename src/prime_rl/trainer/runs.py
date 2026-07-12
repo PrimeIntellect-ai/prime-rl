@@ -1,4 +1,5 @@
 import pickle
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
@@ -462,6 +463,20 @@ class MultiRunManager:
     # =========================================================================
     # Properties and Accessors
     # =========================================================================
+
+    def wait_for_run(self, idx: int = 0, poll_interval: float = 1.0) -> None:
+        """Block until run ``idx`` is registered. Master discovers from disk; all ranks synchronize.
+
+        Runs are otherwise only discovered during batch collection (``packer.discover_runs``), so
+        callers that need a run before the first batch (optimizer setup, first-step weight sync)
+        use this to populate ``idx_2_id``/``used_idxs``.
+        """
+        while idx not in self.idx_2_id:
+            if self.world.is_master:
+                self.discover_runs()
+            self.synchronize_state()
+            self.logger.info(f"Waiting for run {idx} to be created ({self.id_2_idx=})")
+            time.sleep(poll_interval)
 
     @property
     def used_idxs(self):

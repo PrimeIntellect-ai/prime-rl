@@ -226,24 +226,6 @@ def train(config: TrainerConfig):
         progress.step += 1
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
 
-        # Sync inference to the resumed policy (v{checkpoint_step}) BEFORE the loop. On resume the
-        # orchestrator advances to v{checkpoint_step} and pauses inference to receive those weights
-        # over NCCL. Since #2896 moved the in-loop broadcast to the END of a step, the trainer would
-        # otherwise wait for step {checkpoint_step+1} rollouts the paused engines cannot produce, so
-        # both sides deadlock. This one-shot broadcast restores the pre-#2896 top-of-loop sync.
-        if weight_broadcast is not None:
-            logger.info(f"Broadcasting resumed policy weights (v{checkpoint_step}) to inference engines")
-            # Runs are only registered during batch collection (packer.discover_runs), which hasn't
-            # happened yet before the loop. Discover run 0 now so used_idxs is populated (mirrors optim.py).
-            while 0 not in multi_run_manager.idx_2_id:
-                if world.is_master:
-                    multi_run_manager.discover_runs()
-                multi_run_manager.synchronize_state()
-                time.sleep(1)
-            for idx in multi_run_manager.used_idxs:
-                multi_run_manager.ready_to_update[idx] = True
-            weight_broadcast.broadcast_weights(model, step=checkpoint_step)
-
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
     )
@@ -273,6 +255,7 @@ def train(config: TrainerConfig):
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function
+    start_step = progress.step
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -282,6 +265,18 @@ def train(config: TrainerConfig):
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
+
+        # Broadcast the incoming policy (v{progress.step-1}) before waiting for its rollouts. #2896
+        # broadcasts at the END of a step, so the first step would otherwise block on rollouts the
+        # inference engines cannot produce until they receive v{progress.step-1} (the orchestrator
+        # pauses inference at startup to sync it). This happens whether resuming (v{checkpoint_step})
+        # or starting fresh (v0), keeping trainer and orchestrator startup symmetric.
+        if progress.step == start_step and weight_broadcast is not None:
+            logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
+            multi_run_manager.wait_for_run(0)
+            for idx in multi_run_manager.used_idxs:
+                multi_run_manager.ready_to_update[idx] = True
+            weight_broadcast.broadcast_weights(model, step=progress.step - 1)
 
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")
