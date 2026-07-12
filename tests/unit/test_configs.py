@@ -186,6 +186,12 @@ def test_env_algo_overrides_top_level():
     assert reloaded.train.env[0].algo is not None and reloaded.train.env[0].algo.type == "grpo"
 
 
+def test_policy_sampling_does_not_add_response_format_flags():
+    config = OrchestratorConfig.model_validate({"train": {"env": [{"id": "math-env"}]}})
+
+    assert config.train.env[0].sampling.extra_body == {"top_k": -1, "min_p": 0.0}
+
+
 def test_trainer_enable_token_export_cli_flag():
     assert not cli(TrainerConfig, args=[]).enable_token_export
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
@@ -209,6 +215,218 @@ def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
     assert config.inference is not None
     assert config.inference.parallel.dp == 2
     assert config.orchestrator.model.client.dp_rank_count == 2
+
+
+def test_inference_backend_defaults_to_vllm():
+    assert InferenceConfig().backend.type == "vllm"
+
+
+def test_dynamo_disaggregated_config_is_local_and_enables_prefix_caching():
+    config = InferenceConfig.model_validate(
+        {
+            "backend": {"type": "dynamo"},
+            "deployment": {
+                "type": "disaggregated",
+                "gpus_per_node": 1,
+                "prefill_nodes_per_replica": 1,
+                "decode_nodes_per_replica": 1,
+                "num_prefill_replicas": 2,
+                "num_decode_replicas": 2,
+            },
+        }
+    )
+
+    assert config.enable_prefix_caching is True
+    assert config.use_pd_kv_transfer is True
+
+
+@pytest.mark.parametrize(
+    "inference",
+    [
+        {"parallel": {"tp": 0}},
+        {"deployment": {"type": "single_node", "gpus_per_node": 0}},
+    ],
+)
+def test_inference_topology_rejects_non_positive_gpu_dimensions(inference: dict):
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        InferenceConfig.model_validate(inference)
+
+
+def test_dynamo_disaggregated_topology_requires_whole_tp_groups():
+    with pytest.raises(ValidationError, match="gpus_per_node must be divisible"):
+        InferenceConfig.model_validate(
+            {
+                "backend": {"type": "dynamo"},
+                "parallel": {"tp": 2},
+                "deployment": {
+                    "type": "disaggregated",
+                    "gpus_per_node": 3,
+                    "num_prefill_replicas": 1,
+                    "num_decode_replicas": 1,
+                },
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "inference_override",
+    [
+        {"parallel": {"tp": 2, "dp": 3}},
+        {"parallel": {"tp": 2}, "data_parallel_size_local": 1},
+    ],
+)
+def test_dynamo_disaggregated_topology_rejects_conflicting_dp(inference_override: dict):
+    inference = {
+        "backend": {"type": "dynamo"},
+        "deployment": {
+            "type": "disaggregated",
+            "gpus_per_node": 4,
+            "num_prefill_replicas": 1,
+            "num_decode_replicas": 1,
+        },
+        **inference_override,
+    }
+
+    with pytest.raises(ValidationError, match="must equal.*gpus_per_node / inference.parallel.tp"):
+        InferenceConfig.model_validate(inference)
+
+
+def test_dynamo_topology_is_derived_once_from_inference_config():
+    config = InferenceConfig.model_validate(
+        {
+            "backend": {"type": "dynamo"},
+            "parallel": {"tp": 2},
+            "deployment": {
+                "type": "disaggregated",
+                "gpus_per_node": 4,
+                "num_prefill_replicas": 2,
+                "num_decode_replicas": 1,
+            },
+        }
+    )
+
+    assert config.dynamo_worker_roles == ("prefill", "prefill", "decode")
+    assert config.dynamo_gpus_per_worker == 4
+    assert config.dynamo_local_dp == 2
+
+
+def test_dynamo_disaggregated_config_rejects_disabled_prefix_caching():
+    with pytest.raises(ValidationError, match="requires prefix caching"):
+        InferenceConfig.model_validate(
+            {
+                "backend": {"type": "dynamo"},
+                "enable_prefix_caching": False,
+                "deployment": {"type": "disaggregated"},
+            }
+        )
+
+
+def test_dynamo_backend_rejects_lora():
+    with pytest.raises(ValidationError, match="does not support LoRA"):
+        InferenceConfig.model_validate({"backend": {"type": "dynamo"}, "enable_lora": True})
+
+
+def test_rl_config_rejects_lora_auto_setup_for_dynamo_backend():
+    with pytest.raises(ValidationError, match="does not support LoRA"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"model": {"lora": {}}},
+                "orchestrator": {},
+                "inference": {"backend": {"type": "dynamo"}},
+                "deployment": {
+                    "type": "single_node",
+                    "gpus_per_node": 2,
+                    "num_train_gpus": 1,
+                    "num_infer_gpus": 1,
+                },
+            }
+        )
+
+
+def test_native_disaggregated_config_still_requires_slurm():
+    with pytest.raises(ValidationError, match="Must use SLURM"):
+        InferenceConfig.model_validate({"deployment": {"type": "disaggregated"}})
+
+
+def test_single_node_dynamo_disaggregated_keeps_per_worker_dp_and_sets_nccl_world_size():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {
+                "backend": {"type": "dynamo"},
+                "parallel": {"tp": 1},
+                "deployment": {
+                    "type": "disaggregated",
+                    "gpus_per_node": 1,
+                    "prefill_nodes_per_replica": 1,
+                    "decode_nodes_per_replica": 1,
+                    "num_prefill_replicas": 2,
+                    "num_decode_replicas": 2,
+                },
+            },
+            "weight_broadcast": {"type": "nccl"},
+            "deployment": {
+                "type": "single_node",
+                "gpus_per_node": 8,
+                "num_train_gpus": 4,
+                "num_infer_gpus": 4,
+            },
+        }
+    )
+
+    assert config.inference is not None
+    assert config.inference.parallel.dp == 1
+    assert config.orchestrator.model.client.admin_api == "dynamo"
+    assert config.orchestrator.model.client.dp_rank_count == 1
+    assert config.orchestrator.model.client.dynamo_worker_roles == ("prefill", "prefill", "decode", "decode")
+    assert config.orchestrator.model.client.dynamo_gpus_per_worker == 1
+    assert config.trainer.weight_broadcast.inference_world_size == 4
+    assert config.orchestrator.weight_broadcast.inference_world_size == 4
+
+
+def test_single_node_dynamo_aggregated_derives_one_multi_gpu_worker():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"backend": {"type": "dynamo"}, "parallel": {"tp": 1}},
+            "deployment": {
+                "type": "single_node",
+                "gpus_per_node": 4,
+                "num_train_gpus": 2,
+                "num_infer_gpus": 2,
+            },
+        }
+    )
+
+    assert config.inference is not None
+    assert config.orchestrator.model.client.dynamo_worker_roles == ("agg",)
+    assert config.orchestrator.model.client.dynamo_gpus_per_worker == 2
+
+
+def test_dynamo_topology_metadata_cannot_conflict_with_inference_config():
+    with pytest.raises(ValidationError, match="dynamo_worker_roles conflicts"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {
+                    "model": {
+                        "client": {
+                            "dynamo_worker_roles": ["decode"],
+                            "dynamo_gpus_per_worker": 1,
+                        }
+                    }
+                },
+                "inference": {"backend": {"type": "dynamo"}, "parallel": {"tp": 1}},
+                "deployment": {
+                    "type": "single_node",
+                    "gpus_per_node": 2,
+                    "num_train_gpus": 1,
+                    "num_infer_gpus": 1,
+                },
+            }
+        )
 
 
 def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():

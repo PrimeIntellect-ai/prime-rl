@@ -2,10 +2,28 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from collections.abc import Awaitable
 from time import perf_counter
 
 import numpy as np
 from pydantic import BaseModel
+
+
+async def gather_shielded(
+    *awaitables: Awaitable[object],
+) -> tuple[list[object], asyncio.CancelledError | None]:
+    """Settle all awaitables despite repeated cancellation of the caller."""
+    settling = asyncio.gather(*awaitables, return_exceptions=True)
+    cancellation: asyncio.CancelledError | None = None
+    while not settling.done():
+        try:
+            await asyncio.shield(settling)
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+            else:
+                cancellation.add_note("Caller cancelled again while bounded siblings were settling")
+    return list(settling.result()), cancellation
 
 
 async def safe_cancel(task: asyncio.Task) -> None:

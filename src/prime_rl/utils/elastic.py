@@ -26,6 +26,7 @@ from prime_rl.utils.client import (
     ClientIdentity,
     PrefillScorer,
     client_identity,
+    init_nccl_broadcast,
     load_lora_adapter,
     setup_admin_clients,
     setup_clients,
@@ -223,6 +224,10 @@ class ElasticInferencePool:
     def train_clients(self) -> list[vf.ClientConfig]:
         self._rebuild_clients()
         return self._train_clients
+
+    @property
+    def admin_api(self) -> Literal["vllm", "dynamo"]:
+        return self.client_config.admin_api
 
     @property
     def eval_clients(self) -> list[vf.ClientConfig]:
@@ -511,3 +516,20 @@ class ElasticInferencePool:
         if lora_name is None:
             raise ValueError("Elastic inference pool requires LoRA training (lora_name must be set)")
         await self.sync_weights(weight_dir, lora_name, step)
+
+    async def init_nccl_broadcast(
+        self,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int | None = None,
+        quantize_in_weight_transfer: bool = False,
+    ) -> None:
+        await init_nccl_broadcast(
+            self.admin_clients,
+            host,
+            port,
+            timeout,
+            inference_world_size=inference_world_size,
+            quantize_in_weight_transfer=quantize_in_weight_transfer,
+        )

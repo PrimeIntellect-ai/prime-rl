@@ -44,11 +44,13 @@ from typing import TYPE_CHECKING, ClassVar
 
 from prime_rl.configs.algorithm import ActionLossType, AlgoConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.policy_gate import PolicyRequestRejected
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from renderers import RendererConfig
 
+    from prime_rl.orchestrator.policy_gate import MutablePolicyGate
     from prime_rl.orchestrator.types import Rollout
     from prime_rl.utils.client import InferencePool
 
@@ -119,8 +121,15 @@ class Algorithm:
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
-    def __init__(self, config: AlgoConfig, policy_pool: InferencePool):
+    def __init__(
+        self,
+        config: AlgoConfig,
+        policy_pool: InferencePool,
+        *,
+        policy_gate: MutablePolicyGate | None = None,
+    ):
         self.policy_pool = policy_pool
+        self.policy_gate = policy_gate
         self.connected_pools: list[InferencePool] = []  # frozen pools connected in setup(); closed at shutdown
 
     async def setup(self) -> None:
@@ -152,7 +161,12 @@ class Algorithm:
         """Arrival phase (non-virtual): rollout-local scoring as each rollout is
         tokenized."""
         if rollout.samples:
-            await self.score_rollout(rollout)
+            try:
+                await self.score_rollout(rollout)
+            except PolicyRequestRejected as exc:
+                # Preserve the sink's one-arrival-per-group accounting while
+                # dropping scoring that cannot use the generating version.
+                rollout.capture_error(exc)
 
     async def finalize_group(self, rollouts: list[Rollout]) -> None:
         """Group phase (non-virtual): group-relative scoring, then stamp each

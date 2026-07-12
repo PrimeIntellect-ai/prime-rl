@@ -148,6 +148,13 @@ def inference_local(config: InferenceConfig):
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
 
     if config.dry_run:
+        if config.backend.type == "dynamo":
+            from prime_rl.inference.dynamo import build_dry_run_worker_specs, build_frontend_process
+
+            specs = build_dry_run_worker_specs(config)
+            logger.info(f"Dynamo frontend: {' '.join(build_frontend_process(config).command())}")
+            for spec in specs:
+                logger.info(f"Dynamo {spec.name}: {' '.join(spec.process.command())}")
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
         return
 
@@ -161,6 +168,12 @@ def inference_local(config: InferenceConfig):
     os.environ.update({**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars})
 
     setup_vllm_env(config)
+
+    if config.backend.type == "dynamo":
+        from prime_rl.inference.dynamo import run_dynamo_local
+
+        run_dynamo_local(config)
+        return
 
     from prime_rl.inference.vllm.server import server  # pyright: ignore
 

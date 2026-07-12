@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import OPSDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.utils.async_utils import gather_shielded
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
+    from prime_rl.orchestrator.policy_gate import MutablePolicyGate
     from prime_rl.orchestrator.types import Rollout
     from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
@@ -30,8 +31,14 @@ class OPSDAlgorithm(Algorithm):
 
     action_loss_type = "ref_kl"
 
-    def __init__(self, config: OPSDAlgoConfig, policy_pool: InferencePool):
-        super().__init__(config, policy_pool)
+    def __init__(
+        self,
+        config: OPSDAlgoConfig,
+        policy_pool: InferencePool,
+        *,
+        policy_gate: MutablePolicyGate | None = None,
+    ):
+        super().__init__(config, policy_pool, policy_gate=policy_gate)
         self.demo_key = config.demo_key
         self.template = config.template
         self.renderer_config = config.renderer
@@ -74,4 +81,18 @@ class OPSDAlgorithm(Algorithm):
             # sample.token_ids (demo-conditioned, the trainer's ref_kl target).
             sample.ref_logprobs = full_logprobs[len(hint_block) :]
 
-        await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))
+        async def settle_scores() -> None:
+            results, cancellation = await gather_shielded(*(score_sample(sample) for sample in rollout.samples))
+            failures = [result for result in results if isinstance(result, BaseException)]
+            primary: BaseException | None = cancellation or (failures[0] if failures else None)
+            if primary is not None:
+                siblings = failures if cancellation is not None else failures[1:]
+                for sibling in siblings:
+                    primary.add_note(f"Another OPSD score failed: {sibling!r}")
+                raise primary
+
+        if self.policy_gate is None:
+            await settle_scores()
+            return
+        async with self.policy_gate.request(expected_version=rollout.policy_version):
+            await settle_scores()

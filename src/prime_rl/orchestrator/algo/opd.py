@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import OPDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.utils.client import StaticInferencePool
+from prime_rl.utils.client import FixedInferencePool
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
@@ -29,12 +29,12 @@ class OPDAlgorithm(Algorithm):
     def __init__(self, config: OPDAlgoConfig, policy_pool: InferencePool):
         super().__init__(config, policy_pool)
         self.teacher = config.teacher
-        self.teacher_pool: StaticInferencePool | None = None  # static teacher endpoint, connected in setup()
+        self.teacher_pool: FixedInferencePool | None = None  # fixed teacher endpoint, connected in setup()
 
     async def setup(self) -> None:
         pool = await self.connect(self.teacher)
-        if not isinstance(pool, StaticInferencePool):
-            raise TypeError("opd teacher must be a static endpoint — prefill scoring needs fixed endpoints")
+        if not isinstance(pool, FixedInferencePool):
+            raise TypeError("opd teacher must be a fixed endpoint — prefill scoring needs fixed endpoints")
         self.teacher_pool = pool
 
     async def score_rollout(self, rollout: Rollout) -> None:

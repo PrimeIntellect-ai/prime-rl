@@ -529,7 +529,9 @@ class OrchestratorConfig(BaseConfig):
     """Maximum training steps. If None, runs indefinitely."""
 
     max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
+    """Maximum policies allowed to generate one rollout on the vLLM admin backend. Dynamo uses a strict
+    application drain before every weight mutation, so live-policy and eval requests never span versions and
+    this tolerance does not apply there."""
 
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
@@ -728,7 +730,6 @@ class OrchestratorConfig(BaseConfig):
             if env.algo.sampling.source == "policy":
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
-                env.sampling.extra_body.setdefault("return_token_ids", True)
             if env.is_legacy:
                 # v0 env: cap per-turn response tokens to the training budget (the legacy
                 # bridge applies extra_env_kwargs via env.set_kwargs).
