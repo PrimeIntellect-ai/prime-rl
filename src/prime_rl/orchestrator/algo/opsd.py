@@ -53,11 +53,11 @@ class OPSDAlgorithm(Algorithm):
     def _demonstration(self, rollout: Rollout) -> str:
         demonstration = rollout.info.get(self.demo_key)
         if demonstration is None:
-            demonstration = getattr(rollout.task, self.demo_key, None)
+            demonstration = getattr(rollout.task.data, self.demo_key, None)
         if demonstration is None:
             raise ValueError(
                 f"opsd requires '{self.demo_key}' in the trace info dict or on the task "
-                f"(env '{rollout.env_name}', task {rollout.task.idx})."
+                f"(env '{rollout.env_name}', task {rollout.task.data.idx})."
             )
         return demonstration
 

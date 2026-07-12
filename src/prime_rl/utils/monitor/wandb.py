@@ -225,8 +225,8 @@ class WandbMonitor(Monitor):
                 sample = {
                     "step": step,
                     "env_name": rollout.env_name,
-                    "task": _loggable_task(trace.task),
-                    "task_idx": trace.task.idx,
+                    "task": _loggable_task(trace.task.data),
+                    "task_idx": trace.task.data.idx,
                     "messages": self.tokenizer.decode(token_ids),
                     "input_ids": str(token_ids),
                     "reward": trace.reward,
@@ -263,8 +263,8 @@ class WandbMonitor(Monitor):
                 sample = {
                     "step": step,
                     "env": env_name,
-                    "task": _loggable_task(trace.task),
-                    "task_idx": trace.task.idx,
+                    "task": _loggable_task(trace.task.data),
+                    "task_idx": trace.task.data.idx,
                     "completion": completion,
                     "reward": trace.reward,
                 }

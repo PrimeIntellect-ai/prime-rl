@@ -36,7 +36,8 @@ rollouts_per_example = 16
 max_off_policy_steps = 32
 
 [[orchestrator.train.env]]
-id = "general-agent-solver-rlm"
+taskset = { id = "general-agent-v1", task = { tools = { colocated = true } } }
+harness = { id = "null", runtime = { type = "modal" } }
 
 [orchestrator.train.env.args]
 min_tier = 1

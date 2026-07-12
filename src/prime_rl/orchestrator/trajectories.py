@@ -15,6 +15,8 @@ the images it introduced (`branch.multi_modal_data`), rebuilt here into the flat
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import numpy as np
 import verifiers.v1 as vf
 
@@ -136,6 +138,29 @@ def qa_recycle_samples(trace: vf.Trace, tokenizer, env_name: str = "") -> list[T
     return samples
 
 
+def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[bool]]]:
+    """Yield each branch that yields a training sample, with its trainable-token mask.
+
+    The mask is `branch.sampled_mask` except that a sampled node shared by several branches
+    (a mid-trajectory fork) is trainable only in the first branch containing it; later
+    branches carry its tokens as context (mask False). Branches left with no trainable
+    tokens are skipped, so consumers pairing branches with `trace_to_samples` output
+    (e.g. echo's observation weighting) must filter through here to stay aligned.
+    """
+    trained_nodes: set[int] = set()
+    for branch in trace.branches:
+        mask: list[bool] = []
+        for node in branch.nodes:
+            if node.sampled and any(node.mask) and id(node) in trained_nodes:
+                mask.extend([False] * len(node.mask))
+            else:
+                if node.sampled and any(node.mask):
+                    trained_nodes.add(id(node))
+                mask.extend(node.mask)
+        if any(mask):
+            yield branch, mask
+
+
 def trace_to_samples(
     trace: vf.Trace,
     *,
@@ -162,9 +187,7 @@ def trace_to_samples(
     order), so the "first" branch containing a node is deterministic.
     """
     samples: list[TrainingSample] = []
-    trained_nodes: set[int] = set()  # id(node) of sampled nodes already granted their mask
-    for branch in trace.branches:
-        mask: list[bool] = []
+    for branch, mask in iter_trainable_branches(trace):
         node_temps: list[float] = []  # per-token; only used when the branch mixes QA/rollout nodes
         for node in branch.nodes:
             # ttt_qa NODES sample at the QA temperature; everything else at the rollout's.
@@ -175,16 +198,6 @@ def trace_to_samples(
             # trajectory at the wrong temperature in the importance ratio.
             node_temp = qa_temperature if (node.ttt_qa and qa_temperature is not None) else rollout_temperature
             node_temps.extend([node_temp] * len(node.mask))
-            if node.sampled and any(node.mask):
-                if id(node) in trained_nodes:
-                    mask.extend([False] * len(node.mask))  # context here; trained elsewhere
-                else:
-                    trained_nodes.add(id(node))
-                    mask.extend(node.mask)
-            else:
-                mask.extend(node.mask)
-        if not any(mask):
-            continue
         token_ids = branch.token_ids
         mm_kwargs: dict[str, EncodedTensor] | None = None
         mm_token_type_ids: list[int] | None = None

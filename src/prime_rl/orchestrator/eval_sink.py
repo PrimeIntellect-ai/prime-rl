@@ -96,7 +96,7 @@ class EvalSink:
         if not group:
             return
         env_name = group[0].env_name
-        task_idx = group[0].task.idx
+        task_idx = group[0].task.data.idx
         eval_step = group[0].eval_step
         bucket = self.pending_batches[(env_name, eval_step)]
         bucket.extend(group)

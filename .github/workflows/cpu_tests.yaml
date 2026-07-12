@@ -90,14 +90,24 @@ jobs:
           assert find_package_resource("templates") is None, "templates should not be in slim wheel"
           print("slim install OK — configs import with no heavy deps loaded")
           PY
-      - name: Verify a real config (with [slurm]) parses on slim install
+      - name: Verify real configs (with [slurm]) parse on slim install
         run: |
           /tmp/slim/bin/python - <<'PY'
           from pydantic_config import cli
+          from prime_rl.configs.sft import SFTConfig
           from prime_rl.configs.rl import RLConfig
-          rl = cli(RLConfig, args=["@", "examples/Intellect-3.1/rl.toml"])
-          assert rl.slurm is not None, "expected [slurm] in example config"
-          # On slim, template_path can't be auto-resolved (heavy wheel absent) — must stay None.
-          assert rl.slurm.template_path is None, f"unexpected template_path on slim: {rl.slurm.template_path}"
+          # Configs that don't pull in a v1 env package parse on the slim
+          # (prime-rl-configs-only) install: the SFT config has no env sections, and the
+          # reverse_text RL recipe uses a v0 env id (resolved lazily, not imported at parse).
+          # RL configs on a v1 taskset can't parse here because vf.EnvServerConfig imports the
+          # (uninstalled) env package at parse time.
+          for cfg_cls, args in [
+              (SFTConfig, ["@", "examples/reverse_text/slurm_sft.toml"]),
+              (RLConfig, ["@", "examples/reverse_text/rl.toml", "@", "examples/reverse_text/slurm_rl.toml"]),
+          ]:
+              cfg = cli(cfg_cls, args=args)
+              assert cfg.slurm is not None, f"expected [slurm] in {args}"
+              # On slim, template_path can't be auto-resolved (heavy wheel absent) — must stay None.
+              assert cfg.slurm.template_path is None, f"unexpected template_path on slim: {cfg.slurm.template_path}"
           print("slim parse OK")
           PY
