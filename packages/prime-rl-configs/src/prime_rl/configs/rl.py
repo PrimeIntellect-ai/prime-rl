@@ -32,7 +32,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
-from prime_rl.configs.ttt import TTTServiceConfig
+from prime_rl.configs.ttt import FSDPEngineConfig, PeftEngineConfig, TTTServiceConfig
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
@@ -354,8 +354,9 @@ class RLConfig(BaseConfig):
         run the policy full-weights (frozen-adapter replay can't stack on a trainable policy
         LoRA), and the inference server must serve LoRA adapters for the TTT service to
         load. Enforced here — at launch, not mid-run. Replay composes with activation
-        checkpointing and ``torch.compile`` (ttt_replay.py normalizes AC-wrapped FQNs and
-        installs eager, dynamo-disabled hooks), so neither is rejected here."""
+        checkpointing and non-fullgraph ``torch.compile`` (ttt_replay.py normalizes
+        AC-wrapped FQNs and installs eager, dynamo-disabled hooks); fullgraph compilation
+        is rejected because those hooks intentionally create graph breaks."""
         # ``ttt.enabled`` is the master switch (verifiers TTTConfig.enabled): a disabled
         # block leaves rollouts untouched, so it must impose no constraints here either.
         # Eval envs run the identical inference regime as training (same TTT updates),
@@ -368,6 +369,9 @@ class RLConfig(BaseConfig):
             env for env in eval_env_configs if getattr(env, "ttt", None) is not None and env.ttt.enabled
         ]
         active_ttt_envs = active_train_ttt_envs + active_eval_ttt_envs
+        managed_train_ttt_envs = [env for env in active_train_ttt_envs if env.ttt.base_url == "auto"]
+        managed_eval_ttt_envs = [env for env in active_eval_ttt_envs if env.ttt.base_url == "auto"]
+        managed_ttt_envs = managed_train_ttt_envs + managed_eval_ttt_envs
         ttt_envs = [env.resolved_name for env in active_ttt_envs]
         # Launcher/service mutual consistency FIRST — these pairings are wrong regardless
         # of whether any env has TTT enabled, so they must precede the early return below
@@ -383,6 +387,12 @@ class RLConfig(BaseConfig):
             raise ValueError(
                 "[ttt] service configured but no train/eval env has ttt enabled — "
                 "remove [ttt]/num_ttt_nodes or enable ttt on an env."
+            )
+        if self.ttt is not None and not managed_ttt_envs:
+            raise ValueError(
+                "[ttt] managed service configured but no active train/eval env uses "
+                'ttt.base_url = "auto" — remove [ttt]/num_ttt_nodes or point an env at '
+                "the managed service."
             )
         if self.ttt is not None and num_ttt_nodes == 0:
             # Covers both multi_node with num_ttt_nodes = 0 and non-multi_node deployments
@@ -437,11 +447,43 @@ class RLConfig(BaseConfig):
         # TrainerConfig.ttt_replay). Keyed to TRAIN envs only: eval-only TTT never
         # produces replay samples (eval adapters are dismissed per rollout).
         if active_train_ttt_envs:
+            if self.trainer.model.compile is not None and self.trainer.model.compile.fullgraph:
+                raise ValueError(
+                    "Train TTT replay is incompatible with trainer.model.compile.fullgraph=true; "
+                    "set fullgraph=false or disable model compilation."
+                )
             self.trainer.ttt_replay = True
         # --- Launcher-managed TTT service (RLConfig.ttt + deployment.num_ttt_nodes) ---
         # Mutual [ttt]/num_ttt_nodes consistency is enforced above (before the early
         # return), so reaching here with self.ttt set implies num_ttt_nodes > 0.
         if self.ttt is not None:
+            if self.inference is None or getattr(self.deployment, "total_infer_nodes", 0) < 1:
+                raise ValueError(
+                    "Launcher-managed TTT requires a launched inference deployment; "
+                    "configure inference with deployment.num_infer_nodes >= 1, or run both "
+                    "TTT and inference externally."
+                )
+            if isinstance(self.ttt.engine, PeftEngineConfig):
+                raise ValueError(
+                    "Launcher-managed TTT requires [ttt.engine] type = 'fsdp'; "
+                    "start the single-process PEFT engine externally."
+                )
+            adapter_prefixes = {env.ttt.adapter_prefix for env in managed_ttt_envs}
+            if len(adapter_prefixes) != 1:
+                raise ValueError(
+                    "Every env using one managed TTT service must use the same "
+                    f"ttt.adapter_prefix; got {sorted(adapter_prefixes)}."
+                )
+            env_adapter_prefix = next(iter(adapter_prefixes))
+            if "adapter_prefix" not in self.ttt.model_fields_set:
+                self.ttt.adapter_prefix = env_adapter_prefix
+            elif self.ttt.adapter_prefix != env_adapter_prefix:
+                raise ValueError(
+                    f"[ttt].adapter_prefix must match the env prefix {env_adapter_prefix!r}; "
+                    f"got {self.ttt.adapter_prefix!r}."
+                )
+            if managed_train_ttt_envs and not self.ttt.keep_checkpoints:
+                raise ValueError("Train TTT requires ttt.keep_checkpoints=true for policy replay.")
             # Auto-wire what the service must share with the run. Explicit values win.
             if "output_dir" not in self.ttt.model_fields_set:
                 self.ttt.output_dir = self.output_dir
@@ -451,13 +493,31 @@ class RLConfig(BaseConfig):
                     "adapter checkpoints ride the shared filesystem between the service, the "
                     "inference engines, and the trainer's replay; the dirs must match."
                 )
-            if self.model is not None and "name" not in self.ttt.model.model_fields_set:
-                self.ttt.model.name = self.model.name
-            if self.model is not None and self.ttt.model.name != self.model.name:
+            policy_model_name = self.trainer.model.name
+            if "name" not in self.ttt.model.model_fields_set:
+                self.ttt.model.name = policy_model_name
+            if self.ttt.model.name != policy_model_name:
                 raise ValueError(
-                    f"[ttt] model.name ({self.ttt.model.name}) != run model ({self.model.name}) — "
+                    f"[ttt] model.name ({self.ttt.model.name}) != run model ({policy_model_name}) — "
                     "TTT updates consume the engine's exact token ids; the base models must match."
                 )
+            if isinstance(self.ttt.engine, FSDPEngineConfig):
+                # TTTServiceConfig initially synchronizes these from its own model field,
+                # before RLConfig auto-wires the resolved policy name. Keep direct users of
+                # the validated in-memory config consistent with the dumped/reparsed config.
+                self.ttt.engine.model.name = policy_model_name
+                self.ttt.engine._model_name = policy_model_name
+                policy_tokenizer = self.orchestrator.tokenizer
+                if "tokenizer" not in self.ttt.model_fields_set:
+                    self.ttt.tokenizer = policy_tokenizer.model_copy(deep=True)
+                elif self.ttt.tokenizer != policy_tokenizer:
+                    raise ValueError("[ttt].tokenizer must match the policy tokenizer for Q&A rendering.")
+                if (
+                    "matmul_precision" in self.ttt.engine.model_fields_set
+                    and self.ttt.engine.matmul_precision != self.trainer.matmul_precision
+                ):
+                    raise ValueError("[ttt].engine.matmul_precision must match trainer.matmul_precision.")
+                self.ttt.engine.matmul_precision = self.trainer.matmul_precision
             # inference_admin_urls are filled by the SLURM template at job start (the
             # per-replica backend roots are only known then) — nothing to validate here.
             if self.inference is not None and self.inference.enable_lora:

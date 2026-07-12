@@ -435,6 +435,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_env_vars=inference_env_vars,
             num_ttt_nodes=getattr(config.deployment, "num_ttt_nodes", 0) if config.ttt is not None else 0,
             ttt_port=config.ttt.port if config.ttt is not None else 8092,
+            ttt_startup_timeout=config.ttt.startup_timeout_seconds if config.ttt is not None else 1800,
             prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
             decode_vllm_extra_json=vllm_overrides_fragment(infer_deploy.decode_vllm_overrides),
             dp_per_node=config.deployment.gpus_per_node // config.inference.parallel.tp,
@@ -471,6 +472,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_env_vars=inference_env_vars,
             num_ttt_nodes=getattr(config.deployment, "num_ttt_nodes", 0) if config.ttt is not None else 0,
             ttt_port=config.ttt.port if config.ttt is not None else 8092,
+            ttt_startup_timeout=config.ttt.startup_timeout_seconds if config.ttt is not None else 1800,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)

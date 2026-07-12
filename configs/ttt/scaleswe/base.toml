@@ -24,7 +24,6 @@ seq_len = 65536
 TRITON_CACHE_DIR = "/tmp/triton-cache-$USER-$SLURM_JOB_ID"
 
 [slurm]
-job_name = "glm45air-ttt-swe"
 project_dir = "."
 partition = "all"
 pre_run_command = 'timeout 120 prime sandbox delete --label "$SLURM_JOB_NAME" -y || true'
@@ -45,7 +44,8 @@ timeout = 3600
 [ckpt]
 interval = 50
 keep_last = 1
-resume_step = -1
+# Runs start from scratch. Opt into resume explicitly with --ckpt.resume-step only after
+# verifying that the selected arm's own output directory is the intended checkpoint source.
 
 [model]
 name = "zai-org/GLM-4.5-Air"
@@ -120,8 +120,8 @@ enable_return_routed_experts = true
 # MoE expert FFNs); rank must cover the TTT service's [lora].rank.
 enable_lora = true
 max_lora_rank = 16
-# Passive ceiling: > max_inflight_rollouts (256) so leaked adapters (failed releases)
-# are absorbed as headroom without over-admitting rollouts.
+# Serving ceiling with a small operational margin above the dispatcher's shared
+# train/eval max_inflight_rollouts (256); it does not raise rollout admission.
 max_loras = 272
 # vLLM requires max_cpu_loras >= max_loras (its default is 100).
 max_cpu_loras = 272

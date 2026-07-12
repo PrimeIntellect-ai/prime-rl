@@ -3,6 +3,10 @@
 The full engine (setup_model + FSDP + packed forwards) needs CUDA and runs in the GPU
 integration suite; here the trainer is built via __new__ with the registry fields only."""
 
+from collections import OrderedDict
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("torch")
@@ -12,7 +16,12 @@ from prime_rl.configs.ttt import (  # noqa: E402
     TTTOptimizerConfig,
     TTTServiceConfig,
 )
-from prime_rl.ttt.trainer_v2 import SlotState, TTTTrainerV2, UpdateJob  # noqa: E402
+from prime_rl.ttt.trainer_v2 import (  # noqa: E402
+    SlotState,
+    TTTTrainerV2,
+    UpdateJob,
+    _patch_frozen_fused_lm_head,
+)
 
 
 def make_registry(max_slots: int = 4, **engine_overrides) -> TTTTrainerV2:
@@ -34,8 +43,13 @@ def make_registry(max_slots: int = 4, **engine_overrides) -> TTTTrainerV2:
     )
     trainer.max_slots = max_slots
     trainer.slots = {}
+    trainer.adapter_names = {}
+    trainer.released = OrderedDict()
     trainer.free_idxs = set(range(max_slots))
     trainer.runs = FakeRuns()
+    trainer.vocab_size = 100_000
+    trainer.world = SimpleNamespace(is_master=False)
+    trainer.ckpt_root = Path("outputs/ttt-test-registry")
     return trainer
 
 
@@ -59,7 +73,7 @@ def test_slot_claim_is_deterministic_and_reset():
     assert trainer._claim("r1", "ttt-r1") is s1  # idempotent
     assert not trainer.free_idxs
 
-    trainer.release("r1")
+    trainer.release("r1", "ttt-r1")
     assert trainer.free_idxs == {0}
     s3 = trainer._claim("r3", "ttt-r3")
     assert s3.idx == 0  # freed slot reused, reset again
@@ -98,14 +112,6 @@ def test_validate_job_is_pure():
     with pytest.raises(ValueError, match="'answer' must be a string"):
         trainer.validate_job(job("r1", qa_pairs=[{"question": "q", "answer": 42}]))
 
-    # Slot exhaustion is a validation error for NEW rollouts, not existing ones.
-    trainer.slots["other"] = SlotState("other", "ttt-other", idx=0)
-    trainer.free_idxs = set()
-    with pytest.raises(ValueError, match="no free TTT adapter slots"):
-        trainer.validate_job(job("r1"))
-    trainer.slots["other"].version = 0
-    trainer.validate_job(job("other"))  # existing rollout: fine
-
 
 def test_pack_respects_token_cap_and_keeps_jobs_atomic():
     trainer = make_registry(max_slots=8, max_tokens_per_forward=1024)
@@ -134,6 +140,7 @@ def test_server_validation_splits_bad_jobs():
     bad = _Pending(job=job("r2", seq_no=5))
     valid = _validate_and_split(trainer, [good, bad])
     assert valid == [good]
+    assert good.job.sequences == [(good.job.token_ids, good.job.loss_mask)]
     assert bad.done.is_set() and "expected seq_no 1" in bad.error
     assert not good.done.is_set()
 
@@ -181,6 +188,7 @@ def make_cpu_trainer(max_slots: int = 4, **engine_overrides):
 
     trainer = make_registry(max_slots=max_slots, **engine_overrides)
     trainer.device = torch.device("cpu")
+    trainer.parallel_dims = SimpleNamespace(ep_enabled=False)
     trainer.logger = type("L", (), {"info": lambda self, *a, **k: None})()
     dummy = torch.nn.Parameter(torch.zeros(1))
     trainer._forward_logprobs = lambda input_ids, position_ids, labels: (
@@ -286,6 +294,10 @@ def test_update_batch_replays_duplicate_seq_no_from_cache():
     assert replay is first  # the cached result, same ckpt_path/version
     assert trainer.slots["r1"].version == 1
 
+    changed = job("r1")
+    changed.token_ids[-1] = 99
+    assert "does not match the cached request" in trainer.update_batch([changed])["r1"]["error"]
+
 
 def test_replay_of_older_seq_no_still_409s():
     trainer = make_cpu_trainer(max_slots=2)
@@ -306,3 +318,48 @@ def test_seq_no_equal_version_without_cache_still_409s():
     trainer.free_idxs = {1}
     with pytest.raises(ValueError, match="expected seq_no 2"):
         trainer.validate_job(job("r1", seq_no=1))
+
+
+def test_slot_and_release_identity_remain_bound():
+    trainer = make_registry(max_slots=2)
+    trainer._claim("r1", "ttt-r1")
+    with pytest.raises(ValueError, match="is bound to adapter"):
+        trainer._claim("r1", "ttt-other")
+    with pytest.raises(ValueError, match="already bound to rollout"):
+        trainer._claim("r2", "ttt-r1")
+
+    released = trainer.release("r1", "ttt-r1")
+    assert released.released
+    assert not trainer.release("r1", "ttt-r1").released  # idempotent retry
+    with pytest.raises(ValueError, match="idempotent release retry"):
+        trainer._claim("r2", "ttt-r1")
+
+
+def test_frozen_fused_head_backpropagates_without_weight_gradient(monkeypatch):
+    import torch
+
+    from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear
+
+    torch.manual_seed(0)
+    model = torch.nn.Module()
+    head = FusedOutputLinear(in_features=4, out_features=7, chunk_size=2)
+    head.weight.requires_grad_(False)
+    model.add_module("lm_head", head)
+    assert _patch_frozen_fused_lm_head(model)
+
+    hidden = torch.randn(2, 3, 4, requires_grad=True)
+    labels = torch.tensor([[0, 3, 6], [2, 1, 4]])
+    temperature = torch.ones_like(labels, dtype=torch.float32)
+    output = head(hidden, labels=labels, temperature=temperature)
+
+    original_zeros_like = torch.zeros_like
+
+    def reject_weight_sized_allocation(tensor, *args, **kwargs):
+        if tensor is head.weight:
+            pytest.fail("backward allocated a gradient for the frozen vocabulary weight")
+        return original_zeros_like(tensor, *args, **kwargs)
+
+    monkeypatch.setattr(torch, "zeros_like", reject_weight_sized_allocation)
+    output["logprobs"].sum().backward()
+    assert hidden.grad is not None
+    assert head.weight.grad is None

@@ -538,17 +538,13 @@ class OrchestratorConfig(BaseConfig):
     """BetterStack heartbeat configuration for monitoring training progress."""
 
     ttt_base_url: str | None = None
-    """Launcher-injected TTT service URL: overrides every train/eval env's
-    ``ttt.base_url`` at startup. Set by the SLURM template once the service node's
-    hostname is known (dotted CLI overrides can't index into the env list); config
-    ``base_url`` values act as placeholders (e.g. ``"auto"``) when the launcher manages
-    the service."""
+    """Launcher-injected TTT service URL: replaces the ``"auto"`` placeholder on
+    train/eval envs at startup. Explicit URLs remain external-service overrides. Set by
+    the SLURM template once the managed service hostname is known."""
 
     @model_validator(mode="after")
     def apply_ttt_base_url(self):
-        """Fan the launcher-injected ``ttt_base_url`` out to every TTT env (train + eval).
-        Placeholder-only: an explicit per-env URL is an external service the user mixes
-        with the launcher-managed one — preserve it."""
+        """Resolve ``"auto"`` TTT URLs without changing explicit external URLs."""
         if self.ttt_base_url is None:
             return self
         eval_envs = self.eval.env if self.eval is not None else []

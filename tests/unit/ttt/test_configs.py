@@ -144,6 +144,38 @@ def test_ttt_service_autowires_output_dir_and_model():
     config = RLConfig.model_validate(rl_ttt_service_payload())
     assert config.ttt.output_dir == config.output_dir
     assert config.ttt.model.name == "Qwen/Qwen3-0.6B"
+    assert config.ttt.engine.to_model_config(config.ttt.lora).name == "Qwen/Qwen3-0.6B"
+
+
+def test_ttt_service_autowires_component_level_policy_model():
+    """A shared top-level [model] is optional; the resolved trainer model remains the
+    authoritative policy name for the managed service and its nested FSDP config."""
+    payload = rl_ttt_service_payload()
+    del payload["model"]
+    policy_model = "zai-org/GLM-4.5-Air"
+    payload["trainer"]["model"] = {"name": policy_model}
+    payload["orchestrator"]["model"] = {"name": policy_model}
+    payload["inference"]["model"] = {"name": policy_model}
+    config = RLConfig.model_validate(payload)
+    assert config.ttt.model.name == policy_model
+    assert config.ttt.engine.to_model_config(config.ttt.lora).name == policy_model
+
+
+def test_managed_service_contract_ignores_external_ttt_envs():
+    payload = rl_ttt_service_payload()
+    managed = payload["orchestrator"]["train"]["env"][0]
+    managed["ttt"]["adapter_prefix"] = "managed"
+    external = {
+        "id": "external-env",
+        "ttt": {"base_url": "http://external:9000", "adapter_prefix": "external"},
+    }
+    payload["orchestrator"]["train"]["env"].append(external)
+    config = RLConfig.model_validate(payload)
+    assert config.ttt.adapter_prefix == "managed"
+
+    payload["orchestrator"]["train"]["env"] = [external]
+    with pytest.raises(ValueError, match='no active train/eval env uses ttt.base_url = "auto"'):
+        RLConfig.model_validate(payload)
 
 
 def test_ttt_nodes_without_service_config_rejected():
@@ -247,7 +279,7 @@ def test_ttt_nodes_without_ttt_envs_rejected():
     payload = rl_ttt_service_payload()
     del payload["ttt"]
     payload["orchestrator"]["train"]["env"] = [{"id": "dummy-env"}]
-    with pytest.raises(ValueError, match="no \[ttt\] service config"):
+    with pytest.raises(ValueError, match=r"no \[ttt\] service config"):
         RLConfig.model_validate(payload)
 
 
@@ -257,4 +289,14 @@ def test_ttt_service_on_single_node_rejected():
     del payload["deployment"]
     del payload["slurm"]
     with pytest.raises(ValueError, match="never start it"):
+        RLConfig.model_validate(payload)
+
+
+def test_managed_ttt_requires_launched_inference():
+    """The multi-node template only wires managed TTT to launched inference replicas."""
+    payload = rl_ttt_service_payload()
+    payload["deployment"]["num_infer_nodes"] = 0
+    payload["inference"] = None
+    payload["trainer"] = {"data": {"fake": {}}}
+    with pytest.raises(ValueError, match="requires a launched inference deployment"):
         RLConfig.model_validate(payload)

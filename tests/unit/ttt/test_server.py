@@ -148,6 +148,13 @@ async def test_health(service):
         assert response.json() == {"status": "ok", "adapters": 0}
 
 
+async def test_peft_admin_client_honors_configured_timeout():
+    config = TTTServiceConfig(inference_admin_urls=[], admin_timeout_seconds=7.5)
+    app = build_app(config, trainer=FakeTrainer())
+    async with app.router.lifespan_context(app):
+        assert app.state.http.timeout.connect == 7.5
+
+
 async def test_update_forwards_qa_fields(service):
     async with service() as (client, trainer, engine):
         response = await client.post(
@@ -163,3 +170,108 @@ async def test_update_forwards_qa_fields(service):
         assert qa_pairs == [{"question": "q1", "answer": "a1"}]
         assert train_rollout is False
         assert system_prompt is None and tools is None
+
+
+async def test_v2_partial_replica_load_is_reconciled_everywhere():
+    import asyncio
+
+    from prime_rl.ttt.admin import AdapterLoadError, load_adapter_into_replicas, unload_adapter_from_replicas
+    from prime_rl.ttt.server_v2 import complete_adapter_load
+
+    load_started: set[str] = set()
+    unloads: set[str] = set()
+    both_loads = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/load_lora_adapter":
+            load_started.add(request.url.host)
+            if len(load_started) == 2:
+                both_loads.set()
+            await both_loads.wait()  # proves fan-out is concurrent
+            return httpx.Response(503 if request.url.host == "bad" else 200)
+        if request.url.path == "/v1/unload_lora_adapter":
+            unloads.add(request.url.host)
+            return httpx.Response(200)
+        return httpx.Response(404)
+
+    marked = False
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+
+        async def mark_loaded():
+            nonlocal marked
+            marked = True
+
+        with pytest.raises(AdapterLoadError):
+            await complete_adapter_load(
+                lambda: load_adapter_into_replicas(client, ["http://good", "http://bad"], "ttt-r1", "/v1"),
+                mark_loaded,
+                lambda: unload_adapter_from_replicas(client, ["http://good", "http://bad"], "ttt-r1"),
+                "ttt-r1",
+            )
+
+    assert not marked
+    assert load_started == unloads == {"good", "bad"}
+
+
+async def test_v2_cancelled_wait_keeps_rollout_lease_until_work_finishes():
+    import asyncio
+    from types import SimpleNamespace
+
+    from prime_rl.ttt.server_v2 import _acquire_rollout_lease, _wait_with_lease
+
+    app = SimpleNamespace(state=SimpleNamespace(deferred_rollout_releases=set()))
+    done = __import__("threading").Event()
+    lease = await _acquire_rollout_lease({}, "r1")
+    waiter = asyncio.create_task(_wait_with_lease(app, lease, done))
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert lease.lock.locked()
+
+    done.set()
+    for _ in range(100):
+        if not lease.lock.locked():
+            break
+        await asyncio.sleep(0.01)
+    assert not lease.lock.locked()
+
+
+async def test_v2_rejects_adapter_namespace_before_queueing():
+    from queue import Queue
+
+    from prime_rl.ttt.server_v2 import build_app_v2
+
+    trainer = type("Trainer", (), {"slots": {}})()
+    work_queue = Queue()
+    app = build_app_v2(
+        TTTServiceConfig(engine={"type": "fsdp", "max_batch_wait_seconds": 0}, inference_admin_urls=[]),
+        trainer,
+        work_queue,
+    )
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://ttt") as client:
+            response = await client.post("/update", json={**UPDATE, "adapter_name": "policy-r1"})
+    assert response.status_code == 409
+    assert work_queue.empty()
+
+
+async def test_v2_unary_stop_and_http_start_failure_do_not_strand_work_loop():
+    import threading
+    from queue import Queue
+    from types import SimpleNamespace
+
+    from prime_rl.ttt.server_v2 import _monitor_http_server, _work_loop
+
+    stop_queue = Queue()
+    stop_queue.put(("stop",))
+    _work_loop(None, stop_queue, SimpleNamespace(is_master=True, world_size=1))
+
+    http_thread = threading.Thread(target=lambda: None)
+    http_thread.start()
+    http_thread.join(timeout=1)
+    abort_queue = Queue()
+    _monitor_http_server(SimpleNamespace(started=False), http_thread, abort_queue, startup_timeout=1)
+    with pytest.raises(RuntimeError, match="HTTP server failed"):
+        _work_loop(None, abort_queue, SimpleNamespace(is_master=True, world_size=1))

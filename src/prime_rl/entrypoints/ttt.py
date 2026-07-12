@@ -4,6 +4,8 @@ Defers the heavy imports (torch, transformers, peft) until after ``cli()`` parse
 args, so ``ttt --help`` short-circuits quickly.
 """
 
+import os
+
 from prime_rl.configs.ttt import TTTServiceConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
@@ -21,6 +23,13 @@ def main():
 
         run_server_v2(config)
     else:
+        world_size = int(os.environ.get("WORLD_SIZE", "1"))
+        if world_size != 1:
+            raise ValueError(
+                f"The PEFT TTT engine is single-process, but WORLD_SIZE={world_size}. "
+                "Launch it with `uv run ttt ...` on one GPU, or use engine.type='fsdp' "
+                "for torchrun/multi-GPU deployments."
+            )
         from prime_rl.ttt.server import run_server
 
         run_server(config)

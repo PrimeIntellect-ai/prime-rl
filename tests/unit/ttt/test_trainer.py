@@ -16,7 +16,7 @@ from prime_rl.configs.ttt import (  # noqa: E402
     TTTOptimizerConfig,
     TTTServiceConfig,
 )
-from prime_rl.ttt.trainer import TTTTrainer  # noqa: E402
+from prime_rl.ttt.trainer import TTTTrainer, _load_qa_tokenizer  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -181,6 +181,36 @@ def test_alignment_validation(tmp_path, tiny_model_name):
 
 
 # -- Q&A training -----------------------------------------------------------------------
+
+
+def test_peft_qa_tokenizer_honors_service_config(monkeypatch):
+    from transformers import AutoTokenizer
+
+    calls = []
+
+    class FakeTokenizer:
+        eos_token_id = 7
+        pad_token_id = None
+        chat_template = None
+
+    def fake_from_pretrained(name, **kwargs):
+        calls.append((name, kwargs))
+        return FakeTokenizer()
+
+    monkeypatch.setattr(AutoTokenizer, "from_pretrained", fake_from_pretrained)
+    config = TTTServiceConfig.model_validate(
+        {
+            "tokenizer": {
+                "name": "custom-tokenizer",
+                "trust_remote_code": True,
+                "chat_template": "inline {{ messages }}",
+            }
+        }
+    )
+    tokenizer = _load_qa_tokenizer(config)
+    assert calls == [("custom-tokenizer", {"trust_remote_code": True})]
+    assert tokenizer.chat_template == "inline {{ messages }}"
+    assert tokenizer.pad_token_id == tokenizer.eos_token_id
 
 
 @pytest.fixture(scope="module")

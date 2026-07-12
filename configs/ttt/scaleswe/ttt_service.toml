@@ -16,7 +16,7 @@ name = "zai-org/GLM-4.5-Air"
 
 [engine]
 type = "fsdp"
-max_slots = 272                 # > orchestrator.max_inflight_rollouts (256): headroom for leaked slots
+max_slots = 272                 # small margin above orchestrator.max_inflight_rollouts (256)
 max_tokens_per_forward = 65536  # activation budget per packed update forward
 max_batch_wait_seconds = 0.5    # collect concurrent rollouts' updates into one forward
 
@@ -26,6 +26,7 @@ max_batch_wait_seconds = 0.5    # collect concurrent rollouts' updates into one 
 impl = "custom"
 attn = "flash_attention_3"
 fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
 
 [lora]
 rank = 16

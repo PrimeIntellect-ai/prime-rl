@@ -14,8 +14,9 @@ the trainer itself; the server layer bounds queuing.
 The raw-branch path needs no tokenizer: it consumes the exact token ids the inference
 engine saw. Q&A training is the one exception — the pairs arrive as text (they are trained
 *standalone*, without the branch context they were generated under, so the engine's
-context-tokenization is meaningless for them) and are rendered with the base model's own
-chat template, loss on the answer tokens. The tokenizer is lazy-loaded on first Q&A use.
+context-tokenization is meaningless for them) and are rendered with the configured Q&A
+tokenizer and chat template, loss on the answer tokens. The tokenizer is lazy-loaded on
+first Q&A use.
 """
 
 from __future__ import annotations
@@ -31,6 +32,20 @@ from torch import nn
 from prime_rl.configs.ttt import TTTServiceConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.qa_render import assert_prefix_stable_template, render_qa_pair
+
+
+def _load_qa_tokenizer(config: TTTServiceConfig):
+    """Load the service's configured Q&A tokenizer, including its template override."""
+    from transformers import AutoTokenizer
+
+    name = config.tokenizer.name
+    assert name is not None  # TTTServiceConfig fills this from model.name
+    tokenizer = AutoTokenizer.from_pretrained(name, trust_remote_code=config.tokenizer.trust_remote_code)
+    if config.tokenizer.chat_template is not None:
+        path = Path(config.tokenizer.chat_template)
+        tokenizer.chat_template = path.read_text() if path.is_file() else config.tokenizer.chat_template
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+    return tokenizer
 
 
 @dataclass
@@ -86,12 +101,10 @@ class TTTTrainer:
         self.adapters: dict[str, AdapterState] = {}
         self._tokenizer = None  # lazy — only Q&A training needs it
         # Startup canary: a chat template that isn't prefix-stable would silently skip every
-        # Q&A pair — fail the service at launch instead. A model dir without tokenizer files
-        # stays lazy (Q&A requests will then fail loudly on first use).
+        # Q&A pair — fail the service at launch instead. A configured tokenizer that cannot
+        # load stays lazy (Q&A requests will then fail loudly on first use).
         try:
-            from transformers import AutoTokenizer
-
-            tokenizer = AutoTokenizer.from_pretrained(config.model.name)
+            tokenizer = _load_qa_tokenizer(config)
         except Exception:
             pass
         else:
@@ -161,9 +174,7 @@ class TTTTrainer:
         context. Returns `(token_ids, loss_mask)` per pair; pairs whose answer renders to
         nothing are skipped."""
         if self._tokenizer is None:
-            from transformers import AutoTokenizer
-
-            self._tokenizer = AutoTokenizer.from_pretrained(self.config.model.name)
+            self._tokenizer = _load_qa_tokenizer(self.config)
 
         template_kwargs: dict = {"tools": tools} if tools else {}
         head = [{"role": "system", "content": system_prompt}] if system_prompt else []

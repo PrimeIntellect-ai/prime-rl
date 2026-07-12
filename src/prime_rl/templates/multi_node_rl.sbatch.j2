@@ -30,6 +30,7 @@ export NUM_TRAIN_NODES={{ num_train_nodes }}
 export NUM_INFER_NODES={{ num_infer_nodes }}
 export NUM_TTT_NODES={{ num_ttt_nodes | default(0) }}
 export TTT_PORT={{ ttt_port | default(8092) }}
+export TTT_STARTUP_TIMEOUT={{ ttt_startup_timeout | default(1800) }}
 export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
@@ -457,6 +458,19 @@ else
 # trainer nodes. Top-level (after the role if/else) so the wait -n teardown covers it.
 {% if orchestrator_on_inference %}ORCH_PROCID=$((NUM_INFER_NODES - 1)){% else %}ORCH_PROCID=$NUM_INFER_NODES{% endif %}
 if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
+{% if num_ttt_nodes | default(0) > 0 %}
+    # The FSDP service loads and shards its model before starting HTTP. Do not schedule
+    # rollouts until it is healthy; otherwise early compactions race model startup.
+    TTT_READY_DEADLINE=$((SECONDS + TTT_STARTUP_TIMEOUT))
+    until curl --fail --silent --show-error --max-time 5 "$TTT_BASE_URL/health" >/dev/null; do
+        if [ "$SECONDS" -ge "$TTT_READY_DEADLINE" ]; then
+            echo "TTT service did not become ready within ${TTT_STARTUP_TIMEOUT}s: $TTT_BASE_URL/health" >&2
+            exit 1
+        fi
+        sleep 5
+    done
+    echo "TTT service ready: $TTT_BASE_URL"
+{% endif %}
     ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.base-url $INFER_URLS"
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.admin-base-url $ADMIN_URLS"

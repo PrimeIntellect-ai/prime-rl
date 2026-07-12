@@ -7,7 +7,7 @@ Topology (under torchrun, 1+ nodes):
   (`engine.max_batch_wait_seconds` window, `max_tokens_per_forward` cap handled by the
   trainer's packer).
 - **All ranks** sit in a work loop: rank 0 broadcasts a work order
-  (`("update", jobs) | ("release", rollout_id) | ("stop",)`) via
+  (`("update", jobs) | ("release", rollout_id) | ("abort", reason) | ("stop",)`) via
   `broadcast_object_list`; every rank executes the same collective path
   (forward/backward/step, checkpoint barrier); rank 0 writes checkpoints, loads adapters
   into the inference engines, and answers the HTTP callers.
@@ -25,7 +25,6 @@ import datetime
 import os
 import threading
 import time
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from queue import Empty, Queue
@@ -34,7 +33,18 @@ import httpx
 from fastapi import FastAPI, HTTPException
 
 from prime_rl.configs.ttt import TTTServiceConfig
-from prime_rl.ttt.server import ReleaseRequest, UpdateRequest, UpdateResponse
+from prime_rl.ttt.admin import (
+    AdapterLoadError,
+    AdapterUnloadError,
+    load_adapter_into_replicas,
+    unload_adapter_from_replicas,
+)
+from prime_rl.ttt.identity import validate_adapter_identity
+from prime_rl.ttt.server import (
+    ReleaseRequest,
+    UpdateRequest,
+    UpdateResponse,
+)
 from prime_rl.utils.logger import get_logger
 
 # How long an HTTP caller waits on the work loop before giving up with a 503. Generous:
@@ -45,6 +55,30 @@ _RESULT_WAIT_SECONDS = 3600.0
 # Idle-heartbeat period for the control-plane broadcast (see run_server_v2.heartbeat):
 # must be comfortably below the gloo group's 24h op timeout.
 _HEARTBEAT_SECONDS = 3600.0
+
+
+def validate_update_response(result: dict | None) -> UpdateResponse:
+    """Validate the work loop's payload before touching inference replicas."""
+    if result is None:
+        raise RuntimeError("TTT update produced no response")
+    return UpdateResponse.model_validate(result)
+
+
+async def complete_adapter_load(load, mark_loaded, unload, adapter_name: str) -> None:
+    """Load all replicas, recording success only after the load completes.
+
+    Reconcile a partial/ambiguous load by unloading the name everywhere before the
+    rollout lock is released. The original load/commit error remains authoritative.
+    """
+    try:
+        await load()
+        await mark_loaded()
+    except BaseException:
+        try:
+            await unload()
+        except Exception as cleanup_error:
+            get_logger().warning(f"TTT adapter-load cleanup failed for {adapter_name}: {cleanup_error}")
+        raise
 
 
 @dataclass
@@ -65,6 +99,59 @@ class _ReleaseAck:
 
     done: threading.Event = field(default_factory=threading.Event)
     had_slot: bool = False
+    adapter_name: str | None = None
+
+
+@dataclass
+class _KeyedLockLease:
+    lock: asyncio.Lock
+    key: str
+    released: bool = False
+
+    async def release(self) -> None:
+        if self.released:
+            return
+        self.released = True
+        self.lock.release()
+
+
+async def _acquire_rollout_lease(locks: dict[str, asyncio.Lock], key: str) -> _KeyedLockLease:
+    """Acquire the stable per-rollout lock retained for this service lifetime."""
+    lock = locks.setdefault(key, asyncio.Lock())
+    await lock.acquire()
+    return _KeyedLockLease(lock, key)
+
+
+def _defer_lease_release(app: FastAPI, lease: _KeyedLockLease, completion: asyncio.Task) -> None:
+    """Keep a rollout lease after its request times out or is cancelled."""
+
+    async def release_after_completion() -> None:
+        try:
+            await completion
+        except BaseException as e:
+            # A detached release transaction may fail after its HTTP caller has gone
+            # away. Consume the exception (the tombstone still permits an explicit
+            # retry) instead of emitting an unhandled-task warning.
+            get_logger().warning(f"TTT detached rollout operation failed for {lease.key}: {e}")
+        finally:
+            await lease.release()
+
+    task = asyncio.create_task(release_after_completion())
+    app.state.deferred_rollout_releases.add(task)
+    task.add_done_callback(app.state.deferred_rollout_releases.discard)
+
+
+async def _wait_with_lease(app: FastAPI, lease: _KeyedLockLease, done: threading.Event) -> None:
+    """Wait up to the HTTP result deadline, transferring ownership on interruption."""
+    completion = asyncio.create_task(asyncio.to_thread(done.wait))
+    try:
+        await asyncio.wait_for(asyncio.shield(completion), _RESULT_WAIT_SECONDS)
+    except BaseException:
+        # ``shield`` keeps the thread waiter alive. The background task holds the lease
+        # until the queued/running work order really completes, so a retry or release
+        # cannot overtake an orphaned update after client cancellation or a 503 timeout.
+        _defer_lease_release(app, lease, completion)
+        raise
 
 
 def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
@@ -78,7 +165,10 @@ def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
     while True:
         if world.is_master:
             order = work_queue.get()
-            payload = [order[0], order[1]]
+            # ``stop`` is intentionally a one-item control order. Keep the transport
+            # tolerant of that documented shape so rank 0 broadcasts the stop instead of
+            # raising IndexError and leaving peer ranks blocked in their receive.
+            payload = [order[0], order[1] if len(order) > 1 else None]
         else:
             payload = [None, None]
         if dist.is_initialized() and world.world_size > 1:
@@ -89,32 +179,34 @@ def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
         kind, data = payload
         if kind == "stop":
             return
+        if kind == "abort":
+            # Rank 0's HTTP thread is the only way work enters this service.  If it
+            # cannot bind/start, or exits later, broadcast the failure so workers do not
+            # remain parked forever in the next control-plane collective.
+            raise RuntimeError(f"TTT v2 HTTP server failed: {data}")
         if kind == "noop":
             continue  # idle heartbeat: keeps the gloo broadcast fed (see run_server_v2)
         if kind == "release":
-            released = trainer.release(data)
+            try:
+                released = trainer.release(*data)
+            except Exception:
+                logger.exception("ttt v2: release failed after broadcast, aborting rank")
+                os._exit(1)
             if world.is_master:
-                order[2].had_slot = released is not None
+                order[2].had_slot = released.released
+                order[2].adapter_name = released.adapter_name
                 order[2].done.set()
             continue
         # kind == "update": data = list[UpdateJob]; on rank 0, order[2] = list[_Pending]
         jobs = data
         try:
             results = trainer.update_batch(jobs)
-        except ValueError as e:
-            # Deterministic validation error raised identically on every rank (jobs arrive
-            # in the same order via broadcast): safe to report per-batch and keep going.
-            logger.exception("ttt v2: batch failed validation")
-            if world.is_master:
-                for pending in order[2]:
-                    pending.error = f"{type(e).__name__}: {e}"
-                    pending.done.set()
-            continue
         except Exception:
-            # A rank-local fault mid-collective (OOM, NCCL, driver) would leave the peer
-            # ranks hung inside the collective. Crash this rank: torchrun tears the whole
-            # group down loudly instead of wedging silently — fail-loud stance.
-            logger.exception("ttt v2: non-deterministic batch failure, aborting rank")
+            # All request/sequence validation is isolated before slot claims. Anything
+            # escaping update_batch — including ValueError — is post-preparation and may
+            # have mutated a slot or stranded peers in a collective, so every exception is
+            # fatal to this torchrun worker.
+            logger.exception("ttt v2: post-preparation batch failure, aborting rank")
             os._exit(1)
         if world.is_master:
             for pending in order[2]:
@@ -135,15 +227,28 @@ def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
 
 
 def _validate_and_split(trainer, pendings: list["_Pending"]) -> list["_Pending"]:
-    """Per-job validation on rank 0 BEFORE broadcasting, so a malformed job 409s its own
-    caller without poisoning the batch. PURE (`validate_job`) — slot claims happen inside
-    `update_batch`, identically on every rank."""
+    """Validate and materialize sequences on rank 0 before broadcasting.
+
+    Workers must consume the exact same prepared token lists. Running tokenizer/chat-
+    template code independently on every rank risks a rank-local exception or divergent
+    rendering, followed by mismatched packed-forward collectives. Slot claims remain in
+    ``update_batch`` and therefore still happen identically on every rank.
+    """
     valid: list[_Pending] = []
     for pending in pendings:
         try:
-            trainer.validate_job(pending.job)
+            cached = trainer.validate_job(pending.job)
+            if cached is None:
+                trainer.prepare_job(pending.job)
         except ValueError as e:
             pending.error = str(e)
+            pending.done.set()
+            continue
+        except Exception as e:
+            # Preparation has not been broadcast and mutates no GPU/slot state, so an
+            # unexpected tokenizer/template failure is safe to isolate as this job's 500.
+            pending.error = f"{type(e).__name__}: {e}"
+            pending.error_status = 500
             pending.done.set()
             continue
         valid.append(pending)
@@ -152,16 +257,15 @@ def _validate_and_split(trainer, pendings: list["_Pending"]) -> list["_Pending"]
 
 def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAPI:
     """The rank-0 app: enqueue jobs, wait for the work loop's results, drive engine adapter
-    loads. `trainer` is only touched for validation here — execution happens in the work
-    loop on all ranks."""
+    loads. `trainer` is touched only for pure validation/sequence preparation here — GPU
+    execution and slot mutation happen in the work loop on all ranks."""
     from prime_rl.ttt.trainer_v2 import UpdateJob
 
-    logger = get_logger()
     batch_queue: Queue[_Pending] = Queue()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.http = httpx.AsyncClient(timeout=120.0)
+        app.state.http = httpx.AsyncClient(timeout=config.admin_timeout_seconds)
         # Per-rollout locks order /update and /release: an update holds its rollout's lock
         # across enqueue→result→adapter load so a concurrent release can't unload+free the
         # slot between train and engine load (orphaned adapter in vLLM otherwise).
@@ -169,7 +273,8 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
         # complete in the work loop WHILE a retry waits on the lock, so the duplicate check
         # lives inside the work loop (which sees the post-completion slot version) and must
         # NOT be a pre-read here in the HTTP layer — a pre-read would race that completion.
-        app.state.rollout_locks = defaultdict(asyncio.Lock)
+        app.state.rollout_locks = {}
+        app.state.deferred_rollout_releases = set()
         collector = threading.Thread(
             target=_collector_loop,
             args=(config, trainer, batch_queue, work_queue),
@@ -184,28 +289,21 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
     app = FastAPI(lifespan=lifespan)
 
     async def load_adapter(adapter_name: str, ckpt_path: str) -> None:
-        for url in config.inference_admin_urls:
-            response = await app.state.http.post(
-                f"{url.rstrip('/')}/load_lora_adapter",
-                json={"lora_name": adapter_name, "lora_path": ckpt_path},
-            )
-            response.raise_for_status()
+        await load_adapter_into_replicas(
+            app.state.http,
+            config.inference_admin_urls,
+            adapter_name,
+            ckpt_path,
+            config.admin_timeout_seconds,
+        )
 
     async def unload_adapter(adapter_name: str) -> None:
-        for url in config.inference_admin_urls:
-            try:
-                response = await app.state.http.post(
-                    f"{url.rstrip('/')}/v1/unload_lora_adapter",
-                    json={"lora_name": adapter_name},
-                )
-                if response.status_code // 100 != 2:
-                    # Best-effort: a not-loaded 4xx is expected on release retries — warn,
-                    # never raise (the slot is freed regardless).
-                    logger.warning(
-                        f"ttt: unload of {adapter_name} on {url} returned {response.status_code}: {response.text[:200]}"
-                    )
-            except httpx.HTTPError:
-                logger.warning(f"ttt: unload of {adapter_name} failed on {url}")
+        await unload_adapter_from_replicas(
+            app.state.http,
+            config.inference_admin_urls,
+            adapter_name,
+            config.admin_timeout_seconds,
+        )
 
     @app.get("/health")
     async def health() -> dict:
@@ -213,6 +311,10 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
 
     @app.post("/update")
     async def update(request: UpdateRequest) -> UpdateResponse:
+        try:
+            validate_adapter_identity(request.rollout_id, request.adapter_name, config.adapter_prefix)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
         job = UpdateJob(
             rollout_id=request.rollout_id,
             adapter_name=request.adapter_name,
@@ -224,39 +326,83 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
             system_prompt=request.system_prompt,
             tools=request.tools,
         )
-        async with app.state.rollout_locks[request.rollout_id]:
+        lease = await _acquire_rollout_lease(app.state.rollout_locks, request.rollout_id)
+        lease_transferred = False
+        try:
             pending = _Pending(job=job)
             batch_queue.put(pending)
-            finished = await asyncio.to_thread(pending.done.wait, _RESULT_WAIT_SECONDS)
-            if not finished:
+            try:
+                await _wait_with_lease(app, lease, pending.done)
+            except TimeoutError:
+                lease_transferred = True
                 raise HTTPException(status_code=503, detail="TTT work loop did not answer in time")
+            except BaseException:
+                lease_transferred = True
+                raise
             if pending.error is not None:
                 # 409: deterministic per-job validation errors; 500: unexpected (defensive —
                 # non-deterministic failures crash the rank, so this should be unreachable).
                 raise HTTPException(status_code=pending.error_status, detail=pending.error)
+            response = validate_update_response(pending.result)
+
+            async def mark_loaded() -> None:
+                trainer.mark_loaded(request.rollout_id, request.adapter_name, response.version)
+
             try:
-                await load_adapter(request.adapter_name, pending.result["ckpt_path"])
-            except httpx.HTTPError as e:
+                await complete_adapter_load(
+                    lambda: load_adapter(request.adapter_name, response.ckpt_path),
+                    mark_loaded,
+                    lambda: unload_adapter(request.adapter_name),
+                    request.adapter_name,
+                )
+            except (AdapterLoadError, httpx.HTTPError, TimeoutError) as e:
                 raise HTTPException(status_code=502, detail=f"adapter load failed: {e}") from e
-            return UpdateResponse(**pending.result)
+            return response
+        finally:
+            if not lease_transferred:
+                await lease.release()
 
     @app.post("/release")
     async def release(request: ReleaseRequest) -> dict:
-        async with app.state.rollout_locks[request.rollout_id]:
-            ack = _ReleaseAck()
-            work_queue.put(("release", request.rollout_id, ack))
-            finished = await asyncio.to_thread(ack.done.wait, _RESULT_WAIT_SECONDS)
-            if not finished:
+        try:
+            validate_adapter_identity(request.rollout_id, request.adapter_name, config.adapter_prefix)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        lease = await _acquire_rollout_lease(app.state.rollout_locks, request.rollout_id)
+        lease_transferred = False
+        try:
+            try:
+                trainer.validate_release(request.rollout_id, request.adapter_name)
+            except ValueError as e:
+                raise HTTPException(status_code=409, detail=str(e)) from e
+
+            async def release_and_unload() -> _ReleaseAck:
+                ack = _ReleaseAck()
+                work_queue.put(("release", (request.rollout_id, request.adapter_name), ack))
+                await asyncio.to_thread(ack.done.wait)
+                assert ack.adapter_name is not None
+                await unload_adapter(ack.adapter_name)
+                return ack
+
+            transaction = asyncio.create_task(release_and_unload())
+            try:
+                ack = await asyncio.wait_for(asyncio.shield(transaction), _RESULT_WAIT_SECONDS)
+            except TimeoutError:
+                lease_transferred = True
+                _defer_lease_release(app, lease, transaction)
                 raise HTTPException(status_code=503, detail="TTT work loop did not answer in time")
-            # Unload UNCONDITIONALLY: a client retry after a lost response finds
-            # had_slot=False (the first attempt already freed the slot) but the engine
-            # unload may never have run — gating it on had_slot would leak the adapter in
-            # vLLM until restart, permanently eating one of max_loras. unload_adapter is
-            # idempotent (a not-loaded name is caught and warn-logged).
-            await unload_adapter(request.adapter_name)
+            except asyncio.CancelledError:
+                lease_transferred = True
+                _defer_lease_release(app, lease, transaction)
+                raise
             # had_slot comes from the work order's result — a pre-read of trainer.slots
             # could race the work loop's own mutation of the registry.
             return {"released": ack.had_slot}
+        except AdapterUnloadError as e:
+            raise HTTPException(status_code=502, detail=f"adapter unload incomplete: {e}") from e
+        finally:
+            if not lease_transferred:
+                await lease.release()
 
     return app
 
@@ -300,6 +446,28 @@ def _collector_loop(config, trainer, batch_queue: Queue, work_queue: Queue) -> N
             work_queue.put(("update", [p.job for p in valid], valid))
 
 
+def _monitor_http_server(server, http_thread: threading.Thread, work_queue: Queue, startup_timeout: float) -> None:
+    """Turn uvicorn startup/exit failures into a work order seen by every rank."""
+    deadline = time.monotonic() + startup_timeout
+    while http_thread.is_alive() and not server.started:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            work_queue.put(("abort", f"did not report ready within {startup_timeout:g} seconds"))
+            return
+        # Joining with a short timeout detects early thread exit without a busy spin.
+        http_thread.join(timeout=min(0.05, remaining))
+
+    if not server.started:
+        work_queue.put(("abort", "exited before startup completed (bind/configuration/startup failure)"))
+        return
+
+    # A serving TTT process has no normal independent HTTP-thread exit.  Observe it for
+    # the process lifetime so an exception or unexpected uvicorn shutdown also wakes the
+    # distributed work loop instead of leaving non-master ranks parked forever.
+    http_thread.join()
+    work_queue.put(("abort", "exited unexpectedly after startup"))
+
+
 def run_server_v2(config: TTTServiceConfig) -> None:
     """Entry under torchrun: build the engine on every rank; rank 0 serves HTTP in a
     daemon thread and feeds the shared work loop; all ranks execute it."""
@@ -330,6 +498,11 @@ def run_server_v2(config: TTTServiceConfig) -> None:
         )
         http_thread = threading.Thread(target=server.run, daemon=True)
         http_thread.start()
+        threading.Thread(
+            target=_monitor_http_server,
+            args=(server, http_thread, work_queue, config.startup_timeout_seconds),
+            daemon=True,
+        ).start()
 
         def heartbeat() -> None:
             # Idle heartbeat: non-master ranks park inside the gloo broadcast between work
@@ -342,6 +515,6 @@ def run_server_v2(config: TTTServiceConfig) -> None:
                 work_queue.put(("noop", None))
 
         threading.Thread(target=heartbeat, daemon=True).start()
-        get_logger().info(f"TTT v2 serving on {config.host}:{config.port} ({world})")
+        get_logger().info(f"TTT v2 starting on {config.host}:{config.port} ({world})")
 
     _work_loop(trainer, work_queue, world, ctrl_pg)

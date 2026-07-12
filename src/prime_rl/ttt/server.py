@@ -77,7 +77,7 @@ def build_app(config: TTTServiceConfig, trainer: "TTTTrainer | None" = None) -> 
             app.state.trainer = trainer
         app.state.semaphore = asyncio.Semaphore(config.max_concurrent_updates)
         app.state.train_lock = asyncio.Lock()  # one update in the trainer at a time
-        app.state.http = httpx.AsyncClient(timeout=120.0)
+        app.state.http = httpx.AsyncClient(timeout=config.admin_timeout_seconds)
         try:
             yield
         finally:

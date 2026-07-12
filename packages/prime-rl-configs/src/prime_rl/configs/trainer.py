@@ -573,10 +573,20 @@ class TrainerConfig(BaseConfig):
     """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
 
     ttt_replay: bool = False
-    """Expect TTT frozen-adapter replay samples: install the replay hooks eagerly at model setup (required before ``torch.compile`` — hooks added afterwards are silently ignored by dynamo). Auto-set by ``RLConfig.validate_ttt`` when any train env has TTT enabled."""
+    """Expect TTT frozen-adapter replay samples: install the replay hooks eagerly at model setup. Non-fullgraph ``torch.compile`` is supported; ``compile.fullgraph=true`` is not because replay's eager adapter hook is an intentional graph break. Auto-set by ``RLConfig.validate_ttt`` when any train env has TTT enabled."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
+
+    @model_validator(mode="after")
+    def ttt_replay_rejects_fullgraph_compile(self):
+        if self.ttt_replay and self.model.compile is not None and self.model.compile.fullgraph:
+            raise ValueError(
+                "TTT replay is incompatible with trainer.model.compile.fullgraph=true: "
+                "the replay hook intentionally runs outside the compiled graph. Set fullgraph=false "
+                "or disable model compilation."
+            )
+        return self
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):

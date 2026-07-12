@@ -2,6 +2,11 @@
 # (loss_scope=all) before it drops; the rest of the rollout samples through the adapter;
 # the trainer replays every branch under its exact frozen adapter. Read against A1.
 
+output_dir = "outputs/ttt-scaleswe/a2-ttt"
+
+[slurm]
+job_name = "glm45air-ttt-swe-a2"
+
 [wandb]
 name = "a2-glm45air-scaleswe-ttt"
 
@@ -13,7 +18,7 @@ num_ttt_nodes = 1
 
 [ttt.engine]
 type = "fsdp"
-max_slots = 272                 # > max_inflight_rollouts (256): headroom for leaked slots
+max_slots = 272                 # small margin above max_inflight_rollouts (256)
 max_tokens_per_forward = 65536
 max_batch_wait_seconds = 0.5
 
@@ -21,6 +26,7 @@ max_batch_wait_seconds = 0.5
 impl = "custom"
 attn = "flash_attention_3"
 fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
 
 [ttt.lora]
 rank = 16
@@ -34,8 +40,8 @@ lr = 1e-4
 
 [[orchestrator.train.env]]
 name = "scaleswe"
-taskset = { id = "scaleswe-v1" }
-harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+taskset = { id = "scaleswe-v1", dataset_name = "AweAI-Team/Scale-SWE", dataset_revision = "d8db20390a936bbda9c96d88b97cc4778dff1481", filter_unavailable_images = false, use_prime_registry = true }
+harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe-a2"] } }
 ttt = { base_url = "auto" }
 
 # Evals run the same TTT regime as training — the dispatcher routes TTT eval envs
@@ -44,7 +50,7 @@ ttt = { base_url = "auto" }
 [[orchestrator.eval.env]]
 name = "swebench-verified"
 taskset = { id = "swebench-verified-v1", use_prime_registry = true }
-harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe-a2"] } }
 ttt = { base_url = "auto" }
 num_examples = 200  # fixed subset: comparable across steps/arms, keeps 6-arm eval load sane
 timeout = { rollout = 3600 }
@@ -54,7 +60,7 @@ timeout = { rollout = 3600 }
 [[orchestrator.eval.env]]
 name = "swebench-pro"
 taskset = { id = "swebench-pro-v1" }
-harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe-a2"] } }
 ttt = { base_url = "auto" }
 num_examples = 100
 interval = 40
@@ -67,7 +73,7 @@ timeout = { rollout = 3600 }
 [[orchestrator.eval.env]]
 name = "deepdive"
 taskset = { id = "deepdive-v1" }
-harness = { id = "compacting", compact_at_tokens = 16384, search = true, forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-ttt-swe"] } }
+harness = { id = "compacting", compact_at_tokens = 16384, search = true, forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["glm45air-ttt-swe-a2"] } }
 ttt = { base_url = "auto" }
 num_examples = 50
 timeout = { rollout = 3600 }
