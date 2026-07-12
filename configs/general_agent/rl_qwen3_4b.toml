@@ -32,7 +32,8 @@ rollouts_per_example = 8
 max_off_policy_steps = 32
 
 [[orchestrator.train.env]]
-id = "general-agent-solver-rlm"
+taskset = { id = "general-agent-v1", task = { tools = { colocated = true } } }
+harness = { id = "null", runtime = { type = "modal" } }
 
 [inference]
 gpu_memory_utilization = 0.85
