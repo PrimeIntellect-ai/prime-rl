@@ -326,6 +326,7 @@ def substitute_ring_attn(
             window_size=window_size,
             group=process_group,
             heads_k_stride=heads_k_stride,
+            softmax_scale=self.scaling,
         )
         if isinstance(out, tuple):
             out = out[0]
