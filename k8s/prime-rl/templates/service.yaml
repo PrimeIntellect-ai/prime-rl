@@ -12,6 +12,7 @@ metadata:
 spec:
   type: {{ .Values.orchestrator.service.type }}
   selector:
+    {{- include "prime-rl.selectorLabels" . | nindent 4 }}
     {{- include "prime-rl.componentLabels" . | nindent 4 }}
     role: orchestrator
   ports:
@@ -37,6 +38,7 @@ metadata:
 spec:
   clusterIP: None  # Headless service for StatefulSet
   selector:
+    {{- include "prime-rl.selectorLabels" . | nindent 4 }}
     {{- include "prime-rl.componentLabels" . | nindent 4 }}
     role: orchestrator
   ports:
@@ -46,7 +48,7 @@ spec:
     name: nccl
 {{- end }}
 ---
-{{- if .Values.inference.enabled }}
+{{- if and .Values.inference.enabled (eq .Values.inference.mode "statefulset") }}
 {{- if .Values.inference.service.enabled }}
 apiVersion: v1
 kind: Service
@@ -60,6 +62,7 @@ metadata:
 spec:
   type: {{ .Values.inference.service.type }}
   selector:
+    {{- include "prime-rl.selectorLabels" . | nindent 4 }}
     {{- include "prime-rl.componentLabels" . | nindent 4 }}
     role: inference
   ports:
@@ -84,6 +87,7 @@ metadata:
 spec:
   type: {{ .Values.trainer.service.type }}
   selector:
+    {{- include "prime-rl.selectorLabels" . | nindent 4 }}
     {{- include "prime-rl.componentLabels" . | nindent 4 }}
     role: trainer
   ports:
@@ -98,7 +102,7 @@ spec:
 {{- end }}
 {{- end }}
 ---
-{{- if .Values.inference.enabled }}
+{{- if and .Values.inference.enabled (eq .Values.inference.mode "statefulset") }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -111,6 +115,7 @@ metadata:
 spec:
   clusterIP: None  # Headless service for StatefulSet
   selector:
+    {{- include "prime-rl.selectorLabels" . | nindent 4 }}
     {{- include "prime-rl.componentLabels" . | nindent 4 }}
     role: inference
   ports:
@@ -131,6 +136,7 @@ metadata:
 spec:
   clusterIP: None  # Headless service for StatefulSet
   selector:
+    {{- include "prime-rl.selectorLabels" . | nindent 4 }}
     {{- include "prime-rl.componentLabels" . | nindent 4 }}
     role: trainer
   ports:

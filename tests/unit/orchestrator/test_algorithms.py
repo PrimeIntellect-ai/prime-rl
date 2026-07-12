@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pydantic
 import pytest
@@ -8,10 +8,13 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import EchoAlgorithm, OPDAlgorithm, OPSDAlgorithm, stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.policy_gate import MutablePolicyGate
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import Policy, Rollout
 from prime_rl.transport.types import TrainingSample
+from prime_rl.utils.client import DynamoInferencePool, StaticInferencePool
+from prime_rl.utils.elastic import ElasticInferencePool
 
 FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
 
@@ -76,6 +79,91 @@ def test_opd_teacher_must_be_a_frozen_endpoint():
         _build(type="opd")
     with pytest.raises(ValueError, match="FrozenModelConfig"):
         _build(type="opd", teacher="policy")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pool_type", [StaticInferencePool, DynamoInferencePool])
+async def test_opd_accepts_fixed_teacher_pools(pool_type):
+    pool = object.__new__(pool_type)
+    algo = OPDAlgorithm(_build(type="opd", teacher=FROZEN), MagicMock())
+    algo.connect = AsyncMock(return_value=pool)
+
+    await algo.setup()
+
+    assert algo.teacher_pool is pool
+
+
+@pytest.mark.asyncio
+async def test_opd_rejects_elastic_teacher_pool():
+    pool = object.__new__(ElasticInferencePool)
+    algo = OPDAlgorithm(_build(type="opd", teacher=FROZEN), MagicMock())
+    algo.connect = AsyncMock(return_value=pool)
+
+    with pytest.raises(TypeError, match="fixed endpoint"):
+        await algo.setup()
+
+
+@pytest.mark.asyncio
+async def test_opsd_rejects_late_live_policy_score_as_rollout_error():
+    policy = Policy(version=0, model_name="policy")
+    gate = MutablePolicyGate(policy, enabled=True)
+    pool = MagicMock(model_name="policy")
+    pool.score = AsyncMock(return_value=[0.0, -0.1])
+    algo = OPSDAlgorithm(_build(type="opsd"), pool, policy_gate=gate)
+    algo.renderer = MagicMock()
+    algo.renderer.render_ids.return_value = [999]
+    rollout = _make_rollout([_make_sample()])
+    rollout.info["demonstration"] = "expert answer"
+    rollout.policy_version = 0
+
+    await gate.begin_update(step=1)
+    await algo.finalize_rollout(rollout)
+
+    assert rollout.has_error
+    assert rollout.error.type == "PolicyRequestRejected"
+    pool.score.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_opsd_settles_every_score_sibling_before_releasing_policy_gate():
+    policy = Policy(version=0, model_name="policy")
+    gate = MutablePolicyGate(policy, enabled=True)
+    sibling_started = asyncio.Event()
+    release_sibling = asyncio.Event()
+    calls = 0
+
+    async def score(_token_ids: list[int]) -> list[float]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("score failed")
+        sibling_started.set()
+        await release_sibling.wait()
+        return [0.0] * 7
+
+    pool = MagicMock(model_name="policy")
+    pool.score = score
+    algo = OPSDAlgorithm(_build(type="opsd"), pool, policy_gate=gate)
+    algo.renderer = MagicMock()
+    algo.renderer.render_ids.return_value = [999]
+    rollout = _make_rollout([_make_sample(), _make_sample()])
+    rollout.info["demonstration"] = "expert answer"
+    rollout.policy_version = 0
+
+    scoring = asyncio.create_task(algo.score_rollout(rollout))
+    await sibling_started.wait()
+    update_token = await gate.begin_update(step=1)
+    idle = asyncio.create_task(gate.wait_idle())
+    await asyncio.sleep(0)
+
+    assert not scoring.done()
+    assert not idle.done()
+
+    release_sibling.set()
+    with pytest.raises(RuntimeError, match="score failed"):
+        await scoring
+    await idle
+    await gate.finish_update(update_token)
 
 
 def test_sft_requires_teacher():

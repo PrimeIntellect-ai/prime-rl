@@ -51,6 +51,7 @@ class InflightRollout:
     client_config: vf.ClientConfig | None = None
     off_policy_steps: int = 0
     eval_step: int | None = None
+    uses_mutable_policy: bool = False
 
 
 @dataclass
@@ -67,6 +68,7 @@ class GroupState:
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None
     policy_version_at_start: int = 0
+    uses_mutable_policy: bool = False
 
 
 class Rollout(vf.Trace[DataT], Generic[DataT]):
@@ -172,8 +174,14 @@ class VersionObserver(Protocol):
 
     ``on_version_pending`` fires *before* the inference engines are paused for
     the weight update; ``on_new_version`` fires *after* the new weights are live
-    and ``Policy`` has been mutated."""
+    and ``Policy`` has been mutated. ``on_version_update_failed`` rolls back
+    transition-only state only when failure is known to precede engine
+    mutation; indeterminate engine-update failures remain fenced. A pending
+    hook that raises must roll back state it partially entered before raising;
+    only hooks that return successfully receive a later failure callback."""
 
     async def on_version_pending(self, step: int) -> None: ...
 
     async def on_new_version(self, step: int) -> None: ...
+
+    async def on_version_update_failed(self, step: int, error: BaseException) -> None: ...

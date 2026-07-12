@@ -1,0 +1,390 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "reference": {"type": "string"},
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        },
+        "pullSecrets": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "inference": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["statefulset", "dynamoGraph"]
+        },
+        "dynamoGraph": {
+          "type": "object",
+          "properties": {
+            "clientTopology": {
+              "type": "object",
+              "properties": {
+                "schema_version": {"const": 1},
+                "admin_api": {"const": "dynamo"},
+                "base_url": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {"type": "string", "minLength": 1}
+                },
+                "rl_base_url": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {"type": "string", "minLength": 1}
+                },
+                "dynamo_worker_roles": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {"type": "string", "enum": ["agg", "prefill", "decode"]}
+                },
+                "dynamo_gpus_per_worker": {"type": "integer", "minimum": 1}
+              },
+              "required": [
+                "schema_version",
+                "admin_api",
+                "base_url",
+                "rl_base_url",
+                "dynamo_worker_roles",
+                "dynamo_gpus_per_worker"
+              ],
+              "additionalProperties": false
+            },
+            "engineConfig": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^.+-dynamo-engine-[0-9a-f]{12}$"
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "canonicalData": {"type": "string", "minLength": 1},
+                "annotations": {
+                  "type": "object",
+                  "properties": {
+                    "prime-rl.nvidia.com/config-sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "prime-rl.nvidia.com/manifest-sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "prime-rl.nvidia.com/topology-sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "prime-rl.nvidia.com/workload-sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  },
+                  "required": [
+                    "prime-rl.nvidia.com/config-sha256",
+                    "prime-rl.nvidia.com/manifest-sha256",
+                    "prime-rl.nvidia.com/topology-sha256",
+                    "prime-rl.nvidia.com/workload-sha256"
+                  ],
+                  "additionalProperties": {"type": "string"}
+                },
+                "data": {
+                  "type": "object",
+                  "minProperties": 2,
+                  "additionalProperties": {"type": "string"}
+                }
+              },
+              "anyOf": [
+                {"maxProperties": 0},
+                {"required": ["name", "sha256", "canonicalData", "annotations", "data"]}
+              ],
+              "additionalProperties": false
+            },
+            "topologyBinding": {
+              "type": "object",
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "canonical": {"type": "string", "minLength": 1}
+              },
+              "required": ["sha256", "canonical"],
+              "additionalProperties": false
+            },
+            "controllerMode": {
+              "type": "string",
+              "enum": ["chartManaged", "external"]
+            },
+            "workloadBinding": {
+              "type": "object",
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "canonical": {"type": "string", "minLength": 1}
+              },
+              "required": ["sha256", "canonical"],
+              "additionalProperties": false
+            },
+            "manifestCanonical": {"type": "string", "minLength": 1},
+            "resource": {"type": "object"}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "existingClaim": {"type": "string"}
+      }
+    },
+    "modelCache": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "existingClaim": {"type": "string"},
+        "mountPath": {"type": "string", "minLength": 1}
+      }
+    },
+    "huggingFace": {
+      "type": "object",
+      "properties": {
+        "tokenSecretName": {"type": "string"},
+        "tokenSecretKey": {"type": "string", "minLength": 1}
+      }
+    },
+    "orchestrator": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "replicas": {"type": "integer", "minimum": 0},
+        "autoStart": {"type": "boolean"},
+        "command": {"type": "string"},
+        "runtimeClassName": {"type": "string"},
+        "nodeSelector": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {"type": "string", "minLength": 1},
+              "operator": {"type": "string", "enum": ["Exists", "Equal"]},
+              "value": {"type": "string"},
+              "effect": {
+                "type": "string",
+                "enum": ["NoSchedule", "PreferNoSchedule", "NoExecute"]
+              }
+            },
+            "required": ["key", "operator"],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    "trainer": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "replicas": {"type": "integer", "minimum": 0},
+        "autoStart": {"type": "boolean"},
+        "command": {"type": "string"},
+        "gpu": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "count": {"type": "integer", "minimum": 0}
+          },
+          "required": ["enabled", "count"]
+        },
+        "runtimeClassName": {"type": "string"},
+        "nodeSelector": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {"type": "string", "minLength": 1},
+              "operator": {"type": "string", "enum": ["Exists", "Equal"]},
+              "value": {"type": "string"},
+              "effect": {
+                "type": "string",
+                "enum": ["NoSchedule", "PreferNoSchedule", "NoExecute"]
+              }
+            },
+            "required": ["key", "operator"],
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "inference": {
+            "properties": {"mode": {"const": "dynamoGraph"}},
+            "required": ["mode"]
+          }
+        },
+        "required": ["inference"]
+      },
+      "then": {
+        "properties": {
+          "image": {
+            "properties": {
+              "reference": {"pattern": "^.+@sha256:[0-9a-f]{64}$"}
+            },
+            "required": ["reference"]
+          },
+          "inference": {
+            "properties": {
+              "enabled": {"const": true},
+              "dynamoGraph": {
+                "properties": {
+                  "engineConfig": {"minProperties": 5},
+                  "resource": {"minProperties": 1}
+                },
+                "required": [
+                  "clientTopology",
+                  "engineConfig",
+                  "topologyBinding",
+                  "controllerMode",
+                  "workloadBinding",
+                  "manifestCanonical",
+                  "resource"
+                ]
+              }
+            },
+            "required": ["enabled", "dynamoGraph"]
+          }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "inference": {
+                "properties": {
+                  "dynamoGraph": {
+                    "properties": {"controllerMode": {"const": "chartManaged"}}
+                  }
+                }
+              },
+              "orchestrator": {
+                "properties": {
+                  "enabled": {"const": true},
+                  "replicas": {"minimum": 1},
+                  "autoStart": {"const": true},
+                  "command": {
+                    "pattern": "^uv[ \\t]+run[ \\t]+orchestrator([ \\t]|$)"
+                  }
+                },
+                "required": ["enabled", "replicas", "autoStart", "command"]
+              },
+              "trainer": {
+                "properties": {
+                  "enabled": {"const": true},
+                  "replicas": {"minimum": 1},
+                  "autoStart": {"const": true},
+                  "command": {
+                    "pattern": "^uv[ \\t]+run[ \\t]+trainer([ \\t]|$)"
+                  },
+                  "gpu": {
+                    "properties": {
+                      "enabled": {"const": true},
+                      "count": {"minimum": 1}
+                    }
+                  }
+                },
+                "required": ["enabled", "replicas", "autoStart", "command", "gpu"]
+              }
+            }
+          },
+          {
+            "properties": {
+              "inference": {
+                "properties": {
+                  "dynamoGraph": {
+                    "properties": {"controllerMode": {"const": "external"}}
+                  }
+                }
+              },
+              "orchestrator": {
+                "properties": {
+                  "enabled": {"const": false},
+                  "replicas": {"const": 0},
+                  "autoStart": {"const": false},
+                  "command": {"const": ""}
+                },
+                "required": ["enabled", "replicas", "autoStart", "command"]
+              },
+              "trainer": {
+                "properties": {
+                  "enabled": {"const": false},
+                  "replicas": {"const": 0},
+                  "autoStart": {"const": false},
+                  "command": {"const": ""},
+                  "gpu": {
+                    "properties": {
+                      "enabled": {"const": false},
+                      "count": {"const": 0}
+                    }
+                  }
+                },
+                "required": ["enabled", "replicas", "autoStart", "command", "gpu"]
+              }
+            }
+          }
+        ],
+        "required": ["image", "inference", "orchestrator", "trainer"]
+      },
+      "else": {
+        "properties": {
+          "inference": {
+            "properties": {
+              "dynamoGraph": {"maxProperties": 0}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "modelCache": {
+            "properties": {"enabled": {"const": true}},
+            "required": ["enabled"]
+          }
+        },
+        "required": ["modelCache"]
+      },
+      "then": {
+        "properties": {
+          "modelCache": {
+            "properties": {"existingClaim": {"minLength": 1}},
+            "required": ["existingClaim"]
+          }
+        }
+      }
+    }
+  ]
+}

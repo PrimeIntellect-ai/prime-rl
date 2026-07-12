@@ -1,0 +1,17 @@
+{{- if and .Values.inference.enabled (eq .Values.inference.mode "dynamoGraph") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ required "inference.dynamoGraph.engineConfig.name is required" .Values.inference.dynamoGraph.engineConfig.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl.labels" . | nindent 4 }}
+    role: inference
+  annotations:
+    {{- toYaml .Values.inference.dynamoGraph.engineConfig.annotations | nindent 4 }}
+immutable: true
+data:
+  {{- range $name, $content := .Values.inference.dynamoGraph.engineConfig.data }}
+  {{ $name }}: {{ $content | toJson }}
+  {{- end }}
+{{- end }}

@@ -1,4 +1,15 @@
+{{- $dgdWorkload := dict }}
+{{- if eq .Values.inference.mode "dynamoGraph" }}
+{{- $workloadBinding := required "inference.dynamoGraph.workloadBinding is required" .Values.inference.dynamoGraph.workloadBinding }}
+{{- $workloadCanonical := required "inference.dynamoGraph.workloadBinding.canonical is required" $workloadBinding.canonical }}
+{{- $dgdWorkload = mustFromJson $workloadCanonical }}
+{{- end }}
 {{- if .Values.orchestrator.enabled }}
+{{- $orchestratorPlacement := .Values.orchestrator }}
+{{- if eq .Values.inference.mode "dynamoGraph" }}
+{{- $orchestratorWorkload := required "canonical orchestrator workload is required" (index $dgdWorkload "orchestrator") }}
+{{- $orchestratorPlacement = required "canonical orchestrator placement is required" (index $orchestratorWorkload "placement") }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -22,18 +33,31 @@ spec:
         {{- include "prime-rl.componentLabels" . | nindent 8 }}
         role: orchestrator
     spec:
-      {{- with .Values.orchestrator.nodeSelector }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      {{- with $orchestratorPlacement.nodeSelector }}
       nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $orchestratorPlacement.runtimeClassName }}
+      runtimeClassName: {{ $orchestratorPlacement.runtimeClassName }}
+      {{- end }}
+      {{- with $orchestratorPlacement.tolerations }}
+      tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
       - name: prime-rl-orchestrator
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        image: {{ include "prime-rl.image" . | quote }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.orchestrator.autoStart }}
         command: ["/bin/bash", "-c"]
         args:
-          - {{ .Values.orchestrator.command }}
+          - {{ .Values.orchestrator.command | quote }}
         {{- else }}
         command: ["sleep", "infinity"]
         {{- end }}
@@ -62,16 +86,17 @@ spec:
         - name: HEADLESS_SERVICE
           value: "{{ .Release.Name }}-orchestrator-headless.{{ .Values.namespace }}.svc.cluster.local"
         - name: INFERENCE_URL
-          {{- $releaseName := .Release.Name }}
-          {{- $namespace := .Values.namespace }}
-          {{- $port := int .Values.inference.service.port }}
-          {{- $replicas := int .Values.inference.replicas }}
-          {{- $urls := list }}
-          {{- range $i := until $replicas }}
-          {{- $url := printf "http://%s-inference-%d.%s-inference-headless.%s.svc.cluster.local:%d/v1" $releaseName $i $releaseName $namespace $port }}
-          {{- $urls = append $urls $url }}
-          {{- end }}
-          value: {{ $urls | join "," | quote }}
+          value: {{ include "prime-rl.inferenceUrls" . | quote }}
+        {{- if .Values.modelCache.enabled }}
+        - name: HF_HOME
+          value: {{ .Values.modelCache.mountPath | quote }}
+        {{- end }}
+        {{- if eq .Values.inference.mode "dynamoGraph" }}
+        - name: DYN_RL_DISCOVERY_URL
+          value: "http://{{ .Release.Name }}-frontend-rl.{{ .Values.namespace }}.svc.cluster.local:8001"
+        - name: DYN_RL_TOPOLOGY
+          value: {{ required "inference.dynamoGraph.clientTopology is required" .Values.inference.dynamoGraph.clientTopology | toJson | quote }}
+        {{- end }}
         {{- with .Values.orchestrator.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -82,6 +107,15 @@ spec:
               name: {{ .Values.config.secrets.name }}
               key: wandb-api-key
               optional: true
+        {{- end }}
+        {{- if .Values.huggingFace.tokenSecretName }}
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.huggingFace.tokenSecretName }}
+              key: {{ .Values.huggingFace.tokenSecretKey }}
+              optional: false
+        {{- else if .Values.config.secrets.enabled }}
         - name: HF_TOKEN
           valueFrom:
             secretKeyRef:
@@ -91,20 +125,33 @@ spec:
         {{- end }}
         resources:
           {{- toYaml .Values.orchestrator.resources | nindent 10 }}
-        {{- if .Values.storage.enabled }}
+        {{- if or .Values.storage.enabled .Values.modelCache.enabled }}
         volumeMounts:
+        {{- if .Values.storage.enabled }}
         - name: shared-data
           mountPath: {{ .Values.storage.mountPath }}
         {{- end }}
-      {{- if .Values.storage.enabled }}
+        {{- if .Values.modelCache.enabled }}
+        - name: model-cache
+          mountPath: {{ .Values.modelCache.mountPath }}
+        {{- end }}
+        {{- end }}
+      {{- if or .Values.storage.enabled .Values.modelCache.enabled }}
       volumes:
+      {{- if .Values.storage.enabled }}
       - name: shared-data
         persistentVolumeClaim:
-          claimName: {{ .Release.Name }}-shared-data
+          claimName: {{ include "prime-rl.storageClaimName" . }}
+      {{- end }}
+      {{- if .Values.modelCache.enabled }}
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: {{ required "modelCache.existingClaim is required when modelCache.enabled" .Values.modelCache.existingClaim }}
+      {{- end }}
       {{- end }}
 {{- end }}
 ---
-{{- if .Values.inference.enabled }}
+{{- if and .Values.inference.enabled (eq .Values.inference.mode "statefulset") }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -129,12 +176,18 @@ spec:
         {{- include "prime-rl.componentLabels" . | nindent 8 }}
         role: inference
     spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
       {{- if .Values.inference.runtimeClassName }}
       runtimeClassName: {{ .Values.inference.runtimeClassName }}
       {{- end }}
       containers:
       - name: prime-rl-inference
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        image: {{ include "prime-rl.image" . | quote }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.inference.autoStart }}
         command: ["/bin/bash", "-c"]
@@ -165,6 +218,10 @@ spec:
           value: "{{ .Values.inference.replicas }}"
         - name: HEADLESS_SERVICE
           value: "{{ .Release.Name }}-inference-headless.{{ .Values.namespace }}.svc.cluster.local"
+        {{- if .Values.modelCache.enabled }}
+        - name: HF_HOME
+          value: {{ .Values.modelCache.mountPath | quote }}
+        {{- end }}
         {{- with .Values.inference.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -175,6 +232,15 @@ spec:
               name: {{ .Values.config.secrets.name }}
               key: wandb-api-key
               optional: true
+        {{- end }}
+        {{- if .Values.huggingFace.tokenSecretName }}
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.huggingFace.tokenSecretName }}
+              key: {{ .Values.huggingFace.tokenSecretKey }}
+              optional: false
+        {{- else if .Values.config.secrets.enabled }}
         - name: HF_TOKEN
           valueFrom:
             secretKeyRef:
@@ -220,20 +286,38 @@ spec:
           failureThreshold: {{ .Values.inference.probes.readiness.failureThreshold }}
           timeoutSeconds: {{ .Values.inference.probes.readiness.timeoutSeconds }}
         {{- end }}
-        {{- if .Values.storage.enabled }}
+        {{- if or .Values.storage.enabled .Values.modelCache.enabled }}
         volumeMounts:
+        {{- if .Values.storage.enabled }}
         - name: shared-data
           mountPath: {{ .Values.storage.mountPath }}
         {{- end }}
-      {{- if .Values.storage.enabled }}
+        {{- if .Values.modelCache.enabled }}
+        - name: model-cache
+          mountPath: {{ .Values.modelCache.mountPath }}
+        {{- end }}
+        {{- end }}
+      {{- if or .Values.storage.enabled .Values.modelCache.enabled }}
       volumes:
+      {{- if .Values.storage.enabled }}
       - name: shared-data
         persistentVolumeClaim:
-          claimName: {{ .Release.Name }}-shared-data
+          claimName: {{ include "prime-rl.storageClaimName" . }}
+      {{- end }}
+      {{- if .Values.modelCache.enabled }}
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: {{ required "modelCache.existingClaim is required when modelCache.enabled" .Values.modelCache.existingClaim }}
+      {{- end }}
       {{- end }}
 {{- end }}
 ---
 {{- if .Values.trainer.enabled }}
+{{- $trainerPlacement := .Values.trainer }}
+{{- if eq .Values.inference.mode "dynamoGraph" }}
+{{- $trainerWorkload := required "canonical trainer workload is required" (index $dgdWorkload "trainer") }}
+{{- $trainerPlacement = required "canonical trainer placement is required" (index $trainerWorkload "placement") }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -258,17 +342,31 @@ spec:
         {{- include "prime-rl.componentLabels" . | nindent 8 }}
         role: trainer
     spec:
-      {{- if .Values.trainer.runtimeClassName }}
-      runtimeClassName: {{ .Values.trainer.runtimeClassName }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      {{- if $trainerPlacement.runtimeClassName }}
+      runtimeClassName: {{ $trainerPlacement.runtimeClassName }}
+      {{- end }}
+      {{- with $trainerPlacement.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $trainerPlacement.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
       - name: prime-rl-trainer
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        image: {{ include "prime-rl.image" . | quote }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         {{- if .Values.trainer.autoStart }}
         command: ["/bin/bash", "-c"]
         args:
-          - {{ .Values.trainer.command }}
+          - {{ .Values.trainer.command | quote }}
         {{- else }}
         command: ["sleep", "infinity"]
         {{- end }}
@@ -301,16 +399,17 @@ spec:
           value: {{ .Values.trainer.pytorchCudaAllocConf | quote }}
         {{- end }}
         - name: INFERENCE_URL
-          {{- $releaseName := .Release.Name }}
-          {{- $namespace := .Values.namespace }}
-          {{- $port := int .Values.inference.service.port }}
-          {{- $replicas := int .Values.inference.replicas }}
-          {{- $urls := list }}
-          {{- range $i := until $replicas }}
-          {{- $url := printf "http://%s-inference-%d.%s-inference-headless.%s.svc.cluster.local:%d/v1" $releaseName $i $releaseName $namespace $port }}
-          {{- $urls = append $urls $url }}
-          {{- end }}
-          value: {{ $urls | join "," | quote }}
+          value: {{ include "prime-rl.inferenceUrls" . | quote }}
+        {{- if .Values.modelCache.enabled }}
+        - name: HF_HOME
+          value: {{ .Values.modelCache.mountPath | quote }}
+        {{- end }}
+        {{- if eq .Values.inference.mode "dynamoGraph" }}
+        - name: DYN_RL_DISCOVERY_URL
+          value: "http://{{ .Release.Name }}-frontend-rl.{{ .Values.namespace }}.svc.cluster.local:8001"
+        - name: DYN_RL_TOPOLOGY
+          value: {{ required "inference.dynamoGraph.clientTopology is required" .Values.inference.dynamoGraph.clientTopology | toJson | quote }}
+        {{- end }}
         {{- with .Values.trainer.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -321,6 +420,15 @@ spec:
               name: {{ .Values.config.secrets.name }}
               key: wandb-api-key
               optional: true
+        {{- end }}
+        {{- if .Values.huggingFace.tokenSecretName }}
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.huggingFace.tokenSecretName }}
+              key: {{ .Values.huggingFace.tokenSecretKey }}
+              optional: false
+        {{- else if .Values.config.secrets.enabled }}
         - name: HF_TOKEN
           valueFrom:
             secretKeyRef:
@@ -366,15 +474,28 @@ spec:
           failureThreshold: {{ .Values.trainer.probes.readiness.failureThreshold }}
           timeoutSeconds: {{ .Values.trainer.probes.readiness.timeoutSeconds }}
         {{- end }}
-        {{- if .Values.storage.enabled }}
+        {{- if or .Values.storage.enabled .Values.modelCache.enabled }}
         volumeMounts:
+        {{- if .Values.storage.enabled }}
         - name: shared-data
           mountPath: {{ .Values.storage.mountPath }}
         {{- end }}
-      {{- if .Values.storage.enabled }}
+        {{- if .Values.modelCache.enabled }}
+        - name: model-cache
+          mountPath: {{ .Values.modelCache.mountPath }}
+        {{- end }}
+        {{- end }}
+      {{- if or .Values.storage.enabled .Values.modelCache.enabled }}
       volumes:
+      {{- if .Values.storage.enabled }}
       - name: shared-data
         persistentVolumeClaim:
-          claimName: {{ .Release.Name }}-shared-data
+          claimName: {{ include "prime-rl.storageClaimName" . }}
+      {{- end }}
+      {{- if .Values.modelCache.enabled }}
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: {{ required "modelCache.existingClaim is required when modelCache.enabled" .Values.modelCache.existingClaim }}
+      {{- end }}
       {{- end }}
 {{- end }}

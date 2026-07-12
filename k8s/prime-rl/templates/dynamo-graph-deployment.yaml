@@ -1,0 +1,330 @@
+{{- $candidateGraph := default (dict) .Values.inference.dynamoGraph }}
+{{- if and (ne .Values.inference.mode "dynamoGraph") (gt (len $candidateGraph) 0) }}
+{{- fail "generated DynamoGraph contract requires dynamoGraph mode" }}
+{{- end }}
+{{- if eq .Values.inference.mode "dynamoGraph" }}
+{{- if not (kindIs "bool" .Values.inference.enabled) }}
+{{- fail "inference.enabled must be boolean true in dynamoGraph mode" }}
+{{- end }}
+{{- if not .Values.inference.enabled }}
+{{- fail "inference.enabled must be boolean true in dynamoGraph mode" }}
+{{- end }}
+{{- $graph := required "inference.dynamoGraph is required" .Values.inference.dynamoGraph }}
+{{- $resource := required "inference.dynamoGraph.resource is required" $graph.resource }}
+{{- $resourceName := required "inference.dynamoGraph.resource.metadata.name is required" $resource.metadata.name }}
+{{- $resourceNamespace := required "inference.dynamoGraph.resource.metadata.namespace is required" $resource.metadata.namespace }}
+{{- if ne .Release.Name $resourceName }}
+{{- fail (printf "Helm Release.Name %q must match embedded DynamoGraphDeployment metadata.name %q" .Release.Name $resourceName) }}
+{{- end }}
+{{- if ne .Values.namespace $resourceNamespace }}
+{{- fail (printf "values namespace %q must match embedded DynamoGraphDeployment metadata.namespace %q" .Values.namespace $resourceNamespace) }}
+{{- end }}
+{{- if ne .Release.Namespace $resourceNamespace }}
+{{- fail (printf "Helm Release.Namespace %q must match values and embedded DynamoGraphDeployment namespace %q" .Release.Namespace $resourceNamespace) }}
+{{- end }}
+{{- $topology := required "inference.dynamoGraph.clientTopology is required" $graph.clientTopology }}
+{{- $baseURLs := required "inference.dynamoGraph.clientTopology.base_url is required" $topology.base_url }}
+{{- $rlBaseURLs := required "inference.dynamoGraph.clientTopology.rl_base_url is required" $topology.rl_base_url }}
+{{- if or (ne (len $baseURLs) 1) (ne (index $baseURLs 0) (printf "http://%s-frontend.%s.svc.cluster.local:8000/v1" .Release.Name .Values.namespace)) }}
+{{- fail "inference.dynamoGraph.clientTopology.base_url must match the generated release frontend URL" }}
+{{- end }}
+{{- if or (ne (len $rlBaseURLs) 1) (ne (index $rlBaseURLs 0) (printf "http://%s-frontend-rl.%s.svc.cluster.local:8001" .Release.Name .Values.namespace)) }}
+{{- fail "inference.dynamoGraph.clientTopology.rl_base_url must match the generated release RL discovery URL" }}
+{{- end }}
+{{- $engineConfig := required "inference.dynamoGraph.engineConfig is required" $graph.engineConfig }}
+{{- $engineCanonical := required "inference.dynamoGraph.engineConfig.canonicalData is required" $engineConfig.canonicalData }}
+{{- $engineHash := required "inference.dynamoGraph.engineConfig.sha256 is required" $engineConfig.sha256 }}
+{{- $computedEngineHash := sha256sum $engineCanonical }}
+{{- if ne $engineHash $computedEngineHash }}
+{{- fail "inference.dynamoGraph.engineConfig.sha256 must match its canonical payload" }}
+{{- end }}
+{{- $canonicalEngineData := mustFromJson $engineCanonical }}
+{{- if ne (toJson $canonicalEngineData) (toJson $engineConfig.data) }}
+{{- fail "inference.dynamoGraph.engineConfig.data must match its canonical payload" }}
+{{- end }}
+{{- $expectedConfigName := printf "%s-dynamo-engine-%s" .Release.Name (trunc 12 $computedEngineHash) }}
+{{- if ne (required "inference.dynamoGraph.engineConfig.name is required" $engineConfig.name) $expectedConfigName }}
+{{- fail "inference.dynamoGraph.engineConfig.name must be content-addressed by engineConfig.sha256" }}
+{{- end }}
+{{- $resourceAnnotations := required "DynamoGraphDeployment metadata.annotations are required" $resource.metadata.annotations }}
+{{- if ne (required "DynamoGraphDeployment config-sha256 annotation is required" (index $resourceAnnotations "prime-rl.nvidia.com/config-sha256")) $engineHash }}
+{{- fail "DynamoGraphDeployment config-sha256 must match engineConfig.sha256" }}
+{{- end }}
+{{- $engineAnnotations := required "inference.dynamoGraph.engineConfig.annotations are required" $engineConfig.annotations }}
+{{- if ne (required "engineConfig config-sha256 annotation is required" (index $engineAnnotations "prime-rl.nvidia.com/config-sha256")) $engineHash }}
+{{- fail "engineConfig config-sha256 annotation must match engineConfig.sha256" }}
+{{- end }}
+{{- $topologyBinding := required "inference.dynamoGraph.topologyBinding is required" $graph.topologyBinding }}
+{{- $topologyCanonical := required "inference.dynamoGraph.topologyBinding.canonical is required" $topologyBinding.canonical }}
+{{- $topologyHash := required "inference.dynamoGraph.topologyBinding.sha256 is required" $topologyBinding.sha256 }}
+{{- if ne (sha256sum $topologyCanonical) $topologyHash }}
+{{- fail "topology binding sha256 must match its canonical payload" }}
+{{- end }}
+{{- if ne (required "DynamoGraphDeployment topology-sha256 annotation is required" (index $resourceAnnotations "prime-rl.nvidia.com/topology-sha256")) $topologyHash }}
+{{- fail "DynamoGraphDeployment topology binding annotation must match topologyBinding.sha256" }}
+{{- end }}
+{{- $canonicalTopology := mustFromJson $topologyCanonical }}
+{{- if ne (toJson (index $canonicalTopology "clientTopology")) (toJson $topology) }}
+{{- fail "clientTopology must match the renderer topology binding" }}
+{{- end }}
+{{- $services := required "DynamoGraphDeployment services are required" $resource.spec.services }}
+{{- $boundWorkers := required "topology binding workerServices are required" (index $canonicalTopology "workerServices") }}
+{{- if or (ne (len $services) 3) (ne (len $boundWorkers) 2) }}
+{{- fail "DynamoGraphDeployment services must match the renderer topology binding" }}
+{{- end }}
+{{- range $serviceName, $expectedWorker := $boundWorkers }}
+{{- $service := required (printf "topology binding service %s is required" $serviceName) (index $services $serviceName) }}
+{{- if ne (required (printf "%s componentType is required" $serviceName) $service.componentType) "worker" }}
+{{- fail (printf "DynamoGraphDeployment service %s must be a worker in the renderer topology binding" $serviceName) }}
+{{- end }}
+{{- $actualWorker := dict
+      "role" (required (printf "%s subComponentType is required" $serviceName) $service.subComponentType)
+      "replicas" (required (printf "%s replicas is required" $serviceName) $service.replicas)
+      "requestsGpu" (required (printf "%s GPU request is required" $serviceName) $service.resources.requests.gpu)
+      "limitsGpu" (required (printf "%s GPU limit is required" $serviceName) $service.resources.limits.gpu) }}
+{{- if ne (toJson $expectedWorker) (toJson $actualWorker) }}
+{{- fail (printf "DynamoGraphDeployment service %s must match the renderer topology binding" $serviceName) }}
+{{- end }}
+{{- end }}
+{{- $prefill := required "DynamoGraphDeployment VllmPrefillWorker is required" (index $services "VllmPrefillWorker") }}
+{{- $decode := required "DynamoGraphDeployment VllmDecodeWorker is required" (index $services "VllmDecodeWorker") }}
+{{- $expectedRoles := list }}
+{{- range $_ := until (int (required "VllmPrefillWorker replicas is required" $prefill.replicas)) }}
+{{- $expectedRoles = append $expectedRoles "prefill" }}
+{{- end }}
+{{- range $_ := until (int (required "VllmDecodeWorker replicas is required" $decode.replicas)) }}
+{{- $expectedRoles = append $expectedRoles "decode" }}
+{{- end }}
+{{- if ne (toJson $expectedRoles) (toJson (required "clientTopology.dynamo_worker_roles is required" $topology.dynamo_worker_roles)) }}
+{{- fail "clientTopology.dynamo_worker_roles must match the DGD worker topology binding" }}
+{{- end }}
+{{- $gpusPerWorker := printf "%v" (required "clientTopology.dynamo_gpus_per_worker is required" $topology.dynamo_gpus_per_worker) }}
+{{- range $serviceName, $service := dict "VllmDecodeWorker" $decode "VllmPrefillWorker" $prefill }}
+{{- if or (ne (printf "%v" $service.resources.requests.gpu) $gpusPerWorker) (ne (printf "%v" $service.resources.limits.gpu) $gpusPerWorker) }}
+{{- fail (printf "DynamoGraphDeployment service %s GPU resources must match the client topology binding" $serviceName) }}
+{{- end }}
+{{- end }}
+{{- $workloadBinding := required "inference.dynamoGraph.workloadBinding is required" $graph.workloadBinding }}
+{{- $workloadCanonical := required "inference.dynamoGraph.workloadBinding.canonical is required" $workloadBinding.canonical }}
+{{- $workloadHash := required "inference.dynamoGraph.workloadBinding.sha256 is required" $workloadBinding.sha256 }}
+{{- if ne (sha256sum $workloadCanonical) $workloadHash }}
+{{- fail "workload binding sha256 must match its canonical payload" }}
+{{- end }}
+{{- if ne (required "DynamoGraphDeployment workload-sha256 annotation is required" (index $resourceAnnotations "prime-rl.nvidia.com/workload-sha256")) $workloadHash }}
+{{- fail "DynamoGraphDeployment workload binding annotation must match workloadBinding.sha256" }}
+{{- end }}
+{{- $workload := mustFromJson $workloadCanonical }}
+{{- $workloadKeys := list "config" "controllerMode" "huggingFace" "image" "modelCache" "orchestrator" "storage" "trainer" }}
+{{- if ne (len $workload) (len $workloadKeys) }}
+{{- fail "workload binding must contain the complete chart runtime contract" }}
+{{- end }}
+{{- range $key := $workloadKeys }}
+{{- if not (hasKey $workload $key) }}
+{{- fail (printf "workload binding is missing %s" $key) }}
+{{- end }}
+{{- end }}
+{{- $imageWorkload := index $workload "image" }}
+{{- $actualImage := dict "reference" .Values.image.reference "pullPolicy" .Values.image.pullPolicy "pullSecrets" .Values.image.pullSecrets }}
+{{- if ne (toJson $imageWorkload) (toJson $actualImage) }}
+{{- fail "image configuration must match the workload binding" }}
+{{- end }}
+{{- $configWorkload := index $workload "config" }}
+{{- if ne (toJson $configWorkload) (toJson .Values.config) }}
+{{- fail "config configuration must match the workload binding" }}
+{{- end }}
+{{- $huggingFaceWorkload := index $workload "huggingFace" }}
+{{- if ne (toJson $huggingFaceWorkload) (toJson .Values.huggingFace) }}
+{{- fail "huggingFace configuration must match the workload binding" }}
+{{- end }}
+{{- $modelCacheWorkload := index $workload "modelCache" }}
+{{- if ne (toJson $modelCacheWorkload) (toJson .Values.modelCache) }}
+{{- fail "modelCache configuration must match the workload binding" }}
+{{- end }}
+{{- $controllerMode := required "canonical controllerMode is required" (index $workload "controllerMode") }}
+{{- if and (ne $controllerMode "chartManaged") (ne $controllerMode "external") }}
+{{- fail "canonical controllerMode must be chartManaged or external" }}
+{{- end }}
+{{- if ne (required "inference.dynamoGraph.controllerMode is required" $graph.controllerMode) $controllerMode }}
+{{- fail "inference.dynamoGraph.controllerMode must match the workload binding" }}
+{{- end }}
+{{- $frontend := required "DynamoGraphDeployment Frontend is required" (index $services "Frontend") }}
+{{- $frontendPod := required "DynamoGraphDeployment Frontend extraPodSpec is required" $frontend.extraPodSpec }}
+{{- $orchestratorWorkload := required "canonical orchestrator workload is required" (index $workload "orchestrator") }}
+{{- $trainerWorkload := required "canonical trainer workload is required" (index $workload "trainer") }}
+{{- $storageWorkload := required "canonical storage workload is required" (index $workload "storage") }}
+{{- $actualOrchestrator := dict
+      "enabled" .Values.orchestrator.enabled
+      "replicas" .Values.orchestrator.replicas
+      "autoStart" .Values.orchestrator.autoStart
+      "command" .Values.orchestrator.command
+      "resources" .Values.orchestrator.resources
+      "service" .Values.orchestrator.service
+      "env" .Values.orchestrator.env }}
+{{- if ne (toJson (omit $orchestratorWorkload "gpu" "placement")) (toJson $actualOrchestrator) }}
+{{- fail "orchestrator configuration must match the workload binding" }}
+{{- end }}
+{{- $actualTrainer := dict
+      "enabled" .Values.trainer.enabled
+      "replicas" .Values.trainer.replicas
+      "autoStart" .Values.trainer.autoStart
+      "command" .Values.trainer.command
+      "gpu" .Values.trainer.gpu
+      "pytorchCudaAllocConf" .Values.trainer.pytorchCudaAllocConf
+      "resources" .Values.trainer.resources
+      "service" .Values.trainer.service
+      "env" .Values.trainer.env
+      "probes" .Values.trainer.probes }}
+{{- if ne (toJson (omit $trainerWorkload "placement")) (toJson $actualTrainer) }}
+{{- fail "trainer configuration must match the workload binding" }}
+{{- end }}
+{{- if ne (toJson $storageWorkload) (toJson .Values.storage) }}
+{{- fail "storage configuration must match the workload binding" }}
+{{- end }}
+{{- if or (not (hasKey $orchestratorWorkload "enabled")) (not (hasKey $trainerWorkload "enabled")) }}
+{{- fail "canonical controller workloads must define enabled" }}
+{{- end }}
+{{- $orchestratorEnabled := index $orchestratorWorkload "enabled" }}
+{{- $trainerEnabled := index $trainerWorkload "enabled" }}
+{{- if ne $orchestratorEnabled .Values.orchestrator.enabled }}
+{{- fail "orchestrator.enabled must match the workload binding" }}
+{{- end }}
+{{- if ne $trainerEnabled .Values.trainer.enabled }}
+{{- fail "trainer.enabled must match the workload binding" }}
+{{- end }}
+{{- $orchestratorGPU := required "canonical orchestrator gpu contract is required" (index $orchestratorWorkload "gpu") }}
+{{- if not (hasKey $orchestratorGPU "enabled") }}
+{{- fail "canonical orchestrator gpu contract must define enabled" }}
+{{- end }}
+{{- if index $orchestratorGPU "enabled" }}
+{{- fail "canonical orchestrator GPU capability must be disabled" }}
+{{- end }}
+{{- range $componentName, $resources := dict "orchestrator" .Values.orchestrator.resources "trainer" .Values.trainer.resources }}
+{{- range $resourceScope, $entries := dict "limits" (default (dict) $resources.limits) "requests" (default (dict) $resources.requests) }}
+{{- range $resourceName, $_ := $entries }}
+{{- if hasPrefix "nvidia.com/" $resourceName }}
+{{- fail (printf "%s resources cannot set NVIDIA extended resource %s in %s" $componentName $resourceName $resourceScope) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $trainerGPU := required "canonical trainer gpu contract is required" (index $trainerWorkload "gpu") }}
+{{- if or (not (hasKey $trainerGPU "enabled")) (not (hasKey $trainerGPU "count")) }}
+{{- fail "canonical trainer gpu contract must define enabled and count" }}
+{{- end }}
+{{- $trainerGPUEnabled := index $trainerGPU "enabled" }}
+{{- $trainerGPUCount := int (index $trainerGPU "count") }}
+{{- if eq $controllerMode "chartManaged" }}
+{{- if or (not $orchestratorEnabled) (not $trainerEnabled) (not $trainerGPUEnabled) (lt $trainerGPUCount 1) }}
+{{- fail "chartManaged mode requires orchestrator, trainer, and trainer GPU capability" }}
+{{- end }}
+{{- range $componentName, $canonical := dict "orchestrator" $orchestratorWorkload "trainer" $trainerWorkload }}
+{{- $command := index $canonical "command" }}
+{{- if or (lt (int (index $canonical "replicas")) 1) (not (index $canonical "autoStart")) (not (regexMatch (printf "^uv[[:space:]]+run[[:space:]]+%s([[:space:]]|$)" $componentName) $command)) }}
+{{- fail (printf "chartManaged %s execution requires positive replicas, autoStart=true, and an executable uv run %s command" $componentName $componentName) }}
+{{- end }}
+{{- end }}
+{{- else }}
+{{- if or $orchestratorEnabled $trainerEnabled $trainerGPUEnabled (ne $trainerGPUCount 0) }}
+{{- fail "external mode forbids chart-managed controller workloads and trainer GPU capability" }}
+{{- end }}
+{{- range $componentName, $canonical := dict "orchestrator" $orchestratorWorkload "trainer" $trainerWorkload }}
+{{- if or (ne (int (index $canonical "replicas")) 0) (index $canonical "autoStart") (not (empty (index $canonical "command"))) }}
+{{- fail (printf "external mode requires zeroed %s execution" $componentName) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if or (not (hasKey $storageWorkload "enabled")) (not (hasKey $storageWorkload "existingClaim")) (not (hasKey $storageWorkload "mountPath")) }}
+{{- fail "canonical storage workload must define enabled, existingClaim, and mountPath" }}
+{{- end }}
+{{- $storageEnabled := index $storageWorkload "enabled" }}
+{{- $storageClaim := index $storageWorkload "existingClaim" }}
+{{- if and (eq $controllerMode "chartManaged") (not $storageEnabled) }}
+{{- fail "chartManaged mode requires chart storage" }}
+{{- end }}
+{{- if and (eq $controllerMode "external") $storageEnabled (empty $storageClaim) }}
+{{- fail "external mode requires an existing claim when chart storage is enabled" }}
+{{- end }}
+{{- $orchestratorPlacement := required "canonical orchestrator placement is required" (index $orchestratorWorkload "placement") }}
+{{- $expectedOrchestratorPlacement := dict
+      "nodeSelector" (required "Frontend nodeSelector is required" $frontendPod.nodeSelector)
+      "tolerations" (required "Frontend tolerations are required" $frontendPod.tolerations) }}
+{{- if ne (toJson $orchestratorPlacement) (toJson $expectedOrchestratorPlacement) }}
+{{- fail "orchestrator placement must match the manifest-bound DGD frontend placement" }}
+{{- end }}
+{{- $trainerPlacement := required "canonical trainer placement is required" (index $trainerWorkload "placement") }}
+{{- range $serviceName, $service := dict "VllmDecodeWorker" $decode "VllmPrefillWorker" $prefill }}
+{{- $workerPod := required (printf "%s extraPodSpec is required" $serviceName) $service.extraPodSpec }}
+{{- $expectedTrainerPlacement := dict
+      "nodeSelector" (required (printf "%s nodeSelector is required" $serviceName) $workerPod.nodeSelector)
+      "tolerations" (required (printf "%s tolerations are required" $serviceName) $workerPod.tolerations) }}
+{{- if hasKey $workerPod "runtimeClassName" }}
+{{- $_ := set $expectedTrainerPlacement "runtimeClassName" (required (printf "%s runtimeClassName must not be empty" $serviceName) $workerPod.runtimeClassName) }}
+{{- end }}
+{{- if ne (toJson $trainerPlacement) (toJson $expectedTrainerPlacement) }}
+{{- fail "trainer placement must match every manifest-bound DGD worker placement" }}
+{{- end }}
+{{- end }}
+{{- $frontendLabels := required "DynamoGraphDeployment Frontend extraPodMetadata.labels is required" $frontend.extraPodMetadata.labels }}
+{{- $expectedFrontendLabels := dict "app.kubernetes.io/name" (include "prime-rl.name" .) "app.kubernetes.io/instance" .Release.Name }}
+{{- if ne (toJson $frontendLabels) (toJson $expectedFrontendLabels) }}
+{{- fail "DynamoGraphDeployment Frontend labels must match the chart selector labels" }}
+{{- end }}
+{{- $manifestCanonical := required "inference.dynamoGraph.manifestCanonical is required" $graph.manifestCanonical }}
+{{- $manifestHash := required "DynamoGraphDeployment manifest-sha256 annotation is required" (index $resourceAnnotations "prime-rl.nvidia.com/manifest-sha256") }}
+{{- if ne (sha256sum $manifestCanonical) $manifestHash }}
+{{- fail "DynamoGraphDeployment manifest-sha256 must match its canonical payload" }}
+{{- end }}
+{{- if ne (required "engineConfig manifest-sha256 annotation is required" (index $engineAnnotations "prime-rl.nvidia.com/manifest-sha256")) $manifestHash }}
+{{- fail "engineConfig manifest-sha256 annotation must match the DynamoGraphDeployment manifest" }}
+{{- end }}
+{{- if ne (required "engineConfig topology-sha256 annotation is required" (index $engineAnnotations "prime-rl.nvidia.com/topology-sha256")) $topologyHash }}
+{{- fail "engineConfig topology-sha256 annotation must match topologyBinding.sha256" }}
+{{- end }}
+{{- if ne (required "engineConfig workload-sha256 annotation is required" (index $engineAnnotations "prime-rl.nvidia.com/workload-sha256")) $workloadHash }}
+{{- fail "engineConfig workload-sha256 annotation must match workloadBinding.sha256" }}
+{{- end }}
+{{- if ne (toJson $engineAnnotations) (toJson $resourceAnnotations) }}
+{{- fail "engineConfig annotations must match DynamoGraphDeployment identity annotations" }}
+{{- end }}
+{{- $canonicalResource := mustFromJson $manifestCanonical }}
+{{- $scopedResource := deepCopy $resource }}
+{{- $_ := unset $scopedResource.metadata.annotations "prime-rl.nvidia.com/manifest-sha256" }}
+{{- if ne (toJson $canonicalResource) (toJson $scopedResource) }}
+{{- fail "DynamoGraphDeployment resource must match its canonical manifest payload" }}
+{{- end }}
+{{- $protectedEnv := dict "DYN_RL_DISCOVERY_URL" true "DYN_RL_TOPOLOGY" true "INFERENCE_URL" true "HF_HOME" true "HF_TOKEN" true "HUGGING_FACE_HUB_TOKEN" true }}
+{{- range $componentName, $component := dict "orchestrator" .Values.orchestrator "trainer" .Values.trainer }}
+{{- range $entry := $component.env }}
+{{- if hasKey $protectedEnv $entry.name }}
+{{- fail (printf "%s.env cannot override generated %s" $componentName $entry.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $image := required "image.reference is required in dynamoGraph mode" .Values.image.reference }}
+{{- if not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $image) }}
+{{- fail "image.reference must be pinned to a full sha256 digest in dynamoGraph mode" }}
+{{- end }}
+{{- $referenceDigest := regexFind "sha256:[0-9a-f]{64}$" $image }}
+{{- $annotatedDigest := required "DynamoGraphDeployment image-digest annotation is required" (index $resourceAnnotations "prime-rl.nvidia.com/image-digest") }}
+{{- if ne $referenceDigest $annotatedDigest }}
+{{- fail "image.reference digest must match the DynamoGraphDeployment image-digest annotation" }}
+{{- end }}
+{{- $imageWithoutDigest := trimSuffix (printf "@%s" $referenceDigest) $image }}
+{{- $imageTag := regexFind "[^/:]+$" $imageWithoutDigest }}
+{{- range $label, $annotation := dict "Prime" "prime-rl.nvidia.com/prime-sha" "Dynamo" "prime-rl.nvidia.com/dynamo-sha" }}
+{{- $sourceSHA := required (printf "DynamoGraphDeployment %s SHA annotation is required" $label) (index $resourceAnnotations $annotation) }}
+{{- if not (regexMatch "^[0-9a-f]{40}$" $sourceSHA) }}
+{{- fail (printf "%s SHA annotation must be a full 40-character Git commit SHA" $label) }}
+{{- end }}
+{{- if not (contains (substr 0 12 $sourceSHA) $imageTag) }}
+{{- fail (printf "%s SHA annotation must match a 12-character commit suffix in the image tag" $label) }}
+{{- end }}
+{{- end }}
+{{- range $serviceName, $service := $resource.spec.services }}
+{{- $serviceImage := required (printf "DynamoGraphDeployment service %s image is required" $serviceName) $service.extraPodSpec.mainContainer.image }}
+{{- if ne $image $serviceImage }}
+{{- fail (printf "DynamoGraphDeployment service %s must use the same image.reference as orchestrator and trainer" $serviceName) }}
+{{- end }}
+{{- end }}
+{{- toYaml $resource }}
+{{- end }}

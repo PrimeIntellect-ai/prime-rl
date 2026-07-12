@@ -1,0 +1,3 @@
+{{- if gt (len .Release.Name) 41 }}
+{{- fail (printf "Helm release name %q must be at most 41 characters so generated Service names are valid" .Release.Name) }}
+{{- end }}

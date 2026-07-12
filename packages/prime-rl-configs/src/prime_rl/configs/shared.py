@@ -147,6 +147,18 @@ class ClientConfig(BaseConfig):
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in disaggregated P/D deployments where the router must not handle admin traffic."""
 
+    admin_api: Literal["vllm", "dynamo"] = "vllm"
+    """Admin protocol used for health and weight updates. Auto-derived from the local inference backend."""
+
+    rl_base_url: list[str] | None = None
+    """Dynamo RL worker-discovery URLs. When omitted, they are derived from the frontend URL or ``DYN_RL_DISCOVERY_URL``."""
+
+    dynamo_worker_roles: tuple[Literal["agg", "prefill", "decode"], ...] | None = None
+    """Exact Dynamo worker roles expected during readiness. Auto-derived from the local inference topology."""
+
+    dynamo_gpus_per_worker: int | None = Field(None, ge=1)
+    """GPUs owned by each discovered Dynamo worker. Auto-derived from the local inference topology."""
+
     elastic: ElasticConfig | None = None
     """Elastic inference pool config for DNS-based service discovery. When set, ``base_url`` is ignored and inference servers are discovered dynamically via DNS."""
 
@@ -255,7 +267,8 @@ class MetricsServerConfig(BaseConfig):
 
 
 class BaseTransportConfig(BaseConfig):
-    pass
+    send_timeout_seconds: float = Field(300.0, gt=0, allow_inf_nan=False)
+    """Maximum time to ship one rollout batch before the orchestrator fails closed."""
 
 
 class FileSystemTransportConfig(BaseTransportConfig):

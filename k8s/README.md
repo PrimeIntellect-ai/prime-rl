@@ -59,6 +59,34 @@ helm install my-exp ./prime-rl \
   --set config.secrets.name=prime-rl-secrets
 ```
 
+### Generated DynamoGraph deployments
+
+`dynamo-dgd` produces internally consistent Helm values for Dynamo disaggregated inference. The source SHAs, image tag, and image digest are caller-supplied evidence: the renderer checks that they agree, but it does not authenticate source or image provenance. Verify those inputs through the release process before rendering and protect the generated values from modification.
+
+Chart-managed mode requires explicit runnable controller commands; the renderer supplies safe execution defaults of one replica and `autoStart: true` and refuses to emit a sleeper deployment:
+
+```bash
+uv run dynamo-dgd inference.toml \
+  --release-name my-exp \
+  --namespace my-namespace \
+  --image "$IMAGE@$IMAGE_DIGEST" \
+  --image-digest "$IMAGE_DIGEST" \
+  --prime-sha "$PRIME_SHA" \
+  --dynamo-sha "$DYNAMO_SHA" \
+  --output-dir ./artifacts \
+  --gpu-architecture arm64 \
+  --gpu-product NVIDIA-GB200 \
+  --gpu-node-pool prime-gpu \
+  --orchestrator-command 'uv run orchestrator @ /app/configs/debug/orch.toml --output-dir /data/outputs' \
+  --trainer-command 'uv run trainer @ /app/configs/debug/rl/train.toml --output-dir /data/outputs'
+
+helm install my-exp ./prime-rl \
+  --namespace my-namespace \
+  -f ./artifacts/dynamo-helm-values.json
+```
+
+Use `--external-controller` when another system runs orchestration and training; generated values then render no controller StatefulSets. Generated releases are limited to 41 characters so every derived Kubernetes Service name remains valid. The image tag must contain the first 12 characters of both caller-supplied source SHAs, and the digest must match `--image-digest`.
+
 ## Uninstalling
 
 ```bash

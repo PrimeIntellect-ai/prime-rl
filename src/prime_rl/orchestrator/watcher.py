@@ -1,6 +1,6 @@
-"""WeightWatcher: polls the broadcast dir, advances ``Policy``, notifies
-observers (dispatcher → off-policy cancel). Standalone async task; the
-orchestrator's barrier bounds the in-flight lead."""
+"""WeightWatcher: polls broadcasts and applies policy updates behind the
+dispatcher admission/drain barrier. Standalone async task; the orchestrator's
+lead gate separately bounds sampling ahead of the trainer."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import time
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.types import Policy, VersionObserver
-from prime_rl.utils.async_utils import safe_cancel
+from prime_rl.utils.async_utils import gather_shielded, safe_cancel
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_step_path, wait_for_path
@@ -92,8 +92,11 @@ class WeightWatcher:
                     f"Orchestrator resumed: checkpoint {next_step} ready (after {format_time(self.last_wait_for_ckpt_time)})"
                 )
 
-            # Drain off-policy rollouts BEFORE pausing the inference engines.
-            # Aborting a rollout triggers vLLM's KV-connector cleanup (NIXL's
+            # Establish the backend-specific application transition BEFORE
+            # pausing inference engines. Dynamo fences new dispatch and drains
+            # every mutable-policy request; the vLLM admin path retains its
+            # configured off-policy cancellation window. Aborting a rollout
+            # triggers vLLM's KV-connector cleanup (NIXL's
             # ``_reqs_not_processed``), which is only propagated to the workers
             # while the engine is stepping. If we drain after resume instead,
             # the aborts race with the flush of KV transfers that completed
@@ -102,17 +105,32 @@ class WeightWatcher:
             # the engine and cascading to every DP rank. Draining first lets the
             # aborts settle under normal stepping. ``on_new_version`` (below)
             # still runs post-update for observers that need the live version.
-            for observer in self.observers:
-                try:
+            entered_observers: list[VersionObserver] = []
+            try:
+                for observer in self.observers:
                     await observer.on_version_pending(next_step)
-                except Exception as exc:
-                    get_logger().warning(
-                        f"Observer {type(observer).__name__}.on_version_pending({next_step}) raised: {exc!r}"
-                    )
+                    # A hook owns its own partial-entry rollback. Only a fully
+                    # entered observer may receive a later transition cleanup.
+                    entered_observers.append(observer)
+            except BaseException as exc:
+                await self._notify_update_failed(entered_observers, next_step, exc)
+                raise
 
             get_logger().debug(f"Updating weights to step {next_step}")
             t1 = time.perf_counter()
-            await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
+            try:
+                await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
+            except BaseException as exc:
+                # Once an admin update starts, an error cannot prove that no
+                # worker committed new weights (a resume failure is even later).
+                # Keep every transition fence closed and let the component
+                # failure terminate the run; reopening would stamp old-version
+                # requests onto mixed or fully-updated workers.
+                exc.add_note(
+                    f"Policy update {next_step} may have mutated inference workers; mutable-policy admission "
+                    "remains fail-closed"
+                )
+                raise
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
             get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
@@ -123,13 +141,34 @@ class WeightWatcher:
                 self.inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
 
-            for observer in self.observers:
-                try:
-                    await observer.on_new_version(next_step)
-                except Exception as exc:
-                    get_logger().warning(
-                        f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
-                    )
+            await self._notify_update_succeeded(entered_observers, next_step)
+
+    @staticmethod
+    async def _notify_update_succeeded(observers: list[VersionObserver], step: int) -> None:
+        """Notify observers in dependency order and fail closed on any error."""
+        # Complete observers in reverse order: the orchestrator first
+        # re-evaluates its long-lived lead gate while the dispatcher's short
+        # transition fence remains closed, then the dispatcher reopens
+        # admission on the new version.
+        for observer in reversed(observers):
+            await observer.on_new_version(step)
+
+    @staticmethod
+    async def _notify_update_failed(
+        observers: list[VersionObserver],
+        step: int,
+        primary_error: BaseException,
+    ) -> None:
+        for observer in reversed(observers):
+            results, cancellation = await gather_shielded(observer.on_version_update_failed(step, primary_error))
+            failures = [result for result in results if isinstance(result, BaseException)]
+            if cancellation is not None:
+                failures.append(cancellation)
+            for cleanup_error in failures:
+                primary_error.add_note(
+                    f"Observer {type(observer).__name__}.on_version_update_failed({step}) also failed: "
+                    f"{cleanup_error!r}"
+                )
 
     def gauges(self) -> dict[str, float]:
         return {

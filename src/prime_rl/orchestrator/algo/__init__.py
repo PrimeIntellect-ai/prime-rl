@@ -40,6 +40,7 @@ from prime_rl.orchestrator.types import Rollout
 
 if TYPE_CHECKING:
     from prime_rl.configs.algorithm import AlgoConfig
+    from prime_rl.orchestrator.policy_gate import MutablePolicyGate
     from prime_rl.utils.client import InferencePool
 
 # Runtime dispatch is keyed on ``algo.type`` — it names the algorithm, and
@@ -54,7 +55,12 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
 }
 
 
-def build_algorithm(config: AlgoConfig, policy_pool: InferencePool) -> Algorithm:
+def build_algorithm(
+    config: AlgoConfig,
+    policy_pool: InferencePool,
+    *,
+    policy_gate: MutablePolicyGate | None = None,
+) -> Algorithm:
     cls = ALGORITHM_CLASSES[config.type]
     assert cls.action_loss_type == config.action_loss_type  # config and runtime declare in two places
     # The Algorithm is the runtime of the algorithm config's training signal
@@ -62,7 +68,9 @@ def build_algorithm(config: AlgoConfig, policy_pool: InferencePool) -> Algorithm
     # handed the live policy pool — opsd self-distills against it, others may
     # judge against it or ignore it. Other models (a frozen teacher, a hint
     # renderer) are built from the algorithm's own config in setup().
-    return cls(config, policy_pool)
+    algorithm = cls(config, policy_pool)
+    algorithm.policy_gate = policy_gate
+    return algorithm
 
 
 __all__ = [

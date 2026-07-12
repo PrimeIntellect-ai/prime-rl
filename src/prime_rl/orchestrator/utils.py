@@ -12,6 +12,7 @@ import orjson
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.utils.client import setup_inference_pool
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
+from prime_rl.utils.policy_client_config import policy_client_config_from_environment
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_ckpt_dir,
@@ -31,7 +32,7 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     use plain chat-completions."""
     from renderers.base import create_renderer
 
-    client_config = config.model.client
+    client_config = policy_client_config_from_environment(config.model.client)
     model_name = config.model.name
     renderer = create_renderer(tokenizer, config.renderer)
     get_logger().info(f"Initialized {type(renderer).__name__} for {model_name}")
