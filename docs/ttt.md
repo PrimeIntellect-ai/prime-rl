@@ -1,132 +1,165 @@
 # Test-Time Training (TTT)
 
-TTT trains a **per-rollout LoRA adapter during the rollout itself**: every time the agent's
-context is compacted (the `compacting` harness), the just-dropped branch is trained into the
-adapter, and the rest of the rollout samples through it — so what fell out of the attention
-window lives on in the weights. For RL, every branch is replayed in the trainer under the
-exact adapter version it was sampled with, so the importance ratio stays honest: the adapter
-acts as context, exactly like the tokens do.
+TTT trains a per-rollout LoRA adapter at context-compaction boundaries. The compacting
+harness asks the model for a handoff summary, replaces the old conversation with the summary,
+and continues sampling through an adapter trained on the abandoned branch. For RL, each
+branch carries the adapter checkpoint that sampled it, and the trainer replays that frozen
+adapter while updating only the policy's base weights.
 
-Plan and design rationale: `ttt-plan.md` / `ttt-implementation.md` (repo root).
-Experiment configs: [`configs/ttt/`](../configs/ttt/README.md).
+`ttt-implementation.md` records the detailed design. `ttt-plan.md` is the historical proposal.
+Experiment configs are under [`configs/ttt/`](../configs/ttt/README.md).
 
 ## Architecture
 
-Four processes (the standard three plus the TTT service):
-
-```
-harness (compacting)          interception (verifiers.v1)         TTT service (ttt)
-  rewrites context     →   fork detected in the trace graph   →   POST /update
-                                                                   (grad steps on the
-  next turn samples    ←   model = adapter, cache salted      ←    branch's exact tokens,
-  through the adapter                                              PEFT ckpt, vLLM
-                                                                   /load_lora_adapter)
+```text
+compacting harness       verifiers interception hook          TTT service
+rewrite conversation  -> detect the new trace branch       -> POST /update
+next model request     <- select versioned adapter          <- save PEFT checkpoint
+                       <- salt the prefix cache             <- load it into every vLLM replica
 ```
 
-- **The invariant**: every trace branch is sampled under exactly one adapter version.
-  Updates fire only at branch forks (compactions); each committed node is stamped with its
-  version (`MessageNode.ttt_version`); `Branch.ttt_version` enforces uniformity.
-- **The trigger is passive**: the interception layer detects that a prepared turn doesn't
-  extend the previous leaf. Harnesses know nothing about TTT.
-- **Exactness over latency**: the rollout blocks on each update (applied + adapter reloaded
-  + prefix cache salted per version) before the next turn samples.
-- **TTT requires the renderer (train) client** — updates consume the engine's exact token
-  ids; the eval relay fails loudly. The orchestrator routes TTT-enabled eval envs through
-  the renderer client too (evals run the identical inference regime as training); their
-  adapters/checkpoints are dismissed as each rollout finishes — no RL replay on eval.
+The supported path has one important invariant: every sampled branch uses one TTT adapter
+version. The hook updates only when the prepared conversation stops extending the current
+leaf, then stamps subsequently committed nodes with the new version. `Branch.ttt_version`
+raises if sampled nodes from multiple versions appear on one branch. The supplied compacting
+harness rebuilds the prompt as a fresh system-plus-summary branch and satisfies this invariant;
+arbitrary partial-history rewrites are not a supported TTT trigger contract.
+
+Updates are synchronous from the rollout's perspective. The next turn is not sampled until
+training, checkpoint export, and inference-adapter loading have completed. Sampling uses a
+version-specific cache salt so vLLM cannot reuse KV state computed under an older adapter.
+
+TTT requires the renderer/train client because raw updates use the exact token IDs seen by
+inference. TTT-enabled eval environments are routed through that client too. Eval adapters are
+released and their checkpoints deleted after each rollout; they are never replayed by the RL
+trainer.
 
 ## Configuration
 
-Env-side (`verifiers.v1.TTTConfig`, on any v1 env / the eval CLI as `--ttt.*`):
+An environment opts in through `verifiers.v1.TTTConfig`:
 
 ```toml
 [[orchestrator.train.env]]
 taskset = { id = "deepdive-v1" }
 harness = { id = "compacting", compact_at_tokens = 8192 }
-ttt = { base_url = "http://localhost:8092" }          # the TTT service
-# loss_scope = "all" | "sampled"; train_final_branch; qa = {...} (below)
+ttt = { base_url = "http://localhost:8092" }
 ```
 
-Service-side (`TTTServiceConfig`, `uv run ttt @ config.toml`): base model (must match the
-inference deployment), LoRA rank/alpha/targets, optimizer + LR + `steps_per_update`,
-`inference_admin_urls` (every vLLM server), `output_dir` (checkpoints at
-`outputs/ttt/<rollout_id>/v<k>/`, shared FS with inference and trainer).
+The service is configured with `TTTServiceConfig` and launched with
+`uv run ttt @ config.toml`. Important shared fields are the base model, tokenizer used for
+Q&A rendering, LoRA rank/targets, optimizer, output directory, adapter prefix, every vLLM
+admin URL, and the per-replica admin timeout. Checkpoints are written as
+`<output_dir>/ttt/<rollout_id>/v<version>/`.
 
-Two engines (`[engine] type`):
+Two service engines are available:
 
-- **`peft`** (default) — single-device HF + PEFT, one resident adapter swapped per update.
-  Small models (≤~8B), CPU tests.
-- **`fsdp`** — the prime-rl trainer stack (custom modeling / FSDP2 / CP / AC / fused LM
-  head) with `max_slots` resident MultiLoRA adapter slots; updates for *different*
-  rollouts pack into shared forwards (the segmented `lora_num_tokens` layout), so
-  throughput scales with tokens rather than update count. Launch under torchrun across
-  the TTT node(s). Large MoEs (e.g. GLM-4.5-Air) and high rollout concurrency. Note:
-  vLLM serves LoRA on attention projections only — keep `lora.target_modules`
-  attention-only for MoE deployments.
+- `peft` is the default single-process Hugging Face/PEFT engine. It swaps one rollout's LoRA
+  tensors and optimizer state into a shared model for each serialized update. Use it for
+  small models and standalone evaluation; do not launch it under multi-process `torchrun`.
+  This legacy path assumes the verifier resends an identical payload on retry, trusts its
+  generated rollout/adapter identity, and performs sequential best-effort replica admin
+  operations. It is not the hardened multi-replica service described below.
+- `fsdp` uses Prime-RL's custom model stack, FSDP2, and resident MultiLoRA slots. Updates for
+  different rollouts can share a packed forward while retaining separate slots, losses,
+  optimizers, and checkpoints. It requires flash attention and a chunked fused LM head.
+  Context parallelism is rejected at service startup because packed sequences are currently
+  replicated on every rank. VLM inputs and grouped-expert or output-head LoRA targets are not
+  supported. For MoE deployments such as GLM-4.5-Air, use attention projections only.
 
-Inference: `enable_lora = true`, `max_lora_rank >=` the TTT rank, `max_loras >=` concurrent
-TTT rollouts.
+The FSDP engine validates token IDs against the loaded vocabulary before GPU execution,
+uses the DTensor-aware gradient-clipping path, and checks loss, gradients, parameters, and
+optimizer state for non-finite values before publishing a checkpoint. Its frozen output-head
+backward computes only the activation gradient, avoiding a vocabulary-sized gradient for the
+frozen weight.
 
-**Launcher-managed service (recommended for SLURM runs):** add a `[ttt]` section to the RL
-config and set `deployment.num_ttt_nodes` — the multi-node launcher then allocates the
-node(s) after the trainer nodes (layout: inference | train | ttt), runs the service under
-one torchrun, and auto-wires everything only known at job start: `output_dir` (shared
-with trainer + engines), the model name, the per-replica vLLM admin roots, and every TTT
-env's `base_url` (via the orchestrator's `ttt_base_url` override — config `base_url`
-values are placeholders, e.g. `"auto"`). Cross-checks run at launch: `lora.rank <=
-inference.max_lora_rank`, `max_inflight_rollouts <= engine.max_slots`. One SLURM job,
-one teardown — no manual node handshake. Alternatively run the service externally
-(`uv run ttt @ config.toml` / torchrun) and point env `ttt.base_url` at it.
+### Launcher-managed service
 
-## Q&A at compaction (Cartridges-style)
+For multi-node SLURM runs, add a top-level `[ttt]` block and set
+`deployment.num_ttt_nodes`. The launcher allocates the TTT node after inference and trainer
+nodes, starts the FSDP service under one `torchrun`, fills its model, tokenizer, output path,
+matmul precision, and vLLM admin roots, and waits for `/health` before starting the
+orchestrator. Environment URLs equal to `"auto"` are replaced with the managed service URL;
+explicit URLs are preserved for intentionally external services.
 
-`ttt.qa = {}` runs `qa.num_generations` parallel seeded generations per compaction, each
-with the abandoned branch *still in context* (through the rollout's own client, under its
-current adapter): the model writes **both the questions and the answers** — several
-structured `<item>` blocks per call, including trigger-phrased lessons ("When X happens,
-do Y") — extracted robustly and near-dup-filtered. The generation prompt enforces
-self-containment (pairs are later trained context-free, so a question referencing "the
-conversation above" has no retrieval key). The adapter then trains on the pairs rendered
-**standalone** — conditioned on the rollout's system prompt + tool schemas (loss-masked),
-loss on the answers — so the knowledge must come from the weights, not a
-context-conditioned mapping. `qa.also_train_rollout` adds the raw branch back in.
+Managed launch requires:
 
-Q&A exchanges are committed to the trace as `ttt_qa`-tagged branches: real sampled tokens
-under a known adapter version, so **RL trains the generation behavior itself** — the
-rollout's advantage reinforces lessons that helped. The tag keeps them out of
-`RolloutLimits` and the trace's turn/token metrics (own `qa.max_tokens` budget); items are
-recorded in `trace.info["ttt"]`.
+- the FSDP engine;
+- at least one launcher-owned inference replica, so the template has vLLM admin roots to
+  wire and a role alongside which to start the TTT service;
+- one adapter prefix shared by the managed service and participating envs;
+- `keep_checkpoints = true` when train environments use TTT;
+- service slots and vLLM LoRA capacity large enough for train concurrency;
+- the service model and Q&A tokenizer to match the policy configuration;
+- full-weight policy training, since vLLM cannot compose a trainable policy LoRA with the
+  per-rollout TTT LoRA;
+- non-fullgraph compilation, because replay changes an eager forward hook per microbatch.
 
-Optional quality/aggregation knobs:
+The ScaleSWE configs set the relevant capacities explicitly. Prime-RL's global inference
+defaults are otherwise left unchanged by this feature.
 
-- `qa.verify = true` — one extra call per compaction re-presents the branch + all
-  candidate items and drops the ones the model flags (answer unsupported, or question not
-  self-contained). Fails open on a malformed verdict; rejected items land in
-  `trace.info["ttt"]["qa_rejected"]`.
-- `qa.recycle_to_policy = true` (RL) — recycles each rollout's pairs into the **policy's**
-  main weights: rendered with the policy tokenizer (same system+tools conditioning) and
-  routed to the `ce` loss component, riding the same training batch.
-- `qa.meta_lessons = true` (RL) — group-level meta-extraction: after a GRPO group
-  finishes, one call sees every rollout's pairs together with its **reward** and distills
-  contrastive, general lessons (what the high-reward attempts did that the low-reward ones
-  didn't), shipped as ce-routed samples like recycled pairs. De-myopifies the per-rollout
-  extraction; enrichment only (a failed call logs and skips).
+Only envs whose TTT URL is `"auto"` participate in those managed-service contracts. Envs with
+an explicit URL remain external and may use their own adapter prefix. A top-level managed
+service with no `"auto"` env is rejected as unused configuration.
 
-## RL replay
+## Q&A at compaction
 
-- `TrainingSample.ttt_adapter_path` carries each branch's adapter checkpoint ref
-  (resolved from the trace stamps; a stamped branch with no recorded checkpoint is a hard
-  error, never a silent base-model replay).
-- The packer never mixes adapter paths in a micro batch; the trainer's `TTTReplayManager`
-  applies the frozen adapter around each micro batch's forward via forward hooks (no
-  parameters, composes with FSDP/AC/compile; gradients flow to base weights only).
-- Constraints (validated at launch): full-weight policy training (no `[trainer.model.lora]`)
-  and `enable_lora` on inference.
-- Checkpoint GC: the orchestrator deletes dropped rollouts' adapter dirs at ship time and
-  shipped ones once the weight watcher sees the trainer consume their step.
+With `ttt.qa = {}`, the model generates question-answer items while the abandoned context is
+still visible. Prompts emphasize self-contained facts and trigger-phrased lessons. Items are
+parsed from tagged blocks, optionally verified, and trained standalone with the rollout's
+system prompt and tool schemas as masked context. `qa.also_train_rollout` includes the raw
+branch in the same adapter update.
 
-## Failure semantics
+The Q&A exchanges are also committed as `ttt_qa` trace branches. They have their own token
+budget and do not inflate the rollout's normal turn/token limits, but their sampled tokens can
+receive the rollout's RL signal.
 
-A failed update (service error, out-of-order version, missing token ids, failed Q&A
-generation) is a `TTTError` — the rollout fails loudly (non-retryable 400 to the harness):
-after a lost update the adapter no longer matches the context the model believes it has.
+Two mutually exclusive train-time variants route Q&A-derived examples to the policy's CE
+loss in the same mixed batch as RL:
+
+- `qa.recycle_to_policy` uses each rollout's own pairs.
+- `qa.meta_lessons` compares the completed group's pairs and rewards, extracts general
+  lessons, and attaches those lessons to the first post-filter survivor of that group. The
+  group ownership is retained across batch splits so filtering the first member cannot drop
+  the lessons.
+
+## Frozen-adapter replay
+
+`TrainingSample.ttt_adapter_path` identifies the checkpoint used by a branch. The packer does
+not mix paths in one microbatch. `TTTReplayManager` loads the checkpoint, attaches frozen
+LoRA deltas to supported `nn.Linear` modules, and casts them to the module's actual forward
+dtype. Gradients flow through the delta into the base policy, not into the adapter.
+
+Prime-RL `main` owns the graph-wide rule that a shared sampled node is trainable in only one
+flattened branch sample. TTT relies on that existing trajectory behavior; it does not add a
+second fork/rewrite detector or a TTT-specific deduplication policy.
+
+Checkpoint cleanup is deliberately simple. `TTTCheckpointGC` defers directories referenced by
+a shipped batch until the trainer publishes the corresponding policy version, deletes
+conclusively errored/filtered rollout directories, and carries undecided overflow rollouts to
+a later batch. Eval directories are deleted immediately. This state is in memory: there is no
+persistent recovery manifest or explicit trainer-consumption marker. A final step with no
+subsequent weight publication may therefore leave harmless checkpoint files for manual or
+run-directory cleanup.
+
+## Failure semantics and limits
+
+Malformed or out-of-order requests fail the affected rollout. In the distributed FSDP engine,
+rank 0 prepares Q&A token sequences once and broadcasts the exact materialized jobs. Validation
+errors are isolated before slot mutation; unexpected failures after work starts terminate the
+worker group rather than risk rank divergence.
+
+FSDP adapter activation is transactional across inference replicas: loads fan out concurrently,
+partial or ambiguous failures trigger an unload reconciliation, and a version is marked loaded
+only after every replica succeeds. Per-rollout leases prevent a cancelled/timed-out request or
+release from being overtaken by another operation on the same adapter. Release retries use a
+bounded tombstone registry and repeat unload until every replica confirms the adapter is gone.
+
+Those identity, exact-retry, lease, tombstone, and transactional-replica guarantees are FSDP
+v2 guarantees. The standalone PEFT engine intentionally retains its simpler trusted-client,
+single-endpoint semantics.
+
+The implementation still needs a real Linux multi-GPU smoke test. The macOS unit suite cannot
+exercise CUDA kernels, FSDP/DTensor collectives, live vLLM reload behavior, or the shared
+cluster filesystem. The TTT service also starts from the policy base weights present at launch;
+as the RL policy evolves, that base becomes stale. Frozen replay preserves the recorded adapter
+delta, but it does not reconstruct the exact historical base model.

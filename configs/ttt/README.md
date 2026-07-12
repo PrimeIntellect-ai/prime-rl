@@ -39,7 +39,7 @@ LIMITS="--max-input-tokens 32768"   # total-context budget for every arm
 | small plain context | `uv run eval deepdive-v1 --harness.search true $CLIENT --max-input-tokens 8192` |
 | compaction only | `uv run eval deepdive-v1 --harness.id compacting --harness.search true --harness.compact-at-tokens 8192 $CLIENT $LIMITS` |
 | compaction + TTT | ... `--ttt.base-url http://localhost:8092` |
-| compaction + TTT (0-LR wiring ablation) | ... `--ttt.base-url ... --ttt.enabled false` |
+| compaction only through the TTT-configured path (hook disabled) | ... `--ttt.base-url ... --ttt.enabled false` |
 | compaction + Q&A-TTT | ... `--ttt.base-url ... --ttt.qa.num-generations 2 --ttt.qa.items-per-generation 4` |
 
 ## RL arm (small scale)
@@ -56,7 +56,8 @@ the env list.
 
 `scaleswe/` — the A0–A5 arm matrix on `scaleswe-v1` (see the header of
 `scaleswe/base.toml`): pure-RL and compaction baselines, compaction+TTT, QA, and the two
-permanent-SFT variants (naive recycle vs group meta-lessons, head-to-head). TTT arms use
+auxiliary-CE variants (naive recycle vs group meta-lessons, head-to-head). Their CE samples
+share the RL batch and optimizer step; they are not separate follow-up SFT steps. TTT arms use
 the **fsdp engine**: the prime-rl trainer stack with `max_slots` resident MultiLoRA
 adapter slots and cross-rollout batched updates. The service is **launcher-managed** —
 each TTT arm sets `deployment.num_ttt_nodes = 1` plus a `[ttt]` section, and the SLURM
@@ -64,3 +65,25 @@ launcher allocates the node, torchruns the service, and auto-wires output_dir / 
 vLLM admin roots / env `base_url`s (see `docs/ttt.md`). `scaleswe/ttt_service.toml`
 remains for running the service standalone. `[engine] type = "peft"` (the default) is the
 single-GPU engine for small models.
+
+Every arm overlay has its own output directory, SLURM job name, and Prime sandbox label, so
+the six supplied configs do not overwrite one another. This is naming discipline, not a
+global launch reservation: two concurrent submissions of the same arm can still target the
+same directory. Use a distinct output override for concurrent/repeated runs. The base does
+not opt into checkpoint resume; pass `--ckpt.resume-step` only when intentionally resuming
+that arm's existing directory.
+
+Every arm pins `AweAI-Team/Scale-SWE` to commit
+`d8db20390a936bbda9c96d88b97cc4778dff1481` and sets
+`filter_unavailable_images = false`. Each arm also sets `use_prime_registry = true`: the
+public mirror is known to lack some ScaleSWE image tags, while the Prime registry is the
+complete source used by these sandbox runs. Dataset rows, task order, and image references
+are therefore identical across the panel, and an unavailable image fails its task instead
+of silently removing it from one arm. The dataset stores Docker tags rather than immutable
+image digests; archive the registry-resolved image digest with run artifacts if binary-level
+container provenance is required.
+
+TTT-enabled eval environments use the renderer client because exact token IDs are required.
+A0 and A1 retain Prime-RL's normal non-TTT eval transport. That transport difference should
+be recorded as a limitation when comparing the baseline arms with A2–A5; a generic
+renderer-client override was intentionally not added to Prime-RL core on this branch.

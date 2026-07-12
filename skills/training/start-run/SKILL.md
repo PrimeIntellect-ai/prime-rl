@@ -80,9 +80,15 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## `ttt` — test-time-training service
 
-Per-rollout LoRA training at compaction boundaries (see `docs/ttt.md`). Runs on its own GPU,
-alongside an inference server with `enable_lora = true`; must share `output_dir` and the base
-model with the deployment. Launched manually — the `rl` entrypoint does not manage it.
+Per-rollout LoRA training at compaction boundaries (see `docs/ttt.md`). Runs on dedicated
+GPU resources alongside an inference server with `enable_lora = true`; must share
+`output_dir` and the base model and tokenizer with the deployment.
+
+For multi-node SLURM RL, prefer launcher management: set
+`deployment.num_ttt_nodes >= 1`, add `[ttt]` with `[ttt.engine] type = "fsdp"`, and use
+`base_url = "auto"` on managed TTT envs. The launcher allocates the TTT nodes, wires the
+inference admin URLs, waits for `/health`, and starts rollouts only after the service is
+ready. The PEFT engine is single-process and must be launched manually on one GPU.
 
 ```bash
 uv run ttt @ configs/ttt/ttt.toml
@@ -93,6 +99,9 @@ curl http://localhost:8092/health
 - Entrypoint: `src/prime_rl/entrypoints/ttt.py`
 - Env side: `ttt = { base_url = ... }` on a train/eval env (needs the `compacting` harness
   and the renderer client); experiment arms in `configs/ttt/README.md`
+- Managed constraints: full-weight text policy, policy-sourced rollouts, matching
+  model/tokenizer, `keep_checkpoints = true` for training, and sufficient inference LoRA
+  rank/GPU/CPU capacity.
 
 ## Summary
 

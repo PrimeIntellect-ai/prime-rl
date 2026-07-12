@@ -1,3 +1,8 @@
+# Historical TTT proposal
+
+This file records the original proposal and experiment brainstorm. It is not normative;
+see `docs/ttt.md` and `ttt-implementation.md` for implemented behavior and constraints.
+
 Learn online into a LoRA per rollout. Techniques that I want to support:
 
 - sliding window learning
@@ -67,7 +72,8 @@ How to do RL with this:
 - then dismiss that LoRA fully and move on to the next 1k tokens, or the next action after compaction
 - it is crucial that the alignment between LoRA weights at inference time and at weight update time is exact, because the LoRA acts as context just like the tokens do
 
-The Q&A updates are of course also in the LoRA and get dismissed, but we can simply train on them in one SFT step after the RL update step is done. That way, we can recycle the compute spent on them into a permanent weight update.
+The implemented Q&A recycling path routes the examples to the CE component in the same
+mixed-loss batch and optimizer step as RL. It is not a sequential SFT step after RL.
 
 The two techniques I'm most excited about by far are the ones with compaction.
 
@@ -82,4 +88,3 @@ What's to do, in this order:
 - our job
 	- investigate the results, re-plan if something went wrong, analyze the behaviors etc.
 	- write out the results in an article
-
