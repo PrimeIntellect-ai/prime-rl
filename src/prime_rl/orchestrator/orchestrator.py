@@ -101,6 +101,11 @@ MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
 
+# Default wait for the trainer's startup weight broadcast when no ckpt block
+# configures ``wait_for_weights_timeout`` (e.g. a from-scratch run). The
+# broadcast is always coming, so wait rather than fail immediately.
+STARTUP_WEIGHT_WAIT_TIMEOUT_S = 1200
+
 
 class Orchestrator:
     # Set in ``__init__``
@@ -325,7 +330,10 @@ class Orchestrator:
         # where inference waited for weights the trainer only sent at the end of a step.
         sync_version = self.resume_step if self.resume_step is not None else 0
         check_exists = config.weight_broadcast.type != "nccl"
-        wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
+        # Wait for the trainer's startup broadcast to land. On a fresh start there is no ckpt block,
+        # so fall back to a default timeout instead of not waiting at all (which would raise before
+        # broadcasts/step_0/STABLE is written when using filesystem weight broadcast).
+        wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
         weights_path = get_weight_dir(
             config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
         )
