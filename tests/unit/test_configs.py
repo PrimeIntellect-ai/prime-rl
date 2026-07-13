@@ -48,9 +48,6 @@ def is_pre_topology_env_config(path: Path) -> bool:
     """
     with path.open("rb") as f:
         data = tomllib.load(f)
-    orchestrator = data.get("orchestrator")
-    if not isinstance(orchestrator, dict):
-        return False
 
     def envs_use_legacy(block: object) -> bool:
         if not isinstance(block, dict):
@@ -67,7 +64,13 @@ def is_pre_topology_env_config(path: Path) -> bool:
                 return True
         return False
 
-    return envs_use_legacy(orchestrator.get("train")) or envs_use_legacy(orchestrator.get("eval"))
+    # RL entrypoint: [orchestrator.train.env] / standalone OrchestratorConfig: [train.env]
+    roots: list[dict] = [data]
+    orchestrator = data.get("orchestrator")
+    if isinstance(orchestrator, dict):
+        roots.append(orchestrator)
+
+    return any(envs_use_legacy(root.get("train")) or envs_use_legacy(root.get("eval")) for root in roots)
 
 
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
