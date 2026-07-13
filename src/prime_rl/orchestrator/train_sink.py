@@ -29,6 +29,11 @@ from prime_rl.orchestrator.types import Rollout, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
+# Dead groups (finalized with nothing entering ``pending_batch``) tolerated in
+# a row before empty batches surface, letting the orchestrator's
+# consecutive-empty-batch abort fire instead of the run idling forever.
+MAX_CONSECUTIVE_DEAD_GROUPS = 10
+
 
 class TrainSink:
     """Three-level train sink. Constructed once, fed via ``add(rollout)``."""
@@ -67,6 +72,7 @@ class TrainSink:
         # sync on append/pop so the readiness check never re-walks the uncached
         # ``Trace.num_total_tokens`` graph property per arrival.
         self.pending_tokens: int = 0
+        self.consecutive_dead_groups: int = 0
 
         # Reset by the orchestrator after each ship via ``reset_pre_filter_stats``
         self.pre_filter_seen = 0
@@ -117,12 +123,14 @@ class TrainSink:
 
     async def add(self, rollout: Rollout) -> TrainBatch | None:
         """Process one arrival; finalize the group on the ``group_size``-th
-        arrival; return a ``TrainBatch`` if the batch threshold is met."""
+        arrival; return a ``TrainBatch`` if the batch threshold is met, or an
+        empty one (no samples) once dead groups exceed the liveness bound."""
         await self.process_rollout(rollout)
         env_name = rollout.env_name
         self.pending_rollouts.append(rollout)
         self.pending_groups[rollout.group_id].append(rollout)
-        if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
+        group_finalized = len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name)
+        if group_finalized:
             await self.process_group(rollout.group_id)
         ready = (
             len(self.pending_batch) >= self.batch_size
@@ -131,6 +139,8 @@ class TrainSink:
         )
         if ready:
             return self.process_batch()
+        if group_finalized and self.consecutive_dead_groups >= MAX_CONSECUTIVE_DEAD_GROUPS:
+            return TrainBatch(rollouts=self.pending_rollouts, samples=[])
         return None
 
     async def process_rollout(self, rollout: Rollout) -> None:
@@ -168,12 +178,14 @@ class TrainSink:
         # (computed relative to the missing ones)
         env = self.train_envs.get(env_name)
         if num_errored > 0 and env.requires_group_scoring:
+            self.consecutive_dead_groups += 1
             get_logger().debug(
                 f"Finished group | env={env_name} task_idx={task_idx} | "
                 f"rollouts={len(group)} (errored={num_errored}) | dropped: group-scored partial"
             )
             return
         if not survivors:
+            self.consecutive_dead_groups += 1
             get_logger().debug(
                 f"Finished group | env={env_name} task_idx={task_idx} | "
                 f"rollouts={len(group)} (errored={num_errored}) | dropped: all failed"
@@ -212,6 +224,12 @@ class TrainSink:
             self.pending_batch.append(r)
             if self.token_batch_size is not None:
                 self.pending_tokens += r.num_total_tokens
+
+        # All survivors pre-filtered: the group is as dead as an all-errored one
+        if num_filtered == len(survivors):
+            self.consecutive_dead_groups += 1
+        else:
+            self.consecutive_dead_groups = 0
 
         # Per-group summary. One line per finalized group; per-filter
         # detection breakdown lives at debug level in ``apply_filters``
