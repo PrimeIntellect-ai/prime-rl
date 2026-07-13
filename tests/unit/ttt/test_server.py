@@ -113,6 +113,17 @@ async def test_update_trains_and_loads_adapter(service):
         (load,) = engine.loads
         assert load == {"lora_name": "ttt-r1", "lora_path": "/ckpts/r1/v1"}
 
+        # QA fields ride the same route and reach the trainer verbatim.
+        response = await client.post(
+            "/update",
+            json={**UPDATE, "seq_no": 2, "qa_pairs": [{"question": "q1", "answer": "a1"}], "train_rollout": False},
+        )
+        assert response.status_code == 200
+        (*_, qa_pairs, train_rollout, system_prompt, tools) = trainer.updates[1]
+        assert qa_pairs == [{"question": "q1", "answer": "a1"}]
+        assert train_rollout is False
+        assert system_prompt is None and tools is None
+
 
 async def test_trainer_error_maps_to_409(service):
     async with service() as (client, trainer, engine):
@@ -153,23 +164,6 @@ async def test_peft_admin_client_honors_configured_timeout():
     app = build_app(config, trainer=FakeTrainer())
     async with app.router.lifespan_context(app):
         assert app.state.http.timeout.connect == 7.5
-
-
-async def test_update_forwards_qa_fields(service):
-    async with service() as (client, trainer, engine):
-        response = await client.post(
-            "/update",
-            json={
-                **UPDATE,
-                "qa_pairs": [{"question": "q1", "answer": "a1"}],
-                "train_rollout": False,
-            },
-        )
-        assert response.status_code == 200
-        (*_, qa_pairs, train_rollout, system_prompt, tools) = trainer.updates[0]
-        assert qa_pairs == [{"question": "q1", "answer": "a1"}]
-        assert train_rollout is False
-        assert system_prompt is None and tools is None
 
 
 async def test_v2_partial_replica_load_is_reconciled_everywhere():

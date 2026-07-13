@@ -1,6 +1,6 @@
-"""The TTT config TOMLs parse and launch: service configs validate against
-TTTServiceConfig (top-level keys must not hide under [optim]), and the scaleswe base
-config's vLLM LoRA sizing covers the TTT service's adapters."""
+"""TTT launch hardening: RLConfig.validate_ttt and the launcher-managed service wiring.
+TOML parse/launchability of the shipped configs (incl. arm overlay composition) is covered
+by tests/unit/test_configs.py."""
 
 import tomllib
 from pathlib import Path
@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("pydantic")
 
-from prime_rl.configs.ttt import TTTServiceConfig  # noqa: E402
+from prime_rl.configs.rl import RLConfig  # noqa: E402
 
 CONFIGS = Path(__file__).parents[3] / "configs" / "ttt"
 
@@ -17,11 +17,6 @@ CONFIGS = Path(__file__).parents[3] / "configs" / "ttt"
 def load(path: Path) -> dict:
     with open(path, "rb") as f:
         return tomllib.load(f)
-
-
-@pytest.mark.parametrize("name", ["ttt.toml", "scaleswe/ttt_service.toml"])
-def test_service_configs_validate(name: str):
-    TTTServiceConfig.model_validate(load(CONFIGS / name))
 
 
 def test_scaleswe_lora_sizing():
@@ -34,9 +29,6 @@ def test_scaleswe_lora_sizing():
 
 
 # --- RLConfig.validate_ttt launch hardening ---
-
-from prime_rl.configs.rl import RLConfig  # noqa: E402
-from prime_rl.utils.config import cli  # noqa: E402
 
 
 def rl_payload(ttt: dict | None, **inference_overrides) -> dict:
@@ -93,8 +85,7 @@ def eval_only_ttt_payload(**inference_overrides) -> dict:
 
 
 def test_eval_env_ttt_requires_enable_lora():
-    """Eval envs run the identical TTT inference regime, so they impose the same
-    LoRA-serving requirement on inference as train envs."""
+    """Eval envs run the identical TTT inference regime, so they impose the same requirement."""
     with pytest.raises(ValueError, match="enable_lora"):
         RLConfig.model_validate(eval_only_ttt_payload(enable_lora=False))
 
@@ -103,31 +94,6 @@ def test_eval_only_ttt_does_not_set_ttt_replay():
     """Eval adapters are dismissed per rollout, never replayed — no trainer replay hooks."""
     config = RLConfig.model_validate(eval_only_ttt_payload())
     assert config.trainer.ttt_replay is False
-
-
-@pytest.mark.parametrize(
-    "arm",
-    [
-        "arm_a0_no_compaction.toml",
-        "arm_a1_compaction.toml",
-        "arm_a2_ttt.toml",
-        "arm_a3_qa.toml",
-        "arm_a4_recycle.toml",
-        "arm_a5_meta.toml",
-    ],
-)
-def test_scaleswe_arms_launchable(arm: str):
-    """Pins the invariant that every shipped overlay stack still validates end-to-end
-    (baselines: base+arm; TTT arms: base+ttt_common+arm)."""
-    scaleswe = CONFIGS / "scaleswe"
-    layers = [scaleswe / "base.toml"]
-    if arm not in ("arm_a0_no_compaction.toml", "arm_a1_compaction.toml"):
-        layers.append(scaleswe / "ttt_common.toml")
-    layers.append(scaleswe / arm)
-    args = []
-    for layer in layers:
-        args += ["@", str(layer)]
-    cli(RLConfig, args=args)
 
 
 # --- Launcher-managed TTT service (RLConfig.ttt + deployment.num_ttt_nodes) ---
@@ -156,8 +122,7 @@ def test_ttt_service_autowires_output_dir_and_model():
 
 
 def test_ttt_service_autowires_component_level_policy_model():
-    """A shared top-level [model] is optional; the resolved trainer model remains the
-    authoritative policy name for the managed service and its nested FSDP config."""
+    """Without a shared top-level [model], the resolved trainer model stays authoritative."""
     payload = rl_ttt_service_payload()
     del payload["model"]
     policy_model = "zai-org/GLM-4.5-Air"
@@ -186,32 +151,64 @@ def test_managed_service_contract_ignores_external_ttt_envs():
         RLConfig.model_validate(payload)
 
 
-def test_ttt_nodes_without_service_config_rejected():
-    payload = rl_ttt_service_payload()
+def _drop_service_config(payload):
     del payload["ttt"]
-    with pytest.raises(ValueError, match="no \\[ttt\\] service config"):
-        RLConfig.model_validate(payload)
 
 
-def test_ttt_service_without_nodes_rejected():
-    payload = rl_ttt_service_payload()
+def _zero_ttt_nodes(payload):
     payload["deployment"]["num_ttt_nodes"] = 0
-    with pytest.raises(ValueError, match="never start it"):
-        RLConfig.model_validate(payload)
 
 
-def test_ttt_service_rank_must_fit_max_lora_rank():
-    payload = rl_ttt_service_payload()
+def _oversized_rank(payload):
     payload["ttt"]["lora"]["rank"] = 32  # > max_lora_rank 16
-    with pytest.raises(ValueError, match="max_lora_rank"):
-        RLConfig.model_validate(payload)
 
 
-def test_ttt_service_slots_must_cover_inflight():
-    payload = rl_ttt_service_payload()
+def _inflight_exceeds_slots(payload):
     payload["orchestrator"]["max_inflight_rollouts"] = 65
     payload["inference"]["max_loras"] = 128
-    with pytest.raises(ValueError, match="max_slots"):
+
+
+def _no_ttt_envs(payload):
+    payload["orchestrator"]["train"]["env"] = [{"id": "dummy-env"}]  # no ttt block
+
+
+def _nodes_without_service_or_envs(payload):
+    del payload["ttt"]
+    payload["orchestrator"]["train"]["env"] = [{"id": "dummy-env"}]
+
+
+def _single_node(payload):
+    del payload["deployment"]
+    del payload["slurm"]
+
+
+def _no_launched_inference(payload):
+    payload["deployment"]["num_infer_nodes"] = 0
+    payload["inference"] = None
+    payload["trainer"] = {"data": {"fake": {}}}
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        pytest.param(_drop_service_config, r"no \[ttt\] service config", id="nodes-without-service-config"),
+        pytest.param(_zero_ttt_nodes, "never start it", id="service-without-nodes"),
+        pytest.param(_oversized_rank, "max_lora_rank", id="rank-exceeds-max-lora-rank"),
+        pytest.param(_inflight_exceeds_slots, "max_slots", id="slots-below-inflight"),
+        # [ttt]/num_ttt_nodes with no env carrying an active ttt block is dead config.
+        pytest.param(_no_ttt_envs, "no train/eval env has ttt enabled", id="service-without-ttt-envs"),
+        # num_ttt_nodes > 0 without [ttt] fails even when no env has TTT (hoisted check).
+        pytest.param(_nodes_without_service_or_envs, r"no \[ttt\] service config", id="nodes-without-ttt-envs"),
+        # Non-multi_node deployments never start the service — [ttt] is meaningless there.
+        pytest.param(_single_node, "never start it", id="service-on-single-node"),
+        # The multi-node template only wires managed TTT to launched inference replicas.
+        pytest.param(_no_launched_inference, "requires a launched inference deployment", id="no-launched-inference"),
+    ],
+)
+def test_ttt_service_misconfigurations_rejected(mutate, match):
+    payload = rl_ttt_service_payload()
+    mutate(payload)
+    with pytest.raises(ValueError, match=match):
         RLConfig.model_validate(payload)
 
 
@@ -231,8 +228,7 @@ def test_orchestrator_ttt_base_url_fans_out():
 
 
 def test_orchestrator_ttt_base_url_fanout_is_placeholder_only():
-    """An explicit per-env URL (external service mixed with the launcher-managed one)
-    must survive the fan-out; only the "auto" placeholder is overwritten."""
+    """An explicit per-env URL must survive the fan-out; only "auto" is overwritten."""
     from prime_rl.configs.orchestrator import OrchestratorConfig
 
     config = OrchestratorConfig.model_validate(
@@ -253,9 +249,8 @@ def test_orchestrator_ttt_base_url_fanout_is_placeholder_only():
 
 
 def test_orchestrator_leftover_auto_rejected_at_startup():
-    """A leftover "auto" placeholder without the launcher-injected URL must fail fast at
-    orchestrator startup (standalone eval-CLI / dumped-toml runs) — not POST to 'auto'.
-    Parse-time it stays legal (the SLURM template injects --ttt-base-url later)."""
+    """A leftover "auto" without the launcher-injected URL must fail fast at orchestrator
+    startup, not POST to 'auto'; parse-time it stays legal (SLURM injects the URL later)."""
     from prime_rl.configs.orchestrator import OrchestratorConfig
 
     config = OrchestratorConfig.model_validate(
@@ -271,40 +266,3 @@ def test_orchestrator_leftover_auto_rejected_at_startup():
     config.ttt_base_url = "http://ttt-node:8092"
     config.apply_ttt_base_url()
     config.check_ttt_base_urls_resolved()
-
-
-def test_ttt_service_without_ttt_envs_rejected():
-    """[ttt]/num_ttt_nodes with no env carrying an active ttt block is dead config —
-    reachable only now that the consistency checks precede the no-TTT-env early return."""
-    payload = rl_ttt_service_payload()
-    payload["orchestrator"]["train"]["env"] = [{"id": "dummy-env"}]  # no ttt block
-    with pytest.raises(ValueError, match="no train/eval env has ttt enabled"):
-        RLConfig.model_validate(payload)
-
-
-def test_ttt_nodes_without_ttt_envs_rejected():
-    """num_ttt_nodes > 0 without [ttt] fails even when no env has TTT (hoisted check)."""
-    payload = rl_ttt_service_payload()
-    del payload["ttt"]
-    payload["orchestrator"]["train"]["env"] = [{"id": "dummy-env"}]
-    with pytest.raises(ValueError, match=r"no \[ttt\] service config"):
-        RLConfig.model_validate(payload)
-
-
-def test_ttt_service_on_single_node_rejected():
-    """Non-multi_node deployments never start the service — [ttt] is meaningless there."""
-    payload = rl_ttt_service_payload()
-    del payload["deployment"]
-    del payload["slurm"]
-    with pytest.raises(ValueError, match="never start it"):
-        RLConfig.model_validate(payload)
-
-
-def test_managed_ttt_requires_launched_inference():
-    """The multi-node template only wires managed TTT to launched inference replicas."""
-    payload = rl_ttt_service_payload()
-    payload["deployment"]["num_infer_nodes"] = 0
-    payload["inference"] = None
-    payload["trainer"] = {"data": {"fake": {}}}
-    with pytest.raises(ValueError, match="requires a launched inference deployment"):
-        RLConfig.model_validate(payload)

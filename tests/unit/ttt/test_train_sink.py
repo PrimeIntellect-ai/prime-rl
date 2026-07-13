@@ -139,11 +139,8 @@ class QAEnv:
         self.algorithm = Algo()
 
 
-@pytest.mark.asyncio
-async def test_qa_recycle_failure_skips_rollout_not_group():
-    import uuid
-
-    env = QAEnv()
+def make_qa_sink(env) -> TrainSink:
+    """Light TrainSink with the group-processing state process_group touches."""
     sink = TrainSink.__new__(TrainSink)
     sink.train_envs = FakeTrainEnvs(env)
     sink.tokenizer = RaisingTokenizer()
@@ -155,6 +152,16 @@ async def test_qa_recycle_failure_skips_rollout_not_group():
     sink.pre_filter_dropped = 0
     sink.pre_filter_dropped_by_name = {}
     sink.pending_groups = {}
+    sink._meta_clients = {}
+    return sink
+
+
+@pytest.mark.asyncio
+async def test_qa_recycle_failure_skips_rollout_not_group():
+    import uuid
+
+    env = QAEnv()
+    sink = make_qa_sink(env)
 
     rollout = Rollout(task=task(), env_name="e")
     rollout.info["ttt"] = {"updates": [{"version": 1, "qa_pairs": [{"question": "q?", "answer": "a"}]}]}
@@ -189,17 +196,7 @@ async def test_meta_lesson_failure_skips_group_not_run():
 
     env.sampler = type("S", (), {"pool": Pool()})()
 
-    sink = TrainSink.__new__(TrainSink)
-    sink.train_envs = FakeTrainEnvs(env)
-    sink.tokenizer = RaisingTokenizer()
-    sink.pre_filters = []
-    sink.pending_batch = []
-    sink.pending_tokens = 0
-    sink.token_batch_size = None
-    sink.pre_filter_seen = 0
-    sink.pre_filter_dropped = 0
-    sink.pre_filter_dropped_by_name = {}
-    sink.pending_groups = {}
+    sink = make_qa_sink(env)
     sink._meta_clients = {"e": ExplodingClient()}
     sink.meta_groups_ok = 0
     sink.meta_groups_dropped = 0
@@ -230,18 +227,7 @@ async def test_disabled_ttt_runs_no_qa_to_policy_paths():
     env.config.ttt.enabled = False
     env.config.ttt.qa.recycle_to_policy = True
 
-    sink = TrainSink.__new__(TrainSink)
-    sink.train_envs = FakeTrainEnvs(env)
-    sink.tokenizer = RaisingTokenizer()  # would raise if recycling ran and weren't contained
-    sink.pre_filters = []
-    sink.pending_batch = []
-    sink.pending_tokens = 0
-    sink.token_batch_size = None
-    sink.pre_filter_seen = 0
-    sink.pre_filter_dropped = 0
-    sink.pre_filter_dropped_by_name = {}
-    sink.pending_groups = {}
-    sink._meta_clients = {}
+    sink = make_qa_sink(env)  # RaisingTokenizer would raise if recycling ran uncontained
 
     recycle_calls = []
     rollout = Rollout(task=task(), env_name="e")

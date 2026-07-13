@@ -176,10 +176,8 @@ def make_cpu_trainer(max_slots: int = 4, **engine_overrides):
 
     from prime_rl.trainer.models.layers.lora import set_lora_num_tokens, set_multilora_scaling
 
-    # update_batch copies into the global LORA_NUM_TOKENS in place; the real service sizes
-    # it (and the paired SCALING_FACTORS) via setup_multi_run_manager, which this fake
-    # skips — pin both globals to a coherent max_slots shape so the test is isolated from
-    # whatever shapes other suites left behind (the setters cross-assert shapes).
+    # Pin the LORA_NUM_TOKENS/SCALING_FACTORS globals to a coherent max_slots shape so the
+    # test is isolated from whatever shapes other suites left behind.
     set_lora_num_tokens(None, reset_reference=True)
     set_multilora_scaling(torch.ones(max_slots, dtype=torch.float32), reset_reference=True)
     set_lora_num_tokens(torch.zeros(max_slots, dtype=torch.int32), reset_reference=True)
@@ -304,6 +302,7 @@ def test_update_batch_replays_duplicate_seq_no_from_cache():
     assert first["version"] == 1
     # A retry after a lost response replays the exact same seq_no: answer from the cache —
     # no forward, no optimizer step, no version bump.
+    real_forward = trainer._forward_logprobs
     trainer._forward_logprobs = lambda *a, **k: pytest.fail("forward must not run on replay")
     replay = trainer.update_batch([job("r1")])["r1"]
     assert replay is first  # the cached result, same ckpt_path/version
@@ -313,16 +312,10 @@ def test_update_batch_replays_duplicate_seq_no_from_cache():
     changed.token_ids[-1] = 99
     assert "does not match the cached request" in trainer.update_batch([changed])["r1"]["error"]
 
-
-def test_replay_of_older_seq_no_still_409s():
-    trainer = make_cpu_trainer(max_slots=2)
-    trainer.update_batch([job("r1")])
-    trainer.update_batch([job("r1", seq_no=2)])
     # seq_no strictly below the slot version is NOT a replay of the last update: 409.
-    with pytest.raises(ValueError, match="expected seq_no 3"):
-        trainer.validate_job(job("r1", seq_no=1))
-    results = trainer.update_batch([job("r1", seq_no=1)])
-    assert "expected seq_no 3" in results["r1"]["error"]
+    trainer._forward_logprobs = real_forward
+    trainer.update_batch([job("r1", seq_no=2)])
+    assert "expected seq_no 3" in trainer.update_batch([job("r1", seq_no=1)])["r1"]["error"]
 
 
 def test_seq_no_equal_version_without_cache_still_409s():

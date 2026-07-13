@@ -316,67 +316,54 @@ def test_trace_to_samples_missing_ckpt_is_fatal():
         trace_to_samples(trace, env_name="e")
 
 
-class FakeTokenizer:
-    """Chat-template stand-in: 3 prompt tokens + one token per answer word."""
+class RecordingTokenizer:
+    """Chat-template stand-in recording roles/tools: 2 tokens per message + 1 gen prompt."""
 
-    def apply_chat_template(self, conversation, tokenize=True, add_generation_prompt=False):
-        tokens = [1, 2, 3]  # question rendering
-        if len(conversation) > 1:
-            tokens = tokens + [100 + i for i in range(len(conversation[1]["content"].split()))]
-        return tokens
+    def __init__(self):
+        self.calls = []
+
+    def apply_chat_template(self, conversation, tokenize=True, add_generation_prompt=False, tools=None):
+        self.calls.append({"roles": [m["role"] for m in conversation], "tools": tools})
+        return list(range(2 * len(conversation) + (1 if add_generation_prompt else 0)))
 
 
-def test_qa_recycle_samples_are_ce_routed():
+def test_qa_recycle_samples_are_ce_routed_with_conditioning():
+    """Recycled QA pairs render [system, Q, A] with the rollout's tools — the same frame the
+    adapter training used — as pure SFT: ce on the answer only, zero rl weight, no adapter."""
     from prime_rl.orchestrator.trajectories import qa_recycle_samples
 
     info = {
         "ttt": {
+            "system_prompt": "sys",
+            "tools": [{"type": "function", "function": {"name": "search"}}],
             "updates": [
-                {"version": 1, "qa_pairs": [{"question": "q?", "answer": "three word answer"}]},
+                {"version": 1, "qa_pairs": [{"question": "q?", "answer": "a"}]},
                 {"version": 2, "qa_pairs": [{"question": "q2?", "answer": "  "}]},  # blank: skipped
-            ]
+            ],
         }
     }
     trace = make_trace([1, 1], info=info)
-    samples = qa_recycle_samples(trace, FakeTokenizer(), env_name="e")
-    (sample,) = samples
-    assert sample.token_ids == [1, 2, 3, 100, 101, 102]
-    assert sample.mask == [False, False, False, True, True, True]
+    tokenizer = RecordingTokenizer()
+    (sample,) = qa_recycle_samples(trace, tokenizer, env_name="e")
+    # Rendered with system head + tools on both the full and the prompt-only calls.
+    assert all(c["roles"][0] == "system" for c in tokenizer.calls)
+    assert all(c["tools"] is not None for c in tokenizer.calls)
+    # full = 6 tokens ([sys, user, assistant]), prompt = 5 ([sys, user] + gen prompt) but the
+    # prefix check fails (prompt ids 0..4 == full ids 0..4) -> prompt_len 5, answer len 1.
+    assert len(sample.token_ids) == 6
+    assert sample.mask == [False] * 5 + [True]
     # ce on the answer tokens, rl weight zero everywhere: pure SFT recycling.
-    assert sample.ce_weights == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    assert sample.ce_weights == [0.0] * 5 + [1.0]
     assert sample.rl_weights == [0.0] * 6
-    # ce NLL is temperature-free MLE: T=1 always, and pre-stamped so the sink's
-    # rollout-temperature fill skips it.
+    # ce NLL is temperature-free MLE: T=1 always, pre-stamped so the sink's fill skips it.
     assert sample.temperatures == [1.0] * 6
     assert sample.advantages is None
     assert sample.ttt_adapter_path is None
 
 
-def test_trace_to_samples_stamps_qa_temperature_on_ttt_qa_branches():
-    from prime_rl.orchestrator.trajectories import trace_to_samples
-
-    trace = make_trace([None, None])
-    trace.nodes[1].ttt_qa = True  # the branch's sampled node is a QA side-generation
-    (sample,) = trace_to_samples(trace, env_name="e", qa_temperature=0.9, rollout_temperature=0.7)
-    # Node-granular: the QA node's tokens get qa_temperature, the non-QA user node keeps
-    # the rollout temperature (see test_qa_temperature_is_node_granular_on_mixed_branches).
-    assert sample.temperatures == [0.7, 0.7, 0.9, 0.9]
-    # None = same-as-rollout: leave [] for the sink's rollout-temperature fill.
-    trace2 = make_trace([None, None])
-    trace2.nodes[1].ttt_qa = True
-    (sample2,) = trace_to_samples(trace2, env_name="e", qa_temperature=None, rollout_temperature=0.7)
-    assert sample2.temperatures == []
-    # Non-QA branches keep [] even when qa_temperature is set.
-    (sample3,) = trace_to_samples(make_trace([None, None]), env_name="e", qa_temperature=0.9, rollout_temperature=0.7)
-    assert sample3.temperatures == []
-
-
 def test_qa_temperature_is_node_granular_on_mixed_branches():
-    """A QA branch forks off the abandoned trajectory's leaf, so it CARRIES rollout-sampled
-    nodes — and under the train-once dedup the first QA branch owns those tokens' trainable
-    mask. Their temperature must stay the ROLLOUT's; only the ttt_qa nodes' tokens get
-    qa_temperature. (Branch-granular stamping put the bulk of the pre-compaction trajectory
-    at the wrong temperature in the importance ratio.)"""
+    """Only ttt_qa nodes' tokens get qa_temperature; rollout-sampled nodes carried by the QA
+    branch (which owns their trainable mask under the train-once dedup) keep the rollout's."""
     import verifiers.v1 as vf
     from verifiers.v1.graph import MessageNode
     from verifiers.v1.types import AssistantMessage, UserMessage
@@ -399,45 +386,53 @@ def test_qa_temperature_is_node_granular_on_mixed_branches():
         )
         return len(trace.nodes) - 1
 
-    # Abandoned trajectory: user -> assistant (rollout-sampled, temp 0.7).
+    # Abandoned trajectory: user -> assistant (rollout-sampled, temp 0.7), then the QA
+    # side-generation forks off the abandoned leaf (its only child).
     n_user = add(None, UserMessage(content="u"), sampled=False)
     n_asst = add(n_user, AssistantMessage(content="a"), sampled=True)
-    # QA side-generation forks off the abandoned leaf (its only child -> the trajectory
-    # tokens live ONLY inside this branch).
     n_qa_prompt = add(n_asst, UserMessage(content="write items"), sampled=False, ttt_qa=True)
     add(n_qa_prompt, AssistantMessage(content="<item>...</item>"), sampled=True, ttt_qa=True)
 
     (sample,) = trace_to_samples(trace, env_name="e", qa_temperature=0.9, rollout_temperature=0.7)
     # Tokens: [user(2), assistant(2), qa_prompt(2), qa_answer(2)]
     assert sample.temperatures == [0.7, 0.7, 0.7, 0.7, 0.9, 0.9, 0.9, 0.9]
-    # And the rollout-sampled token is trainable in this branch (the dedup grants it here),
-    # which is exactly why its temperature matters.
+    # The rollout-sampled token IS trainable here (dedup grants it to this branch) — which
+    # is exactly why its temperature matters.
     assert sample.mask == [False, False, False, True, False, False, False, True]
 
-
-def test_sink_temperature_stamp_skips_prestamped_samples():
-    """The sink's rollout-temperature fill (TrainSink.process_group) must only touch
-    unstamped samples — replicate its predicate over pre-stamped ce/qa samples."""
-    from prime_rl.transport import TrainingSample
-
-    def make(temperatures):
-        return TrainingSample(
-            token_ids=[1, 2], mask=[True, True], logprobs=[0.0, 0.0], temperatures=temperatures, env_name="e"
-        )
-
-    samples = [make([]), make([1.0, 1.0]), make([0.9, 0.9])]
-    for sample in samples:  # the sink's stamping loop
-        if not sample.temperatures:
-            sample.temperatures = [0.7] * len(sample.token_ids)
-    assert [s.temperatures for s in samples] == [[0.7, 0.7], [1.0, 1.0], [0.9, 0.9]]
+    # None = same-as-rollout: leave [] for the sink's rollout-temperature fill.
+    trace2 = make_trace([None, None])
+    trace2.nodes[1].ttt_qa = True
+    (sample2,) = trace_to_samples(trace2, env_name="e", qa_temperature=None, rollout_temperature=0.7)
+    assert sample2.temperatures == []
+    # Non-QA branches keep [] even when qa_temperature is set.
+    (sample3,) = trace_to_samples(make_trace([None, None]), env_name="e", qa_temperature=0.9, rollout_temperature=0.7)
+    assert sample3.temperatures == []
 
 
 # -- checkpoint GC ---------------------------------------------------------------------------
 
+from dataclasses import dataclass, field  # noqa: E402
+
+
+@dataclass
+class FakeRollout:
+    info: dict = field(default_factory=dict)
+    has_error: bool = False
+    is_filtered: bool = False
+
+
+@dataclass
+class FakeBatch:
+    rollouts: list
+    samples: list
+
+
+def rollout_for(d: Path, **kwargs) -> FakeRollout:
+    return FakeRollout(info={"ttt": {"updates": [{"version": 1, "ckpt_path": str(d / "v1")}]}}, **kwargs)
+
 
 def test_ttt_gc_lifecycle(tmp_path):
-    from dataclasses import dataclass, field
-
     from prime_rl.orchestrator.ttt_gc import TTTCheckpointGC
 
     shipped_dir = tmp_path / "ttt" / "r-shipped"
@@ -445,24 +440,8 @@ def test_ttt_gc_lifecycle(tmp_path):
     for d in (shipped_dir / "v1", dropped_dir / "v1"):
         d.mkdir(parents=True)
 
-    @dataclass
-    class FakeRollout:
-        info: dict = field(default_factory=dict)
-        has_error: bool = False
-        is_filtered: bool = False
-
-    @dataclass
-    class FakeBatch:
-        rollouts: list
-        samples: list
-
-    def rollout_for(d, **kwargs):
-        return FakeRollout(info={"ttt": {"updates": [{"version": 1, "ckpt_path": str(d / "v1")}]}}, **kwargs)
-
-    shipped_rollout = rollout_for(shipped_dir)
-    dropped_rollout = rollout_for(dropped_dir, is_filtered=True)
     batch = FakeBatch(
-        rollouts=[shipped_rollout, dropped_rollout],
+        rollouts=[rollout_for(shipped_dir), rollout_for(dropped_dir, is_filtered=True)],
         samples=[make_sample(ttt_adapter_path=str(shipped_dir / "v1"))],
     )
 
@@ -478,30 +457,13 @@ def test_ttt_gc_lifecycle(tmp_path):
 
 
 def test_ttt_gc_carries_window_straddlers(tmp_path):
-    """``batch.rollouts`` is the ARRIVAL window, not the ship cohort: a rollout can arrive
-    in step N's window and ship its samples in step N+1 (batch overflow; group finalized
-    after the cut). Its adapter dirs must NOT be deleted at step N — they're carried until
-    they ship (then deferred + freed on consumption) — otherwise the trainer's replay load
-    hard-fails at N+1."""
-    from dataclasses import dataclass, field
-
+    """``batch.rollouts`` is the ARRIVAL window, not the ship cohort: a rollout arriving in
+    step N can ship its samples in step N+1 — its adapter dirs are carried until they ship."""
     from prime_rl.orchestrator.ttt_gc import TTTCheckpointGC
 
     straddler_dir = tmp_path / "ttt" / "r-straddler"
     (straddler_dir / "v1").mkdir(parents=True)
-
-    @dataclass
-    class FakeRollout:
-        info: dict = field(default_factory=dict)
-        has_error: bool = False
-        is_filtered: bool = False
-
-    @dataclass
-    class FakeBatch:
-        rollouts: list
-        samples: list
-
-    straddler = FakeRollout(info={"ttt": {"updates": [{"version": 1, "ckpt_path": str(straddler_dir / "v1")}]}})
+    straddler = rollout_for(straddler_dir)
 
     gc = TTTCheckpointGC()
     # Step 1: the rollout is in the arrival window but its samples don't ship yet.
@@ -518,21 +480,13 @@ def test_ttt_gc_carries_window_straddlers(tmp_path):
 
 
 def test_eval_rollout_ckpt_disposal(tmp_path):
-    """Eval rollouts do TTT at inference time but never reach TrainSink/TTTCheckpointGC —
-    their adapter dirs are dismissed immediately when the rollout arrives."""
-    from dataclasses import dataclass, field
-
+    """Eval rollouts never reach TrainSink/TTTCheckpointGC — dirs dismissed on arrival."""
     from prime_rl.orchestrator.ttt_gc import dispose_eval_rollout_ckpts
 
     ckpt_dir = tmp_path / "ttt" / "r-eval"
     (ckpt_dir / "v1").mkdir(parents=True)
 
-    @dataclass
-    class FakeRollout:
-        info: dict = field(default_factory=dict)
-
-    ttt_rollout = FakeRollout(info={"ttt": {"updates": [{"version": 1, "ckpt_path": str(ckpt_dir / "v1")}]}})
-    dispose_eval_rollout_ckpts(ttt_rollout)
+    dispose_eval_rollout_ckpts(rollout_for(ckpt_dir))
     assert not ckpt_dir.exists()
 
     # No ttt info → no dirs, no error.
@@ -589,53 +543,17 @@ def test_shared_sampled_prefix_trained_once():
         assert s.mask[-1] is True or s.mask[-1] == True  # noqa: E712
 
 
-def test_qa_recycle_conditions_on_system_and_tools():
-    """Recycled QA samples render [system, Q, A] with the rollout's tools — the same frame
-    the adapter training used — with loss (ce) only on the answer."""
-    from prime_rl.orchestrator.trajectories import qa_recycle_samples
-
-    class RecordingTokenizer:
-        def __init__(self):
-            self.calls = []
-
-        def apply_chat_template(self, conversation, tokenize=True, add_generation_prompt=False, tools=None):
-            self.calls.append({"roles": [m["role"] for m in conversation], "tools": tools})
-            # 2 tokens per message + 1 for the generation prompt.
-            n = 2 * len(conversation) + (1 if add_generation_prompt else 0)
-            return list(range(n))
-
-    info = {
-        "ttt": {
-            "system_prompt": "sys",
-            "tools": [{"type": "function", "function": {"name": "search"}}],
-            "updates": [{"version": 1, "qa_pairs": [{"question": "q", "answer": "a"}]}],
-        }
-    }
-    trace = make_trace([1, 1], info=info)
-    tokenizer = RecordingTokenizer()
-    (sample,) = qa_recycle_samples(trace, tokenizer, env_name="e")
-    # Rendered with system head + tools on both the full and the prompt-only calls.
-    assert all(c["roles"][0] == "system" for c in tokenizer.calls)
-    assert all(c["tools"] is not None for c in tokenizer.calls)
-    # full = 6 tokens ([sys, user, assistant]), prompt = 5 ([sys, user] + gen prompt) but the
-    # prefix check fails (prompt ids 0..4 == full ids 0..4) -> prompt_len 5, answer len 1.
-    assert len(sample.token_ids) == 6
-    assert sample.mask == [False] * 5 + [True]
-    assert sample.ce_weights == [0.0] * 5 + [1.0]
-
-
 # -- group-level meta-extraction --------------------------------------------------------------
 
 
+@dataclass
+class FakeGroupRollout:
+    reward: float
+    info: dict = field(default_factory=dict)
+    samples: list = field(default_factory=list)
+
+
 def rollout_with_pairs(reward: float, pairs: list[dict]):
-    from dataclasses import dataclass, field
-
-    @dataclass
-    class FakeGroupRollout:
-        reward: float
-        info: dict = field(default_factory=dict)
-        samples: list = field(default_factory=list)
-
     return FakeGroupRollout(
         reward=reward,
         info={
@@ -723,14 +641,6 @@ async def test_meta_extraction_needs_two_with_pairs_and_surfaces_provider_failur
 
 def test_meta_lesson_samples_are_ce_routed_with_conditioning():
     from prime_rl.orchestrator.qa_meta import meta_lesson_samples
-
-    class RecordingTokenizer:
-        def __init__(self):
-            self.calls = []
-
-        def apply_chat_template(self, conversation, tokenize=True, add_generation_prompt=False, tools=None):
-            self.calls.append({"roles": [m["role"] for m in conversation], "tools": tools})
-            return list(range(2 * len(conversation) + (1 if add_generation_prompt else 0)))
 
     group = [rollout_with_pairs(1.0, [{"question": "q", "answer": "a"}])]
     # Tool-only conditioning is valid. It used to be discarded because selection was
