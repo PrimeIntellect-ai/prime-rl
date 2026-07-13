@@ -139,7 +139,8 @@ class StaticSFTSource:
             mask.append(True)
             if mm_token_type_ids is not None:
                 mm_token_type_ids.append(0)
-        if self.config.max_length is not None and len(token_ids) > self.config.max_length:
+        max_length = min(self.config.max_length or self.seq_len, self.seq_len)
+        if len(token_ids) > max_length:
             return None
         if not any(mask[: self.seq_len]):
             return None
