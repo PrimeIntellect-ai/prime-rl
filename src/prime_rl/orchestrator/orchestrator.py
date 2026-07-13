@@ -367,7 +367,7 @@ class Orchestrator:
             config,
             policy=self.policy,
             inference=self.policy_inference,
-            observers=[self.dispatcher, self],
+            observers=[self.dispatcher, self.train_sink, self],
             lora_name=self.lora_name,
             ckpt_step=self.policy.version,
         )
