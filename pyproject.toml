@@ -75,7 +75,6 @@ envs = [
     "apex-shortlist-v1",
     "arxivmath-v1",
     "browsecomp-v1",
-    "code-golf-v1",
     "color-codeword-v1",
     "deepdive-v1",
     "deepwiki-v1",
@@ -86,6 +85,8 @@ envs = [
     "graphwalks-v1",
     "gsm8k-v1",
     "i3-code-v1",
+    "i3-logic-v1",
+    "i3-math-v1",
     "i3-science-v1",
     "ifbench-v1",
     "ifeval-v1",
@@ -248,7 +249,6 @@ alphabet-sort-v1 = { path = "deps/verifiers/environments/alphabet_sort_v1", edit
 apex-shortlist-v1 = { path = "deps/research-environments/environments/math/apex_shortlist_v1", editable = true }
 arxivmath-v1 = { path = "deps/research-environments/environments/math/arxivmath_v1", editable = true }
 browsecomp-v1 = { path = "deps/research-environments/environments/search/browsecomp_v1", editable = true }
-code-golf-v1 = { path = "deps/verifiers/environments/code_golf_v1", editable = true }
 color-codeword-v1 = { path = "deps/verifiers/environments/color_codeword_v1", editable = true }
 deepdive-v1 = { path = "deps/research-environments/environments/search/deepdive_v1", editable = true }
 deepwiki-v1 = { path = "deps/verifiers/environments/deepwiki_v1", editable = true }
@@ -259,6 +259,8 @@ gpqa-v1 = { path = "deps/research-environments/environments/science/gpqa_v1", ed
 graphwalks-v1 = { path = "deps/research-environments/environments/long_context/graphwalks_v1", editable = true }
 gsm8k-v1 = { path = "deps/verifiers/environments/gsm8k_v1", editable = true }
 i3-code-v1 = { path = "deps/research-environments/environments/code/i3_code_v1", editable = true }
+i3-logic-v1 = { path = "deps/research-environments/environments/reasoning/i3_logic_v1", editable = true }
+i3-math-v1 = { path = "deps/research-environments/environments/math/i3_math_v1", editable = true }
 i3-science-v1 = { path = "deps/research-environments/environments/science/i3_science_v1", editable = true }
 ifbench-v1 = { path = "deps/research-environments/environments/if/ifbench_v1", editable = true }
 ifeval-v1 = { path = "deps/research-environments/environments/if/ifeval_v1", editable = true }

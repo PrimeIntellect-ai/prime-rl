@@ -615,17 +615,6 @@ wheels = [
 ]
 
 [[package]]
-name = "code-golf-v1"
-version = "0.1.0"
-source = { editable = "deps/verifiers/environments/code_golf_v1" }
-dependencies = [
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
-
-[[package]]
 name = "color-codeword-v1"
 version = "0.1.0"
 source = { editable = "deps/verifiers/environments/color_codeword_v1" }
@@ -1799,6 +1788,42 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "orjson" },
+    { name = "verifiers", specifier = ">=0.2.0" },
+]
+
+[[package]]
+name = "i3-logic-v1"
+version = "0.2.0"
+source = { editable = "deps/research-environments/environments/reasoning/i3_logic_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "markdown" },
+    { name = "math-verify" },
+    { name = "sympy" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "markdown", specifier = ">=3.5.1" },
+    { name = "math-verify", specifier = ">=0.8.0" },
+    { name = "sympy", specifier = ">=1.12.0" },
+    { name = "verifiers", specifier = ">=0.2.0" },
+]
+
+[[package]]
+name = "i3-math-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/math/i3_math_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
     { name = "verifiers", specifier = ">=0.2.0" },
 ]
 
@@ -3930,7 +3955,6 @@ envs = [
     { name = "apex-shortlist-v1" },
     { name = "arxivmath-v1" },
     { name = "browsecomp-v1" },
-    { name = "code-golf-v1" },
     { name = "color-codeword-v1" },
     { name = "deepdive-v1" },
     { name = "deepwiki-v1" },
@@ -3941,6 +3965,8 @@ envs = [
     { name = "graphwalks-v1" },
     { name = "gsm8k-v1" },
     { name = "i3-code-v1" },
+    { name = "i3-logic-v1" },
+    { name = "i3-math-v1" },
     { name = "i3-science-v1" },
     { name = "ifbench-v1" },
     { name = "ifeval-v1" },
@@ -4031,7 +4057,6 @@ requires-dist = [
     { name = "arxivmath-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math/arxivmath_v1" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "browsecomp-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/search/browsecomp_v1" },
-    { name = "code-golf-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/code_golf_v1" },
     { name = "color-codeword-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/color_codeword_v1" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
@@ -4050,6 +4075,8 @@ requires-dist = [
     { name = "graphwalks-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/long_context/graphwalks_v1" },
     { name = "gsm8k-v1", marker = "extra == 'envs'", editable = "deps/verifiers/environments/gsm8k_v1" },
     { name = "i3-code-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/code/i3_code_v1" },
+    { name = "i3-logic-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/reasoning/i3_logic_v1" },
+    { name = "i3-math-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math/i3_math_v1" },
     { name = "i3-science-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/science/i3_science_v1" },
     { name = "ifbench-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/if/ifbench_v1" },
     { name = "ifeval-v1", marker = "extra == 'envs'", editable = "deps/research-environments/environments/if/ifeval_v1" },
@@ -6169,7 +6196,6 @@ dev = [
 examples = [
     { name = "alphabet-sort-v1", editable = "deps/verifiers/environments/alphabet_sort_v1" },
     { name = "chess-v1", editable = "deps/verifiers/environments/chess_v1" },
-    { name = "code-golf-v1", editable = "deps/verifiers/environments/code_golf_v1" },
     { name = "color-codeword-v1", editable = "deps/verifiers/environments/color_codeword_v1" },
     { name = "compact", editable = "deps/verifiers/environments/compact" },
     { name = "debate-v1", editable = "deps/verifiers/environments/debate_v1" },
