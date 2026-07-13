@@ -404,20 +404,8 @@ def train(config: TrainerConfig):
             # (the hook is per-token local, so CP composes fine).
             ttt_adapter_path = micro_batch.get("ttt_adapter_path")
             if ttt_adapter_path is not None and ttt_replay is None:
-                if config.model.lora is not None:
-                    raise RuntimeError(
-                        "TTT replay samples cannot be trained with policy LoRA enabled — "
-                        "train the policy full-weights (unset [trainer.model.lora])."
-                    )
-                if config.model.compile is not None:
-                    # Hooks installed after compile are silently ignored by dynamo — the
-                    # forward would be base-model while we believe the adapter is active.
-                    raise RuntimeError(
-                        "TTT replay sample encountered but replay hooks were not installed "
-                        "before torch.compile — set [trainer] ttt_replay = true (or disable "
-                        "[trainer.model.compile])."
-                    )
-                ttt_replay = TTTReplayManager(model, torch.device("cuda", world.local_rank))
+                # Unreachable when launched via RLConfig (validate_ttt force-sets ttt_replay).
+                raise RuntimeError("TTT replay sample encountered but [trainer] ttt_replay is not set.")
             if ttt_replay is not None:
                 ttt_replay.activate(ttt_adapter_path)
 

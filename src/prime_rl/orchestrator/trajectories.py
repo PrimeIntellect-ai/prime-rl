@@ -23,7 +23,7 @@ import verifiers.v1 as vf
 from prime_rl.transport import TrainingSample
 from prime_rl.transport.types import EncodedTensor, RoutedExperts
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.qa_render import render_qa_pair
+from prime_rl.utils.qa_render import qa_pairs_to_ce_samples
 
 
 def _to_numpy(val) -> np.ndarray:
@@ -68,12 +68,9 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
 
 
 def _ttt_adapter_path(trace: vf.Trace, branch: vf.Branch) -> str | None:
-    """Resolve the branch's TTT adapter checkpoint from the trace's stamps: version 0 (or an
-    un-stamped rollout) sampled from the base model — no adapter; version k maps to the TTT
-    service's checkpoint dir for this rollout (recorded per update in ``trace.info["ttt"]``).
-    ``Branch.ttt_version`` enforces the one-version-per-branch invariant (raises on a mix).
-    A stamped branch whose checkpoint path is missing from the info records is a hard error —
-    replaying it against the base model would silently corrupt the importance ratio."""
+    """Resolve the branch's TTT adapter checkpoint from ``trace.info["ttt"]`` (version 0 /
+    un-stamped = base model, no adapter). A stamped branch with no recorded path is a hard
+    error — replaying it base-model would silently corrupt the importance ratio."""
     version = branch.ttt_version
     if not version:  # None (no TTT) or 0 (base model)
         return None
@@ -91,51 +88,12 @@ def _ttt_adapter_path(trace: vf.Trace, branch: vf.Branch) -> str | None:
 
 
 def qa_recycle_samples(trace: vf.Trace, tokenizer, env_name: str = "") -> list[TrainingSample]:
-    """Build ce-routed training samples from the rollout's recorded TTT Q&A pairs — the
-    "recycle the Q&A compute into a permanent weight update" step: each pair (text, from
-    ``trace.info["ttt"]``) is rendered standalone with the policy tokenizer's chat template
-    — conditioned on the rollout's system prompt + tool schemas (the same frame the adapter
-    training used), loss-masked — and routed entirely to the **ce** loss component (answer
-    tokens; ``rl_weights`` all zero, no advantages), so it rides the same training batch as
-    the RL samples without touching the policy-gradient math. QA samples carry no adapter
-    ref — they train the live policy weights."""
+    """Recycle the rollout's recorded TTT Q&A pairs (``trace.info["ttt"]``) into ce-routed
+    training samples for the live policy weights — same conditioning frame (system prompt +
+    tools) the adapter training used, no adapter ref, no rl credit."""
     ttt_info = trace.info.get("ttt", {})
-    system_prompt = ttt_info.get("system_prompt")
-    tools = ttt_info.get("tools")
-    head = [{"role": "system", "content": system_prompt}] if system_prompt else []
-    template_kwargs: dict = {"tools": tools} if tools else {}
-    samples: list[TrainingSample] = []
-    for update in ttt_info.get("updates", []):
-        for pair in update.get("qa_pairs") or []:
-            question = str(pair.get("question", ""))
-            answer = str(pair.get("answer", ""))
-            if not answer.strip():
-                continue
-            conversation = [
-                *head,
-                {"role": "user", "content": question},
-                {"role": "assistant", "content": answer},
-            ]
-            rendered = render_qa_pair(tokenizer, conversation, template_kwargs)
-            if rendered is None:
-                continue  # non-prefix-stable render: skip rather than train on the full render
-            full, prompt_len = rendered
-            answer_len = len(full) - prompt_len
-            if answer_len < 1:
-                continue
-            mask = [False] * prompt_len + [True] * answer_len
-            samples.append(
-                TrainingSample(
-                    token_ids=full,
-                    mask=mask,
-                    logprobs=[0.0] * len(full),  # ce is masked NLL — no importance ratio
-                    temperatures=[1.0] * len(full),  # ce NLL is temperature-free MLE — never rescale logits
-                    env_name=env_name,
-                    rl_weights=[0.0] * len(full),
-                    ce_weights=[1.0 if m else 0.0 for m in mask],
-                )
-            )
-    return samples
+    pairs = [pair for update in ttt_info.get("updates", []) for pair in update.get("qa_pairs") or []]
+    return qa_pairs_to_ce_samples(pairs, ttt_info.get("system_prompt"), ttt_info.get("tools"), tokenizer, env_name)
 
 
 def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[bool]]]:

@@ -1,22 +1,9 @@
-"""The TTT training core: one base model, one PEFT LoRA adapter per rollout.
+"""The TTT v1 training core: one base model, one PEFT LoRA adapter per rollout.
 
-`TTTTrainer` owns the base model copy and a registry of live adapters. An update swaps the
-rollout's adapter weights onto the shared PEFT wrapper, runs `steps_per_update` gradient
-steps on the branch's flat token sequence (CE loss on the masked positions), and writes a
-PEFT-format checkpoint — the exact format vLLM's `/load_lora_adapter` consumes. Optimizer
-state persists per rollout across its updates (the adapter learns continuously) and is
-dropped on release.
-
-One adapter set is *resident* in the PEFT wrapper at a time; per-rollout states are swapped
-in/out around each update (cheap: rank-r matrices). Concurrency is therefore serialized in
-the trainer itself; the server layer bounds queuing.
-
-The raw-branch path needs no tokenizer: it consumes the exact token ids the inference
-engine saw. Q&A training is the one exception — the pairs arrive as text (they are trained
-*standalone*, without the branch context they were generated under, so the engine's
-context-tokenization is meaningless for them) and are rendered with the configured Q&A
-tokenizer and chat template, loss on the answer tokens. The tokenizer is lazy-loaded on
-first Q&A use.
+An update swaps the rollout's adapter onto the shared PEFT wrapper, runs
+`steps_per_update` gradient steps (CE on the masked positions of the raw branch tokens
+and/or rendered Q&A pairs), and writes a PEFT-format checkpoint that vLLM's
+`/load_lora_adapter` consumes. One adapter resident at a time — the trainer serializes.
 """
 
 from __future__ import annotations
@@ -30,22 +17,18 @@ import torch
 from torch import nn
 
 from prime_rl.configs.ttt import TTTServiceConfig
+from prime_rl.ttt.validation import validate_qa_pairs
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.qa_render import assert_prefix_stable_template, render_qa_pair
+from prime_rl.utils.qa_render import assert_prefix_stable_template, tokenize_qa_pairs
 
 
 def _load_qa_tokenizer(config: TTTServiceConfig):
-    """Load the service's configured Q&A tokenizer, including its template override."""
-    from transformers import AutoTokenizer
+    """Load the service's configured Q&A tokenizer (template override, pad=eos) via the
+    trainer's setup_tokenizer — same contract v2 uses."""
+    from prime_rl.trainer.model import setup_tokenizer
 
-    name = config.tokenizer.name
-    assert name is not None  # TTTServiceConfig fills this from model.name
-    tokenizer = AutoTokenizer.from_pretrained(name, trust_remote_code=config.tokenizer.trust_remote_code)
-    if config.tokenizer.chat_template is not None:
-        path = Path(config.tokenizer.chat_template)
-        tokenizer.chat_template = path.read_text() if path.is_file() else config.tokenizer.chat_template
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-    return tokenizer
+    assert config.tokenizer.name is not None  # TTTServiceConfig fills this from model.name
+    return setup_tokenizer(config.tokenizer)
 
 
 @dataclass
@@ -160,42 +143,10 @@ class TTTTrainer:
 
     # -- the update -------------------------------------------------------------------------
 
-    def _tokenize_qa(
-        self,
-        qa_pairs: list[dict],
-        system_prompt: str | None = None,
-        tools: list[dict] | None = None,
-    ) -> list[tuple[list[int], list[bool]]]:
-        """Render each Q&A pair standalone with the base model's chat template — no branch
-        context (that's the point: the knowledge must come from the weights), but
-        conditioned on the rollout's system prompt and tool schemas (chat templates render
-        tools into the system block), so tool lessons are learned next to the tool
-        descriptions. Loss on the answer tokens only; the system/question prefix is
-        context. Returns `(token_ids, loss_mask)` per pair; pairs whose answer renders to
-        nothing are skipped."""
+    def _tokenize_qa(self, qa_pairs, system_prompt=None, tools=None):
         if self._tokenizer is None:
             self._tokenizer = _load_qa_tokenizer(self.config)
-
-        template_kwargs: dict = {"tools": tools} if tools else {}
-        head = [{"role": "system", "content": system_prompt}] if system_prompt else []
-        sequences: list[tuple[list[int], list[bool]]] = []
-        for pair in qa_pairs:
-            if not str(pair.get("answer", "")).strip():
-                continue  # a blank answer renders only template scaffold — nothing to learn
-            conversation = [
-                *head,
-                {"role": "user", "content": pair["question"]},
-                {"role": "assistant", "content": pair["answer"]},
-            ]
-            rendered = render_qa_pair(self._tokenizer, conversation, template_kwargs)
-            if rendered is None:
-                continue  # non-prefix-stable render: skip rather than train on the full render
-            full, prompt_len = rendered
-            if len(full) - prompt_len < 1:
-                continue
-            mask = [False] * prompt_len + [True] * (len(full) - prompt_len)
-            sequences.append((full, mask))
-        return sequences
+        return tokenize_qa_pairs(self._tokenizer, qa_pairs, system_prompt, tools)
 
     def update(
         self,
@@ -232,16 +183,7 @@ class TTTTrainer:
         if seq_no != expected:
             raise ValueError(f"out-of-order update for {rollout_id}: expected seq_no {expected}, got {seq_no}")
         if qa_pairs:
-            # Shape-check before any state mutation: a malformed pair must 409 (ValueError)
-            # with a clear message, not KeyError → 500 from inside `_tokenize_qa`.
-            for i, pair in enumerate(qa_pairs):
-                if not isinstance(pair, dict) or not isinstance(pair.get("question"), str):
-                    raise ValueError(
-                        f"malformed qa_pairs[{i}]: expected a dict with a string 'question' "
-                        f"(and 'answer'), got {type(pair).__name__}"
-                    )
-                if not isinstance(pair.get("answer", ""), str):
-                    raise ValueError(f"malformed qa_pairs[{i}]: 'answer' must be a string when present")
+            validate_qa_pairs(qa_pairs)  # 409 before any state mutation, not a KeyError-500
         state = self._get_or_create(rollout_id, adapter_name)
 
         sequences: list[tuple[list[int], list[bool]]] = []

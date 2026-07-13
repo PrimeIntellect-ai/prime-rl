@@ -391,12 +391,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
 {% if num_ttt_nodes | default(0) > 0 -%}
 elif [ "$SLURM_PROCID" -ge "$((NUM_INFER_NODES + NUM_TRAIN_NODES))" ]; then
-    # TTT service node(s): one torchrun across all of them (fsdp engine shards the model;
-    # rank 0 = TTT_HOSTS[0] serves HTTP on TTT_PORT). Auto-wired to this run: output_dir
-    # (adapter ckpts ride the shared FS to vLLM + trainer replay) and the per-replica
-    # vLLM backend roots (ADMIN_URLS without the /v1 suffix — the service posts to the
-    # root-level /load_lora_adapter wrapper). NOTE: this whole role dispatch runs inside
-    # a single-quoted bash -c block — no apostrophes in comments here.
+    # TTT service node(s): one torchrun; rank 0 = TTT_HOSTS[0] serves HTTP on TTT_PORT.
+    # Auto-wired: output_dir (shared FS) + per-replica vLLM backend roots (no /v1 suffix).
+    # NOTE: single-quoted bash -c block — no apostrophes in comments here.
     TTT_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES - NUM_TRAIN_NODES))
 {%- for key, value in trainer_env_vars.items() %}
     export {{ key }}="{{ value }}"
@@ -459,8 +456,7 @@ else
 {% if orchestrator_on_inference %}ORCH_PROCID=$((NUM_INFER_NODES - 1)){% else %}ORCH_PROCID=$NUM_INFER_NODES{% endif %}
 if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
 {% if num_ttt_nodes | default(0) > 0 %}
-    # The FSDP service loads and shards its model before starting HTTP. Do not schedule
-    # rollouts until it is healthy; otherwise early compactions race model startup.
+    # Do not schedule rollouts until the service is healthy — early compactions race model startup.
     TTT_READY_DEADLINE=$((SECONDS + TTT_STARTUP_TIMEOUT))
     until curl --fail --silent --show-error --max-time 5 "$TTT_BASE_URL/health" >/dev/null; do
         if [ "$SECONDS" -ge "$TTT_READY_DEADLINE" ]; then
@@ -475,8 +471,7 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.base-url $INFER_URLS"
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.admin-base-url $ADMIN_URLS"
 {%- if num_ttt_nodes | default(0) > 0 %}
-    # Launcher-managed TTT service: point every TTT env at it (config base_url values
-    # are placeholders — the service hostname is only known here).
+    # Point every TTT env at the managed service (hostname only known here).
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --ttt-base-url $TTT_BASE_URL"
 {%- endif %}
 {%- if orchestrator_env_vars %}

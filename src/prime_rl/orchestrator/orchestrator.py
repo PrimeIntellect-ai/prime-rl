@@ -202,12 +202,9 @@ class Orchestrator:
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
 
-        # TTT Q&A -> policy paths (recycle_to_policy / meta_lessons) render standalone
-        # [system, Q, A] pairs with THIS tokenizer's chat template and rely on the prompt
-        # render being a token prefix of the full render. render_qa_pair degrades to
-        # warn-and-skip per pair — under a non-prefix-stable template that silently drops
-        # EVERY pair and the arm measures nothing. Fail at launch instead (the TTT service
-        # runs the same canary for the adapter-training side).
+        # TTT Q&A -> policy paths rely on prefix-stable rendering; a bad template would
+        # silently skip EVERY pair — fail at launch instead (the TTT service runs the same
+        # canary for the adapter-training side).
         def _wants_qa_to_policy(env) -> bool:
             ttt = getattr(env, "ttt", None)
             qa = getattr(ttt, "qa", None)

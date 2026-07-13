@@ -1,21 +1,9 @@
 """TTT service v2 server: rank-0 HTTP over the FSDP/MultiLoRA engine.
 
-Topology (under torchrun, 1+ nodes):
-
-- **Rank 0** runs the FastAPI app (same surface as v1: `/update`, `/release`, `/health`)
-  plus a collector loop that drains queued update jobs into batches
-  (`engine.max_batch_wait_seconds` window, `max_tokens_per_forward` cap handled by the
-  trainer's packer).
-- **All ranks** sit in a work loop: rank 0 broadcasts a work order
-  (`("update", jobs) | ("release", rollout_id) | ("abort", reason) | ("stop",)`) via
-  `broadcast_object_list`; every rank executes the same collective path
-  (forward/backward/step, checkpoint barrier); rank 0 writes checkpoints, loads adapters
-  into the inference engines, and answers the HTTP callers.
-
-Per-rollout ordering is inherited from the rollout side (the hook blocks per update), and
-same-rollout jobs never coexist in one batch for the same reason. Job failures (validation,
-out-of-order seq_no) are per-job: the batch runs for the healthy jobs and the failed ones
-report their error to their callers.
+Rank 0 runs the FastAPI app (same surface as v1) plus a collector loop that drains queued
+update jobs into batches; all ranks sit in a work loop fed by a rank-0 gloo broadcast and
+execute the same collective path. Job failures are per-job: the batch runs for the healthy
+jobs, each failure is reported to its own caller.
 """
 
 from __future__ import annotations
@@ -47,38 +35,11 @@ from prime_rl.ttt.server import (
 )
 from prime_rl.utils.logger import get_logger
 
-# How long an HTTP caller waits on the work loop before giving up with a 503. Generous:
-# an update normally completes within one batch window + forward, but a wedged work loop
-# must not pin request threads forever.
+# HTTP caller wait on the work loop before a 503 — a wedged loop must not pin threads forever.
 _RESULT_WAIT_SECONDS = 3600.0
 
-# Idle-heartbeat period for the control-plane broadcast (see run_server_v2.heartbeat):
-# must be comfortably below the gloo group's 24h op timeout.
+# Idle-heartbeat period (see run_server_v2.heartbeat); must stay well below gloo's 24h op timeout.
 _HEARTBEAT_SECONDS = 3600.0
-
-
-def validate_update_response(result: dict | None) -> UpdateResponse:
-    """Validate the work loop's payload before touching inference replicas."""
-    if result is None:
-        raise RuntimeError("TTT update produced no response")
-    return UpdateResponse.model_validate(result)
-
-
-async def complete_adapter_load(load, mark_loaded, unload, adapter_name: str) -> None:
-    """Load all replicas, recording success only after the load completes.
-
-    Reconcile a partial/ambiguous load by unloading the name everywhere before the
-    rollout lock is released. The original load/commit error remains authoritative.
-    """
-    try:
-        await load()
-        await mark_loaded()
-    except BaseException:
-        try:
-            await unload()
-        except Exception as cleanup_error:
-            get_logger().warning(f"TTT adapter-load cleanup failed for {adapter_name}: {cleanup_error}")
-        raise
 
 
 @dataclass
@@ -164,24 +125,18 @@ def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
     while True:
         if world.is_master:
             order = work_queue.get()
-            # ``stop`` is intentionally a one-item control order. Keep the transport
-            # tolerant of that documented shape so rank 0 broadcasts the stop instead of
-            # raising IndexError and leaving peer ranks blocked in their receive.
+            # ``stop`` is a one-item order; tolerate it so peers aren't stranded mid-receive.
             payload = [order[0], order[1] if len(order) > 1 else None]
         else:
             payload = [None, None]
         if dist.is_initialized() and world.world_size > 1:
-            # Control plane goes over a dedicated gloo group: non-master ranks block here
-            # for arbitrarily long idle gaps, and NCCL's ~10-min watchdog would abort them;
-            # gloo blocks CPU-side without a watchdog. Training collectives stay on NCCL.
+            # Control plane rides the watchdog-free gloo group (see run_server_v2).
             dist.broadcast_object_list(payload, src=0, group=ctrl_pg)
         kind, data = payload
         if kind == "stop":
             return
         if kind == "abort":
-            # Rank 0's HTTP thread is the only way work enters this service.  If it
-            # cannot bind/start, or exits later, broadcast the failure so workers do not
-            # remain parked forever in the next control-plane collective.
+            # A dead rank-0 HTTP thread must not leave workers parked in the broadcast forever.
             raise RuntimeError(f"TTT v2 HTTP server failed: {data}")
         if kind == "noop":
             continue  # idle heartbeat: keeps the gloo broadcast fed (see run_server_v2)
@@ -192,7 +147,7 @@ def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
                 logger.exception("ttt v2: release failed after broadcast, aborting rank")
                 os._exit(1)
             if world.is_master:
-                order[2].had_slot = released.released
+                order[2].had_slot = released
                 order[2].done.set()
             continue
         # kind == "update": data = list[UpdateJob]; on rank 0, order[2] = list[_Pending]
@@ -264,13 +219,10 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.http = httpx.AsyncClient(timeout=config.admin_timeout_seconds)
-        # Per-rollout locks order /update and /release: an update holds its rollout's lock
-        # across enqueue→result→adapter load so a concurrent release can't unload+free the
-        # slot between train and engine load (orphaned adapter in vLLM otherwise).
-        # They also serialize duplicate-replay retries: an orphaned 503 pending may still
-        # complete in the work loop WHILE a retry waits on the lock, so the duplicate check
-        # lives inside the work loop (which sees the post-completion slot version) and must
-        # NOT be a pre-read here in the HTTP layer — a pre-read would race that completion.
+        # Per-rollout locks order /update and /release across enqueue→result→adapter load
+        # (a concurrent release could otherwise unload+free the slot between train and engine
+        # load) and serialize duplicate-replay retries — the duplicate check MUST live in the
+        # work loop, not as an HTTP pre-read, or it races an orphaned pending's completion.
         app.state.rollout_locks = {}
         app.state.deferred_rollout_releases = set()
         collector = threading.Thread(
@@ -341,21 +293,25 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
                 lease_transferred = True
                 raise
             if pending.error is not None:
-                # 409: deterministic per-job validation errors; 500: unexpected-execution
-                # class (non-finite loss/checkpoint rejections and other isolated faults).
+                # 409: deterministic per-job validation errors; 500: unexpected-execution class.
                 raise HTTPException(status_code=pending.error_status, detail=pending.error)
-            response = validate_update_response(pending.result)
-
-            async def mark_loaded() -> None:
-                trainer.mark_loaded(request.rollout_id, request.adapter_name, response.version)
-
+            if pending.result is None:
+                raise RuntimeError("TTT update produced no response")
+            response = UpdateResponse.model_validate(pending.result)
             try:
-                await complete_adapter_load(
-                    lambda: load_adapter(request.adapter_name, response.ckpt_path),
-                    mark_loaded,
-                    lambda: unload_adapter(request.adapter_name),
-                    request.adapter_name,
-                )
+                # Mark loaded only after every replica load; reconcile a partial/ambiguous
+                # load by unloading everywhere before the rollout lock is released.
+                try:
+                    await load_adapter(request.adapter_name, response.ckpt_path)
+                    trainer.mark_loaded(request.rollout_id, request.adapter_name, response.version)
+                except BaseException:
+                    try:
+                        await unload_adapter(request.adapter_name)
+                    except Exception as cleanup_error:
+                        get_logger().warning(
+                            f"TTT adapter-load cleanup failed for {request.adapter_name}: {cleanup_error}"
+                        )
+                    raise
             except (AdapterLoadError, httpx.HTTPError, TimeoutError) as e:
                 raise HTTPException(status_code=502, detail=f"adapter load failed: {e}") from e
             return response
@@ -399,9 +355,7 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
                 lease_transferred = True
                 _defer_lease_release(app, lease, transaction)
                 raise
-            # had_slot comes from the work order's result — a pre-read of trainer.slots
-            # could race the work loop's own mutation of the registry.
-            return {"released": ack.had_slot}
+            return {"released": ack.had_slot}  # authoritative (see _ReleaseAck)
         except AdapterUnloadError as e:
             raise HTTPException(status_code=502, detail=f"adapter unload incomplete: {e}") from e
         finally:
@@ -409,22 +363,6 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
                 await lease.release()
 
     return app
-
-
-def _dedup_pendings(pendings: list["_Pending"]) -> tuple[list["_Pending"], list["_Pending"]]:
-    """Keep the FIRST pending per rollout_id; later duplicates are deferred to the next
-    batch. Legitimate back-to-back updates (seq_no k, k+1) can land in one drain — running
-    both in one packed batch would trip the strict seq_no validation on the second."""
-    seen: set[str] = set()
-    batch: list[_Pending] = []
-    deferred: list[_Pending] = []
-    for pending in pendings:
-        if pending.job.rollout_id in seen:
-            deferred.append(pending)
-        else:
-            seen.add(pending.job.rollout_id)
-            batch.append(pending)
-    return batch, deferred
 
 
 def _collector_loop(config, trainer, batch_queue: Queue, work_queue: Queue) -> None:
@@ -442,9 +380,17 @@ def _collector_loop(config, trainer, batch_queue: Queue, work_queue: Queue) -> N
                 pendings.append(batch_queue.get_nowait())
             except Empty:
                 break
-        pendings, deferred = _dedup_pendings(pendings)
-        for pending in deferred:
-            batch_queue.put(pending)  # re-queue: next batch, after this rollout's first job
+        # Keep the FIRST pending per rollout_id; a same-rollout follow-up (seq_no k, k+1
+        # in one drain) would trip strict seq_no validation — re-queue it for the next batch.
+        seen: set[str] = set()
+        deduped: list[_Pending] = []
+        for pending in pendings:
+            if pending.job.rollout_id in seen:
+                batch_queue.put(pending)
+            else:
+                seen.add(pending.job.rollout_id)
+                deduped.append(pending)
+        pendings = deduped
         valid = _validate_and_split(trainer, pendings)
         if valid:
             work_queue.put(("update", [p.job for p in valid], valid))
@@ -487,9 +433,8 @@ def run_server_v2(config: TTTServiceConfig) -> None:
         torch.distributed.init_process_group(backend="nccl", device_id=torch.device("cuda", world.local_rank))
     ctrl_pg = None
     if torch.distributed.is_initialized() and world.world_size > 1:
-        # Dedicated gloo group for the control-plane broadcast: idle services park
-        # non-master ranks in the broadcast for hours; NCCL's ~10-min watchdog would abort
-        # them, gloo just blocks CPU-side. Training collectives keep the default NCCL group.
+        # Control plane on a dedicated gloo group: non-master ranks park in the broadcast
+        # for hours and NCCL's ~10-min watchdog would abort them; training stays on NCCL.
         ctrl_pg = torch.distributed.new_group(backend="gloo", timeout=datetime.timedelta(hours=24))
     trainer = TTTTrainerV2(config)
     trainer.ctrl_pg = ctrl_pg  # checkpoint barrier rides the gloo group too
@@ -509,11 +454,8 @@ def run_server_v2(config: TTTServiceConfig) -> None:
         ).start()
 
         def heartbeat() -> None:
-            # Idle heartbeat: non-master ranks park inside the gloo broadcast between work
-            # orders, and gloo enforces the group timeout per op — a fully idle service
-            # (e.g. launched before the RL run starts) would have ranks 1..N time out and
-            # die after 24h, taking the WHOLE service down. A periodic no-op order keeps
-            # the broadcast fed; it costs one tiny gloo broadcast per interval.
+            # Gloo enforces its 24h timeout per op — a fully idle service would kill
+            # ranks 1..N; a periodic no-op order keeps the broadcast fed.
             while True:
                 time.sleep(_HEARTBEAT_SECONDS)
                 work_queue.put(("noop", None))

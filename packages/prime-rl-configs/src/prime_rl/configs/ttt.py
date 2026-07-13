@@ -3,7 +3,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, PrivateAttr, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from prime_rl.configs.shared import LogConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
@@ -158,12 +158,11 @@ class FSDPEngineConfig(BaseConfig):
 
     def to_model_config(self, lora: "TTTLoRAConfig"):
         """Build the trainer ``ModelConfig`` for the TTT stack: user overrides + the TTT
-        model name + the slotted LoRA config (rank/alpha/targets from ``[lora]``)."""
+        model name (threaded into ``model.name`` by TTTServiceConfig validation) + the
+        slotted LoRA config (rank/alpha/targets from ``[lora]``)."""
         from prime_rl.configs.trainer import LoRAConfig as TrainerLoRAConfig
 
         data = self.model.model_dump()
-        if self._model_name is not None:
-            data["name"] = self._model_name
         data["lora"] = TrainerLoRAConfig(
             rank=lora.rank,
             alpha=lora.alpha,
@@ -171,9 +170,6 @@ class FSDPEngineConfig(BaseConfig):
             target_modules=lora.target_modules,
         ).model_dump()
         return TrainerModelConfig.model_validate(data)
-
-    # Set by TTTServiceConfig validation so the engine renders the right base model.
-    _model_name: str | None = PrivateAttr(default=None)
 
 
 TTTEngineConfig = PeftEngineConfig | FSDPEngineConfig
@@ -244,5 +240,4 @@ class TTTServiceConfig(BaseConfig):
             self.tokenizer.name = self.model.name
         if isinstance(self.engine, FSDPEngineConfig):
             self.engine.model.name = self.model.name
-            self.engine._model_name = self.model.name
         return self

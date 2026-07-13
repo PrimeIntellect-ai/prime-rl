@@ -1,27 +1,9 @@
-"""GC for TTT adapter checkpoints — the replay artifacts the TTT service leaves on disk.
-
-Every compaction of a TTT rollout writes a versioned adapter checkpoint
-(`outputs/ttt/<rollout_id>/v<k>/`), which the trainer needs exactly once: to replay the
-rollout's branches in the training step that ships them. After that step is consumed the
-checkpoints are dead weight, and a rollout that never ships (errored, filtered, dropped
-group) leaves them orphaned. The orchestrator drives this GC because it alone knows both
-lifecycles:
-
-- ``track_batch(step, batch)``: called at ship time. Rollout dirs referenced by shipped
-  samples are deferred until the trainer finishes that step. ``batch.rollouts`` is the
-  ARRIVAL window, not the ship cohort — a rollout can arrive in step N's window and ship
-  its samples in step N+1 (batch overflow; a group finalizing after the cut) — so only
-  conclusively dead rollouts (errored: never tokenized into samples; filtered: excluded
-  from shipping) are deleted immediately. Everything else is carried until its dirs show
-  up in a later step's shipped samples.
-- ``on_new_version(version)``: the weight watcher observed the trainer's broadcast for
-  ``version`` — every step ≤ ``version`` is consumed, so its deferred dirs are deleted.
-
-Rollouts that are silently dropped without a filter/error mark (a group-scored group with
-a partial failure) stay in the carry set for the run's lifetime — a bounded leak on disk,
-never a premature delete. Deletion is best-effort (`ignore_errors`): a vanished dir (e.g.
-the TTT service configured with ``keep_checkpoints=false``) is not an error.
-"""
+"""GC for TTT adapter checkpoints (`outputs/ttt/<rollout_id>/v<k>/`), driven by the
+orchestrator, which alone knows both lifecycles: ``track_batch`` defers shipped rollouts'
+dirs until the trainer consumes that step (``on_new_version``); conclusively dead rollouts
+(errored/filtered) delete immediately; everything else is carried — a rollout can arrive in
+step N's window and ship in step N+1, so carrying is a bounded leak, never a premature
+delete. Deletion is best-effort (``ignore_errors``)."""
 
 from __future__ import annotations
 

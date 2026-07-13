@@ -1,17 +1,8 @@
-"""The TTT service's HTTP surface.
+"""The TTT service's HTTP surface (v1): FastAPI over `TTTTrainer`.
 
-FastAPI app over the `TTTTrainer`:
-
-- `POST /update` — one blocking TTT update for a rollout (gradient step(s) + checkpoint),
-  then a `/load_lora_adapter` (in-place reload, prime-rl's wrapper) on every inference
-  server. The rollout side blocks on this call, so the response is the ack.
-- `POST /release` — drop the rollout's training state and unload its adapter from the
-  engines; checkpoints stay on disk (unless `keep_checkpoints=false`).
-- `GET /health` — readiness (the model is loaded when the app is serving).
-
-Training is serialized through an executor (`max_concurrent_updates` bounds distinct
-rollouts queuing; the trainer itself runs one update at a time — the adapters share one
-PEFT wrapper). Per-rollout ordering is guaranteed by the rollout side blocking per update.
+`POST /update` runs one blocking TTT update then (re)loads the adapter on every inference
+server; `POST /release` drops the rollout's state and unloads the adapter; `GET /health`
+is readiness. Training is serialized (the adapters share one PEFT wrapper).
 """
 
 from __future__ import annotations
@@ -137,9 +128,8 @@ def build_app(config: TTTServiceConfig, trainer: "TTTTrainer | None" = None) -> 
                     )
                 except ValueError as e:
                     raise HTTPException(status_code=409, detail=str(e)) from e
-                # load_adapter stays inside the train_lock so a concurrent /release can't
-                # unload+pop between train and load (orphaned adapter in vLLM). This
-                # serializes engine loads — acceptable: max_concurrent_updates defaults to 1.
+                # Load inside the train_lock — same orphaned-adapter race as v2's
+                # per-rollout locks (see server_v2.build_app_v2 lifespan).
                 try:
                     await load_adapter(request.adapter_name, result["ckpt_path"])
                 except httpx.HTTPError as e:
@@ -150,10 +140,8 @@ def build_app(config: TTTServiceConfig, trainer: "TTTTrainer | None" = None) -> 
     async def release(request: ReleaseRequest) -> dict:
         async with app.state.train_lock:
             state = app.state.trainer.release(request.rollout_id)
-        # Unload UNCONDITIONALLY: a client retry after a lost response finds no state (the
-        # first attempt already dropped it) but the engine unload may never have run —
-        # gating on it would leak the adapter in vLLM until restart. unload_adapter is
-        # idempotent (a not-loaded name is caught and warn-logged).
+        # Unload UNCONDITIONALLY: a retry after a lost response finds no state, but the
+        # first attempt's engine unload may never have run (unload is idempotent).
         await unload_adapter(request.adapter_name)
         return {"released": state is not None}
 

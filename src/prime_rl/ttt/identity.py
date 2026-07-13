@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
 from pathlib import Path
 
 _ROLLOUT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
@@ -67,8 +66,3 @@ def update_fingerprint(
     except (TypeError, ValueError) as exc:
         raise ValueError(f"update payload is not JSON-serializable: {exc}") from exc
     return hashlib.sha256(encoded).hexdigest()
-
-
-@dataclass(frozen=True)
-class ReleaseResult:
-    released: bool

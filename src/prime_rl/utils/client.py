@@ -82,6 +82,17 @@ class InferencePool(Protocol):
         ...
 
 
+def openai_client_from_config(cfg) -> AsyncOpenAI:
+    """A plain AsyncOpenAI built straight from a verifiers ``ClientConfig``'s fields —
+    works for any ClientConfig type; ``resolve_client`` would hand back an EvalClient
+    (no ``.openai``) for these chat-completions configs."""
+    return AsyncOpenAI(
+        base_url=cfg.base_url,
+        api_key=os.environ.get(cfg.api_key_var) or "EMPTY",
+        default_headers=cfg.headers or None,
+    )
+
+
 class PrefillScorer:
     """Prefill-scores token ids against a pool's *current* endpoints. Resolves one
     client per endpoint, cached by endpoint identity — so it fills once for a
@@ -101,14 +112,7 @@ class PrefillScorer:
         key = client_identity(cfg)
         openai = self._clients.get(key)
         if openai is None:
-            # Build the OpenAI client straight from the config fields — works for any
-            # ClientConfig type; resolve_client would hand back an EvalClient (no `.openai`)
-            # for these chat-completions teacher configs.
-            openai = self._clients[key] = AsyncOpenAI(
-                base_url=cfg.base_url,
-                api_key=os.environ.get(cfg.api_key_var) or "EMPTY",
-                default_headers=cfg.headers or None,
-            )
+            openai = self._clients[key] = openai_client_from_config(cfg)
         return await prefill_logprobs(openai, model, token_ids)
 
     async def aclose(self) -> None:

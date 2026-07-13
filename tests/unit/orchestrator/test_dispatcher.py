@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("verifiers")
 
-from prime_rl.orchestrator.dispatcher import RolloutDispatcher  # noqa: E402
+from prime_rl.orchestrator.dispatcher import _wants_train_client  # noqa: E402
 from prime_rl.orchestrator.types import GroupState  # noqa: E402
 
 
@@ -35,20 +35,13 @@ class FakeEnvs:
         return self._envs[name]
 
 
-def make_dispatcher(eval_envs: FakeEnvs | None) -> RolloutDispatcher:
-    # ``_wants_train_client`` only reads ``eval_envs``; skip the heavy constructor.
-    dispatcher = RolloutDispatcher.__new__(RolloutDispatcher)
-    dispatcher.eval_envs = eval_envs
-    return dispatcher
-
-
 def group(kind: str, env_name: str) -> GroupState:
     return GroupState(kind=kind, env_name=env_name, task_idx=0, rollouts_to_schedule=1, target_rollouts=1)
 
 
 def test_ttt_eval_env_routes_to_train_client():
     envs = FakeEnvs({"ttt-eval": FakeEnv(FakeConfig(ttt=FakeTTT(enabled=True)))})
-    assert make_dispatcher(envs)._wants_train_client(group("eval", "ttt-eval")) is True
+    assert _wants_train_client(envs, group("eval", "ttt-eval")) is True
 
 
 def test_plain_eval_env_keeps_eval_client():
@@ -58,10 +51,9 @@ def test_plain_eval_env_keeps_eval_client():
             "disabled": FakeEnv(FakeConfig(ttt=FakeTTT(enabled=False))),
         }
     )
-    dispatcher = make_dispatcher(envs)
-    assert dispatcher._wants_train_client(group("eval", "plain")) is False
-    assert dispatcher._wants_train_client(group("eval", "disabled")) is False
+    assert _wants_train_client(envs, group("eval", "plain")) is False
+    assert _wants_train_client(envs, group("eval", "disabled")) is False
 
 
 def test_train_groups_always_use_train_client():
-    assert make_dispatcher(None)._wants_train_client(group("train", "any")) is True
+    assert _wants_train_client(None, group("train", "any")) is True

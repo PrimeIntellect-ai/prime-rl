@@ -113,6 +113,18 @@ class DispatcherMetrics:
         return keys
 
 
+def _wants_train_client(eval_envs, group: "GroupState") -> bool:
+    """All train groups sample through the renderer (train) client; so do TTT-enabled eval
+    envs — TTT consumes exact token ids, so the chat relay would refuse at the first
+    compaction. Plain eval groups keep the chat-relay eval client."""
+    if group.kind != "eval":
+        return True
+    if eval_envs is None:
+        return False
+    ttt = getattr(eval_envs.get(group.env_name).config, "ttt", None)
+    return ttt is not None and ttt.enabled
+
+
 class RolloutDispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules
@@ -169,21 +181,6 @@ class RolloutDispatcher:
 
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
-
-    def _wants_train_client(self, group: GroupState) -> bool:
-        """Whether this group must sample through the renderer (train) client.
-
-        All train groups do. Eval groups normally use the chat-relay eval client,
-        but a TTT-enabled eval env must run the identical inference regime as
-        training: TTT consumes exact token ids, so it requires the renderer/token
-        client — the chat relay would refuse at the first compaction."""
-        if group.kind != "eval":
-            return True
-        if self.eval_envs is None:
-            return False
-        config = self.eval_envs.get(group.env_name).config
-        ttt = getattr(config, "ttt", None)
-        return ttt is not None and ttt.enabled
 
     def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
         """``(pool, model_name, is_live)`` for *train* rollouts of this env —
@@ -414,13 +411,8 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the env sampler's pool via the
-        # renderer/token train client. Eval always evaluates the policy and
-        # goes through the eval client (chat-completions) — the same path the
-        # legacy orchestrator used, so eval scores stay comparable. TTT eval
-        # envs are the exception: TTT consumes exact token ids, so they need
-        # the renderer (train) client — the chat relay would refuse at the
-        # first compaction.
+        # Train rollouts use the env sampler's pool via the renderer/token train
+        # client; eval always evaluates the policy (client choice: _wants_train_client).
         if group.kind == "eval":
             pool, model_name = self.policy_pool, self.policy.model_name
             live_sourced = True
@@ -429,7 +421,7 @@ class RolloutDispatcher:
 
         # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
-            if group.kind == "eval" and not self._wants_train_client(group):
+            if group.kind == "eval" and not _wants_train_client(self.eval_envs, group):
                 client = await pool.get_eval_client()
             else:
                 load = Counter(

@@ -350,17 +350,11 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_ttt(self):
-        """Test-time-training envs (``env.ttt``) constrain the deployment: the trainer must
-        run the policy full-weights (frozen-adapter replay can't stack on a trainable policy
-        LoRA), and the inference server must serve LoRA adapters for the TTT service to
-        load. Enforced here — at launch, not mid-run. Replay composes with activation
-        checkpointing and non-fullgraph ``torch.compile`` (ttt_replay.py normalizes
-        AC-wrapped FQNs and installs eager, dynamo-disabled hooks); fullgraph compilation
-        is rejected because those hooks intentionally create graph breaks."""
-        # ``ttt.enabled`` is the master switch (verifiers TTTConfig.enabled): a disabled
-        # block leaves rollouts untouched, so it must impose no constraints here either.
-        # Eval envs run the identical inference regime as training (same TTT updates),
-        # so inference-side constraints apply to both; replay is train-only.
+        """TTT envs constrain the deployment at launch: full-weight policy (frozen-adapter
+        replay can't stack on a trainable policy LoRA; fullgraph compile rejected — the
+        replay hooks create graph breaks) and LoRA-serving inference. A disabled ttt block
+        imposes no constraints; eval envs share inference-side constraints, replay is
+        train-only."""
         active_train_ttt_envs = [
             env for env in self.orchestrator.train.env if getattr(env, "ttt", None) is not None and env.ttt.enabled
         ]
@@ -373,9 +367,8 @@ class RLConfig(BaseConfig):
         managed_eval_ttt_envs = [env for env in active_eval_ttt_envs if env.ttt.base_url == "auto"]
         managed_ttt_envs = managed_train_ttt_envs + managed_eval_ttt_envs
         ttt_envs = [env.resolved_name for env in active_ttt_envs]
-        # Launcher/service mutual consistency FIRST — these pairings are wrong regardless
-        # of whether any env has TTT enabled, so they must precede the early return below
-        # (otherwise a no-TTT-env config with stray [ttt]/num_ttt_nodes slips through).
+        # Launcher/service mutual consistency FIRST — must precede the early return so a
+        # no-TTT-env config with stray [ttt]/num_ttt_nodes can't slip through.
         num_ttt_nodes = getattr(self.deployment, "num_ttt_nodes", 0)
         if num_ttt_nodes > 0 and self.ttt is None:
             raise ValueError(
@@ -395,9 +388,7 @@ class RLConfig(BaseConfig):
                 "the managed service."
             )
         if self.ttt is not None and num_ttt_nodes == 0:
-            # Covers both multi_node with num_ttt_nodes = 0 and non-multi_node deployments
-            # (which have no num_ttt_nodes at all): the launcher only starts the service
-            # via write_slurm_script on multi_node, so [ttt] is dead config otherwise.
+            # Also covers non-multi_node deployments (no num_ttt_nodes at all).
             raise ValueError(
                 "[ttt] service config is set but the launcher would never start it "
                 "(deployment.num_ttt_nodes = 0 / single-node deployment). Set "
@@ -428,11 +419,8 @@ class RLConfig(BaseConfig):
                     "these are mutually exclusive experiment arms (A4 vs A5) whose effects must stay "
                     "disentangled — enable at most one."
                 )
-        # Every in-flight rollout holds a vLLM adapter slot; the orchestrator resolves
-        # ``max_inflight_rollouts`` in its own validators (from batch_size when unset), so
-        # read it defensively and only enforce when determinable. Eval rollouts hold slots
-        # concurrently with train rollouts too; eval concurrency depends on eval scheduling
-        # and isn't computable here, so it's only surfaced in the error guidance.
+        # Every in-flight rollout holds a vLLM adapter slot; enforce only when
+        # max_inflight_rollouts is determinable here.
         if self.inference is not None and self.inference.enable_lora:
             max_inflight = self.orchestrator.max_inflight_rollouts
             if max_inflight is not None and max_inflight > self.inference.max_loras:
@@ -443,9 +431,8 @@ class RLConfig(BaseConfig):
                     "max_loras with eval concurrency). Raise max_loras (and max_cpu_loras) or lower "
                     "max_inflight_rollouts / oversampling_factor."
                 )
-        # The trainer must arm the replay hooks before ``torch.compile`` (see
-        # TrainerConfig.ttt_replay). Keyed to TRAIN envs only: eval-only TTT never
-        # produces replay samples (eval adapters are dismissed per rollout).
+        # Arm replay hooks before torch.compile; train envs only (eval adapters are
+        # dismissed per rollout, never replayed).
         if active_train_ttt_envs:
             if self.trainer.model.compile is not None and self.trainer.model.compile.fullgraph:
                 raise ValueError(
@@ -453,9 +440,7 @@ class RLConfig(BaseConfig):
                     "set fullgraph=false or disable model compilation."
                 )
             self.trainer.ttt_replay = True
-        # --- Launcher-managed TTT service (RLConfig.ttt + deployment.num_ttt_nodes) ---
-        # Mutual [ttt]/num_ttt_nodes consistency is enforced above (before the early
-        # return), so reaching here with self.ttt set implies num_ttt_nodes > 0.
+        # Launcher-managed TTT service (self.ttt set implies num_ttt_nodes > 0, see above).
         if self.ttt is not None:
             if self.inference is None or getattr(self.deployment, "total_infer_nodes", 0) < 1:
                 raise ValueError(
@@ -502,11 +487,9 @@ class RLConfig(BaseConfig):
                     "TTT updates consume the engine's exact token ids; the base models must match."
                 )
             if isinstance(self.ttt.engine, FSDPEngineConfig):
-                # TTTServiceConfig initially synchronizes these from its own model field,
-                # before RLConfig auto-wires the resolved policy name. Keep direct users of
-                # the validated in-memory config consistent with the dumped/reparsed config.
+                # TTTServiceConfig synced this from its own model field before RLConfig
+                # auto-wired the resolved policy name — re-sync.
                 self.ttt.engine.model.name = policy_model_name
-                self.ttt.engine._model_name = policy_model_name
                 policy_tokenizer = self.orchestrator.tokenizer
                 if "tokenizer" not in self.ttt.model_fields_set:
                     self.ttt.tokenizer = policy_tokenizer.model_copy(deep=True)

@@ -185,6 +185,7 @@ def make_cpu_trainer(max_slots: int = 4, **engine_overrides):
     set_lora_num_tokens(torch.zeros(max_slots, dtype=torch.int32), reset_reference=True)
 
     trainer = make_registry(max_slots=max_slots, **engine_overrides)
+    trainer._tokenizer = object()  # QA render is never reached in these tests
     trainer.device = torch.device("cpu")
     trainer.parallel_dims = SimpleNamespace(ep_enabled=False)
     trainer.logger = type("L", (), {"info": lambda self, *a, **k: None})()
@@ -271,14 +272,30 @@ def test_update_batch_asserts_unique_rollout_ids():
 
 
 def test_collector_dedups_same_rollout_keeping_first():
-    from prime_rl.ttt.server_v2 import _dedup_pendings, _Pending
+    """One collector drain keeps the FIRST pending per rollout (order preserved) and
+    re-queues the same-rollout follow-up for the next batch."""
+    import threading
+    from queue import Queue
 
+    from prime_rl.ttt.server_v2 import _collector_loop, _Pending
+
+    trainer = make_registry(max_slots=4, max_batch_wait_seconds=0)
     first = _Pending(job=job("r1", seq_no=1))
-    second = _Pending(job=job("r1", seq_no=2))
+    second = _Pending(job=job("r1", seq_no=1))  # retry of the same update, one drain later
     other = _Pending(job=job("r2"))
-    batch, deferred = _dedup_pendings([first, second, other])
-    assert batch == [first, other]  # first pending per rollout stays, order preserved
-    assert deferred == [second]  # later duplicate deferred to the next batch
+    batch_queue: Queue = Queue()
+    work_queue: Queue = Queue()
+    for pending in (first, second, other):
+        batch_queue.put(pending)
+    collector = threading.Thread(
+        target=_collector_loop, args=(trainer.config, trainer, batch_queue, work_queue), daemon=True
+    )
+    collector.start()
+    kind, jobs, valid = work_queue.get(timeout=5)
+    assert kind == "update"
+    assert valid == [first, other]  # first pending per rollout stays, order preserved
+    kind, jobs, valid = work_queue.get(timeout=5)
+    assert valid == [second]  # the deferred duplicate rides the next batch
 
 
 def test_update_batch_replays_duplicate_seq_no_from_cache():
@@ -326,14 +343,11 @@ def test_slot_and_release_identity_remain_bound():
     with pytest.raises(ValueError, match="already bound to rollout"):
         trainer._claim("r2", "ttt-r1")
 
-    released = trainer.release("r1", "ttt-r1")
-    assert released.released
-    # Idempotent retry: the state is gone, but the release still succeeds with
-    # released=False (the server unloads from vLLM unconditionally either way).
-    assert not trainer.release("r1", "ttt-r1").released
-    # A never-seen rollout releases the same way — no tombstone bookkeeping needed
-    # (rollout ids are uuid4-unique, so reuse cannot happen).
-    assert not trainer.release("r-unknown", "ttt-r-unknown").released
+    assert trainer.release("r1", "ttt-r1") is True
+    # Idempotent retry: the state is gone, but the release still succeeds with False
+    # (the server unloads from vLLM unconditionally either way); never-seen rollouts too.
+    assert trainer.release("r1", "ttt-r1") is False
+    assert trainer.release("r-unknown", "ttt-r-unknown") is False
 
 
 def poisoning_forward(trainer, poisoned_span_start_fn):

@@ -173,10 +173,13 @@ async def test_update_forwards_qa_fields(service):
 
 
 async def test_v2_partial_replica_load_is_reconciled_everywhere():
+    """A partial replica load must be reconciled (unload everywhere) before the /update
+    caller sees its 502, and success must never be recorded (mark_loaded)."""
     import asyncio
+    import threading
+    from queue import Queue
 
-    from prime_rl.ttt.admin import AdapterLoadError, load_adapter_into_replicas, unload_adapter_from_replicas
-    from prime_rl.ttt.server_v2 import complete_adapter_load
+    from prime_rl.ttt.server_v2 import build_app_v2
 
     load_started: set[str] = set()
     unloads: set[str] = set()
@@ -191,23 +194,47 @@ async def test_v2_partial_replica_load_is_reconciled_everywhere():
             return httpx.Response(503 if request.url.host == "bad" else 200)
         if request.url.path == "/v1/unload_lora_adapter":
             unloads.add(request.url.host)
-            return httpx.Response(200)
+            return httpx.Response(200, json={"status": "ok"})
         return httpx.Response(404)
 
-    marked = False
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    marked = []
 
-        async def mark_loaded():
-            nonlocal marked
-            marked = True
+    class FakeV2Trainer:
+        slots: dict = {}
+        free_idxs: set = set()
 
-        with pytest.raises(AdapterLoadError):
-            await complete_adapter_load(
-                lambda: load_adapter_into_replicas(client, ["http://good", "http://bad"], "ttt-r1", "/v1"),
-                mark_loaded,
-                lambda: unload_adapter_from_replicas(client, ["http://good", "http://bad"], "ttt-r1"),
-                "ttt-r1",
-            )
+        def validate_job(self, job):
+            return None
+
+        def prepare_job(self, job):
+            pass
+
+        def mark_loaded(self, rollout_id, adapter_name, version):
+            marked.append((rollout_id, adapter_name, version))
+
+    work_queue: Queue = Queue()
+
+    def fake_work_loop():
+        kind, jobs, pendings = work_queue.get()
+        assert kind == "update"
+        for pending in pendings:
+            pending.result = {"version": 1, "loss": 0.5, "ckpt_path": "/v1", "num_loss_tokens": 1}
+            pending.done.set()
+
+    config = TTTServiceConfig(
+        engine={"type": "fsdp", "max_batch_wait_seconds": 0},
+        inference_admin_urls=["http://good", "http://bad"],
+    )
+    app = build_app_v2(config, FakeV2Trainer(), work_queue)
+    threading.Thread(target=fake_work_loop, daemon=True).start()
+    async with app.router.lifespan_context(app):
+        await app.state.http.aclose()
+        app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://ttt") as client:
+            response = await client.post("/update", json=UPDATE)
+            assert response.status_code == 502
+            assert "adapter load failed" in response.json()["detail"]
 
     assert not marked
     assert load_started == unloads == {"good", "bad"}

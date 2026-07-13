@@ -1,21 +1,9 @@
 """Frozen TTT-adapter replay: run a micro batch's forward under the exact LoRA adapter its
-tokens were sampled with, while training only the base weights.
-
-The RL half of test-time training (see `verifiers.v1.ttt` / `prime_rl.ttt`): every branch of
-a TTT rollout was sampled under one adapter version, checkpointed by the TTT service in PEFT
-format. The packer keeps one adapter per micro batch (`MicroBatch.ttt_adapter_path`), and
-this manager applies it around the forward — so the trainer's logprobs (and thus the
-importance ratio) are computed under the same weights the sampler used. The adapter acts as
-context, exactly like the tokens do.
-
-Mechanism: forward hooks on the target `nn.Linear` modules add the adapter contribution
-`scale * (x @ A^T @ B^T)` from plain no-grad tensors. No parameters, no buffers, no wrapped
-modules — so it composes with FSDP/AC/compile untouched, the base weights keep their
-gradients, and the adapter path still backpropagates *through* the activations (a frozen
-adapter is a fixed function of x, not a stop-gradient).
-
-Not compatible with policy-LoRA training (`model.lora`): stacking a trainable adapter on the
-frozen ones is deliberately out of scope — the config validator rejects the combination.
+tokens were sampled with (one adapter per micro batch), while training only the base
+weights — so the trainer's logprobs/importance ratio use the sampler's weights. Mechanism:
+forward hooks on the target `nn.Linear`s add `scale * (x @ A^T @ B^T)` from plain no-grad
+tensors, composing with FSDP/AC/compile untouched (adapter still backpropagates *through*
+the activations). Incompatible with policy-LoRA training — the config validator rejects it.
 """
 
 from __future__ import annotations

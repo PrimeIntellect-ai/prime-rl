@@ -63,10 +63,8 @@ class TrainSink:
         self.pending_rollouts: TrainRollouts = TrainRollouts()
         self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
         self.pending_batch: list[Rollout] = []
-        # A5 lessons belong to the completed group, not to an arbitrary rollout.
-        # Keep them separate until a post-filter survivor from that group ships;
-        # otherwise filtering the first survivor or splitting the group across
-        # batches can silently lose the lessons.
+        # A5 lessons are group-owned until a post-filter survivor from that group ships,
+        # so filtering/splitting can't silently lose them.
         self._group_meta_samples: dict[uuid.UUID, list[TrainingSample]] = {}
         # Running token total of ``pending_batch`` (token-batched runs), kept in
         # sync on append/pop so the readiness check never re-walks the uncached
@@ -78,23 +76,18 @@ class TrainSink:
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name: dict[str, int] = {}
 
-        # Lazy chat clients for TTT group meta-extraction, keyed by env name (built on
-        # first use from that env's sampler pool — a single shared client would pin every
-        # env's calls to whichever pool triggered meta-lessons first).
+        # Lazy per-env chat clients for TTT meta-extraction (a shared client would pin
+        # every env to whichever pool triggered meta-lessons first).
         self._meta_clients: dict[str, object] = {}
 
-        # A5 meta-extraction outcome counters (reset with the pre-filter stats each ship):
-        # a silently rising dropped rate means the arm is quietly running without lessons.
+        # A5 meta-extraction outcome counters — a rising dropped rate means the arm is
+        # quietly running without lessons.
         self.meta_groups_ok = 0
         self.meta_groups_dropped = 0
 
     def _rollout_batch_tokens(self, rollout: Rollout) -> int:
-        """Tokens this rollout contributes to the trainer payload.
-
-        Preserve Prime-RL's trace-token accounting for ordinary environments. TTT
-        rollouts can add recycled/meta CE samples, so their batching must use the
-        actual serialized samples.
-        """
+        """Tokens this rollout contributes to the trainer payload: trace tokens for
+        ordinary envs, actual serialized samples for TTT (recycled/meta CE add tokens)."""
         ttt_config = getattr(self.train_envs.get(rollout.env_name).config, "ttt", None)
         if ttt_config is not None and ttt_config.enabled:
             return sum(len(sample.token_ids) for sample in rollout.samples)
@@ -250,12 +243,10 @@ class TrainSink:
         # owns the grouping mechanics.
         await env.algorithm.finalize_group(survivors)
 
-        # TTT Q&A recycling: append the ce-routed Q&A samples AFTER group
-        # finalization, so the advantage broadcast/stamping never sees them —
-        # they carry no rl credit, only a ce stream on the answer tokens.
+        # TTT Q&A recycling: append ce-routed Q&A samples AFTER group finalization so
+        # the advantage broadcast/stamping never sees them.
         ttt_config = getattr(env.config, "ttt", None)
-        # Gate on `enabled` too: a disabled TTT block (wiring ablation) must run neither
-        # QA-to-policy path — same predicate as RLConfig.validate_ttt and the launch canary.
+        # Gate on `enabled`: a disabled TTT block must run neither QA-to-policy path.
         qa_config = ttt_config.qa if ttt_config is not None and ttt_config.enabled else None
         if qa_config is not None and qa_config.recycle_to_policy:
             for r in survivors:
@@ -266,22 +257,16 @@ class TrainSink:
                     # schemas): skip this rollout's recycling, never error the rollout.
                     get_logger().warning(f"QA recycling failed | env={env_name} task_idx={task_idx}", exc_info=True)
 
-        # TTT group-level meta-extraction: one call over the finished cohort (every
-        # rollout's Q&A pairs + its reward) distills contrastive, general lessons —
-        # what the high-reward attempts did that the low-reward ones didn't. Keep the
-        # resulting ce-routed samples group-owned until a member survives both filter
-        # passes. Enrichment: a failed extraction logs and skips, never fails the group.
+        # TTT group-level meta-extraction (see qa_meta.py); samples stay group-owned
+        # until a member survives both filter passes.
         meta_samples: list[TrainingSample] = []
         if qa_config is not None and qa_config.meta_lessons and len(survivors) >= 2:
-            from prime_rl.orchestrator.qa_meta import (
-                build_meta_client,
-                extract_meta_lessons,
-                meta_lesson_samples,
-            )
+            from prime_rl.orchestrator.qa_meta import extract_meta_lessons, meta_lesson_samples
+            from prime_rl.utils.client import openai_client_from_config
 
             try:
                 if env_name not in self._meta_clients:
-                    self._meta_clients[env_name] = build_meta_client(await env.sampler.pool.get_eval_client())
+                    self._meta_clients[env_name] = openai_client_from_config(await env.sampler.pool.get_eval_client())
                 items = await extract_meta_lessons(
                     survivors, qa_config, self._meta_clients[env_name], env.sampler.pool.model_name
                 )
@@ -294,10 +279,7 @@ class TrainSink:
                     )
                 self.meta_groups_ok += 1
             except Exception:
-                # Meta lessons are enrichment, never correctness — the same containment
-                # QA recycling gets above. Client construction, the provider call, and
-                # meta_lesson_samples' chat-template rendering (recorded tool schemas)
-                # can raise; a bad group must not kill the run.
+                # Enrichment, never correctness: a bad group must not kill the run.
                 self.meta_groups_dropped += 1
                 get_logger().warning(
                     f"Meta-lesson extraction failed | env={env_name} task_idx={task_idx}", exc_info=True
