@@ -72,6 +72,7 @@ from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast
+from prime_rl.utils.config import to_toml_dict
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
@@ -195,7 +196,7 @@ class Orchestrator:
         config_dir = config.output_dir / "control"
         config_dir.mkdir(parents=True, exist_ok=True)
         with open(config_dir / "orch.toml", "wb") as f:
-            tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
+            tomli_w.dump(to_toml_dict(config), f)
 
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
