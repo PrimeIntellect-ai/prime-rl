@@ -92,6 +92,9 @@ class InterceptHandler(logging.Handler):
         if self.prefix is not None:
             message = f"[{self.prefix}] {message}"
         logger.opt(depth=depth, exception=record.exc_info).log(level, message)
+        # A failed worker exits immediately, so drain its queued JSON traceback first.
+        if _JSON_LOGGING and record.exc_info:
+            logger.complete()
 
 
 def setup_logger(
