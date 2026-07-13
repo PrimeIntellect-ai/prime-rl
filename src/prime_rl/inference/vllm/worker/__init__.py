@@ -26,6 +26,6 @@ monkey_patch_fp32_lm_head()
 # Install fp32 router logits patch; self-gates on additional_config["fp32_router_logits"]
 monkey_patch_fp32_router_logits()
 
-# Install kept-tokens sampler patch (top-p/top-k mask replay); no-op unless
+# Install kept-tokens sampler patch (sampling replay); no-op unless
 # PRIME_RETURN_KEPT_TOKENS=1
 monkey_patch_kept_tokens_sampler()

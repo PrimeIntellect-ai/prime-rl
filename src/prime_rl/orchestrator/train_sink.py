@@ -222,7 +222,7 @@ class TrainSink:
                     # Rollout logprobs are kept-renormalized; training without the masks
                     # silently biases every importance ratio.
                     raise RuntimeError(
-                        f"env '{env_name}' samples with truncation (top_p/top_k/min_p) but its rollouts "
+                        f"env '{env_name}' samples with truncation (top_p/top_k) but its rollouts "
                         "carry no kept-set sampling masks. Set `kept_tokens` on the inference server "
                         "config (the rl entrypoint derives it automatically) and make sure the server "
                         "runs prime-rl's vLLM patches."

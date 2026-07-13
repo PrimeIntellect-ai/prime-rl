@@ -528,7 +528,7 @@ class RLConfig(BaseConfig):
         if "kept_tokens" in self.inference.model_fields_set and self.inference.kept_tokens != derived:
             warnings.warn(
                 f"Overriding inference.kept_tokens = {self.inference.kept_tokens} with {derived}, "
-                "derived from the largest train sampling top_k (keeps sampling-mask replay exact).",
+                "derived from the largest train sampling top_k (keeps sampling replay exact).",
                 stacklevel=2,
             )
         self.inference.kept_tokens = derived

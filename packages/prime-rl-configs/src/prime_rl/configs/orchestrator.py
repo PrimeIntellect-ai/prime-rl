@@ -55,17 +55,13 @@ class TrainSamplingConfig(BaseConfig):
 
     top_p: float = Field(1.0, gt=0, le=1.0)
     """Nucleus (top-p) sampling for train rollouts. Values below 1.0 truncate the sampling
-    distribution; the ``rl`` entrypoint auto-enables sampling-mask replay so trainer and
-    rollout distributions stay consistent — see docs/inference.md (Sampling Mask Replay)."""
+    distribution; the ``rl`` entrypoint auto-enables sampling replay so trainer and
+    rollout distributions stay consistent — see docs/inference.md (Sampling Replay)."""
 
     top_k: int | None = Field(None, ge=1)
-    """Top-k sampling for train rollouts. Truncation triggers sampling-mask replay, and
-    a default top-k is injected when only top-p/min-p truncate so kept sets stay
-    bounded — see docs/inference.md (Sampling Mask Replay)."""
-
-    min_p: float = Field(0.0, ge=0, lt=1.0)
-    """Min-p sampling for train rollouts (0 = disabled). Truncates the distribution, so
-    it triggers sampling-mask replay like ``top_p``/``top_k``."""
+    """Top-k sampling for train rollouts. Truncation triggers sampling replay, and
+    a default top-k is injected when only top-p truncates so kept sets stay
+    bounded — see docs/inference.md (Sampling Replay)."""
 
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
@@ -78,7 +74,7 @@ class TrainSamplingConfig(BaseConfig):
     """Extra body forwarded with each request to the inference server."""
 
     def truncates_distribution(self) -> bool:
-        return self.top_p < 1.0 or self.top_k is not None or self.min_p > 0.0
+        return self.top_p < 1.0 or self.top_k is not None
 
     @model_validator(mode="after")
     def validate_no_extra_body_truncation(self):
@@ -97,7 +93,7 @@ class TrainSamplingConfig(BaseConfig):
         if smuggled:
             raise ValueError(
                 f"extra_body carries truncating {smuggled}; set them as fields on the train "
-                "sampling config instead (they drive sampling-mask replay)."
+                "sampling config instead (they drive sampling replay)."
             )
         return self
 
@@ -111,12 +107,10 @@ class TrainSamplingConfig(BaseConfig):
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens
 
-        # top_k/min_p ride extra_body (like EvalSamplingConfig), overriding the sentinels.
+        # top_k rides extra_body (like EvalSamplingConfig), overriding the sentinel.
         extra_body = dict(self.extra_body)
         if self.top_k is not None:
             extra_body["top_k"] = self.top_k
-        if self.min_p > 0:
-            extra_body["min_p"] = self.min_p
         if extra_body:
             args["extra_body"] = extra_body
 
@@ -659,8 +653,8 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def setup_truncated_sampling(self):
-        """Truncated policy sampling trains with kept-set mask replay (rollout
-        logprobs are renormalized — see docs/inference.md, Sampling Mask Replay).
+        """Truncated policy sampling trains with sampling replay (rollout
+        logprobs are renormalized — see docs/inference.md, Sampling Replay).
         Owned here: every truncating config gets a top-k bound (bounds the kept
         sets); opd/opsd is rejected (full-vocab prefill refs would mix
         normalizations); the gibberish/repetition filters are pruned or rejected
@@ -677,7 +671,7 @@ class OrchestratorConfig(BaseConfig):
         if unbounded:
             warnings.warn(
                 f"Truncated train sampling: defaulting top_k = {DEFAULT_TRAIN_TOP_K} so every kept set is "
-                "bounded and sampling-mask replay stays exact. Set top_k explicitly to override.",
+                "bounded and sampling replay stays exact. Set top_k explicitly to override.",
                 stacklevel=2,
             )
             for sampling in unbounded:
@@ -688,7 +682,7 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError(
                 "opd/opsd is not supported with truncated train sampling: reference logprobs are full-vocab "
                 "prefill scores while trainer logprobs are renormalized over the kept set, biasing the "
-                "ref_kl term. Remove the truncation (top_p/top_k/min_p) or the opd/opsd algo."
+                "ref_kl term. Remove the truncation (top_p/top_k) or the opd/opsd algo."
             )
 
         logprob_filter_types = ("gibberish", "repetition")

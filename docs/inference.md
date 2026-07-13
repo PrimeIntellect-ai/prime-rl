@@ -283,9 +283,9 @@ This however is not free, it adds a significant overhead to the HTTP requests as
 
 Currently this feature is also not supported with CPU KV cache offload, which can have negative impact on the inference throughput.
 
-### Sampling Mask Replay
+### Sampling Replay
 
-Truncated sampling (`top_p < 1`, `top_k`, `min_p > 0`) renormalizes the sampling distribution over the surviving "kept set" of tokens. The rollout logprobs reflect that (`logprobs_mode = "processed_logprobs"`), so the trainer must renormalize over the same set — otherwise every importance ratio is biased and training collapses (DeepSeek V3.2's "Keep Sampling Mask", [arXiv:2512.02556](https://arxiv.org/abs/2512.02556) §3.1; Cognition's [SWE-1.7 post](https://cognition.com/blog/swe-1-7)). prime-rl handles this automatically: the kept-set token ids are recorded at sampling time and the trainer renormalizes its logprobs over them.
+Truncated sampling (`top_p < 1`, `top_k`) renormalizes the sampling distribution over the surviving "kept set" of tokens. The rollout logprobs reflect that (`logprobs_mode = "processed_logprobs"`), so the trainer must renormalize over the same set — otherwise every importance ratio is biased and training collapses (DeepSeek V3.2's "Keep Sampling Mask", [arXiv:2512.02556](https://arxiv.org/abs/2512.02556) §3.1; Cognition's [SWE-1.7 post](https://cognition.com/blog/swe-1-7)). prime-rl handles this automatically: the kept-set token ids are recorded at sampling time and the trainer renormalizes its logprobs over them.
 
 ```toml
 [orchestrator.train.sampling]

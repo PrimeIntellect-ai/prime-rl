@@ -1,6 +1,6 @@
 """Kept-token (sampling mask) capture for top-p/top-k replay training.
 
-Truncated sampling (top-p/top-k/min-p) renormalizes the sampling distribution
+Truncated sampling (top-p/top-k) renormalizes the sampling distribution
 over a per-token "kept set"; the trainer replays these sets to renormalize its
 own logprobs identically (DeepSeek V3.2 "Keep Sampling Mask", arXiv:2512.02556
 §3.1). vLLM materializes the mask (it's the finite entries of the processed
