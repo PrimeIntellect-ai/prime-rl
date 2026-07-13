@@ -2,20 +2,18 @@
 # eval on SWE-Bench Verified (same harness/TTT regime as training). Derived from the
 # glm45air-swe ablation config; adapted for TTT (compaction + LoRA serving + TTT service).
 #
-# ARMS (see ttt-implementation.md / the experiment table):
+# ARMS (see docs/ttt.md):
 #   A0 pure RL, no compaction, 64k ......... arm_a0_no_compaction.toml (overlay)
 #   A1 compaction baseline (no TTT) ........ arm_a1_compaction.toml
 #   A2 compaction + TTT (raw branch) ....... arm_a2_ttt.toml
 #   A3 + QA (adapter trains on QA pairs) ... arm_a3_qa.toml
 #   A4 = A3 + naive recycle_to_policy ...... arm_a4_recycle.toml
 #   A5 = A3 + group meta-lessons ........... arm_a5_meta.toml
-# Launch: uv run rl @ configs/ttt/scaleswe/base.toml @ configs/ttt/scaleswe/arm_<X>.toml
+# Launch (baselines):  uv run rl @ .../base.toml @ .../arm_a<0|1>_*.toml
+# Launch (TTT arms):   uv run rl @ .../base.toml @ .../ttt_common.toml @ .../arm_a<2-5>_*.toml
 #
-# TTT arms carry their own [ttt] service config + deployment.num_ttt_nodes = 1: the SLURM
-# launcher allocates the extra node (layout: inference | train | ttt), runs the service
-# under torchrun, and auto-wires output_dir, the model, the vLLM admin roots, and every
-# TTT env's base_url ("auto" placeholders). One job per arm — nothing to start manually.
-# (ttt_service.toml remains for running the service standalone, e.g. eval-CLI workflows.)
+# ttt_common.toml holds the shared launcher-managed [ttt] service overlay (one extra SLURM
+# node, layout: inference | train | ttt; ttt_service.toml remains for standalone runs).
 
 max_steps = 1000
 seq_len = 65536
@@ -105,10 +103,11 @@ thinking_retention = "all"
 #                                        context pressure; forgetting canary for A4/A5's
 #                                        permanent weight updates). Needs SERPER_API_KEY
 #                                        + OPENAI_API_KEY on the orchestrator. ---
+# num_examples are fixed subsets: comparable across steps/arms, keeps 6-arm eval load sane.
+# qa recycle/meta flags are inert on eval (train-sink only) — kept identical to training.
 
 [orchestrator.eval]
 interval = 20
-skip_first_step = false
 
 # --- Inference ---
 

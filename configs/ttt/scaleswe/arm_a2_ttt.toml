@@ -1,6 +1,7 @@
 # A2 — compaction + TTT (headline): adapter trains on each compacted-away branch
 # (loss_scope=all) before it drops; the rest of the rollout samples through the adapter;
 # the trainer replays every branch under its exact frozen adapter. Read against A1.
+# Compose with ttt_common.toml (shared [ttt] service overlay).
 
 output_dir = "outputs/ttt-scaleswe/a2-ttt"
 
@@ -10,53 +11,20 @@ job_name = "glm45air-ttt-swe-a2"
 [wandb]
 name = "a2-glm45air-scaleswe-ttt"
 
-# Launcher-managed TTT service: one extra node appended after the trainer nodes, torchrun
-# across its 8 GPUs, auto-wired (output_dir, model, vLLM admin roots, env base_urls — the
-# "auto" placeholders below are overwritten at job start).
-[deployment]
-num_ttt_nodes = 1
-
-[ttt.engine]
-type = "fsdp"
-max_slots = 272                 # small margin above max_inflight_rollouts (256)
-max_tokens_per_forward = 65536
-max_batch_wait_seconds = 0.5
-
-[ttt.engine.model]
-impl = "custom"
-attn = "flash_attention_3"
-fused_lm_head_token_chunk_size = 1024
-optim_cpu_offload = true
-
-[ttt.lora]
-rank = 16
-alpha = 32
-# Attention-only: vLLM's LoRA serving does not cover MoE expert FFNs.
-target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
-
-[ttt.optim]
-type = "adamw"
-lr = 1e-4
-
 [[orchestrator.train.env]]
 name = "scaleswe"
 taskset = { id = "scaleswe-v1", dataset_name = "AweAI-Team/Scale-SWE", dataset_revision = "d8db20390a936bbda9c96d88b97cc4778dff1481", filter_unavailable_images = false, use_prime_registry = true }
 harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe-a2"] } }
 ttt = { base_url = "auto" }
 
-# Evals run the same TTT regime as training — the dispatcher routes TTT eval envs
-# through the renderer (train) client, and eval adapters/checkpoints are dismissed as
-# each rollout finishes (no RL replay on eval).
 [[orchestrator.eval.env]]
 name = "swebench-verified"
 taskset = { id = "swebench-verified-v1", use_prime_registry = true }
 harness = { id = "compacting", compact_at_tokens = 16384, runtime = { type = "prime", labels = ["glm45air-ttt-swe-a2"] } }
 ttt = { base_url = "auto" }
-num_examples = 200  # fixed subset: comparable across steps/arms, keeps 6-arm eval load sane
+num_examples = 200
 timeout = { rollout = 3600 }
 
-# Within-domain generalization: a DIFFERENT SWE dataset (SWE-bench Pro, SWEAP images —
-# no overlap with Scale-SWE). Same regime as training. Heavier tasks -> every 40 steps.
 [[orchestrator.eval.env]]
 name = "swebench-pro"
 taskset = { id = "swebench-pro-v1" }
@@ -66,10 +34,6 @@ num_examples = 100
 interval = 40
 timeout = { rollout = 3600 }
 
-# Out-of-domain: deepdive (long-horizon web research) — does the method transfer beyond
-# SWE, and does compaction/TTT help where context pressure is highest? Needs
-# SERPER_API_KEY (search tool, forwarded from the orchestrator env) and OPENAI_API_KEY
-# (the taskset's gpt-5-mini judge) on the orchestrator node.
 [[orchestrator.eval.env]]
 name = "deepdive"
 taskset = { id = "deepdive-v1" }

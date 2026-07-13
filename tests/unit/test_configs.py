@@ -35,6 +35,20 @@ OVERLAY_FAMILIES = {
 }
 # Standalone files inside an overlay directory (validated normally, not as arms).
 OVERLAY_STANDALONE = {Path("configs/ttt/scaleswe/ttt_service.toml")}
+# Shared mid-layer fragment: TTT arms compose base + ttt_common + arm; never standalone.
+OVERLAY_MIDDLE = Path("configs/ttt/scaleswe/ttt_common.toml")
+
+
+def overlay_args(base: Path, arm: Path) -> list[str]:
+    """Compose the launch layers for an arm: TTT arms need the ttt_common mid-layer."""
+    layers = [base]
+    if b"ttt =" in arm.read_bytes():
+        layers.append(OVERLAY_MIDDLE)
+    layers.append(arm)
+    args = []
+    for layer in layers:
+        args += ["@", layer.as_posix()]
+    return args
 
 
 def get_config_files() -> list[Path]:
@@ -73,12 +87,16 @@ def test_load_configs(config_file: Path):
     base = overlay_family_for(config_file)
     if base is not None:
         arm = base if config_file == base else config_file
-        if arm == base:
-            # The base validates when composed with any one arm; pick the first.
-            arms = sorted(p for p in OVERLAY_FAMILIES[base].glob("*.toml") if overlay_family_for(p) == base and p != base)
+        if arm in (base, OVERLAY_MIDDLE):
+            # base/ttt_common validate when composed with any one arm; pick the first.
+            arms = sorted(
+                p
+                for p in OVERLAY_FAMILIES[base].glob("*.toml")
+                if overlay_family_for(p) == base and p not in (base, OVERLAY_MIDDLE)
+            )
             assert arms, f"Overlay family {base} has no arm files"
-            arm = arms[0]
-        cli(RLConfig, args=["@", base.as_posix(), "@", arm.as_posix()])
+            arm = arms[0] if config_file == base else next(p for p in arms if b"ttt =" in p.read_bytes())
+        cli(RLConfig, args=overlay_args(base, arm))
         return
 
     could_parse = []

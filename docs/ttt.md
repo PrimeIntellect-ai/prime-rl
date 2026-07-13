@@ -6,7 +6,6 @@ and continues sampling through an adapter trained on the abandoned branch. For R
 branch carries the adapter checkpoint that sampled it, and the trainer replays that frozen
 adapter while updating only the policy's base weights.
 
-`ttt-implementation.md` records the detailed design. `ttt-plan.md` is the historical proposal.
 Experiment configs are under [`configs/ttt/`](../configs/ttt/README.md).
 
 ## Architecture
@@ -163,3 +162,15 @@ exercise CUDA kernels, FSDP/DTensor collectives, live vLLM reload behavior, or t
 cluster filesystem. The TTT service also starts from the policy base weights present at launch;
 as the RL policy evolves, that base becomes stale. Frozen replay preserves the recorded adapter
 delta, but it does not reconstruct the exact historical base model.
+
+Remaining limitations to disclose when comparing arms:
+
+- Compute is not matched: A3-A5 add Q&A calls, A4/A5 add CE tokens; configs do not normalize it.
+- Baseline eval transport differs: TTT evals use the renderer client, A0/A1 keep normal routing.
+- The service has no auth/TLS; run it only on the job's private network.
+
+Recommended GPU smoke sequence: single-GPU FSDP update/retry/load/release/replay; two-rank
+packed updates with clipping/finite checks/export; two vLLM replicas with one injected
+load failure to verify reconciliation; a compacting rollout through an update and a sampled
+turn; one shipped RL batch verifying frozen replay and GC; watch the final step for the
+documented non-persistent cleanup leak.

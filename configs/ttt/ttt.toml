@@ -7,12 +7,8 @@ output_dir = "outputs"
 # Engines to (re)load adapters on after each update (vLLM admin roots, no /v1).
 inference_admin_urls = ["http://localhost:8000"]
 
-steps_per_update = 1
-max_concurrent_updates = 1
-
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
-device = "cuda"
 
 [lora]
 rank = 16

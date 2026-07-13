@@ -117,9 +117,17 @@ def test_eval_only_ttt_does_not_set_ttt_replay():
     ],
 )
 def test_scaleswe_arms_launchable(arm: str):
-    """Pins the invariant that every shipped base+arm overlay still validates end-to-end."""
-    base = CONFIGS / "scaleswe" / "base.toml"
-    cli(RLConfig, args=["@", str(base), "@", str(CONFIGS / "scaleswe" / arm)])
+    """Pins the invariant that every shipped overlay stack still validates end-to-end
+    (baselines: base+arm; TTT arms: base+ttt_common+arm)."""
+    scaleswe = CONFIGS / "scaleswe"
+    layers = [scaleswe / "base.toml"]
+    if arm not in ("arm_a0_no_compaction.toml", "arm_a1_compaction.toml"):
+        layers.append(scaleswe / "ttt_common.toml")
+    layers.append(scaleswe / arm)
+    args = []
+    for layer in layers:
+        args += ["@", str(layer)]
+    cli(RLConfig, args=args)
 
 
 # --- Launcher-managed TTT service (RLConfig.ttt + deployment.num_ttt_nodes) ---

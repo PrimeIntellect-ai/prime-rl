@@ -99,9 +99,7 @@ curl http://localhost:8092/health
 - Entrypoint: `src/prime_rl/entrypoints/ttt.py`
 - Env side: `ttt = { base_url = ... }` on a train/eval env (needs the `compacting` harness
   and the renderer client); experiment arms in `configs/ttt/README.md`
-- Managed constraints: full-weight text policy, policy-sourced rollouts, matching
-  model/tokenizer, `keep_checkpoints = true` for training, and sufficient inference LoRA
-  rank/GPU/CPU capacity.
+- Managed constraints: see `docs/ttt.md` ("Launcher-managed service").
 
 ## Summary
 

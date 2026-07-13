@@ -1,0 +1,28 @@
+# Shared TTT-arm overlay (A2-A5). Compose: @ base.toml @ ttt_common.toml @ arm_aX.toml
+# Launcher-managed service: one extra node after the trainer nodes, torchrun across its
+# 8 GPUs, auto-wired output_dir/model/vLLM admin roots/env base_urls ("auto" placeholders).
+
+[deployment]
+num_ttt_nodes = 1
+
+[ttt.engine]
+type = "fsdp"
+max_slots = 272                 # small margin above max_inflight_rollouts (256)
+max_tokens_per_forward = 65536
+max_batch_wait_seconds = 0.5
+
+[ttt.engine.model]
+impl = "custom"
+attn = "flash_attention_3"
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+
+[ttt.lora]
+rank = 16
+alpha = 32
+# Attention-only: vLLM's LoRA serving does not cover MoE expert FFNs.
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+[ttt.optim]
+type = "adamw"
+lr = 1e-4
