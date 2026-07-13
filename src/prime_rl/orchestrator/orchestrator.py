@@ -97,8 +97,9 @@ MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
 # Maximum batches the orchestrator may run ahead of the trainer. The
 # dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
-# resumed when the watcher advances ``policy.version``.
-TARGET_LAG = 1
+# resumed when the watcher advances ``policy.version``. Configurable via
+# ``orchestrator.target_lag`` (default 1). Unrelated to ``max_off_policy_steps``.
+DEFAULT_TARGET_LAG = 1
 
 
 class Orchestrator:
@@ -825,7 +826,7 @@ class Orchestrator:
         )
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG and not building_final_batch_nccl:
+        if lead > self.config.target_lag and not building_final_batch_nccl:
             if was_set:
                 get_logger().info(
                     "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."
