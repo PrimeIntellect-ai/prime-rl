@@ -630,6 +630,11 @@ class OrchestratorConfig(BaseConfig):
         return self.static_sft_source is not None
 
     @property
+    def any_policy_sourced(self) -> bool:
+        """True when at least one train env samples from the live policy."""
+        return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.env)
+
+    @property
     def needs_inference(self) -> bool:
         """Static dataset SFT is the only ``rl`` path that needs no inference."""
         return not self.is_static_sft
@@ -642,7 +647,7 @@ class OrchestratorConfig(BaseConfig):
         it's ignored."""
         if self.pool_size is None:
             return self
-        if not any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.env):
+        if not self.any_policy_sourced:
             raise ValueError(
                 f"orchestrator.pool_size={self.pool_size!r} is set but no train env samples "
                 "from the policy — the renderer-client sampling pool never runs (the renderer "
