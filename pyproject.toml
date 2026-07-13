@@ -101,10 +101,12 @@ envs = [
     "math500-v1",
     "mmlu-pro-v1",
     "mrcr-v2-v1",
+    "multiswe-v1",
     "oolong-pairs-v1",
     "oolong-real-v1",
     "oolong-synth-v1",
     "openseeker-v1",
+    "openswe-v1",
     "openthoughts-tblite-v1",
     "papersearchqa-v1",
     "patterned-needle-in-haystack-v1",
@@ -120,8 +122,11 @@ envs = [
     "swebench-pro-v1",
     "swebench-verified-v1",
     "swelego-v1",
+    "swerebench-v2-v1",
+    "swesmith-v1",
     "tau2-bench-v1",
     "terminal-bench-2-v1",
+    "terminal-lego-v1",
     "tmax-v1",
     "unscramble-v1",
     "uuid-ctf-v1",
@@ -275,10 +280,12 @@ math-python = { path = "deps/verifiers/environments/math_python", editable = tru
 math500-v1 = { path = "deps/research-environments/environments/math/math500_v1", editable = true }
 mmlu-pro-v1 = { path = "deps/research-environments/environments/knowledge/mmlu_pro_v1", editable = true }
 mrcr-v2-v1 = { path = "deps/research-environments/environments/long_context/mrcr_v2_v1", editable = true }
+multiswe-v1 = { path = "deps/research-environments/environments/swe/multiswe_v1", editable = true }
 oolong-pairs-v1 = { path = "deps/research-environments/environments/long_context/oolong_pairs_v1", editable = true }
 oolong-real-v1 = { path = "deps/research-environments/environments/long_context/oolong_real_v1", editable = true }
 oolong-synth-v1 = { path = "deps/research-environments/environments/long_context/oolong_synth_v1", editable = true }
 openseeker-v1 = { path = "deps/research-environments/environments/search/openseeker_v1", editable = true }
+openswe-v1 = { path = "deps/research-environments/environments/swe/openswe_v1", editable = true }
 openthoughts-tblite-v1 = { path = "deps/research-environments/environments/terminal/openthoughts_tblite_v1", editable = true }
 papersearchqa-v1 = { path = "deps/research-environments/environments/search/papersearchqa_v1", editable = true }
 patterned-needle-in-haystack-v1 = { path = "deps/research-environments/environments/long_context/patterned_needle_in_haystack_v1", editable = true }
@@ -294,8 +301,11 @@ simpleqa-verified-v1 = { path = "deps/research-environments/environments/knowled
 swebench-pro-v1 = { path = "deps/research-environments/environments/swe/swebench_pro_v1", editable = true }
 swebench-verified-v1 = { path = "deps/research-environments/environments/swe/swebench_verified_v1", editable = true }
 swelego-v1 = { path = "deps/research-environments/environments/swe/swelego_v1", editable = true }
+swerebench-v2-v1 = { path = "deps/research-environments/environments/swe/swerebench_v2_v1", editable = true }
+swesmith-v1 = { path = "deps/research-environments/environments/swe/swesmith_v1", editable = true }
 tau2-bench-v1 = { path = "deps/research-environments/environments/tool_use/tau2_bench_v1", editable = true }
 terminal-bench-2-v1 = { path = "deps/research-environments/environments/terminal/terminal_bench_2_v1", editable = true }
+terminal-lego-v1 = { path = "deps/research-environments/environments/terminal/terminal_lego_v1", editable = true }
 tmax-v1 = { path = "deps/research-environments/environments/terminal/tmax_v1", editable = true }
 unscramble-v1 = { path = "deps/research-environments/environments/reasoning/unscramble_v1", editable = true }
 uuid-ctf-v1 = { path = "deps/research-environments/environments/reasoning/uuid_ctf_v1", editable = true }
