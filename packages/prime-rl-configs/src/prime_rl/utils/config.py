@@ -1,8 +1,43 @@
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
 from pydantic_config import BaseConfig as BaseConfig  # noqa: F401
 from pydantic_config import cli  # noqa: F401
+
+
+def to_toml_dict(config: BaseModel, exclude: set[str] | None = None) -> dict:
+    """Dump a config to a TOML-serializable dict.
+
+    TOML cannot represent null, so None fields left at their default are dropped
+    (they re-resolve identically on re-parse) while explicitly-set None fields
+    are encoded as the string ``"None"``, which ``BaseConfig`` converts back to
+    ``None``. Dropping those too would silently revert explicit None overrides
+    (e.g. ``--trainer.model.compile None``) to their non-None defaults when the
+    written config is re-parsed.
+    """
+    return _encode_model(config, config.model_dump(exclude=exclude, mode="json"))
+
+
+def _encode_model(model: BaseModel, dumped: dict) -> dict:
+    encoded = {}
+    for name, value in dumped.items():
+        if value is None:
+            if name in model.model_fields_set:
+                encoded[name] = "None"
+            continue
+        encoded[name] = _encode_value(getattr(model, name), value)
+    return encoded
+
+
+def _encode_value(attr: Any, value: Any) -> Any:
+    if isinstance(attr, BaseModel) and isinstance(value, dict):
+        return _encode_model(attr, value)
+    if isinstance(value, list) and isinstance(attr, (list, tuple)):
+        return [_encode_value(a, v) for a, v in zip(attr, value)]
+    if isinstance(value, dict) and isinstance(attr, dict):
+        return {k: _encode_value(a, v) for (k, v), a in zip(value.items(), attr.values())}
+    return "None" if value is None else value
 
 
 def find_package_resource(subdir: str) -> Path | None:
