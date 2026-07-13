@@ -55,14 +55,17 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
 }
 
 
-def build_algorithm(config: AlgoConfig, policy_pool: InferencePool) -> Algorithm:
+def build_algorithm(config: AlgoConfig, policy_pool: InferencePool | None) -> Algorithm:
     cls = ALGORITHM_CLASSES[config.type]
     assert cls.action_loss_type == config.action_loss_type  # config and runtime declare in two places
+    if config.type != "static-sft":
+        assert policy_pool is not None, f"algorithm '{config.type}' requires the policy inference pool"
     # The Algorithm is the runtime of the algorithm config's training signal
     # (its sibling Sampler interprets the sampling half). Every algorithm is
-    # handed the live policy pool — opsd self-distills against it, others may
-    # judge against it or ignore it. Other models (a frozen teacher, a hint
-    # renderer) are built from the algorithm's own config in setup().
+    # handed the live policy pool when one exists — opsd self-distills against
+    # it, others may judge against it or ignore it. Pure static SFT has no pool.
+    # Other models (a frozen teacher, a hint renderer) are built from the
+    # algorithm's own config in setup().
     return cls(config, policy_pool)
 
 

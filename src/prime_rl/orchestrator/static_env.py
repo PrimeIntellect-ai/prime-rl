@@ -24,6 +24,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.configs.orchestrator import StaticDatasetConfig, TrainEnvConfig
 from prime_rl.configs.sft import LossMaskConfig
 from prime_rl.orchestrator.algo import Algorithm
+from prime_rl.orchestrator.envs import TrainEnv
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.chat_template import (
     deserialize_tool_calls,
@@ -34,7 +35,7 @@ from prime_rl.utils.logger import get_logger
 
 _MESSAGE_ADAPTER: TypeAdapter = TypeAdapter(vf.Message)
 
-STATIC_ROLLOUT_TYPE = Rollout[vf.WireTask]
+STATIC_ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 
 # Per-role keys the typed v1 messages accept — anything else in a dataset row's
 # message dict (metadata columns, provider extras) is dropped before validation.
@@ -59,6 +60,9 @@ class NullSampler:
 
     async def setup(self) -> None:
         pass
+
+    def sampling_args(self, args: dict) -> dict:
+        return {}
 
 
 def resolve_messages(example: dict) -> list[dict]:
@@ -190,10 +194,8 @@ def render_to_nodes(
     return nodes
 
 
-class StaticSFTEnv:
-    """A train env whose "taskset" is a HF SFT dataset. Duck-type compatible
-    with ``TrainEnv``; spawns no server, calls no model, never errors a
-    healthy row."""
+class StaticSFTEnv(TrainEnv):
+    """A train env whose "taskset" is a HF SFT dataset."""
 
     def __init__(
         self,
@@ -203,22 +205,13 @@ class StaticSFTEnv:
         renderer_config,
     ):
         assert config.dataset is not None
-        self.config = config
+        super().__init__(config, NullSampler(), algorithm)
         self.dataset_config: StaticDatasetConfig = config.dataset
-        self.algorithm = algorithm
-        self.sampler = NullSampler()
         # The sink fans the env temperature out per token; context tokens are
         # masked and ce ignores it, so any constant works.
-        self.sampling_args: dict = {"temperature": 1.0}
-        self.num_tasks: int = 0
-        self.requires_group_scoring: bool = False
+        self.sampling_args = {"temperature": 1.0}
         self.renderer: Renderer = create_renderer(tokenizer, renderer_config)
         self._dataset = None
-        self._env_server_process = None  # Envs.shutdown compatibility
-
-    @property
-    def name(self) -> str:
-        return self.config.resolved_name
 
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         """Load (and interleave) the HF dataset; no server to spawn."""
@@ -229,6 +222,8 @@ class StaticSFTEnv:
             dataset = dataset.take(min(self.dataset_config.max_examples, len(dataset)))
         self._dataset = dataset
         self.num_tasks = len(dataset)
+        if self.num_tasks == 0:
+            raise ValueError(f"Static dataset {self.dataset_config.name} is empty")
         get_logger().info(
             f"Env {self.name} ready: static dataset {self.dataset_config.name} with {self.num_tasks} examples"
         )
@@ -240,7 +235,7 @@ class StaticSFTEnv:
         assert self._dataset is not None, f"Env {self.name} not started — call start() first."
         example = dict(self._dataset[task_idx % self.num_tasks])
         rollout = STATIC_ROLLOUT_TYPE(
-            task=vf.WireTask(idx=task_idx, prompt=None),
+            task=vf.TraceTask(type="StaticSFTTask", data=vf.WireTaskData(idx=task_idx, prompt=None)),
             is_completed=True,
             stop_condition="agent_completed",
         )
@@ -272,6 +267,3 @@ class StaticSFTEnv:
 
         rollout.nodes = nodes
         return rollout
-
-    def shutdown(self) -> None:
-        pass

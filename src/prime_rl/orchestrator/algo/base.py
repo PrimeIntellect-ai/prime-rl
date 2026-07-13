@@ -112,14 +112,14 @@ class Algorithm:
     out — accepted for the simpler one-rollout-at-a-time shape.
 
     Constructed with the algorithm config it interprets plus the live policy
-    pool (``self.policy_pool`` — always available, never closed by the
-    algorithm). An algorithm that needs to tokenize (e.g. opsd's demonstration
+    pool (``self.policy_pool`` — unavailable only for pure static-SFT runs and
+    never closed by the algorithm). An algorithm that needs to tokenize (e.g. opsd's demonstration
     hint) builds its own renderer in :meth:`setup` from its config; the policy's
     renderer is not threaded in."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
-    def __init__(self, config: AlgoConfig, policy_pool: InferencePool):
+    def __init__(self, config: AlgoConfig, policy_pool: InferencePool | None):
         self.policy_pool = policy_pool
         self.connected_pools: list[InferencePool] = []  # frozen pools connected in setup(); closed at shutdown
 
