@@ -9,6 +9,7 @@ def setup_vllm_env(config: InferenceConfig):
 
     # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+    os.environ["VLLM_USE_DEEP_GEMM"] = "1" if config.use_deep_gemm else "0"
 
     # Force the V1 GPU model runner. vLLM 0.24.0 routes Llama/Mistral/Qwen3 plus MoE archs
     # (DeepseekV2, Qwen2Moe, GraniteMoe; the 0.23 MoE/quantized guard was removed) to the
