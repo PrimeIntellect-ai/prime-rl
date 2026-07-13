@@ -95,11 +95,8 @@ SHUTDOWN_TIMEOUT_S = 300
 # dataset; fail loudly instead of spinning
 MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
-# Maximum batches the orchestrator may run ahead of the trainer. The
-# dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
-# resumed when the watcher advances ``policy.version``. Configurable via
-# ``orchestrator.target_lag`` (default 1). Unrelated to ``max_off_policy_steps``.
-DEFAULT_TARGET_LAG = 1
+# Dispatch gate lag is configured via ``orchestrator.target_lag`` (default 1).
+# Unrelated to ``max_off_policy_steps`` (per-rollout staleness).
 
 
 class Orchestrator:
