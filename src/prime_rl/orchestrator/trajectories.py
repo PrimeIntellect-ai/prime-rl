@@ -66,15 +66,15 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
     return RoutedExperts(data=arr.tobytes(), shape=list(arr.shape), dtype=str(arr.dtype))
 
 
-def _encode_kept_tokens(kept: tuple[np.ndarray, np.ndarray] | None, num_tokens: int) -> KeptTokens | None:
-    """The branch's kept-set sampling masks (`(ids, counts)` from `Branch.kept_tokens`) ->
-    the transport `KeptTokens` the trainer replays. Realigns `counts` to `num_tokens`
+def _encode_kept_tokens(kept: vf.KeptTokens | None, num_tokens: int) -> KeptTokens | None:
+    """The branch's kept-set sampling masks (`Branch.kept_tokens`) -> the transport
+    `KeptTokens` the trainer replays. Realigns `counts` to `num_tokens`
     (truncating drops the tail's ids too) as a backstop — `Branch.kept_tokens` already
     guarantees alignment, mirroring `_encode_routed_experts`. A 0 count just means no
     replay for that position, so partial coverage stays safe."""
     if kept is None:
         return None
-    ids, counts = kept
+    ids, counts = kept.ids, kept.counts
     if len(counts) > num_tokens:
         counts = counts[:num_tokens]
         ids = ids[: int(counts.sum())]
