@@ -14,9 +14,9 @@ max_inflight_rollouts = 512
 group_size = 8
 
 [[orchestrator.train.env]]
-id = "math-env"
-args = { dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
 name = "hendrycks-math"
+taskset = { id = "math-env-v1", dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
 interval = 50
