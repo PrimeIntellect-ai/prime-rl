@@ -57,10 +57,13 @@ class TrainSink:
         self.pre_filters = pre_filters
         self.post_filters = post_filters
 
+        # Observation window for the next shipped batch: rollouts of groups
+        # finalized since the last ship (errored + filtered + survivors).
+        # In-progress groups stay out until they finalize.
+        self.pending_rollouts: TrainRollouts = TrainRollouts()
         # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
         # isn't unique — the same task can be re-sampled while an
         # earlier group is still in flight
-        self.pending_rollouts: TrainRollouts = TrainRollouts()
         self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
         self.pending_batch: list[Rollout] = []
         # Running token total of ``pending_batch`` (token-batched runs), kept in
@@ -117,13 +120,18 @@ class TrainSink:
 
     async def add(self, rollout: Rollout) -> TrainBatch | None:
         """Process one arrival; finalize the group on the ``group_size``-th
-        arrival; return a ``TrainBatch`` if the batch threshold is met."""
+        arrival; return a ``TrainBatch`` if the finalization pushed (or left)
+        the batch over its threshold. Arrivals into still-incomplete groups
+        never ship a batch."""
         await self.process_rollout(rollout)
         env_name = rollout.env_name
-        self.pending_rollouts.append(rollout)
         self.pending_groups[rollout.group_id].append(rollout)
-        if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
-            await self.process_group(rollout.group_id)
+        if len(self.pending_groups[rollout.group_id]) < self.group_size_for(env_name):
+            return None
+        await self.process_group(rollout.group_id)
+        # ``pending_batch`` only grows on group finalization, so readiness is
+        # only re-checked here — the window of a shipped batch then always
+        # contains at least the group that finalized it.
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
@@ -159,6 +167,12 @@ class TrainSink:
         group = self.pending_groups.pop(group_id, [])
         if not group:
             return
+        # Window membership follows group finalization, not arrival: a rollout
+        # only becomes observable (metrics / persistence) once its whole group
+        # is finalized, so a batch's window never claims rollouts of a group
+        # that ships later. Dropped groups still land here — they were observed.
+        for r in group:
+            self.pending_rollouts.append(r)
         env_name = group[0].env_name
         task_idx = group[0].task.data.idx
         survivors = [r for r in group if not r.has_error]
@@ -253,11 +267,12 @@ class TrainSink:
         # advantage stream and loss routing on each sample. Filtered rollouts don't ship.
         samples: list[TrainingSample] = [sample for r in cohort if not r.is_filtered for sample in r.samples]
 
-        # ``rollouts`` is the whole arrival window (errored + filtered + survivors); ``samples`` is
-        # the shipped cohort's trainable payload. ``rollouts.effective`` / ``rollouts.metrics`` derive
-        # the clean subset + metric views on demand. Reset the window only when the batch actually
-        # ships (non-empty samples) — an empty batch is dropped unlogged by the orchestrator, so keep
-        # accumulating its arrivals (and any overflow) into the next shipped batch's window.
+        # ``rollouts`` is the observation window — every rollout of every group finalized since the
+        # last ship (errored + filtered + survivors) — while ``samples`` is the shipped cohort's
+        # trainable payload. ``rollouts.effective`` / ``rollouts.metrics`` derive the clean subset +
+        # metric views on demand. Reset the window only when the batch actually ships (non-empty
+        # samples) — an empty batch is dropped unlogged by the orchestrator, so keep accumulating its
+        # finalized groups (and any overflow) into the next shipped batch's window.
         rollouts = self.pending_rollouts
         if samples:
             self.pending_rollouts = TrainRollouts()
