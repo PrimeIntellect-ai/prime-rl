@@ -304,17 +304,14 @@ class TrainSink:
         self.pending_batch = kept_batch
 
         for group_id, group in list(self.pending_groups.items()):
-            survivors = []
-            for rollout in group:
-                if is_stale(rollout):
-                    dropped += 1
-                else:
-                    rollout.off_policy_steps = off_policy_lag(trainer_step, rollout.policy_version)
-                    survivors.append(rollout)
-            if survivors:
-                self.pending_groups[group_id] = survivors
-            else:
+            if any(is_stale(rollout) for rollout in group):
+                # Drop the whole partial group — removing only stale members would
+                # strand survivors below group_size with no Cancelled siblings.
+                dropped += len(group)
                 self.pending_groups.pop(group_id, None)
+                continue
+            for rollout in group:
+                rollout.off_policy_steps = off_policy_lag(trainer_step, rollout.policy_version)
 
         if dropped:
             self.pending_rollouts = TrainRollouts(
