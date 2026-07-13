@@ -3,7 +3,6 @@
 The full engine (setup_model + FSDP + packed forwards) needs CUDA and runs in the GPU
 integration suite; here the trainer is built via __new__ with the registry fields only."""
 
-from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,7 +43,6 @@ def make_registry(max_slots: int = 4, **engine_overrides) -> TTTTrainerV2:
     trainer.max_slots = max_slots
     trainer.slots = {}
     trainer.adapter_names = {}
-    trainer.released = OrderedDict()
     trainer.free_idxs = set(range(max_slots))
     trainer.runs = FakeRuns()
     trainer.vocab_size = 100_000
@@ -330,9 +328,77 @@ def test_slot_and_release_identity_remain_bound():
 
     released = trainer.release("r1", "ttt-r1")
     assert released.released
-    assert not trainer.release("r1", "ttt-r1").released  # idempotent retry
-    with pytest.raises(ValueError, match="idempotent release retry"):
-        trainer._claim("r2", "ttt-r1")
+    # Idempotent retry: the state is gone, but the release still succeeds with
+    # released=False (the server unloads from vLLM unconditionally either way).
+    assert not trainer.release("r1", "ttt-r1").released
+    # A never-seen rollout releases the same way — no tombstone bookkeeping needed
+    # (rollout ids are uuid4-unique, so reuse cannot happen).
+    assert not trainer.release("r-unknown", "ttt-r-unknown").released
+
+
+def poisoning_forward(trainer, poisoned_span_start_fn):
+    """A forward stub that mirrors make_cpu_trainer's graph-bearing fake but injects inf
+    into one job's span (identified by its packed start offset)."""
+    import torch
+
+    dummy = torch.nn.Parameter(torch.zeros(1))
+    trainer._optimizer = lambda state: torch.optim.SGD([dummy], lr=0.0)
+
+    def forward(input_ids, position_ids, labels):
+        out = dummy - torch.zeros_like(input_ids, dtype=torch.float32)
+        start = poisoned_span_start_fn()
+        if start is not None:
+            poison = torch.zeros_like(out)
+            poison[0, start] = float("inf")
+            out = out + poison
+        return out
+
+    trainer._forward_logprobs = forward
+    return dummy
+
+
+def test_update_batch_isolates_non_finite_loss_per_job():
+    """One poisoned job in a 2-job bin: it gets a per-job error, the healthy job trains
+    and commits, and update_batch RETURNS (no FloatingPointError escaping to the work
+    loop's os._exit fail-fast — one NaN rollout must not kill the service)."""
+    trainer = make_cpu_trainer(max_slots=4)
+    # r1 packs first (equal sizes keep insertion order); poison r1's span [0, 8).
+    poisoning_forward(trainer, lambda: 0)
+    results = trainer.update_batch([job("r1"), job("r2")])
+    assert results["r1"]["error"] == "non-finite loss — rollout update rejected"
+    assert results["r2"]["version"] == 1  # healthy job committed
+    assert trainer.slots["r2"].version == 1
+    assert trainer.slots["r1"].version == 0  # no commit: replay cache stays coherent
+
+
+def test_update_batch_all_jobs_non_finite_skips_bin_entirely():
+    import torch
+
+    trainer = make_cpu_trainer(max_slots=4)
+    dummy = torch.nn.Parameter(torch.zeros(1))
+    trainer._optimizer = lambda state: torch.optim.SGD([dummy], lr=0.0)
+    trainer._forward_logprobs = lambda input_ids, position_ids, labels: (
+        dummy + torch.full_like(input_ids, float("nan"), dtype=torch.float32)
+    )
+    results = trainer.update_batch([job("r1"), job("r2")])
+    assert results["r1"]["error"] == "non-finite loss — rollout update rejected"
+    assert results["r2"]["error"] == "non-finite loss — rollout update rejected"
+    assert trainer.slots["r1"].version == 0 and trainer.slots["r2"].version == 0
+
+
+def test_update_batch_non_finite_checkpoint_is_per_job_error():
+    trainer = make_cpu_trainer(max_slots=4)
+
+    def save(state):
+        if state.rollout_id == "r1":
+            raise FloatingPointError("non-finite TTT v2 checkpoint tensors")
+        return f"/fake/{state.rollout_id}/v{state.version}"
+
+    trainer.save_checkpoint = save
+    results = trainer.update_batch([job("r1"), job("r2")])
+    assert results["r1"]["error"] == "non-finite adapter checkpoint — rollout update rejected"
+    assert results["r2"]["version"] == 1  # the other job still commits
+    assert trainer.slots["r1"].version == 0
 
 
 def test_frozen_fused_head_backpropagates_without_weight_gradient(monkeypatch):

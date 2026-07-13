@@ -39,7 +39,7 @@ from prime_rl.ttt.admin import (
     load_adapter_into_replicas,
     unload_adapter_from_replicas,
 )
-from prime_rl.ttt.identity import validate_adapter_identity
+from prime_rl.ttt.identity import validate_adapter_name, validate_rollout_id
 from prime_rl.ttt.server import (
     ReleaseRequest,
     UpdateRequest,
@@ -99,7 +99,6 @@ class _ReleaseAck:
 
     done: threading.Event = field(default_factory=threading.Event)
     had_slot: bool = False
-    adapter_name: str | None = None
 
 
 @dataclass
@@ -130,8 +129,8 @@ def _defer_lease_release(app: FastAPI, lease: _KeyedLockLease, completion: async
             await completion
         except BaseException as e:
             # A detached release transaction may fail after its HTTP caller has gone
-            # away. Consume the exception (the tombstone still permits an explicit
-            # retry) instead of emitting an unhandled-task warning.
+            # away. Consume the exception (release is idempotent, so an explicit retry
+            # still converges) instead of emitting an unhandled-task warning.
             get_logger().warning(f"TTT detached rollout operation failed for {lease.key}: {e}")
         finally:
             await lease.release()
@@ -194,7 +193,6 @@ def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
                 os._exit(1)
             if world.is_master:
                 order[2].had_slot = released.released
-                order[2].adapter_name = released.adapter_name
                 order[2].done.set()
             continue
         # kind == "update": data = list[UpdateJob]; on rank 0, order[2] = list[_Pending]
@@ -216,9 +214,9 @@ def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
                     pending.error_status = 500
                 elif "error" in pending.result:
                     # Per-job failure isolated inside update_batch: a ValueError is a real
-                    # validation rejection (the job's own 409); anything else is a genuinely
-                    # unexpected fault — surface it as 500 so it's distinguishable in logs
-                    # (the hook retries neither status).
+                    # validation rejection (the job's own 409); anything else — including
+                    # the non-finite loss/checkpoint rejections — is unexpected-execution
+                    # class and surfaces as 500 (the hook retries neither status).
                     pending.error = pending.result["error"]
                     if not pending.error.startswith("ValueError:"):
                         pending.error_status = 500
@@ -312,7 +310,10 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
     @app.post("/update")
     async def update(request: UpdateRequest) -> UpdateResponse:
         try:
-            validate_adapter_identity(request.rollout_id, request.adapter_name, config.adapter_prefix)
+            # rollout_id is a filesystem path component; adapter_name only needs to be
+            # present — the trusted in-repo hook derives it as {prefix}-{rollout_id}.
+            validate_rollout_id(request.rollout_id)
+            validate_adapter_name(request.adapter_name)
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
         job = UpdateJob(
@@ -340,8 +341,8 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
                 lease_transferred = True
                 raise
             if pending.error is not None:
-                # 409: deterministic per-job validation errors; 500: unexpected (defensive —
-                # non-deterministic failures crash the rank, so this should be unreachable).
+                # 409: deterministic per-job validation errors; 500: unexpected-execution
+                # class (non-finite loss/checkpoint rejections and other isolated faults).
                 raise HTTPException(status_code=pending.error_status, detail=pending.error)
             response = validate_update_response(pending.result)
 
@@ -365,7 +366,8 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
     @app.post("/release")
     async def release(request: ReleaseRequest) -> dict:
         try:
-            validate_adapter_identity(request.rollout_id, request.adapter_name, config.adapter_prefix)
+            validate_rollout_id(request.rollout_id)
+            validate_adapter_name(request.adapter_name)
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
         lease = await _acquire_rollout_lease(app.state.rollout_locks, request.rollout_id)
@@ -380,8 +382,10 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
                 ack = _ReleaseAck()
                 work_queue.put(("release", (request.rollout_id, request.adapter_name), ack))
                 await asyncio.to_thread(ack.done.wait)
-                assert ack.adapter_name is not None
-                await unload_adapter(ack.adapter_name)
+                # Unload UNCONDITIONALLY: a retry after a lost response finds the slot
+                # already dropped, but the first attempt's engine unload may never have
+                # run — gating on had_slot would leak the adapter in vLLM until restart.
+                await unload_adapter(request.adapter_name)
                 return ack
 
             transaction = asyncio.create_task(release_and_unload())

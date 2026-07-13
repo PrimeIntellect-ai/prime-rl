@@ -237,7 +237,9 @@ async def test_v2_cancelled_wait_keeps_rollout_lease_until_work_finishes():
     assert not lease.lock.locked()
 
 
-async def test_v2_rejects_adapter_namespace_before_queueing():
+async def test_v2_rejects_malformed_identity_before_queueing():
+    """rollout_id is a filesystem path component — reject traversal before any queueing.
+    (Prefix-namespace enforcement is gone: the trusted in-repo hook derives the name.)"""
     from queue import Queue
 
     from prime_rl.ttt.server_v2 import build_app_v2
@@ -252,9 +254,36 @@ async def test_v2_rejects_adapter_namespace_before_queueing():
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://ttt") as client:
-            response = await client.post("/update", json={**UPDATE, "adapter_name": "policy-r1"})
-    assert response.status_code == 409
+            response = await client.post("/update", json={**UPDATE, "rollout_id": "../evil"})
+            assert response.status_code == 409
+            response = await client.post("/update", json={**UPDATE, "adapter_name": ""})
+            assert response.status_code == 409
     assert work_queue.empty()
+
+
+async def test_absent_adapter_404_matching_tolerates_message_churn():
+    """The idempotent-unload detector must survive vLLM error-message rewording: any
+    structured 404 naming the adapter (or typed NotFoundError) counts; a bare/route 404
+    (which would not mention the adapter name) does not."""
+    from prime_rl.ttt.admin import _is_known_absent_adapter_response
+
+    def resp(status: int, json_body=None, text: str = ""):
+        return httpx.Response(status, json=json_body) if json_body is not None else httpx.Response(status, text=text)
+
+    name = "ttt-r1"
+    # vLLM's historical exact message.
+    legacy = {"error": {"type": "NotFoundError", "code": 404, "message": f"The lora adapter '{name}' cannot be found."}}
+    assert _is_known_absent_adapter_response(resp(404, legacy), name)
+    # Changed message format, still names the adapter.
+    assert _is_known_absent_adapter_response(resp(404, {"error": f"lora {name} not loaded"}), name)
+    assert _is_known_absent_adapter_response(resp(404, {"message": f"adapter {name}: no such adapter"}), name)
+    # Typed NotFoundError without the name still proves the postcondition.
+    assert _is_known_absent_adapter_response(resp(404, {"error": {"type": "NotFoundError"}}), name)
+    # Route-missing / unrelated 404s stay errors.
+    assert not _is_known_absent_adapter_response(resp(404, text="Not Found"), name)
+    assert not _is_known_absent_adapter_response(resp(404, {"error": "no such route"}), name)
+    assert not _is_known_absent_adapter_response(resp(404, {"error": "lora ttt-other not loaded"}), name)
+    assert not _is_known_absent_adapter_response(resp(400, legacy), name)
 
 
 async def test_v2_unary_stop_and_http_start_failure_do_not_strand_work_loop():

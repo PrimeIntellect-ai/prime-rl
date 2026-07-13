@@ -19,33 +19,10 @@ def validate_rollout_id(rollout_id: str) -> str:
 
 
 def validate_adapter_name(adapter_name: str) -> str:
-    """Reject empty, oversized, or control-character adapter names."""
-    if not adapter_name or len(adapter_name) > 256:
-        raise ValueError("adapter_name must contain 1-256 characters")
-    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in adapter_name):
-        raise ValueError("adapter_name must not contain control characters")
-    return adapter_name
-
-
-def expected_adapter_name(rollout_id: str, adapter_prefix: str) -> str:
-    """Derive the only adapter identity a configured service accepts for a rollout."""
-    validate_rollout_id(rollout_id)
-    # ``TTTServiceConfig`` validates the prefix and caps it at 127 characters. Keep this
-    # runtime boundary defensive because tests and third-party callers can construct
-    # config-like objects without going through Pydantic.
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,126}", adapter_prefix):
-        raise ValueError(
-            "adapter_prefix must be 1-127 ASCII letters, digits, '_' or '-', starting with a letter or digit"
-        )
-    return f"{adapter_prefix}-{rollout_id}"
-
-
-def validate_adapter_identity(rollout_id: str, adapter_name: str, adapter_prefix: str) -> str:
-    """Reject caller-selected names outside the service's rollout-bound namespace."""
-    validate_adapter_name(adapter_name)
-    expected = expected_adapter_name(rollout_id, adapter_prefix)
-    if adapter_name != expected:
-        raise ValueError(f"rollout {rollout_id!r} must use adapter {expected!r}; got {adapter_name!r}")
+    """Require a present adapter name. The in-repo hook always derives the name as
+    ``{prefix}-{rollout_id}`` from a trusted client, so only presence is load-bearing."""
+    if not adapter_name:
+        raise ValueError("adapter_name must be non-empty")
     return adapter_name
 
 
@@ -94,5 +71,4 @@ def update_fingerprint(
 
 @dataclass(frozen=True)
 class ReleaseResult:
-    adapter_name: str
     released: bool

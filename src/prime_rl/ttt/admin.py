@@ -33,11 +33,13 @@ async def post_with_timeout(
 
 
 def _is_known_absent_adapter_response(response: httpx.Response, adapter_name: str) -> bool:
-    """Recognize vLLM's structured idempotent "adapter is absent" response.
+    """Recognize vLLM's idempotent "adapter is absent" response.
 
     A bare 404 can mean the admin route itself is missing, and a 400 can describe any
-    malformed request.  Only vLLM's typed ``NotFoundError`` for this exact adapter proves
-    that the desired postcondition (adapter absent) already holds.
+    malformed request.  A structured 404 that names this adapter (or carries vLLM's typed
+    ``NotFoundError``) proves the desired postcondition (adapter absent) already holds —
+    matching on the name rather than an exact message survives vLLM message churn, and a
+    route-missing 404 would not mention the adapter name.
     """
     if response.status_code != 404:
         return False
@@ -45,14 +47,12 @@ def _is_known_absent_adapter_response(response: httpx.Response, adapter_name: st
         payload = response.json()
     except ValueError:
         return False
-    if not isinstance(payload, dict) or not isinstance(payload.get("error"), dict):
+    if not isinstance(payload, dict):
         return False
-    error = payload["error"]
-    return (
-        error.get("type") == "NotFoundError"
-        and error.get("code") in (404, "404")
-        and error.get("message") == f"The lora adapter '{adapter_name}' cannot be found."
-    )
+    error = payload.get("error", payload.get("message"))
+    if isinstance(error, dict) and error.get("type") == "NotFoundError":
+        return True
+    return adapter_name in str(error)
 
 
 async def unload_adapter_from_replicas(

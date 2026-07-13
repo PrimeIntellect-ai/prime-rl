@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import shutil
 import threading
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MethodType
@@ -53,8 +52,6 @@ from prime_rl.utils.qa_render import assert_prefix_stable_template, render_qa_pa
 
 if TYPE_CHECKING:
     from prime_rl.trainer.optim import CPUOffloadOptimizer
-
-_RELEASE_TOMBSTONES = 4096
 
 
 class _FrozenWeightLogProbEntropyFn:
@@ -285,7 +282,6 @@ class TTTTrainerV2:
 
         self.slots: dict[str, SlotState] = {}
         self.adapter_names: dict[str, str] = {}
-        self.released: OrderedDict[str, str] = OrderedDict()
         self.free_idxs = set(range(self.max_slots))
         # Optional gloo group for control-plane collectives (set by run_server_v2): the
         # checkpoint barrier rides it so it shares the watchdog-free control plane.
@@ -294,14 +290,6 @@ class TTTTrainerV2:
             f"TTT v2 ready: {self.max_slots} adapter slots, rank={config.lora.rank}, "
             f"targets={config.lora.target_modules}"
         )
-
-    def _require_finite(self, values, label: str) -> None:
-        """Reject a non-finite value coherently across every distributed rank."""
-        finite = torch.tensor(int(_locally_finite(values)), dtype=torch.int32, device=self.device)
-        if torch.distributed.is_initialized():
-            torch.distributed.all_reduce(finite, op=torch.distributed.ReduceOp.MIN)
-        if not bool(finite.item()):
-            raise FloatingPointError(f"non-finite TTT v2 {label}")
 
     # -- slot registry -----------------------------------------------------------------------
 
@@ -318,10 +306,6 @@ class TTTTrainerV2:
         owner = self.adapter_names.get(adapter_name)
         if owner is not None:
             raise ValueError(f"adapter {adapter_name!r} is already bound to rollout {owner!r}")
-        if adapter_name in self.released.values():
-            raise ValueError(f"adapter {adapter_name!r} is retained for an idempotent release retry")
-        if rollout_id in self.released:
-            raise ValueError(f"rollout {rollout_id!r} was already released and cannot be reused")
         if not self.free_idxs:
             raise RuntimeError(
                 f"no free TTT adapter slots (max_slots={self.max_slots}); "
@@ -339,35 +323,25 @@ class TTTTrainerV2:
         validate_rollout_id(rollout_id)
         validate_adapter_name(adapter_name)
         state = self.slots.get(rollout_id)
-        if state is not None:
-            if state.adapter_name != adapter_name:
-                raise ValueError(
-                    f"rollout {rollout_id!r} is bound to adapter {state.adapter_name!r}, not {adapter_name!r}"
-                )
-            return ReleaseResult(adapter_name=state.adapter_name, released=True)
-        prior_name = self.released.get(rollout_id)
-        if prior_name is None:
+        if state is None:
+            # Unknown rollout: a client retry after a lost response — the state is already
+            # dropped, but the caller still owes vLLM an unload, so this is not an error.
             owner = self.adapter_names.get(adapter_name)
             if owner is not None:
                 raise ValueError(f"adapter {adapter_name!r} belongs to rollout {owner!r}")
-            raise ValueError(f"unknown or expired rollout {rollout_id!r}")
-        if prior_name != adapter_name:
-            raise ValueError(f"rollout {rollout_id!r} was released as adapter {prior_name!r}, not {adapter_name!r}")
-        return ReleaseResult(adapter_name=prior_name, released=False)
+            return ReleaseResult(released=False)
+        if state.adapter_name != adapter_name:
+            raise ValueError(f"rollout {rollout_id!r} is bound to adapter {state.adapter_name!r}, not {adapter_name!r}")
+        return ReleaseResult(released=True)
 
     def release(self, rollout_id: str, adapter_name: str) -> ReleaseResult:
         result = self.validate_release(rollout_id, adapter_name)
         if not result.released:
-            self.released.move_to_end(rollout_id)
             return result
         state = self.slots.pop(rollout_id)
         state.optimizer = None
         self.free_idxs.add(state.idx)
         self.adapter_names.pop(state.adapter_name, None)
-        self.released[rollout_id] = state.adapter_name
-        self.released.move_to_end(rollout_id)
-        while len(self.released) > _RELEASE_TOMBSTONES:
-            self.released.popitem(last=False)
         # Only rank 0 owns checkpoint I/O. Other ranks can differ in loaded_version because
         # adapter loading is an HTTP-side rank-0 operation, but their slot lifecycle remains
         # identical.
@@ -533,10 +507,6 @@ class TTTTrainerV2:
         owner = self.adapter_names.get(job.adapter_name)
         if owner is not None and owner != job.rollout_id:
             raise ValueError(f"adapter {job.adapter_name!r} is already bound to rollout {owner!r}")
-        if state is None and job.adapter_name in self.released.values():
-            raise ValueError(f"adapter {job.adapter_name!r} is retained for an idempotent release retry")
-        if state is None and job.rollout_id in self.released:
-            raise ValueError(f"rollout {job.rollout_id!r} was already released and cannot be reused")
         fingerprint = update_fingerprint(
             rollout_id=job.rollout_id,
             adapter_name=job.adapter_name,
@@ -721,51 +691,79 @@ class TTTTrainerV2:
             labels = torch.tensor([flat_labels], dtype=torch.long, device=self.device)
             target = torch.tensor([flat_target], dtype=torch.bool, device=self.device)
 
-            job_losses = [0.0] * len(bin_jobs)
+            # Non-finite isolation: one job's NaN/inf loss (e.g. bf16 long-seq NLL) must
+            # not kill the service. Gradients are slot-segmented — each job's backward
+            # lands only on its own slot's params — so a poisoned job is corrupt only in
+            # its own slot by construction; excluding its span from the summed loss before
+            # backward and skipping its optimizer step fully isolates it.
+            active = list(zip(bin_jobs, optimizers, job_spans))
+            job_losses: dict[str, float] = {}
             for _ in range(self.config.steps_per_update):
-                for optimizer in optimizers:
+                if not active:
+                    break  # every job in this bin went non-finite: nothing left to train
+                for _, optimizer, _ in active:
                     optimizer.zero_grad(set_to_none=True)
                 set_lora_num_tokens(lora_num_tokens)
                 logprobs = self._forward_logprobs(input_ids, position_ids, labels)
-                # Sum of per-job mean NLLs: each job's gradient lands only on its own
-                # slot's params (token segments), so summing job losses is exact.
-                total = None
                 span_losses = []
-                for start, end, denom in job_spans:
+                for _, _, (start, end, denom) in active:
                     span_target = target[0, start:end]
-                    span_nll = -(logprobs[0, start:end] * span_target).sum() / denom
-                    span_losses.append(span_nll)
-                    total = span_nll if total is None else total + span_nll
-                self._require_finite(span_losses, "loss")
-                for j, span_nll in enumerate(span_losses):
-                    job_losses[j] = float(span_nll.detach())
+                    span_losses.append(-(logprobs[0, start:end] * span_target).sum() / denom)
+                # Per-job finite mask, made rank-coherent with ONE all_reduce MIN so every
+                # rank drops the same jobs and stays in collective lockstep.
+                finite = torch.tensor(
+                    [int(bool(torch.isfinite(nll.detach()).all())) for nll in span_losses],
+                    dtype=torch.int32,
+                    device=self.device,
+                )
+                if torch.distributed.is_initialized():
+                    torch.distributed.all_reduce(finite, op=torch.distributed.ReduceOp.MIN)
+                survivors = []
+                total = None
+                for (job, optimizer, span), nll, ok in zip(active, span_losses, finite.tolist()):
+                    if not ok:
+                        # A job poisoned at step k>1 has already applied k-1 optimizer
+                        # steps — fine: it gets no checkpoint/commit below, so its version
+                        # and replay cache stay at the prior coherent snapshot (staged
+                        # commit). The slot's live weights are dirty, but the client
+                        # rollout dies on the 500 and releases the slot.
+                        results[job.rollout_id] = {"error": "non-finite loss — rollout update rejected"}
+                        job_losses.pop(job.rollout_id, None)
+                        continue
+                    # Sum of per-job mean NLLs: each job's gradient lands only on its own
+                    # slot's params (token segments), so summing job losses is exact.
+                    job_losses[job.rollout_id] = float(nll.detach())
+                    total = nll if total is None else total + nll
+                    survivors.append((job, optimizer, span))
+                active = survivors
+                if total is None:
+                    continue  # whole bin non-finite this step: no backward, no steps
                 total.backward()
-                params = [p for optimizer in optimizers for group in optimizer.param_groups for p in group["params"]]
-                self._require_finite([p.grad for p in params if p.grad is not None], "gradients")
                 if self.config.optim.max_norm is not None:
-                    for job, optimizer in zip(bin_jobs, optimizers):
+                    for _, optimizer, _ in active:
                         clip_grad_norm_(
                             [p for group in optimizer.param_groups for p in group["params"]],
                             max_norm=self.config.optim.max_norm,
                             ep_enabled=self.parallel_dims.ep_enabled,
                         )
-                    self._require_finite([p.grad for p in params if p.grad is not None], "clipped gradients")
-                for optimizer in optimizers:
+                for _, optimizer, _ in active:
                     optimizer.step()
-                self._require_finite(params, "updated adapter parameters")
-                # CPUOffloadOptimizer.state_dict() temporarily rehydrates its state on
-                # CUDA, synchronizes, then offloads it again.  Finiteness only needs the
-                # already-resident state mapping, so inspect that in place and avoid an
-                # extra GPU transfer/sync for every packed slot on every step.
-                self._require_finite([optimizer.state for optimizer in optimizers], "optimizer state")
 
-            for job, loss in zip(bin_jobs, job_losses):
+            for job, _, _ in active:
+                loss = job_losses[job.rollout_id]
                 state = states[job.rollout_id]
                 # Export against an explicit staged version. The live state's version and
                 # replay cache remain at the prior coherent snapshot until checkpointing
                 # succeeds and ``commit_update`` publishes all three metadata fields.
                 staged = SlotState(job.rollout_id, job.adapter_name, state.idx, version=job.seq_no)
-                ckpt_path = self.save_checkpoint(staged)
+                try:
+                    ckpt_path = self.save_checkpoint(staged)
+                except FloatingPointError:
+                    # save_checkpoint gathers the full slot tensors collectively and checks
+                    # finiteness BEFORE the rank-0-only write, so this raise is identical
+                    # on every rank — per-job rejection keeps ranks in lockstep.
+                    results[job.rollout_id] = {"error": "non-finite adapter checkpoint — rollout update rejected"}
+                    continue
                 num_loss = sum(sum(mask[1:]) for _, mask in job.sequences)
                 result = {
                     "version": job.seq_no,
@@ -823,6 +821,9 @@ class TTTTrainerV2:
             f"base_model.model.{key}": (value.full_tensor() if isinstance(value, DTensor) else value).to("cpu")
             for key, value in raw.items()
         }
+        # ``full_tensor()`` is a collective gather, so every rank holds the same values
+        # here: this raise fires identically on all ranks, before the rank-0-only write —
+        # update_batch converts it to a per-job rejection without breaking rank lockstep.
         if not _locally_finite(tensors):
             raise FloatingPointError("non-finite TTT v2 checkpoint tensors")
         path = checkpoint_rollout_dir(self.ckpt_root, state.rollout_id) / f"v{state.version}"
