@@ -22,12 +22,14 @@ git submodule update --init --recursive
 ## Sync
 
 ```bash
-uv sync                    # core only
-uv sync --group dev        # + pytest, ruff, pre-commit
-uv sync --all-extras       # recommended: envs, flash-attn, flash-attn-cute, etc.
+uv sync                                    # core only
+uv sync --group dev                        # + pytest, ruff, pre-commit
+uv sync --all-extras                       # + extras (flash-attn, flash-attn-cute, …)
+uv sync --all-extras --all-packages        # + all env packages (needed to train on them)
+uv sync --package prime-rl --package gsm8k-v1  # core + just one env
 ```
 
-The `envs` extra installs environments listed under `[project.optional-dependencies].envs`, resolved through `[tool.uv.sources]`. Adding a new env means adding its package name to `envs` and its editable source path to `[tool.uv.sources]`.
+Environment packages under `deps/research-environments/environments/*/*` and `deps/verifiers/environments/*` are uv **workspace members**, auto-discovered — adding a new env needs no `pyproject.toml` change. They are opt-in: a plain `uv sync` / `--all-extras` does not install them (and would remove them if already present — re-run with `--all-packages`, or `--inexact` to keep them). Install all with `--all-packages`, or a subset with repeated `--package <env>` (include `--package prime-rl` to keep the core). If two envs pin conflicting transitive versions (all members share one lock), add the loser to `[tool.uv.workspace].exclude`.
 
 When bumping a package past the workspace-wide `exclude-newer = "7 days"` window, add it (and any newly-required transitives) to `[tool.uv.exclude-newer-package]` before refreshing `uv.lock`.
 
