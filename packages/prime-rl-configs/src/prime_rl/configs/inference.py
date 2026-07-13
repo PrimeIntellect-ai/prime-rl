@@ -501,6 +501,20 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_lora_cpu_capacity(self):
+        """Validate that CPU LoRA capacity can hold all GPU-resident LoRAs.
+
+        vLLM's LoRAConfig requires max_cpu_loras >= max_loras; a smaller value
+        would otherwise only fail at inference server startup.
+        """
+        if self.enable_lora and self.max_cpu_loras < self.max_loras:
+            raise ValueError(
+                f"max_cpu_loras ({self.max_cpu_loras}) must be >= max_loras ({self.max_loras}) "
+                "when LoRA is enabled (vLLM LoRAConfig requirement)"
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_api_server_count(self):
         """
         Ensures that we have at least as many API servers as data parallel
