@@ -19,8 +19,6 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     unpack_rows_triton,
 )
 
-USE_POWER_OF_TWO_SCALES = True
-
 
 def _compute_grad_weight(
     x: torch.Tensor,
@@ -44,7 +42,7 @@ def _compute_grad_weight(
             actual_ms_tensor,
             ks_tensor,
             block_starts_tensor,
-            USE_POWER_OF_TWO_SCALES,
+            True,
             GROUP_ALIGNMENT,
         )
         dy_fp8 = grouped_per_channel_cast_to_fp8_rowmajor_triton(
@@ -55,7 +53,7 @@ def _compute_grad_weight(
             actual_ms_tensor,
             ks_tensor,
             block_starts_tensor,
-            USE_POWER_OF_TWO_SCALES,
+            True,
             GROUP_ALIGNMENT,
         )
         grouped_weight_grad = deep_gemm.k_grouped_fp8_gemm_tn_contiguous
@@ -68,7 +66,7 @@ def _compute_grad_weight(
             actual_ms_tensor,
             ks_tensor,
             block_starts_tensor,
-            USE_POWER_OF_TWO_SCALES,
+            True,
             GROUP_ALIGNMENT,
         )
         dy_fp8 = grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
@@ -79,7 +77,7 @@ def _compute_grad_weight(
             actual_ms_tensor,
             ks_tensor,
             block_starts_tensor,
-            USE_POWER_OF_TWO_SCALES,
+            True,
             GROUP_ALIGNMENT,
         )
         grouped_weight_grad = deep_gemm.k_grouped_fp8_gemm_nt_contiguous
@@ -122,12 +120,12 @@ class _GroupedFP8Gemm(torch.autograd.Function):
             starts_tensor,
             actual_ms_tensor,
             block_starts_tensor,
-            USE_POWER_OF_TWO_SCALES,
+            True,
             GROUP_ALIGNMENT,
         )
         weight_fp8 = grouped_per_block_cast_to_fp8_triton(
             weight.transpose(1, 2),
-            USE_POWER_OF_TWO_SCALES,
+            True,
             GROUP_ALIGNMENT,
         )
 
@@ -206,12 +204,12 @@ class _GroupedFP8Gemm(torch.autograd.Function):
                 starts_tensor,
                 actual_ms_tensor,
                 block_starts_tensor,
-                USE_POWER_OF_TWO_SCALES,
+                True,
                 GROUP_ALIGNMENT,
             )
             weight_dx_fp8 = grouped_per_block_cast_to_fp8_triton(
                 weight,
-                USE_POWER_OF_TWO_SCALES,
+                True,
                 GROUP_ALIGNMENT,
             )
             grad_x_padded = torch.empty(
