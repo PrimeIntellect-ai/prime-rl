@@ -37,9 +37,10 @@ uv run rl @ examples/reverse_text/rl.toml --dry-run                             
 - Environment packages: before launching a config with a non-core verifier env id,
   verify the package imports under `uv run` (for example
   `uv run python -c "import importlib.util; print(importlib.util.find_spec('r2e_gym_v1'))"`).
-  If a local env exists under `deps/research-environments/environments/` but does not
-  import, install the research-env workspace members with `uv sync --all-packages`
-  (they're auto-discovered — no `pyproject.toml` edit needed).
+  If a local env exists under `deps/research-environments/environments/` or
+  `deps/verifiers/environments/` but does not import, install the env workspace
+  members with `uv sync --all-packages` (all) or `uv sync --package prime-rl
+  --package <env>` (one) — they're auto-discovered, no `pyproject.toml` edit needed.
 
 ## `sft` — SFT training
 

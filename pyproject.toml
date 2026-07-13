@@ -66,22 +66,6 @@ flash-attn-3 = ["flash_attn_3"]
 flash-attn-cute = [
     "flash-attn-4",
 ]
-envs = [
-    "alphabet-sort",
-    "alphabet-sort-v1",
-    "code-golf-v1",
-    "color-codeword-v1",
-    "deepwiki-v1",
-    "glossary-v1",
-    "gsm8k-v1",
-    "math-python",
-    "reverse-text",
-    "reverse-text-v1",
-    "wiki-search",
-    "wiki-search-v1",
-    "wordle",
-    "wordle-v1",
-]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
     "deep-gemm ; platform_machine == 'x86_64'",
@@ -141,10 +125,14 @@ override-dependencies = [
     "openenv-core",
 ]
 
-# Research-environment packages are auto-discovered as workspace members, so new
-# envs need no per-package registration. Install them with `uv sync --all-packages`.
+# Environment packages (research-environments + verifiers) are auto-discovered as
+# workspace members, so new envs need no per-package registration. Install them
+# with `uv sync --all-packages`.
 [tool.uv.workspace]
-members = ["deps/research-environments/environments/*/*"]
+members = [
+    "deps/research-environments/environments/*/*",
+    "deps/verifiers/environments/*",
+]
 # tau2-synth-v1 and tau3-bench-v1 pin `tau2` forks/revs that conflict with the
 # canonical tau2-bench-v1; a workspace shares one lock, so these can't coexist.
 exclude = [
@@ -201,20 +189,6 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
-alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
-alphabet-sort-v1 = { path = "deps/verifiers/environments/alphabet_sort_v1", editable = true }
-code-golf-v1 = { path = "deps/verifiers/environments/code_golf_v1", editable = true }
-color-codeword-v1 = { path = "deps/verifiers/environments/color_codeword_v1", editable = true }
-deepwiki-v1 = { path = "deps/verifiers/environments/deepwiki_v1", editable = true }
-glossary-v1 = { path = "deps/verifiers/environments/glossary_v1", editable = true }
-gsm8k-v1 = { path = "deps/verifiers/environments/gsm8k_v1", editable = true }
-math-python = { path = "deps/verifiers/environments/math_python", editable = true }
-reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
-reverse-text-v1 = { path = "deps/verifiers/environments/reverse_text_v1", editable = true }
-wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
-wiki-search-v1 = { path = "deps/verifiers/environments/wiki_search_v1", editable = true }
-wordle = { path = "deps/verifiers/environments/wordle", editable = true }
-wordle-v1 = { path = "deps/verifiers/environments/wordle_v1", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
