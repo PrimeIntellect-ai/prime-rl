@@ -120,10 +120,9 @@ class Orchestrator:
     ckpt_manager: CheckpointManager | None
     component_tasks: list[asyncio.Task]
 
-    # Always set by ``setup()`` (``policy_inference`` is None for pure
-    # static-SFT runs — no env generates rollouts, so nothing is deployed)
+    # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
-    policy_inference: InferencePool | None
+    policy_inference: InferencePool
     monitor: Monitor
     sender: TrainingBatchSender
     train_envs: TrainEnvs
@@ -209,23 +208,14 @@ class Orchestrator:
 
         # The one model prime-rl hosts: the live policy. Frozen model
         # references are external endpoints — each env's Algorithm builds its
-        # own pools in ``setup()`` below. A run where no env generates
-        # rollouts (pure static SFT, no eval) deploys nothing: the renderer
-        # is still built for client-side tokenization.
-        if config.needs_inference:
-            get_logger().info(
-                f"Initializing policy inference pool (base_url={', '.join(config.model.client.base_url)}, "
-                f"model={config.model.name})"
-            )
-            self.renderer, self.policy_inference = await setup_policy_inference_pool(
-                config=config, tokenizer=self.tokenizer
-            )
-        else:
-            from renderers.base import create_renderer
-
-            get_logger().info("No env generates rollouts — skipping the policy inference pool")
-            self.renderer = create_renderer(self.tokenizer, config.renderer)
-            self.policy_inference = None
+        # own pools in ``setup()`` below.
+        get_logger().info(
+            f"Initializing policy inference pool (base_url={', '.join(config.model.client.base_url)}, "
+            f"model={config.model.name})"
+        )
+        self.renderer, self.policy_inference = await setup_policy_inference_pool(
+            config=config, tokenizer=self.tokenizer
+        )
         self.mm_token_type_ids_mapping = (
             getattr(self.renderer, "mm_token_type_id_map", None) if self.renderer is not None else None
         )
@@ -258,10 +248,7 @@ class Orchestrator:
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
-            config.train.env,
-            policy_pool=self.policy_inference,
-            renderer_config=config.renderer,
-            tokenizer=self.tokenizer,
+            config.train.env, policy_pool=self.policy_inference, renderer_config=config.renderer
         )
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
@@ -291,14 +278,11 @@ class Orchestrator:
                 self.resume_step = config.ckpt.resume_step
 
         # Resume below may bump ``policy.version`` and the LoRA model name
-        self.policy.model_name = (
-            self.policy_inference.model_name if self.policy_inference is not None else config.model.name
-        )
+        self.policy.model_name = self.policy_inference.model_name
 
-        if self.policy_inference is not None:
-            get_logger().info("Waiting for policy inference pool to be ready")
-            await self.policy_inference.wait_for_ready(config.model.name)
-            get_logger().success("Policy inference pool ready")
+        get_logger().info("Waiting for policy inference pool to be ready")
+        await self.policy_inference.wait_for_ready(config.model.name)
+        get_logger().success("Policy inference pool ready")
         # Build + ready pools for each env's frozen sampling source and the
         # algorithm's frozen reference model
         await asyncio.gather(
@@ -306,7 +290,7 @@ class Orchestrator:
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
-        if config.wandb is not None and config.collect_inference_metrics and self.policy_inference is not None:
+        if config.wandb is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(
                 self.policy_inference.admin_clients,
                 roles=config.inference_metrics_roles,
@@ -931,6 +915,11 @@ async def run_orchestrator(config: OrchestratorConfig) -> None:
     """Top-level entrypoint. Wrapped in ``@clean_exit`` so wandb is flushed
     on exit (success or crash); keeps that out of the class.
     """
+    if config.is_static_sft:
+        from prime_rl.orchestrator.static_sft import StaticSFTOrchestrator
+
+        await StaticSFTOrchestrator(config).start()
+        return
     await Orchestrator(config).start()
 
 

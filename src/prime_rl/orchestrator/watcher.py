@@ -24,7 +24,7 @@ class WeightWatcher:
         config: OrchestratorConfig,
         *,
         policy: Policy,
-        inference: InferencePool | None,
+        inference: InferencePool,
         observers: list[VersionObserver],
         lora_name: str | None,
         ckpt_step: int = 0,
@@ -110,21 +110,16 @@ class WeightWatcher:
                         f"Observer {type(observer).__name__}.on_version_pending({next_step}) raised: {exc!r}"
                     )
 
-            # Without inference (pure static SFT) there is nothing to push
-            # weights to — adopting the version is all the pacing needs.
-            if self.inference is not None:
-                get_logger().debug(f"Updating weights to step {next_step}")
-                t1 = time.perf_counter()
-                await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
-                self.last_update_weights_time = time.perf_counter() - t1
-                get_logger().debug(
-                    f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}"
-                )
+            get_logger().debug(f"Updating weights to step {next_step}")
+            t1 = time.perf_counter()
+            await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
+            self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
+            get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
 
             self.ckpt_step = next_step
             self.policy.version = next_step
-            if self.lora_name is not None and self.inference is not None:
+            if self.lora_name is not None:
                 self.inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
 

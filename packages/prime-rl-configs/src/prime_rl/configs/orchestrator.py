@@ -8,10 +8,9 @@ from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
+    DatasetSourceConfig,
     GRPOAlgoConfig,
-    StaticSFTAlgoConfig,
 )
-from prime_rl.configs.sft import LossMaskConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
@@ -152,48 +151,6 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
-class StaticDatasetConfig(BaseConfig):
-    """A HF SFT dataset as a train env's data source: rows (``messages`` or
-    ``prompt``+``completion`` columns) are rendered to tokens on the
-    orchestrator and trained with CE — no env server, no inference."""
-
-    name: str
-    """HF dataset name or path."""
-
-    subsets: list[str] | None = None
-    """Subsets to load from the HF dataset."""
-
-    splits: list[str] | None = None
-    """Splits to load from the HF dataset."""
-
-    probabilities: list[float] | None = None
-    """Sampling probabilities for each subset/split."""
-
-    stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted"
-    """Stopping strategy when interleaving multiple subsets/splits."""
-
-    max_examples: int | None = Field(None, ge=1)
-    """If set, use only the first N examples of the loaded dataset."""
-
-    max_length: int | None = Field(None, ge=1)
-    """If set, rows rendering to more tokens are skipped (surfaced as errored
-    rollouts). None lets the trainer truncate at ``seq_len`` like any rollout."""
-
-    loss_mask: LossMaskConfig = LossMaskConfig()
-    """Which message roles contribute to the loss."""
-
-    @model_validator(mode="after")
-    def validate_subsets_and_splits(self):
-        if self.subsets is not None and self.splits is not None and len(self.subsets) != len(self.splits):
-            raise ValueError("Number of subsets must be equal to number of splits.")
-        if self.probabilities is not None:
-            for field_name in ("subsets", "splits"):
-                values = getattr(self, field_name)
-                if values is not None and len(self.probabilities) != len(values):
-                    raise ValueError(f"Number of probabilities must be equal to number of {field_name}.")
-        return self
-
-
 class EnvConfig(vf.EnvServerConfig):
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
@@ -266,33 +223,6 @@ class TrainEnvConfig(EnvConfig):
     """Training algorithm for this env. Inherits from the top-level
     ``orchestrator.algo`` when unset; set ``type`` (and its params) to give
     this env its own algorithm."""
-
-    dataset: StaticDatasetConfig | None = None
-    """When set, this env is a static SFT data source: dataset rows are
-    rendered to tokens on the orchestrator and trained with CE. Mutually
-    exclusive with ``taskset``/``id``/``address`` — no env server is spawned
-    and nothing is sampled. Requires ``name``; the algorithm is
-    ``static-sft`` (auto-selected)."""
-
-    @property
-    def is_legacy(self) -> bool:
-        """A v0/legacy env (run via the bridge). Dataset envs are neither."""
-        return self.dataset is None and not self.taskset.id
-
-    @model_validator(mode="after")
-    def validate_env(self):
-        if self.dataset is not None:
-            if self.taskset.id or self.id or self.address:
-                raise ValueError(
-                    "dataset is mutually exclusive with taskset/id/address — a dataset env "
-                    "has no env server and generates nothing."
-                )
-            if not self.name:
-                raise ValueError('a dataset env needs a name — set name = "<display name>".')
-            if "group_size" in self.model_fields_set and self.group_size != 1:
-                raise ValueError("group_size must be 1 for a dataset env — every row is its own group.")
-            return self
-        return super().validate_env()
 
 
 class EvalEnvConfig(EnvConfig):
@@ -672,45 +602,37 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def inherit_env_algorithms(self):
         """Envs without their own algorithm inherit the top-level one.
-        Declared before any validator that reads ``algo``. Dataset envs
-        always run ``static-sft`` and never inherit a sampling algorithm."""
+        A dataset source is top-level because it produces batches directly;
+        it is not an environment and cannot be mixed into rollout envs."""
+        if isinstance(self.algo.sampling.source, DatasetSourceConfig):
+            if self.train.env:
+                raise ValueError("dataset-backed SFT does not use train.env — the dataset is sampling.source")
+            if self.eval is not None:
+                raise ValueError("dataset-backed SFT does not support eval in the static training path")
+            return self
         for env_cfg in self.train.env:
-            if env_cfg.dataset is not None:
-                if env_cfg.algo is None:
-                    env_cfg.algo = StaticSFTAlgoConfig()
-                elif env_cfg.algo.type != "static-sft":
-                    raise ValueError(
-                        f"env '{env_cfg.resolved_name}' has a dataset but algo '{env_cfg.algo.type}' — "
-                        "dataset envs train with 'static-sft' (or leave algo unset)."
-                    )
-            elif env_cfg.algo is None:
-                if self.algo.type == "static-sft":
-                    raise ValueError(
-                        f"env '{env_cfg.resolved_name}' would inherit algo 'static-sft' but has no dataset — "
-                        "'static-sft' only applies to dataset envs."
-                    )
+            if env_cfg.algo is None:
                 env_cfg.algo = self.algo.model_copy(deep=True)
-            elif env_cfg.algo.type == "static-sft":
+            if isinstance(env_cfg.algo.sampling.source, DatasetSourceConfig):
                 raise ValueError(
-                    f"env '{env_cfg.resolved_name}' has algo 'static-sft' but no dataset — "
-                    "'static-sft' only applies to dataset envs."
+                    f"env '{env_cfg.resolved_name}' has a dataset sampling source — datasets are "
+                    "top-level static SFT sources, not environments"
                 )
         return self
 
     @property
-    def any_policy_sourced(self) -> bool:
-        """True when at least one train env samples rollouts from the live policy."""
-        return any(
-            env.dataset is None and env.algo is not None and env.algo.sampling.source == "policy"
-            for env in self.train.env
-        )
+    def static_sft_source(self) -> DatasetSourceConfig | None:
+        source = self.algo.sampling.source
+        return source if self.algo.type == "sft" and isinstance(source, DatasetSourceConfig) else None
+
+    @property
+    def is_static_sft(self) -> bool:
+        return self.static_sft_source is not None
 
     @property
     def needs_inference(self) -> bool:
-        """True when the run touches the policy inference deployment at all —
-        any env that generates rollouts (train env with a taskset, or eval).
-        False only for pure static-SFT runs, which train without inference."""
-        return self.eval is not None or any(env.dataset is None for env in self.train.env)
+        """Static dataset SFT is the only ``rl`` path that needs no inference."""
+        return not self.is_static_sft
 
     @model_validator(mode="after")
     def validate_pool_size(self):
@@ -720,7 +642,7 @@ class OrchestratorConfig(BaseConfig):
         it's ignored."""
         if self.pool_size is None:
             return self
-        if not self.any_policy_sourced:
+        if not any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.env):
             raise ValueError(
                 f"orchestrator.pool_size={self.pool_size!r} is set but no train env samples "
                 "from the policy — the renderer-client sampling pool never runs (the renderer "
@@ -797,10 +719,9 @@ class OrchestratorConfig(BaseConfig):
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.group_size:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
 
-        # Propagate the top-level ``group_size`` into each train env that didn't set
-        # its own. Dataset envs stay at 1 — every row is its own group.
+        # Propagate the top-level ``group_size`` into each train env that didn't set its own.
         for env_cfg in self.train.env:
-            if "group_size" not in env_cfg.model_fields_set and env_cfg.dataset is None:
+            if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
 
         return self
@@ -821,13 +742,11 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_no_inference_broadcast(self):
-        """A run without inference receives no weights — NCCL broadcast has
-        nothing to rendezvous with. The trainer's filesystem broadcast still
-        paces the orchestrator (the watcher polls the STABLE marker)."""
+        """Static SFT uses the filesystem marker as its trainer handshake."""
         if not self.needs_inference and self.weight_broadcast.type != "filesystem":
             raise ValueError(
-                "weight_broadcast must be 'filesystem' when no train env generates rollouts "
-                "and eval is disabled — there is no inference deployment to broadcast to."
+                "dataset-backed SFT requires filesystem weight broadcast — there is no "
+                "inference deployment for NCCL broadcast"
             )
         return self
 
@@ -835,8 +754,6 @@ class OrchestratorConfig(BaseConfig):
     def resolve_env_config(self):
         """Set vLLM sampling defaults + legacy env kwargs on each train env from top-level fields."""
         for env in self.train.env:
-            if env.dataset is not None:
-                continue
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
             assert env.algo is not None

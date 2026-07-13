@@ -278,24 +278,17 @@ class Envs(Generic[EnvT]):
 class TrainEnvs(Envs[TrainEnv]):
     """Collection of training environments, each paired with its rollout
     :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
-    resolved algorithm config. Dataset entries build a server-less
-    :class:`~prime_rl.orchestrator.static_env.StaticSFTEnv` instead."""
+    resolved algorithm config."""
 
-    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer_config=None, tokenizer=None):
-        from prime_rl.orchestrator.static_env import StaticSFTEnv
-
+    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer_config=None):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
-            if config.dataset is not None:
-                assert tokenizer is not None, "dataset envs need the tokenizer to build their renderer"
-                env = StaticSFTEnv(config, build_algorithm(config.algo, policy_pool), tokenizer, renderer_config)
-            else:
-                env = TrainEnv(
-                    config,
-                    Sampler(config.algo.sampling, policy_pool, renderer_config),
-                    build_algorithm(config.algo, policy_pool),
-                )
+            env = TrainEnv(
+                config,
+                Sampler(config.algo.sampling, policy_pool, renderer_config),
+                build_algorithm(config.algo, policy_pool),
+            )
             self._envs[env.name] = env
 
 

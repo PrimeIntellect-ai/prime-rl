@@ -140,14 +140,9 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
 
     @property
     def is_trainable(self) -> bool:
-        """Whether the rollout carries a nonzero loss signal."""
-        has_supervised_tokens = any(
-            any(weights)
-            for sample in self.samples
-            for weights in (sample.ce_weights, sample.ref_kl_weights)
-            if weights is not None
-        )
-        return has_supervised_tokens or bool(self.advantages) and any(a != 0.0 for a in self.advantages)
+        """Whether the rollout carries a training signal — a nonzero advantage on some token. A
+        uniform-reward GRPO group (all-zero advantages) or an unscored rollout has no gradient."""
+        return bool(self.advantages) and any(a != 0.0 for a in self.advantages)
 
 
 @dataclass

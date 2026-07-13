@@ -90,20 +90,20 @@ The RL entrypoint supports several training algorithms, switched via `[orchestra
 | `grpo` (default) | None | Standard group-relative RL |
 | `max_rl` | None | [MaxRL](https://arxiv.org/abs/2602.02710): GRPO with mean-normalized advantages (maximum-likelihood RL) |
 | `opd` | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): the policy generates rollouts, the trainer minimizes per-token reverse KL to a reference model |
-| `sft` | Required, any OpenAI-compatible endpoint | Hard-distill: a frozen model generates rollouts, the policy trains on its tokens |
+| `sft` | Frozen endpoint or static dataset | CE on tokens from `orchestrator.algo.sampling.source` |
 | `opsd` | None — the live policy is its own reference (no deployment) | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own reference conditioned on expert demonstrations |
 | `echo` | None | GRPO plus cross-entropy on env-observation tokens |
 
 A new algorithm is a named class in code, not a config — see [Algorithms § Authoring an Algorithm](algorithms.md#authoring-an-algorithm).
 
-Frozen models are declared inline on the algorithm, named where the model is used — `[orchestrator.algo.teacher]` for `opd` (the frozen model scored against), `[orchestrator.algo.sampling.source]` for `sft` (the model it samples from) — each with `name` + `base_url`. `opsd` declares no frozen model: it self-distills against the live policy. The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `base_url` at them:
+Frozen models are declared inline on the algorithm, named where the model is used — `[orchestrator.algo.teacher]` for `opd` (the frozen model scored against), `[orchestrator.algo.sampling.source]` for hard-distill `sft` (the model it samples from) — each with `name` + `base_url`. Static SFT instead sets `type = "dataset"` and `name` under that same source table. `opsd` declares no frozen model: it self-distills against the live policy. The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `base_url` at them:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \
   --model.name <frozen-model> --server.port 8001
 ```
 
-The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no orchestrator. Use the `sft` algorithm only when you want a frozen model to generate the supervision on the fly.
+The standalone `uv run sft` entrypoint remains the direct SFT trainer. Dataset-backed SFT can also run through `uv run rl` by configuring `sft` with a dataset `sampling.source`, which keeps the RL trainer and checkpoint flow.
 
 ### Important Metrics
 

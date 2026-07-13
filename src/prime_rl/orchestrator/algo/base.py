@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from renderers import RendererConfig
 
     from prime_rl.orchestrator.types import Rollout
+    from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
 
 
@@ -112,14 +113,13 @@ class Algorithm:
     out — accepted for the simpler one-rollout-at-a-time shape.
 
     Constructed with the algorithm config it interprets plus the live policy
-    pool (``self.policy_pool`` — unavailable only for pure static-SFT runs and
-    never closed by the algorithm). An algorithm that needs to tokenize (e.g. opsd's demonstration
+    pool (``self.policy_pool`` — never closed by the algorithm). An algorithm that needs to tokenize (e.g. opsd's demonstration
     hint) builds its own renderer in :meth:`setup` from its config; the policy's
     renderer is not threaded in."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
-    def __init__(self, config: AlgoConfig, policy_pool: InferencePool | None):
+    def __init__(self, config: AlgoConfig, policy_pool: InferencePool):
         self.policy_pool = policy_pool
         self.connected_pools: list[InferencePool] = []  # frozen pools connected in setup(); closed at shutdown
 
@@ -148,6 +148,11 @@ class Algorithm:
         """Group phase, the finalized cohort, before filtering: write
         group-relative credit."""
 
+    @classmethod
+    def route_sample(cls, sample: TrainingSample) -> None:
+        """Route one already-built sample through this algorithm's loss."""
+        stamp_loss_routing(sample, cls.action_loss_type)
+
     async def finalize_rollout(self, rollout: Rollout) -> None:
         """Arrival phase (non-virtual): rollout-local scoring as each rollout is
         tokenized."""
@@ -162,4 +167,4 @@ class Algorithm:
         for rollout in rollouts:
             stamp_advantages(rollout)
             for sample in rollout.samples:
-                stamp_loss_routing(sample, self.action_loss_type)
+                self.route_sample(sample)

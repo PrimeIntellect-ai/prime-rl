@@ -10,9 +10,8 @@ assembly. There is no separate ``advantage`` sub-component and no preset layer.
 
 Each algorithm fixes two things:
 
-1. **Sampling** — which model generates train rollouts. ``sampling.source`` is
-   a model reference: ``"policy"`` (the live policy) or an inline frozen hosted
-   model.
+1. **Sampling/source** — where training tokens come from: ``"policy"`` (the
+   live policy), an inline frozen hosted model, or (for SFT) a static dataset.
 2. **The per-token training signal** — credit assignment and loss routing,
    fused: one mapping from a finalized rollout to per-token ``(loss component,
    weight)``. Group-relative algorithms compute scalars on the orchestrator and
@@ -38,6 +37,7 @@ from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
+from prime_rl.configs.sft import LossMaskConfig
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.config import BaseConfig
 
@@ -65,10 +65,35 @@ class FrozenModelConfig(ClientConfig):
         return self
 
 
-ModelReference: TypeAlias = Literal["policy"] | FrozenModelConfig
-"""``"policy"`` (the live policy — weight-updated: prefix caches salted per
-version, sampling logprobs carried, rollouts age off-policy) or an inline
-externally-hosted frozen model."""
+class DatasetSourceConfig(BaseConfig):
+    """A static Hugging Face dataset used as the source for SFT tokens."""
+
+    type: Literal["dataset"] = "dataset"
+    name: str
+    subsets: list[str] | None = None
+    splits: list[str] | None = None
+    probabilities: list[float] | None = None
+    stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted"
+    shuffle: bool = True
+    seed: int = 0
+    max_examples: int | None = Field(None, ge=1)
+    max_length: int | None = Field(None, ge=1)
+    loss_mask: LossMaskConfig = LossMaskConfig()
+
+    @model_validator(mode="after")
+    def validate_subsets_and_splits(self):
+        if self.subsets is not None and self.splits is not None and len(self.subsets) != len(self.splits):
+            raise ValueError("Number of subsets must be equal to number of splits.")
+        if self.probabilities is not None:
+            for field_name in ("subsets", "splits"):
+                values = getattr(self, field_name)
+                if values is not None and len(self.probabilities) != len(values):
+                    raise ValueError(f"Number of probabilities must be equal to number of {field_name}.")
+        return self
+
+
+SamplingSource: TypeAlias = Literal["policy"] | FrozenModelConfig | DatasetSourceConfig
+"""The live policy, an externally hosted frozen model, or a static dataset."""
 
 ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
 
@@ -79,11 +104,9 @@ ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
 
 
 class SamplingConfig(BaseConfig):
-    source: ModelReference = "policy"
-    """Model reference for train rollout generation: ``"policy"`` (the live
-    policy — prefix caches salted per version, sampling logprobs requested,
-    rollouts age off-policy) or an inline frozen hosted model (stable prefix
-    cache, no sampling logprobs, rollouts never go stale)."""
+    source: SamplingSource = "policy"
+    """Source of training tokens: the live policy, an inline frozen hosted
+    model, or (for SFT only) a static dataset."""
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +186,7 @@ class BaseAlgoConfig(BaseConfig):
     adds its own parameters — including any reference model it needs, named
     where that model is actually used (opd scores against a frozen ``teacher``;
     sft samples from its ``sampling.source``; opsd self-distills against the
-    live policy and names no model).
+    live policy and names no model). Dataset sources are valid only for SFT.
 
     The bundle IS the algorithm — there is no separate ``advantage``
     sub-component. ``algo.type`` names it, and the class defaults are the
@@ -178,13 +201,13 @@ class BaseAlgoConfig(BaseConfig):
     def validate_sampling_source(self):
         """The on-policy loss types (rl, ref_kl) need the live policy's own
         sampling logprobs, so they must sample from ``"policy"``; only sft (ce)
-        may sample from a frozen model."""
+        may consume frozen-model or dataset tokens."""
         if self.action_loss_type in ("rl", "ref_kl") and self.sampling.source != "policy":
             raise ValueError(
                 f"algorithm '{self.type}' trains with the "
-                f"{self.action_loss_type} loss type but sampling.source is a frozen model — "
+                f"{self.action_loss_type} loss type but sampling.source is not the live policy — "
                 "the importance ratio and trust region need the live policy's own sampling logprobs. "
-                "Use the 'sft' algorithm to distill frozen-model tokens."
+                "Use the 'sft' algorithm for frozen-model or dataset tokens."
             )
         return self
 
@@ -291,49 +314,19 @@ class SFTAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "ce"
 
     @model_validator(mode="after")
-    def require_frozen_source(self):
-        """sft's teacher is the model it samples from — ``sampling.source`` must
-        be a frozen hosted model, not the policy (CE on the policy's own tokens
-        is not a distillation target)."""
+    def require_supervised_source(self):
+        """SFT needs tokens from a frozen model or a static dataset."""
         if self.sampling.source == "policy":
             raise ValueError(
-                f"algorithm '{self.type}' needs a teacher to sample rollouts from — "
-                "CE on the policy's own tokens is not a distillation target. Set "
-                "sampling.source to an inline hosted model (name + base_url)."
-            )
-        return self
-
-
-class StaticSFTAlgoConfig(BaseAlgoConfig):
-    type: Literal["static-sft"] = "static-sft"
-    """Static SFT: cross-entropy on tokens that come from a dataset instead of
-    a model — nothing is sampled, so there is no sampling source. Selected
-    automatically for train envs configured with a ``dataset``; not meaningful
-    for envs that generate rollouts."""
-
-    action_loss_type: ClassVar[ActionLossType] = "ce"
-
-    @model_validator(mode="after")
-    def forbid_sampling_source(self):
-        """Static SFT has no rollout generation — a sampling source is a
-        config error, not a knob. Checked by value (not ``model_fields_set``)
-        so the config survives the entrypoint's dump/re-parse round trip."""
-        if self.sampling.source != "policy":
-            raise ValueError(
-                "algorithm 'static-sft' trains on dataset tokens — nothing is sampled, "
-                "so sampling.source must not point at a model."
+                f"algorithm '{self.type}' needs a supervised token source — CE on the policy's "
+                "own tokens is not a training target. Set sampling.source to an inline hosted "
+                "model (name + base_url) or a dataset."
             )
         return self
 
 
 AlgoConfig: TypeAlias = Annotated[
-    GRPOAlgoConfig
-    | EchoAlgoConfig
-    | MaxRLAlgoConfig
-    | OPDAlgoConfig
-    | OPSDAlgoConfig
-    | SFTAlgoConfig
-    | StaticSFTAlgoConfig,
+    GRPOAlgoConfig | EchoAlgoConfig | MaxRLAlgoConfig | OPDAlgoConfig | OPSDAlgoConfig | SFTAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -344,8 +337,7 @@ its class defaults are the vetted setting.
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
-- ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
-- ``static-sft`` — no sampling at all: the tokens come from a dataset (train envs with a ``dataset``), CE on the assistant tokens.
+- ``sft`` — CE on tokens from a frozen model or a static dataset, selected by ``sampling.source``.
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
 
 A new credit-assignment scheme is a new named algorithm in code (subclass

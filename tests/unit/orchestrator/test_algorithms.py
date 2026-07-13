@@ -7,7 +7,7 @@ import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
-from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
+from prime_rl.configs.algorithm import AlgoConfig, DatasetSourceConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout
@@ -26,12 +26,14 @@ def _build(**kwargs) -> AlgoConfig:
 
 def _ref_kind(ref):
     """Collapse a resolved reference to a comparable marker."""
+    if isinstance(ref, DatasetSourceConfig):
+        return "dataset"
     return "frozen" if isinstance(ref, FrozenModelConfig) else ref
 
 
 # The vetted default of each algorithm: which model it samples from and which
 # loss component its action tokens feed. opd alone names a frozen ``teacher``;
-# sft samples from a frozen ``sampling.source``; the rest run on the policy.
+# sft consumes a frozen-model or dataset ``sampling.source``; the rest use policy sampling.
 @pytest.mark.parametrize(
     ("algorithm_type", "build_kwargs", "source", "action_loss_type"),
     [
@@ -39,6 +41,7 @@ def _ref_kind(ref):
         ("max_rl", {}, "policy", "rl"),
         ("opd", {"teacher": FROZEN}, "policy", "ref_kl"),
         ("sft", {"sampling": {"source": FROZEN}}, "frozen", "ce"),
+        ("sft", {"sampling": {"source": {"type": "dataset", "name": "org/data"}}}, "dataset", "ce"),
         ("opsd", {}, "policy", "ref_kl"),
         ("echo", {}, "policy", "rl"),
     ],
@@ -78,14 +81,15 @@ def test_opd_teacher_must_be_a_frozen_endpoint():
         _build(type="opd", teacher="policy")
 
 
-def test_sft_requires_teacher():
-    with pytest.raises(ValueError, match="needs a teacher to sample rollouts from"):
+def test_sft_requires_supervised_source():
+    with pytest.raises(ValueError, match="needs a supervised token source"):
         _build(type="sft")
 
 
-def test_rl_loss_type_incompatible_with_frozen_sampling():
-    with pytest.raises(ValueError, match="sampling.source is a frozen model"):
-        _build(type="grpo", sampling={"source": FROZEN})
+@pytest.mark.parametrize("source", [FROZEN, {"type": "dataset", "name": "org/data"}])
+def test_rl_loss_type_requires_policy_sampling(source):
+    with pytest.raises(ValueError, match="sampling.source is not the live policy"):
+        _build(type="grpo", sampling={"source": source})
 
 
 # --------------------------------------------------------------------------
