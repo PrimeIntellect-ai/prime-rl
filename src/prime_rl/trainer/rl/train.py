@@ -247,6 +247,21 @@ def train(config: TrainerConfig):
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
 
+    # NCCL weight broadcast streams weights live from the trainer, so on resume the
+    # inference servers still hold base weights and the orchestrator immediately asks
+    # them to adopt the checkpoint version — a request only the trainer can serve.
+    # Re-broadcast the resumed weights once before the first step; without this the
+    # inference pool pauses waiting for a broadcast that never arrives and the run
+    # deadlocks until the distributed timeout.
+    if checkpoint_step is not None and weight_broadcast is not None and config.weight_broadcast.type == "nccl":
+        logger.info(f"Re-broadcasting resumed checkpoint weights (policy v{checkpoint_step}) to inference")
+        if world.is_master:
+            multi_run_manager.discover_runs()
+        multi_run_manager.synchronize_state()
+        for idx in multi_run_manager.used_idxs:
+            multi_run_manager.ready_to_update[idx] = True
+        weight_broadcast.broadcast_weights(model, step=checkpoint_step)
+
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
