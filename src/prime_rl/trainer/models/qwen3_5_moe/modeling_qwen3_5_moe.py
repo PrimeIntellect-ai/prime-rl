@@ -551,6 +551,14 @@ QWEN35MOE_ATTN_IMPL2CLASS = {
 }
 
 
+def normalize_qwen3_5_attn_implementation(attn_impl: str) -> str:
+    if attn_impl == "eager":
+        return "sdpa"
+    if attn_impl == "kernels-community/vllm-flash-attn3":
+        return "flash_attention_3"
+    return attn_impl
+
+
 # ---------------------------------------------------------------------------
 # Decoder layer
 # ---------------------------------------------------------------------------
@@ -567,9 +575,8 @@ def _get_gated_attention(config: Qwen3_5MoeConfig) -> nn.Module:
         attention_dropout=config.attention_dropout,
     )
 
-    attn_impl = config._attn_implementation
-    if attn_impl == "eager":
-        attn_impl = "sdpa"
+    attn_impl = normalize_qwen3_5_attn_implementation(config._attn_implementation)
+    config._attn_implementation = attn_impl
 
     if attn_impl not in QWEN35MOE_ATTN_IMPL2CLASS:
         supported = list(QWEN35MOE_ATTN_IMPL2CLASS.keys())
@@ -783,6 +790,17 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
         "hidden_states": Qwen3_5MoeDecoderLayer,
     }
 
+    def _check_and_adjust_attn_implementation(
+        self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
+    ) -> str:
+        attn_impl = normalize_qwen3_5_attn_implementation(attn_implementation or "sdpa")
+        if attn_impl not in QWEN35MOE_ATTN_IMPL2CLASS:
+            supported = list(QWEN35MOE_ATTN_IMPL2CLASS.keys())
+            raise ValueError(
+                f"Qwen3.5-MoE attention does not support '{attn_implementation}'. Supported implementations: {supported}."
+            )
+        return attn_impl
+
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return any(
@@ -819,6 +837,7 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
 
 class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
     def __init__(self, config: Qwen3_5MoeConfig):
+        config._attn_implementation = normalize_qwen3_5_attn_implementation(config._attn_implementation)
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
