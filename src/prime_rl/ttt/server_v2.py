@@ -429,7 +429,10 @@ def run_server_v2(config: TTTServiceConfig) -> None:
 
     world = get_world()
     torch.cuda.set_device(world.local_rank)
-    if torch.distributed.is_available() and not torch.distributed.is_initialized() and world.world_size > 1:
+    # Init unconditionally (not just world_size > 1): the trainer stack's MultiRunManager
+    # needs the c10d default store even on a single rank — without this a 1-GPU service
+    # (e.g. the tiny-model smoke) crashes at startup.
+    if torch.distributed.is_available() and not torch.distributed.is_initialized():
         torch.distributed.init_process_group(backend="nccl", device_id=torch.device("cuda", world.local_rank))
     ctrl_pg = None
     if torch.distributed.is_initialized() and world.world_size > 1:
