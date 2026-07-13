@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Generic, Literal, Protocol
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
-from verifiers.v1.task import TaskT
+from verifiers.v1.task import DataT
 
 from prime_rl.transport import TrainingSample
 
@@ -69,12 +69,12 @@ class GroupState:
     policy_version_at_start: int = 0
 
 
-class Rollout(vf.Trace[TaskT], Generic[TaskT]):
+class Rollout(vf.Trace[DataT], Generic[DataT]):
     """A completed rollout: the env's typed ``vf.Trace`` *is* the rollout — prime-rl's
     orchestration metadata lives on it directly (set by the dispatcher once the rollout
     returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
-    fields are ``exclude=True``, so dumping a Rollout yields a plain trace — the on-disk
-    ``results.jsonl`` is unchanged.
+    fields are ``exclude=True``, so dumping a Rollout yields a plain trace on the wire;
+    :meth:`to_record` adds the small metadata fields back for the on-disk trace files.
 
     It is also the single currency the scoring hooks receive: a hook reads the trace
     directly (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``) and writes
@@ -97,6 +97,19 @@ class Rollout(vf.Trace[TaskT], Generic[TaskT]):
     is_filtered: bool = Field(default=False, exclude=True)
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
     eval_step: int | None = Field(default=None, exclude=True)
+
+    def to_record(self) -> dict:
+        """The plain trace record plus the orchestration metadata (excluded from the pydantic
+        dump), so a record stays fully placeable — kind, env, policy — even when trace files
+        are merged or read away from their paths. ``eval_step`` is the eval trigger step (None
+        for train rollouts)."""
+        return super().to_record() | {
+            "kind": self.kind,
+            "env_name": self.env_name,
+            "group_id": str(self.group_id),
+            "policy_version": self.policy_version,
+            "eval_step": self.eval_step,
+        }
 
     def assign_advantages(self, values: float | list[float]) -> None:
         """Write the rl advantage stream: a scalar broadcast over the

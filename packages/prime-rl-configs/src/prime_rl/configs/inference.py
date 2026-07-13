@@ -321,32 +321,6 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     def num_nodes(self) -> int:
         return self.num_prefill_nodes + self.num_decode_nodes
 
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_node_counts(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-
-        data = dict(data)
-
-        def normalize_total_nodes(total_key: str, per_replica_key: str, replicas_key: str) -> None:
-            has_total = total_key in data
-            has_per_replica = per_replica_key in data
-            if has_total and has_per_replica:
-                raise ValueError(f"Set only {per_replica_key}; {total_key} is derived from it.")
-            if not has_total:
-                return
-
-            total_nodes = int(data.pop(total_key))
-            replicas = int(data.get(replicas_key, 1))
-            if total_nodes % replicas != 0:
-                raise ValueError(f"{total_key} ({total_nodes}) must be divisible by {replicas_key} ({replicas}).")
-            data[per_replica_key] = total_nodes // replicas
-
-        normalize_total_nodes("num_prefill_nodes", "prefill_nodes_per_replica", "num_prefill_replicas")
-        normalize_total_nodes("num_decode_nodes", "decode_nodes_per_replica", "num_decode_replicas")
-        return data
-
 
 InferenceDeploymentConfig: TypeAlias = Annotated[
     SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig | DisaggregatedInferenceDeploymentConfig,

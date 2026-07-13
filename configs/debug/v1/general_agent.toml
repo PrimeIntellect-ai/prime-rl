@@ -41,7 +41,7 @@ name = "qwen3"
 
 [[orchestrator.train.env]]
 # v1 general-agent solver taskset; the tool server is colocated in the harness's modal sandbox.
-taskset = { id = "general-agent-v1", tools = { colocated = true } }
+taskset = { id = "general-agent-v1", task = { tools = { colocated = true } } }
 harness = { id = "null", runtime = { type = "modal" } }
 
 [inference]
