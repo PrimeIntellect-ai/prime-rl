@@ -22,12 +22,15 @@ git submodule update --init --recursive
 ## Sync
 
 ```bash
-uv sync                    # core only
-uv sync --group dev        # + pytest, ruff, pre-commit
-uv sync --all-extras       # recommended: envs, flash-attn, flash-attn-cute, etc.
+uv sync                              # core only
+uv sync --group dev                  # + pytest, ruff, pre-commit
+uv sync --all-extras                 # + extras (flash-attn, flash-attn-cute, …) and verifiers envs
+uv sync --all-extras --all-packages  # + all research-environment envs (needed to train on them)
 ```
 
-The `envs` extra installs environments listed under `[project.optional-dependencies].envs`, resolved through `[tool.uv.sources]`. Adding a new env means adding its package name to `envs` and its editable source path to `[tool.uv.sources]`.
+Research-environment envs are uv **workspace members**, auto-discovered from `deps/research-environments/environments/*/*`. They are opt-in: a plain `uv sync` / `--all-extras` does not install them (and would remove them if already present — re-run with `--all-packages`, or use `--inexact` to keep them). Adding a new research env needs no `pyproject.toml` change — it's picked up automatically. If two envs pin conflicting transitive versions (all members share one lock), add the loser to `[tool.uv.workspace].exclude`.
+
+Verifiers-repo envs (e.g. `gsm8k-v1`, `wordle`) instead live in `[project.optional-dependencies].envs`, resolved through `[tool.uv.sources]`; a new one is added there.
 
 When bumping a package past the workspace-wide `exclude-newer = "7 days"` window, add it (and any newly-required transitives) to `[tool.uv.exclude-newer-package]` before refreshing `uv.lock`.
 
