@@ -43,7 +43,9 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
         client_config,
         model_name=model_name,
         train_client_type="renderer",
-        eval_client_type="openai_chat_completions",
+        # Renderer for evals too: client-side tool-call parsing, immune to server tool-parser
+        # regressions (vLLM 0.24's glm45 parser drops ~40% of calls, truncating eval episodes).
+        eval_client_type="renderer",
         renderer_config=config.renderer,
         pool_size=config.pool_size,
     )
