@@ -30,6 +30,19 @@ from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
 
+def payload_tokens(rollout: Rollout) -> int:
+    """Token cost of the rollout's trainer-bound payload — the samples built by
+    ``process_rollout``. This is what actually ships: forked traces can drop
+    branches with no trainable tokens, so ``Trace.num_total_tokens`` (which sums
+    over all branches) may overcount. For linear traces the two agree.
+
+    Zero-payload rollouts (no trainable samples at all) fall back to the trace
+    total so they still advance token batching — a degenerate all-zero-payload
+    stream then ships empty batches and trips the orchestrator's
+    consecutive-empty-batch abort instead of stalling the readiness check."""
+    return sum(len(sample.token_ids) for sample in rollout.samples) or rollout.num_total_tokens
+
+
 class TrainSink:
     """Three-level train sink. Constructed once, fed via ``add(rollout)``."""
 
@@ -63,9 +76,9 @@ class TrainSink:
         self.pending_rollouts: TrainRollouts = TrainRollouts()
         self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
         self.pending_batch: list[Rollout] = []
-        # Running token total of ``pending_batch`` (token-batched runs), kept in
-        # sync on append/pop so the readiness check never re-walks the uncached
-        # ``Trace.num_total_tokens`` graph property per arrival.
+        # Running payload-token total of ``pending_batch`` (token-batched
+        # runs), kept in sync on append/pop so the readiness check never
+        # re-sums per arrival.
         self.pending_tokens: int = 0
 
         # Reset by the orchestrator after each ship via ``reset_pre_filter_stats``
@@ -211,7 +224,7 @@ class TrainSink:
             r.is_filtered = False
             self.pending_batch.append(r)
             if self.token_batch_size is not None:
-                self.pending_tokens += r.num_total_tokens
+                self.pending_tokens += payload_tokens(r)
 
         # Per-group summary. One line per finalized group; per-filter
         # detection breakdown lives at debug level in ``apply_filters``
@@ -238,7 +251,7 @@ class TrainSink:
             cut = 0
             running = 0
             for i, r in enumerate(self.pending_batch):
-                running += r.num_total_tokens
+                running += payload_tokens(r)
                 cut = i + 1
                 if running >= self.token_batch_size:
                     break
