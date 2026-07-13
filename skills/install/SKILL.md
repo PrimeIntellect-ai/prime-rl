@@ -46,8 +46,10 @@ Requires `nvcc`. Without `mamba-ssm`, NemotronH falls back to HF's pure-PyTorch 
 ### FP8 inference (GLM-5-FP8, etc.)
 
 ```bash
-uv sync --group fp8-inference   # installs the prebuilt deep-gemm wheel
+uv sync --extra disagg
 ```
+
+This installs the prebuilt DeepGEMM wheel selected by `uv` for Linux x86_64 or aarch64.
 
 ### Trainer DeepEP backend
 
