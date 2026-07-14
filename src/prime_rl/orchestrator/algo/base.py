@@ -112,7 +112,8 @@ class Algorithm:
     out — accepted for the simpler one-rollout-at-a-time shape.
 
     Constructed with the algorithm config it interprets plus the live policy
-    pool (``self.policy_pool`` — never closed by the algorithm). An algorithm that needs to tokenize (e.g. opsd's demonstration
+    pool (``self.policy_pool`` — always available, never closed by the
+    algorithm). An algorithm that needs to tokenize (e.g. opsd's demonstration
     hint) builds its own renderer in :meth:`setup` from its config; the policy's
     renderer is not threaded in."""
 

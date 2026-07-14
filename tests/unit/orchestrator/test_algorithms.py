@@ -86,6 +86,11 @@ def test_sft_requires_supervised_source():
         _build(type="sft")
 
 
+def test_dataset_source_requires_explicit_type():
+    with pytest.raises(ValueError, match="type"):
+        _build(type="sft", sampling={"source": {"name": "org/data"}})
+
+
 @pytest.mark.parametrize("source", [FROZEN, {"type": "dataset", "name": "org/data"}])
 def test_rl_loss_type_requires_policy_sampling(source):
     with pytest.raises(ValueError, match="sampling.source is not the live policy"):

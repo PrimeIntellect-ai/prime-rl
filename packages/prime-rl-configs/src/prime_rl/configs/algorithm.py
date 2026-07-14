@@ -68,7 +68,7 @@ class FrozenModelConfig(ClientConfig):
 class DatasetSourceConfig(BaseConfig):
     """A static Hugging Face dataset used as the source for SFT tokens."""
 
-    type: Literal["dataset"] = "dataset"
+    type: Literal["dataset"]
     name: str
     subsets: list[str] | None = None
     splits: list[str] | None = None

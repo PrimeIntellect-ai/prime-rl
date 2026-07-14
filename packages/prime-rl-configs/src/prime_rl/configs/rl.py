@@ -156,7 +156,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     """Training nodes."""
 
     num_infer_nodes: int | None = Field(None, ge=0)
-    """Inference nodes per replica. If unset, inferred from ``inference.deployment``. Set to 0 to skip inference and orchestrator (requires fake data)."""
+    """Inference nodes per replica. If unset, inferred from ``inference.deployment``. Set to 0 for fake data or dataset-backed SFT; the latter runs its producer on a trainer node."""
 
     num_infer_replicas: int = Field(1, ge=1)
     """Independent inference replicas. Total inference nodes = ``num_infer_nodes * num_infer_replicas``."""
@@ -240,6 +240,12 @@ class RLConfig(BaseConfig):
         return self.trainer.data.fake is None
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
+
+    @model_validator(mode="after")
+    def validate_inference_needed(self):
+        if self.inference is not None and not self.orchestrator.needs_inference:
+            raise ValueError("dataset-backed SFT does not use inference — remove the [inference] config")
+        return self
 
     @model_validator(mode="after")
     def auto_setup_infer_nodes(self):

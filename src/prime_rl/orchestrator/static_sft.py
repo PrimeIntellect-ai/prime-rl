@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from typing import TYPE_CHECKING, cast
 
@@ -17,7 +16,7 @@ from prime_rl.orchestrator.ckpt import CheckpointManager, setup_ckpt_manager
 from prime_rl.orchestrator.trajectories import _encode_mm_kwargs
 from prime_rl.orchestrator.types import Progress
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
-from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages, strip_message_content
+from prime_rl.utils.chat_template import resolve_sft_messages, resolve_sft_tools
 from prime_rl.utils.config import to_toml_dict
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
@@ -33,40 +32,6 @@ if TYPE_CHECKING:
 
 
 STATIC_SFT_ENV_NAME = "static_sft"
-
-
-def _resolve_messages(example: dict) -> list[dict]:
-    if "messages" in example:
-        messages = normalize_messages(example["messages"], default_role="assistant")
-    elif "prompt" in example and "completion" in example:
-        messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
-            example["completion"], default_role="assistant"
-        )
-    else:
-        raise ValueError("SFT rows need either 'messages' or both 'prompt' and 'completion'")
-    return strip_message_content(deserialize_tool_calls(messages))
-
-
-def _resolve_tools(example: dict) -> list[dict]:
-    raw_tools = example.get("tools", example.get("tool_defs"))
-    if not raw_tools:
-        return []
-    if isinstance(raw_tools, str):
-        raw_tools = json.loads(raw_tools)
-    return [
-        tool
-        if tool.get("type") == "function" and "function" in tool
-        else {
-            "type": "function",
-            "function": {
-                "name": tool.get("name"),
-                "description": tool.get("description"),
-                "parameters": tool.get("parameters"),
-                **({} if tool.get("strict") is None else {"strict": tool["strict"]}),
-            },
-        }
-        for tool in raw_tools
-    ]
 
 
 class DatasetSampleSource:
@@ -115,7 +80,7 @@ class DatasetSampleSource:
         return example
 
     def _render(self, example: dict) -> TrainingSample | None:
-        messages = _resolve_messages(example)
+        messages = resolve_sft_messages(example)
         loss_mask = self.config.loss_mask
 
         def role_to_mask(message: dict) -> bool:
@@ -128,7 +93,7 @@ class DatasetSampleSource:
             self.renderer,
             messages,
             role_to_mask=role_to_mask,
-            tools=_resolve_tools(example),
+            tools=resolve_sft_tools(example),
         )
         token_ids = list(rendered.token_ids)
         mask = list(rendered.loss_mask)
@@ -142,7 +107,9 @@ class DatasetSampleSource:
         max_length = min(self.config.max_length or self.seq_len, self.seq_len)
         if len(token_ids) > max_length:
             return None
-        if not any(mask[: self.seq_len]):
+        if mask:
+            mask[0] = False
+        if not any(mask):
             return None
 
         mm_kwargs = None

@@ -514,7 +514,7 @@ class OrchestratorConfig(BaseConfig):
     """Rollout-mode batching only. Multiplier used to derive ``max_inflight_rollouts`` from ``batch_size`` when ``max_inflight_rollouts`` is unset. Values below 1.0 intentionally cap in-flight rollout capacity below ``batch_size``."""
 
     max_inflight_rollouts: int | None = Field(None, ge=1)
-    """Maximum number of rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
+    """Maximum number of rollouts kept in-flight. Required for rollout-based token batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Output sequences returned per example during training."""
@@ -703,8 +703,8 @@ class OrchestratorConfig(BaseConfig):
         if has_token_batch:
             if self.oversampling_factor is not None:
                 raise ValueError("oversampling_factor can only be set when batch_size is set")
-            if self.max_inflight_rollouts is None:
-                raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
+            if self.max_inflight_rollouts is None and not self.is_static_sft:
+                raise ValueError("max_inflight_rollouts must be set for rollout-based token batching")
         else:
             assert self.batch_size is not None
             if self.batch_size % self.group_size != 0:

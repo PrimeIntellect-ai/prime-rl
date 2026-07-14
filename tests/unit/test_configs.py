@@ -207,6 +207,34 @@ def test_trainer_enable_token_export_cli_flag():
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
 
 
+def static_sft_orchestrator(**kwargs):
+    return {
+        "renderer": {"name": "default"},
+        "algo": {"type": "sft", "sampling": {"source": {"type": "dataset", "name": "org/data"}}},
+        **kwargs,
+    }
+
+
+def test_static_sft_rejects_inference_config():
+    with pytest.raises(ValidationError, match="does not use inference"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": static_sft_orchestrator(),
+                "inference": {},
+            }
+        )
+
+
+def test_static_sft_token_batching_does_not_require_rollout_capacity():
+    config = OrchestratorConfig.model_validate(static_sft_orchestrator(token_batch_size=1024))
+    assert config.token_batch_size == 1024
+    assert config.max_inflight_rollouts is None
+
+    with pytest.raises(ValidationError, match="rollout-based token batching"):
+        OrchestratorConfig.model_validate({"token_batch_size": 1024})
+
+
 def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
     config = RLConfig.model_validate(
         {
