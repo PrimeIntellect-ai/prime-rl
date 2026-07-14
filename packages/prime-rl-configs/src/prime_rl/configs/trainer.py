@@ -117,6 +117,9 @@ class DebugModelConfig(BaseConfig):
 
 
 class ModelConfig(BaseModelConfig):
+    conversion_dir: Path | None = None
+    """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
+
     seq_len: int = 2048
     """Sequence length the model is trained on."""
 
@@ -658,7 +661,7 @@ class TrainerConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
         if self.model.lora is not None and self.weight_broadcast.type == "nccl":
-            # TODO: Support this
+            # TODO: Support NCCL broadcast with LoRA
             raise ValueError("NCCL weight broadcast does not support LoRA yet.")
         return self
 

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Callable, Generator, cast
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 from torch.distributed.tensor import DTensor
@@ -200,7 +201,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         # `_compute_notified_runs` is a pure function of SPMD-replicated state on
         # multi_run_manager, so every trainer rank derives the same list. Only
         # the master touches the filesystem to notify the orchestrator, but all
-        # ranks must wait on NCCL_READY before entering the broadcast path:
+        # ranks must wait for the inference pool before entering the broadcast path:
         # the broadcast preparation (DTensor resolution, quantization) enqueues
         # collectives on non-master ranks, and if those ranks start prep before
         # the orchestrator has paused inference, the collectives sit unmatched
@@ -208,7 +209,9 @@ class NCCLWeightBroadcast(WeightBroadcast):
         notified_runs = self._compute_notified_runs()
         if self.world.is_master:
             self._notify_orchestrator(notified_runs)
-        self._wait_for_nccl_ready(notified_runs)
+            self._wait_for_nccl_ready(notified_runs)
+        if self.world.world_size > 1:
+            dist.barrier()
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 

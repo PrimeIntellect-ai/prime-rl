@@ -111,7 +111,7 @@ RUN --mount=type=cache,target=/app/.cache/uv \
     && \
     EXTRA_DISAGG_FLAG=""; if [ "$INCLUDE_DISAGG_EXTRAS" = "1" ]; then EXTRA_DISAGG_FLAG="--extra disagg"; fi \
     && \
-    uv sync --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra envs --extra gpt-oss --extra modelexpress $EXTRA_DISAGG_FLAG --group mamba-ssm --locked --no-dev
+    uv sync --all-packages --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra gpt-oss --extra modelexpress $EXTRA_DISAGG_FLAG --group mamba-ssm --locked --no-dev
 
 # Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
 # nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer

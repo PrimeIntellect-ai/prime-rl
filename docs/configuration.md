@@ -218,7 +218,7 @@ The shipped end-to-end examples in [`examples/`](https://github.com/PrimeIntelle
 
 - [**Qwen 3 30B – A3B Math**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/qwen30b_math) — `Qwen3-30B-A3B` on hard math.
 - [**Qwen 3 30B – A3B SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/qwen30b_swe) — `Qwen3-30B-A3B` on hard SWE.
-- [**INTELLECT-3.1**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/Intellect-3.1) — reproduces our INTELLECT-3.1 training run.
+- [**INTELLECT-3.1**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/intellect-3.1) — reproduces our INTELLECT-3.1 training run.
 - [**MiniMax-M2.5 SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/minimax_m2.5_swe) — `MiniMax-M2.5` on agentic SWE.
 - [**High-throughput GLM-5**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/glm5_pd_disag) — `GLM-5` with P/D disaggregation and FP8 inference.
 
