@@ -16,7 +16,7 @@ and drives the pipeline. Components are single-purpose:
   ``_timestamp``-axis pipeline log.
 
 Components don't reference the orchestrator. The orchestrator wires them
-in ``setup()`` and drives them from ``main_loop()``.
+in ``setup()`` and exposes trainer-bound batches to the shared producer.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import tomli_w
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
     from prime_rl.utils.monitor.base import Monitor
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.batch_producer import PreparedTrainingBatch, TrainingBatchProducer
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -69,7 +71,7 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
-from prime_rl.transport import TrainingBatch, setup_training_batch_sender
+from prime_rl.transport import setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast
 from prime_rl.utils.config import to_toml_dict
@@ -105,6 +107,12 @@ TARGET_LAG = 1
 # configures ``wait_for_weights_timeout`` (e.g. a from-scratch run). The
 # broadcast is always coming, so wait rather than fail immediately.
 STARTUP_WEIGHT_WAIT_TIMEOUT_S = 1200
+
+
+@dataclass
+class RolloutBatchContext:
+    batch: TrainBatch
+    step_time: float
 
 
 class Orchestrator:
@@ -421,8 +429,8 @@ class Orchestrator:
         start_time = time.perf_counter()
 
         # Spawn background loops (dispatcher schedules, watcher polls). The
-        # pipeline ``main_loop`` runs inline in this task; the single
-        # ``PeriodicLogger`` polls dispatcher / watcher / sinks / lag
+        # batch source runs inline in this task; the single ``PeriodicLogger``
+        # polls dispatcher / watcher / sinks / lag
         # monitor each ``log.interval`` seconds for the pipeline-view log
         self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
         await self.periodic_logger.start()
@@ -438,12 +446,16 @@ class Orchestrator:
         # Anchor step-time clock so the first step measures startup → first batch
         self.last_batch_at = time.perf_counter()
 
-        # ``clean_exit`` stays False if ``main_loop`` raises (signal-driven
+        # ``clean_exit`` stays False if batch production raises (signal-driven
         # CancelledError, KeyboardInterrupt, or a real error), so the teardown
         # logs a forced-cleanup warning instead of a clean-exit success.
         clean_exit = False
         try:
-            await self.main_loop()
+            await TrainingBatchProducer(
+                source=self,
+                sender=self.sender,
+                progress=self.progress,
+            ).run()
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
@@ -466,15 +478,14 @@ class Orchestrator:
                 get_logger().warning("Orchestrator cleanup complete (forced).")
             trim_process_memory()
 
-    async def main_loop(self) -> None:
-        """Consume ``Rollout``\\ s from the dispatcher and route them
-        to the train / eval sink. Both sinks return a finalized batch (or
-        ``None``) from ``add()``; we just dispatch on the result."""
+    async def next_training_batch(self, batch_step: int) -> PreparedTrainingBatch[RolloutBatchContext] | None:
+        """Consume rollouts until the next trainer-bound batch is ready."""
+        assert batch_step == self.progress.step
         while not self.stopped.is_set():
             if self.draining and self.dispatcher.is_idle:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
-                break
+                return None
 
             try:
                 rollout: Rollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
@@ -485,12 +496,12 @@ class Orchestrator:
             # ``all`` trace file the moment it arrives, so it survives crashes and drains.
             # Train rollouts belong to the batch window currently collecting (``progress.step``),
             # eval rollouts to the step whose eval triggered them.
-            step = rollout.eval_step if rollout.kind == "eval" else self.progress.step
-            assert step is not None
+            rollout_step = rollout.eval_step if rollout.kind == "eval" else batch_step
+            assert rollout_step is not None
             await asyncio.to_thread(
                 save_rollouts,
                 [rollout.to_record()],
-                get_trace_path(self.config.output_dir, step, rollout.kind, "all"),
+                get_trace_path(self.config.output_dir, rollout_step, rollout.kind, "all"),
             )
 
             if rollout.kind == "eval":
@@ -504,15 +515,16 @@ class Orchestrator:
             # In drain mode any late-arriving train batch is dropped — we
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
-                await self.finalize_train_batch(train_batch)
+                batch = await self.prepare_train_batch(train_batch, batch_step)
+                if batch is not None:
+                    return batch
+        return None
 
-    async def finalize_train_batch(self, batch: TrainBatch) -> None:
-        """Ship one ``TrainBatch`` out to the trainer and handle the I/O
-        side-effects (ckpt, save_rollouts, reference scoring, sender.send,
-        metrics, heartbeat, progress, eval trigger). The sink has already
-        done all data-transformation work."""
+    async def prepare_train_batch(
+        self, batch: TrainBatch, step: int
+    ) -> PreparedTrainingBatch[RolloutBatchContext] | None:
+        """Validate and persist a rollout batch before publication."""
         config = self.config
-        step = self.progress.step
 
         # Sink-to-sink cycle time — the actual time between batches, not
         # including the orchestrator's ship I/O (overlapped with the
@@ -529,7 +541,7 @@ class Orchestrator:
                 f"Draining pipeline (cancelled {n_cancelled} in-flight train rollout(s); "
                 f"any in-flight evals will complete)"
             )
-            return
+            return None
 
         if not batch.samples:
             self.consecutive_empty_batches += 1
@@ -543,7 +555,7 @@ class Orchestrator:
                     f"{self.consecutive_empty_batches} consecutive empty train batches — "
                     "check filter config (pre_batch_filters / post_batch_filters) or task difficulty."
                 )
-            return
+            return None
         self.consecutive_empty_batches = 0
         n_trainable = sum(1 for r in batch.rollouts if r.is_trainable)
         if n_trainable / len(batch.rollouts) <= 0.1:
@@ -560,8 +572,19 @@ class Orchestrator:
         records = [r.to_record() for r in effective]
         await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
 
-        await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
-        self.progress.step += 1
+        return PreparedTrainingBatch(
+            examples=batch.samples,
+            context=RolloutBatchContext(batch=batch, step_time=step_time),
+        )
+
+    async def on_training_batch_sent(
+        self,
+        prepared: PreparedTrainingBatch[RolloutBatchContext],
+        step: int,
+    ) -> None:
+        """Run rollout-specific side effects after the shared producer sends a batch."""
+        batch = prepared.context.batch
+        step_time = prepared.context.step_time
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
@@ -916,9 +939,9 @@ async def run_orchestrator(config: OrchestratorConfig) -> None:
     on exit (success or crash); keeps that out of the class.
     """
     if config.is_static_sft:
-        from prime_rl.orchestrator.static_sft import DatasetBatchProducer
+        from prime_rl.orchestrator.static_sft import DatasetBatchSource
 
-        await DatasetBatchProducer(config).start()
+        await DatasetBatchSource(config).start()
         return
     await Orchestrator(config).start()
 

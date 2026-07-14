@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 import tomli_w
@@ -13,10 +14,11 @@ from renderers.base import Renderer, build_training_sample, create_renderer
 from prime_rl.configs.algorithm import DatasetSourceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
+from prime_rl.orchestrator.batch_producer import PreparedTrainingBatch, TrainingBatchProducer
 from prime_rl.orchestrator.ckpt import CheckpointManager, setup_ckpt_manager
 from prime_rl.orchestrator.trajectories import _encode_mm_kwargs
 from prime_rl.orchestrator.types import Progress
-from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
+from prime_rl.transport import TrainingSample, setup_training_batch_sender
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages, strip_message_content
 from prime_rl.utils.config import to_toml_dict
 from prime_rl.utils.heartbeat import Heartbeat
@@ -186,8 +188,14 @@ class DatasetSampleSource:
         return await asyncio.to_thread(self._build_batch, batch_size, token_batch_size)
 
 
-class DatasetBatchProducer:
-    """Produces dataset-backed training batches for the trainer."""
+@dataclass
+class DatasetBatchContext:
+    attempts: int
+    started: float
+
+
+class DatasetBatchSource:
+    """Adapts a static SFT dataset to the shared training-batch producer."""
 
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
@@ -198,9 +206,11 @@ class DatasetBatchProducer:
         self.ckpt_manager: CheckpointManager | None = setup_ckpt_manager(config.output_dir, config.ckpt)
         self.sender: TrainingBatchSender | None = None
         self.monitor: Monitor | None = None
+        self.source: DatasetSampleSource | None = None
         self.heart = Heartbeat(config.heartbeat.url) if config.heartbeat is not None else None
+        self.last_completed_step = 0
 
-    async def setup(self) -> DatasetSampleSource:
+    async def setup(self) -> None:
         config = self.config
         config_dir = config.output_dir / "control"
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -224,14 +234,14 @@ class DatasetBatchProducer:
 
         tokenizer = setup_tokenizer(config.tokenizer)
         renderer = create_renderer(tokenizer, config.renderer)
-        source = DatasetSampleSource(
+        self.source = DatasetSampleSource(
             self.dataset_config,
             renderer=renderer,
             tokenizer=tokenizer,
             seq_len=config.seq_len,
             cursor=self.progress.total_problems,
         )
-        await source.load()
+        await self.source.load()
         from prime_rl.utils.monitor import setup_monitor
 
         self.monitor = setup_monitor(
@@ -245,58 +255,76 @@ class DatasetBatchProducer:
             eval_env_names=[],
         )
         self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
-        return source
+        self.last_completed_step = self.progress.step - 1
 
     async def start(self) -> None:
-        source = await self.setup()
+        await self.setup()
         assert self.sender is not None and self.monitor is not None
         config = self.config
         get_logger().info(f"Starting static SFT loop (max_steps={config.max_steps or 'infinite'})")
-        last_completed_step = self.progress.step - 1
         try:
-            while config.max_steps is None or self.progress.step <= config.max_steps:
-                step = self.progress.step
-                started = time.perf_counter()
-                samples, attempts = await source.build_batch(config.batch_size, config.token_batch_size)
-                await self.sender.send(TrainingBatch(examples=samples, step=step))
-
-                stable = get_step_path(get_broadcast_dir(config.output_dir), step) / "STABLE"
-                await wait_for_path(stable)
-
-                num_tokens = sum(len(sample.token_ids) for sample in samples)
-                self.progress.total_tokens += num_tokens
-                self.progress.total_samples += len(samples)
-                self.progress.total_problems += attempts
-                self.progress.step += 1
-                last_completed_step = step
-                if (
-                    self.ckpt_manager is not None
-                    and config.ckpt is not None
-                    and config.ckpt.interval is not None
-                    and step % config.ckpt.interval == 0
-                    and (config.max_steps is None or step < config.max_steps)
-                ):
-                    await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
-
-                elapsed = time.perf_counter() - started
-                self.monitor.log(
-                    {
-                        "progress/tokens": num_tokens,
-                        "progress/samples": len(samples),
-                        "progress/total_tokens": self.progress.total_tokens,
-                        "progress/total_samples": self.progress.total_samples,
-                        "time/step": elapsed,
-                        "step": step,
-                    },
-                    step=step,
-                )
-                get_logger().success(
-                    f"Step {step} | {format_time(elapsed):>7} | {len(samples)} samples | {num_tokens} tokens"
-                )
-                if self.heart is not None:
-                    self.heart.beat()
+            await TrainingBatchProducer(
+                source=self,
+                sender=self.sender,
+                progress=self.progress,
+            ).run()
         finally:
             self.monitor.save_final_summary()
-            if self.ckpt_manager is not None and last_completed_step > 0:
-                await asyncio.to_thread(self.ckpt_manager.save, self.progress, last_completed_step)
+            if self.ckpt_manager is not None and self.last_completed_step > 0:
+                self.progress.step = self.last_completed_step + 1
+                await asyncio.to_thread(self.ckpt_manager.save, self.progress, self.last_completed_step)
             self.sender.close()
+
+    async def next_training_batch(self, step: int) -> PreparedTrainingBatch[DatasetBatchContext] | None:
+        config = self.config
+        if config.max_steps is not None and step > config.max_steps:
+            return None
+        assert self.source is not None
+        started = time.perf_counter()
+        samples, attempts = await self.source.build_batch(config.batch_size, config.token_batch_size)
+        return PreparedTrainingBatch(
+            examples=samples,
+            context=DatasetBatchContext(attempts=attempts, started=started),
+        )
+
+    async def on_training_batch_sent(
+        self,
+        batch: PreparedTrainingBatch[DatasetBatchContext],
+        step: int,
+    ) -> None:
+        config = self.config
+        assert self.monitor is not None
+        stable = get_step_path(get_broadcast_dir(config.output_dir), step) / "STABLE"
+        await wait_for_path(stable)
+
+        num_tokens = sum(len(sample.token_ids) for sample in batch.examples)
+        self.progress.total_tokens += num_tokens
+        self.progress.total_samples += len(batch.examples)
+        self.progress.total_problems += batch.context.attempts
+        self.last_completed_step = step
+        if (
+            self.ckpt_manager is not None
+            and config.ckpt is not None
+            and config.ckpt.interval is not None
+            and step % config.ckpt.interval == 0
+            and (config.max_steps is None or step < config.max_steps)
+        ):
+            await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
+
+        elapsed = time.perf_counter() - batch.context.started
+        self.monitor.log(
+            {
+                "progress/tokens": num_tokens,
+                "progress/samples": len(batch.examples),
+                "progress/total_tokens": self.progress.total_tokens,
+                "progress/total_samples": self.progress.total_samples,
+                "time/step": elapsed,
+                "step": step,
+            },
+            step=step,
+        )
+        get_logger().success(
+            f"Step {step} | {format_time(elapsed):>7} | {len(batch.examples)} samples | {num_tokens} tokens"
+        )
+        if self.heart is not None:
+            self.heart.beat()
