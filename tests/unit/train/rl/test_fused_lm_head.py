@@ -61,6 +61,34 @@ def test_fused_lm_head_matches_full_logits_forward_and_backward_cpu():
     torch.testing.assert_close(grad_weight1, grad_weight0, rtol=0, atol=1e-5)
 
 
+def test_fused_lm_head_frozen_weight_backward_cpu():
+    """Frozen LM-head weight: hidden gradient matches baseline, no weight gradient is produced."""
+    torch.manual_seed(0)
+    b, s, h, v = 2, 4, 8, 37
+    temperature = torch.full((b, s), 1.7, dtype=torch.float32)
+    chunk_size = 3
+
+    hidden0 = torch.randn(b, s, h, dtype=torch.float32, requires_grad=True)
+    labels = torch.randint(0, v, (b, s), dtype=torch.long)
+    weight0 = torch.randn(v, h, dtype=torch.float32)
+
+    # Baseline (weight frozen)
+    logp0, _ = _baseline_logprobs_and_entropy(hidden0, weight0, labels, temperature=temperature)
+    logp0.sum().backward()
+    grad_hidden0 = hidden0.grad.detach().clone()
+
+    # Fused (weight frozen)
+    hidden1 = hidden0.detach().clone().requires_grad_(True)
+    lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=chunk_size)
+    lm.weight = torch.nn.Parameter(weight0.clone(), requires_grad=False)
+
+    out = lm(hidden1, labels, temperature=temperature)
+    out["logprobs"].sum().backward()
+
+    torch.testing.assert_close(hidden1.grad, grad_hidden0, rtol=0, atol=1e-5)
+    assert lm.weight.grad is None
+
+
 def test_fused_lm_head_requires_labels():
     """Test that FusedOutputLinear raises assertion error when labels is None."""
     torch.manual_seed(0)

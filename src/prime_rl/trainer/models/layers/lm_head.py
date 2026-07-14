@@ -238,8 +238,9 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         vocab = weight.shape[0]
         vocab_chunk_size = min(vocab, 8192)
 
-        grad_hidden = torch.zeros_like(hidden)
-        grad_weight = torch.zeros_like(weight)
+        needs_hidden, needs_weight = ctx.needs_input_grad[0], ctx.needs_input_grad[1]
+        grad_hidden = torch.zeros_like(hidden) if needs_hidden else None
+        grad_weight = torch.zeros_like(weight) if needs_weight else None
 
         for start in range(0, n, chunk_size):
             end = min(start + chunk_size, n)
@@ -263,8 +264,10 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     grad_logits[mask, idx] += grad_chunk[mask]
                 grad_logits = grad_logits * inv_t_chunk
 
-                grad_hidden[start:end].add_(grad_logits.to(hidden.dtype) @ weight_chunk)
-                grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
+                if needs_hidden:
+                    grad_hidden[start:end].add_(grad_logits.to(hidden.dtype) @ weight_chunk)
+                if needs_weight:
+                    grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
 
         return grad_hidden, grad_weight, None, None, None
 
