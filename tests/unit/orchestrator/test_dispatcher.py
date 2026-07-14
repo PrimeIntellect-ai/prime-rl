@@ -55,5 +55,11 @@ def test_plain_eval_env_keeps_eval_client():
     assert _wants_train_client(envs, group("eval", "disabled")) is False
 
 
+def test_eval_client_renderer_routes_all_evals_through_train_client():
+    envs = FakeEnvs({"plain": FakeEnv(FakeConfig(ttt=None))})
+    assert _wants_train_client(envs, group("eval", "plain"), eval_client="renderer") is True
+    assert _wants_train_client(None, group("eval", "plain"), eval_client="renderer") is True
+
+
 def test_train_groups_always_use_train_client():
     assert _wants_train_client(None, group("train", "any")) is True

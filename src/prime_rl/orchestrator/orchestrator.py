@@ -366,6 +366,7 @@ class Orchestrator:
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
+            eval_client=config.eval.client if config.eval is not None else "relay",
         )
         self.train_sink = TrainSink(
             config,

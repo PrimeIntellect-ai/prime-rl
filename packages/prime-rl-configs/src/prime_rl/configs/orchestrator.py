@@ -289,6 +289,14 @@ class EvalConfig(BaseConfig):
     """If True, skip the startup eval that otherwise runs before any
     train rollouts."""
 
+    client: Literal["relay", "renderer"] = "relay"
+    """Client transport for eval rollouts. ``relay`` (default): the chat-completions eval
+    client — the legacy path, scores comparable with historical runs. ``renderer``: the
+    same renderer/token client training uses — set this when eval curves are compared
+    across arms where some envs need the renderer anyway (TTT), so transport is matched.
+    TTT-enabled eval envs always use the renderer regardless (the relay carries no token
+    ids)."""
+
     @model_validator(mode="after")
     def resolve_env_defaults(self):
         """Resolve per-env overrides: inherit group-level sampling, num_examples,

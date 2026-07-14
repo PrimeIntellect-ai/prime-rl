@@ -113,11 +113,15 @@ class DispatcherMetrics:
         return keys
 
 
-def _wants_train_client(eval_envs, group: "GroupState") -> bool:
+def _wants_train_client(eval_envs, group: "GroupState", eval_client: str = "relay") -> bool:
     """All train groups sample through the renderer (train) client; so do TTT-enabled eval
     envs — TTT consumes exact token ids, so the chat relay would refuse at the first
-    compaction. Plain eval groups keep the chat-relay eval client."""
+    compaction. Plain eval groups use the chat-relay eval client unless
+    ``eval.client = "renderer"`` routes ALL evals through the renderer (transport-matched
+    eval curves across arms; see EvalConfig.client)."""
     if group.kind != "eval":
+        return True
+    if eval_client == "renderer":
         return True
     if eval_envs is None:
         return False
@@ -144,10 +148,12 @@ class RolloutDispatcher:
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
+        eval_client: str = "relay",
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
         self.eval_envs = eval_envs
+        self.eval_client = eval_client
         # Train rollouts go to the env sampler's pool; eval always
         # evaluates the policy.
         self.policy_pool = policy_pool
@@ -421,7 +427,7 @@ class RolloutDispatcher:
 
         # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
-            if group.kind == "eval" and not _wants_train_client(self.eval_envs, group):
+            if group.kind == "eval" and not _wants_train_client(self.eval_envs, group, self.eval_client):
                 client = await pool.get_eval_client()
             else:
                 load = Counter(
