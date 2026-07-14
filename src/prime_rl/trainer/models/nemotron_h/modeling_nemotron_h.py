@@ -422,8 +422,9 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import _rename_keys
+        from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import _drop_mtp_keys, _rename_keys
 
+        _drop_mtp_keys(state_dict)
         # Handle backbone.* -> model.* prefix before layer conversion
         _rename_keys(state_dict, "backbone.", "model.")
 
