@@ -323,25 +323,23 @@ class Orchestrator:
         else:
             get_logger().info("Training from scratch")
 
-        # Sync inference to the incoming policy before the first step, whether fresh (v0 = base) or
-        # resumed (v{resume_step}). This pauses inference and rendezvouses with the trainer's
-        # first-step broadcast (train.py), so inference serves the correct policy from step 1. Keeping
-        # it unconditional makes trainer/orchestrator startup symmetric and avoids the resume deadlock
-        # where inference waited for weights the trainer only sent at the end of a step.
-        sync_version = self.resume_step if self.resume_step is not None else 0
-        check_exists = config.weight_broadcast.type != "nccl"
-        # Wait for the trainer's startup broadcast to land. On a fresh start there is no ckpt block,
-        # so fall back to a default timeout instead of not waiting at all (which would raise before
-        # broadcasts/step_0/STABLE is written when using filesystem weight broadcast).
-        wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
-        weights_path = get_weight_dir(
-            config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
-        )
-        await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
-        if self.lora_name is not None:
-            self.policy_inference.update_model_name(self.lora_name)
-            self.policy.model_name = self.lora_name
-        self.policy.version = sync_version
+        # Sync inference to the incoming policy before the first step when resuming or when using
+        # NCCL, which rendezvouses with the trainer's first-step broadcast (train.py). A fresh
+        # filesystem run needs no sync (the base model IS policy v0) and must not wait for a
+        # startup broadcast: runs registered after the trainer's first step never receive one.
+        if self.resume_step is not None or config.weight_broadcast.type == "nccl":
+            sync_version = self.resume_step if self.resume_step is not None else 0
+            check_exists = config.weight_broadcast.type != "nccl"
+            # Without a ckpt block, fall back to a default timeout instead of not waiting at all.
+            wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
+            weights_path = get_weight_dir(
+                config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
+            )
+            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
+            if self.lora_name is not None:
+                self.policy_inference.update_model_name(self.lora_name)
+                self.policy.model_name = self.lora_name
+            self.policy.version = sync_version
 
         self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source: EvalSource | None = (

@@ -266,12 +266,13 @@ def train(config: TrainerConfig):
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
 
-        # Broadcast the incoming policy (v{progress.step-1}) before waiting for its rollouts. #2896
-        # broadcasts at the END of a step, so the first step would otherwise block on rollouts the
-        # inference engines cannot produce until they receive v{progress.step-1} (the orchestrator
-        # pauses inference at startup to sync it). This happens whether resuming (v{checkpoint_step})
-        # or starting fresh (v0), keeping trainer and orchestrator startup symmetric.
-        if progress.step == start_step and weight_broadcast is not None:
+        # With NCCL, broadcast the incoming policy (v{progress.step-1}) before waiting for its
+        # rollouts: #2896 broadcasts at the END of a step, so the first step would otherwise block
+        # on rollouts the paused inference engines cannot produce until they receive
+        # v{progress.step-1}. Filesystem broadcast needs no startup rendezvous (fresh: base model
+        # = v0; resume: the orchestrator reads its checkpoint dir), and a one-shot startup
+        # broadcast would miss multi-run runs registered after the first step.
+        if progress.step == start_step and weight_broadcast is not None and config.weight_broadcast.type == "nccl":
             logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
             multi_run_manager.wait_for_run(0)
             for idx in multi_run_manager.used_idxs:
