@@ -747,7 +747,7 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_no_inference_broadcast(self):
-        """Static SFT uses the filesystem marker as its trainer handshake."""
+        """NCCL broadcast requires a running inference deployment."""
         if not self.needs_inference and self.weight_broadcast.type != "filesystem":
             raise ValueError(
                 "dataset-backed SFT requires filesystem weight broadcast — there is no "

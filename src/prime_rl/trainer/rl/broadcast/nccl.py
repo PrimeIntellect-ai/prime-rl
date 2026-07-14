@@ -207,6 +207,8 @@ class NCCLWeightBroadcast(WeightBroadcast):
         # the orchestrator has paused inference, the collectives sit unmatched
         # until NCCL's watchdog kills the process after 10 min.
         notified_runs = self._compute_notified_runs()
+        if not notified_runs:
+            return
         if self.world.is_master:
             self._notify_orchestrator(notified_runs)
             self._wait_for_nccl_ready(notified_runs)
@@ -223,9 +225,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         non-master ranks agree on which NCCL_READY markers to wait for.
         """
         notified_runs: list[tuple[int, Path]] = []
-        for idx in self.multi_run_manager.used_idxs:
-            if not self.multi_run_manager.ready_to_update[idx]:
-                continue
+        for idx in self.multi_run_manager.ready_to_broadcast_idxs:
             try:
                 # pack() already advanced progress to the next step, so the model we just
                 # trained — policy v(step-1) — broadcasts to broadcasts/step_{step-1}.
@@ -241,10 +241,10 @@ class NCCLWeightBroadcast(WeightBroadcast):
         return notified_runs
 
     def _notify_orchestrator(self, notified_runs: list[tuple[int, Path]]) -> None:
-        """Create STABLE markers for each notified run and clear their ready flags.
+        """Create STABLE markers for each notified run.
 
-        Master-only side effects (filesystem writes + state mutation). Called
-        after `_compute_notified_runs`; non-master ranks skip this entirely.
+        Called after `_compute_notified_runs`; non-master ranks skip this
+        filesystem side effect entirely.
         """
         for idx, save_dir in notified_runs:
             try:
@@ -255,8 +255,6 @@ class NCCLWeightBroadcast(WeightBroadcast):
                 self.logger.warning(f"Run {idx} is deleted, skipping")
             except Exception as e:
                 self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
-            finally:
-                self.multi_run_manager.ready_to_update[idx] = False
 
     def _wait_for_nccl_ready(self, notified_runs: list[tuple[int, Path]]):
         """Wait for inference workers to signal they are ready to receive NCCL broadcast."""

@@ -12,7 +12,7 @@ import torch.distributed.distributed_c10d as c10d
 from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.pathing import get_all_ckpt_steps, get_stable_ckpt_steps
+from prime_rl.utils.pathing import get_all_ckpt_steps, get_stable_ckpt_steps, get_step_path, get_trainer_step_dir
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -485,6 +485,24 @@ class MultiRunManager:
     @property
     def ready_to_update_idxs(self):
         return [idx for idx, ready in enumerate(self.ready_to_update) if ready]
+
+    @property
+    def ready_to_broadcast_idxs(self) -> list[int]:
+        return [idx for idx in self.used_idxs if self.ready_to_update[idx] and self.config[idx].needs_inference]
+
+    def mark_ready_steps_complete(self) -> None:
+        """Publish trainer-step completion and release every run updated this step."""
+        completed_idxs = [idx for idx in self.used_idxs if self.ready_to_update[idx]]
+        if self.world.is_master:
+            for idx in completed_idxs:
+                run_dir = self.get_run_dir(idx)
+                if not run_dir.exists():
+                    continue
+                step_dir = get_step_path(get_trainer_step_dir(run_dir), self.progress[idx].step - 1)
+                step_dir.mkdir(parents=True, exist_ok=True)
+                (step_dir / "STABLE").touch()
+        for idx in completed_idxs:
+            self.ready_to_update[idx] = False
 
     def run_dirs(self) -> list[Path]:
         return [self.output_dir / run_id for run_id in self.id_2_idx.keys()]

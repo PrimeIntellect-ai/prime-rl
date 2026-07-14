@@ -1,11 +1,12 @@
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Generator
 
 import pytest
 import tomli_w
 import torch.distributed as dist
 
-from prime_rl.trainer.runs import MultiRunManager
+from prime_rl.trainer.runs import MultiRunManager, Progress
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -62,6 +63,29 @@ def test_initial_state(tmp_path: Path) -> None:
     assert len(multi_run_manager.id_2_idx) == 0
     assert len(multi_run_manager.unused_idxs) == 5
     assert multi_run_manager.run_dirs() == []
+
+
+def test_step_completion_is_independent_from_weight_broadcast(tmp_path: Path) -> None:
+    multi_run_manager = MultiRunManager.__new__(MultiRunManager)
+    multi_run_manager.output_dir = tmp_path
+    multi_run_manager.world = SimpleNamespace(is_master=True)
+    multi_run_manager.idx_2_id = {0: "run_static", 1: "run_policy"}
+    multi_run_manager.config = {
+        0: SimpleNamespace(needs_inference=False),
+        1: SimpleNamespace(needs_inference=True),
+    }
+    multi_run_manager.progress = {0: Progress(step=4), 1: Progress(step=7)}
+    multi_run_manager.ready_to_update = [True, True]
+    for run_id in multi_run_manager.idx_2_id.values():
+        (tmp_path / run_id).mkdir()
+
+    assert multi_run_manager.ready_to_broadcast_idxs == [1]
+
+    multi_run_manager.mark_ready_steps_complete()
+
+    assert (tmp_path / "run_static" / "trainer_steps" / "step_3" / "STABLE").exists()
+    assert (tmp_path / "run_policy" / "trainer_steps" / "step_6" / "STABLE").exists()
+    assert multi_run_manager.ready_to_update == [False, False]
 
 
 def test_detect_new_runs(tmp_path: Path) -> None:
