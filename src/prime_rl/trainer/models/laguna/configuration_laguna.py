@@ -148,7 +148,7 @@ class LagunaConfig(PretrainedConfig):
         for params in nested.values():
             params.setdefault("rope_type", "default")
 
-        # Laguna full-attention layers use YaRN's factor-derived attention scaling.
+        # vLLM ignores this override and derives YaRN scaling from factor; match it for rollout/trainer parity.
         nested["full_attention"].pop("attention_factor", None)
 
         self.rope_parameters = nested
