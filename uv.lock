@@ -81,6 +81,7 @@ members = [
     "mcp-atlas-v1",
     "mmlu-pro-v1",
     "mmmu",
+    "mmmu-v1",
     "mrcr-v2-v1",
     "multiswe-v1",
     "nl2repobench-v1",
@@ -3529,6 +3530,23 @@ requires-dist = [
 ]
 
 [[package]]
+name = "mmmu-v1"
+version = "0.1.0"
+source = { editable = "deps/verifiers/environments/mmmu_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "pillow" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "pillow" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "modal"
 version = "1.5.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4859,25 +4877,25 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "deep-ep", marker = "platform_machine == 'x86_64'" },
-    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
-    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
+    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64'" },
     { name = "flash-attn-3" },
     { name = "flash-attn-4" },
     { name = "nixl" },
     { name = "nixl-cu12", version = "0.10.1", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "quack-kernels" },
-    { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
-    { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
+    { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
 ]
 disagg = [
     { name = "deep-ep", marker = "platform_machine == 'x86_64'" },
-    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
-    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
+    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "nixl" },
     { name = "nixl-cu12", version = "0.10.1", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
-    { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
-    { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
+    { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
 ]
 flash-attn = [
     { name = "flash-attn", marker = "platform_machine == 'x86_64'" },
@@ -7543,6 +7561,7 @@ examples = [
     { name = "deepwiki-v1", editable = "deps/verifiers/environments/deepwiki_v1" },
     { name = "glossary-v1", editable = "deps/verifiers/environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "deps/verifiers/environments/gsm8k_v1" },
+    { name = "mmmu-v1", editable = "deps/verifiers/environments/mmmu_v1" },
     { name = "reverse-text-v1", editable = "deps/verifiers/environments/reverse_text_v1" },
     { name = "scratchpad-v1", editable = "deps/verifiers/environments/scratchpad_v1" },
     { name = "wiki-search-v1", editable = "deps/verifiers/environments/wiki_search_v1" },
