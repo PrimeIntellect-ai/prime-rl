@@ -389,17 +389,16 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         # HF NemotronH unifies attention/mlp/mamba under a single `mixer` attribute per
-        # layer, pluralizes the shared expert, and uses a `backbone.` root prefix.
+        # layer and pluralizes the shared expert. The root prefix stays `model.` since
+        # adapter keys target the live module tree, not the on-disk `backbone.` spelling.
         import re
 
         rename = [
-            # Shared expert first, so the mlp -> mixer rule below cannot leave the
-            # singular `shared_expert` name behind.
+            # Shared expert first, so the mlp rule below cannot match first.
             (re.compile(r"(\.layers\.\d+)\.mlp\.shared_expert\."), r"\1.mixer.shared_experts."),
             (re.compile(r"(\.layers\.\d+)\.mlp\."), r"\1.mixer."),
             (re.compile(r"(\.layers\.\d+)\.self_attn\."), r"\1.mixer."),
             (re.compile(r"(\.layers\.\d+)\.mamba\."), r"\1.mixer."),
-            (re.compile(r"^model\."), "backbone."),
         ]
         for old_key in list(state_dict.keys()):
             new_key = old_key

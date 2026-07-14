@@ -214,7 +214,7 @@ def test_nemotron_h_weight_conversion_roundtrip():
 
 
 def test_nemotron_h_adapter_key_conversion():
-    """Verify LoRA adapter keys map onto the HF namespace (backbone/mixer/shared_experts)."""
+    """Verify LoRA adapter keys map onto the live HF module tree (model./mixer/shared_experts)."""
     tensor = torch.zeros(2, 2)
     state_dict = {
         "model.layers.0.mamba.in_proj.lora_A.weight": tensor,
@@ -225,11 +225,11 @@ def test_nemotron_h_adapter_key_conversion():
     }
     converted = NemotronHForCausalLM.convert_adapter_to_hf(state_dict)
     assert set(converted) == {
-        "backbone.layers.0.mixer.in_proj.lora_A.weight",
-        "backbone.layers.1.mixer.shared_experts.up_proj.lora_A.weight",
-        "backbone.layers.1.mixer.fc1_latent_proj.lora_B.weight",
-        "backbone.layers.1.mixer.experts.0.up_proj.lora_A.weight",
-        "backbone.layers.2.mixer.q_proj.lora_B.weight",
+        "model.layers.0.mixer.in_proj.lora_A.weight",
+        "model.layers.1.mixer.shared_experts.up_proj.lora_A.weight",
+        "model.layers.1.mixer.fc1_latent_proj.lora_B.weight",
+        "model.layers.1.mixer.experts.0.up_proj.lora_A.weight",
+        "model.layers.2.mixer.q_proj.lora_B.weight",
     }
 
 
