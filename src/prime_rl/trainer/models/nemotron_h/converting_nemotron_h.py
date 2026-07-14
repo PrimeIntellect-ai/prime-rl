@@ -29,11 +29,6 @@ def _rename_keys(state_dict: dict[str, Tensor], old_prefix: str, new_prefix: str
         state_dict[new_key] = state_dict.pop(key)
 
 
-def _drop_mtp_keys(state_dict: dict[str, Tensor]):
-    for key in [key for key in state_dict if key.startswith("mtp.")]:
-        del state_dict[key]
-
-
 def convert_hf_layer_to_prime(state_dict: dict[str, Tensor], layer_idx: int, layer_type: str):
     """Convert a single layer from HF to PrimeRL format in-place."""
     prefix = f"model.layers.{layer_idx}."
@@ -153,7 +148,8 @@ def convert_hf_to_prime(state_dict: dict[str, Tensor], layers_block_type: list[s
     _rename_keys(state_dict, "backbone.", "model.")
 
     # Drop multi-token prediction keys (not used in training)
-    _drop_mtp_keys(state_dict)
+    for key in [k for k in state_dict if k.startswith("mtp.")]:
+        del state_dict[key]
 
     # Global renames
     if "model.embeddings.weight" in state_dict:
