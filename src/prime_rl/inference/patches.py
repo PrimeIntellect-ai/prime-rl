@@ -19,6 +19,31 @@ def apply_shared_vllm_patches():
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
+    monkey_patch_online_fp8_parameter_cast()
+
+
+def monkey_patch_online_fp8_parameter_cast():
+    """Pass plain tensors to vLLM's compiled block-FP8 caster.
+
+    Layerwise reload restores ``ModelWeightParameter`` objects before online
+    quantization. TorchDynamo recursively dispatches that tensor subclass while
+    tracing ``per_block_cast_to_fp8``. ``Parameter.data`` shares storage but is
+    a plain tensor, matching the input accepted during the initial model load.
+    """
+    from torch.nn import Parameter
+    from vllm.model_executor.layers.quantization.online import fp8
+
+    original_cast = fp8.per_block_cast_to_fp8
+    if getattr(original_cast, "_prime_rl_unwraps_parameters", False):
+        return
+
+    def _per_block_cast_to_fp8(x, *args, **kwargs):
+        if isinstance(x, Parameter):
+            x = x.data
+        return original_cast(x, *args, **kwargs)
+
+    _per_block_cast_to_fp8._prime_rl_unwraps_parameters = True
+    fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
 
 
 def monkey_patch_kv_xfer_finished_tolerate_freed():
