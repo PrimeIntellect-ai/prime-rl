@@ -33,7 +33,7 @@ def convert_snapshot_to_prime(
     model_cls: type | None = None,
     conversion_dir: Path | None = None,
 ) -> ConvertStatus:
-    """Write `<snapshot>/prime/` if the snapshot is a convertible HF model."""
+    """Write converted weights under ``conversion_dir`` or the snapshot."""
     from transformers import AutoConfig
 
     from prime_rl.trainer.models import get_custom_causal_lm_cls, get_custom_vlm_cls
@@ -93,4 +93,4 @@ def convert_snapshot_to_prime(
 def run_convert(config: ConvertConfig) -> ConvertStatus:
     snapshot = resolve_snapshot(config.model)
     get_logger().info(f"resolved {config.model} -> {snapshot}")
-    return convert_snapshot_to_prime(snapshot)
+    return convert_snapshot_to_prime(snapshot, conversion_dir=config.conversion_dir)

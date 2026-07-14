@@ -145,6 +145,16 @@ def test_converted_writes_prime(tmp_path, monkeypatch):
     assert save_dir == tmp_path / "prime"
 
 
+def test_converted_writes_to_conversion_dir(tmp_path, monkeypatch):
+    cls = type("HfCls", (_FakeCausalLM,), {"prime": False, "hf": True, "converted": False})
+    save_calls: list = []
+    _patch_common(monkeypatch, cls=cls, keys=["x"], save_calls=save_calls)
+    conversion_dir = tmp_path / "converted"
+
+    assert convert_snapshot_to_prime(tmp_path, conversion_dir=conversion_dir) == "converted"
+    assert save_calls[0][1] == conversion_dir / "prime"
+
+
 def test_incomplete_prime_is_rebuilt(tmp_path, monkeypatch):
     prime = tmp_path / "prime"
     prime.mkdir()

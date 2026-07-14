@@ -88,10 +88,12 @@ time, and safely reuses or repairs shared-cache output.
 ```bash
 uv run convert --model Qwen/Qwen3-30B-A3B
 uv run convert --model /path/to/local/snapshot
+uv run convert --model /path/to/local/snapshot --conversion-dir /path/to/writable/cache
 ```
 
 - Config: `ConvertConfig` (`packages/prime-rl-configs/src/prime_rl/configs/convert.py`)
 - Entrypoint: `src/prime_rl/entrypoints/convert.py`
+- Output: `<snapshot>/prime/` by default, or `<conversion-dir>/prime/` when set
 - Exit status: `0` for converted, existing, or already-compatible weights; `2`
   for unsupported architectures; `3` when safetensors are absent; `4` when the
   snapshot is not in Hugging Face format
