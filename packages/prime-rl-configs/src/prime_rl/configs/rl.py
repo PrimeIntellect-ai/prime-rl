@@ -365,6 +365,10 @@ class RLConfig(BaseConfig):
                 self.weight_broadcast = SharedWeightBroadcastConfig(type="filesystem")
             else:
                 self.weight_broadcast = SharedWeightBroadcastConfig()
+        if not self.orchestrator.needs_inference and self.weight_broadcast.type != "filesystem":
+            raise ValueError(
+                "dataset-backed SFT currently requires filesystem weight broadcast for trainer-step synchronization"
+            )
         if self.weight_broadcast.type == "nccl" and self.trainer.model.lora is not None:
             # LoRA adapters are transferred via the filesystem (loaded from disk by the inference
             # servers); NCCL broadcast only writes a STABLE marker, so LoRA over NCCL cannot transfer

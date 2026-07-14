@@ -226,6 +226,17 @@ def test_static_sft_rejects_inference_config():
         )
 
 
+def test_static_sft_rejects_shared_nccl_broadcast():
+    with pytest.raises(ValidationError, match="trainer-step synchronization"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": static_sft_orchestrator(),
+                "weight_broadcast": {"type": "nccl"},
+            }
+        )
+
+
 def test_static_sft_token_batching_does_not_require_rollout_capacity():
     config = OrchestratorConfig.model_validate(static_sft_orchestrator(token_batch_size=1024))
     assert config.token_batch_size == 1024
