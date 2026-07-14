@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import torch
+
 try:
     import deep_gemm
 except ImportError:
     deep_gemm = None  # CPU-only environments don't ship deep_gemm; FP8 paths
     # are GPU-only at runtime, so leaving the symbol None is safe — only the
     # autograd Function bodies below actually call into it.
-import torch
 
 from prime_rl.trainer.models.kernels.fp8_utils import (
     GROUP_ALIGNMENT,
     build_grouped_layout,
     grouped_per_block_cast_to_fp8_triton,
+    grouped_per_channel_cast_to_fp8_rowmajor_triton,
     grouped_per_channel_cast_to_fp8_sm90_kmajor_triton,
     grouped_per_token_cast_to_fp8_triton,
     unpack_rows_triton,
@@ -30,32 +32,60 @@ def _compute_grad_weight(
     block_starts_tensor: torch.Tensor,
     aligned_ms: list[int],
 ) -> torch.Tensor:
-    x_k_major = grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
-        x,
-        padded_total_m,
-        block_to_group,
-        starts_tensor,
-        actual_ms_tensor,
-        ks_tensor,
-        block_starts_tensor,
-        False,
-        GROUP_ALIGNMENT,
-    )
-    dy_k_major = grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
-        grad_output,
-        padded_total_m,
-        block_to_group,
-        starts_tensor,
-        actual_ms_tensor,
-        ks_tensor,
-        block_starts_tensor,
-        False,
-        GROUP_ALIGNMENT,
-    )
+    is_sm100 = torch.cuda.get_device_capability(x.device)[0] >= 10
+    if is_sm100:
+        x_fp8 = grouped_per_channel_cast_to_fp8_rowmajor_triton(
+            x,
+            padded_total_m,
+            block_to_group,
+            starts_tensor,
+            actual_ms_tensor,
+            ks_tensor,
+            block_starts_tensor,
+            True,
+            GROUP_ALIGNMENT,
+        )
+        dy_fp8 = grouped_per_channel_cast_to_fp8_rowmajor_triton(
+            grad_output,
+            padded_total_m,
+            block_to_group,
+            starts_tensor,
+            actual_ms_tensor,
+            ks_tensor,
+            block_starts_tensor,
+            True,
+            GROUP_ALIGNMENT,
+        )
+        grouped_weight_grad = deep_gemm.k_grouped_fp8_gemm_tn_contiguous
+    else:
+        x_fp8 = grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
+            x,
+            padded_total_m,
+            block_to_group,
+            starts_tensor,
+            actual_ms_tensor,
+            ks_tensor,
+            block_starts_tensor,
+            True,
+            GROUP_ALIGNMENT,
+        )
+        dy_fp8 = grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(
+            grad_output,
+            padded_total_m,
+            block_to_group,
+            starts_tensor,
+            actual_ms_tensor,
+            ks_tensor,
+            block_starts_tensor,
+            True,
+            GROUP_ALIGNMENT,
+        )
+        grouped_weight_grad = deep_gemm.k_grouped_fp8_gemm_nt_contiguous
+
     grad_weight = torch.zeros(weight_shape, device=x.device, dtype=torch.float32)
-    deep_gemm.k_grouped_fp8_gemm_nt_contiguous(
-        x_k_major,
-        dy_k_major,
+    grouped_weight_grad(
+        x_fp8,
+        dy_fp8,
         grad_weight,
         aligned_ms,
         ks_tensor,
@@ -90,12 +120,12 @@ class _GroupedFP8Gemm(torch.autograd.Function):
             starts_tensor,
             actual_ms_tensor,
             block_starts_tensor,
-            False,
+            True,
             GROUP_ALIGNMENT,
         )
         weight_fp8 = grouped_per_block_cast_to_fp8_triton(
             weight.transpose(1, 2),
-            False,
+            True,
             GROUP_ALIGNMENT,
         )
 
@@ -174,12 +204,12 @@ class _GroupedFP8Gemm(torch.autograd.Function):
                 starts_tensor,
                 actual_ms_tensor,
                 block_starts_tensor,
-                False,
+                True,
                 GROUP_ALIGNMENT,
             )
             weight_dx_fp8 = grouped_per_block_cast_to_fp8_triton(
                 weight,
-                False,
+                True,
                 GROUP_ALIGNMENT,
             )
             grad_x_padded = torch.empty(
