@@ -590,9 +590,8 @@ def train(config: TrainerConfig):
                     weight_broadcast.maybe_clean(interval_to_keep)
             else:
                 broadcast_weights_time = 0
-                # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
-                for idx in multi_run_manager.used_idxs:
-                    multi_run_manager.ready_to_update[idx] = False
+
+        multi_run_manager.mark_ready_steps_complete()
 
         # Checkpoint the step we just finished (model = policy v{progress.step}).
         if config.max_concurrent_runs > 1:

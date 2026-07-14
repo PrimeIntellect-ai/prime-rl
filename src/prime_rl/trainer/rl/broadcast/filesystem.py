@@ -37,6 +37,9 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
+        ready_idxs = self.multi_run_manager.ready_to_broadcast_idxs
+        if not ready_idxs:
+            return
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.perf_counter()
         adapter_only = self.lora_config is not None
@@ -50,7 +53,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
                 state_dict = revert_weight_conversion(model, state_dict)
 
-        for idx in self.multi_run_manager.ready_to_update_idxs:
+        for idx in ready_idxs:
             self.logger.debug(
                 f"Broadcasting weights for run {idx} (ready_to_update={self.multi_run_manager.ready_to_update[idx]})"
             )
@@ -99,8 +102,6 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     self.logger.warning(f"Run {idx} is deleted, skipping")
                 except Exception as e:
                     self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
-                finally:
-                    self.multi_run_manager.ready_to_update[idx] = False
 
         if self.world.is_master:
             self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")

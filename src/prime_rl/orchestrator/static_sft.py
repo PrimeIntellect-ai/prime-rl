@@ -20,7 +20,7 @@ from prime_rl.utils.chat_template import resolve_sft_messages, resolve_sft_tools
 from prime_rl.utils.config import to_toml_dict
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_step_path, wait_for_path
+from prime_rl.utils.pathing import get_step_path, get_trainer_step_dir, wait_for_path
 from prime_rl.utils.utils import resolve_latest_ckpt_step
 
 if TYPE_CHECKING:
@@ -227,7 +227,7 @@ class DatasetBatchProducer:
                 samples, attempts = await source.build_batch(config.batch_size, config.token_batch_size)
                 await self.sender.send(TrainingBatch(examples=samples, step=step))
 
-                stable = get_step_path(get_broadcast_dir(config.output_dir), step) / "STABLE"
+                stable = get_step_path(get_trainer_step_dir(config.output_dir), step) / "STABLE"
                 await wait_for_path(stable)
 
                 num_tokens = sum(len(sample.token_ids) for sample in samples)

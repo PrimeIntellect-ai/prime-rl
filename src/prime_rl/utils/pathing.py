@@ -88,6 +88,10 @@ def get_broadcast_dir(output_dir: Path) -> Path:
     return output_dir / "broadcasts"
 
 
+def get_trainer_step_dir(output_dir: Path) -> Path:
+    return output_dir / "trainer_steps"
+
+
 def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
 
@@ -157,7 +161,7 @@ def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool, ckpt_o
 
 
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
-    """Remove stale rollouts, broadcasts, and traces past ``resume_step``.
+    """Remove stale rollouts, broadcasts, trainer markers, and traces past ``resume_step``.
 
     Pass ``resume_step=-1`` to wipe every step directory (fresh runs).
     """
@@ -166,6 +170,7 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
         get_rollout_dir(output_dir),
         get_rollout_dir(run_default),
         get_broadcast_dir(run_default),
+        get_trainer_step_dir(run_default),
     ]
 
     for directory in dirs:
