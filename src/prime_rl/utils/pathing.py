@@ -203,6 +203,11 @@ def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) ->
     wait_time = 0
     logger.debug(f"Waiting for path `{path}`")
     while True:
+        # Check first (free when the file is already visible), revalidate only on a miss —
+        # the miss may be a stale NFS negative-dentry rather than true absence.
+        if path.exists():
+            logger.debug(f"Found path `{path}`")
+            break
         _revalidate_dir(path)
         if path.exists():
             logger.debug(f"Found path `{path}`")
@@ -218,6 +223,11 @@ async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -
     wait_time = 0
     logger.debug(f"Waiting for path `{path}`")
     while True:
+        # Check first (free when the file is already visible), revalidate only on a miss —
+        # the miss may be a stale NFS negative-dentry rather than true absence.
+        if path.exists():
+            logger.debug(f"Found path `{path}`")
+            break
         _revalidate_dir(path)
         if path.exists():
             logger.debug(f"Found path `{path}`")
