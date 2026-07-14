@@ -13,7 +13,7 @@ You also need prime-rl cloned on your cluster into the shared filesystem.
 ```bash
 git clone https://github.com/PrimeIntellect-ai/prime-rl.git /shared/prime-rl
 cd /shared/prime-rl
-uv sync --all-extras
+uv sync --all-extras --all-packages
 ```
 
 ### Install llm-d

@@ -83,7 +83,8 @@ class Env:
     def __init__(self, config: EnvConfig):
         self.config = config
         self.sampling_args: dict = {}
-        self.num_tasks: int = 0
+        self.num_tasks: int | None = 0
+        """Task count reported by the server; ``None`` means the taskset is infinite."""
         self.requires_group_scoring: bool = False
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
@@ -112,9 +113,8 @@ class Env:
         info = await self.env_client.info()
         self.num_tasks = info.num_tasks
         self.requires_group_scoring = info.requires_group_scoring
-        get_logger().info(
-            f"Env {self.name} ready: num_tasks={self.num_tasks} group_scoring={self.requires_group_scoring}"
-        )
+        num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
+        get_logger().info(f"Env {self.name} ready: num_tasks={num_tasks} group_scoring={self.requires_group_scoring}")
 
     async def _spawn(self, log_dir: Path, log_level: str, json_logging: bool) -> str:
         """Spawn a v1 EnvServer child process (it loads the env; we never do).
@@ -220,7 +220,12 @@ class EvalEnv(Env):
 
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
-        n = self.num_tasks if self.config.num_examples < 0 else min(self.config.num_examples, self.num_tasks)
+        if self.num_tasks is None:
+            if self.config.num_examples < 0:
+                raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
+            n = self.config.num_examples
+        else:
+            n = self.num_tasks if self.config.num_examples < 0 else min(self.config.num_examples, self.num_tasks)
         self.examples = [{"task_idx": i} for i in range(n)]
 
 

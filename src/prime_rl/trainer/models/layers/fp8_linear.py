@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import re
 
+import torch
+from torch import nn
+
 try:
     import deep_gemm
 except ImportError:
     deep_gemm = None  # CPU-only environments don't ship deep_gemm; FP8 paths
     # are GPU-only at runtime, so leaving the symbol None is safe — only the
     # autograd Function bodies below actually call into it.
-import torch
-from torch import nn
 
 from prime_rl.trainer.models.kernels.fp8_utils import (
     per_block_cast_to_fp8_tp_triton,
@@ -25,8 +26,8 @@ class _FP8BlockwiseMM(torch.autograd.Function):
     def forward(ctx, x, weight, block_size, out_dtype=torch.bfloat16):
         x_shape = x.shape
         x_2d = x.reshape(-1, x_shape[-1]).contiguous()
-        x_fp8 = per_token_cast_to_fp8_triton(x_2d, False, block_size)
-        weight_fp8 = per_block_cast_to_fp8_triton(weight, False, block_size)
+        x_fp8 = per_token_cast_to_fp8_triton(x_2d, True, block_size)
+        weight_fp8 = per_block_cast_to_fp8_triton(weight, True, block_size)
 
         out = torch.empty((x_2d.size(0), weight.size(0)), device=x.device, dtype=out_dtype)
         deep_gemm.fp8_gemm_nt(x_fp8, weight_fp8, out)
@@ -44,8 +45,8 @@ class _FP8BlockwiseMM(torch.autograd.Function):
 
         grad_x = grad_weight = None
         if ctx.needs_input_grad[0]:
-            grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, False, block_size)
-            weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, False, block_size)
+            grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, True, block_size)
+            weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, True, block_size)
             grad_x_2d = torch.empty_like(x_2d)
             deep_gemm.fp8_gemm_nt(grad_output_fp8, weight_dx_fp8, grad_x_2d)
             grad_x = grad_x_2d.reshape(ctx.x_shape)
@@ -63,8 +64,8 @@ class _FP8BlockwiseMM(torch.autograd.Function):
             else:
                 grad_output_2d_padded = grad_output_2d
                 x_2d_padded = x_2d
-            grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d_padded, False, block_size)
-            x_t_fp8 = per_token_cast_to_fp8_tp_triton(x_2d_padded, False, block_size)
+            grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d_padded, True, block_size)
+            x_t_fp8 = per_token_cast_to_fp8_tp_triton(x_2d_padded, True, block_size)
             grad_weight_fp32 = torch.zeros_like(weight, dtype=torch.float32)
             deep_gemm.fp8_gemm_nt(
                 grad_output_t_fp8,
@@ -82,7 +83,7 @@ class Float8BlockwiseLinear(nn.Linear):
     """nn.Linear replacement that uses FP8 blockwise matmul via DeepGEMM.
 
     Requires:
-    - SM90 (Hopper) GPU
+    - SM90 (Hopper) or SM100 (Blackwell) GPU
     - bfloat16 inputs/weights
     - No bias
     - in_features and out_features divisible by 128

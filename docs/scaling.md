@@ -179,7 +179,7 @@ The defaults already cover: fused LM head chunking (`1024`), `torch.compile` (fu
 
 The `rl`, `sft`, and `inference` entrypoints all submit to SLURM when a `[slurm]` table is present — there's no separate entrypoint.
 
-> **The prime-rl checkout and its `uv` venv must live on a shared filesystem** visible to every node. The generated sbatch script runs a single `uv sync --all-extras` on the batch node (not once per node), so all ranks share that one environment — a node-local venv would leave the other nodes stale.
+> **The prime-rl checkout and its `uv` venv must live on a shared filesystem** visible to every node. The generated sbatch script runs a single `uv sync --all-extras --all-packages` on the batch node (not once per node), so all ranks share that one environment — a node-local venv would leave the other nodes stale.
 
 ### Activation
 
