@@ -488,12 +488,6 @@ def get_model(
 
     is_vlm_training = config.vlm is not None
 
-    if isinstance(config.quantization, MXFP8Config):
-        MXFP8_SM = (10, 0)
-        cap = torch.cuda.get_device_capability() if torch.cuda.is_available() else None
-        if cap is None or cap < MXFP8_SM:
-            raise ValueError(f"MXFP8 quantization requires SM{MXFP8_SM} but device is SM{cap}")
-
     if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
         _patch_qwen3_5_text_position_ids()
         _patch_qwen3_5_moe_conversion_mapping()

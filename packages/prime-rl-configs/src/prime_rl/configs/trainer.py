@@ -311,6 +311,20 @@ class ModelConfig(BaseModelConfig):
             raise ValueError("MXFP8 quantization requires model.ep_comm_backend='torch'.")
         return self
 
+    @model_validator(mode="after")
+    def mxfp8_requires_blackwell(self):
+        if not isinstance(self.quantization, MXFP8Config):
+            return self
+        import torch
+        if not torch.cuda.is_available():
+            return self
+        capability = torch.cuda.get_device_capability()
+        if capability < (10, 0):
+            raise ValueError(
+                f"MXFP8 quantization requires SM100 (Blackwell) or newer, but device is SM{capability[0]}{capability[1]}."
+            )
+        return self
+
 
 class TokenizerConfig(BaseConfig):
     name: str | None = None
