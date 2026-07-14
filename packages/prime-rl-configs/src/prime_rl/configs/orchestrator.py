@@ -8,6 +8,7 @@ from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
+    DatasetSourceConfig,
     GRPOAlgoConfig,
 )
 from prime_rl.configs.shared import (
@@ -513,7 +514,7 @@ class OrchestratorConfig(BaseConfig):
     """Rollout-mode batching only. Multiplier used to derive ``max_inflight_rollouts`` from ``batch_size`` when ``max_inflight_rollouts`` is unset. Values below 1.0 intentionally cap in-flight rollout capacity below ``batch_size``."""
 
     max_inflight_rollouts: int | None = Field(None, ge=1)
-    """Maximum number of rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
+    """Maximum number of rollouts kept in-flight. Required for rollout-based token batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Output sequences returned per example during training."""
@@ -601,16 +602,42 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def inherit_env_algorithms(self):
         """Envs without their own algorithm inherit the top-level one.
-        Declared before any validator that reads ``algo``."""
+        A dataset source is top-level because it produces batches directly;
+        it is not an environment and cannot be mixed into rollout envs."""
+        if isinstance(self.algo.sampling.source, DatasetSourceConfig):
+            if self.train.env:
+                raise ValueError("dataset-backed SFT does not use train.env — the dataset is sampling.source")
+            if self.eval is not None:
+                raise ValueError("dataset-backed SFT does not support eval in the static training path")
+            return self
         for env_cfg in self.train.env:
             if env_cfg.algo is None:
                 env_cfg.algo = self.algo.model_copy(deep=True)
+            if isinstance(env_cfg.algo.sampling.source, DatasetSourceConfig):
+                raise ValueError(
+                    f"env '{env_cfg.resolved_name}' has a dataset sampling source — datasets are "
+                    "top-level static SFT sources, not environments"
+                )
         return self
 
     @property
+    def static_sft_source(self) -> DatasetSourceConfig | None:
+        source = self.algo.sampling.source
+        return source if self.algo.type == "sft" and isinstance(source, DatasetSourceConfig) else None
+
+    @property
+    def is_static_sft(self) -> bool:
+        return self.static_sft_source is not None
+
+    @property
     def any_policy_sourced(self) -> bool:
-        """True when at least one train env samples rollouts from the live policy."""
+        """True when at least one train env samples from the live policy."""
         return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.env)
+
+    @property
+    def needs_inference(self) -> bool:
+        """Static dataset SFT is the only ``rl`` path that needs no inference."""
+        return not self.is_static_sft
 
     @model_validator(mode="after")
     def validate_pool_size(self):
@@ -676,8 +703,8 @@ class OrchestratorConfig(BaseConfig):
         if has_token_batch:
             if self.oversampling_factor is not None:
                 raise ValueError("oversampling_factor can only be set when batch_size is set")
-            if self.max_inflight_rollouts is None:
-                raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
+            if self.max_inflight_rollouts is None and not self.is_static_sft:
+                raise ValueError("max_inflight_rollouts must be set for rollout-based token batching")
         else:
             assert self.batch_size is not None
             if self.batch_size % self.group_size != 0:
@@ -716,6 +743,16 @@ class OrchestratorConfig(BaseConfig):
             if self.prime_monitor:
                 self.prime_monitor.log_extras = None
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_no_inference_broadcast(self):
+        """Static SFT uses the filesystem marker as its trainer handshake."""
+        if not self.needs_inference and self.weight_broadcast.type != "filesystem":
+            raise ValueError(
+                "dataset-backed SFT requires filesystem weight broadcast — there is no "
+                "inference deployment for NCCL broadcast"
+            )
         return self
 
     @model_validator(mode="after")

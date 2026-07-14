@@ -20,10 +20,9 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
 
 # Orchestrator -> Packer
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    """A single training example — one branch of a rollout as a flat token sequence.
+    """A single training example represented as a flat token sequence.
 
-    There is no prompt/completion split: an agentic, multi-turn branch interleaves context and
-    model-sampled spans, so ``mask`` marks which tokens are trainable (model-sampled) and
+    There is no prompt/completion split: ``mask`` marks which tokens are trainable and
     ``logprobs`` / ``temperatures`` are aligned per token. All four arrays share the length of
     ``token_ids``."""
 
@@ -50,7 +49,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     mm_token_type_ids: list[int] | None = None
 
     # Per-token component weight streams (full prompt+completion length),
-    # stamped by the orchestrator from the env's algorithm. The training loss
+    # stamped by the orchestrator according to the configured algorithm. The training loss
     # is a sum of three components, each normalized by its own global token
     # count: rl (importance-weighted PG + KL), ce (masked NLL), and ref_kl
     # (reverse KL to a reference model as the PG signal). A weight scales that

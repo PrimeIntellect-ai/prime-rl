@@ -68,6 +68,40 @@ def strip_message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]
     return [_strip(message) for message in messages]
 
 
+def resolve_sft_messages(example: dict[str, Any]) -> list[dict[str, Any]]:
+    if "messages" in example:
+        messages = normalize_messages(example["messages"], default_role="assistant")
+    elif "prompt" in example and "completion" in example:
+        messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
+            example["completion"], default_role="assistant"
+        )
+    else:
+        raise ValueError("SFT rows need either 'messages' or both 'prompt' and 'completion'")
+    return strip_message_content(deserialize_tool_calls(messages))
+
+
+def resolve_sft_tools(example: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_tools = example.get("tools", example.get("tool_defs"))
+    if not raw_tools:
+        return []
+    if isinstance(raw_tools, str):
+        raw_tools = json.loads(raw_tools)
+    return [
+        tool
+        if isinstance(tool, dict) and tool.get("type") == "function" and "function" in tool
+        else {
+            "type": "function",
+            "function": {
+                "name": tool.get("name"),
+                "description": tool.get("description"),
+                "parameters": tool.get("parameters"),
+                **({} if tool.get("strict") is None else {"strict": tool["strict"]}),
+            },
+        }
+        for tool in raw_tools
+    ]
+
+
 def should_add_generation_prompt(messages: list[dict[str, Any]], idx: int) -> bool:
     role = messages[idx].get("role")
     if role not in ("user", "tool"):

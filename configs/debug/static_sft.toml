@@ -1,0 +1,22 @@
+max_steps = 10
+seq_len = 1024
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[orchestrator]
+batch_size = 8
+
+[orchestrator.algo]
+type = "sft"
+
+[orchestrator.algo.sampling.source]
+type = "dataset"
+name = "PrimeIntellect/Reverse-Text-SFT"
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"
+
+[trainer.optim]
+lr = 1e-5

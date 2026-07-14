@@ -915,6 +915,11 @@ async def run_orchestrator(config: OrchestratorConfig) -> None:
     """Top-level entrypoint. Wrapped in ``@clean_exit`` so wandb is flushed
     on exit (success or crash); keeps that out of the class.
     """
+    if config.is_static_sft:
+        from prime_rl.orchestrator.static_sft import DatasetBatchProducer
+
+        await DatasetBatchProducer(config).start()
+        return
     await Orchestrator(config).start()
 
 

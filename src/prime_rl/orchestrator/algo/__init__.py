@@ -35,7 +35,7 @@ from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.opd import OPDAlgorithm
 from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
-from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
+from prime_rl.orchestrator.algo.sft import SFTAlgorithm
 from prime_rl.orchestrator.types import Rollout
 
 if TYPE_CHECKING:
@@ -50,7 +50,7 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "max_rl": MaxRLAlgorithm,
     "opd": OPDAlgorithm,
     "opsd": OPSDAlgorithm,
-    "sft": SFTDistillAlgorithm,
+    "sft": SFTAlgorithm,
 }
 
 
@@ -60,8 +60,9 @@ def build_algorithm(config: AlgoConfig, policy_pool: InferencePool) -> Algorithm
     # The Algorithm is the runtime of the algorithm config's training signal
     # (its sibling Sampler interprets the sampling half). Every algorithm is
     # handed the live policy pool — opsd self-distills against it, others may
-    # judge against it or ignore it. Other models (a frozen teacher, a hint
-    # renderer) are built from the algorithm's own config in setup().
+    # judge against it or ignore it.
+    # Other models (a frozen teacher, a hint renderer) are built from the
+    # algorithm's own config in setup().
     return cls(config, policy_pool)
 
 
@@ -73,7 +74,7 @@ __all__ = [
     "OPDAlgorithm",
     "OPSDAlgorithm",
     "Rollout",
-    "SFTDistillAlgorithm",
+    "SFTAlgorithm",
     "build_algorithm",
     "connect_frozen_pool",
     "stamp_advantages",

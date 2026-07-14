@@ -1,4 +1,3 @@
-import json
 import uuid
 from collections import defaultdict
 from typing import Literal, TypedDict, cast
@@ -18,9 +17,8 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import (
     IncrementalTokenizationError,
     build_incremental_token_mask,
-    deserialize_tool_calls,
-    normalize_messages,
-    strip_message_content,
+    resolve_sft_messages,
+    resolve_sft_tools,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -167,57 +165,8 @@ class SFTDataset(StatefulIterableDataset):
         if self.tokenizer is None:
             return example
 
-        def resolve_messages(example: dict) -> list[dict]:
-            # `messages` takes precedence over explicit split fields and is interpreted
-            # as a whole-chat training sample with an empty prompt.
-            if "messages" in example:
-                messages = normalize_messages(example["messages"], default_role="assistant")
-            elif "prompt" in example and "completion" in example:
-                messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
-                    example["completion"], default_role="assistant"
-                )
-            else:
-                raise ValueError(
-                    "All examples in the dataset must have either a 'messages' column "
-                    "or both 'prompt' and 'completion' columns for SFT"
-                )
-
-            # Deserialize tool call arguments from message list, if present - assumes OAI format
-            # Reference: https://platform.openai.com/docs/guides/function-calling#handling-function-calls
-            messages = deserialize_tool_calls(messages)
-
-            # Strip content from all messages so that incremental tokenization works
-            # NOTE: This has the side effect that we do never train on leading or trailing whitespace
-            return strip_message_content(messages)
-
-        messages = resolve_messages(example)
-
-        # Parse available tools, if present - assumes OAI format
-        # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
-        # Accepts either `tools` or `tool_defs` (the verifiers rollout format),
-        # as either a JSON-encoded string of a list or a list of dicts. Tools
-        # arriving in the verifiers shape are converted to OAI form so any
-        # downstream chat template can consume them.
-        raw_tools = example.get("tools", example.get("tool_defs"))
-        if not raw_tools:
-            tools = []
-        else:
-            if isinstance(raw_tools, str):
-                raw_tools = json.loads(raw_tools)
-            tools = [
-                t
-                if isinstance(t, dict) and t.get("type") == "function" and "function" in t
-                else {
-                    "type": "function",
-                    "function": {
-                        "name": t.get("name"),
-                        "description": t.get("description"),
-                        "parameters": t.get("parameters"),
-                        **({} if t.get("strict") is None else {"strict": t["strict"]}),
-                    },
-                }
-                for t in raw_tools
-            ]
+        messages = resolve_sft_messages(example)
+        tools = resolve_sft_tools(example)
 
         def should_mask(message: dict) -> bool:
             assert "role" in message, "Message must have a role"
