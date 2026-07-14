@@ -549,8 +549,8 @@ def train(config: TrainerConfig):
         # Update the model parameters
         optimizer.step()
         if config.model.moe_load_balance.mode == "loss_free":
-            lb = config.model.moe_load_balance
-            update_expert_bias(model, lb.coeff, dp_cp_group)
+            lb_coeff = config.model.moe_load_balance.coeff
+            update_expert_bias(model, lb_coeff, dp_cp_group)
         optimizer.zero_grad()
 
         # Update learning rate scheduler
