@@ -135,9 +135,6 @@ class ModelConfig(BaseModelConfig):
     seq_len: int = 2048
     """Sequence length the model is trained on."""
 
-    dropout: float = Field(0.0, ge=0, le=1)
-    """Dropout applied at each block's output before the residual add (attention block and FFN/MoE block). Intended for SFT/self-distillation (e.g. 0.15); leave at 0 for RL. Requires the custom model implementation."""
-
     moe_load_balance: MoELoadBalanceConfig = MoELoadBalanceConfig()
     """Training-time MoE load-balancing configuration."""
 

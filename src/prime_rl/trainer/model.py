@@ -470,15 +470,6 @@ def get_load_balance_stats(
     }
 
 
-def set_block_dropout(model: nn.Module, dropout_p: float) -> None:
-    """Set the pre-residual block-output dropout probability on every supported block (attention,
-    dense MLP, MoE, LatentMoE). Dropout is applied to each block's output before the residual add.
-    ``dropout_p == 0.0`` is a no-op at runtime."""
-    for module in model.modules():
-        if hasattr(module, "dropout_p"):
-            module.dropout_p = dropout_p
-
-
 def set_moe_load_balance_active(model: nn.Module, active: bool) -> None:
     """Enable/disable the loss-free bias-update usage accumulator on every MoE layer. Called once at
     setup so ``expert_load_acc`` only grows when ``update_expert_bias`` is actually being run."""

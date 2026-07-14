@@ -7,7 +7,6 @@ This page covers the specialized features layered on top of the core training st
 - [Custom Modeling](#custom-modeling)
   - [Expert Parallelism Backends](#expert-parallelism-backends)
   - [MoE Load Balancing](#moe-load-balancing)
-  - [Block Dropout](#block-dropout)
 - [Multimodal Training](#multimodal-training)
   - [Supported Families](#supported-families)
   - [Enabling VLM Mode](#enabling-vlm-mode)
@@ -63,10 +62,6 @@ coeff = 1e-3         # bias update step size
 ```
 
 **`loss_free`** applies the DeepSeek auxiliary-loss-free update ([arXiv:2408.15664](https://arxiv.org/abs/2408.15664)): each optimizer step it nudges the router `expert_bias` toward balanced usage by `coeff · sign(load_error)` (the delta is recentered to zero mean so the bias vector doesn't drift a global offset), with no extra loss term. Expert token counts are summed across the data-parallel (`dp_cp`) group so balancing targets the whole global batch rather than each rank's shard.
-
-### Block Dropout
-
-`model.dropout` (default `0.0`) applies dropout at each block's output before the residual add — attention block and FFN/MoE block. It is intended for SFT/self-distillation (e.g. `0.15`); leave it at `0.0` for RL. Requires the custom model implementation.
 
 ## Multimodal Training
 

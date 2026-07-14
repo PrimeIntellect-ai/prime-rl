@@ -158,8 +158,6 @@ class GlmMoeDsaAttention(nn.Module):
         )
 
         self.o_proj = nn.Linear(self.num_heads * self.v_head_dim, args.hidden_size, bias=args.attention_bias)
-        # Pre-residual block-output dropout. Set via set_block_dropout(); 0.0 is a no-op.
-        self.dropout_p = 0.0
         # IndexShare (GLM-5.2): layers that reuse cached indices carry no indexer weights.
         self.indexer = Indexer(args) if not args.skip_topk else None
         self.use_index_cache = args.use_index_cache
@@ -233,7 +231,7 @@ class GlmMoeDsaAttention(nn.Module):
         attn_output = self._mla_unabsorb(attn_output, w_v)
         batch_size, total_tokens = attn_output.shape[:2]
         attn_output = attn_output.reshape(batch_size, total_tokens, -1)
-        return nn.functional.dropout(self.o_proj(attn_output), p=self.dropout_p, training=self.training)
+        return self.o_proj(attn_output)
 
     def forward(
         self,

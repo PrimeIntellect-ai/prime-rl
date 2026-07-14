@@ -594,8 +594,6 @@ class MoE(nn.Module):
         )
         self.score_before_experts = moe_args.score_before_experts
         self.deepep_token_chunk_size: int | None = None
-        # Pre-residual block-output dropout. Set via set_block_dropout(); 0.0 is a no-op.
-        self.dropout_p = 0.0
 
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert is accumulated in the model forward pass.
@@ -765,7 +763,6 @@ class MoE(nn.Module):
 
         if self.ep_comm_backend == "deepep":
             routed_output = self._run_deepep_routed_experts(x, selected_experts_indices, top_scores)
-            routed_output = F.dropout(routed_output, p=self.dropout_p, training=self.training)
             return routed_output.reshape(bs, slen, dim)
 
         # top_scores and token_indices_experts_sorted shape (bs*slen*top_k,)
@@ -795,7 +792,6 @@ class MoE(nn.Module):
 
         routed_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
         out = out.scatter_add(dim=0, index=routed_indices, src=routed_output)
-        out = F.dropout(out, p=self.dropout_p, training=self.training)
         out = out.reshape(bs, slen, dim)
         return out
 
@@ -1094,8 +1090,6 @@ class LatentMoE(nn.Module):
         self.reorderer = TokenReorderer(num_experts=num_experts, top_k=top_k)
         self.shared_expert = BCNonGatedFeedForward(dim=dim, hidden_dim=shared_expert_intermediate_size)
         self.deepep_token_chunk_size: int | None = None
-        # Pre-residual block-output dropout. Set via set_block_dropout(); 0.0 is a no-op.
-        self.dropout_p = 0.0
 
         if latent_dim is not None:
             self.fc1_latent_proj = nn.Linear(dim, latent_dim, bias=False)
@@ -1245,7 +1239,6 @@ class LatentMoE(nn.Module):
 
         if self.ep_comm_backend == "deepep":
             routed_output = self._run_deepep_routed_experts(x_flat, selected_experts_indices, top_scores)
-            routed_output = F.dropout(routed_output, p=self.dropout_p, training=self.training)
             return routed_output.reshape(bs, slen, dim)
 
         (
@@ -1265,7 +1258,6 @@ class LatentMoE(nn.Module):
 
         token_indices_full = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
         out = out.scatter_add(dim=0, index=token_indices_full, src=routed_output)
-        out = F.dropout(out, p=self.dropout_p, training=self.training)
         out = out.reshape(bs, slen, dim)
         return out
 

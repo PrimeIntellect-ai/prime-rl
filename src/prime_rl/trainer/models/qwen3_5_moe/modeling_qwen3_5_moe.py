@@ -24,6 +24,7 @@ from prime_rl.trainer.models.layers.attn import (
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
+from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
@@ -43,6 +44,7 @@ except ImportError:
 
 try:
     from fla.modules import FusedRMSNormGated
+    from fla.modules.conv import causal_conv1d as fla_causal_conv1d
     from fla.ops.cp import FLACPContext, build_cp_context
     from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 except ImportError:
@@ -50,6 +52,7 @@ except ImportError:
     FusedRMSNormGated = None  # type: ignore
     FLACPContext = None  # type: ignore
     build_cp_context = None  # type: ignore
+    fla_causal_conv1d = None  # type: ignore
 
 logger = logging.get_logger(__name__)
 
@@ -233,16 +236,16 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         self._causal_conv1d_fn = causal_conv1d_fn
         self._chunk_gated_delta_rule = chunk_gated_delta_rule or torch_chunk_gated_delta_rule
 
-    def _build_cp_context(self, local_seq_len: int, device: torch.device) -> "FLACPContext | None":
-        """Build fla CP context from the local (sharded) sequence length."""
+    def _build_cp_context(self) -> "FLACPContext | None":
+        """Build fla CP context from the full pre-shard document boundaries."""
         cp_group = getattr(self, "cp_group", None)
         if cp_group is None or build_cp_context is None:
             return None
-        # Reconstruct global cu_seqlens: single contiguous sequence across all CP ranks
-        global_seq_len = local_seq_len * self.cp_world_size
-        global_cu_seqlens = torch.tensor([0, global_seq_len], dtype=torch.int32, device=device)
+        # Local cu_seqlens cannot describe documents straddling shard boundaries;
+        # use the full (un-sharded) cu_seqlens published by setup_cp_params. fla
+        # derives per-rank boundaries and document-aware state passing from them.
         return build_cp_context(
-            cu_seqlens=global_cu_seqlens,
+            cu_seqlens=ULYSSES_PARAMS["cu_seqlens"],
             group=cp_group,
             conv1d_kernel_size=self.conv_kernel_size,
         )
@@ -259,9 +262,23 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
+        cp_context = self._build_cp_context()
+
         # Causal conv1d — must reset at sequence boundaries for packed batches,
         # otherwise the kernel-1 left pad leaks state across sequences.
-        if self._causal_conv1d_fn is not None:
+        if cp_context is not None:
+            # fla's CP conv resets at the true document boundaries and exchanges
+            # tail tokens with the previous rank for documents straddling the
+            # shard boundary; the local cu_seqlens can express neither.
+            conv_out, _ = fla_causal_conv1d(
+                x=mixed_qkv.transpose(1, 2),
+                weight=self.conv1d.weight.squeeze(1),
+                bias=self.conv1d.bias,
+                activation=self.activation,
+                cp_context=cp_context,
+            )
+            mixed_qkv = conv_out.transpose(1, 2)
+        elif self._causal_conv1d_fn is not None:
             seq_idx = None
             if cu_seqlens is not None:
                 seg_lens = cu_seqlens[1:] - cu_seqlens[:-1]
@@ -303,7 +320,6 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
         # Use fla's native CP when available, otherwise fall back to PyTorch kernel
-        cp_context = self._build_cp_context(seq_len, hidden_states.device)
         if cp_context is not None:
             cu_seqlens = cp_context.cu_seqlens
             core_attn_out, _ = self._chunk_gated_delta_rule(
@@ -593,10 +609,6 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.layer_type = config.layer_types[layer_idx]
-        # Pre-residual token-mixer dropout, applied in forward since both the gated attention and the
-        # GatedDeltaNet linear-attn mixers are bespoke (not the shared attention layers). Set via
-        # set_block_dropout(); 0.0 is a no-op.
-        self.dropout_p = 0.0
 
         # Token mixer: either GatedDeltaNet or gated softmax attention
         if self.layer_type == "linear_attention":
@@ -649,7 +661,6 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
                 max_seqlen=max_seqlen,
             )
 
-        hidden_states = F.dropout(hidden_states, p=self.dropout_p, training=self.training)
         hidden_states = residual + hidden_states
 
         # MLP: routed experts + gated shared expert
@@ -665,8 +676,6 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         shared_output = self.shared_expert(hidden_flat)
         shared_output = F.sigmoid(self.shared_expert_gate(hidden_flat)) * shared_output
         shared_output = shared_output.view(bs, slen, dim)
-        # Match the routed-path block-output dropout (applied inside MoE) on the shared-expert path.
-        shared_output = F.dropout(shared_output, p=self.mlp.dropout_p, training=self.training)
 
         hidden_states = residual + routed_output + shared_output
         return hidden_states
