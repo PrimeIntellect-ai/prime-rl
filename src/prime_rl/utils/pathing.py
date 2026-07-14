@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 import time
 from pathlib import Path
@@ -179,11 +180,30 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
             shutil.rmtree(get_step_path(directory, step))
 
 
+def _revalidate_dir(path: Path) -> None:
+    """Force the NFS client to revalidate ``path``'s parent directory.
+
+    NFS clients cache directory lookups (negative dentries, attribute cache) for up
+    to ``acdirmax`` — commonly 60s — so a file created from another node can stay
+    invisible to ``path.exists()`` for up to a minute. A READDIR on the parent drops
+    the stale entries, making freshly written files visible immediately. Observed as
+    a constant ~60s per training step on multi-node trainers (remote ranks polling
+    for their micro-batch files); with revalidation the same wait is 2-7s. No-op
+    cost on local filesystems; errors (e.g. parent not yet created) are ignored —
+    the poll then behaves exactly as before.
+    """
+    try:
+        os.listdir(path.parent)
+    except OSError:
+        pass
+
+
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
     logger = get_logger()
     wait_time = 0
     logger.debug(f"Waiting for path `{path}`")
     while True:
+        _revalidate_dir(path)
         if path.exists():
             logger.debug(f"Found path `{path}`")
             break
@@ -198,6 +218,7 @@ async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -
     wait_time = 0
     logger.debug(f"Waiting for path `{path}`")
     while True:
+        _revalidate_dir(path)
         if path.exists():
             logger.debug(f"Found path `{path}`")
             break
