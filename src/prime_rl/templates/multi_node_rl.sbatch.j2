@@ -150,10 +150,10 @@ source .venv/bin/activate
 # all finish. `set -e` above aborts the job if any node's sync fails. Re-source .env
 # inside the task because unexported vars in .env don't cross srun even with normal
 # SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
-srun --ntasks-per-node=1 bash -c 'cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras'
+srun --ntasks-per-node=1 bash -c 'cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages'
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
-uv sync --all-extras
+uv sync --all-extras --all-packages
 {% endif %}
 
 {% if pre_run_command %}

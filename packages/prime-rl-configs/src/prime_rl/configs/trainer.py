@@ -153,6 +153,9 @@ QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discrim
 
 
 class ModelConfig(BaseModelConfig):
+    conversion_dir: Path | None = None
+    """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
+
     seq_len: int = 2048
     """Sequence length the model is trained on."""
 
