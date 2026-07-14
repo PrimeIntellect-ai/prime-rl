@@ -436,3 +436,48 @@ def test_frozen_fused_head_backpropagates_without_weight_gradient(monkeypatch):
     output["logprobs"].sum().backward()
     assert hidden.grad is not None
     assert head.weight.grad is None
+
+
+def test_recv_weights_order_drains_batch_then_receives_on_every_rank():
+    """The recv_weights work order runs strictly after the in-flight update batch (the
+    work loop is sequential), calls the receive on the rank, bumps base_version, and
+    leaves slot params/optimizer state untouched."""
+    from queue import Queue
+    from threading import Event
+
+    from prime_rl.ttt.server_v2 import _work_loop
+
+    trainer = make_cpu_trainer(max_slots=2)
+    trainer.config.weight_broadcast = None  # stubbed receive below, config unused
+    trainer.base_version = 0
+    calls: list = []
+
+    original_update_batch = trainer.update_batch
+
+    def update_batch(jobs):
+        calls.append(("update", [j.rollout_id for j in jobs]))
+        return original_update_batch(jobs)
+
+    def receive_base_weights(step):
+        calls.append(("recv", step))
+        trainer.base_version = step
+
+    trainer.update_batch = update_batch
+    trainer.receive_base_weights = receive_base_weights
+
+    j1 = job("r1")
+    from prime_rl.ttt.server_v2 import _Pending
+
+    pending = _Pending(job=j1)
+    ack = Event()
+    work_queue: Queue = Queue()
+    work_queue.put(("update", [j1], [pending]))
+    work_queue.put(("recv_weights", 7, ack))
+    work_queue.put(("stop",))
+    _work_loop(trainer, work_queue, SimpleNamespace(is_master=True, world_size=1))
+
+    assert calls == [("update", ["r1"]), ("recv", 7)]  # batch drained BEFORE the receive
+    assert ack.is_set()
+    assert trainer.base_version == 7
+    # Slot state survives the receive: r1's slot, optimizer binding, and version.
+    assert "r1" in trainer.slots and trainer.slots["r1"].version == 1

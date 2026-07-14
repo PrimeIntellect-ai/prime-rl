@@ -418,6 +418,9 @@ elif [ "$SLURM_PROCID" -ge "$((NUM_INFER_NODES + NUM_TRAIN_NODES))" ]; then
         @ $CONFIG_DIR/ttt.toml \
         --output-dir $OUTPUT_DIR \
         --inference-admin-urls $TTT_ADMIN_URLS \
+{%- if use_nccl_broadcast %}
+        --weight_broadcast.host $MASTER_ADDR \
+{%- endif %}
         2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/ttt/node_${TTT_NODE_RANK}.log &
 {% endif -%}
 else

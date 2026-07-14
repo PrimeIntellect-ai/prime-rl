@@ -237,10 +237,114 @@ class TTTTrainerV2:
         # Optional gloo group for control-plane collectives (set by run_server_v2): the
         # checkpoint barrier rides it so it shares the watchdog-free control plane.
         self.ctrl_pg = None
+        # Base-model policy version: 0 = the launch-time HF checkpoint; bumped by
+        # receive_base_weights on every successful broadcast receive.
+        self.base_version = 0
+        self.weight_receiver = None
+        self._setup_weight_receiver()
         self.logger.info(
             f"TTT v2 ready: {self.max_slots} adapter slots, rank={config.lora.rank}, "
             f"targets={config.lora.target_modules}"
         )
+
+    # -- base-weight broadcast (follow the policy) ---------------------------------------------
+
+    def _setup_weight_receiver(self) -> None:
+        """Join the trainer's NCCL broadcast group at startup (nccl receiver only).
+
+        Every service rank occupies global receiver rank ``rank_offset + world.rank`` —
+        the slot after all inference GPUs — plus 1 for the trainer broadcaster on rank 0.
+        Group creation is collective, so this must run on every rank before serving.
+        """
+        wb = self.config.weight_broadcast
+        if wb is None or wb.type != "nccl":
+            return
+        from prime_rl.utils.nccl_receiver import NCCLWeightBroadcastReceiver
+
+        self.weight_receiver = NCCLWeightBroadcastReceiver(
+            host=wb.host,
+            port=wb.port,
+            rank=wb.rank_offset + self.world.rank + 1,  # +1: trainer broadcaster on rank 0
+            world_size=wb.world_size + 1,  # +1: trainer broadcaster on rank 0
+            device=self.device,
+            timeout=wb.timeout,
+        )
+
+    @torch.no_grad()
+    def receive_base_weights(self, step: int) -> None:
+        """Update the frozen base model to policy v{step} (all ranks, collective).
+
+        The trainer broadcasts full HF-format tensors framed layer-by-layer (see
+        ``NCCLWeightBroadcastSender.broadcast_weights``); we consume the same framing so
+        only one layer's full tensors are resident at a time (a whole large-MoE state dict
+        would not fit one GPU). Only the BASE weights change: the MultiLoRA slot params
+        and per-slot optimizer state are deliberately untouched — resident adapters were
+        trained against a base at most one broadcast-interval old, a bounded
+        discontinuity we accept rather than resetting live rollouts' slots.
+        """
+        import time
+
+        from prime_rl.trainer.lora import strip_lora_from_state_dict
+
+        start_time = time.perf_counter()
+        wb = self.config.weight_broadcast
+        assert wb is not None, "receive_base_weights requires a [weight_broadcast] config"
+        # ``state_dict()`` applies the MultiLoRA/AC name hooks, so keys line up with the
+        # broadcast payload and values are the live (possibly DTensor-sharded) params.
+        model_state_dict = strip_lora_from_state_dict(self.model.state_dict())
+        if wb.type == "nccl":
+            assert self.weight_receiver is not None
+            from prime_rl.utils.nccl_receiver import receive_integer, receive_state_dict
+
+            communicator = self.weight_receiver.communicator
+            # The sender frames the broadcast as [non-layer weights, layer 0, layer 1, ...].
+            num_state_dicts = receive_integer(communicator)
+            for message_idx in range(num_state_dicts):
+                layer_state_dict = dict(receive_state_dict(communicator))
+                self._load_full_tensors(model_state_dict, layer_state_dict, layer_idx=message_idx - 1)
+                del layer_state_dict
+        else:
+            # Filesystem broadcast: every rank reads the shared HF checkpoint step dir.
+            from prime_rl.trainer.weights import load_state_dict as load_fs_state_dict
+            from prime_rl.utils.pathing import get_broadcast_dir, get_step_path
+
+            full_state_dict = load_fs_state_dict(get_step_path(get_broadcast_dir(self.config.output_dir), step))
+            self._load_full_tensors(model_state_dict, full_state_dict, layer_idx=None)
+        self.base_version = step
+        self.logger.info(f"ttt v2 base weights updated to policy v{step} in {time.perf_counter() - start_time:.2f}s")
+
+    def _load_full_tensors(
+        self, model_state_dict: dict[str, torch.Tensor], incoming: dict[str, torch.Tensor], layer_idx: int | None
+    ) -> None:
+        """Copy full HF-format tensors into the live (possibly sharded) model params.
+
+        Reuses the trainer stack's HF->prime converters (the inverse of the sender's
+        ``preprocess_layer_checkpoint``). Every rank holds the identical full tensor, so
+        ``distribute_tensor(src_data_rank=None)`` shards locally without communication.
+        """
+        from torch.distributed.tensor import DTensor, distribute_tensor
+
+        from prime_rl.trainer.models import PreTrainedModelPrimeRL
+
+        if isinstance(self.model, PreTrainedModelPrimeRL) and self.model.is_prime_state_dict(model_state_dict):
+            if layer_idx is None:
+                self.model.convert_to_prime(incoming)
+            else:
+                # Mirrors the sender's per-message ``convert_layer_to_hf`` (incl. the
+                # layer_idx=-1 non-layer message, where converters are no-ops).
+                self.model.convert_layer_to_prime(incoming, layer_idx)
+        for key, value in incoming.items():
+            dest = model_state_dict.get(key)
+            if dest is None:
+                # e.g. tied lm_head duplicated by the sender's HF conversion.
+                self.logger.warning(f"ttt v2 base weight update: no model param for broadcast key {key!r}, skipping")
+                continue
+            value = value.to(device=self.device, dtype=dest.dtype)
+            if isinstance(dest, DTensor):
+                dest.copy_(distribute_tensor(value, dest.device_mesh, dest.placements, src_data_rank=None))
+            else:
+                dest.copy_(value)
+            del value
 
     # -- slot registry -----------------------------------------------------------------------
 

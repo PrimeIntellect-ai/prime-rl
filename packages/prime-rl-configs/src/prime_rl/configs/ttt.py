@@ -1,7 +1,7 @@
 import re
 from math import isfinite
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
@@ -175,6 +175,45 @@ class FSDPEngineConfig(BaseConfig):
 TTTEngineConfig = PeftEngineConfig | FSDPEngineConfig
 
 
+class TTTNCCLWeightBroadcastConfig(BaseConfig):
+    """Receiver side of the trainer's NCCL weight broadcast: every service rank joins the
+    trainer's broadcast group so the frozen base model follows the policy. Mirrors the
+    fields the vLLM workers get via ``/init_broadcaster`` (see
+    ``NCCLWeightUpdateWorker.init_broadcaster``); launcher-managed runs auto-wire this in
+    ``RLConfig`` and the SLURM template injects ``host`` once the trainer node is known."""
+
+    type: Literal["nccl"] = "nccl"
+
+    host: str = "localhost"
+    """Host of the NCCL broadcast rendezvous (the trainer master node)."""
+
+    port: int = Field(29501, ge=1, le=65535)
+    """Port of the NCCL broadcast rendezvous."""
+
+    rank_offset: int = Field(0, ge=0)
+    """Global receiver-GPU offset of this service's rank 0 (= inference_world_size when the
+    TTT ranks are appended after all inference GPUs)."""
+
+    world_size: int = Field(1, ge=1)
+    """Total receiver GPUs in the broadcast group (inference + TTT); the trainer
+    broadcaster occupies one extra rank on top of this."""
+
+    timeout: int = Field(1200, ge=1)
+    """Timeout in seconds for the NCCL broadcast."""
+
+
+class TTTFileSystemWeightBroadcastConfig(BaseConfig):
+    """Receiver side of the filesystem weight broadcast: load the policy's HF checkpoint
+    from the shared broadcast step dir. No group membership — simpler than NCCL."""
+
+    type: Literal["filesystem"] = "filesystem"
+
+
+TTTWeightBroadcastConfig: TypeAlias = Annotated[
+    TTTNCCLWeightBroadcastConfig | TTTFileSystemWeightBroadcastConfig, Field(discriminator="type")
+]
+
+
 class TTTServiceConfig(BaseConfig):
     """The TTT service: a fourth process type (alongside inference / orchestrator /
     trainer) that owns test-time training. It holds one copy of the base model, trains one
@@ -227,6 +266,11 @@ class TTTServiceConfig(BaseConfig):
     startup_timeout_seconds: int = Field(1800, ge=1)
     """How long a managed launcher waits for service readiness."""
 
+    weight_broadcast: TTTWeightBroadcastConfig | None = None
+    """Receiver config for following the policy's weight broadcasts (None = off, the
+    default — standalone services keep a launch-frozen base). Launcher-managed multi-node
+    NCCL runs auto-wire this in ``RLConfig.validate_ttt``."""
+
     keep_checkpoints: bool = True
     """Keep every adapter version on disk after the rollout releases (the RL replay
     artifacts). False deletes the rollout's checkpoint dir on `/release` (eval-only runs
@@ -240,4 +284,12 @@ class TTTServiceConfig(BaseConfig):
             self.tokenizer.name = self.model.name
         if isinstance(self.engine, FSDPEngineConfig):
             self.engine.model.name = self.model.name
+        return self
+
+    @model_validator(mode="after")
+    def validate_weight_broadcast_engine(self):
+        # The receive path (work-loop order + sharded set_model_state_dict) only exists in
+        # the v2 trainer stack; the single-process PEFT engine has no work loop to join.
+        if self.weight_broadcast is not None and not isinstance(self.engine, FSDPEngineConfig):
+            raise ValueError("[ttt].weight_broadcast requires [ttt.engine] type = 'fsdp'")
         return self

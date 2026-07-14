@@ -184,6 +184,7 @@ class Orchestrator:
         self.lora_name = None
         self.resume_step = None
         self.lag_task = None
+        self.ttt_admin = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -306,6 +307,20 @@ class Orchestrator:
             )
             await self.inference_metrics.start()
 
+        # Launcher-managed TTT service: its base model follows the policy through the same
+        # update flow as the vLLM admins — including the resume-time update below, which
+        # for NCCL is one collective broadcast round every receiver must join.
+        # (ttt_base_url is only injected for managed runs; standalone services keep their
+        # launch-frozen base.)
+        if config.ttt_base_url is not None:
+            import httpx
+
+            self.ttt_admin = httpx.AsyncClient(
+                base_url=config.ttt_base_url,
+                limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
+                timeout=httpx.Timeout(None),
+            )
+
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
@@ -315,6 +330,7 @@ class Orchestrator:
                 config.weight_broadcast.timeout,
                 inference_world_size=config.weight_broadcast.inference_world_size,
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
+                ttt_world_size=config.weight_broadcast.ttt_world_size,
             )
 
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
@@ -334,7 +350,9 @@ class Orchestrator:
             weights_path = get_weight_dir(
                 config.output_dir, self.resume_step, check_exists=check_exists, wait_timeout=wait_timeout
             )
-            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=self.resume_step)
+            await self.policy_inference.update_weights(
+                weights_path, lora_name=self.lora_name, step=self.resume_step, ttt_admin_client=self.ttt_admin
+            )
             if self.lora_name is not None:
                 self.policy_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
@@ -386,6 +404,7 @@ class Orchestrator:
             observers=[self.dispatcher, self],
             lora_name=self.lora_name,
             ckpt_step=self.policy.version,
+            ttt_admin=self.ttt_admin,
         )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
@@ -904,6 +923,8 @@ class Orchestrator:
                 await self.inference_metrics.stop()
             if getattr(self, "policy_inference", None) is not None:
                 await self.policy_inference.stop()
+            if self.ttt_admin is not None:
+                await self.ttt_admin.aclose()
             if self.train_envs is not None:
                 for env in self.train_envs:
                     for pool in (*env.sampler.connected_pools, *env.algorithm.connected_pools):

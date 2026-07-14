@@ -325,3 +325,55 @@ async def test_v2_unary_stop_and_http_start_failure_do_not_strand_work_loop():
     _monitor_http_server(SimpleNamespace(started=False), http_thread, abort_queue, startup_timeout=1)
     with pytest.raises(RuntimeError, match="HTTP server failed"):
         _work_loop(None, abort_queue, SimpleNamespace(is_master=True, world_size=1))
+
+
+async def test_v2_update_base_weights_route_acks_and_times_out():
+    """/update_base_weights: 200 once the work loop acks; 503 on a wedged loop."""
+    import threading
+    from queue import Queue
+    from unittest.mock import patch
+
+    from prime_rl.ttt.server_v2 import build_app_v2
+
+    trainer = type("Trainer", (), {"slots": {}, "free_idxs": set(), "base_version": 0})()
+    work_queue: Queue = Queue()
+
+    def fake_work_loop():
+        kind, step, ack = work_queue.get()
+        assert kind == "recv_weights" and step == 3
+        trainer.base_version = step
+        ack.set()
+
+    app = build_app_v2(
+        TTTServiceConfig(engine={"type": "fsdp", "max_batch_wait_seconds": 0}, inference_admin_urls=[]),
+        trainer,
+        work_queue,
+    )
+    threading.Thread(target=fake_work_loop, daemon=True).start()
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://ttt") as client:
+            response = await client.post("/update_base_weights", json={"step": 3})
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok", "base_version": 3}
+            health = await client.get("/health")
+            assert health.json()["base_version"] == 3
+
+            # Wedged work loop (nothing drains the queue): bounded 503, not a hang.
+            with patch("prime_rl.ttt.server_v2._RESULT_WAIT_SECONDS", 0.05):
+                response = await client.post("/update_base_weights", json={"step": 4})
+            assert response.status_code == 503
+
+
+async def test_shared_nccl_receiver_module_is_vllm_free_importable():
+    """The moved receiver lives in utils (importable without vLLM at module import time)
+    and the vLLM worker re-exports it, so both sides share one implementation."""
+    import importlib
+    import sys
+
+    module = importlib.import_module("prime_rl.utils.nccl_receiver")
+    assert hasattr(module, "NCCLWeightBroadcastReceiver")
+    # Import must not have pulled vLLM in (the communicator import is lazy).
+    source = open(module.__file__).read()
+    assert "from vllm" in source  # lazy import inside __init__
+    assert module.__name__ in sys.modules

@@ -423,6 +423,10 @@ class NCCLWeightBroadcastConfig(BaseConfig):
     inference_world_size: int = Field(1, ge=1)
     """Total inference GPUs across all servers. Used by ``init_nccl_broadcast`` to compute per-server rank offsets."""
 
+    ttt_world_size: int = Field(0, ge=0)
+    """Extra receiver GPUs from a TTT service in the same broadcast group. Every group
+    member must agree on the total world size, so the vLLM receivers need this too."""
+
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")

@@ -32,7 +32,13 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
-from prime_rl.configs.ttt import FSDPEngineConfig, PeftEngineConfig, TTTServiceConfig
+from prime_rl.configs.ttt import (
+    FSDPEngineConfig,
+    PeftEngineConfig,
+    TTTFileSystemWeightBroadcastConfig,
+    TTTNCCLWeightBroadcastConfig,
+    TTTServiceConfig,
+)
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
@@ -843,6 +849,60 @@ class RLConfig(BaseConfig):
             assert self.orchestrator.weight_broadcast.type == "nccl"
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_ttt_weight_broadcast(self):
+        """Wire the launcher-managed TTT service into the policy weight broadcast.
+
+        The service's frozen base model must follow the policy or adapters train against an
+        ever-staler base. For NCCL the TTT ranks join the trainer's broadcast group right
+        after all inference GPUs (global receiver ranks [inference_world_size ..
+        inference_world_size + ttt_world_size)), so the trainer/orchestrator group sizing
+        must include them. Runs after ``auto_setup_weight_broadcast`` (which rebuilds
+        ``trainer.weight_broadcast``) and the deployment validators (which finalize
+        ``inference_world_size``). Complements ``validate_ttt``; explicit mismatching
+        receiver configs are rejected like the other TTT auto-wiring.
+        """
+        if self.ttt is None or self.weight_broadcast is None:
+            return self
+        if self.weight_broadcast.type == "nccl":
+            assert self.trainer.weight_broadcast.type == "nccl"
+            assert self.orchestrator.weight_broadcast.type == "nccl"
+            if self.weight_broadcast.quantize_in_weight_transfer:
+                # The quantized transfer ships vLLM-kernel-format FP8 tensors, which the
+                # TTT trainer stack cannot load back into its bf16 params.
+                raise ValueError(
+                    "Launcher-managed TTT cannot follow a quantized weight transfer — "
+                    "unset weight_broadcast.quantize_in_weight_transfer."
+                )
+            ttt_world_size = self.deployment.num_ttt_nodes * self.deployment.gpus_per_node
+            inference_world_size = self.trainer.weight_broadcast.inference_world_size
+            self.trainer.weight_broadcast.ttt_world_size = ttt_world_size
+            self.orchestrator.weight_broadcast.ttt_world_size = ttt_world_size
+            expected = TTTNCCLWeightBroadcastConfig(
+                # host is injected by the SLURM template (the trainer master hostname is
+                # only known at job start), matching the orchestrator's receiver wiring.
+                port=self.weight_broadcast.port,
+                rank_offset=inference_world_size,
+                world_size=inference_world_size + ttt_world_size,
+                timeout=self.weight_broadcast.timeout,
+            )
+            if self.ttt.weight_broadcast is None:
+                self.ttt.weight_broadcast = expected
+            elif self.ttt.weight_broadcast.model_dump(exclude={"host"}) != expected.model_dump(exclude={"host"}):
+                raise ValueError(
+                    f"[ttt].weight_broadcast ({self.ttt.weight_broadcast}) conflicts with the run's NCCL "
+                    f"broadcast wiring ({expected}) — drop the explicit receiver config to auto-wire it."
+                )
+        elif self.weight_broadcast.type == "filesystem":
+            if self.ttt.weight_broadcast is None:
+                self.ttt.weight_broadcast = TTTFileSystemWeightBroadcastConfig()
+            elif self.ttt.weight_broadcast.type != "filesystem":
+                raise ValueError(
+                    "[ttt].weight_broadcast type must match the run's weight_broadcast "
+                    f"('filesystem'); got {self.ttt.weight_broadcast.type!r}."
+                )
         return self
 
     @model_validator(mode="after")

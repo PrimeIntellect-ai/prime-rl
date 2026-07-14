@@ -186,7 +186,9 @@ class NCCLWeightBroadcast(WeightBroadcast):
             config.host,
             config.port,
             0,
-            config.inference_world_size + 1,
+            # Trainer rank 0 + every inference GPU + every TTT service GPU (the service's
+            # base model follows the policy through the same collective).
+            config.inference_world_size + config.ttt_world_size + 1,
             device,
             config.timeout,
             dtype,

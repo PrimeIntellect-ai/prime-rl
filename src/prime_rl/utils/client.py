@@ -69,8 +69,14 @@ class InferencePool(Protocol):
         """Wait for inference pool to be ready."""
         ...
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        """Update weights on all inference servers."""
+    async def update_weights(
+        self,
+        weight_dir: Path | None,
+        lora_name: str | None = None,
+        step: int = 0,
+        ttt_admin_client: AsyncClient | None = None,
+    ) -> None:
+        """Update weights on all inference servers (and a policy-following TTT service)."""
         ...
 
     async def score(self, token_ids: list[int]) -> list[float]:
@@ -176,8 +182,16 @@ class StaticInferencePool:
         )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+    async def update_weights(
+        self,
+        weight_dir: Path | None,
+        lora_name: str | None = None,
+        step: int = 0,
+        ttt_admin_client: AsyncClient | None = None,
+    ) -> None:
+        await update_weights(
+            self._admin_clients, weight_dir, lora_name=lora_name, step=step, ttt_admin_client=ttt_admin_client
+        )
 
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this pool's model (one logprob per
@@ -404,12 +418,18 @@ async def update_weights(
     weight_dir: Path | None,
     lora_name: str | None = None,
     step: int = 0,
+    ttt_admin_client: AsyncClient | None = None,
 ) -> None:
     """Update weights on static inference servers.
 
     Pauses all engines first to drain in-flight requests, then performs the
     weight update, then resumes. This ensures all DP workers are idle and can
     participate in the collective weight transfer.
+
+    When a TTT service follows the policy (``ttt_admin_client``), its
+    ``/update_base_weights`` post rides the SAME gather as the vLLM posts: for NCCL the
+    trainer's broadcast is one collective that blocks until every receiver (vLLM workers
+    AND TTT ranks) has joined, so ordering the TTT call after would deadlock.
 
     Note: the prefix cache is intentionally not reset on weight update. The orchestrator
     salts the prefix cache per weight version (``cache_salt`` in the sampling request, see
@@ -433,17 +453,25 @@ async def update_weights(
                 nccl_ready_file.touch()
                 logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
-            await asyncio.gather(
-                *[
+            update_posts = [
+                _admin_post(
+                    admin_client,
+                    "/update_weights",
+                    json={"weight_dir": weight_dir_posix},
+                    timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                )
+                for admin_client in admin_clients
+            ]
+            if ttt_admin_client is not None:
+                update_posts.append(
                     _admin_post(
-                        admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
+                        ttt_admin_client,
+                        "/update_base_weights",
+                        json={"step": step},
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                     )
-                    for admin_client in admin_clients
-                ]
-            )
+                )
+            await asyncio.gather(*update_posts)
         finally:
             await _resume_engines(admin_clients)
 
@@ -523,6 +551,7 @@ async def init_nccl_broadcast(
     timeout: int,
     inference_world_size: int | None = None,
     quantize_in_weight_transfer: bool = False,
+    ttt_world_size: int = 0,
 ) -> None:
     """Initialize NCCL broadcast on all inference servers.
 
@@ -556,6 +585,7 @@ async def init_nccl_broadcast(
                     "inference_world_size": inference_world_size,
                     "timeout": timeout,
                     "quantize_in_weight_transfer": quantize_in_weight_transfer,
+                    "ttt_world_size": ttt_world_size,
                 },
             )
             response.raise_for_status()

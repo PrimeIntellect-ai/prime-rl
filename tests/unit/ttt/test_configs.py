@@ -266,3 +266,84 @@ def test_orchestrator_leftover_auto_rejected_at_startup():
     config.ttt_base_url = "http://ttt-node:8092"
     config.apply_ttt_base_url()
     config.check_ttt_base_urls_resolved()
+
+
+# --- Policy weight-broadcast receiver wiring (TTT service follows the policy) ---
+
+
+def test_ttt_service_autowires_nccl_weight_broadcast_receiver():
+    """multi_node + nccl: trainer group grows by the TTT GPUs and the service receiver
+    occupies global receiver ranks [inference_world_size .. +num_ttt_nodes*gpus)."""
+    config = RLConfig.model_validate(rl_ttt_service_payload())
+    assert config.trainer.weight_broadcast.type == "nccl"
+    assert config.trainer.weight_broadcast.ttt_world_size == 8  # 1 ttt node * 8 gpus
+    assert config.orchestrator.weight_broadcast.ttt_world_size == 8
+    inference_world_size = config.trainer.weight_broadcast.inference_world_size
+    wb = config.ttt.weight_broadcast
+    assert wb is not None and wb.type == "nccl"
+    assert wb.rank_offset == inference_world_size
+    assert wb.world_size == inference_world_size + 8
+    assert wb.port == config.weight_broadcast.port
+    assert wb.timeout == config.weight_broadcast.timeout
+
+
+def test_ttt_service_receiver_mismatch_rejected():
+    payload = rl_ttt_service_payload()
+    payload["ttt"]["weight_broadcast"] = {"type": "nccl", "rank_offset": 3, "world_size": 5}
+    with pytest.raises(ValueError, match="conflicts with the run's NCCL broadcast wiring"):
+        RLConfig.model_validate(payload)
+
+
+def test_ttt_service_follows_filesystem_broadcast():
+    payload = rl_ttt_service_payload()
+    payload["weight_broadcast"] = {"type": "filesystem"}
+    config = RLConfig.model_validate(payload)
+    assert config.ttt.weight_broadcast is not None
+    assert config.ttt.weight_broadcast.type == "filesystem"
+    assert config.trainer.weight_broadcast.type == "filesystem"
+
+
+def test_ttt_quantized_transfer_rejected_with_managed_service():
+    payload = rl_ttt_service_payload()
+    payload["weight_broadcast"] = {"type": "nccl", "quantize_in_weight_transfer": True}
+    payload["trainer"]["model"] = {"impl": "custom"}
+    with pytest.raises(ValueError, match="quantiz"):
+        RLConfig.model_validate(payload)
+
+
+def test_standalone_service_defaults_to_no_weight_broadcast():
+    from prime_rl.configs.ttt import TTTServiceConfig
+
+    assert TTTServiceConfig().weight_broadcast is None
+    with pytest.raises(ValueError, match="fsdp"):
+        TTTServiceConfig(weight_broadcast={"type": "nccl"})  # receive path is v2-only
+
+
+def test_trainer_broadcast_without_ttt_keeps_zero_ttt_world_size():
+    config = RLConfig.model_validate(rl_payload({"base_url": "http://localhost:8092"}))
+    if config.trainer.weight_broadcast.type == "nccl":
+        assert config.trainer.weight_broadcast.ttt_world_size == 0
+
+
+def test_scaleswe_arm_overlays_get_receiver_autowiring():
+    """The shipped scaleswe TTT arms still validate and pick up the auto-wiring."""
+    import copy
+
+    def deep_merge(base: dict, overlay: dict) -> dict:
+        merged = copy.deepcopy(base)
+        for key, value in overlay.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = deep_merge(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+
+    payload = deep_merge(load(CONFIGS / "scaleswe" / "base.toml"), load(CONFIGS / "scaleswe" / "ttt_common.toml"))
+    payload = deep_merge(payload, load(CONFIGS / "scaleswe" / "arm_a2_ttt.toml"))
+    config = RLConfig.model_validate(payload)
+    assert config.trainer.weight_broadcast.type == "nccl"
+    # 4 replicas x 1 node x 8 GPUs inference + 1 TTT node x 8 GPUs + trainer rank 0 = 41.
+    assert config.trainer.weight_broadcast.inference_world_size == 32
+    assert config.trainer.weight_broadcast.ttt_world_size == 8
+    assert config.ttt.weight_broadcast.rank_offset == 32
+    assert config.ttt.weight_broadcast.world_size == 40

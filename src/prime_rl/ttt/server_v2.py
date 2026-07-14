@@ -19,6 +19,7 @@ from queue import Empty, Queue
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 from prime_rl.configs.ttt import TTTServiceConfig
 from prime_rl.ttt.admin import (
@@ -40,6 +41,10 @@ _RESULT_WAIT_SECONDS = 3600.0
 
 # Idle-heartbeat period (see run_server_v2.heartbeat); must stay well below gloo's 24h op timeout.
 _HEARTBEAT_SECONDS = 3600.0
+
+
+class UpdateBaseWeightsRequest(BaseModel):
+    step: int
 
 
 @dataclass
@@ -140,6 +145,20 @@ def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
             raise RuntimeError(f"TTT v2 HTTP server failed: {data}")
         if kind == "noop":
             continue  # idle heartbeat: keeps the gloo broadcast fed (see run_server_v2)
+        if kind == "recv_weights":
+            # data = step; on rank 0, order[2] is the HTTP-side ack event. The collector
+            # already can't interleave (work orders are unary), but the batch queue may
+            # hold jobs — those ride later orders; this order only runs the receive.
+            try:
+                trainer.receive_base_weights(data)
+            except Exception:
+                # A failed receive may leave ranks desynced mid-collective (some received
+                # tensors, some didn't) — fail fast loudly, do not limp.
+                logger.exception("ttt v2: base weight receive failed, aborting rank")
+                os._exit(1)
+            if world.is_master:
+                order[2].set()
+            continue
         if kind == "release":
             try:
                 released = trainer.release(*data)
@@ -257,7 +276,29 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
 
     @app.get("/health")
     async def health() -> dict:
-        return {"status": "ok", "adapters": len(trainer.slots), "free_slots": len(trainer.free_idxs)}
+        return {
+            "status": "ok",
+            "adapters": len(trainer.slots),
+            "free_slots": len(trainer.free_idxs),
+            "base_version": getattr(trainer, "base_version", 0),
+        }
+
+    @app.post("/update_base_weights")
+    async def update_base_weights(request: UpdateBaseWeightsRequest) -> dict:
+        """Follow a policy weight broadcast: all ranks join the collective receive.
+
+        Enqueued directly on the work queue (not the batch collector): the work loop is
+        sequential, so the currently executing update batch drains before the receive.
+        For NCCL the orchestrator gathers this call with the vLLM /update_weights posts —
+        every receiver must join the one broadcast or the trainer hangs.
+        """
+        ack = threading.Event()
+        work_queue.put(("recv_weights", request.step, ack))
+        try:
+            await asyncio.wait_for(asyncio.to_thread(ack.wait), _RESULT_WAIT_SECONDS)
+        except TimeoutError:
+            raise HTTPException(status_code=503, detail="TTT work loop did not answer in time")
+        return {"status": "ok", "base_version": request.step}
 
     @app.post("/update")
     async def update(request: UpdateRequest) -> UpdateResponse:

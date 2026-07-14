@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+from httpx import AsyncClient
+
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.types import Policy, VersionObserver
 from prime_rl.utils.async_utils import safe_cancel
@@ -29,6 +31,7 @@ class WeightWatcher:
         lora_name: str | None,
         ckpt_step: int = 0,
         poll_interval: float = 1.0,
+        ttt_admin: AsyncClient | None = None,
     ) -> None:
         self.config = config
         self.policy = policy
@@ -37,6 +40,9 @@ class WeightWatcher:
         self.lora_name = lora_name
         self.ckpt_step = ckpt_step
         self.poll_interval = poll_interval
+        # A policy-following TTT service joins the same update flow as the vLLM admins
+        # (same-gather: for NCCL all receivers must join the one broadcast collective).
+        self.ttt_admin = ttt_admin
 
         self.last_update_weights_time: float = 0.0
         self.last_wait_for_ckpt_time: float = 0.0
@@ -112,7 +118,9 @@ class WeightWatcher:
 
             get_logger().debug(f"Updating weights to step {next_step}")
             t1 = time.perf_counter()
-            await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
+            await self.inference.update_weights(
+                weights_path, lora_name=self.lora_name, step=next_step, ttt_admin_client=self.ttt_admin
+            )
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
             get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")

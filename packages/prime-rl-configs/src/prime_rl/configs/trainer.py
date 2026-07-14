@@ -497,6 +497,11 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     inference_world_size: int = 1
     """Number of GPUs used for inference."""
 
+    ttt_world_size: int = Field(0, ge=0)
+    """Extra receiver GPUs from a TTT service that joins the broadcast group (its base
+    model follows the policy). 0 = no TTT receivers; auto-wired by ``RLConfig.validate_ttt``
+    for launcher-managed TTT runs."""
+
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
