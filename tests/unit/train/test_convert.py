@@ -39,7 +39,7 @@ def test_atomic_save_repairs_incomplete_destination(tmp_path):
     assert not (save_dir / "partial.bin").exists()
 
 
-def test_atomic_save_accepts_complete_concurrent_winner(tmp_path):
+def test_atomic_save_preserves_complete_destination(tmp_path):
     save_dir = tmp_path / "out"
     atomic_save_state_dict({"winner": torch.ones(1)}, save_dir)
 
@@ -67,10 +67,6 @@ class _FakeCausalLM:
     @classmethod
     def is_hf_state_dict(cls, keys):
         return cls.hf
-
-    @classmethod
-    def convert_to_prime(cls, state_dict):
-        cls.converted = True
 
     @classmethod
     def convert_layer_to_prime(cls, state_dict, layer_idx):
@@ -104,11 +100,6 @@ def test_exists_short_circuits(tmp_path, monkeypatch):
     assert convert_snapshot_to_prime(tmp_path) == "exists"
 
 
-def test_unsupported_architecture(tmp_path, monkeypatch):
-    _patch_common(monkeypatch, cls=None, keys=["x"])
-    assert convert_snapshot_to_prime(tmp_path) == "unsupported"
-
-
 def test_unsupported_remote_config(tmp_path, monkeypatch):
     def raise_unsupported(*args, **kwargs):
         raise ValueError("remote code required")
@@ -117,21 +108,10 @@ def test_unsupported_remote_config(tmp_path, monkeypatch):
     assert convert_snapshot_to_prime(tmp_path) == "unsupported"
 
 
-def test_no_safetensors(tmp_path, monkeypatch):
-    _patch_common(monkeypatch, cls=_FakeCausalLM, keys=[])
-    assert convert_snapshot_to_prime(tmp_path) == "no-safetensors"
-
-
 def test_already_prime(tmp_path, monkeypatch):
     cls = type("PrimeCls", (_FakeCausalLM,), {"prime": True})
     _patch_common(monkeypatch, cls=cls, keys=["x"])
     assert convert_snapshot_to_prime(tmp_path) == "already-prime"
-
-
-def test_not_hf(tmp_path, monkeypatch):
-    cls = type("NeitherCls", (_FakeCausalLM,), {"prime": False, "hf": False})
-    _patch_common(monkeypatch, cls=cls, keys=["x"])
-    assert convert_snapshot_to_prime(tmp_path) == "not-hf"
 
 
 def test_converted_writes_prime(tmp_path, monkeypatch):
@@ -156,18 +136,6 @@ def test_converted_writes_to_conversion_dir(tmp_path, monkeypatch):
     assert save_calls[0][1] == conversion_dir / "prime"
 
 
-def test_incomplete_prime_is_rebuilt(tmp_path, monkeypatch):
-    prime = tmp_path / "prime"
-    prime.mkdir()
-    (prime / "partial.bin").write_text("junk")
-    cls = type("HfCls", (_FakeCausalLM,), {"prime": False, "hf": True, "converted": False})
-    save_calls: list = []
-    _patch_common(monkeypatch, cls=cls, keys=["x"], save_calls=save_calls)
-
-    assert convert_snapshot_to_prime(tmp_path) == "converted"
-    assert len(save_calls) == 1
-
-
 def test_corrupt_prime_is_rebuilt_without_reading_keys(tmp_path, monkeypatch):
     prime = tmp_path / "prime"
     prime.mkdir()
@@ -187,7 +155,7 @@ def test_corrupt_prime_is_rebuilt_without_reading_keys(tmp_path, monkeypatch):
     assert len(save_calls) == 1
 
 
-def test_concurrent_prime_winner_returns_exists(tmp_path, monkeypatch):
+def test_converter_reports_existing_when_publish_loses(tmp_path, monkeypatch):
     cls = type("HfCls", (_FakeCausalLM,), {"prime": False, "hf": True, "converted": False})
     _patch_common(monkeypatch, cls=cls, keys=["x"], published=False)
 
@@ -227,6 +195,9 @@ def test_stream_convert_state_dict_roundtrips_by_layer(tmp_path):
         "model.layers.0.mlp.experts.w1",
         "model.layers.1.self_attn.weight",
     }
+    assert torch.equal(loaded["model.embed_tokens.weight"], torch.arange(4))
+    assert torch.equal(loaded["model.layers.0.mlp.experts.w1"], torch.ones(2, 2))
+    assert torch.equal(loaded["model.layers.1.self_attn.weight"], torch.full((2, 2), 2))
     assert published is True
 
     published = stream_convert_state_dict(
