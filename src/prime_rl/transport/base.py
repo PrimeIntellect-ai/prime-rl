@@ -8,7 +8,7 @@ from prime_rl.utils.logger import get_logger
 
 
 class TrainingBatchSender(ABC):
-    """Base class for sending training examples from orchestrator to trainer."""
+    """Base class for sending training examples from a producer to the trainer."""
 
     def __init__(self, output_dir: Path):
         self.logger = get_logger()
@@ -30,7 +30,7 @@ class TrainingBatchSender(ABC):
 
 
 class TrainingBatchReceiver(ABC):
-    """Base class for receiving training examples from orchestrator."""
+    """Base class for receiving training examples from producers."""
 
     def __init__(self) -> None:
         self.logger = get_logger()

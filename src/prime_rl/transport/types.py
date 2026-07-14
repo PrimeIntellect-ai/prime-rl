@@ -3,7 +3,7 @@ import msgspec
 
 # Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
 # Mirrors verifiers.utils.serve_utils.msgpack_encoder so the same wire
-# shape is used end-to-end from renderer → orchestrator → trainer.
+# shape is used end-to-end from renderer → producer → trainer.
 class EncodedTensor(msgspec.Struct, array_like=True, gc=False):
     dtype: str
     shape: list[int]
@@ -18,12 +18,11 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
     dtype: str
 
 
-# Orchestrator -> Packer
+# Producer -> Packer
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    """A single training example — one branch of a rollout as a flat token sequence.
+    """A single training example represented as a flat token sequence.
 
-    There is no prompt/completion split: an agentic, multi-turn branch interleaves context and
-    model-sampled spans, so ``mask`` marks which tokens are trainable (model-sampled) and
+    There is no prompt/completion split: ``mask`` marks which tokens are trainable and
     ``logprobs`` / ``temperatures`` are aligned per token. All four arrays share the length of
     ``token_ids``."""
 
@@ -37,7 +36,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # Generic multimodal kwargs: flat dict keyed by the kwarg names the
     # model's forward expects (e.g. {"pixel_values": ..., "image_grid_thw":
     # ...} for Qwen3-VL; just {"pixel_values": ...} for Gemma3). The
-    # orchestrator batches per-image renderer items by torch.cat along
+    # producer batches per-image renderer items by torch.cat along
     # dim=0 generically — no model-specific knowledge in prime-rl. The
     # trainer ``**`` -unpacks this into the model forward, so any VLM
     # whose HF processor / forward agree on kwarg names works without
@@ -50,7 +49,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     mm_token_type_ids: list[int] | None = None
 
     # Per-token component weight streams (full prompt+completion length),
-    # stamped by the orchestrator from the env's algorithm. The training loss
+    # stamped by the producer from the configured algorithm. The training loss
     # is a sum of three components, each normalized by its own global token
     # count: rl (importance-weighted PG + KL), ce (masked NLL), and ref_kl
     # (reverse KL to a reference model as the PG signal). A weight scales that
@@ -63,7 +62,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     ref_kl_weights: list[float] | None = None
 
     # Per-token advantages (full prompt+completion length), the fourth stream:
-    # the orchestrator broadcasts the rollout's scalar over the completion for
+    # the producer broadcasts a rollout's scalar over its completion for
     # scalar algorithms. ``None`` means no rl credit assigned — legal only for
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: list[float] | None = None

@@ -916,9 +916,9 @@ async def run_orchestrator(config: OrchestratorConfig) -> None:
     on exit (success or crash); keeps that out of the class.
     """
     if config.is_static_sft:
-        from prime_rl.orchestrator.static_sft import StaticSFTOrchestrator
+        from prime_rl.orchestrator.static_sft import DatasetBatchProducer
 
-        await StaticSFTOrchestrator(config).start()
+        await DatasetBatchProducer(config).start()
         return
     await Orchestrator(config).start()
 

@@ -1,4 +1,4 @@
-"""Dataset-backed SFT producer for the ``rl`` trainer path."""
+"""Dataset-backed ``TrainingBatch`` producer for the ``rl`` trainer path."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from renderers.base import Renderer, build_training_sample, create_renderer
 
 from prime_rl.configs.algorithm import DatasetSourceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.algo.sft import SFTAlgorithm
+from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.ckpt import CheckpointManager, setup_ckpt_manager
 from prime_rl.orchestrator.trajectories import _encode_mm_kwargs
 from prime_rl.orchestrator.types import Progress
@@ -69,8 +69,8 @@ def _resolve_tools(example: dict) -> list[dict]:
     ]
 
 
-class StaticSFTSource:
-    """Loads, renders, and batches a static SFT dataset on the orchestrator."""
+class DatasetSampleSource:
+    """Loads and renders a static SFT dataset as training samples."""
 
     def __init__(
         self,
@@ -157,7 +157,7 @@ class StaticSFTSource:
             mm_kwargs=mm_kwargs,
             mm_token_type_ids=mm_token_type_ids,
         )
-        SFTAlgorithm.route_sample(sample)
+        stamp_loss_routing(sample, "ce")
         return sample
 
     def _build_batch(self, batch_size: int | None, token_batch_size: int | None) -> tuple[list[TrainingSample], int]:
@@ -169,11 +169,7 @@ class StaticSFTSource:
         while (len(samples) < batch_size) if batch_size is not None else (tokens < cast(int, token_batch_size)):
             example = self._next_example()
             attempts += 1
-            try:
-                sample = self._render(example)
-            except Exception as exc:
-                get_logger().warning(f"Skipping static SFT row: {exc}")
-                sample = None
+            sample = self._render(example)
             if sample is None:
                 consecutive_failures += 1
                 if consecutive_failures >= len(self.dataset):
@@ -190,8 +186,8 @@ class StaticSFTSource:
         return await asyncio.to_thread(self._build_batch, batch_size, token_batch_size)
 
 
-class StaticSFTOrchestrator:
-    """Produces dataset batches and waits for each trainer update to finish."""
+class DatasetBatchProducer:
+    """Produces dataset-backed training batches for the trainer."""
 
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
@@ -204,7 +200,7 @@ class StaticSFTOrchestrator:
         self.monitor: Monitor | None = None
         self.heart = Heartbeat(config.heartbeat.url) if config.heartbeat is not None else None
 
-    async def setup(self) -> StaticSFTSource:
+    async def setup(self) -> DatasetSampleSource:
         config = self.config
         config_dir = config.output_dir / "control"
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -228,7 +224,7 @@ class StaticSFTOrchestrator:
 
         tokenizer = setup_tokenizer(config.tokenizer)
         renderer = create_renderer(tokenizer, config.renderer)
-        source = StaticSFTSource(
+        source = DatasetSampleSource(
             self.dataset_config,
             renderer=renderer,
             tokenizer=tokenizer,

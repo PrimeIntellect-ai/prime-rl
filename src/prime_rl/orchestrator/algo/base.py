@@ -50,7 +50,6 @@ if TYPE_CHECKING:
     from renderers import RendererConfig
 
     from prime_rl.orchestrator.types import Rollout
-    from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
 
 
@@ -148,11 +147,6 @@ class Algorithm:
         """Group phase, the finalized cohort, before filtering: write
         group-relative credit."""
 
-    @classmethod
-    def route_sample(cls, sample: TrainingSample) -> None:
-        """Route one already-built sample through this algorithm's loss."""
-        stamp_loss_routing(sample, cls.action_loss_type)
-
     async def finalize_rollout(self, rollout: Rollout) -> None:
         """Arrival phase (non-virtual): rollout-local scoring as each rollout is
         tokenized."""
@@ -167,4 +161,4 @@ class Algorithm:
         for rollout in rollouts:
             stamp_advantages(rollout)
             for sample in rollout.samples:
-                self.route_sample(sample)
+                stamp_loss_routing(sample, self.action_loss_type)

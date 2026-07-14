@@ -234,6 +234,11 @@ class RLConfig(BaseConfig):
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
 
+    @property
+    def needs_batch_producer(self) -> bool:
+        """Whether the trainer needs an external producer of training batches."""
+        return self.trainer.data.fake is None
+
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
     @model_validator(mode="after")
@@ -276,11 +281,18 @@ class RLConfig(BaseConfig):
                     "Cannot configure inference with num_infer_nodes = 0. "
                     "Either set num_infer_nodes > 0 or remove the inference config."
                 )
-            if num_infer_nodes == 0 and not self.trainer.data.fake and not self.bench:
+            if (
+                num_infer_nodes == 0
+                and self.needs_batch_producer
+                and self.orchestrator.needs_inference
+                and not self.bench
+            ):
                 raise ValueError(
-                    "Must use fake data (trainer.data.fake or bench = true) when num_infer_nodes = 0, "
-                    "since no orchestrator or inference server will be running."
+                    "Must use fake data, dataset-backed SFT, or bench = true when num_infer_nodes = 0, "
+                    "since rollout-producing orchestrators require inference."
                 )
+            if num_infer_nodes == 0 and self.needs_batch_producer and self.deployment.orchestrator_on_inference:
+                raise ValueError("orchestrator_on_inference requires at least one inference node")
         return self
 
     @model_validator(mode="after")

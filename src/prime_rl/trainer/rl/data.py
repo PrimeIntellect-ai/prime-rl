@@ -173,7 +173,7 @@ class FakeDataLoader:
 
 
 class DataLoader:
-    """Loads serialized data from a data path written by the orchestrator."""
+    """Loads serialized training batches written by an external producer."""
 
     def __init__(
         self,
@@ -225,7 +225,7 @@ class DataLoader:
         mm_kwargs: dict[str, Tensor] | None = None
         if micro_batch.mm_kwargs:
             # Each value is an EncodedTensor (dtype, shape, raw bytes).
-            # No batch dim — the orchestrator concatenates per-image along
+            # No batch dim — the producer concatenates per-image along
             # dim=0 generically, matching what each HF VLM's forward expects.
             mm_kwargs = {
                 key: torch.frombuffer(bytearray(payload.data), dtype=_torch_dtype(payload.dtype)).reshape(payload.shape)
