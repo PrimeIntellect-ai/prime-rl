@@ -148,6 +148,9 @@ class LagunaConfig(PretrainedConfig):
         for params in nested.values():
             params.setdefault("rope_type", "default")
 
+        # vLLM ignores this override and derives YaRN scaling from factor; match it for rollout/trainer parity.
+        nested["full_attention"].pop("attention_factor", None)
+
         self.rope_parameters = nested
         self.partial_rotary_factor = None
 

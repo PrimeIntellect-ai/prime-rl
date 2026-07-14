@@ -16,7 +16,8 @@ rollouts_per_example = 4
 max_completion_tokens = 4096
 
 [[orchestrator.train.env]]
-id = "general-agent-solver-rlm"
+taskset = { id = "general-agent-v1", task = { tools = { colocated = true } } }
+harness = { id = "null", runtime = { type = "modal" } }
 
 [trainer]
 

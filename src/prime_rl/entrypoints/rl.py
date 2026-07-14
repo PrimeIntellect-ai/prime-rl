@@ -16,7 +16,7 @@ from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.inference import vllm_overrides_fragment
-from prime_rl.utils.config import cli
+from prime_rl.utils.config import cli, to_toml_dict
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -56,9 +56,8 @@ def get_physical_gpu_ids() -> list[int]:
 def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    config_dict = config.model_dump(exclude=exclude, exclude_none=True, mode="json")
     with open(output_dir / RL_TOML, "wb") as f:
-        tomli_w.dump(config_dict, f)
+        tomli_w.dump(to_toml_dict(config, exclude=exclude), f)
 
 
 def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
@@ -66,16 +65,16 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with open(output_dir / TRAINER_TOML, "wb") as f:
-        tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
+        tomli_w.dump(to_toml_dict(config.trainer), f)
 
     with open(output_dir / ORCHESTRATOR_TOML, "wb") as f:
-        tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
+        tomli_w.dump(to_toml_dict(config.orchestrator), f)
 
     if config.inference is not None:
         # Exclude launcher-only fields that are not needed by the vLLM server
         exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
         with open(output_dir / INFERENCE_TOML, "wb") as f:
-            tomli_w.dump(config.inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"), f)
+            tomli_w.dump(to_toml_dict(config.inference, exclude=exclude_inference), f)
 
 
 def rl_local(config: RLConfig):
