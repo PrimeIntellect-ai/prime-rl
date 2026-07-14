@@ -5,7 +5,7 @@ seq_len = 2048
 
 [slurm]
 job_name = "nemotron-4node"
-pre_run_command = "uv sync --all-extras --group mamba-ssm"
+pre_run_command = "uv sync --all-extras --all-packages --group mamba-ssm"
 
 [deployment]
 type = "multi_node"
