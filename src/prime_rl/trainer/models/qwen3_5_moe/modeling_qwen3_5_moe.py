@@ -497,13 +497,6 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
     ) -> torch.Tensor:
-        if query_states.shape[0] != 1:
-            # Varlen flash attention consumes a single packed row; extra batch rows
-            # would be silently dropped by the [0] indexing below.
-            raise ValueError(
-                f"Qwen3.5 varlen flash attention requires batch size 1, got {query_states.shape[0]}. "
-                "Use packed sequences (micro_batch_size=1) with flash attention."
-            )
         return self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
 
     def attn_projections(
