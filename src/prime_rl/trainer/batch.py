@@ -116,7 +116,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         if has_rl_members:
             raise ValueError(
                 f"sample from env '{training_example.env_name}' has rl member tokens but no advantages — "
-                "the producer must stamp the advantage stream"
+                "the producer must stamp the advantage stream (the orchestrator broadcasts the rollout scalar)"
             )
         advantages = [0.0] * len(input_ids)
     # Component weight streams: keep absent streams None (rl weight 1.0 on the
@@ -134,7 +134,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     temperatures = training_example.temperatures
 
     # Ref logprobs already cover the full sequence (prompt + completion),
-    # computed via prefill in the producer when the algorithm scores against a reference
+    # computed via prefill in the orchestrator when the algorithm scores against a reference
     ref_logprobs = training_example.ref_logprobs
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None

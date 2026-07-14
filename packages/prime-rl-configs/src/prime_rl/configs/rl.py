@@ -156,7 +156,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     """Training nodes."""
 
     num_infer_nodes: int | None = Field(None, ge=0)
-    """Inference nodes per replica. If unset, inferred from ``inference.deployment``. Set to 0 for fake data or dataset-backed SFT; the latter runs its producer on a trainer node."""
+    """Inference nodes per replica. If unset, inferred from ``inference.deployment``. Set to 0 when inference is not needed; dataset-backed SFT runs the orchestrator on a trainer node."""
 
     num_infer_replicas: int = Field(1, ge=1)
     """Independent inference replicas. Total inference nodes = ``num_infer_nodes * num_infer_replicas``."""
@@ -235,8 +235,8 @@ class RLConfig(BaseConfig):
     """Only validate and dump resolved configs, then exit early."""
 
     @property
-    def needs_batch_producer(self) -> bool:
-        """Whether the trainer needs an external producer of training batches."""
+    def needs_orchestrator(self) -> bool:
+        """Whether the orchestrator process should run."""
         return self.trainer.data.fake is None
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
@@ -289,7 +289,7 @@ class RLConfig(BaseConfig):
                 )
             if (
                 num_infer_nodes == 0
-                and self.needs_batch_producer
+                and self.needs_orchestrator
                 and self.orchestrator.needs_inference
                 and not self.bench
             ):
@@ -297,7 +297,7 @@ class RLConfig(BaseConfig):
                     "Must use fake data, dataset-backed SFT, or bench = true when num_infer_nodes = 0, "
                     "since rollout-producing orchestrators require inference."
                 )
-            if num_infer_nodes == 0 and self.needs_batch_producer and self.deployment.orchestrator_on_inference:
+            if num_infer_nodes == 0 and self.needs_orchestrator and self.deployment.orchestrator_on_inference:
                 raise ValueError("orchestrator_on_inference requires at least one inference node")
         return self
 

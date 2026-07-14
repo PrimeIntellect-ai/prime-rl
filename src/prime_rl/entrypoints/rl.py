@@ -433,7 +433,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
-            launch_orchestrator=config.needs_batch_producer,
+            launch_orchestrator=config.needs_orchestrator,
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
         )
     else:
@@ -458,7 +458,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
-            launch_orchestrator=config.needs_batch_producer,
+            launch_orchestrator=config.needs_orchestrator,
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             trainer_env_vars=trainer_env_vars,
             orchestrator_env_vars=orchestrator_env_vars,
@@ -505,7 +505,7 @@ def rl_slurm(config: RLConfig):
         log_message = format_log_message(
             log_dir=log_dir,
             trainer=True,
-            orchestrator=config.needs_batch_producer,
+            orchestrator=config.needs_orchestrator,
             inference=has_infer,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
