@@ -347,6 +347,14 @@ class RLConfig(BaseConfig):
                 self.weight_broadcast = SharedWeightBroadcastConfig(type="filesystem")
             else:
                 self.weight_broadcast = SharedWeightBroadcastConfig()
+        if self.weight_broadcast.type == "nccl" and self.trainer.model.lora is not None:
+            # LoRA adapters are transferred via the filesystem (loaded from disk by the inference
+            # servers); NCCL broadcast only writes a STABLE marker, so LoRA over NCCL cannot transfer
+            # an adapter and would hang/fail on the startup weight sync.
+            raise ValueError(
+                "LoRA training is not yet supported with NCCL weight broadcast. "
+                "Set weight_broadcast.type = 'filesystem'."
+            )
         if self.weight_broadcast.type == "nccl":
             inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
             self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(

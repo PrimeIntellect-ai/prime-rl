@@ -1,7 +1,10 @@
 """TrainSource: weighted round-robin across train envs, infinite pull.
 
 Weights are each env's configured ``ratio`` (default 1, i.e. equal weight
-per env). ``next_example`` reshuffles on cursor exhaustion."""
+per env). A finite env serves a shuffled task-index table, reshuffled on
+cursor exhaustion; an infinite env (``num_tasks is None``) streams a
+monotonic ``task_idx`` — the server generates tasks on demand, so every
+pull is a fresh task and there are no epochs to shuffle."""
 
 from __future__ import annotations
 
@@ -22,17 +25,22 @@ class TrainSource:
         if not self.envs:
             raise ValueError("TrainSource needs at least one train env")
 
-        self.examples: dict[str, list[dict]] = {}
+        # A finite env's shuffled index table; ``None`` for an infinite env,
+        # whose cursor alone is the (monotonic) task_idx stream.
+        self.examples: dict[str, list[dict] | None] = {}
         self.cursors: dict[str, int] = {}
         # Group-scoring envs reserve ``group_size`` permits up front;
         # per-rollout envs need 1
         self.env_costs: dict[str, int] = {}
         for env in self.envs:
             # The orchestrator never loads the env: sample over the task-index
-            # range the server reported via info() (num_tasks).
-            rows: list[dict] = [{"task_idx": i, "env_name": env.name} for i in range(env.num_tasks)]
-            self.rng.shuffle(rows)
-            self.examples[env.name] = rows
+            # range the server reported via info() (num_tasks; None = infinite).
+            if env.num_tasks is None:
+                self.examples[env.name] = None
+            else:
+                rows: list[dict] = [{"task_idx": i, "env_name": env.name} for i in range(env.num_tasks)]
+                self.rng.shuffle(rows)
+                self.examples[env.name] = rows
             self.cursors[env.name] = 0
             self.env_costs[env.name] = env.config.group_size if env.requires_group_scoring else 1
 
@@ -45,6 +53,9 @@ class TrainSource:
             return None
         rows = self.examples[env_name]
         cursor = self.cursors[env_name]
+        if rows is None:  # infinite env: the cursor is the task_idx
+            self.cursors[env_name] = cursor + 1
+            return {"task_idx": cursor, "env_name": env_name}
         if cursor >= len(rows):
             self.rng.shuffle(rows)
             cursor = 0
