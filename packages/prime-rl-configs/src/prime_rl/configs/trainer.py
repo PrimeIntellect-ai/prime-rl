@@ -117,8 +117,8 @@ class DebugModelConfig(BaseConfig):
 
 
 class ModelConfig(BaseModelConfig):
-    primerl_conversion_dir: Path | None = None
-    """Override the location for the converted weights in Prime-RL format. Defaults to the model snapshot directory."""
+    conversion_dir: Path | None = None
+    """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
     seq_len: int = 2048
     """Sequence length the model is trained on."""

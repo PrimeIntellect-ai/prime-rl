@@ -835,7 +835,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     # Only master loads the full state dict when conversion is actually needed.
     if isinstance(model, PreTrainedModelPrimeRL):
         source_path = snapshot_path
-        convert_dir = config.primerl_conversion_dir or source_path
+        convert_dir = config.conversion_dir or source_path
         snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
         model_keys = dict.fromkeys(model.state_dict().keys())
 
