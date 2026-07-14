@@ -7,6 +7,7 @@ from prime_rl.trainer.weights import (
     atomic_save_state_dict,
     is_state_dict_complete,
     load_state_dict,
+    load_state_dict_keys,
     stream_convert_state_dict,
 )
 
@@ -162,6 +163,25 @@ def test_incomplete_prime_is_rebuilt(tmp_path, monkeypatch):
     cls = type("HfCls", (_FakeCausalLM,), {"prime": False, "hf": True, "converted": False})
     save_calls: list = []
     _patch_common(monkeypatch, cls=cls, keys=["x"], save_calls=save_calls)
+
+    assert convert_snapshot_to_prime(tmp_path) == "converted"
+    assert len(save_calls) == 1
+
+
+def test_corrupt_prime_is_rebuilt_without_reading_keys(tmp_path, monkeypatch):
+    prime = tmp_path / "prime"
+    prime.mkdir()
+    (prime / "model.safetensors").write_bytes(b"corrupt")
+    cls = type("HfCls", (_FakeCausalLM,), {"prime": False, "hf": True, "converted": False})
+    save_calls: list = []
+    _patch_common(monkeypatch, cls=cls, keys=["x"], save_calls=save_calls)
+
+    def load_keys(path):
+        if path == prime:
+            return load_state_dict_keys(path)
+        return ["x"]
+
+    monkeypatch.setattr("prime_rl.trainer.weights.load_state_dict_keys", load_keys)
 
     assert convert_snapshot_to_prime(tmp_path) == "converted"
     assert len(save_calls) == 1

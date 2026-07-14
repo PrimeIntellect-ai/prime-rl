@@ -58,10 +58,11 @@ def convert_snapshot_to_prime(
         return "unsupported"
 
     if prime.exists():
-        prime_keys = dict.fromkeys(load_state_dict_keys(prime))
-        if is_state_dict_complete(prime) and model_cls.is_prime_state_dict(prime_keys):
-            logger.info(f"complete prime/ already present at {prime}, nothing to do")
-            return "exists"
+        if is_state_dict_complete(prime):
+            prime_keys = dict.fromkeys(load_state_dict_keys(prime))
+            if model_cls.is_prime_state_dict(prime_keys):
+                logger.info(f"complete prime/ already present at {prime}, nothing to do")
+                return "exists"
         logger.warning(f"existing prime/ at {prime} is incomplete or invalid; rebuilding it")
 
     keys = dict.fromkeys(load_state_dict_keys(snapshot))
