@@ -148,6 +148,9 @@ class LagunaConfig(PretrainedConfig):
         for params in nested.values():
             params.setdefault("rope_type", "default")
 
+        # Laguna full-attention layers use YaRN's factor-derived attention scaling.
+        nested["full_attention"].pop("attention_factor", None)
+
         self.rope_parameters = nested
         self.partial_rotary_factor = None
 
