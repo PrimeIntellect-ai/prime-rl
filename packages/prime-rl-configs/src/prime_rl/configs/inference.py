@@ -441,7 +441,10 @@ class InferenceConfig(BaseConfig):
         if self.quantization != "mxfp8":
             return self
 
-        import torch
+        try:
+            import torch
+        except ModuleNotFoundError as exc:
+            raise ValueError("inference.quantization='mxfp8' requires torch to validate SM100 support.") from exc
 
         if torch.cuda.is_available():
             capability = torch.cuda.get_device_capability()
