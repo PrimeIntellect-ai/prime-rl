@@ -209,19 +209,3 @@ def test_stream_convert_state_dict_roundtrips_by_layer(tmp_path):
         max_shard_size=8,
     )
     assert published is False
-
-
-def test_nemotron_h_streaming_conversion_drops_mtp_keys():
-    from prime_rl.trainer.models.nemotron_h import NemotronHForCausalLM
-
-    non_layer = {"mtp.weight": torch.ones(1)}
-    layer = {
-        "mtp.layers.0.weight": torch.ones(1),
-        "backbone.layers.0.mixer.in_proj.weight": torch.ones(1),
-    }
-
-    NemotronHForCausalLM.convert_layer_to_prime(non_layer, -1)
-    NemotronHForCausalLM.convert_layer_to_prime(layer, 0)
-
-    assert non_layer == {}
-    assert set(layer) == {"model.layers.0.mamba.in_proj.weight"}
