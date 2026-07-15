@@ -21,7 +21,7 @@ write_state() {
 
 pod_ssh() {
   env -u PRIME_API_KEY -u PRIME_TEAM_ID "$prime" pods status "$pod_id" --plain 2>/dev/null \
-    | sed -n 's/^SSH[[:space:]]*//p' | xargs
+    | sed -n 's/^[[:space:]]*SSH[[:space:]]*//p' | xargs
 }
 
 terminate_pod() {
@@ -38,7 +38,7 @@ preserve_artifacts() {
   ssh_cmd="ssh -i $key -p $port -o StrictHostKeyChecking=no"
   repo=/home/ubuntu/prime-rl
   mkdir -p "$artifact_root"
-  for arm in fullanswer answerplan; do
+  for arm in fullanswer answerplan gepaplan; do
     output="outputs-genagent-opsd-1lp-d64-${arm}-band000060-k8-tp4-pod-r40-smoke2-20260715"
     mkdir -p "$artifact_root/$arm"
     rsync -az --partial -e "$ssh_cmd" \
@@ -54,12 +54,18 @@ preserve_artifacts() {
 
 submit_full_runs() {
   local output job_ids
+  rsync -az packages/prime-rl-configs/src/prime_rl/configs/algorithm.py \
+    ar:prime-rl/packages/prime-rl-configs/src/prime_rl/configs/algorithm.py
+  rsync -az src/prime_rl/orchestrator/algo/opsd.py \
+    ar:prime-rl/src/prime_rl/orchestrator/algo/opsd.py
+  rsync -az configs/opd-gap/ ar:prime-rl/configs/opd-gap/
   output=$(ssh ar 'set -e; cd ~/prime-rl; \
     .venv/bin/rl @ configs/opd-gap/genagent-band000060-qwen35-opsd-fullanswer-ar-r40-full100.toml; \
-    .venv/bin/rl @ configs/opd-gap/genagent-band000060-qwen35-opsd-answerplan-ar-r40-full100.toml')
+    .venv/bin/rl @ configs/opd-gap/genagent-band000060-qwen35-opsd-answerplan-ar-r40-full100.toml; \
+    .venv/bin/rl @ configs/opd-gap/genagent-band000060-qwen35-opsd-gepaplan-ar-r40-full100.toml')
   printf '%s\n' "$output" >"$artifact_root/full-submit.log"
   job_ids=$(sed -n 's/.*Submitted batch job \([0-9][0-9]*\).*/\1/p' <<<"$output")
-  [[ $(wc -w <<<"$job_ids") -eq 2 ]]
+  [[ $(wc -w <<<"$job_ids") -eq 3 ]]
   for job_id in $job_ids; do
     ssh ar "scontrol update JobId=$job_id Nice=10000"
   done
@@ -92,7 +98,29 @@ if [[ "$phase" == "complete" ]]; then
       test -s "/home/ubuntu/opd-gap-r40-${arm}-audit-step${step}.json"
     done
   done
-  write_state promoting "both smoke audits passed; submitting matched full runs"
+  write_state gepaplan_smoke "base hint audits passed; running selected GEPA candidate"
+  systemd-run --user --unit=opd-gap-r40-gepa-controller --property=Restart=no \
+    /usr/bin/bash /home/ubuntu/prime-rl/scripts/opd_gap_r40_gepa_controller.sh
+  while systemctl --user is-active --quiet opd-gap-r40-gepa-controller.service; do
+    now=$(date +%s)
+    if (( now - started > max_seconds )); then
+      write_state failed "GEPA controller exceeded pod hard ceiling"
+      systemctl --user stop opd-gap-r40-gepa-controller.service || true
+      preserve_artifacts
+      terminate_pod
+      exit 1
+    fi
+    gepa_phase=$(jq -r '.phase // "unknown"' /home/ubuntu/opd-gap-r40-gepa-controller-state.json 2>/dev/null || printf starting)
+    write_state gepaplan_smoke "GEPA controller phase: $gepa_phase"
+    sleep 60
+  done
+  gepa_phase=$(jq -r '.phase // "unknown"' /home/ubuntu/opd-gap-r40-gepa-controller-state.json 2>/dev/null || printf unknown)
+  preserve_artifacts
+  [[ "$gepa_phase" == "complete" ]]
+  for step in 0 1; do
+    test -s "/home/ubuntu/opd-gap-r40-gepaplan-audit-step${step}.json"
+  done
+  write_state promoting "three smoke audits passed; submitting matched full runs"
   submit_full_runs
   terminate_pod
   write_state complete "artifacts preserved, full runs submitted, pod terminated"
