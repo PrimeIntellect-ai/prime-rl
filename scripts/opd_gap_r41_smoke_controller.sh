@@ -98,6 +98,8 @@ for path in packages/prime-rl-configs src/prime_rl deps configs/opd-gap; do
   rsync -az --exclude .git --exclude .venv --exclude __pycache__ --exclude .pytest_cache \
     -e "$ssh_cmd" "$source_repo/$path/" "$remote:$repo/$path/"
 done
+ssh "${ssh_args[@]}" "$remote" \
+  "sed -i 's/^fallback-version = .*/fallback-version = \"$renderers_version\"/' '$repo/deps/renderers/pyproject.toml' && sed -i 's/^fallback-version = .*/fallback-version = \"$verifiers_version\"/' '$repo/deps/verifiers/pyproject.toml' && grep -qx 'fallback-version = \"$renderers_version\"' '$repo/deps/renderers/pyproject.toml' && grep -qx 'fallback-version = \"$verifiers_version\"' '$repo/deps/verifiers/pyproject.toml'"
 rsync -az -e "$ssh_cmd" \
   "$source_repo/pyproject.toml" "$source_repo/uv.lock" \
   "$source_repo/scripts/opd_gap_audit_diag_topk.py" \
@@ -119,8 +121,7 @@ ssh "${ssh_args[@]}" "$remote" \
   "sudo mkdir -p '$remote_home/.config/uv' '$remote_home/.local/bin' && sudo chown -R \$(id -u):\$(id -g) '$remote_home/.config' '$remote_home/.local'"
 ssh "${ssh_args[@]}" "$remote" \
   "test -x '$uv' || curl -LsSf https://astral.sh/uv/install.sh | XDG_CONFIG_HOME=/tmp/uv-config UV_NO_MODIFY_PATH=1 sh"
-ssh "${ssh_args[@]}" "$remote" \
-  "cd '$repo' && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RENDERERS='$renderers_version' SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VERIFIERS='$verifiers_version' '$uv' sync --frozen --all-extras"
+ssh "${ssh_args[@]}" "$remote" "cd '$repo' && '$uv' sync --frozen --all-extras"
 ssh "${ssh_args[@]}" "$remote" \
   "cd '$repo' && '$uv' run --no-sync python -c 'import torch, verifiers; assert torch.cuda.device_count() == 8; print(torch.cuda.device_count())'"
 
