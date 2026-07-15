@@ -7,12 +7,13 @@ import torch
 import prime_rl.trainer.multi_ckpt as multi_ckpt
 from prime_rl.orchestrator.utils import get_weight_dir
 from prime_rl.trainer.runs import Progress
+from prime_rl.utils.pathing import get_all_ckpt_steps
 
 
 class FakeCheckpointManager:
     def __init__(self, output_dir: Path, _config) -> None:
         self.ckpt_dir = output_dir / "checkpoints"
-        self.ckpt_steps: list[int] = []
+        self.ckpt_steps = get_all_ckpt_steps(self.ckpt_dir)
 
     def get_ckpt_path(self, step: int) -> Path:
         return self.ckpt_dir / f"step_{step}" / "trainer"
@@ -81,6 +82,19 @@ def test_multi_checkpoint_skips_stable_marker_when_broadcast_weights_are_missing
         get_weight_dir(run_dir, 1)
 
 
+def test_multi_checkpoint_ignores_a_stable_checkpoint_without_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "run"
+    incomplete_step_dir = run_dir / "checkpoints" / "step_1"
+    incomplete_step_dir.mkdir(parents=True)
+    (incomplete_step_dir / "STABLE").touch()
+
+    checkpoint_manager, _ = make_checkpoint_manager(tmp_path, monkeypatch)
+
+    assert checkpoint_manager.managers[0].ckpt_steps == []
+
+
 def test_multi_checkpoint_marks_stable_after_copying_broadcast_weights(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -99,3 +113,70 @@ def test_multi_checkpoint_marks_stable_after_copying_broadcast_weights(
     assert (step_dir / "weight" / "model.safetensors").read_bytes() == b"weights"
     assert checkpoint_manager.managers[0].ckpt_steps == [1]
     assert get_weight_dir(run_dir, 1) == step_dir / "weight"
+
+
+def test_multi_checkpoint_skips_an_unstable_broadcast_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = tmp_path / "run"
+    broadcast_dir = run_dir / "broadcasts" / "step_1"
+    broadcast_dir.mkdir(parents=True)
+    (broadcast_dir / "model.safetensors").write_bytes(b"partial weights")
+    checkpoint_manager, run_dir = make_checkpoint_manager(tmp_path, monkeypatch)
+    optimizer = SimpleNamespace(optimizers=[None])
+    scheduler = SimpleNamespace(schedulers=[None])
+
+    checkpoint_manager.save(optimizer, scheduler)
+
+    step_dir = run_dir / "checkpoints" / "step_1"
+    assert (step_dir / "trainer" / "rank_0.pt").exists()
+    assert not (step_dir / "STABLE").exists()
+    assert not (step_dir / "weight").exists()
+    assert checkpoint_manager.managers[0].ckpt_steps == []
+
+
+def test_multi_checkpoint_does_not_publish_when_another_rank_state_save_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "run"
+    broadcast_dir = run_dir / "broadcasts" / "step_1"
+    broadcast_dir.mkdir(parents=True)
+    (broadcast_dir / "model.safetensors").write_bytes(b"weights")
+    (broadcast_dir / "STABLE").touch()
+    checkpoint_manager, run_dir = make_checkpoint_manager(tmp_path, monkeypatch)
+
+    def report_failed_rank(status: torch.Tensor, *_args, **_kwargs) -> None:
+        status.zero_()
+
+    monkeypatch.setattr(multi_ckpt.dist, "all_reduce", report_failed_rank)
+
+    optimizer = SimpleNamespace(optimizers=[None])
+    scheduler = SimpleNamespace(schedulers=[None])
+    checkpoint_manager.save(optimizer, scheduler)
+
+    step_dir = run_dir / "checkpoints" / "step_1"
+    assert not (step_dir / "STABLE").exists()
+    assert not (step_dir / "weight").exists()
+    assert checkpoint_manager.managers[0].ckpt_steps == []
+
+
+def test_multi_checkpoint_retries_an_incomplete_weight_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "run"
+    incomplete_weight_dir = run_dir / "checkpoints" / "step_1" / "weight"
+    incomplete_weight_dir.mkdir(parents=True)
+    (incomplete_weight_dir / "stale.safetensors").write_bytes(b"stale")
+    broadcast_dir = run_dir / "broadcasts" / "step_1"
+    broadcast_dir.mkdir(parents=True)
+    (broadcast_dir / "model.safetensors").write_bytes(b"weights")
+    (broadcast_dir / "STABLE").touch()
+
+    checkpoint_manager, run_dir = make_checkpoint_manager(tmp_path, monkeypatch)
+    optimizer = SimpleNamespace(optimizers=[None])
+    scheduler = SimpleNamespace(schedulers=[None])
+    checkpoint_manager.save(optimizer, scheduler)
+
+    step_dir = run_dir / "checkpoints" / "step_1"
+    assert (step_dir / "STABLE").exists()
+    assert (step_dir / "weight" / "model.safetensors").read_bytes() == b"weights"
+    assert not (step_dir / "weight" / "stale.safetensors").exists()
+    assert checkpoint_manager.managers[0].ckpt_steps == [1]

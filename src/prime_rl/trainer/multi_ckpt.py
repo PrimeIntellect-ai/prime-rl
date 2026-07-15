@@ -4,6 +4,7 @@ MultiCheckpointManager owns per-run CheckpointManagers and AppStates,
 each saving to its own run directory.
 """
 
+import bisect
 import shutil
 from dataclasses import asdict
 from pathlib import Path
@@ -97,6 +98,14 @@ class MultiCheckpointManager:
         )
         run_dir = self.multi_run_manager.get_run_dir(idx)
         manager = CheckpointManager(run_dir, config)
+        # A failed save can leave an unpublished step, and older versions could
+        # publish STABLE without its matching weight snapshot. Only resumable
+        # checkpoints may suppress retries or participate in retention.
+        manager.ckpt_steps = [
+            step
+            for step in get_stable_ckpt_steps(manager.ckpt_dir)
+            if (manager.get_ckpt_path(step).parent / "weight").exists()
+        ]
         self.managers[idx] = manager
         return manager
 
@@ -109,6 +118,12 @@ class MultiCheckpointManager:
             return False
         # Check if already saved this step
         return step not in self.managers[idx].ckpt_steps
+
+    def _all_ranks_succeeded(self, local_success: bool) -> bool:
+        """Return whether every trainer rank completed the current checkpoint phase."""
+        success = self.multi_run_manager.lora_num_tokens.new_tensor([int(local_success)], dtype=torch.int32)
+        dist.all_reduce(success, op=dist.ReduceOp.MIN)
+        return bool(success.item())
 
     def save(
         self,
@@ -124,7 +139,9 @@ class MultiCheckpointManager:
 
             manager = self.managers[idx]
 
-            # We have a very wide try-except because we dont want to crash the trainer over one run having issues
+            # Every rank must reach the phase reductions, including after a local
+            # write failure, so one failed rank cannot leave the others blocked.
+            saved_state = True
             try:
                 model_state_dict = {
                     k: v.data.detach().clone() for k, v in self.multi_run_manager.get_named_parameters_for_run(idx)
@@ -141,38 +158,48 @@ class MultiCheckpointManager:
                     f"Saving checkpoint for run {idx} at step {step} to {ckpt_path / f'rank_{self.world.rank}.pt'}"
                 )
                 torch.save(run_state.state_dict(), ckpt_path / f"rank_{self.world.rank}.pt")
-
-                # Copy broadcast weights so a stable checkpoint can restore the matching policy.
-                copied_weights = True
-                if self.world.is_master:
-                    run_dir = self.multi_run_manager.get_run_dir(idx)
-                    broadcast_src = run_dir / "broadcasts" / f"step_{step}"
-                    weight_dst = run_dir / "checkpoints" / f"step_{step}" / "weight"
-                    try:
-                        shutil.copytree(broadcast_src, weight_dst)
-                    except (OSError, shutil.Error) as exc:
-                        copied_weights = False
-                        self.logger.error(
-                            f"Failed to copy broadcast weights for run {idx} at step {step} from {broadcast_src}: {exc}"
-                        )
-
-                # The stable marker and ckpt_steps must agree on every rank. Use the
-                # existing multi-run tensor device so this works with NCCL and Gloo.
-                copy_status = self.multi_run_manager.lora_num_tokens.new_tensor(
-                    [int(copied_weights)], dtype=torch.int32
-                )
-                dist.all_reduce(copy_status, op=dist.ReduceOp.MIN)
-                if copy_status.item():
-                    manager.mark_stable(step)
-                    manager.ckpt_steps.append(step)
-                elif self.world.is_master:
-                    self.logger.warning(
-                        f"Checkpoint for run {idx} at step {step} remains incomplete because its policy weights were not copied"
-                    )
             except FileNotFoundError:
+                saved_state = False
                 self.logger.warning(f"Run {idx} deleted during checkpoint, skipping")
             except Exception as e:
+                saved_state = False
                 self.logger.error(f"Error checkpointing run {idx}: {e}")
+
+            all_states_saved = self._all_ranks_succeeded(saved_state)
+
+            copied_weights = all_states_saved
+            if all_states_saved and self.world.is_master:
+                run_dir = self.multi_run_manager.get_run_dir(idx)
+                broadcast_src = run_dir / "broadcasts" / f"step_{step}"
+                weight_dst = run_dir / "checkpoints" / f"step_{step}" / "weight"
+                try:
+                    if not (broadcast_src / "STABLE").exists():
+                        raise FileNotFoundError(f"Stable broadcast weights not found at {broadcast_src}")
+                    # A prior incomplete attempt is never published, so replacing
+                    # its partial weight snapshot is safe and makes the step retryable.
+                    if weight_dst.exists():
+                        shutil.rmtree(weight_dst)
+                    shutil.copytree(broadcast_src, weight_dst)
+                except (OSError, shutil.Error) as exc:
+                    copied_weights = False
+                    self.logger.error(
+                        f"Failed to copy broadcast weights for run {idx} at step {step} from {broadcast_src}: {exc}"
+                    )
+
+            all_weights_copied = self._all_ranks_succeeded(copied_weights)
+
+            published = all_weights_copied
+            if all_weights_copied and self.world.is_master:
+                try:
+                    manager.mark_stable(step)
+                except OSError as exc:
+                    published = False
+                    self.logger.error(f"Failed to publish checkpoint for run {idx} at step {step}: {exc}")
+
+            if self._all_ranks_succeeded(published):
+                bisect.insort(manager.ckpt_steps, step)
+            elif self.world.is_master:
+                self.logger.warning(f"Checkpoint for run {idx} at step {step} remains incomplete")
             dist.barrier()
             # If the run is deleted, remove the run directory
             # This is avoid the creation of zombie runs when the directory is deleted while we are checkpointing which recreates the directory
