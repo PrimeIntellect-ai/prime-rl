@@ -92,7 +92,14 @@
     "water_park_t3",
     "loyalty_rewards_t3"
   ],
-  "gepa_selected_prompt": null,
+  "gepa_selected_prompt": {
+    "candidate_index": 2,
+    "path": "configs/opd-gap/prompts/genagent-gepa-plan-r40-candidate2.txt",
+    "validation_score": 0.375,
+    "baseline_validation_score": 0.25,
+    "validation_tasks": 8,
+    "optimization_calls": 48
+  },
   "gepa_train_tasks": [
     "border_checkpoint_t3",
     "event_lighting_t4",
