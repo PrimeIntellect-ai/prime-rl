@@ -2,14 +2,14 @@
 
 set -euo pipefail
 
-pod_id=${R40_POD_ID:-32d0ed3dfeb04994ad98e9f871a504f1}
+pod_id=${R40_POD_ID:-3994c58679144dca95b0197c2208e8b8}
 controller=${R40_CONTROLLER:-opd-gap-r40-smoke-controller.service}
 state_file=${R40_STATE_FILE:-/home/ubuntu/opd-gap-r40-smoke-controller-state.json}
 guardian_state=${R40_GUARDIAN_STATE:-/home/ubuntu/opd-gap-r40-pod-guardian-state.json}
 key=${R40_SSH_KEY:-/home/ubuntu/.ssh/primeintellect_ed25519}
 prime=${R40_PRIME:-/home/ubuntu/.local/bin/prime}
 artifact_root=${R40_ARTIFACT_ROOT:-/home/ubuntu/opd-gap-artifacts/r40-expanded-band-smokes}
-max_seconds=${R40_MAX_SECONDS:-43200}
+max_seconds=${R40_MAX_SECONDS:-21600}
 started=$(date +%s)
 
 write_state() {
