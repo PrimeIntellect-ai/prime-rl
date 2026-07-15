@@ -132,8 +132,9 @@ def test_fake_dataset_single_rank_state_with_packing():
     resumed_dataset = setup_dataset(tokenizer, config)
     resumed_dataloader = setup_dataloader(resumed_dataset, config)
     resumed_dataloader.load_state_dict(state_dict)
+    resumed_dataiter = iter(resumed_dataloader)
     torch.random.set_rng_state(rng_state)
-    resumed_batch = next(iter(resumed_dataloader))
+    resumed_batch = next(resumed_dataiter)
 
     for key in ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens"):
         torch.testing.assert_close(resumed_batch[key], expected_batch[key])
