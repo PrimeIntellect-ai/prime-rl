@@ -61,6 +61,10 @@ def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclComm
         # Flatten all tensors and concatenate
         flat_tensors = [value.flatten() for _, value in items]
         concatenated = torch.cat(flat_tensors)
+        if not concatenated.is_cuda:
+            # fsdp_cpu_offload keeps parameters on CPU; NCCL requires device tensors,
+            # so stage the (per-layer, per-dtype) buffer through CUDA transiently.
+            concatenated = concatenated.cuda()
         communicator.broadcast(concatenated, src=0)
         del concatenated
         # Clean up individual tensors
