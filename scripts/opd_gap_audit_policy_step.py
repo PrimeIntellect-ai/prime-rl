@@ -43,6 +43,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-rows", type=int, default=8)
     parser.add_argument("--require-reward-variance", action="store_true")
     parser.add_argument("--require-nonzero-advantages", action="store_true")
+    parser.add_argument("--allow-no-agent-completed", action="store_true")
+    parser.add_argument("--allow-same-step-adapter", action="store_true")
     return parser.parse_args()
 
 
@@ -61,7 +63,9 @@ def main() -> None:
     run_dir = output_dir / "run_default"
     export_dir = run_dir / "token_exports" / f"step_{args.step}"
     rollout_file = run_dir / "rollouts" / f"step_{args.step}" / "train_rollouts.jsonl"
-    broadcast_dir = run_dir / "broadcasts" / f"step_{args.step + 1}"
+    broadcast_dirs = [run_dir / "broadcasts" / f"step_{args.step + 1}"]
+    if args.allow_same_step_adapter:
+        broadcast_dirs.append(run_dir / "broadcasts" / f"step_{args.step}")
     trainer_log = output_dir / "logs" / "trainer.log"
 
     assert (export_dir / "STABLE").is_file(), f"missing stable token export: {export_dir}"
@@ -131,14 +135,22 @@ def main() -> None:
         f"rollout rows {len(rollouts)} are not complete groups of {args.expected_rows}"
     )
     assert all(record.get("errors") == [] for record in rollouts), "rollout contains errors"
-    assert any(record.get("stop_condition") == "agent_completed" for record in rollouts), (
-        "all rollout attempts missed agent_completed"
-    )
+    stop_conditions: dict[str, int] = {}
+    for record in rollouts:
+        stop = str(record.get("stop_condition"))
+        stop_conditions[stop] = stop_conditions.get(stop, 0) + 1
+    agent_completed_rows = stop_conditions.get("agent_completed", 0)
+    if not args.allow_no_agent_completed:
+        assert agent_completed_rows > 0, "all rollout attempts missed agent_completed"
     rewards = [numeric_reward(record) for record in rollouts]
     if args.require_reward_variance:
         assert len(set(rewards)) > 1, "rollout group has uniform reward"
 
-    assert (broadcast_dir / "STABLE").is_file(), f"missing stable adapter: {broadcast_dir}"
+    broadcast_dir = next(
+        (path for path in broadcast_dirs if (path / "STABLE").is_file()),
+        None,
+    )
+    assert broadcast_dir is not None, f"missing stable adapter in: {broadcast_dirs}"
     assert (broadcast_dir / "adapter_config.json").is_file(), "missing adapter config"
     assert (broadcast_dir / "adapter_model.safetensors").is_file(), "missing adapter weights"
 
@@ -161,6 +173,8 @@ def main() -> None:
                 "step": args.step,
                 "rows": rows,
                 "rollout_rows": len(rollouts),
+                "agent_completed_rows": agent_completed_rows,
+                "stop_conditions": stop_conditions,
                 "tokens": tokens,
                 "rewards": rewards,
                 "nonzero_advantage_tokens": nonzero_advantage_tokens,

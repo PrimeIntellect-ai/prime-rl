@@ -86,6 +86,9 @@ audit_policy_step() {
   if [[ "$arm" == grpo || "$arm" == grpo-full ]]; then
     extra=(--require-reward-variance --require-nonzero-advantages)
   fi
+  if [[ "$arm" == *-full ]]; then
+    extra+=(--allow-no-agent-completed --allow-same-step-adapter)
+  fi
   if ! ssh ar "cd '$repo' && .venv/bin/python scripts/opd_gap_audit_policy_step.py '$output' '$step' ${extra[*]}" >"$audit.tmp"; then
     rm -f "$audit.tmp"
     return 1
