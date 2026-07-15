@@ -1,0 +1,756 @@
+output_dir = "outputs-genagent-opsd-1lp-d64-answerplan-p200rnd-k8-tp4-pod-r39-smoke2-20260715"
+max_steps = 2
+seq_len = 65536
+bench = false
+
+[trainer]
+matmul_precision = "high"
+max_steps = 2
+enable_router_replay = false
+dist_timeout_seconds = 3600
+max_concurrent_runs = 1
+enable_token_export = true
+
+[trainer.model]
+name = "Qwen/Qwen3.5-35B-A3B"
+trust_remote_code = false
+seq_len = 65536
+attn = "flash_attention_2"
+fsdp_cpu_offload = false
+optim_cpu_offload = true
+reshard_after_forward = true
+dp_replicate = 1
+ep = 4
+ep_comm_backend = "torch"
+deepep_num_sms = 20
+cp = 2
+cp_style = "ulysses"
+impl = "custom"
+optimization_dtype = "float32"
+reduce_dtype = "float32"
+moe_use_grouped_mm = true
+fp8 = false
+freeze_moe_router = false
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.compile]
+fullgraph = false
+
+[trainer.model.ac]
+mode = "full"
+freq = 1
+targets = [
+    "norm",
+]
+
+[trainer.model.ac_offloading]
+pin_memory = true
+max_inflight_activations = 5
+
+[trainer.model.lora]
+rank = 32
+alpha = 64.0
+dropout = 0.0
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+    "experts",
+    "fc1_latent_proj",
+    "fc2_latent_proj",
+]
+modules_to_save = []
+
+[trainer.model.debug]
+random_init = false
+force_balanced_routing = false
+
+[trainer.tokenizer]
+name = "Qwen/Qwen3.5-35B-A3B"
+trust_remote_code = false
+
+[trainer.data]
+
+[trainer.loss]
+type = "default"
+dppo_mask_low = 0.2
+dppo_mask_high = 0.2
+adv_tau = 1.0
+kl_tau = 0.001
+
+[trainer.optim]
+lr = 1e-05
+weight_decay = 0.01
+max_norm = 1.0
+type = "adamw"
+betas1 = 0.9
+betas2 = 0.999
+
+[trainer.scheduler]
+type = "constant"
+
+[trainer.ckpt]
+interval = 1
+skip_gather_master_weights = true
+weights_only = false
+trainable_only = true
+keep_last = 2
+skip_progress = false
+skip_scheduler = false
+skip_dataloader = false
+skip_optimizer = false
+
+[trainer.ckpt.weights]
+save_sharded = true
+save_format = "safetensors"
+save_adapter_separately = true
+
+[trainer.weight_broadcast]
+type = "filesystem"
+save_sharded = true
+save_format = "safetensors"
+
+[trainer.rollout_transport]
+type = "filesystem"
+
+[trainer.log]
+level = "debug"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+ranks_filter = [
+    0,
+]
+
+[trainer.wandb]
+project = "opd-gap"
+entity = "primeintellect"
+name = "opsd-1lp-d64-answerplan-p200rnd-k8-tp4-pod-r39-smoke2-20260715"
+offline = false
+
+[trainer.gc]
+interval = 50
+
+[trainer.env_vars]
+
+[orchestrator]
+pre_batch_filters = [
+    { type = "gibberish", enforce = false, token_id_threshold = 100000, logprob_offset = 2.0 },
+    { type = "repetition", enforce = false, window = 3000, prob_threshold = 0.99 },
+    { type = "zero_advantage", enforce = false },
+]
+post_batch_filters = [
+    { type = "gibberish", enforce = false, token_id_threshold = 100000, logprob_offset = 2.0 },
+    { type = "repetition", enforce = false, window = 3000, prob_threshold = 0.99 },
+    { type = "zero_advantage", enforce = false },
+]
+collect_inference_metrics = true
+batch_size = 8
+oversampling_factor = 0.5
+max_inflight_rollouts = 8
+group_size = 8
+seq_len = 65536
+num_train_workers = 2
+max_steps = 2
+max_off_policy_steps = 4
+bench = false
+
+[orchestrator.algo]
+ref_logprob_granularity = "single_token"
+ref_top_k = 64
+diag_top_k = 64
+type = "opsd"
+demo_key = "gold_tool_calls"
+template = """
+Use the validated structural plan below to reason about the original task. The plan gives only ordered tool names and argument names; infer every concrete argument value from the original task and tool observations. Preserve the original trajectory exactly.
+<answer_plan>
+{demonstration}
+</answer_plan>"""
+max_score_tokens = 56000
+demo_transform = "tool_sequence_plan"
+
+[orchestrator.algo.sampling]
+source = "policy"
+
+[orchestrator.algo.renderer]
+name = "auto"
+
+[orchestrator.model]
+name = "Qwen/Qwen3.5-35B-A3B"
+trust_remote_code = false
+
+[orchestrator.model.lora]
+name = "r32-a64.0"
+rank = 32
+alpha = 64.0
+
+[orchestrator.model.client]
+wait_for_ready_timeout = 1800
+base_url = [
+    "http://localhost:8000/v1",
+]
+api_key_var = "VLLM_API_KEY"
+skip_model_check = false
+dp_rank_count = 1
+
+[orchestrator.model.client.headers]
+
+[orchestrator.model.client.headers_from_env]
+
+[orchestrator.model.client.extra_headers_from_state]
+X-Session-ID = "trajectory_id"
+
+[orchestrator.train]
+max_retries = 3
+
+[[orchestrator.train.env]]
+max_turns = 40
+max_input_tokens = 56000
+max_output_tokens = 24000
+max_total_tokens = 60000
+multiplex = 32
+name = "genagent-train"
+max_retries = 3
+group_size = 8
+
+[orchestrator.train.env.taskset]
+id = "general-agent-v1"
+ref = "a2b76f6ac3469f7f50171760c0d0dba38360edc4"
+tasks = [
+    "chemistry_lab_t4",
+    "restaurant_inspection_t4",
+    "kart_track_t4",
+    "insurance_underwriting_t4",
+    "border_checkpoint_t4",
+    "self_storage_t3",
+    "clock_repair_t3",
+    "pet_foster_t4",
+    "storm_chasing_t3",
+    "kennel_t3",
+    "preserves_kitchen_t3",
+    "travel_itinerary_t3",
+    "origami_studio_t4",
+    "movie_theater_t3",
+    "candle_shop_t4",
+    "freelance_platform_t4",
+    "dna_testing_lab_t3",
+    "coast_guard_t4",
+    "keyboard_workshop_t4",
+    "coffee_roastery_t3",
+    "mural_project_t3",
+    "model_rocketry_t3",
+    "calligraphy_studio_t4",
+    "kintsugi_repair_t4",
+    "art_authentication_t3",
+    "taxi_dispatch_t4",
+    "shipwreck_salvage_t3",
+    "comedy_festival_t4",
+    "model_rocket_t3",
+    "darkroom_t4",
+    "sawmill_t4",
+    "spice_blending_t3",
+    "food_tour_t3",
+    "film_festival_t4",
+    "court_docket_t3",
+    "3d_print_shop_t4",
+    "summer_camp_t3",
+    "charity_auction_t3",
+    "street_festival_t4",
+    "customs_clearance_t4",
+    "event_planning_t4",
+    "avalanche_safety_t4",
+    "border_checkpoint_t3",
+    "escrow_service_t3",
+    "vending_machine_t3",
+    "millinery_shop_t3",
+    "dry_cleaning_t4",
+    "apartment_hunting_t4",
+    "deep_sea_mining_t3",
+    "telescope_maker_t3",
+    "rafting_outfitter_t4",
+    "passport_office_t3",
+    "birdwatching_t4",
+    "restaurant_inspection_t3",
+    "potluck_planner_t3",
+    "park_ranger_t4",
+    "antique_shop_t3",
+    "rowing_club_t4",
+    "stamp_collection_t4",
+    "seismic_monitor_t4",
+    "meditation_retreat_t4",
+    "foraging_guide_t4",
+    "recycling_center_t3",
+    "ad_agency_t3",
+    "art_framing_t3",
+    "casino_floor_t3",
+    "carbon_trading_t3",
+    "ham_radio_t4",
+    "laundromat_t4",
+    "yacht_charter_t4",
+    "dog_training_t3",
+    "recipe_box_t4",
+    "repair_cafe_t3",
+    "maritime_port_t4",
+    "distillery_t4",
+    "axe_throwing_t4",
+    "wildlife_migration_t3",
+    "phone_repair_t4",
+    "wedding_planner_t3",
+    "helicopter_tour_t3",
+    "transplant_registry_t3",
+    "spice_merchant_t3",
+    "food_truck_fest_t3",
+    "vinyl_pressing_t3",
+    "flower_auction_t4",
+    "payroll_t4",
+    "magic_academy_t3",
+    "chili_cookoff_t3",
+    "cartography_workshop_t3",
+    "insurance_claim_t4",
+    "drone_light_show_t3",
+    "herbal_apothecary_t3",
+    "rv_rental_t3",
+    "poetry_slam_t4",
+    "tax_preparation_t4",
+    "biochar_facility_t3",
+    "soap_studio_t3",
+    "laser_cutting_t3",
+    "translation_agency_t3",
+    "screen_printing_t4",
+    "event_lighting_t4",
+    "wedding_registry_t4",
+    "pool_service_t3",
+    "3d_print_t3",
+    "weather_station_t4",
+    "robot_combat_t4",
+    "art_supply_t4",
+    "ski_resort_t4",
+    "antique_shop_t4",
+    "choir_t4",
+    "craft_soda_t3",
+    "drug_discovery_t4",
+    "canning_preserves_t3",
+    "award_show_t3",
+    "haunted_house_t4",
+    "game_show_t3",
+    "park_ranger_t3",
+    "grant_review_t4",
+    "city_marathon_t3",
+    "ocean_salvage_t3",
+    "microgreen_farm_t4",
+    "wedding_planning_t3",
+    "covert_ops_t3",
+    "customs_checkpoint_t3",
+    "cocktail_bar_t3",
+    "vintage_camera_t3",
+    "flower_farm_t4",
+    "maple_sugaring_t3",
+    "apartment_swap_t3",
+    "timber_t4",
+    "jazz_club_t3",
+    "conference_planning_t4",
+    "piano_tuning_t4",
+    "tea_blend_t3",
+    "toymaker_workshop_t4",
+    "warehouse_logistics_t4",
+    "luthier_shop_t4",
+    "aquaponics_t3",
+    "insurance_underwriting_t3",
+    "trampoline_park_t3",
+    "sprint_planning_t3",
+    "glamping_resort_t4",
+    "aquaponics_farm_t3",
+    "wardrobe_stylist_t4",
+    "daycare_t4",
+    "hockey_team_t3",
+    "nutrition_clinic_t3",
+    "med_spa_t4",
+    "junkyard_t3",
+    "synbio_lab_t3",
+    "package_registry_t4",
+    "ice_rink_t3",
+    "comedy_club_t4",
+    "hat_shop_t3",
+    "private_island_rental_t4",
+    "library_assistant_t3",
+    "podcast_network_t3",
+    "customs_border_t3",
+    "office_supplies_t4",
+    "calendar_scheduling_t3",
+    "appliance_repair_t4",
+    "scuba_diving_t3",
+    "thesis_defense_t4",
+    "search_and_rescue_t4",
+    "aquatics_center_t4",
+    "crowdfunding_t3",
+    "sports_league_t4",
+    "fashion_design_t3",
+    "film_dubbing_t3",
+    "greenhouse_nursery_t4",
+    "adventurer_guild_t4",
+    "parking_garage_t4",
+    "fermentation_lab_t4",
+    "fencing_club_t4",
+    "board_game_t3",
+    "rooftop_bar_t4",
+    "roller_coaster_design_t3",
+    "orchid_show_t4",
+    "office_supplies_t3",
+    "dental_office_t4",
+    "food_truck_festival_t4",
+    "food_truck_t4",
+    "model_rocket_t4",
+    "poker_tournament_t4",
+    "med_spa_t3",
+    "game_studio_t3",
+    "kart_track_t3",
+    "synth_workshop_t4",
+    "cocktail_competition_t4",
+    "fashion_stylist_t4",
+    "scavenger_hunt_t3",
+    "tech_support_t3",
+    "mun_conference_t3",
+    "shipyard_t3",
+    "cleaning_service_t3",
+    "fog_harvesting_t4",
+    "custom_skateboard_t4",
+    "jewelry_design_t4",
+    "coffee_auction_t4",
+    "skincare_lab_t4",
+]
+min_tier = 3
+max_tier = 4
+pass_rate_model = "openai/gpt-5-mini"
+pass_rate_solver = "local"
+min_pass_rate = 0.0
+max_pass_rate = 1.0
+shuffle_seed = 20260715
+start_idx = 0
+limit = 200
+
+[orchestrator.train.env.taskset.tools]
+colocated = false
+shared = false
+fork = false
+
+[orchestrator.train.env.taskset.tools.runtime]
+type = "subprocess"
+
+[orchestrator.train.env.harness]
+id = "null"
+forward_env = []
+
+[orchestrator.train.env.harness.runtime]
+type = "subprocess"
+
+[orchestrator.train.env.harness.env]
+
+[orchestrator.train.env.timeout]
+setup = 120.0
+rollout = 600.0
+scoring = 60.0
+
+[orchestrator.train.env.retries.rollout]
+max_retries = 0
+include = []
+exclude = []
+
+[orchestrator.train.env.args]
+
+[orchestrator.train.env.extra_env_kwargs]
+
+[orchestrator.train.env.pool]
+type = "elastic"
+multiplex = 128
+
+[orchestrator.train.env.sampling]
+temperature = 1.0
+max_completion_tokens = 4096
+
+[orchestrator.train.env.sampling.extra_body]
+top_k = -1
+min_p = 0.0
+return_token_ids = true
+
+[orchestrator.train.env.algo]
+ref_logprob_granularity = "single_token"
+ref_top_k = 64
+diag_top_k = 64
+type = "opsd"
+demo_key = "gold_tool_calls"
+template = """
+Use the validated structural plan below to reason about the original task. The plan gives only ordered tool names and argument names; infer every concrete argument value from the original task and tool observations. Preserve the original trajectory exactly.
+<answer_plan>
+{demonstration}
+</answer_plan>"""
+max_score_tokens = 65536
+demo_transform = "tool_sequence_plan"
+
+[orchestrator.train.env.algo.sampling]
+source = "policy"
+
+[orchestrator.train.env.algo.renderer]
+name = "auto"
+
+[orchestrator.train.sampling]
+temperature = 1.0
+max_completion_tokens = 4096
+
+[orchestrator.train.sampling.extra_body]
+
+[orchestrator.tokenizer]
+name = "Qwen/Qwen3.5-35B-A3B"
+trust_remote_code = false
+
+[orchestrator.renderer]
+name = "qwen3.5"
+enable_thinking = true
+add_vision_id = false
+image_cache_max = 256
+
+[orchestrator.optim]
+lr = 0.0001
+
+[orchestrator.eval]
+num_examples = 20
+group_size = 1
+max_retries = 3
+interval = 1000
+skip_first_step = true
+
+[[orchestrator.eval.env]]
+max_turns = 40
+max_input_tokens = 56000
+max_output_tokens = 24000
+max_total_tokens = 60000
+multiplex = 32
+name = "genagent-heldout"
+max_retries = 3
+num_examples = 20
+group_size = 1
+interval = 10
+
+[orchestrator.eval.env.taskset]
+id = "general-agent-v1"
+ref = "a2b76f6ac3469f7f50171760c0d0dba38360edc4"
+tasks = [
+    "soap_making_t4",
+    "incense_crafting_t3",
+    "car_show_t3",
+    "timber_t3",
+    "bbq_competition_t3",
+    "textile_mill_t4",
+    "vertical_farm_t3",
+    "fireworks_show_t4",
+    "party_rental_t4",
+    "wine_blend_t3",
+    "space_debris_t4",
+    "freelance_platform_t3",
+    "sewing_workshop_t3",
+    "chocolate_boutique_t3",
+    "science_fair_t4",
+    "fulfillment_center_t4",
+    "film_archive_t4",
+    "fermentation_lab_t3",
+    "coffee_cupping_t3",
+    "cable_car_t4",
+]
+min_tier = 3
+max_tier = 4
+pass_rate_model = "openai/gpt-5-mini"
+pass_rate_solver = "local"
+min_pass_rate = 0.1
+max_pass_rate = 0.5
+shuffle_seed = 20260713
+start_idx = 0
+limit = 20
+
+[orchestrator.eval.env.taskset.tools]
+colocated = false
+shared = false
+fork = false
+
+[orchestrator.eval.env.taskset.tools.runtime]
+type = "subprocess"
+
+[orchestrator.eval.env.harness]
+id = "null"
+forward_env = []
+
+[orchestrator.eval.env.harness.runtime]
+type = "subprocess"
+
+[orchestrator.eval.env.harness.env]
+
+[orchestrator.eval.env.timeout]
+setup = 120.0
+rollout = 600.0
+scoring = 60.0
+
+[orchestrator.eval.env.retries.rollout]
+max_retries = 0
+include = []
+exclude = []
+
+[orchestrator.eval.env.args]
+
+[orchestrator.eval.env.extra_env_kwargs]
+
+[orchestrator.eval.env.pool]
+type = "elastic"
+multiplex = 128
+
+[orchestrator.eval.env.sampling]
+temperature = 1.0
+max_completion_tokens = 4096
+
+[orchestrator.eval.env.sampling.extra_body]
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+max_completion_tokens = 4096
+
+[orchestrator.eval.sampling.extra_body]
+
+[orchestrator.log]
+level = "debug"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+
+[orchestrator.env_vars]
+
+[orchestrator.wandb]
+project = "opd-gap"
+entity = "primeintellect"
+name = "opsd-1lp-d64-answerplan-p200rnd-k8-tp4-pod-r39-smoke2-20260715"
+offline = false
+
+[orchestrator.wandb.log_extras]
+samples = true
+distributions = true
+interval = 10
+
+[orchestrator.prime_monitor]
+base_url = "https://api.primeintellect.ai/api/v1/rft"
+api_key_var = "PRIME_API_KEY"
+run_name = "opsd-1lp-d64-answerplan-p200rnd-k8-tp4-pod-r39-smoke2-20260715"
+
+[orchestrator.prime_monitor.log_extras]
+samples = true
+distributions = true
+interval = 10
+
+[orchestrator.ckpt]
+interval = 1
+keep_last = 2
+skip_progress = false
+
+[orchestrator.weight_broadcast]
+type = "filesystem"
+
+[orchestrator.rollout_transport]
+type = "filesystem"
+
+[inference]
+enable_lora = true
+max_loras = 1
+max_cpu_loras = 2
+max_lora_rank = 32
+enable_prefix_caching = false
+gpu_memory_utilization = 0.7
+api_server_count = 1
+data_parallel_rpc_port = 13345
+seed = 0
+enable_expert_parallel = false
+all2all_backend = "allgather_reducescatter"
+enable_eplb = false
+enable_dbo = false
+use_deep_gemm = false
+use_pd_kv_transfer = false
+enable_return_routed_experts = false
+enable_fp32_lm_head = true
+output_dir = "outputs"
+dry_run = false
+
+[inference.server]
+port = 8000
+liveness_timeout_seconds = 30.0
+
+[inference.model]
+name = "Qwen/Qwen3.5-35B-A3B"
+trust_remote_code = false
+dtype = "auto"
+max_model_len = 65536
+max_logprobs = 64
+enforce_eager = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+[inference.parallel]
+tp = 4
+dp = 1
+
+[inference.log]
+level = "debug"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+
+[inference.env_vars]
+VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS = "1800"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[inference.weight_broadcast]
+type = "filesystem"
+
+[inference.vllm_extra]
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+fully_sharded_loras = false
+enable_flashinfer_autotune = false
+language_model_only = true
+
+[inference.deployment]
+gpus_per_node = 8
+backend_port = 8100
+type = "single_node"
+
+[inference.deployment.router]
+type = "vllm-router"
+port = 8000
+policy = "consistent_hash"
+
+[env_vars]
+
+[log]
+level = "debug"
+json_logging = false
+
+[wandb]
+project = "opd-gap"
+entity = "primeintellect"
+name = "opsd-1lp-d64-answerplan-p200rnd-k8-tp4-pod-r39-smoke2-20260715"
+offline = false
+
+[model]
+name = "Qwen/Qwen3.5-35B-A3B"
+
+[weight_broadcast]
+type = "filesystem"
+port = 29501
+timeout = 1200
+quantize_in_weight_transfer = false
+
+[deployment]
+gpus_per_node = 8
+type = "single_node"
+num_train_gpus = 4
+num_infer_gpus = 4
