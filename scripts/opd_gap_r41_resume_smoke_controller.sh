@@ -58,20 +58,22 @@ trap cleanup EXIT INT TERM
 audit_arm() {
   local arm=$1
   local output="outputs-genagent-opsd-1lp-d64-${arm}-band000060-k8-tp4-pod-r41-smoke2-20260715"
+  local failed=0
   write_state "${arm}_auditing" "$output"
   for step in 0 1; do
     local rollouts="$output/run_default/rollouts/step_${step}/train_rollouts.jsonl"
     ssh "${ssh_args[@]}" "$remote" \
       "cd '$repo' && jq -s '{rows:length,error_rows:([.[]|select((.errors|length)>0)]|length),agent_completed:([.[]|select(.stop_condition==\"agent_completed\")]|length),harness_timeouts:([.[]|select(.stop_condition==\"harness_timeout\")]|length)}' '$rollouts'" \
-      | tee "/home/ubuntu/opd-gap-r41-${arm}-rollout-step${step}.json"
+      | tee "/home/ubuntu/opd-gap-r41-${arm}-rollout-step${step}.json" || failed=1
     ssh "${ssh_args[@]}" "$remote" \
       "cd '$repo' && '$uv' run --no-sync scripts/opd_gap_audit_policy_step.py '$output' '$step'" \
-      | tee "/home/ubuntu/opd-gap-r41-${arm}-policy-step${step}.json"
+      | tee "/home/ubuntu/opd-gap-r41-${arm}-policy-step${step}.json" || failed=1
     ssh "${ssh_args[@]}" "$remote" \
       "cd '$repo' && '$uv' run --no-sync scripts/opd_gap_audit_diag_topk.py '$output/run_default/token_exports/step_${step}'" \
-      | tee "/home/ubuntu/opd-gap-r41-${arm}-audit-step${step}.json"
+      | tee "/home/ubuntu/opd-gap-r41-${arm}-audit-step${step}.json" || failed=1
   done
   preserve_artifacts
+  return "$failed"
 }
 
 fullanswer_config=configs/opd-gap/genagent-band000060-qwen35-opsd-fullanswer-pod-r41-smoke2.toml
@@ -90,7 +92,8 @@ fi
 if [[ -n "$old_controller_pid" ]]; then
   kill -KILL "$old_controller_pid" 2>/dev/null || true
 fi
-audit_arm fullanswer
+fullanswer_audit=0
+audit_arm fullanswer || fullanswer_audit=$?
 
 answerplan_config=configs/opd-gap/genagent-band000060-qwen35-opsd-answerplan-pod-r41-smoke2.toml
 write_state answerplan_dryrun "$answerplan_config"
@@ -100,6 +103,12 @@ write_state answerplan_running "$answerplan_config"
 timeout --signal=TERM --kill-after=5m 3h \
   ssh "${ssh_args[@]}" "$remote" \
     "cd '$repo' && set -a && source .env && set +a && export PATH='/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin' && '$uv' run --no-sync rl @ '$answerplan_config'"
-audit_arm answerplan
+answerplan_audit=0
+audit_arm answerplan || answerplan_audit=$?
+
+if (( fullanswer_audit != 0 || answerplan_audit != 0 )); then
+  write_state failed "mechanics artifacts preserved, but one or more strict completion/field audits failed"
+  exit 1
+fi
 
 write_state complete "four resampling-aware field audits passed; artifacts preserved; pod termination requested"
