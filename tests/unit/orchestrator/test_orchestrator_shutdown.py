@@ -66,4 +66,3 @@ def test_dispatch_gate_remains_active_for_final_batches():
     orchestrator.policy.version = 18
     orchestrator.update_dispatch_gate()
     assert orchestrator.dispatcher.dispatch_allowed.is_set()
-
