@@ -94,7 +94,8 @@ for path in packages/prime-rl-configs src/prime_rl deps configs/opd-gap; do
 done
 rsync -az -e "$ssh_cmd" \
   "$source_repo/pyproject.toml" "$source_repo/uv.lock" \
-  "$source_repo/scripts/opd_gap_audit_diag_topk.py" "$remote:$repo/scripts/"
+  "$source_repo/scripts/opd_gap_audit_diag_topk.py" \
+  "$source_repo/scripts/opd_gap_audit_policy_step.py" "$remote:$repo/scripts/"
 if [[ -f "$source_repo/.env" ]]; then
   scp -q -i "$key" -P "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$source_repo/.env" "$remote:$repo/.env"
 fi
@@ -136,7 +137,10 @@ run_arm() {
     ssh "${ssh_args[@]}" "$remote" \
       "cd '$repo' && jq -se 'length == 8 and all((.errors|length) == 0) and any(.stop_condition == \"agent_completed\")' '$rollouts' >/dev/null"
     ssh "${ssh_args[@]}" "$remote" \
-      "cd '$repo' && '$uv' run --no-sync scripts/opd_gap_audit_diag_topk.py '$output/token_exports/step_${step}'" \
+      "cd '$repo' && '$uv' run --no-sync scripts/opd_gap_audit_policy_step.py '$output' '$step'" \
+      | tee "/home/ubuntu/opd-gap-r41-${arm}-policy-step${step}.json"
+    ssh "${ssh_args[@]}" "$remote" \
+      "cd '$repo' && '$uv' run --no-sync scripts/opd_gap_audit_diag_topk.py '$output/run_default/token_exports/step_${step}'" \
       | tee "/home/ubuntu/opd-gap-r41-${arm}-audit-step${step}.json"
   done
   preserve_artifacts

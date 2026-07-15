@@ -68,14 +68,27 @@ runtime_seconds() {
 audit_opsd_step() {
   local arm=$1 output=$2 step=$3 audit="$artifact_root/audits/${arm}-step${step}.json"
   [[ -s "$audit" ]] && return 0
-  ssh ar "cd '$repo' && .venv/bin/python scripts/opd_gap_audit_diag_topk.py '$output/token_exports/step_${step}'" >"$audit.tmp"
+  ssh ar "cd '$repo' && .venv/bin/python scripts/opd_gap_audit_diag_topk.py '$output/run_default/token_exports/step_${step}'" >"$audit.tmp"
+  mv "$audit.tmp" "$audit"
+}
+
+audit_policy_step() {
+  local arm=$1 output=$2 step=$3 audit="$artifact_root/audits/${arm}-policy-step${step}.json"
+  local extra=()
+  [[ -s "$audit" ]] && return 0
+  if [[ "$arm" == grpo || "$arm" == grpo-full ]]; then
+    extra=(--require-reward-variance --require-nonzero-advantages)
+  fi
+  ssh ar "cd '$repo' && .venv/bin/python scripts/opd_gap_audit_policy_step.py '$output' '$step' ${extra[*]}" >"$audit.tmp"
   mv "$audit.tmp" "$audit"
 }
 
 smoke_ready() {
   local arm=$1 output=${smoke_outputs[$1]}
-  remote_file "$output/token_exports/step_0/STABLE" || return 1
-  remote_file "$output/token_exports/step_1/STABLE" || return 1
+  remote_file "$output/run_default/token_exports/step_0/STABLE" || return 1
+  remote_file "$output/run_default/token_exports/step_1/STABLE" || return 1
+  audit_policy_step "$arm" "$output" 0
+  audit_policy_step "$arm" "$output" 1
   if [[ "$arm" != grpo ]]; then
     audit_opsd_step "$arm" "$output" 0
     audit_opsd_step "$arm" "$output" 1
@@ -103,15 +116,17 @@ refresh_full_json() {
 
 latest_stable_step() {
   local output=$1
-  ssh ar "find '$repo/$output/token_exports' -mindepth 2 -maxdepth 2 -type f -name STABLE 2>/dev/null | sed -n 's#.*step_\([0-9][0-9]*\)/STABLE#\1#p' | sort -n | tail -1" 2>/dev/null
+  ssh ar "find '$repo/$output/run_default/token_exports' -mindepth 2 -maxdepth 2 -type f -name STABLE 2>/dev/null | sed -n 's#.*step_\([0-9][0-9]*\)/STABLE#\1#p' | sort -n | tail -1" 2>/dev/null
 }
 
 audit_full_milestones() {
   local arm=$1 output=${full_outputs[$1]} latest=$2 step
-  [[ "$arm" != grpo ]] || return 0
   for step in 0 10 20 30 40 50 60 70 80 90 99; do
     (( step <= latest )) || continue
-    audit_opsd_step "$arm-full" "$output" "$step"
+    audit_policy_step "$arm-full" "$output" "$step"
+    if [[ "$arm" != grpo ]]; then
+      audit_opsd_step "$arm-full" "$output" "$step"
+    fi
   done
 }
 
