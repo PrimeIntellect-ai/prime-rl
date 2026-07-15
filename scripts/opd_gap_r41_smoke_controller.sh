@@ -17,6 +17,11 @@ port=22
 
 exec >>"$log" 2>&1
 
+renderers_version=$(cd "$source_repo/deps/renderers" && /home/ubuntu/.local/bin/uvx --from hatch hatch version)
+verifiers_version=$(cd "$source_repo/deps/verifiers" && /home/ubuntu/.local/bin/uvx --from hatch hatch version)
+[[ "$renderers_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]
+[[ "$verifiers_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]
+
 write_state() {
   jq -n --arg phase "$1" --arg detail "${2:-}" --arg pod_id "$pod_id" \
     '{phase:$phase,detail:$detail,pod_id:$pod_id,updated_at_utc:(now|todateiso8601)}' \
@@ -113,7 +118,8 @@ ssh "${ssh_args[@]}" "$remote" \
   "sudo mkdir -p '$remote_home/.config/uv' '$remote_home/.local/bin' && sudo chown -R \$(id -u):\$(id -g) '$remote_home/.config' '$remote_home/.local'"
 ssh "${ssh_args[@]}" "$remote" \
   "test -x '$uv' || curl -LsSf https://astral.sh/uv/install.sh | XDG_CONFIG_HOME=/tmp/uv-config UV_NO_MODIFY_PATH=1 sh"
-ssh "${ssh_args[@]}" "$remote" "cd '$repo' && '$uv' sync --all-extras"
+ssh "${ssh_args[@]}" "$remote" \
+  "cd '$repo' && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RENDERERS='$renderers_version' SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VERIFIERS='$verifiers_version' '$uv' sync --all-extras"
 ssh "${ssh_args[@]}" "$remote" \
   "cd '$repo' && '$uv' run --no-sync python -c 'import torch, verifiers; assert torch.cuda.device_count() == 8; print(torch.cuda.device_count())'"
 
