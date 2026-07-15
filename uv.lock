@@ -41,7 +41,9 @@ members = [
     "alphabet-sort-v1",
     "apex-shortlist-v1",
     "arxivmath-v1",
+    "automationbench-v1",
     "bfcl-v3-v1",
+    "browsecomp-plus-v1",
     "browsecomp-v1",
     "browser-cua-example",
     "browser-dom-example",
@@ -107,6 +109,7 @@ members = [
     "scicode-v1",
     "scratchpad-v1",
     "self-reward",
+    "senior-swe-bench-v1",
     "sentence-repeater",
     "simpleqa-v1",
     "simpleqa-verified-v1",
@@ -458,6 +461,40 @@ wheels = [
 ]
 
 [[package]]
+name = "automation-bench"
+version = "1.0.5"
+source = { git = "https://github.com/mikasenghaas/AutomationBench.git?rev=6f0e683#6f0e6834930cf6906ed932e9c5b716206def40d7" }
+dependencies = [
+    { name = "anthropic" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "rich" },
+    { name = "verifiers" },
+]
+
+[[package]]
+name = "automationbench-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/tool_use/automationbench_v1" }
+dependencies = [
+    { name = "automation-bench" },
+    { name = "datasets" },
+    { name = "mcp" },
+    { name = "openai" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "automation-bench", git = "https://github.com/mikasenghaas/AutomationBench.git?rev=6f0e683" },
+    { name = "datasets" },
+    { name = "mcp", specifier = "<2" },
+    { name = "openai" },
+    { name = "verifiers", specifier = ">=0.2.1.dev42" },
+]
+
+[[package]]
 name = "backoff"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -635,6 +672,18 @@ wheels = [
 ]
 
 [[package]]
+name = "bm25s"
+version = "0.3.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7c/ab/39d08d4589dad6f5735a6b03ee083088dc37fba57fa45d4a0749393b9295/bm25s-0.3.9.tar.gz", hash = "sha256:895c679d952b7de8355edb5f3e1a620a1e2f294d1d42b919bf0821cce2e2f597", size = 80528, upload-time = "2026-05-13T23:08:20.952Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/83/06582913e2af0cf498cc478350070490b019c6f6b523cb8b6cfafd32f009/bm25s-0.3.9-py3-none-any.whl", hash = "sha256:db997475e82c9e81262b83fefe6a71304f2fdd0dafd037c8929828865fa6d465", size = 74475, upload-time = "2026-05-13T23:08:19.557Z" },
+]
+
+[[package]]
 name = "boto3"
 version = "1.43.40"
 source = { registry = "https://pypi.org/simple" }
@@ -660,6 +709,31 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d0/50/269986277f852cc83029bccbdcdc0b343a685cfd570599e58029792808d8/botocore-1.43.40.tar.gz", hash = "sha256:2085a4314cfd2c8bc1d08ab8039f76c92e99278db0d2a0e2437010526d5d5d70", size = 15639899, upload-time = "2026-07-03T00:28:16.125Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/dc/8c/5f7e73fd66b28f0705bc55d7060d41ef72328b656b86ca53e75765b3ba2c/botocore-1.43.40-py3-none-any.whl", hash = "sha256:0bc9d352267c9e48415c5d7bb61ff05c3f193eac2fc7e69cfd229a05fbab67d6", size = 15323870, upload-time = "2026-07-03T00:28:12.56Z" },
+]
+
+[[package]]
+name = "browsecomp-plus-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/search/browsecomp_plus_v1" }
+dependencies = [
+    { name = "bm25s" },
+    { name = "datasets" },
+    { name = "mcp" },
+    { name = "openai" },
+    { name = "pystemmer" },
+    { name = "tokenizers" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bm25s", specifier = ">=0.2.0" },
+    { name = "datasets" },
+    { name = "mcp", specifier = ">=1,<2" },
+    { name = "openai" },
+    { name = "pystemmer" },
+    { name = "tokenizers" },
+    { name = "verifiers", specifier = ">=0.2.0" },
 ]
 
 [[package]]
@@ -4890,8 +4964,8 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
-    { name = "deep-ep", version = "1.1.0+1fd57b0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
-    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-ep", version = "1.1.0+1fd57b0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
+    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
     { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64'" },
@@ -4904,8 +4978,8 @@ all = [
     { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
 ]
 disagg = [
-    { name = "deep-ep", version = "1.1.0+1fd57b0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
-    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-ep", version = "1.1.0+1fd57b0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
+    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
     { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "nixl" },
@@ -5497,6 +5571,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/88/12/5d60c15ec2d8536e518784d74b8dd54e602097b99a7919a42bad15713580/pyqwest-0.6.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:aaa9e3578df13a0ceababc60f0814afc6c9df135be324596a8cf49c318f402c4", size = 5457323, upload-time = "2026-05-19T03:20:13.563Z" },
     { url = "https://files.pythonhosted.org/packages/50/5a/24cb4672be3640d8fe2f46d46785295e71bd474a28a2e9bc6ff47ec38a34/pyqwest-0.6.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:1e69b2d46f4471d59e835207dad2d5bb41bb29b28c2d6accbbb4268f0d58ca9c", size = 5605485, upload-time = "2026-05-19T03:20:15.707Z" },
     { url = "https://files.pythonhosted.org/packages/0c/34/c110ecc14814be490f258549192579ec02a9f3792587e933b254bcd24aa7/pyqwest-0.6.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:8de70fc18b524e09883b161f79fe21a647302a0c9950ecefeb34a1c1f27269a9", size = 5764873, upload-time = "2026-05-19T03:20:17.61Z" },
+]
+
+[[package]]
+name = "pystemmer"
+version = "3.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/78/95/bb893462b08db211b248f6b1aaa0dc07d068dc86f180178bc9072fef86bb/pystemmer-3.1.0.tar.gz", hash = "sha256:083cc3ed90f4c3b0668f8e31c2925cbb4db3bf0fd6d710e0ad0914f33685f7df", size = 302551, upload-time = "2026-05-22T11:23:44.581Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/06/55/78699a2621a472be98bae7fb36bdda610b7d1c8bcd8ff448301230260cf9/pystemmer-3.1.0-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:550bd609aa8dc324033eb1c8d34bfd68649183bbdab871ff534332dcafdc5e5a", size = 752410, upload-time = "2026-05-22T11:14:12.075Z" },
+    { url = "https://files.pythonhosted.org/packages/67/63/e3937ac1df5243e94bde11fc1e57584480de419587f46a4badf5088e7ca6/pystemmer-3.1.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:7c6db50dd5e92a2a0acf2b2cec55fddcff3928bf490e26d0c45bc0483272a46c", size = 761062, upload-time = "2026-05-22T11:14:13.78Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/63/1f7ef438e19029025fc73fe95480d0dbb2ff323f1aec9c087ad9eb952afb/pystemmer-3.1.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:b86b0b14634788060cab98ad0cae023620aa7b29f9155e8b474632fc80793405", size = 756304, upload-time = "2026-05-22T11:14:15.419Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/5e/816d59b780aa552c87a7e25148005f41be18193482b122d67c6235741b31/pystemmer-3.1.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:6a1289aa31f5f613a31916e7d4e6eaf6b0e6e70a3d494bf08b1d999a0aaf458e", size = 754520, upload-time = "2026-05-22T11:14:16.754Z" },
 ]
 
 [[package]]
@@ -6137,6 +6223,17 @@ requires-dist = [
     { name = "openai" },
     { name = "verifiers", specifier = ">=0.1.4" },
 ]
+
+[[package]]
+name = "senior-swe-bench-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/swe/senior_swe_bench_v1" }
+dependencies = [
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.1.dev40" }]
 
 [[package]]
 name = "sentence-repeater"
