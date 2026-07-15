@@ -1,5 +1,4 @@
 import asyncio
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -380,23 +379,6 @@ def test_opsd_tool_sequence_plan_rejects_non_json_demonstration():
 
     with pytest.raises(ValueError, match="JSON tool-call chain"):
         algo._demonstration(rollout)
-
-
-def test_opsd_loads_template_path(tmp_path: Path):
-    template_path = tmp_path / "gepa-plan.txt"
-    template_path.write_text("Optimized plan:\n{demonstration}")
-
-    algo = OPSDAlgorithm(_build(type="opsd", template_path=str(template_path)), _FakePool())
-
-    assert algo.template == "Optimized plan:\n{demonstration}"
-
-
-def test_opsd_rejects_template_without_demonstration(tmp_path: Path):
-    template_path = tmp_path / "bad.txt"
-    template_path.write_text("missing placeholder")
-
-    with pytest.raises(ValueError, match="must contain"):
-        OPSDAlgorithm(_build(type="opsd", template_path=str(template_path)), _FakePool())
 
 
 def test_rlsd_filters_rollout_when_hint_alone_exceeds_score_window():

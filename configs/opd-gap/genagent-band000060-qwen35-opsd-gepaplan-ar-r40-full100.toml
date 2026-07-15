@@ -171,7 +171,6 @@ Use the validated structural plan below to reason about the original task. The p
 <answer_plan>
 {demonstration}
 </answer_plan>"""
-template_path = "configs/opd-gap/prompts/genagent-gepa-plan-r40-candidate2.txt"
 max_score_tokens = 56000
 demo_transform = "tool_sequence_plan"
 
@@ -1232,7 +1231,6 @@ Use the validated structural plan below to reason about the original task. The p
 <answer_plan>
 {demonstration}
 </answer_plan>"""
-template_path = "configs/opd-gap/prompts/genagent-gepa-plan-r40-candidate2.txt"
 max_score_tokens = 65536
 demo_transform = "tool_sequence_plan"
 

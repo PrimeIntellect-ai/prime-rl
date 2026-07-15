@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -41,9 +40,7 @@ class OPSDAlgorithm(Algorithm):
         super().__init__(config, policy_pool)
         self.demo_key = config.demo_key
         self.demo_transform = config.demo_transform
-        self.template = Path(config.template_path).read_text() if config.template_path is not None else config.template
-        if "{demonstration}" not in self.template:
-            raise ValueError("opsd template must contain '{demonstration}'")
+        self.template = config.template
         self.max_score_tokens = config.max_score_tokens
         self.granularity = config.ref_logprob_granularity
         self.ref_top_k = config.ref_top_k

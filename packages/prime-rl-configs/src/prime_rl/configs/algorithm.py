@@ -395,10 +395,6 @@ class OPSDAlgoConfig(DistillationAlgoConfig):
     Receives ``{demonstration}``; the original question stays in the (verbatim)
     user turn, so it isn't templated here."""
 
-    template_path: str | None = None
-    """Optional UTF-8 file containing ``template``. This keeps long optimized
-    prompts in one versioned artifact while flattened configs reference it."""
-
     max_score_tokens: int | None = None
     """Scoring context window — set to the inference server's ``max_model_len``.
     Generation reserves no headroom for the hint block, so a near-max-context
