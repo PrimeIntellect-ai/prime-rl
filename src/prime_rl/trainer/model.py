@@ -709,7 +709,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 block_mlp.router,
                 mesh=hsdp_mesh,
                 mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
-                offload_policy=offload_policy,
                 reshard_after_forward=config.reshard_after_forward,
             )
 
@@ -734,7 +733,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             [model.lm_head, norm_module],
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
-            offload_policy=offload_policy,
             reshard_after_forward=False,
         )
     else:
@@ -744,7 +742,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         model,
         mesh=hsdp_mesh,
         mp_policy=mp_policy,
-        offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
     )
 
