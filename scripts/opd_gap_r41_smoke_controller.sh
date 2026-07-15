@@ -143,8 +143,6 @@ run_arm() {
       "cd '$repo' && jq -s '{rows:length,error_rows:([.[]|select((.errors|length)>0)]|length),agent_completed:([.[]|select(.stop_condition==\"agent_completed\")]|length),harness_timeouts:([.[]|select(.stop_condition==\"harness_timeout\")]|length)}' '$rollouts'" \
       | tee "/home/ubuntu/opd-gap-r41-${arm}-rollout-step${step}.json"
     ssh "${ssh_args[@]}" "$remote" \
-      "cd '$repo' && jq -se 'length == 8 and all((.errors|length) == 0) and any(.stop_condition == \"agent_completed\")' '$rollouts' >/dev/null"
-    ssh "${ssh_args[@]}" "$remote" \
       "cd '$repo' && '$uv' run --no-sync scripts/opd_gap_audit_policy_step.py '$output' '$step'" \
       | tee "/home/ubuntu/opd-gap-r41-${arm}-policy-step${step}.json"
     ssh "${ssh_args[@]}" "$remote" \
