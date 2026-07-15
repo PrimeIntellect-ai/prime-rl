@@ -30,7 +30,7 @@ pod_ssh() {
 
 preserve_artifacts() {
   [[ -n "$remote" ]] || return 0
-  local ssh_cmd="ssh -i $key -p $port -o StrictHostKeyChecking=no"
+  local ssh_cmd="ssh -i $key -p $port -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
   mkdir -p "$artifact_root"
   for arm in fullanswer answerplan; do
     local output="outputs-genagent-opsd-1lp-d64-${arm}-band000060-k8-tp4-pod-r41-smoke2-20260715"
@@ -70,8 +70,8 @@ for _ in $(seq 1 160); do
 done
 [[ -n "$remote" ]]
 
-ssh_args=(-i "$key" -p "$port" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10)
-ssh_cmd="ssh -i $key -p $port -o StrictHostKeyChecking=no"
+ssh_args=(-i "$key" -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=10)
+ssh_cmd="ssh -i $key -p $port -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 for _ in $(seq 1 40); do
   ssh "${ssh_args[@]}" "$remote" true 2>/dev/null && break
   sleep 15
@@ -91,10 +91,10 @@ rsync -az -e "$ssh_cmd" \
   "$source_repo/pyproject.toml" "$source_repo/uv.lock" \
   "$source_repo/scripts/opd_gap_audit_diag_topk.py" "$remote:$repo/scripts/"
 if [[ -f "$source_repo/.env" ]]; then
-  scp -q -i "$key" -P "$port" -o StrictHostKeyChecking=no "$source_repo/.env" "$remote:$repo/.env"
+  scp -q -i "$key" -P "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$source_repo/.env" "$remote:$repo/.env"
 fi
 if [[ -f /home/ubuntu/.netrc ]]; then
-  scp -q -i "$key" -P "$port" -o StrictHostKeyChecking=no /home/ubuntu/.netrc "$remote:/home/ubuntu/.netrc"
+  scp -q -i "$key" -P "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /home/ubuntu/.netrc "$remote:/home/ubuntu/.netrc"
   ssh "${ssh_args[@]}" "$remote" 'chmod 600 /home/ubuntu/.netrc'
 fi
 
@@ -103,7 +103,7 @@ rsync -az -e "$ssh_cmd" \
   "/home/ubuntu/.cache/verifiers/general_agent/$task_ref/" \
   "$remote:/home/ubuntu/.cache/verifiers/general_agent/$task_ref/"
 
-ssh "${ssh_args[@]}" "$remote" 'command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh'
+ssh "${ssh_args[@]}" "$remote" 'command -v uv >/dev/null || UV_NO_MODIFY_PATH=1 sh -c "$(curl -LsSf https://astral.sh/uv/install.sh)"'
 ssh "${ssh_args[@]}" "$remote" "cd '$repo' && /home/ubuntu/.local/bin/uv sync --all-extras"
 ssh "${ssh_args[@]}" "$remote" \
   "cd '$repo' && /home/ubuntu/.local/bin/uv run --no-sync python -c 'import torch, verifiers; assert torch.cuda.device_count() == 8; print(torch.cuda.device_count())'"
