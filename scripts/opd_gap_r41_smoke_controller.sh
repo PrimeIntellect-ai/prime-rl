@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+pod_id=${R41_POD_ID:-602b6b39786a40a39e4663510f45bfca}
+prime=${R41_PRIME:-/home/ubuntu/.local/bin/prime}
+key=${R41_SSH_KEY:-/home/ubuntu/.ssh/primeintellect_ed25519}
+source_repo=${R41_SOURCE_REPO:-/home/ubuntu/prime-rl}
+state=${R41_STATE:-/home/ubuntu/opd-gap-r41-smoke-controller-state.json}
+log=${R41_LOG:-/home/ubuntu/opd-gap-r41-smoke-controller.log}
+artifact_root=${R41_ARTIFACT_ROOT:-/home/ubuntu/opd-gap-artifacts/r41-exact-band-smokes}
+task_ref=a2b76f6ac3469f7f50171760c0d0dba38360edc4
+repo=/home/ubuntu/prime-rl
+remote=
+port=22
+
+exec >>"$log" 2>&1
+
+write_state() {
+  jq -n --arg phase "$1" --arg detail "${2:-}" --arg pod_id "$pod_id" \
+    '{phase:$phase,detail:$detail,pod_id:$pod_id,updated_at_utc:(now|todateiso8601)}' \
+    >"$state.tmp"
+  mv "$state.tmp" "$state"
+}
+
+pod_ssh() {
+  env -u PRIME_API_KEY -u PRIME_TEAM_ID "$prime" pods status "$pod_id" --plain 2>/dev/null \
+    | sed -n 's/^[[:space:]]*SSH[[:space:]]*//p' | xargs
+}
+
+preserve_artifacts() {
+  [[ -n "$remote" ]] || return 0
+  local ssh_cmd="ssh -i $key -p $port -o StrictHostKeyChecking=no"
+  mkdir -p "$artifact_root"
+  for arm in fullanswer answerplan; do
+    local output="outputs-genagent-opsd-1lp-d64-${arm}-band000060-k8-tp4-pod-r41-smoke2-20260715"
+    mkdir -p "$artifact_root/$arm"
+    rsync -az --partial -e "$ssh_cmd" \
+      --exclude 'run_default/checkpoints/***' \
+      --exclude 'run_default/broadcasts/***' \
+      --exclude '*.safetensors' \
+      "$remote:$repo/$output/" "$artifact_root/$arm/" || true
+  done
+  cp -f /home/ubuntu/opd-gap-r41-*-audit-step*.json "$artifact_root/" 2>/dev/null || true
+  cp -f "$log" "$state" "$artifact_root/" 2>/dev/null || true
+}
+
+cleanup() {
+  local code=$?
+  trap - EXIT INT TERM
+  preserve_artifacts
+  env -u PRIME_API_KEY -u PRIME_TEAM_ID "$prime" pods terminate "$pod_id" --yes || true
+  if (( code != 0 )); then
+    write_state failed "controller exit $code; artifacts preserved and pod termination requested"
+  fi
+  exit "$code"
+}
+trap cleanup EXIT INT TERM
+
+write_state provisioning "waiting for pod SSH"
+for _ in $(seq 1 160); do
+  ssh_line=$(pod_ssh)
+  if [[ -n "$ssh_line" && "$ssh_line" != "N/A" ]]; then
+    remote=${ssh_line%% *}
+    port=$(awk '{for (i=1;i<=NF;i++) if ($i=="-p") print $(i+1)}' <<<"$ssh_line")
+    port=${port:-22}
+    break
+  fi
+  sleep 15
+done
+[[ -n "$remote" ]]
+
+ssh_args=(-i "$key" -p "$port" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10)
+ssh_cmd="ssh -i $key -p $port -o StrictHostKeyChecking=no"
+for _ in $(seq 1 40); do
+  ssh "${ssh_args[@]}" "$remote" true 2>/dev/null && break
+  sleep 15
+done
+ssh "${ssh_args[@]}" "$remote" true
+
+write_state setup "installing tools and syncing exact r41 runtime"
+ssh "${ssh_args[@]}" "$remote" \
+  "if ! command -v git >/dev/null || ! command -v rsync >/dev/null || ! command -v curl >/dev/null; then sudo apt-get update && sudo apt-get install -y git rsync curl; fi"
+ssh "${ssh_args[@]}" "$remote" \
+  "test -d '$repo/.git' || git clone --branch codex/opsd-lora-stability --single-branch https://github.com/PrimeIntellect-ai/prime-rl.git '$repo'"
+
+for path in packages/prime-rl-configs src/prime_rl deps configs/opd-gap; do
+  rsync -az --exclude .git -e "$ssh_cmd" "$source_repo/$path/" "$remote:$repo/$path/"
+done
+rsync -az -e "$ssh_cmd" \
+  "$source_repo/pyproject.toml" "$source_repo/uv.lock" \
+  "$source_repo/scripts/opd_gap_audit_diag_topk.py" "$remote:$repo/scripts/"
+if [[ -f "$source_repo/.env" ]]; then
+  scp -q -i "$key" -P "$port" -o StrictHostKeyChecking=no "$source_repo/.env" "$remote:$repo/.env"
+fi
+if [[ -f /home/ubuntu/.netrc ]]; then
+  scp -q -i "$key" -P "$port" -o StrictHostKeyChecking=no /home/ubuntu/.netrc "$remote:/home/ubuntu/.netrc"
+  ssh "${ssh_args[@]}" "$remote" 'chmod 600 /home/ubuntu/.netrc'
+fi
+
+ssh "${ssh_args[@]}" "$remote" "mkdir -p '/home/ubuntu/.cache/verifiers/general_agent/$task_ref'"
+rsync -az -e "$ssh_cmd" \
+  "/home/ubuntu/.cache/verifiers/general_agent/$task_ref/" \
+  "$remote:/home/ubuntu/.cache/verifiers/general_agent/$task_ref/"
+
+ssh "${ssh_args[@]}" "$remote" 'command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh'
+ssh "${ssh_args[@]}" "$remote" "cd '$repo' && /home/ubuntu/.local/bin/uv sync --all-extras"
+ssh "${ssh_args[@]}" "$remote" \
+  "cd '$repo' && /home/ubuntu/.local/bin/uv run --no-sync python -c 'import torch, verifiers; assert torch.cuda.device_count() == 8; print(torch.cuda.device_count())'"
+
+run_arm() {
+  local arm=$1
+  local config="configs/opd-gap/genagent-band000060-qwen35-opsd-${arm}-pod-r41-smoke2.toml"
+  local output="outputs-genagent-opsd-1lp-d64-${arm}-band000060-k8-tp4-pod-r41-smoke2-20260715"
+  write_state "${arm}_dryrun" "$config"
+  ssh "${ssh_args[@]}" "$remote" \
+    "cd '$repo' && rm -rf '/tmp/r41-${arm}-dry' && /home/ubuntu/.local/bin/uv run --no-sync rl @ '$config' --dry-run --output-dir '/tmp/r41-${arm}-dry'"
+  write_state "${arm}_running" "$output"
+  timeout --signal=TERM --kill-after=5m 3h \
+    ssh "${ssh_args[@]}" "$remote" \
+      "cd '$repo' && set -a && source .env && set +a && export PATH='/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin' && /home/ubuntu/.local/bin/uv run --no-sync rl @ '$config'"
+  write_state "${arm}_auditing" "$output"
+  for step in 0 1; do
+    ssh "${ssh_args[@]}" "$remote" \
+      "cd '$repo' && /home/ubuntu/.local/bin/uv run --no-sync scripts/opd_gap_audit_diag_topk.py '$output/token_exports/step_${step}'" \
+      | tee "/home/ubuntu/opd-gap-r41-${arm}-audit-step${step}.json"
+  done
+  preserve_artifacts
+}
+
+run_arm fullanswer
+run_arm answerplan
+write_state complete "four field audits passed; artifacts preserved; pod termination requested"
