@@ -4,6 +4,7 @@ set -euo pipefail
 
 state=${R41_AR_STATE:-/home/ubuntu/opd-gap-r41-ar-monitor-state.json}
 artifact_root=${R41_AR_ARTIFACT_ROOT:-/home/ubuntu/opd-gap-artifacts/r41-ar}
+pod_gate_root=${R41_POD_GATE_ROOT:-/home/ubuntu/opd-gap-artifacts/r41-pod-gates}
 repo=/home/tim/prime-rl
 
 # Full-run promotion is an explicit operator action. A resurrected service must
@@ -99,6 +100,9 @@ audit_policy_step() {
 
 smoke_ready() {
   local arm=$1 output=${smoke_outputs[$1]}
+  if [[ "$arm" != grpo && -s "$pod_gate_root/${arm}.PASS" ]]; then
+    return 0
+  fi
   remote_file "$output/run_default/token_exports/step_0/STABLE" || return 1
   remote_file "$output/run_default/token_exports/step_1/STABLE" || return 1
   audit_policy_step "$arm" "$output" 0
