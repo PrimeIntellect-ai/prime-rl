@@ -800,10 +800,6 @@ class MoE(nn.Module):
 
 @torch.compile(dynamic=True)
 def relu2(x: torch.Tensor) -> torch.Tensor:
-    # Fused via inductor: relu+square become a single pointwise kernel that reads x and
-    # writes the output directly, instead of materializing an extra full-size relu(x)
-    # tensor. This is the largest MoE activation and the OOM site for high top-k models
-    # (NemotronH: top-22, interm 2688).
     return F.relu(x).square()
 
 
