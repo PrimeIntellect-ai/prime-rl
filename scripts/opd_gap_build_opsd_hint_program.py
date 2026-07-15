@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import random
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -14,32 +15,16 @@ import tomli_w
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "configs" / "opd-gap"
 BASE_CONFIG = CONFIG_DIR / "genagent-p8var8lt-qwen35-opsd-d64-r37-full100.toml"
-REVISION = "r38"
+GRPO_BASE_CONFIG = CONFIG_DIR / "genagent-p8var8lt-qwen35-grpo-r37-full100.toml"
+REVISION = "r40"
 DATE = "20260715"
-
-TRAIN_TASKS = [
-    "cocktail_competition_t4",
-    "lighthouse_mgmt_t4",
-    "semiconductor_fab_t4",
-    "plant_clinic_t4",
-    "immigration_office_t3",
-    "museum_curation_t3",
-    "transplant_registry_t3",
-    "game_night_t3",
-    "leather_shop_t3",
-    "pest_control_t3",
-    "shipwreck_salvage_t3",
-    "factory_floor_t4",
-    "toy_lending_t3",
-    "trade_show_t4",
-]
-
-GEPA_TASKS = [
-    "poetry_slam_t4",
-    "mine_rescue_t4",
-    "translation_agency_t4",
-    "distillery_t3",
-]
+SEED = 20260715
+TASKSET_REF = "a2b76f6ac3469f7f50171760c0d0dba38360edc4"
+TASK_ROOT = Path.home() / ".cache/verifiers/general_agent" / TASKSET_REF / "tasks"
+MIN_METADATA_PASS_RATE = 0.0
+MAX_METADATA_PASS_RATE_EXCLUSIVE = 0.6
+GEPA_TRAIN_COUNT = 8
+GEPA_EVAL_COUNT = 8
 
 HELDOUT_TASKS = [
     "soap_making_t4",
@@ -82,6 +67,48 @@ ARMS = {
 }
 
 
+def metadata_pass_rate(metadata: dict[str, Any]) -> float | None:
+    for entry in metadata.get("pass_rates", []):
+        if entry.get("solver") == "local" and entry.get("model") == "openai/gpt-5-mini":
+            return float(entry["value"])
+    return None
+
+
+def select_tasks() -> tuple[list[dict[str, Any]], list[str], list[str], list[str]]:
+    candidates: dict[str, dict[str, Any]] = {}
+    for task_toml in sorted(TASK_ROOT.glob("*/task.toml")):
+        raw = task_toml.read_bytes()
+        metadata = tomllib.loads(raw.decode()).get("metadata", {})
+        tier = metadata.get("tier")
+        rate = metadata_pass_rate(metadata)
+        name = metadata.get("name")
+        if (
+            name is None
+            or name in HELDOUT_TASKS
+            or tier not in {3, 4}
+            or rate is None
+            or not MIN_METADATA_PASS_RATE <= rate < MAX_METADATA_PASS_RATE_EXCLUSIVE
+        ):
+            continue
+        candidates[name] = {
+            "task": name,
+            "tier": int(tier),
+            "metadata_pass_rate": rate,
+            "task_toml_sha256": hashlib.sha256(raw).hexdigest(),
+            "gold_sha256": hashlib.sha256((task_toml.parent / "gold.json").read_bytes()).hexdigest(),
+        }
+
+    entries = sorted(candidates.values(), key=lambda entry: entry["task"])
+    random.Random(SEED).shuffle(entries)
+    required = GEPA_TRAIN_COUNT + GEPA_EVAL_COUNT + 1
+    if len(entries) < required:
+        raise RuntimeError(f"only {len(entries)} eligible tasks; need at least {required}")
+    gepa_train = [entry["task"] for entry in entries[:GEPA_TRAIN_COUNT]]
+    gepa_eval = [entry["task"] for entry in entries[GEPA_TRAIN_COUNT : GEPA_TRAIN_COUNT + GEPA_EVAL_COUNT]]
+    train = [entry["task"] for entry in entries[GEPA_TRAIN_COUNT + GEPA_EVAL_COUNT :]]
+    return entries, train, gepa_train, gepa_eval
+
+
 def set_algo(config: dict[str, Any], arm: str) -> None:
     spec = ARMS[arm]
     for algo in (
@@ -99,19 +126,19 @@ def set_algo(config: dict[str, Any], arm: str) -> None:
         )
 
 
-def configure(arm: str, steps: int, placement: str) -> dict[str, Any]:
+def configure(arm: str, steps: int, placement: str, train_tasks: list[str]) -> dict[str, Any]:
     config = copy.deepcopy(tomllib.loads(BASE_CONFIG.read_text()))
-    phase = "smoke2" if steps == 2 else "qual20"
-    descriptor = f"opsd-1lp-d64-{arm}-p14mix-k8-tp4-{placement}-{REVISION}-{phase}-{DATE}"
+    phase = "smoke2" if steps == 2 else "full100"
+    descriptor = f"opsd-1lp-d64-{arm}-band000060-k8-tp4-{placement}-{REVISION}-{phase}-{DATE}"
     output = f"outputs-genagent-{descriptor}"
 
     config["output_dir"] = output
     config["max_steps"] = steps
     config["trainer"]["max_steps"] = steps
-    config["trainer"]["ckpt"]["interval"] = 1 if steps == 2 else 5
+    config["trainer"]["ckpt"]["interval"] = 1 if steps == 2 else 10
     config["trainer"]["wandb"]["name"] = descriptor
     config["orchestrator"]["max_steps"] = steps
-    config["orchestrator"]["ckpt"]["interval"] = 1 if steps == 2 else 5
+    config["orchestrator"]["ckpt"]["interval"] = 1 if steps == 2 else 10
     config["orchestrator"]["wandb"]["name"] = descriptor
     config["orchestrator"]["prime_monitor"]["run_name"] = descriptor
     config["wandb"]["name"] = descriptor
@@ -125,8 +152,11 @@ def configure(arm: str, steps: int, placement: str) -> dict[str, Any]:
     )
 
     train_taskset = config["orchestrator"]["train"]["env"][0]["taskset"]
-    train_taskset["tasks"] = TRAIN_TASKS
-    train_taskset["limit"] = len(TRAIN_TASKS)
+    train_taskset["tasks"] = train_tasks
+    train_taskset["limit"] = len(train_tasks)
+    train_taskset["min_pass_rate"] = 0.0
+    train_taskset["max_pass_rate"] = MAX_METADATA_PASS_RATE_EXCLUSIVE
+    train_taskset["shuffle_seed"] = SEED
     eval_taskset = config["orchestrator"]["eval"]["env"][0]["taskset"]
     eval_taskset["tasks"] = HELDOUT_TASKS
     eval_taskset["limit"] = len(HELDOUT_TASKS)
@@ -139,18 +169,59 @@ def configure(arm: str, steps: int, placement: str) -> dict[str, Any]:
     if placement == "pod":
         config.pop("slurm", None)
     else:
-        config["slurm"]["job_name"] = f"genagent-{arm}-p14mix-{REVISION}-{phase}"
+        config["slurm"]["job_name"] = f"genagent-{arm}-band000060-{REVISION}-{phase}"
+    return config
+
+
+def configure_grpo(steps: int, placement: str, train_tasks: list[str]) -> dict[str, Any]:
+    config = copy.deepcopy(tomllib.loads(GRPO_BASE_CONFIG.read_text()))
+    phase = "smoke2" if steps == 2 else "full100"
+    descriptor = f"grpo-band000060-k8-tp4-{placement}-{REVISION}-{phase}-{DATE}"
+    config["output_dir"] = f"outputs-genagent-{descriptor}"
+    config["max_steps"] = steps
+    config["trainer"]["max_steps"] = steps
+    config["trainer"]["ckpt"]["interval"] = 1 if steps == 2 else 10
+    config["trainer"]["wandb"]["name"] = descriptor
+    config["orchestrator"]["max_steps"] = steps
+    config["orchestrator"]["ckpt"]["interval"] = 1 if steps == 2 else 10
+    config["orchestrator"]["wandb"]["name"] = descriptor
+    config["orchestrator"]["prime_monitor"]["run_name"] = descriptor
+    config["wandb"]["name"] = descriptor
+    filters = [
+        {"type": "gibberish", "enforce": False, "token_id_threshold": 100000, "logprob_offset": 2.0},
+        {"type": "repetition", "enforce": False, "window": 3000, "prob_threshold": 0.99},
+        {"type": "zero_advantage", "enforce": True},
+    ]
+    config["orchestrator"]["pre_batch_filters"] = filters
+    config["orchestrator"]["post_batch_filters"] = copy.deepcopy(filters)
+    train_taskset = config["orchestrator"]["train"]["env"][0]["taskset"]
+    train_taskset["tasks"] = train_tasks
+    train_taskset["limit"] = len(train_tasks)
+    train_taskset["min_pass_rate"] = MIN_METADATA_PASS_RATE
+    train_taskset["max_pass_rate"] = MAX_METADATA_PASS_RATE_EXCLUSIVE
+    train_taskset["shuffle_seed"] = SEED
+    eval_env = config["orchestrator"]["eval"]["env"][0]
+    eval_env["taskset"]["tasks"] = HELDOUT_TASKS
+    eval_env["taskset"]["limit"] = len(HELDOUT_TASKS)
+    eval_env["num_examples"] = len(HELDOUT_TASKS)
+    eval_env["interval"] = 10
+    config["inference"].setdefault("env_vars", {})["VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS"] = "1800"
+    if placement == "pod":
+        config.pop("slurm", None)
+    else:
+        config["slurm"]["job_name"] = f"genagent-grpo-band000060-{REVISION}-{phase}"
     return config
 
 
 def main() -> None:
+    task_entries, train_tasks, gepa_train_tasks, gepa_eval_tasks = select_tasks()
     configs: dict[str, Any] = {}
     for arm in ARMS:
-        for steps in (2, 20):
-            phase = "smoke2" if steps == 2 else "qual20"
+        for steps in (2, 100):
+            phase = "smoke2" if steps == 2 else "full100"
             for placement in ("ar", "pod"):
-                config = configure(arm, steps, placement)
-                path = CONFIG_DIR / f"genagent-p14mix-qwen35-opsd-{arm}-{placement}-{REVISION}-{phase}.toml"
+                config = configure(arm, steps, placement, train_tasks)
+                path = CONFIG_DIR / f"genagent-band000060-qwen35-opsd-{arm}-{placement}-{REVISION}-{phase}.toml"
                 path.write_bytes(tomli_w.dumps(config, multiline_strings=True).encode())
                 configs[f"{arm}-{placement}-{phase}"] = {
                     "path": str(path.relative_to(ROOT)),
@@ -159,14 +230,34 @@ def main() -> None:
                 }
                 print(path.relative_to(ROOT))
 
+    for steps in (2, 100):
+        phase = "smoke2" if steps == 2 else "full100"
+        for placement in ("ar", "pod"):
+            config = configure_grpo(steps, placement, train_tasks)
+            path = CONFIG_DIR / f"genagent-band000060-qwen35-grpo-{placement}-{REVISION}-{phase}.toml"
+            path.write_bytes(tomli_w.dumps(config, multiline_strings=True).encode())
+            configs[f"grpo-{placement}-{phase}"] = {
+                "path": str(path.relative_to(ROOT)),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "output_dir": config["output_dir"],
+            }
+            print(path.relative_to(ROOT))
+
     manifest = {
         "revision": REVISION,
         "taskset_id": "general-agent-v1",
-        "taskset_ref": "a2b76f6ac3469f7f50171760c0d0dba38360edc4",
-        "qualification_source": "evals/genagent-base-band40-k32-hosted-r01-20260715/analysis.json",
-        "qualification_rule": "at least two mixed-reward groups of k=8, zero errors, truncation <= 0.25",
-        "train_tasks": TRAIN_TASKS,
-        "gepa_only_tasks": GEPA_TASKS,
+        "taskset_ref": TASKSET_REF,
+        "selection": (
+            "all unique tier-3/4 tasks with local openai/gpt-5-mini metadata pass rate "
+            ">=0.0 and <0.6; no Qwen-success filtering"
+        ),
+        "selection_seed": SEED,
+        "minimum_metadata_pass_rate": MIN_METADATA_PASS_RATE,
+        "maximum_metadata_pass_rate_exclusive": MAX_METADATA_PASS_RATE_EXCLUSIVE,
+        "task_entries": task_entries,
+        "train_tasks": train_tasks,
+        "gepa_train_tasks": gepa_train_tasks,
+        "gepa_eval_tasks": gepa_eval_tasks,
         "heldout_tasks": HELDOUT_TASKS,
         "group_size": 8,
         "objective": "single_token_ref_kl",
@@ -174,7 +265,7 @@ def main() -> None:
         "gepa_selected_prompt": None,
         "configs": configs,
     }
-    manifest_path = CONFIG_DIR / f"genagent-p14mix-qwen35-opsd-hints-{REVISION}-manifest.json"
+    manifest_path = CONFIG_DIR / f"genagent-band000060-qwen35-opsd-hints-{REVISION}-manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(manifest_path.relative_to(ROOT))
 

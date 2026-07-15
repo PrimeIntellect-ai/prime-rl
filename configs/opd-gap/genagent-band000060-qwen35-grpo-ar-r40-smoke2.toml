@@ -1,0 +1,1477 @@
+output_dir = "outputs-genagent-grpo-band000060-k8-tp4-ar-r40-smoke2-20260715"
+max_steps = 2
+seq_len = 65536
+bench = false
+
+[trainer]
+matmul_precision = "high"
+max_steps = 2
+enable_router_replay = false
+dist_timeout_seconds = 3600
+max_concurrent_runs = 1
+enable_token_export = true
+
+[trainer.model]
+name = "Qwen/Qwen3.5-35B-A3B"
+trust_remote_code = false
+seq_len = 65536
+attn = "flash_attention_2"
+fsdp_cpu_offload = false
+optim_cpu_offload = true
+reshard_after_forward = true
+dp_replicate = 1
+ep = 4
+ep_comm_backend = "torch"
+deepep_num_sms = 20
+cp = 2
+cp_style = "ulysses"
+impl = "custom"
+optimization_dtype = "float32"
+reduce_dtype = "float32"
+moe_use_grouped_mm = true
+fp8 = false
+freeze_moe_router = false
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.compile]
+fullgraph = false
+
+[trainer.model.ac]
+mode = "full"
+freq = 1
+targets = [
+    "norm",
+]
+
+[trainer.model.ac_offloading]
+pin_memory = true
+max_inflight_activations = 5
+
+[trainer.model.lora]
+rank = 32
+alpha = 64.0
+dropout = 0.0
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+    "experts",
+    "fc1_latent_proj",
+    "fc2_latent_proj",
+]
+modules_to_save = []
+
+[trainer.model.debug]
+random_init = false
+force_balanced_routing = false
+
+[trainer.tokenizer]
+name = "Qwen/Qwen3.5-35B-A3B"
+trust_remote_code = false
+
+[trainer.data]
+
+[trainer.loss]
+type = "default"
+dppo_mask_low = 0.2
+dppo_mask_high = 0.2
+adv_tau = 1.0
+kl_tau = 0.001
+
+[trainer.optim]
+lr = 1e-05
+weight_decay = 0.01
+max_norm = 1.0
+type = "adamw"
+betas1 = 0.9
+betas2 = 0.999
+
+[trainer.scheduler]
+type = "constant"
+
+[trainer.ckpt]
+interval = 1
+skip_gather_master_weights = true
+weights_only = false
+trainable_only = true
+keep_last = 2
+skip_progress = false
+skip_scheduler = false
+skip_dataloader = false
+skip_optimizer = false
+
+[trainer.ckpt.weights]
+save_sharded = true
+save_format = "safetensors"
+save_adapter_separately = true
+
+[trainer.weight_broadcast]
+type = "filesystem"
+save_sharded = true
+save_format = "safetensors"
+
+[trainer.rollout_transport]
+type = "filesystem"
+
+[trainer.log]
+level = "debug"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+ranks_filter = [
+    0,
+]
+
+[trainer.wandb]
+project = "opd-gap"
+entity = "primeintellect"
+name = "grpo-band000060-k8-tp4-ar-r40-smoke2-20260715"
+offline = false
+
+[trainer.gc]
+interval = 50
+
+[trainer.env_vars]
+
+[orchestrator]
+pre_batch_filters = [
+    { type = "gibberish", enforce = false, token_id_threshold = 100000, logprob_offset = 2.0 },
+    { type = "repetition", enforce = false, window = 3000, prob_threshold = 0.99 },
+    { type = "zero_advantage", enforce = true },
+]
+post_batch_filters = [
+    { type = "gibberish", enforce = false, token_id_threshold = 100000, logprob_offset = 2.0 },
+    { type = "repetition", enforce = false, window = 3000, prob_threshold = 0.99 },
+    { type = "zero_advantage", enforce = true },
+]
+collect_inference_metrics = true
+batch_size = 8
+oversampling_factor = 0.5
+max_inflight_rollouts = 8
+group_size = 8
+seq_len = 65536
+num_train_workers = 2
+max_steps = 2
+max_off_policy_steps = 4
+bench = false
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.sampling]
+source = "policy"
+
+[orchestrator.model]
+name = "Qwen/Qwen3.5-35B-A3B"
+trust_remote_code = false
+
+[orchestrator.model.lora]
+name = "r32-a64.0"
+rank = 32
+alpha = 64.0
+
+[orchestrator.model.client]
+wait_for_ready_timeout = 1800
+base_url = [
+    "http://localhost:8000/v1",
+]
+api_key_var = "VLLM_API_KEY"
+skip_model_check = false
+dp_rank_count = 1
+
+[orchestrator.model.client.headers]
+
+[orchestrator.model.client.headers_from_env]
+
+[orchestrator.model.client.extra_headers_from_state]
+X-Session-ID = "trajectory_id"
+
+[orchestrator.train]
+max_retries = 3
+
+[[orchestrator.train.env]]
+max_turns = 40
+max_input_tokens = 56000
+max_output_tokens = 24000
+max_total_tokens = 60000
+multiplex = 32
+name = "genagent-train"
+max_retries = 3
+group_size = 8
+
+[orchestrator.train.env.taskset]
+id = "general-agent-v1"
+ref = "a2b76f6ac3469f7f50171760c0d0dba38360edc4"
+tasks = [
+    "alpaca_farm_t4",
+    "origami_studio_t4",
+    "gas_station_t3",
+    "pet_boarding_t3",
+    "balloon_rides_t3",
+    "election_audit_t4",
+    "recipe_box_t4",
+    "mechanic_shop_t3",
+    "hoa_management_t4",
+    "sneaker_consignment_t4",
+    "currency_exchange_t4",
+    "jet_charter_t4",
+    "vintage_camera_t3",
+    "dog_show_t4",
+    "quilt_making_t4",
+    "opera_house_t4",
+    "flight_crew_scheduling_t3",
+    "maritime_port_t4",
+    "hydro_dam_t3",
+    "skateboard_builder_t4",
+    "dj_set_t3",
+    "cinema_t3",
+    "millinery_t3",
+    "flea_market_t3",
+    "rooftop_bar_t3",
+    "food_truck_t3",
+    "sake_brewery_t3",
+    "coffee_auction_t4",
+    "locksmith_t4",
+    "escrow_mgmt_t3",
+    "triathlon_t4",
+    "student_club_t4",
+    "accounting_firm_t4",
+    "estate_sale_t3",
+    "sailing_regatta_t3",
+    "stunt_coordination_t3",
+    "sommelier_t4",
+    "kite_festival_t3",
+    "triathlon_t3",
+    "roller_coaster_design_t3",
+    "compounding_pharmacy_t4",
+    "drug_discovery_t4",
+    "drug_discovery_t3",
+    "paintball_arena_t3",
+    "game_balance_t3",
+    "obedience_school_t3",
+    "community_center_t3",
+    "skateboard_shop_t3",
+    "candle_making_t4",
+    "sculpture_foundry_t4",
+    "marionette_theater_t4",
+    "murder_mystery_t4",
+    "wildlife_migration_t4",
+    "creature_sanctuary_t4",
+    "fragrance_lab_t3",
+    "art_appraisal_t3",
+    "sound_mixing_t4",
+    "ski_resort_t4",
+    "print_farm_t3",
+    "dinner_theater_t4",
+    "museum_heist_t3",
+    "car_restoration_t3",
+    "detective_agency_t3",
+    "pizza_delivery_t4",
+    "skincare_routine_t3",
+    "mountaineering_t3",
+    "tea_estate_t3",
+    "star_party_t4",
+    "witness_protection_t3",
+    "kayak_rental_t3",
+    "property_appraisal_t4",
+    "chess_academy_t4",
+    "flight_crew_scheduling_t4",
+    "transit_network_t4",
+    "dog_show_t3",
+    "banking_t4",
+    "fish_hatchery_t4",
+    "leather_workshop_t4",
+    "apartment_swap_t3",
+    "herbalist_t4",
+    "coffee_subscription_t4",
+    "birdwatching_t4",
+    "skincare_lab_t4",
+    "food_delivery_t4",
+    "weather_station_t3",
+    "immigration_office_t3",
+    "chocolate_factory_t3",
+    "jewelry_repair_t3",
+    "summer_camp_t4",
+    "dog_training_t4",
+    "mars_colony_t4",
+    "paleontology_lab_t3",
+    "champagne_house_t4",
+    "sailing_charter_t4",
+    "charity_auction_t3",
+    "cocktail_competition_t4",
+    "plumbing_dispatch_t3",
+    "whale_tour_t4",
+    "optometry_clinic_t3",
+    "sourdough_bakery_t4",
+    "cobbler_t4",
+    "casting_call_t3",
+    "foraging_guide_t4",
+    "flower_auction_t3",
+    "permaculture_design_t4",
+    "pet_hotel_t3",
+    "biochar_facility_t4",
+    "maple_sugaring_t3",
+    "event_staffing_t3",
+    "lifeguard_t4",
+    "food_truck_rally_t4",
+    "semiconductor_fab_t3",
+    "supper_club_t4",
+    "embassy_t4",
+    "warehouse_logistics_t4",
+    "enamel_pin_factory_t4",
+    "kart_track_t3",
+    "cartography_workshop_t3",
+    "game_studio_t3",
+    "synbio_lab_t3",
+    "spice_blending_t4",
+    "craft_soda_t4",
+    "dim_sum_t4",
+    "county_fair_t4",
+    "typewriter_repair_t4",
+    "soap_making_t3",
+    "hydroponics_t4",
+    "submersible_ops_t4",
+    "museum_curation_t3",
+    "fantasy_league_t3",
+    "book_swap_t4",
+    "amusement_park_t3",
+    "card_shop_t4",
+    "quarantine_station_t4",
+    "jet_charter_t3",
+    "food_coop_t3",
+    "lighthouse_mgmt_t3",
+    "glacier_monitor_t3",
+    "permit_office_t3",
+    "potluck_planner_t3",
+    "orchid_exhibition_t4",
+    "darts_league_t4",
+    "aqueduct_t3",
+    "winery_t3",
+    "audiobook_studio_t3",
+    "diner_t3",
+    "candle_shop_t3",
+    "meditation_retreat_t4",
+    "cable_car_t3",
+    "wedding_registry_t3",
+    "dog_walking_t4",
+    "pet_insurance_t3",
+    "herbal_apothecary_t4",
+    "zipline_park_t3",
+    "origami_workshop_t3",
+    "crop_rotation_t3",
+    "wedding_seating_t3",
+    "boarding_kennel_t3",
+    "sawmill_t3",
+    "aquaponics_t3",
+    "space_debris_t3",
+    "maple_syrup_t3",
+    "maple_sugaring_t4",
+    "engraving_shop_t4",
+    "indie_game_studio_t3",
+    "skateboard_builder_t3",
+    "axe_lounge_t4",
+    "fragrance_lab_t4",
+    "pool_service_t4",
+    "fog_harvesting_t4",
+    "aquascaping_t3",
+    "space_tourism_t3",
+    "city_council_t3",
+    "printmaking_studio_t3",
+    "consulting_firm_t3",
+    "personal_chef_t3",
+    "frequent_flyer_t3",
+    "book_swap_t3",
+    "murder_mystery_t3",
+    "olive_press_t3",
+    "keyboard_build_t3",
+    "coral_reef_t3",
+    "dance_studio_t3",
+    "search_and_rescue_t3",
+    "barbershop_t3",
+    "pet_boarding_t4",
+    "coffee_competition_t3",
+    "gem_exchange_t3",
+    "rv_rental_t3",
+    "screen_printing_t4",
+    "property_title_t4",
+    "influencer_campaign_t3",
+    "cobbler_shop_t4",
+    "optometry_clinic_t4",
+    "book_binding_t3",
+    "cinema_t4",
+    "hackathon_t3",
+    "gift_basket_t3",
+    "bake_sale_t4",
+    "dry_cleaning_t4",
+    "lapidary_workshop_t4",
+    "haberdashery_t4",
+    "space_mission_t4",
+    "submersible_ops_t3",
+    "aquatics_center_t3",
+    "fishery_management_t4",
+    "payroll_t3",
+    "watchmaker_t3",
+    "alpaca_ranch_t4",
+    "currency_exchange_t3",
+    "bounty_hunting_t3",
+    "publishing_house_t4",
+    "carbon_credit_t4",
+    "venture_capital_t4",
+    "falconry_t3",
+    "gem_workshop_t4",
+    "sawmill_t4",
+    "shipwreck_salvage_t4",
+    "food_truck_fleet_t4",
+    "sculpture_foundry_t3",
+    "mining_operation_t3",
+    "heist_planning_t4",
+    "visa_office_t3",
+    "smokehouse_t3",
+    "grant_review_t4",
+    "mushroom_farm_t3",
+    "film_production_t3",
+    "pearl_farming_t3",
+    "pet_food_lab_t3",
+    "bbq_competition_t4",
+    "synth_workshop_t3",
+    "darkroom_t3",
+    "foley_studio_t4",
+    "jewelry_design_t4",
+    "transplant_registry_t3",
+    "glass_blowing_t3",
+    "canning_workshop_t3",
+    "appliance_repair_t3",
+    "vintage_camera_t4",
+    "boarding_school_t3",
+    "street_festival_t4",
+    "rowing_club_t4",
+    "dye_workshop_t4",
+    "cooperage_t3",
+    "rafting_outfitter_t3",
+    "culinary_school_t4",
+    "food_science_lab_t3",
+    "poison_control_t4",
+    "watchmaker_t4",
+    "electrical_service_t4",
+    "dinosaur_park_t3",
+    "comedy_festival_t4",
+    "art_forgery_lab_t3",
+    "space_salvage_t4",
+    "bowling_league_t3",
+    "race_team_t3",
+    "obedience_school_t4",
+    "nanny_agency_t3",
+    "pizza_delivery_t3",
+    "kennel_t4",
+    "med_spa_t3",
+    "lapidary_t3",
+    "realty_t4",
+    "charity_auction_t4",
+    "art_consignment_t4",
+    "post_office_t4",
+    "tea_estate_t4",
+    "fire_watch_t4",
+    "freelance_market_t3",
+    "cobbler_t3",
+    "mars_colony_t3",
+    "semiconductor_fab_t4",
+    "outbreak_response_t4",
+    "botanical_garden_t3",
+    "art_supply_t4",
+    "school_bus_t4",
+    "art_restoration_t4",
+    "rodeo_t4",
+    "carbon_credit_t3",
+    "sticker_shop_t4",
+    "cave_exploration_t3",
+    "hoa_management_t3",
+    "charcuterie_t3",
+    "plushie_workshop_t3",
+    "recipe_box_t3",
+    "deep_sea_mining_t4",
+    "coffee_auction_t3",
+    "organ_transplant_t3",
+    "customs_checkpoint_t4",
+    "audiobook_studio_t4",
+    "horse_racing_t3",
+    "perfume_lab_t4",
+    "toy_lending_t4",
+    "med_spa_t4",
+    "submarine_fleet_t3",
+    "gem_workshop_t3",
+    "clinical_trial_t3",
+    "axe_throwing_t4",
+    "parade_planning_t3",
+    "nuclear_reactor_t4",
+    "tax_preparation_t4",
+    "magic_shop_t3",
+    "hiking_trail_t4",
+    "permaculture_t4",
+    "amusement_park_t4",
+    "school_lunch_t4",
+    "laundromat_t3",
+    "mural_project_t3",
+    "space_tourism_t4",
+    "frame_shop_t3",
+    "summer_camp_t3",
+    "rooftop_bar_t4",
+    "telescope_maker_t3",
+    "dna_testing_lab_t3",
+    "dungeon_design_t3",
+    "bounty_hunting_t4",
+    "wedding_seating_t4",
+    "school_cafeteria_t3",
+    "trophy_shop_t4",
+    "freelance_market_t4",
+    "supplement_shop_t4",
+    "aqueduct_t4",
+    "scooter_share_t3",
+    "submarine_cable_t3",
+    "film_festival_t3",
+    "skincare_lab_t3",
+    "matchmaking_t3",
+    "secret_santa_t3",
+    "board_game_design_t4",
+    "beekeeping_apiary_t3",
+    "pet_show_t4",
+    "accounting_firm_t3",
+    "bank_branch_t3",
+    "meal_kit_service_t3",
+    "elevator_dispatch_t4",
+    "fossil_lab_t3",
+    "enamel_pin_factory_t3",
+    "trampoline_park_t4",
+    "truffle_hunt_t3",
+    "model_railroad_t4",
+    "ocean_salvage_t3",
+    "trade_show_t3",
+    "car_wash_t4",
+    "escrow_mgmt_t4",
+    "dinner_theater_t3",
+    "storm_chasing_t3",
+    "tea_blend_t4",
+    "band_battle_t3",
+    "opera_house_t3",
+    "script_coverage_t4",
+    "canning_preserves_t4",
+    "soap_workshop_t4",
+    "kart_racing_t4",
+    "perfume_lab_t3",
+    "tennis_club_t4",
+    "dairy_farm_t3",
+    "demolition_planning_t4",
+    "personal_finance_t4",
+    "submarine_fleet_t4",
+    "adventure_tour_t3",
+    "wax_museum_t4",
+    "custom_cake_t3",
+    "nutritionist_t4",
+    "seismic_monitor_t4",
+    "truffle_hunt_t4",
+    "rowing_club_t3",
+    "audio_mastering_t4",
+    "secret_santa_t4",
+    "tournament_bracket_t3",
+    "safari_tour_t3",
+    "casino_floor_t3",
+    "culinary_school_t3",
+    "crystal_growing_t3",
+    "personal_chef_t4",
+    "sprint_planning_t3",
+    "circus_t3",
+    "recycling_center_t4",
+    "watch_repair_t3",
+    "mun_conference_t4",
+    "home_theater_t3",
+    "appliance_repair_t4",
+    "ice_road_t4",
+    "cave_exploration_t4",
+    "cocktail_competition_t3",
+    "ramen_shop_t3",
+    "game_studio_t4",
+    "millinery_shop_t3",
+    "permaculture_design_t3",
+    "wedding_planner_t3",
+    "spelling_bee_t3",
+    "junkyard_t4",
+    "origami_studio_t3",
+    "fitness_planner_t4",
+    "synth_workshop_t4",
+    "mine_rescue_t3",
+    "election_campaign_t3",
+    "hazmat_logistics_t4",
+    "prop_rental_t4",
+    "biofuel_refinery_t3",
+    "quilting_workshop_t4",
+    "comic_grading_t3",
+    "shipping_port_t3",
+    "passport_office_t3",
+    "synth_repair_t4",
+    "millinery_t4",
+    "chimney_sweep_t3",
+    "ranch_mgmt_t4",
+    "compounding_pharmacy_t3",
+    "scholarship_office_t3",
+    "school_bus_t3",
+    "lapidary_t4",
+    "notary_office_t3",
+    "food_pantry_t4",
+    "pipeline_inspection_t3",
+    "dog_sled_race_t3",
+    "film_props_t4",
+    "kart_racing_t3",
+    "falconry_t4",
+    "wardrobe_stylist_t3",
+    "day_spa_t4",
+    "assisted_living_t4",
+    "storm_chasing_t4",
+    "cloud_seeding_t3",
+    "trampoline_park_t3",
+    "package_registry_t3",
+    "crop_rotation_t4",
+    "home_inspection_t3",
+    "safari_t3",
+    "plant_clinic_t4",
+    "physical_therapy_t4",
+    "home_staging_t4",
+    "game_balance_t4",
+    "customs_clearance_t3",
+    "geothermal_plant_t3",
+    "champagne_house_t3",
+    "personal_finance_t3",
+    "kintsugi_t4",
+    "quarantine_station_t3",
+    "escrow_service_t3",
+    "volcano_monitoring_t4",
+    "arcade_t3",
+    "immigration_office_t4",
+    "kintsugi_repair_t3",
+    "speed_dating_t4",
+    "scooter_share_t4",
+    "screen_printing_t3",
+    "poison_control_t3",
+    "dog_daycare_t4",
+    "tea_blend_t3",
+    "safari_tour_t4",
+    "corporate_retreat_t4",
+    "glacier_monitor_t4",
+    "paint_contractor_t4",
+    "food_science_lab_t4",
+    "car_restoration_t4",
+    "soap_studio_t4",
+    "hazmat_logistics_t3",
+    "gas_station_t4",
+    "vinyl_restoration_t3",
+    "study_abroad_t4",
+    "choir_t4",
+    "birdwatching_t3",
+    "coffee_shop_t4",
+    "mountaineering_t4",
+    "loyalty_rewards_t4",
+    "plushie_workshop_t4",
+    "pharmacy_t3",
+    "lapidary_studio_t3",
+    "meal_kit_service_t4",
+    "airline_ops_t3",
+    "food_truck_rally_t3",
+    "wedding_planning_t4",
+    "property_appraisal_t3",
+    "aesthetic_clinic_t3",
+    "canal_lock_system_t3",
+    "coffee_shop_t3",
+    "demolition_planning_t3",
+    "party_rental_t3",
+    "ferry_t3",
+    "charcuterie_t4",
+    "architecture_firm_t4",
+    "perfume_workshop_t3",
+    "magic_academy_t3",
+    "wine_blend_t4",
+    "rare_bookshop_t4",
+    "pet_food_lab_t4",
+    "monster_hunter_guild_t4",
+    "auction_house_t4",
+    "puzzle_escape_t3",
+    "wine_club_t4",
+    "seaweed_farm_t4",
+    "stunt_coord_t4",
+    "flower_auction_t4",
+    "gift_basket_t4",
+    "printmaking_studio_t4",
+    "dmv_t3",
+    "drone_light_show_t3",
+    "warehouse_inventory_t4",
+    "smart_home_t3",
+    "concert_tour_t4",
+    "poker_tournament_t3",
+    "car_show_t4",
+    "preserves_kitchen_t3",
+    "payroll_t4",
+    "electrical_service_t3",
+    "fog_harvesting_t3",
+    "craft_fair_t4",
+    "butterfly_conservatory_t3",
+    "soil_lab_t3",
+    "physical_therapy_t3",
+    "volcano_monitoring_t3",
+    "community_fridge_t3",
+    "space_station_t3",
+    "weather_station_t4",
+    "property_title_t3",
+    "model_rocket_t4",
+    "food_truck_fest_t3",
+    "sailing_regatta_t4",
+    "cleaning_service_t3",
+    "translation_agency_t4",
+    "driving_school_t4",
+    "calligraphy_studio_t3",
+    "city_marathon_t3",
+    "thesis_defense_t4",
+    "watchmaking_t4",
+    "vinyl_pressing_t3",
+    "tax_preparation_t3",
+    "volcano_observatory_t4",
+    "fraud_detection_t3",
+    "film_archive_t3",
+    "bicycle_workshop_t4",
+    "aesthetic_clinic_t4",
+    "sneaker_consignment_t3",
+    "pawn_shop_t3",
+    "election_audit_t3",
+    "frame_shop_t4",
+    "adventure_tour_t4",
+    "nuclear_plant_t4",
+    "vfx_pipeline_t3",
+    "diner_t4",
+    "pet_sitting_t4",
+    "carbon_trading_t4",
+    "laser_tag_t4",
+    "dog_breeding_t4",
+    "boba_shop_t3",
+    "commodity_exchange_t3",
+    "magazine_editorial_t3",
+    "marionette_theater_t3",
+    "elevator_dispatch_t3",
+    "museum_heist_t4",
+    "hvac_service_t4",
+    "seismic_station_t3",
+    "avalanche_safety_t4",
+    "book_binding_t4",
+    "cooperage_t4",
+    "nuclear_reactor_t3",
+    "indie_game_studio_t4",
+    "flower_farm_t4",
+    "court_docket_t3",
+    "estate_sale_t4",
+    "stunt_coordination_t4",
+    "axe_lounge_t3",
+    "diagnostic_lab_t4",
+    "tournament_bracket_t4",
+    "cocktail_bar_t3",
+    "water_park_t4",
+    "energy_audit_t4",
+    "glassblowing_t4",
+    "model_rocketry_t3",
+    "film_dubbing_t4",
+    "mining_operation_t4",
+    "ren_faire_t4",
+    "paper_mill_t4",
+    "asteroid_mining_t4",
+    "phone_repair_t3",
+    "freelance_platform_t4",
+    "coast_guard_t3",
+    "mine_rescue_t4",
+    "golf_course_t4",
+    "heli_charter_t3",
+    "hydro_dam_t4",
+    "vertical_farm_t4",
+    "arcade_t4",
+    "lantern_festival_t4",
+    "3d_print_t3",
+    "allergen_kitchen_t3",
+    "maple_syrup_t4",
+    "aquarium_t3",
+    "crypto_exchange_t3",
+    "family_reunion_t3",
+    "choir_festival_t4",
+    "casting_call_t4",
+    "kintsugi_repair_t4",
+    "scavenger_hunt_t4",
+    "coworking_space_t3",
+    "mun_conference_t3",
+    "boba_tea_t3",
+    "warehouse_logistics_t3",
+    "paint_contractor_t3",
+    "art_appraisal_t4",
+    "organ_transplant_t4",
+    "ghost_tour_t3",
+    "interview_scheduling_t3",
+    "horse_racing_t4",
+    "search_and_rescue_t4",
+    "print_farm_t4",
+    "pen_shop_t3",
+    "ad_agency_t3",
+    "laundry_service_t4",
+    "laundromat_t4",
+    "urban_planning_t3",
+    "data_center_t4",
+    "speed_dating_t3",
+    "thrift_store_t3",
+    "sound_mixing_t3",
+    "prison_warden_t3",
+    "3d_print_t4",
+    "arborist_t4",
+    "witness_relocation_t3",
+    "camera_rental_t4",
+    "commodity_exchange_t4",
+    "package_registry_t4",
+    "laundry_service_t3",
+    "clock_repair_t4",
+    "auction_house_t3",
+    "award_show_t3",
+    "seismic_station_t4",
+    "collision_repair_t4",
+    "shipyard_t4",
+    "notary_office_t4",
+    "rodeo_t3",
+    "tcg_tournament_t3",
+    "debate_tournament_t4",
+    "fantasy_league_t4",
+    "crypto_exchange_t4",
+    "county_fair_t3",
+    "dog_breeding_t3",
+    "investment_portfolio_t3",
+    "quarry_t3",
+    "watchmaking_t3",
+    "art_restoration_t3",
+    "adventurer_guild_t4",
+    "skateboard_shop_t4",
+    "retro_game_shop_t4",
+    "hardware_store_t3",
+    "fashion_design_t3",
+    "vr_arcade_t3",
+    "cartography_workshop_t4",
+    "helicopter_tour_t3",
+    "parade_planning_t4",
+    "laser_tag_t3",
+    "avalanche_safety_t3",
+    "supplement_shop_t3",
+    "lantern_festival_t3",
+    "study_abroad_t3",
+    "fulfillment_center_t3",
+    "bowling_league_t4",
+    "airline_ops_t4",
+    "wax_museum_t3",
+    "nutrition_clinic_t3",
+    "aquatics_center_t4",
+    "school_cafeteria_t4",
+    "custom_skateboard_t4",
+    "gastronomy_lab_t3",
+    "leather_shop_t4",
+    "microgreen_farm_t3",
+    "language_exchange_t4",
+    "street_festival_t3",
+    "butterfly_conservatory_t4",
+    "fraud_detection_t4",
+    "herbalist_t3",
+    "dog_walking_t3",
+    "star_party_t3",
+    "comic_grading_t4",
+    "grant_review_t3",
+    "haberdashery_t3",
+    "alpaca_ranch_t3",
+    "ad_agency_t4",
+    "coffee_cupping_t4",
+    "poke_bar_t3",
+    "foley_studio_t3",
+    "venture_capital_t3",
+    "ocean_salvage_t4",
+    "rafting_outfitter_t4",
+    "asteroid_defense_t4",
+    "fitness_planner_t3",
+    "wedding_planner_t4",
+    "prop_rental_t3",
+    "chemistry_lab_t4",
+    "nail_salon_t4",
+    "stunt_coord_t3",
+    "event_staffing_t4",
+    "eclipse_chaser_t3",
+    "hedge_fund_t4",
+    "community_fridge_t4",
+    "dry_cleaning_t3",
+    "sommelier_t3",
+    "phone_repair_t4",
+    "print3d_t4",
+    "adventurer_guild_t3",
+    "allergen_kitchen_t4",
+    "customs_clearance_t4",
+    "witness_protection_t4",
+    "biofuel_refinery_t4",
+    "election_campaign_t4",
+    "bbq_championship_t3",
+    "fossil_lab_t4",
+    "fashion_stylist_t3",
+    "calligraphy_studio_t4",
+    "blood_bank_t4",
+    "seaweed_farm_t3",
+    "spice_blending_t3",
+    "game_show_t3",
+    "customs_border_t4",
+    "barista_competition_t4",
+    "matchmaking_service_t4",
+    "assisted_living_t3",
+    "day_spa_t3",
+    "bird_band_station_t4",
+    "outbreak_tracking_t4",
+    "fiber_optic_t3",
+    "model_rocket_t3",
+    "art_supply_t3",
+    "pet_show_t3",
+    "planetarium_t3",
+    "coin_mint_t3",
+    "film_dubbing_t3",
+    "insurance_underwriting_t4",
+    "leather_shop_t3",
+    "music_school_t3",
+    "farm_share_t4",
+    "creature_sanctuary_t3",
+    "steel_mill_t3",
+    "post_office_t3",
+    "daycare_t4",
+    "fireworks_show_t3",
+    "fermentation_lab_t4",
+    "music_festival_t3",
+    "collision_repair_t3",
+    "typewriter_repair_t3",
+    "dye_workshop_t3",
+    "seed_bank_t3",
+    "custom_pc_t3",
+    "stamp_collection_t4",
+    "pipeline_inspection_t4",
+    "hospital_staffing_t3",
+    "vulnerability_management_t3",
+    "cidery_t4",
+    "language_exchange_t3",
+    "karaoke_bar_t3",
+    "hvac_service_t3",
+    "food_truck_fest_t4",
+    "kite_festival_t4",
+    "crossword_t3",
+    "craft_cocktail_lab_t3",
+    "water_utility_t4",
+    "preserves_kitchen_t4",
+    "mural_commission_t3",
+    "urban_planning_t4",
+    "synbio_lab_t4",
+    "wildlife_migration_t3",
+    "game_night_t4",
+    "diagnostic_lab_t3",
+    "apothecary_t3",
+    "museum_curation_t4",
+    "archery_range_t3",
+    "deep_sea_mining_t3",
+    "reptile_rescue_t4",
+    "drone_light_show_t4",
+    "vinyl_restoration_t4",
+    "zipline_tour_t4",
+    "lifeguard_t3",
+    "sourdough_bakery_t3",
+    "timber_t4",
+    "railway_dispatch_t4",
+    "film_festival_t4",
+    "archery_range_t4",
+    "wine_club_t3",
+    "snow_removal_t4",
+    "spelling_bee_t4",
+    "mezcaleria_t3",
+    "millinery_shop_t4",
+    "kart_track_t4",
+    "vending_machine_t3",
+    "donut_shop_t3",
+    "property_management_t3",
+    "fire_watch_t3",
+    "transplant_registry_t4",
+    "nanny_agency_t4",
+    "crossword_t4",
+    "customs_border_t3",
+    "embassy_t3",
+    "insurance_underwriting_t3",
+    "electronics_repair_t4",
+    "robot_combat_t4",
+    "olive_press_t4",
+    "vintage_boutique_t4",
+    "recycling_center_t3",
+    "spice_merchant_t3",
+    "geocaching_t3",
+    "music_festival_t4",
+    "therapy_animal_t4",
+    "ham_radio_t3",
+    "border_checkpoint_t4",
+    "flea_market_t4",
+    "pool_service_t3",
+    "origami_t4",
+    "incense_workshop_t3",
+    "wedding_planning_t3",
+    "puzzle_escape_t4",
+    "game_night_t3",
+    "poetry_slam_t4",
+    "pet_foster_t4",
+    "paint_lab_t3",
+    "detective_agency_t4",
+    "canning_preserves_t3",
+    "christmas_tree_farm_t4",
+    "hiking_trail_t3",
+    "wardrobe_stylist_t4",
+    "game_show_t4",
+    "dungeon_design_t4",
+    "supper_club_t3",
+    "biobank_management_t3",
+    "paint_n_sip_t4",
+    "asteroid_mining_t3",
+    "vending_machine_t4",
+    "roller_coaster_design_t4",
+    "car_wash_t3",
+    "volcano_observatory_t3",
+    "coin_mint_t4",
+    "safari_t4",
+    "candle_making_t3",
+    "film_props_t3",
+    "lighthouse_mgmt_t4",
+    "model_railroad_t3",
+    "aquaponics_farm_t4",
+    "clinical_trial_t4",
+    "skincare_routine_t4",
+    "permaculture_t3",
+    "water_utility_t3",
+    "hydroponics_t3",
+    "biobank_t4",
+    "pet_therapy_t4",
+    "investment_portfolio_t4",
+    "ice_road_t3",
+    "leather_workshop_t3",
+    "jewelry_repair_t4",
+    "outbreak_response_t3",
+    "food_hall_t3",
+    "ramen_shop_t4",
+    "scavenger_hunt_t3",
+    "meal_kit_t4",
+    "fish_market_t4",
+    "maritime_port_t3",
+    "cocktail_bar_t4",
+    "fish_market_t3",
+    "script_coverage_t3",
+    "translation_agency_t3",
+    "boba_tea_t4",
+    "quarry_t4",
+    "meal_kit_t3",
+    "debate_tournament_t3",
+    "meditation_retreat_t3",
+    "orchard_t3",
+    "audio_mastering_t3",
+    "magazine_editorial_t4",
+    "dog_sled_race_t4",
+    "chimney_sweep_t4",
+    "nutritionist_t3",
+    "food_tour_t4",
+    "fantasy_draft_t3",
+    "choir_festival_t3",
+    "rv_rental_t4",
+    "incense_crafting_t4",
+    "pasta_workshop_t3",
+    "visa_processing_t4",
+    "board_game_cafe_t4",
+    "glassblowing_t3",
+    "foraging_guide_t3",
+    "music_school_t4",
+    "billiard_club_t4",
+    "craft_fair_t3",
+    "skydiving_center_t4",
+    "potluck_planner_t4",
+    "astrophotography_t4",
+    "keyboard_workshop_t4",
+    "ham_radio_t4",
+    "therapy_animal_t3",
+    "driving_school_t3",
+    "city_council_t4",
+    "herbal_apothecary_t3",
+    "chocolate_tasting_t3",
+    "orchid_nursery_t4",
+    "antiquarian_bookshop_t3",
+    "camera_rental_t3",
+    "dubbing_studio_t3",
+    "christmas_tree_farm_t3",
+    "synth_repair_t3",
+    "astrophotography_t3",
+    "meteorite_lab_t4",
+    "steel_mill_t4",
+    "craft_cocktail_lab_t4",
+    "planetarium_t4",
+    "railway_dispatch_t3",
+    "restaurant_inspection_t4",
+    "ranch_mgmt_t3",
+    "dubbing_studio_t4",
+    "gymnastics_meet_t4",
+    "fashion_stylist_t4",
+    "robot_combat_t3",
+    "golf_course_t3",
+    "dog_training_t3",
+    "darkroom_t4",
+    "boarding_kennel_t4",
+    "puzzle_hunt_t4",
+    "school_lunch_t3",
+    "paleontology_lab_t4",
+    "wedding_registry_t4",
+    "paint_n_sip_t3",
+    "corporate_retreat_t3",
+    "terrarium_workshop_t4",
+    "visa_processing_t3",
+    "cheese_making_t3",
+    "tcg_tournament_t4",
+    "meadery_t4",
+    "pet_foster_t3",
+    "family_reunion_t4",
+    "card_shop_t3",
+    "pet_therapy_t3",
+    "arborist_t3",
+    "influencer_campaign_t4",
+    "dairy_farm_t4",
+    "film_scout_t3",
+    "space_salvage_t3",
+    "textile_mill_t3",
+    "craft_soda_t3",
+    "coffee_grading_t4",
+    "consignment_boutique_t3",
+    "outbreak_tracking_t3",
+    "vr_arcade_t4",
+    "bank_branch_t4",
+    "custom_pc_t4",
+    "candle_shop_t4",
+]
+min_tier = 3
+max_tier = 4
+pass_rate_model = "openai/gpt-5-mini"
+pass_rate_solver = "local"
+min_pass_rate = 0.0
+max_pass_rate = 0.6
+shuffle_seed = 20260715
+start_idx = 0
+limit = 943
+
+[orchestrator.train.env.taskset.tools]
+colocated = false
+shared = false
+fork = false
+
+[orchestrator.train.env.taskset.tools.runtime]
+type = "subprocess"
+
+[orchestrator.train.env.harness]
+id = "null"
+forward_env = []
+
+[orchestrator.train.env.harness.runtime]
+type = "subprocess"
+
+[orchestrator.train.env.harness.env]
+
+[orchestrator.train.env.timeout]
+setup = 120.0
+rollout = 600.0
+scoring = 60.0
+
+[orchestrator.train.env.retries.rollout]
+max_retries = 0
+include = []
+exclude = []
+
+[orchestrator.train.env.args]
+
+[orchestrator.train.env.extra_env_kwargs]
+
+[orchestrator.train.env.pool]
+type = "elastic"
+multiplex = 128
+
+[orchestrator.train.env.sampling]
+temperature = 1.0
+max_completion_tokens = 4096
+
+[orchestrator.train.env.sampling.extra_body]
+top_k = -1
+min_p = 0.0
+return_token_ids = true
+
+[orchestrator.train.env.algo]
+type = "grpo"
+
+[orchestrator.train.env.algo.sampling]
+source = "policy"
+
+[orchestrator.train.sampling]
+temperature = 1.0
+max_completion_tokens = 4096
+
+[orchestrator.train.sampling.extra_body]
+
+[orchestrator.tokenizer]
+name = "Qwen/Qwen3.5-35B-A3B"
+trust_remote_code = false
+
+[orchestrator.renderer]
+name = "qwen3.5"
+enable_thinking = true
+add_vision_id = false
+image_cache_max = 256
+
+[orchestrator.optim]
+lr = 0.0001
+
+[orchestrator.eval]
+num_examples = 20
+group_size = 1
+max_retries = 3
+interval = 1000
+skip_first_step = true
+
+[[orchestrator.eval.env]]
+max_turns = 40
+max_input_tokens = 56000
+max_output_tokens = 24000
+max_total_tokens = 60000
+multiplex = 32
+name = "genagent-heldout"
+max_retries = 3
+num_examples = 20
+group_size = 1
+interval = 10
+
+[orchestrator.eval.env.taskset]
+id = "general-agent-v1"
+ref = "a2b76f6ac3469f7f50171760c0d0dba38360edc4"
+tasks = [
+    "soap_making_t4",
+    "incense_crafting_t3",
+    "car_show_t3",
+    "timber_t3",
+    "bbq_competition_t3",
+    "textile_mill_t4",
+    "vertical_farm_t3",
+    "fireworks_show_t4",
+    "party_rental_t4",
+    "wine_blend_t3",
+    "space_debris_t4",
+    "freelance_platform_t3",
+    "sewing_workshop_t3",
+    "chocolate_boutique_t3",
+    "science_fair_t4",
+    "fulfillment_center_t4",
+    "film_archive_t4",
+    "fermentation_lab_t3",
+    "coffee_cupping_t3",
+    "cable_car_t4",
+]
+min_tier = 3
+max_tier = 4
+pass_rate_model = "openai/gpt-5-mini"
+pass_rate_solver = "local"
+min_pass_rate = 0.1
+max_pass_rate = 0.5
+shuffle_seed = 20260713
+start_idx = 0
+limit = 20
+
+[orchestrator.eval.env.taskset.tools]
+colocated = false
+shared = false
+fork = false
+
+[orchestrator.eval.env.taskset.tools.runtime]
+type = "subprocess"
+
+[orchestrator.eval.env.harness]
+id = "null"
+forward_env = []
+
+[orchestrator.eval.env.harness.runtime]
+type = "subprocess"
+
+[orchestrator.eval.env.harness.env]
+
+[orchestrator.eval.env.timeout]
+setup = 120.0
+rollout = 600.0
+scoring = 60.0
+
+[orchestrator.eval.env.retries.rollout]
+max_retries = 0
+include = []
+exclude = []
+
+[orchestrator.eval.env.args]
+
+[orchestrator.eval.env.extra_env_kwargs]
+
+[orchestrator.eval.env.pool]
+type = "elastic"
+multiplex = 128
+
+[orchestrator.eval.env.sampling]
+temperature = 1.0
+max_completion_tokens = 4096
+
+[orchestrator.eval.env.sampling.extra_body]
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+max_completion_tokens = 4096
+
+[orchestrator.eval.sampling.extra_body]
+
+[orchestrator.log]
+level = "debug"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+
+[orchestrator.env_vars]
+
+[orchestrator.wandb]
+project = "opd-gap"
+entity = "primeintellect"
+name = "grpo-band000060-k8-tp4-ar-r40-smoke2-20260715"
+offline = false
+
+[orchestrator.wandb.log_extras]
+samples = true
+distributions = true
+interval = 10
+
+[orchestrator.prime_monitor]
+base_url = "https://api.primeintellect.ai/api/v1/rft"
+api_key_var = "PRIME_API_KEY"
+run_name = "grpo-band000060-k8-tp4-ar-r40-smoke2-20260715"
+
+[orchestrator.prime_monitor.log_extras]
+samples = true
+distributions = true
+interval = 10
+
+[orchestrator.ckpt]
+interval = 1
+keep_last = 2
+skip_progress = false
+
+[orchestrator.weight_broadcast]
+type = "filesystem"
+
+[orchestrator.rollout_transport]
+type = "filesystem"
+
+[inference]
+enable_lora = true
+max_loras = 1
+max_cpu_loras = 2
+max_lora_rank = 32
+enable_prefix_caching = false
+gpu_memory_utilization = 0.7
+api_server_count = 1
+data_parallel_rpc_port = 13345
+seed = 0
+enable_expert_parallel = false
+all2all_backend = "allgather_reducescatter"
+enable_eplb = false
+enable_dbo = false
+use_deep_gemm = false
+use_pd_kv_transfer = false
+enable_return_routed_experts = false
+enable_fp32_lm_head = true
+output_dir = "outputs"
+dry_run = false
+
+[inference.server]
+port = 8000
+liveness_timeout_seconds = 30.0
+
+[inference.model]
+name = "Qwen/Qwen3.5-35B-A3B"
+trust_remote_code = false
+dtype = "auto"
+max_model_len = 65536
+max_logprobs = 64
+enforce_eager = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+[inference.parallel]
+tp = 4
+dp = 1
+
+[inference.log]
+level = "debug"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+
+[inference.env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS = "1800"
+
+[inference.weight_broadcast]
+type = "filesystem"
+
+[inference.vllm_extra]
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+fully_sharded_loras = false
+enable_flashinfer_autotune = false
+language_model_only = true
+
+[inference.deployment]
+gpus_per_node = 8
+backend_port = 8100
+type = "single_node"
+
+[inference.deployment.router]
+type = "vllm-router"
+port = 8000
+policy = "consistent_hash"
+
+[env_vars]
+
+[log]
+level = "debug"
+json_logging = false
+
+[wandb]
+project = "opd-gap"
+entity = "primeintellect"
+name = "grpo-band000060-k8-tp4-ar-r40-smoke2-20260715"
+offline = false
+
+[model]
+name = "Qwen/Qwen3.5-35B-A3B"
+
+[weight_broadcast]
+type = "filesystem"
+port = 29501
+timeout = 1200
+quantize_in_weight_transfer = false
+
+[deployment]
+gpus_per_node = 8
+type = "single_node"
+num_train_gpus = 4
+num_infer_gpus = 4
+
+[slurm]
+job_name = "genagent-grpo-band000060-r40-smoke2"
+partition = "all"
+pre_run_command = "export HF_HUB_OFFLINE=1; export HF_HOME=/home/tim/.cache/huggingface; export TMPDIR=\"/tmp/prime-rl-$SLURM_JOB_ID\"; export UV_CACHE_DIR=\"$TMPDIR/uv-cache\"; export XDG_CACHE_HOME=\"$TMPDIR/xdg-cache\"; export TRITON_CACHE_DIR=\"$TMPDIR/triton\"; export TORCHINDUCTOR_CACHE_DIR=\"$TMPDIR/torchinductor\"; export VLLM_CACHE_ROOT=\"$TMPDIR/vllm\"; mkdir -p \"$TMPDIR\" \"$UV_CACHE_DIR\" \"$XDG_CACHE_HOME\" \"$TRITON_CACHE_DIR\" \"$TORCHINDUCTOR_CACHE_DIR\" \"$VLLM_CACHE_ROOT\"; ulimit -n 65536; timeout 120 prime --plain sandbox delete --label \"$SLURM_JOB_NAME\" --yes || true"
+cleanup_grace_period = 3600

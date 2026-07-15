@@ -10,9 +10,8 @@ from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path.home() / ".cache/verifiers/general_agent/a2b76f6ac3469f7f50171760c0d0dba38360edc4/tasks"
-OUTPUT = ROOT / "evals/genagent-opsd-gepaplan-r38-20260715"
-TRAIN_TASKS = ["poetry_slam_t4", "mine_rescue_t4", "translation_agency_t4"]
-EVAL_TASKS = ["distillery_t3"]
+OUTPUT = ROOT / "evals/genagent-opsd-gepaplan-r40-20260715"
+MANIFEST = ROOT / "configs/opd-gap/genagent-band000060-qwen35-opsd-hints-r40-manifest.json"
 
 
 def materialize(split: str, tasks: list[str]) -> None:
@@ -32,14 +31,17 @@ def materialize(split: str, tasks: list[str]) -> None:
 
 
 def main() -> None:
-    materialize("train_tasks", TRAIN_TASKS)
-    materialize("eval_tasks", EVAL_TASKS)
+    program = json.loads(MANIFEST.read_text())
+    train_tasks = program["gepa_train_tasks"]
+    eval_tasks = program["gepa_eval_tasks"]
+    materialize("train_tasks", train_tasks)
+    materialize("eval_tasks", eval_tasks)
     manifest = {
         "source": str(SOURCE),
         "taskset_ref": "a2b76f6ac3469f7f50171760c0d0dba38360edc4",
         "plan_transform": "tool_sequence_plan",
-        "train_tasks": TRAIN_TASKS,
-        "eval_tasks": EVAL_TASKS,
+        "train_tasks": train_tasks,
+        "eval_tasks": eval_tasks,
     }
     (OUTPUT / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(OUTPUT)
