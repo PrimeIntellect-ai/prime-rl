@@ -183,7 +183,7 @@ def configure(arm: str, steps: int, placement: str, train_tasks: list[str]) -> d
     config = copy.deepcopy(tomllib.loads(BASE_CONFIG.read_text()))
     phase = "smoke2" if steps == 2 else "full100"
     descriptor = f"opsd-1lp-d64-{arm}-band000060-k8-tp4-{placement}-{REVISION}-{phase}-{DATE}"
-    hint = "full validated answer" if arm == "fullanswer" else "structural answer plan"
+    hint = "full validated answer" if arm == "fullanswer" else "tool-call plan (values hidden)"
     display_name = scientific_name("OPSD 1-token top-64", hint, len(train_tasks), steps)
     output = f"outputs-genagent-{descriptor}"
 

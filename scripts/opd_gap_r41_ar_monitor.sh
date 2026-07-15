@@ -29,6 +29,7 @@ declare -A full_outputs=(
   [fullanswer]=outputs-genagent-opsd-1lp-d64-fullanswer-band000060-k8-tp4-ar-r41-full100-20260715
   [answerplan]=outputs-genagent-opsd-1lp-d64-answerplan-band000060-k8-tp4-ar-r41-full100-20260715
 )
+full_arms=(grpo fullanswer)
 
 write_state() {
   local phase=$1 detail=$2
@@ -37,7 +38,7 @@ write_state() {
     --arg fullanswer_smoke "${smoke_jobs[fullanswer]}" \
     --arg answerplan_smoke "${smoke_jobs[answerplan]}" \
     --argjson full_jobs "$(cat "$artifact_root/full-job-ids.json" 2>/dev/null || printf '{}')" \
-    '{phase:$phase,detail:$detail,provenance_revision:"r41",run_labels:{grpo:{label:"GRPO | no hint",display_name:"General Agent | GRPO | hint: none | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps",objective:"grpo",hint_style:"none"},fullanswer:{label:"OPSD (1-token, top-64) | full validated answer",display_name:"General Agent | OPSD 1-token top-64 | hint: full validated answer | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps",objective:"opsd",hint_style:"full_validated_answer"},answerplan:{label:"OPSD (1-token, top-64) | structural answer plan",display_name:"General Agent | OPSD 1-token top-64 | hint: structural answer plan | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps",objective:"opsd",hint_style:"structural_answer_plan"}},smoke_jobs:{grpo:$grpo_smoke,fullanswer:$fullanswer_smoke,answerplan:$answerplan_smoke},full_jobs:$full_jobs,updated_at_utc:(now|todateiso8601)}' \
+    '{phase:$phase,detail:$detail,provenance_revision:"r41",run_labels:{grpo:{label:"GRPO | no hint",display_name:"General Agent | GRPO | hint: none | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps",objective:"grpo",hint_style:"none"},fullanswer:{label:"OPSD (1-token, top-64) | full validated answer",display_name:"General Agent | OPSD 1-token top-64 | hint: full validated answer | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps",objective:"opsd",hint_style:"full_validated_answer"},answerplan:{label:"OPSD (1-token, top-64) | tool-call plan (values hidden)",display_name:"General Agent | OPSD 1-token top-64 | hint: tool-call plan (values hidden) | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps",objective:"opsd",hint_style:"tool_call_plan_values_hidden"}},smoke_jobs:{grpo:$grpo_smoke,fullanswer:$fullanswer_smoke,answerplan:$answerplan_smoke},full_jobs:$full_jobs,deferred_full_runs:{answerplan:{state:"deferred",reason:"choose only after full-answer OPSD completes",prior_pending_job:237}},updated_at_utc:(now|todateiso8601)}' \
     >"$state.tmp"
   mv "$state.tmp" "$state"
 }
@@ -127,7 +128,7 @@ refresh_full_json() {
     --arg grpo "$(cat "$artifact_root/grpo-full-job-id" 2>/dev/null || true)" \
     --arg fullanswer "$(cat "$artifact_root/fullanswer-full-job-id" 2>/dev/null || true)" \
     --arg answerplan "$(cat "$artifact_root/answerplan-full-job-id" 2>/dev/null || true)" \
-    '{grpo:$grpo,fullanswer:$fullanswer,answerplan:$answerplan}' \
+    '{grpo:$grpo,fullanswer:$fullanswer,answerplan:null}' \
     >"$artifact_root/full-job-ids.json"
 }
 
@@ -168,13 +169,13 @@ while true; do
   done
 
   if [[ "$all_smokes" == true ]]; then
-    for arm in grpo fullanswer answerplan; do submit_full "$arm"; done
+    for arm in "${full_arms[@]}"; do submit_full "$arm"; done
     refresh_full_json
   fi
 
   if [[ -s "$artifact_root/full-job-ids.json" ]]; then
     all_full=true
-    for arm in grpo fullanswer answerplan; do
+    for arm in "${full_arms[@]}"; do
       job_id=$(jq -r --arg arm "$arm" '.[$arm]' "$artifact_root/full-job-ids.json")
       [[ -n "$job_id" ]] || { all_full=false; continue; }
       latest=$(latest_stable_step "${full_outputs[$arm]}")
@@ -196,7 +197,7 @@ while true; do
       fi
     done
     if [[ "$all_full" == true ]]; then
-      write_state complete "all three r41 runs reached stable step 99 and OPSD milestone audits passed"
+      write_state complete "GRPO and full-answer OPSD reached stable step 99; answer-plan remains deferred"
       exit 0
     fi
   fi

@@ -130,7 +130,7 @@ ranks_filter = [
 [trainer.wandb]
 project = "opd-gap"
 entity = "primeintellect"
-name = "General Agent | OPSD 1-token top-64 | hint: structural answer plan | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps"
+name = "General Agent | OPSD 1-token top-64 | hint: tool-call plan (values hidden) | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps"
 offline = false
 
 [trainer.gc]
@@ -1367,7 +1367,7 @@ interval = 10.0
 [orchestrator.wandb]
 project = "opd-gap"
 entity = "primeintellect"
-name = "General Agent | OPSD 1-token top-64 | hint: structural answer plan | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps"
+name = "General Agent | OPSD 1-token top-64 | hint: tool-call plan (values hidden) | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps"
 offline = false
 
 [orchestrator.wandb.log_extras]
@@ -1378,7 +1378,7 @@ interval = 10
 [orchestrator.prime_monitor]
 base_url = "https://api.primeintellect.ai/api/v1/rft"
 api_key_var = "PRIME_API_KEY"
-run_name = "General Agent | OPSD 1-token top-64 | hint: structural answer plan | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps"
+run_name = "General Agent | OPSD 1-token top-64 | hint: tool-call plan (values hidden) | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps"
 
 [orchestrator.prime_monitor.log_extras]
 samples = true
@@ -1475,7 +1475,7 @@ json_logging = false
 [wandb]
 project = "opd-gap"
 entity = "primeintellect"
-name = "General Agent | OPSD 1-token top-64 | hint: structural answer plan | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps"
+name = "General Agent | OPSD 1-token top-64 | hint: tool-call plan (values hidden) | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps"
 offline = false
 
 [model]
