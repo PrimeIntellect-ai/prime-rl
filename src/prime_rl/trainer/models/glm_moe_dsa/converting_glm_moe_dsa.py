@@ -2,7 +2,7 @@ import torch
 from torch import Tensor
 
 from prime_rl.trainer.conversion_utils import get_max_layer_num
-from prime_rl.trainer.models.fp8 import quantize_to_fp8_blockwise
+from prime_rl.trainer.models.fp8 import quantize_to_vllm_kernel_format
 
 
 def _is_moe_layer(state_dict: dict[str, Tensor], layer_idx: int) -> bool:
@@ -157,7 +157,7 @@ def convert_tt_layer_to_vllm_kernel(
 
     def add_maybe_fp8(name: str, tensor: Tensor) -> None:
         if quantize_fp8 and tensor.ndim == 2:
-            fp8_weight, scale = quantize_to_fp8_blockwise(tensor)
+            fp8_weight, scale = quantize_to_vllm_kernel_format(tensor)
             out[name] = fp8_weight
             scale_name = name.removesuffix(".weight") + ".weight_scale_inv"
             out[scale_name] = scale
@@ -231,8 +231,8 @@ def convert_tt_layer_to_vllm_kernel(
             w2_fp8: list[Tensor] = []
             w2_scales: list[Tensor] = []
             for expert_idx in range(w1.shape[0]):
-                expert_w13_fp8, expert_w13_scales = quantize_to_fp8_blockwise(w13[expert_idx])
-                expert_w2_fp8, expert_w2_scales = quantize_to_fp8_blockwise(w2[expert_idx])
+                expert_w13_fp8, expert_w13_scales = quantize_to_vllm_kernel_format(w13[expert_idx])
+                expert_w2_fp8, expert_w2_scales = quantize_to_vllm_kernel_format(w2[expert_idx])
                 w13_fp8.append(expert_w13_fp8)
                 w13_scales.append(expert_w13_scales)
                 w2_fp8.append(expert_w2_fp8)
