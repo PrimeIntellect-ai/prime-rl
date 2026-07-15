@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
+from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 
@@ -85,6 +86,38 @@ def test_container_effective_by_env_and_listlike():
     assert set(by_env) == {"a", "b"} and len(by_env["a"]) == 2 and isinstance(by_env["a"], TrainRollouts)
     rc.append(mk())
     assert len(rc) == 5
+
+
+def test_train_batch_retains_exact_trainer_rollouts():
+    arrivals = TrainRollouts([mk(reward=-1.0), mk(reward=-1.0), mk(reward=-1.0)])
+    selected = [
+        mk(reward=1.0),
+        mk(reward=0.0, is_filtered=True),
+        mk(reward=0.0),
+        mk(reward=1.0),
+        mk(reward=0.5),
+    ]
+    selected[0].samples = ["sample-0"]
+    selected[1].samples = ["filtered-sample"]
+    selected[2].samples = []
+    selected[3].samples = ["sample-3"]
+    selected[4].samples = ["sample-4"]
+
+    sink = TrainSink.__new__(TrainSink)
+    sink.batch_size = 4
+    sink.token_batch_size = None
+    sink.post_filters = []
+    sink.pending_batch = selected.copy()
+    sink.pending_rollouts = arrivals
+
+    batch = sink.process_batch()
+
+    assert batch.rollouts is arrivals
+    assert batch.rollouts.metrics.reward.mean() == -1.0
+    assert batch.trainer_rollouts.rollouts == [selected[0], selected[3]]
+    assert batch.trainer_rollouts.metrics.reward.mean() == 1.0
+    assert batch.samples == ["sample-0", "sample-3"]
+    assert sink.pending_batch == [selected[4]]
 
 
 def test_to_wandb_distributions():
