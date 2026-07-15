@@ -150,7 +150,7 @@ post_batch_filters = [
     { type = "zero_advantage", enforce = false },
 ]
 collect_inference_metrics = true
-batch_size = 8
+batch_size = 1
 oversampling_factor = 0.5
 max_inflight_rollouts = 8
 group_size = 8
