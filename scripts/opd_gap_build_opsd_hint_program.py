@@ -171,22 +171,32 @@ def set_algo(config: dict[str, Any], arm: str) -> None:
         )
 
 
+def scientific_name(objective: str, hint: str, train_count: int, steps: int) -> str:
+    phase = "mechanics smoke" if steps == 2 else f"{steps} steps"
+    return (
+        f"General Agent | {objective} | hint: {hint} | Qwen3.5-35B-A3B | "
+        f"train {train_count} | group 8 | {phase}"
+    )
+
+
 def configure(arm: str, steps: int, placement: str, train_tasks: list[str]) -> dict[str, Any]:
     config = copy.deepcopy(tomllib.loads(BASE_CONFIG.read_text()))
     phase = "smoke2" if steps == 2 else "full100"
     descriptor = f"opsd-1lp-d64-{arm}-band000060-k8-tp4-{placement}-{REVISION}-{phase}-{DATE}"
+    hint = "full validated answer" if arm == "fullanswer" else "structural answer plan"
+    display_name = scientific_name("OPSD 1-token top-64", hint, len(train_tasks), steps)
     output = f"outputs-genagent-{descriptor}"
 
     config["output_dir"] = output
     config["max_steps"] = steps
     config["trainer"]["max_steps"] = steps
     config["trainer"]["ckpt"]["interval"] = 1 if steps == 2 else 10
-    config["trainer"]["wandb"]["name"] = descriptor
+    config["trainer"]["wandb"]["name"] = display_name
     config["orchestrator"]["max_steps"] = steps
     config["orchestrator"]["ckpt"]["interval"] = 1 if steps == 2 else 10
-    config["orchestrator"]["wandb"]["name"] = descriptor
-    config["orchestrator"]["prime_monitor"]["run_name"] = descriptor
-    config["wandb"]["name"] = descriptor
+    config["orchestrator"]["wandb"]["name"] = display_name
+    config["orchestrator"]["prime_monitor"]["run_name"] = display_name
+    config["wandb"]["name"] = display_name
     config["orchestrator"]["pre_batch_filters"] = [
         {"type": "gibberish", "enforce": False, "token_id_threshold": 100000, "logprob_offset": 2.0},
         {"type": "repetition", "enforce": False, "window": 3000, "prob_threshold": 0.99},
@@ -214,7 +224,9 @@ def configure(arm: str, steps: int, placement: str, train_tasks: list[str]) -> d
     if placement == "pod":
         config.pop("slurm", None)
     else:
-        config["slurm"]["job_name"] = f"genagent-{arm}-band000060-{REVISION}-{phase}"
+        config["slurm"]["job_name"] = (
+            f"genagent-opsd1tok-{arm}-q35-n{len(train_tasks)}-k8-s{steps}"
+        )
     return config
 
 
@@ -222,16 +234,17 @@ def configure_grpo(steps: int, placement: str, train_tasks: list[str]) -> dict[s
     config = copy.deepcopy(tomllib.loads(GRPO_BASE_CONFIG.read_text()))
     phase = "smoke2" if steps == 2 else "full100"
     descriptor = f"grpo-band000060-k8-tp4-{placement}-{REVISION}-{phase}-{DATE}"
+    display_name = scientific_name("GRPO", "none", len(train_tasks), steps)
     config["output_dir"] = f"outputs-genagent-{descriptor}"
     config["max_steps"] = steps
     config["trainer"]["max_steps"] = steps
     config["trainer"]["ckpt"]["interval"] = 1 if steps == 2 else 10
-    config["trainer"]["wandb"]["name"] = descriptor
+    config["trainer"]["wandb"]["name"] = display_name
     config["orchestrator"]["max_steps"] = steps
     config["orchestrator"]["ckpt"]["interval"] = 1 if steps == 2 else 10
-    config["orchestrator"]["wandb"]["name"] = descriptor
-    config["orchestrator"]["prime_monitor"]["run_name"] = descriptor
-    config["wandb"]["name"] = descriptor
+    config["orchestrator"]["wandb"]["name"] = display_name
+    config["orchestrator"]["prime_monitor"]["run_name"] = display_name
+    config["wandb"]["name"] = display_name
     filters = [
         {"type": "gibberish", "enforce": False, "token_id_threshold": 100000, "logprob_offset": 2.0},
         {"type": "repetition", "enforce": False, "window": 3000, "prob_threshold": 0.99},
@@ -254,7 +267,7 @@ def configure_grpo(steps: int, placement: str, train_tasks: list[str]) -> dict[s
     if placement == "pod":
         config.pop("slurm", None)
     else:
-        config["slurm"]["job_name"] = f"genagent-grpo-band000060-{REVISION}-{phase}"
+        config["slurm"]["job_name"] = f"genagent-grpo-nohint-q35-n{len(train_tasks)}-k8-s{steps}"
     return config
 
 

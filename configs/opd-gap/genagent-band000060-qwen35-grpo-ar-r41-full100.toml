@@ -130,7 +130,7 @@ ranks_filter = [
 [trainer.wandb]
 project = "opd-gap"
 entity = "primeintellect"
-name = "grpo-band000060-k8-tp4-ar-r41-full100-20260715"
+name = "General Agent | GRPO | hint: none | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps"
 offline = false
 
 [trainer.gc]
@@ -1339,7 +1339,7 @@ interval = 10.0
 [orchestrator.wandb]
 project = "opd-gap"
 entity = "primeintellect"
-name = "grpo-band000060-k8-tp4-ar-r41-full100-20260715"
+name = "General Agent | GRPO | hint: none | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps"
 offline = false
 
 [orchestrator.wandb.log_extras]
@@ -1350,7 +1350,7 @@ interval = 10
 [orchestrator.prime_monitor]
 base_url = "https://api.primeintellect.ai/api/v1/rft"
 api_key_var = "PRIME_API_KEY"
-run_name = "grpo-band000060-k8-tp4-ar-r41-full100-20260715"
+run_name = "General Agent | GRPO | hint: none | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps"
 
 [orchestrator.prime_monitor.log_extras]
 samples = true
@@ -1447,7 +1447,7 @@ json_logging = false
 [wandb]
 project = "opd-gap"
 entity = "primeintellect"
-name = "grpo-band000060-k8-tp4-ar-r41-full100-20260715"
+name = "General Agent | GRPO | hint: none | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps"
 offline = false
 
 [model]
@@ -1466,7 +1466,7 @@ num_train_gpus = 4
 num_infer_gpus = 4
 
 [slurm]
-job_name = "genagent-grpo-band000060-r41-full100"
+job_name = "genagent-grpo-nohint-q35-n938-k8-s100"
 partition = "all"
 pre_run_command = "export HF_HUB_OFFLINE=1; export HF_HOME=/home/tim/.cache/huggingface; export TMPDIR=\"/tmp/prime-rl-$SLURM_JOB_ID\"; export UV_CACHE_DIR=\"$TMPDIR/uv-cache\"; export XDG_CACHE_HOME=\"$TMPDIR/xdg-cache\"; export TRITON_CACHE_DIR=\"$TMPDIR/triton\"; export TORCHINDUCTOR_CACHE_DIR=\"$TMPDIR/torchinductor\"; export VLLM_CACHE_ROOT=\"$TMPDIR/vllm\"; mkdir -p \"$TMPDIR\" \"$UV_CACHE_DIR\" \"$XDG_CACHE_HOME\" \"$TRITON_CACHE_DIR\" \"$TORCHINDUCTOR_CACHE_DIR\" \"$VLLM_CACHE_ROOT\"; ulimit -n 65536; timeout 120 prime --plain sandbox delete --label \"$SLURM_JOB_NAME\" --yes || true"
 cleanup_grace_period = 3600
