@@ -316,6 +316,7 @@ class ModelConfig(BaseModelConfig):
         if not isinstance(self.quantization, MXFP8Config):
             return self
         import torch
+
         if not torch.cuda.is_available():
             return self
         capability = torch.cuda.get_device_capability()
