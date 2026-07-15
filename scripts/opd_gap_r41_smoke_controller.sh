@@ -111,7 +111,7 @@ rsync -az -e "$ssh_cmd" \
 ssh "${ssh_args[@]}" "$remote" \
   "sudo mkdir -p '$remote_home/.config/uv' '$remote_home/.local/bin' && sudo chown -R \$(id -u):\$(id -g) '$remote_home/.config' '$remote_home/.local'"
 ssh "${ssh_args[@]}" "$remote" \
-  "test -x '$uv' || XDG_CONFIG_HOME=/tmp/uv-config UV_NO_MODIFY_PATH=1 sh -c '\$(curl -LsSf https://astral.sh/uv/install.sh)'"
+  "test -x '$uv' || curl -LsSf https://astral.sh/uv/install.sh | XDG_CONFIG_HOME=/tmp/uv-config UV_NO_MODIFY_PATH=1 sh"
 ssh "${ssh_args[@]}" "$remote" "cd '$repo' && '$uv' sync --all-extras"
 ssh "${ssh_args[@]}" "$remote" \
   "cd '$repo' && '$uv' run --no-sync python -c 'import torch, verifiers; assert torch.cuda.device_count() == 8; print(torch.cuda.device_count())'"
