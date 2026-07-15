@@ -68,36 +68,45 @@ runtime_seconds() {
 }
 
 audit_opsd_step() {
-  local arm=$1 output=$2 step=$3 audit="$artifact_root/audits/${arm}-step${step}.json"
+  local arm=$1 output=$2 step=$3
+  local audit="$artifact_root/audits/${arm}-step${step}.json"
   [[ -s "$audit" ]] && return 0
-  ssh ar "cd '$repo' && .venv/bin/python scripts/opd_gap_audit_diag_topk.py '$output/run_default/token_exports/step_${step}'" >"$audit.tmp"
+  if ! ssh ar "cd '$repo' && .venv/bin/python scripts/opd_gap_audit_diag_topk.py '$output/run_default/token_exports/step_${step}'" >"$audit.tmp"; then
+    rm -f "$audit.tmp"
+    return 1
+  fi
   mv "$audit.tmp" "$audit"
 }
 
 audit_policy_step() {
-  local arm=$1 output=$2 step=$3 audit="$artifact_root/audits/${arm}-policy-step${step}.json"
+  local arm=$1 output=$2 step=$3
+  local audit="$artifact_root/audits/${arm}-policy-step${step}.json"
   local extra=()
   [[ -s "$audit" ]] && return 0
   if [[ "$arm" == grpo || "$arm" == grpo-full ]]; then
     extra=(--require-reward-variance --require-nonzero-advantages)
   fi
-  ssh ar "cd '$repo' && .venv/bin/python scripts/opd_gap_audit_policy_step.py '$output' '$step' ${extra[*]}" >"$audit.tmp"
+  if ! ssh ar "cd '$repo' && .venv/bin/python scripts/opd_gap_audit_policy_step.py '$output' '$step' ${extra[*]}" >"$audit.tmp"; then
+    rm -f "$audit.tmp"
+    return 1
+  fi
   mv "$audit.tmp" "$audit"
 }
 
 smoke_ready() {
   local arm=$1 output=${smoke_outputs[$1]}
-  if [[ "$arm" != grpo && -s "$pod_gate_root/${arm}.PASS" ]]; then
+  if [[ -s "$pod_gate_root/${arm}.PASS" ]]; then
     return 0
   fi
   remote_file "$output/run_default/token_exports/step_0/STABLE" || return 1
   remote_file "$output/run_default/token_exports/step_1/STABLE" || return 1
-  audit_policy_step "$arm" "$output" 0
-  audit_policy_step "$arm" "$output" 1
+  audit_policy_step "$arm" "$output" 0 || return 1
+  audit_policy_step "$arm" "$output" 1 || return 1
   if [[ "$arm" != grpo ]]; then
-    audit_opsd_step "$arm" "$output" 0
-    audit_opsd_step "$arm" "$output" 1
+    audit_opsd_step "$arm" "$output" 0 || return 1
+    audit_opsd_step "$arm" "$output" 1 || return 1
   fi
+  return 0
 }
 
 submit_full() {
