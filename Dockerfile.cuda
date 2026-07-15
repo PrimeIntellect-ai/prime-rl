@@ -1,242 +1,32 @@
-#inspired from https://github.com/astral-sh/uv-docker-example/blob/main/multistage.Dockerfile
+ARG BASE_IMAGE=ghcr.io/primeintellect-ai/hosted-rl/prime-rl:v0.7.1.dev7
 
-# Build stage - multi-arch base (supports amd64 + arm64)
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS builder
-LABEL maintainer="prime intellect"
-LABEL repository="prime-rl"
+FROM ${BASE_IMAGE} AS deepep-builder
 
-# Set en_US.UTF-8 locale by default
-RUN echo "LC_ALL=en_US.UTF-8" >> /etc/environment
+USER root
 
-# Set CUDA_HOME and update PATH
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libibverbs-dev \
+        librdmacm-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG DEEP_EP_COMMIT=29d31c095796f3c8ece47ee9cdcc167051bbeed9
+RUN git clone https://github.com/deepseek-ai/DeepEP.git /tmp/DeepEP \
+    && git -C /tmp/DeepEP checkout "${DEEP_EP_COMMIT}"
+
 ENV CUDA_HOME=/usr/local/cuda
-ENV PATH=$PATH:/usr/local/cuda/bin
+ENV TORCH_CUDA_ARCH_LIST=10.0
+ENV DISABLE_AGGRESSIVE_PTX_INSTRS=1
+ENV MAX_JOBS=16
 
-# Install build tooling.
-ARG DEBIAN_FRONTEND=noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN apt-get update && apt-get install -y --no-install-recommends --force-yes \
-    build-essential \
-    autoconf \
-    automake \
-    libtool \
-    pkg-config \
-    ca-certificates \
-    curl \
-    sudo \
-    git \
-    ninja-build \
-    libnuma-dev \
-    libnl-3-dev \
-    libnl-route-3-dev \
-    libibverbs-dev \
-    librdmacm-dev \
-    python3.12 \
-    python3.12-venv \
-    python3.12-dev \
-    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
-    && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+RUN cd /tmp/DeepEP \
+    && /app/.venv/bin/python setup.py bdist_wheel --dist-dir /tmp/deepep-wheel
 
-ARG UCX_VERSION=1.19.1
-RUN git clone --depth 1 --branch v${UCX_VERSION} https://github.com/openucx/ucx.git /tmp/ucx \
-    && cd /tmp/ucx \
-    && ./autogen.sh \
-    && ./configure \
-        --prefix=/opt/ucx \
-        --enable-shared \
-        --disable-static \
-        --disable-doxygen-doc \
-        --enable-optimizations \
-        --enable-cma \
-        --enable-devel-headers \
-        --enable-mt \
-        --with-verbs \
-        --with-cuda=/usr/local/cuda \
-        --with-ze=no \
-    && make -j"$(nproc)" \
-    && make install \
-    && rm -rf /tmp/ucx
+FROM ${BASE_IMAGE}
 
-# Download the latest installer
-ADD https://astral.sh/uv/install.sh /uv-installer.sh
-
-# Set install dir to location accessible to non-root users
-RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
-ENV PATH="/usr/local/bin:$PATH"
-# Build .venv against the system CPython, so the venv's recorded interpreter
-# matches the runtime interpreter and no bin/python relink is needed at runtime.
-ENV UV_PYTHON_PREFERENCE=only-system
-ENV UV_CACHE_DIR="/usr/local/share/uv/cache"
-# Explicity set venv dir inside /app so to ensure it gets copied over during
-# the runtime stage's `COPY /app`
-ENV UV_PROJECT_ENVIRONMENT="/app/.venv"
-
-# Install Python dependencies (The gradual copies help with caching)
-WORKDIR /app
-
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
-
-COPY pyproject.toml /app/pyproject.toml
-COPY uv.lock /app/uv.lock
-COPY README.md /app/README.md
-COPY src/ /app/src/
-COPY packages/ /app/packages/
-COPY deps/ /app/deps/
-COPY configs /app/configs
-COPY examples /app/examples
-COPY benchmarks/scripts /app/benchmarks/scripts
-COPY scripts/docker-editable-pretend-versions.sh /app/scripts/docker-editable-pretend-versions.sh
-
-# Use submodule git metadata from the build context when present. Docker copies
-# only the submodule .git pointer files into /app/deps, so we temporarily link
-# /app/.git/modules to the read-only context before resolving versions.
-# Opt-in extras for disaggregated P/D inference (deep-ep, deep-gemm, quack).
-# Default off — they're heavy source builds only the disagg-MoE path needs.
-# Enable via `--build-arg INCLUDE_DISAGG_EXTRAS=1`.
-ARG INCLUDE_DISAGG_EXTRAS=0
-ARG VERIFIERS_PRETEND_VERSION
-ARG RENDERERS_PRETEND_VERSION
-RUN --mount=type=cache,target=/app/.cache/uv \
-    --mount=type=bind,source=.,target=/build-context,readonly \
-    if [ -d /build-context/.git/modules ]; then mkdir -p /app/.git && ln -s /build-context/.git/modules /app/.git/modules; fi \
-    && \
-    eval "$(bash /app/scripts/docker-editable-pretend-versions.sh --shell /app)" \
-    && \
-    if [ -L /app/.git/modules ]; then rm /app/.git/modules && rmdir /app/.git 2>/dev/null || true; fi \
-    && \
-    sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${VERIFIERS_PRETEND_VERSION}\"/" /app/deps/verifiers/pyproject.toml \
-    && \
-    sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${RENDERERS_PRETEND_VERSION}\"/" /app/deps/renderers/pyproject.toml \
-    && \
-    EXTRA_DISAGG_FLAG=""; if [ "$INCLUDE_DISAGG_EXTRAS" = "1" ]; then EXTRA_DISAGG_FLAG="--extra disagg"; fi \
-    && \
-    uv sync --all-packages --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra gpt-oss --extra modelexpress $EXTRA_DISAGG_FLAG --group mamba-ssm --locked --no-dev
-
-# Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
-# nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer
-# (#2883); rebuilding against our UCX is the documented fix. Only needed for
-# the disaggregated P/D path — default off so training-only / single-node
-# inference builds are unaffected. Enable via `--build-arg INCLUDE_NIXL_FROM_SOURCE=1`.
-ARG INCLUDE_NIXL_FROM_SOURCE=0
-ARG NIXL_VERSION=0.10.1
-RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
-        VIRTUAL_ENV=/app/.venv uv pip install pip \
-        && git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git /tmp/nixl \
-        && cd /tmp/nixl \
-        && PKG_CONFIG_PATH=/opt/ucx/lib/pkgconfig \
-           LD_LIBRARY_PATH=/opt/ucx/lib:/opt/ucx/lib/ucx \
-           /app/.venv/bin/python -m pip wheel . --no-deps --wheel-dir=/app/deps \
-        && VIRTUAL_ENV=/app/.venv uv pip install --reinstall --no-deps /app/deps/nixl_cu12-*.whl \
-        && rm -rf /tmp/nixl /app/deps/nixl_cu12-*.whl; \
-    fi
-
-# arm64: build flash-attn from source, fix namespace conflicts, apply workarounds
-ARG TARGETARCH
-COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
-RUN if [ "$TARGETARCH" = "arm64" ]; then /app/scripts/docker-arm64-post-install.sh; fi
-
-# Trim the CUDA toolkit to the nvcc-JIT essentials in a separate stage, so the runtime
-# COPY ships only the trimmed result (~1.5 GB) instead of the full ~6.6 GB. Drops the math
-# runtime libs (cublas/cusparse/cufft/cusolver/curand/npp/nvjpeg) and big static .a
-# archives since nvcc JIT (TileLang/FlashInfer build their own kernels) and torch
-# (uses pinned nvidia-* wheels) needs them. Keeps nvcc/nvvm/ptxas + headers +
-# libcudart/libnvrtc/libcudadevrt for JIT compile+link.
-FROM builder AS cuda-trim
-RUN find /usr/local/cuda-12.8/targets/*/lib \
-        \( -name 'libcublas*' -o -name 'libcusparse*' -o -name 'libcufft*' \
-           -o -name 'libcusolver*' -o -name 'libcurand*' -o -name 'libnpp*' \
-           -o -name 'libnvjpeg*' -o -name 'libnvblas*' \) -delete \
-    && find /usr/local/cuda-12.8 -name '*.a' ! -name 'libcudadevrt.a' ! -name 'libcudart_static.a' -delete
-
-# CUDA 13 runtime libs source
-FROM nvidia/cuda:13.0.1-runtime-ubuntu24.04 AS cuda13
-RUN mkdir -p /cu13 && cp -d $(find /usr/local \
-        -name 'libcudart.so.13*' -o -name 'libnvrtc.so.13*' -o -name 'libnvrtc-builtins.so.13*') /cu13/
-
-# Runtime image
-FROM nvidia/cuda:12.8.1-base-ubuntu24.04
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y \
-    --no-install-recommends \
-    --force-yes \
-    python3.12 \
-    python3.12-venv \
-    python3.12-dev \
-    build-essential \
-    wget \
-    clang \
-    tmux \
-    iperf \
-    openssh-server \
-    git \
-    git-lfs \
-    gpg \
-    sudo \
-    iputils-ping \
-    net-tools \
-    curl \
-    vim \
-    libnuma1 \
-    libnl-3-200 \
-    libnl-route-3-200 \
-    libibverbs1 \
-    ibverbs-providers \
-    librdmacm1 \
-    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
-    && apt-get clean autoclean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# CUDA 12.8 toolkit (TileLang's runtime nvcc JIT)
-COPY --from=cuda-trim /usr/local/cuda-12.8 /usr/local/cuda-12.8
-RUN ln -sfn /usr/local/cuda-12.8 /usr/local/cuda && test -x /usr/local/cuda/bin/nvcc
-ENV CUDA_HOME=/usr/local/cuda
-ENV PATH="/usr/local/cuda/bin:${PATH}"
-
-# CUDA 13 runtime libs for deep-gemm
-COPY --from=cuda13 /cu13/ /opt/cuda13/lib64/
-RUN echo /opt/cuda13/lib64 > /etc/ld.so.conf.d/cuda13.conf \
-    && ldconfig \
-    && ldconfig -p | grep -q libcudart.so.13 \
-    && ldconfig -p | grep -q libnvrtc.so.13
-
-
-ARG USER_ID=1000
-ARG GROUP_ID=1000
-
-RUN userdel -r ubuntu 2>/dev/null || true; \
-    groupdel ubuntu 2>/dev/null || true; \
-    groupadd --gid $GROUP_ID appuser && \
-    useradd --uid $USER_ID --gid appuser --create-home --shell /bin/bash appuser && \
-    usermod -aG sudo appuser && \
-    echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-
-# Install uv for development use
-ADD https://astral.sh/uv/install.sh /uv-installer.sh
-RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
+USER root
+COPY --from=deepep-builder /tmp/deepep-wheel/*.whl /tmp/deep_ep.whl
+RUN /app/.venv/bin/python -m pip install --no-cache-dir --no-deps /tmp/deep_ep.whl \
+    && rm /tmp/deep_ep.whl
 
 USER appuser
-ENV PATH="/usr/local/bin:$PATH"
-WORKDIR /app
-# Copy the application from the builder
-COPY --from=builder --chown=appuser:appuser /app /app
-COPY --from=builder /opt/ucx /opt/ucx
-
-# Copy and set up entrypoint script
-COPY --chown=appuser:appuser scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
-
-# Place executables in the environment at the front of the path
-ENV PATH="/app/.venv/bin:$PATH"
-ENV UCX_HOME=/opt/ucx
-ENV LD_LIBRARY_PATH="/opt/ucx/lib:/opt/ucx/lib/ucx${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-
-# HuggingFace Hub timeouts (defaults are 10s which causes issues on slow networks)
-ENV HF_HUB_ETAG_TIMEOUT=500
-ENV HF_HUB_DOWNLOAD_TIMEOUT=300
-
-# Use entrypoint for setup (ulimit, etc) but default to sleep infinity for K8s
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["sleep", "infinity"]
