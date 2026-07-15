@@ -150,7 +150,10 @@ def build_app(config: TTTServiceConfig, trainer: "TTTTrainer | None" = None) -> 
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
         async with app.state.train_lock:
-            state = app.state.trainer.release(request.rollout_id)
+            try:
+                state = app.state.trainer.release(request.rollout_id, request.adapter_name)
+            except ValueError as e:
+                raise HTTPException(status_code=409, detail=str(e)) from e
         # Unload UNCONDITIONALLY: a retry after a lost response finds no state, but the
         # first attempt's engine unload may never have run (unload is idempotent).
         await unload_adapter(request.adapter_name)

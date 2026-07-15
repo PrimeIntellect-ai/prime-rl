@@ -36,7 +36,7 @@ class FakeTrainer:
         self.updates.append(
             (rollout_id, adapter_name, token_ids, loss_mask, seq_no, qa_pairs, train_rollout, system_prompt, tools)
         )
-        self.adapters[rollout_id] = type("S", (), {"version": seq_no})()
+        self.adapters[rollout_id] = type("S", (), {"version": seq_no, "adapter_name": adapter_name})()
         return {
             "version": seq_no,
             "loss": 0.5,
@@ -44,7 +44,10 @@ class FakeTrainer:
             "num_loss_tokens": sum(loss_mask),
         }
 
-    def release(self, rollout_id):
+    def release(self, rollout_id, adapter_name=None):
+        state = self.adapters.get(rollout_id)
+        if state is not None and adapter_name is not None and state.adapter_name != adapter_name:
+            raise ValueError(f"rollout is bound to adapter {state.adapter_name!r}, not {adapter_name!r}")
         self.released.append(rollout_id)
         return self.adapters.pop(rollout_id, None)
 
@@ -143,13 +146,20 @@ async def test_release_unloads_updated_adapter(service):
         (unload,) = engine.unloads
         assert unload == {"lora_name": "ttt-r1"}
 
+        # Recreate and prove a mismatched adapter cannot drop the rollout's actual state.
+        await client.post("/update", json=UPDATE)
+        response = await client.post("/release", json={"rollout_id": "r1", "adapter_name": "ttt-other"})
+        assert response.status_code == 409
+        assert "r1" in trainer.adapters
+        await client.post("/release", json={"rollout_id": "r1", "adapter_name": "ttt-r1"})
+
         # A release with no state still unloads: a client RETRY after a lost response finds
         # the state already dropped, but the engine unload may never have run — gating on
         # state would leak the adapter in vLLM until restart. unload is idempotent.
         response = await client.post("/release", json={"rollout_id": "r1", "adapter_name": "ttt-r1"})
         assert response.json() == {"released": False}
-        assert len(engine.unloads) == 2
-        assert engine.unloads[1] == {"lora_name": "ttt-r1"}
+        assert len(engine.unloads) == 3
+        assert engine.unloads[-1] == {"lora_name": "ttt-r1"}
 
 
 async def test_health(service):

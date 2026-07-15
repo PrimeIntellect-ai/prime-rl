@@ -124,9 +124,14 @@ class TTTTrainer:
             self.adapters[rollout_id] = state
         return state
 
-    def release(self, rollout_id: str) -> AdapterState | None:
+    def release(self, rollout_id: str, adapter_name: str | None = None) -> AdapterState | None:
         """Drop a rollout's training state; optionally delete its checkpoints."""
         rollout_dir = checkpoint_rollout_dir(self.ckpt_root, rollout_id)
+        state = self.adapters.get(rollout_id)
+        if state is not None and adapter_name is not None and state.adapter_name != adapter_name:
+            raise ValueError(
+                f"rollout {rollout_id!r} is bound to adapter {state.adapter_name!r}, not {adapter_name!r}"
+            )
         state = self.adapters.pop(rollout_id, None)
         if not self.config.keep_checkpoints:
             shutil.rmtree(rollout_dir, ignore_errors=True)
