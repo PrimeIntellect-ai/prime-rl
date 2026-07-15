@@ -5,6 +5,20 @@ set -euo pipefail
 state=${R41_AR_STATE:-/home/ubuntu/opd-gap-r41-ar-monitor-state.json}
 artifact_root=${R41_AR_ARTIFACT_ROOT:-/home/ubuntu/opd-gap-artifacts/r41-ar}
 repo=/home/tim/prime-rl
+
+# Full-run promotion is an explicit operator action. A resurrected service must
+# fail closed unless the operator opts in on that exact invocation.
+if [[ ${R41_ALLOW_AUTO_PROMOTION:-0} != 1 ]]; then
+  mkdir -p "$(dirname "$state")"
+  jq -n \
+    --arg phase held \
+    --arg detail "automatic full-run promotion disabled; set R41_ALLOW_AUTO_PROMOTION=1 explicitly to enable" \
+    '{phase:$phase,detail:$detail,updated_at_utc:(now|todateiso8601)}' \
+    >"$state.tmp"
+  mv "$state.tmp" "$state"
+  exit 0
+fi
+
 mkdir -p "$artifact_root/audits"
 
 declare -A smoke_jobs=(
