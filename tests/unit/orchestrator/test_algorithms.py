@@ -1,6 +1,7 @@
 import asyncio
 from unittest.mock import MagicMock
 
+import numpy as np
 import pydantic
 import pytest
 import verifiers.v1 as vf
@@ -8,10 +9,19 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import (
+    EchoAlgorithm,
+    OPSDAlgorithm,
+    RLCSDAlgorithm,
+    RLRTAlgorithm,
+    RLSDAlgorithm,
+    stamp_advantages,
+    stamp_loss_routing,
+)
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.transport.types import TrainingSample
+from prime_rl.utils.client import PrefillScores
 
 FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
 
@@ -40,6 +50,9 @@ def _ref_kind(ref):
         ("opd", {"teacher": FROZEN}, "policy", "ref_kl"),
         ("sft", {"sampling": {"source": FROZEN}}, "frozen", "ce"),
         ("opsd", {}, "policy", "ref_kl"),
+        ("rlsd", {}, "policy", "rl"),
+        ("rlrt", {}, "policy", "rl"),
+        ("rlcsd", {}, "policy", "rl"),
         ("echo", {}, "policy", "rl"),
     ],
 )
@@ -205,6 +218,312 @@ def test_assign_advantages_list_rejects_misaligned():
     rollout = _make_rollout([_make_sample()])
     with pytest.raises(ValueError, match="align"):
         rollout.assign_advantages([0.5])
+
+
+# --------------------------------------------------------------------------
+# Reward-grounded self-distillation variants.
+#
+# RLSD/RLRT/RLCSD keep the RL loss and rewrite the per-token advantage stream.
+# These tests use a fake renderer/pool so no model server is needed.
+# --------------------------------------------------------------------------
+
+
+class _FakeRenderer:
+    def render_ids(self, messages, add_generation_prompt=False):
+        content = messages[0]["content"]
+        if "bad" in content:
+            return [202]
+        return [101]
+
+
+class _FakePool:
+    model_name = "fake-policy"
+
+    async def score(self, token_ids, top_k=None):
+        marker = token_ids[0]
+        if marker == 101:
+            scores = {11: -1.0, 12: -3.0}
+        elif marker == 202:
+            scores = {11: -3.0, 12: -1.0}
+        else:
+            scores = {}
+        logprobs = [0.0] + [scores.get(token_id, 0.0) for token_id in token_ids[1:]]
+        if top_k is None:
+            return logprobs
+        return PrefillScores(
+            logprobs=logprobs,
+            topk_ids=[
+                [marker * 1000 + position * 100 + rank for rank in range(top_k)] for position in range(len(token_ids))
+            ],
+            topk_logprobs=[[-float(rank + 1) for rank in range(top_k)] for _ in token_ids],
+        )
+
+
+class _LongHintRenderer:
+    def render_ids(self, messages, add_generation_prompt=False):
+        return list(range(10))
+
+
+def _rl_sample() -> TrainingSample:
+    return TrainingSample(
+        token_ids=[10, 11, 12],
+        mask=[False, True, True],
+        logprobs=[0.0, -2.0, -2.0],
+        temperatures=[],
+        env_name="test-env",
+    )
+
+
+def _rl_rollout(reward: float, *, hint: str = "good hint") -> Rollout:
+    rollout = Rollout(task=vf.Task(idx=0, prompt=None), nodes=[], rewards={"reward": reward}, env_name="test-env")
+    rollout.samples = [_rl_sample()]
+    rollout.info["demonstration"] = hint
+    return rollout
+
+
+def _self_distill_kwargs() -> dict:
+    return {
+        "token_weight_clip_min": 0.01,
+        "token_weight_clip_max": 100.0,
+        "normalize_token_weights": True,
+    }
+
+
+def _encoded_array(tensor) -> np.ndarray:
+    return np.frombuffer(tensor.data, dtype=tensor.dtype).reshape(tensor.shape)
+
+
+@pytest.mark.parametrize("algorithm_type", ["rlsd", "rlcsd"])
+def test_self_distilled_rl_diagnostic_topk_default(algorithm_type):
+    assert _build(type=algorithm_type).diag_top_k == 64
+
+
+def test_rlsd_collects_measurement_only_teacher_topk_with_truncation_padding():
+    rollout = _rl_rollout(1.0)
+    algo = RLSDAlgorithm(_build(type="rlsd", diag_top_k=2, max_score_tokens=4), _FakePool())
+    algo.scorer.renderer = _FakeRenderer()
+
+    asyncio.run(algo.score_rollout(rollout))
+
+    sample = rollout.samples[0]
+    assert sample.ref_logprobs == [0.0, -1.0, 0.0]
+    assert sample.mask == [False, True, False]
+    assert sample.diag_topk_token_ids.shape == [3, 2]
+    assert sample.diag_topk_logprobs.shape == [3, 2]
+    np.testing.assert_array_equal(_encoded_array(sample.diag_topk_token_ids)[-1], [0, 0])
+    np.testing.assert_array_equal(_encoded_array(sample.diag_topk_logprobs)[-1], [-1e9, -1e9])
+
+
+def test_rlsd_diagnostics_do_not_change_objective():
+    enabled = [_rl_rollout(1.0), _rl_rollout(0.0)]
+    disabled = [_rl_rollout(1.0), _rl_rollout(0.0)]
+
+    for diag_top_k, group in ((2, enabled), (None, disabled)):
+        algo = RLSDAlgorithm(_build(type="rlsd", diag_top_k=diag_top_k, **_self_distill_kwargs()), _FakePool())
+        algo.scorer.renderer = _FakeRenderer()
+        for rollout in group:
+            asyncio.run(algo.score_rollout(rollout))
+        asyncio.run(algo.score_group(group))
+
+    for enabled_rollout, disabled_rollout in zip(enabled, disabled, strict=True):
+        assert enabled_rollout.advantages == pytest.approx(disabled_rollout.advantages)
+        assert enabled_rollout.samples[0].ref_logprobs == disabled_rollout.samples[0].ref_logprobs
+        assert enabled_rollout.samples[0].diag_topk_token_ids is not None
+        assert disabled_rollout.samples[0].diag_topk_token_ids is None
+
+
+def test_rlsd_uses_teacher_student_ratio_as_reward_signed_magnitude():
+    good = _rl_rollout(1.0)
+    bad = _rl_rollout(0.0)
+    algo = RLSDAlgorithm(_build(type="rlsd", **_self_distill_kwargs()), _FakePool())
+    algo.scorer.renderer = _FakeRenderer()
+
+    asyncio.run(algo.score_rollout(good))
+    asyncio.run(algo.score_rollout(bad))
+    asyncio.run(algo.score_group([good, bad]))
+
+    # GRPO scalar is +/-0.5. The good-hint teacher likes token 11 more than
+    # token 12, so RLSD gives token 11 larger magnitude while preserving sign.
+    assert good.advantages[0] == 0.0
+    assert good.advantages[1] > good.advantages[2] > 0.0
+    assert bad.advantages[1] < bad.advantages[2] < 0.0
+    assert (good.advantages[1] + good.advantages[2]) / 2 == pytest.approx(0.5)
+
+
+def test_opsd_filters_rollout_when_hint_alone_exceeds_score_window():
+    rollout = _rl_rollout(1.0)
+    algo = OPSDAlgorithm(_build(type="opsd", max_score_tokens=5), _FakePool())
+    algo.renderer = _LongHintRenderer()
+
+    asyncio.run(algo.score_rollout(rollout))
+
+    assert rollout.is_filtered is True
+    assert rollout.filter_results["opsd_hint_overflow"] is True
+    assert rollout.samples[0].ref_logprobs is None
+
+
+def test_opsd_tool_sequence_plan_withholds_argument_values():
+    rollout = _rl_rollout(1.0, hint='[["search", {"query": "secret", "limit": 3}], ["submit", {}]]')
+    algo = OPSDAlgorithm(_build(type="opsd", demo_transform="tool_sequence_plan"), _FakePool())
+
+    plan = algo._demonstration(rollout)
+
+    assert plan == "1. Call `search` with `query`, `limit`.\n2. Call `submit` with no arguments."
+    assert "secret" not in plan
+    assert "3" not in plan
+
+
+def test_opsd_tool_sequence_plan_rejects_non_json_demonstration():
+    rollout = _rl_rollout(1.0, hint="not json")
+    algo = OPSDAlgorithm(_build(type="opsd", demo_transform="tool_sequence_plan"), _FakePool())
+
+    with pytest.raises(ValueError, match="JSON tool-call chain"):
+        algo._demonstration(rollout)
+
+
+def test_rlsd_filters_rollout_when_hint_alone_exceeds_score_window():
+    rollout = _rl_rollout(1.0)
+    algo = RLSDAlgorithm(_build(type="rlsd", max_score_tokens=5), _FakePool())
+    algo.scorer.renderer = _LongHintRenderer()
+
+    asyncio.run(algo.score_rollout(rollout))
+
+    assert rollout.is_filtered is True
+    assert rollout.filter_results["rlsd_hint_overflow"] is True
+    assert rollout.samples[0].ref_logprobs == [0.0, 0.0, 0.0]
+
+
+def test_rlrt_reverses_teacher_signal_only_for_positive_advantage_rollouts():
+    good = _rl_rollout(1.0)
+    bad = _rl_rollout(0.0)
+    algo = RLRTAlgorithm(_build(type="rlrt", **_self_distill_kwargs()), _FakePool())
+    algo.scorer.renderer = _FakeRenderer()
+
+    asyncio.run(algo.score_rollout(good))
+    asyncio.run(algo.score_rollout(bad))
+    asyncio.run(algo.score_group([good, bad]))
+
+    # RLRT upweights successful tokens the student chose against the teacher:
+    # here token 12 has lower teacher probability than token 11, so it gets the
+    # larger positive advantage. The failed rollout stays plain GRPO.
+    assert 0.0 < good.advantages[1] < good.advantages[2]
+    assert bad.advantages == [0.0, -0.5, -0.5]
+
+
+def _assistant_rollout(
+    reward: float,
+    content: str | None,
+    *,
+    reasoning_content: str | None = None,
+    tool_calls: list[dict] | None = None,
+) -> Rollout:
+    nodes = [
+        _node(UserMessage(content="q"), parent=None, sampled=False, token_ids=[10]),
+        _node(
+            AssistantMessage(content=content, reasoning_content=reasoning_content, tool_calls=tool_calls),
+            parent=0,
+            sampled=True,
+            token_ids=[11, 12],
+            logprobs=[-2.0, -2.0],
+        ),
+    ]
+    rollout = Rollout(task=vf.Task(idx=0, prompt=None), nodes=nodes, rewards={"reward": reward}, env_name="test-env")
+    rollout.samples = trace_to_samples(rollout, env_name="test-env")
+    return rollout
+
+
+def test_rlcsd_uses_correct_minus_incorrect_sibling_hint_contrast():
+    success = _assistant_rollout(1.0, "good solution")
+    failure = _assistant_rollout(0.0, "bad solution")
+    other_failure = _assistant_rollout(0.0, "bad alternate")
+    algo = RLCSDAlgorithm(_build(type="rlcsd", **_self_distill_kwargs()), _FakePool())
+    algo.scorer.renderer = _FakeRenderer()
+
+    asyncio.run(algo.score_group([success, failure, other_failure]))
+
+    # Only one success exists, so the success cannot use a non-self positive
+    # hint and stays plain GRPO. It still records positive-teacher diagnostics.
+    # Failures get contrastive reweighting from the success minus the other
+    # failure.
+    assert success.advantages == pytest.approx([0.0, 2 / 3, 2 / 3])
+    assert success.samples[0].ref_logprobs is not None
+    assert success.samples[0].diag_topk_token_ids is not None
+    assert failure.advantages[0] == 0.0
+    assert failure.advantages[1] < failure.advantages[2] < 0.0
+    assert (failure.advantages[1] + failure.advantages[2]) / 2 == pytest.approx(-1 / 3)
+
+
+def test_rlcsd_diagnostics_capture_positive_teacher_without_changing_objective():
+    enabled = [
+        _assistant_rollout(1.0, "good solution"),
+        _assistant_rollout(0.0, "bad solution"),
+        _assistant_rollout(0.0, "bad alternate"),
+    ]
+    disabled = [
+        _assistant_rollout(1.0, "good solution"),
+        _assistant_rollout(0.0, "bad solution"),
+        _assistant_rollout(0.0, "bad alternate"),
+    ]
+
+    for diag_top_k, group in ((2, enabled), (None, disabled)):
+        algo = RLCSDAlgorithm(
+            _build(type="rlcsd", diag_top_k=diag_top_k, **_self_distill_kwargs()),
+            _FakePool(),
+        )
+        algo.scorer.renderer = _FakeRenderer()
+        asyncio.run(algo.score_group(group))
+
+    for enabled_rollout, disabled_rollout in zip(enabled, disabled, strict=True):
+        assert enabled_rollout.advantages == pytest.approx(disabled_rollout.advantages)
+
+    measured = enabled[1].samples[0]
+    unmeasured = disabled[1].samples[0]
+    assert measured.ref_logprobs == unmeasured.ref_logprobs
+    assert measured.diag_topk_token_ids.shape == [3, 2]
+    assert measured.diag_topk_logprobs.shape == [3, 2]
+    assert unmeasured.diag_topk_token_ids is None
+    # The first diagnostic row comes after the positive hint row. A negative
+    # teacher write would have a different marker and overwrite these ids.
+    np.testing.assert_array_equal(_encoded_array(measured.diag_topk_token_ids)[0], [101100, 101101])
+
+
+def test_rlcsd_uses_reasoning_and_tool_calls_when_assistant_content_is_none():
+    group = [
+        _assistant_rollout(
+            1.0,
+            None,
+            reasoning_content="correct plan",
+            tool_calls=[{"id": "good", "name": "tools_finish", "arguments": '{"ok": true}'}],
+        ),
+        _assistant_rollout(
+            1.0,
+            None,
+            reasoning_content="correct alternate",
+            tool_calls=[{"id": "good2", "name": "tools_finish", "arguments": '{"ok": true}'}],
+        ),
+        _assistant_rollout(
+            0.0,
+            None,
+            reasoning_content="wrong plan",
+            tool_calls=[{"id": "bad", "name": "tools_finish", "arguments": '{"ok": false}'}],
+        ),
+        _assistant_rollout(
+            0.0,
+            None,
+            reasoning_content="wrong alternate",
+            tool_calls=[{"id": "bad2", "name": "tools_finish", "arguments": '{"ok": false}'}],
+        ),
+    ]
+    algo = RLCSDAlgorithm(_build(type="rlcsd", diag_top_k=2, **_self_distill_kwargs()), _FakePool())
+    algo.scorer.renderer = _FakeRenderer()
+
+    asyncio.run(algo.score_group(group))
+
+    for rollout in group:
+        sample = rollout.samples[0]
+        assert sample.ref_logprobs is not None
+        assert sample.diag_topk_token_ids is not None
+        assert sample.diag_topk_logprobs is not None
 
 
 # --------------------------------------------------------------------------

@@ -1,0 +1,117 @@
+{
+  "configs": {
+    "answerplan-ar-qual20": {
+      "output_dir": "outputs-genagent-opsd-1lp-d64-answerplan-p14mix-k8-tp4-ar-r38-qual20-20260715",
+      "path": "configs/opd-gap/genagent-p14mix-qwen35-opsd-answerplan-ar-r38-qual20.toml",
+      "sha256": "fb176615047c04cb13397ef6ed4915ec504f930b93672d98e8fb8b261de0d136"
+    },
+    "answerplan-ar-smoke2": {
+      "output_dir": "outputs-genagent-opsd-1lp-d64-answerplan-p14mix-k8-tp4-ar-r38-smoke2-20260715",
+      "path": "configs/opd-gap/genagent-p14mix-qwen35-opsd-answerplan-ar-r38-smoke2.toml",
+      "sha256": "744df324e2b0e06cc1ad8b6e9036cbef95b9b80ff4ebfb2f8fa90a5098ee4163"
+    },
+    "answerplan-pod-qual20": {
+      "output_dir": "outputs-genagent-opsd-1lp-d64-answerplan-p14mix-k8-tp4-pod-r38-qual20-20260715",
+      "path": "configs/opd-gap/genagent-p14mix-qwen35-opsd-answerplan-pod-r38-qual20.toml",
+      "sha256": "5e6b9066d189373b9f2938a72ebe67ceb26a4728d2bbf3305df6f7f30466e2bc"
+    },
+    "answerplan-pod-smoke2": {
+      "output_dir": "outputs-genagent-opsd-1lp-d64-answerplan-p14mix-k8-tp4-pod-r38-smoke2-20260715",
+      "path": "configs/opd-gap/genagent-p14mix-qwen35-opsd-answerplan-pod-r38-smoke2.toml",
+      "sha256": "fff926242d1affe8570fef2a3b673e69daaeff35c208966c1dcbdf6dcc5dad58"
+    },
+    "fullanswer-ar-qual20": {
+      "output_dir": "outputs-genagent-opsd-1lp-d64-fullanswer-p14mix-k8-tp4-ar-r38-qual20-20260715",
+      "path": "configs/opd-gap/genagent-p14mix-qwen35-opsd-fullanswer-ar-r38-qual20.toml",
+      "sha256": "be60b02386d7003a7bda568c18fe1bb8a053b7857dc74987c47798e25770779a"
+    },
+    "fullanswer-ar-smoke2": {
+      "output_dir": "outputs-genagent-opsd-1lp-d64-fullanswer-p14mix-k8-tp4-ar-r38-smoke2-20260715",
+      "path": "configs/opd-gap/genagent-p14mix-qwen35-opsd-fullanswer-ar-r38-smoke2.toml",
+      "sha256": "56ec192ee5224bcabb18240594c015e721ff4cf4a955d51e9fa2c58b5ebfc431"
+    },
+    "fullanswer-pod-qual20": {
+      "output_dir": "outputs-genagent-opsd-1lp-d64-fullanswer-p14mix-k8-tp4-pod-r38-qual20-20260715",
+      "path": "configs/opd-gap/genagent-p14mix-qwen35-opsd-fullanswer-pod-r38-qual20.toml",
+      "sha256": "74764ba2532a605fce9afbe51ce825d2d7036f6105f0475d2d0a37392e81bc34"
+    },
+    "fullanswer-pod-smoke2": {
+      "output_dir": "outputs-genagent-opsd-1lp-d64-fullanswer-p14mix-k8-tp4-pod-r38-smoke2-20260715",
+      "path": "configs/opd-gap/genagent-p14mix-qwen35-opsd-fullanswer-pod-r38-smoke2.toml",
+      "sha256": "9eb471e113aac9897e8a8f7ae5d3bdd3804a65f0dab51b01d20a7b7334bb8f6b"
+    },
+    "gepaplan-ar-qual20": {
+      "output_dir": "outputs-genagent-opsd-1lp-d64-gepaplan-p14mix-k8-tp4-ar-r38-qual20-20260715",
+      "path": "configs/opd-gap/genagent-p14mix-qwen35-opsd-gepaplan-ar-r38-qual20.toml",
+      "sha256": "f833ff4419499d2a7e89d5a29afc130af342ee2db9ff81962836ab2c7d8852d4"
+    },
+    "gepaplan-ar-smoke2": {
+      "output_dir": "outputs-genagent-opsd-1lp-d64-gepaplan-p14mix-k8-tp4-ar-r38-smoke2-20260715",
+      "path": "configs/opd-gap/genagent-p14mix-qwen35-opsd-gepaplan-ar-r38-smoke2.toml",
+      "sha256": "071786e406720b3b810b04d03ba746602dc87969978a4495f7d821d54f969efd"
+    },
+    "gepaplan-pod-qual20": {
+      "output_dir": "outputs-genagent-opsd-1lp-d64-gepaplan-p14mix-k8-tp4-pod-r38-qual20-20260715",
+      "path": "configs/opd-gap/genagent-p14mix-qwen35-opsd-gepaplan-pod-r38-qual20.toml",
+      "sha256": "2690b9c8deb400428a7b9543987924c13ba4f573eebb3050208dcd9ffeb80bba"
+    },
+    "gepaplan-pod-smoke2": {
+      "output_dir": "outputs-genagent-opsd-1lp-d64-gepaplan-p14mix-k8-tp4-pod-r38-smoke2-20260715",
+      "path": "configs/opd-gap/genagent-p14mix-qwen35-opsd-gepaplan-pod-r38-smoke2.toml",
+      "sha256": "0f9eda04db4d47cb7f374704fd02a614cf9c0d2ca137a7530c9a7d132201992a"
+    }
+  },
+  "diagnostic_top_k": 64,
+  "gepa_only_tasks": [
+    "poetry_slam_t4",
+    "mine_rescue_t4",
+    "translation_agency_t4",
+    "distillery_t3"
+  ],
+  "gepa_selected_prompt": null,
+  "group_size": 8,
+  "heldout_tasks": [
+    "soap_making_t4",
+    "incense_crafting_t3",
+    "car_show_t3",
+    "timber_t3",
+    "bbq_competition_t3",
+    "textile_mill_t4",
+    "vertical_farm_t3",
+    "fireworks_show_t4",
+    "party_rental_t4",
+    "wine_blend_t3",
+    "space_debris_t4",
+    "freelance_platform_t3",
+    "sewing_workshop_t3",
+    "chocolate_boutique_t3",
+    "science_fair_t4",
+    "fulfillment_center_t4",
+    "film_archive_t4",
+    "fermentation_lab_t3",
+    "coffee_cupping_t3",
+    "cable_car_t4"
+  ],
+  "objective": "single_token_ref_kl",
+  "qualification_rule": "at least two mixed-reward groups of k=8, zero errors, truncation <= 0.25",
+  "qualification_source": "evals/genagent-base-band40-k32-hosted-r01-20260715/analysis.json",
+  "revision": "r38",
+  "taskset_id": "general-agent-v1",
+  "taskset_ref": "a2b76f6ac3469f7f50171760c0d0dba38360edc4",
+  "train_tasks": [
+    "cocktail_competition_t4",
+    "lighthouse_mgmt_t4",
+    "semiconductor_fab_t4",
+    "plant_clinic_t4",
+    "immigration_office_t3",
+    "museum_curation_t3",
+    "transplant_registry_t3",
+    "game_night_t3",
+    "leather_shop_t3",
+    "pest_control_t3",
+    "shipwreck_salvage_t3",
+    "factory_floor_t4",
+    "toy_lending_t3",
+    "trade_show_t4"
+  ]
+}

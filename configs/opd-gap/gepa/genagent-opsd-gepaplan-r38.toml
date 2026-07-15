@@ -1,0 +1,29 @@
+model = "qwen/qwen3.5-35b-a3b"
+reflection_model = "gpt-5.5"
+endpoints_path = "../../../deps/verifiers/configs/endpoints.toml"
+run_dir = "../../../evals/genagent-opsd-gepaplan-r38-20260715/gepa"
+save_results = true
+verbose = true
+
+[env]
+env_id = "opd_gap_gepa_general_agent"
+
+[env.env_args]
+train_tasks_dir = "/home/ubuntu/prime-rl/evals/genagent-opsd-gepaplan-r38-20260715/train_tasks"
+eval_tasks_dir = "/home/ubuntu/prime-rl/evals/genagent-opsd-gepaplan-r38-20260715/eval_tasks"
+max_turns = 20
+timeout_seconds = 600.0
+system_prompt = "Use the validated structural answer plan in the user request. Infer all concrete argument values from the original task and tool observations. Execute the necessary tools accurately and stop once the requested world state is satisfied."
+
+[gepa]
+max_calls = 12
+minibatch_size = 2
+perfect_score = 1.0
+num_train = 3
+num_val = 1
+max_concurrent = 2
+seed = 20260715
+
+[sampling]
+temperature = 1.0
+max_tokens = 4096

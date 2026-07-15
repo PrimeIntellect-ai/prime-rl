@@ -200,6 +200,93 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
 
 
+class SelfDistilledRLConfig(GRPOAlgoConfig):
+    """Shared knobs for reward-grounded self-distillation variants.
+
+    These algorithms keep the GRPO/RL loss and use self-teacher scores only to
+    redistribute the scalar, verifier-derived advantage across sampled tokens.
+    The sign of the update remains reward-grounded.
+    """
+
+    demo_key: str = "demonstration"
+    """Key holding the privileged hint text for dataset-hint variants, looked
+    up in rollout ``info`` first and then as a top-level task field."""
+
+    template: str = "Here is a reference solution attempt:\n<demonstration>\n{demonstration}\n</demonstration>"
+    """Content of the leading system message carrying a hint. Receives
+    ``{demonstration}``; the sampled trajectory is scored verbatim after it."""
+
+    max_score_tokens: int | None = None
+    """Scoring context window. When set, over-budget samples are scored on the
+    head and the unscored tail is masked out of the RL loss."""
+
+    diag_top_k: int | None = 64
+    """Collect the self-teacher's top-k token ids and logprobs per sampled
+    position for measurement-only trainer exports; ``None`` disables it. The
+    sampled-token teacher logprobs used by the algorithm remain scalar and the
+    top-k distribution never participates in advantages, weights, or loss.
+    Requires the inference server's ``max_logprobs`` to be at least this k."""
+
+    renderer: RendererConfig = AutoRendererConfig()
+    """Renderer family for the hint block. The tokenizer is the live policy's
+    tokenizer, matching OPSD's self-teacher setup."""
+
+    token_weight_clip_min: float = Field(0.25, gt=0, allow_inf_nan=False)
+    """Lower bound for the per-token teacher/student reweighting factor."""
+
+    token_weight_clip_max: float = Field(4.0, gt=0, allow_inf_nan=False)
+    """Upper bound for the per-token teacher/student reweighting factor."""
+
+    token_weight_temperature: float = Field(1.0, gt=0, allow_inf_nan=False)
+    """Temperature applied to logprob gaps before exponentiating into token
+    weights. Higher values make the modulation weaker."""
+
+    normalize_token_weights: bool = True
+    """Normalize trainable-token weights to mean 1 per rollout, preserving the
+    scale of the original GRPO advantage while changing token allocation."""
+
+    @model_validator(mode="after")
+    def validate_weight_clip(self):
+        if self.token_weight_clip_min > self.token_weight_clip_max:
+            raise ValueError("token_weight_clip_min must be <= token_weight_clip_max")
+        return self
+
+
+class RLSDAlgoConfig(SelfDistilledRLConfig):
+    type: Literal["rlsd"] = "rlsd"  # type: ignore[assignment]
+    """RLSD-style reward-grounded self-distillation: compute a GRPO advantage,
+    then modulate its per-token magnitude by the demo-conditioned self-teacher's
+    sampled-token probability ratio. The verifier-derived advantage keeps the
+    update direction."""
+
+
+class RLRTAlgoConfig(SelfDistilledRLConfig):
+    type: Literal["rlrt"] = "rlrt"  # type: ignore[assignment]
+    """RLRT-style reversed-teacher exploration: on positive-advantage rollouts,
+    upweight sampled tokens the student chose despite the demo-conditioned
+    teacher assigning lower probability. Non-positive rollouts stay GRPO."""
+
+
+class RLCSDAlgoConfig(SelfDistilledRLConfig):
+    type: Literal["rlcsd"] = "rlcsd"  # type: ignore[assignment]
+    """RLCSD-style contrastive self-distillation: build correct/incorrect
+    hints from sibling rollouts in the same group, subtract the incorrect-hint
+    score from the correct-hint score, and use the contrast to modulate the
+    GRPO advantage. If a group lacks a usable contrast, it remains plain GRPO."""
+
+    demo_key: str = "demonstration"
+    """Unused by the default sibling-hint path; kept for schema compatibility
+    with the shared self-distillation config."""
+
+    max_hint_chars: int | None = Field(12000, gt=0)
+    """Maximum characters from a sibling rollout to use as a hint. ``None``
+    keeps the full assistant text."""
+
+    num_negative_hints: int = Field(1, ge=1)
+    """Number of incorrect sibling hints to marginalize over. Multiple
+    negatives are averaged in probability space for the sampled token."""
+
+
 class EchoAlgoConfig(GRPOAlgoConfig):
     type: Literal["echo"] = "echo"  # type: ignore[assignment]
     """ECHO: group-relative advantage on action tokens (GRPO), plus weighted
@@ -249,6 +336,17 @@ class DistillationAlgoConfig(BaseAlgoConfig):
     """k for the ``"top_k"`` granularity. Values above the inference server's
     ``max_logprobs`` cap (vLLM default: 20) are rejected at scoring time."""
 
+    diag_top_k: int | None = 64
+    """Collect the hinted-teacher's top-k (token id, logprob) pairs per position
+    for diagnostics regardless of the objective; ``None`` disables. Only active
+    with the ``"single_token"`` granularity (``"top_k"`` already ships the
+    distribution as ``ref_topk_*``): samples additionally carry ``diag_topk_*``
+    tensors, consumed only by token export — the training loss is unchanged. The
+    trainer also computes, per position, the student's OWN top-k (ids+logprobs)
+    and the teacher's truncated entropy for export (measurements 4 and 6). Lives
+    on the shared distillation base so both opd and opsd inherit it. Requires the
+    inference server's ``max_logprobs`` >= this k."""
+
 
 class OPDAlgoConfig(DistillationAlgoConfig):
     type: Literal["opd"] = "opd"
@@ -284,6 +382,13 @@ class OPSDAlgoConfig(DistillationAlgoConfig):
     demo_key: str = "demonstration"
     """Key holding the expert demonstration text — looked up in the example's
     ``info`` dict first, then as a top-level rollout field (e.g. ``answer``)."""
+
+    demo_transform: Literal["identity", "tool_sequence_plan"] = "identity"
+    """Optional deterministic transformation of the demonstration before it is
+    inserted into ``template``. ``"identity"`` preserves the exact reference;
+    ``"tool_sequence_plan"`` parses a General Agent ``gold.json`` chain and
+    retains only the ordered tool names and argument names, deliberately
+    withholding concrete argument values from the self-teacher."""
 
     template: str = "Here is an example of an expert response:\n<demonstration>\n{demonstration}\n</demonstration>"
     """Content of the leading system message carrying the demonstration.
@@ -330,7 +435,15 @@ class SFTAlgoConfig(BaseAlgoConfig):
 
 
 AlgoConfig: TypeAlias = Annotated[
-    GRPOAlgoConfig | EchoAlgoConfig | MaxRLAlgoConfig | OPDAlgoConfig | OPSDAlgoConfig | SFTAlgoConfig,
+    GRPOAlgoConfig
+    | EchoAlgoConfig
+    | MaxRLAlgoConfig
+    | OPDAlgoConfig
+    | OPSDAlgoConfig
+    | RLSDAlgoConfig
+    | RLRTAlgoConfig
+    | RLCSDAlgoConfig
+    | SFTAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -341,6 +454,9 @@ its class defaults are the vetted setting.
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
+- ``rlsd`` — GRPO with demo-conditioned self-teacher token-magnitude reweighting.
+- ``rlrt`` — GRPO with reversed-teacher reweighting on positive-advantage rollouts.
+- ``rlcsd`` — GRPO with correct-vs-incorrect sibling-hint contrastive token reweighting.
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
 

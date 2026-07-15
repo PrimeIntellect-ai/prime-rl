@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -38,10 +39,12 @@ class OPSDAlgorithm(Algorithm):
     def __init__(self, config: OPSDAlgoConfig, policy_pool: InferencePool):
         super().__init__(config, policy_pool)
         self.demo_key = config.demo_key
+        self.demo_transform = config.demo_transform
         self.template = config.template
         self.max_score_tokens = config.max_score_tokens
         self.granularity = config.ref_logprob_granularity
         self.ref_top_k = config.ref_top_k
+        self.diag_top_k = config.diag_top_k
         self.renderer_config = config.renderer
         self.renderer: Renderer | None = None  # opsd builds its own in setup()
         # Self-distillation: the teacher *is* the live policy. Scoring against
@@ -58,6 +61,32 @@ class OPSDAlgorithm(Algorithm):
 
         self.renderer = create_renderer(load_tokenizer(self.policy_pool.model_name), self.renderer_config)
 
+    @staticmethod
+    def _tool_sequence_plan(demonstration: str) -> str:
+        """Reduce a validated General Agent tool-call chain to its structure.
+
+        This keeps the plan arm scientifically distinct from full-answer OPSD:
+        ordered tool and argument names survive, while every concrete argument
+        value is withheld.
+        """
+        try:
+            calls = json.loads(demonstration)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("tool_sequence_plan requires a JSON tool-call chain") from exc
+        if not isinstance(calls, list) or not calls:
+            raise ValueError("tool_sequence_plan requires a non-empty list of tool calls")
+
+        steps: list[str] = []
+        for index, call in enumerate(calls, start=1):
+            if not isinstance(call, list | tuple) or len(call) != 2:
+                raise ValueError(f"tool_sequence_plan call {index} must be [tool_name, arguments]")
+            tool_name, arguments = call
+            if not isinstance(tool_name, str) or not isinstance(arguments, dict):
+                raise ValueError(f"tool_sequence_plan call {index} has invalid tool name or arguments")
+            argument_names = ", ".join(f"`{name}`" for name in arguments) or "no arguments"
+            steps.append(f"{index}. Call `{tool_name}` with {argument_names}.")
+        return "\n".join(steps)
+
     def _demonstration(self, rollout: Rollout) -> str:
         demonstration = rollout.info.get(self.demo_key)
         if demonstration is None:
@@ -67,6 +96,10 @@ class OPSDAlgorithm(Algorithm):
                 f"opsd requires '{self.demo_key}' in the trace info dict or on the task "
                 f"(env '{rollout.env_name}', task {rollout.task.idx})."
             )
+        if not isinstance(demonstration, str):
+            raise ValueError(f"opsd demonstration '{self.demo_key}' must be a string")
+        if self.demo_transform == "tool_sequence_plan":
+            return self._tool_sequence_plan(demonstration)
         return demonstration
 
     async def score_rollout(self, rollout: Rollout) -> None:
@@ -84,10 +117,14 @@ class OPSDAlgorithm(Algorithm):
                 # the server needs prompt + 1 <= max_model_len.
                 budget = self.max_score_tokens - len(hint_block) - 1
                 if budget <= 0:
-                    raise ValueError(
-                        f"opsd hint block ({len(hint_block)} tok) alone exceeds "
-                        f"max_score_tokens={self.max_score_tokens} — shorten the demonstration or template."
+                    rollout.is_filtered = True
+                    rollout.filter_results["opsd_hint_overflow"] = True
+                    get_logger().warning(
+                        f"OPSD hint overflow: hint block ({len(hint_block)} tok) alone exceeds "
+                        f"max_score_tokens={self.max_score_tokens}; dropping rollout "
+                        f"(env {rollout.env_name!r}, task {rollout.task.idx})."
                     )
+                    return
                 if n_scored > budget:
                     # Generation reserves no context headroom for the hint, so a
                     # near-max-context trajectory + hint can exceed the scoring
@@ -103,12 +140,18 @@ class OPSDAlgorithm(Algorithm):
                         f"scoring first {n_scored} tokens, masking the tail "
                         f"(env {rollout.env_name!r}, task {rollout.task.idx})."
                     )
+            scores = diag_scores = None
             try:
                 if self.granularity == "top_k":
                     scores = await pool.score(hint_block + token_ids[:n_scored], top_k=self.ref_top_k)
                     full_logprobs = scores.logprobs
+                elif self.diag_top_k is not None:
+                    # Diagnostics-only collection: the same scoring call with
+                    # top_k, but the objective stays single_token — the realized
+                    # logprobs below are extracted exactly as without top_k.
+                    diag_scores = await pool.score(hint_block + token_ids[:n_scored], top_k=self.diag_top_k)
+                    full_logprobs = diag_scores.logprobs
                 else:
-                    scores = None
                     full_logprobs = await pool.score(hint_block + token_ids[:n_scored])
             except openai.BadRequestError as e:
                 if "longer than the maximum model length" not in str(e):
@@ -142,5 +185,19 @@ class OPSDAlgorithm(Algorithm):
                     )
                 sample.ref_topk_token_ids = EncodedTensor.from_numpy(topk_ids)
                 sample.ref_topk_logprobs = EncodedTensor.from_numpy(topk_logprobs)
+            if diag_scores is not None:
+                # Diagnostics-only top-k (single_token objective): same hint
+                # slice and truncation padding as ref_topk_* above, but shipped
+                # as diag_topk_* — consumed only by token export, never the loss.
+                diag_ids = np.asarray(diag_scores.topk_ids[len(hint_block) :], dtype=np.int32)
+                diag_logprobs = np.asarray(diag_scores.topk_logprobs[len(hint_block) :], dtype=np.float32)
+                n_pad = len(token_ids) - n_scored
+                if n_pad > 0:
+                    diag_ids = np.concatenate([diag_ids, np.zeros((n_pad, self.diag_top_k), dtype=np.int32)])
+                    diag_logprobs = np.concatenate(
+                        [diag_logprobs, np.full((n_pad, self.diag_top_k), -1e9, dtype=np.float32)]
+                    )
+                sample.diag_topk_token_ids = EncodedTensor.from_numpy(diag_ids)
+                sample.diag_topk_logprobs = EncodedTensor.from_numpy(diag_logprobs)
 
         await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))
