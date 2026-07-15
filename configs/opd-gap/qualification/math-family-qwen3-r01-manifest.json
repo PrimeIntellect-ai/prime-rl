@@ -1,0 +1,79 @@
+{
+  "revision": "r01",
+  "created_at_utc": "2026-07-15T02:20:00Z",
+  "environment": "primeintellect/math-env@0.1.6",
+  "environment_version_id": "vy0wvpr8ho1hpahb18qgm6ru",
+  "dataset": "PrimeIntellect/INTELLECT-3-RL",
+  "dataset_subset": "math",
+  "dataset_split": "train",
+  "dataset_revision": "a9eb9183224cec63fe9a71e7a3a80cff14868624",
+  "dataset_rows": 21161,
+  "difficulty_key": "avg@8_qwen3_4b_thinking_2507",
+  "selection_seed": 20260715,
+  "tasks_per_band": 16,
+  "rollouts_per_task": 16,
+  "models": [
+    "Qwen/Qwen3-0.6B",
+    "Qwen/Qwen3-1.7B",
+    "Qwen/Qwen3-4B",
+    "Qwen/Qwen3-8B",
+    "Qwen/Qwen3-14B",
+    "Qwen/Qwen3-32B"
+  ],
+  "hosted_model_id_overrides": {
+    "Qwen/Qwen3-8B": "qwen/qwen3-8b"
+  },
+  "sampling": {
+    "temperature": 1.0,
+    "max_tokens": 4096,
+    "max_retries": 2,
+    "retry_classification": "ProviderError only; final provider errors are infrastructure, never reward zero",
+    "judge_model": null,
+    "math_verify_timeout_seconds": 60
+  },
+  "bands": [
+    {
+      "name": "zero",
+      "min_inclusive": 0.0,
+      "max_inclusive": 0.0,
+      "pool_rows": 10356,
+      "dataset_indices": [17517, 20623, 14658, 13060, 4926, 8920, 15820, 1507, 20398, 17419, 3883, 6849, 13338, 7025, 18393, 17273],
+      "question_sha256": ["8e31683cf8427f7a1273c2904bd02f257ebe2984414e0371980f6332f79bfcff", "72c8b79a221ac0a78123d9ca6d23952254a24b8e642c34d44d1455ba7392f871", "e441d7506e99fcff5a6f0f5002c215dced676d4e7f647411c9d625320e0a572d", "215e7ccd1dfadb65ff2201cb4d57bfbe2aa0c6eeb54c08ef66780445d5d9bef8", "02282bb6a6181fc9a03a5aeb3c4356248b6ab0e034a2657ba30e3b96a23e19b9", "1c4651e5dfde71ce098d3d476ff936ef18c57f9ce42caca0cab345a74a5b5a14", "4701a65e0d657b8ede7163398a9065d81428ace850ab42fbbabddf0c941eb0fb", "72b1c13dcde5cdf32fcb428b9428e45a6d0fc4cf5f5befcd04009a7ceb8a4185", "2b3aa6d7adc4675fe46a6e7a63c269ad3effab288ae1984a757befbc1e0e6656", "b88760d7ee5b8c84db10eebe3b3cb18b06391411d8774f1275035b7eb51e9499", "0e75d64d0db17fe8e1c98b67de19be51870a8d4068991a99b0bd8b94c79a66cd", "79c6ee71138db1c3c1b8987fd9b8fc657fbfd96750796b339eb3c6f332bb21b1", "0dae260523d75930f9b4abf5845fedbe980281924ac6bcc181f94eb0c53ece75", "6a15eb0dcfd92ab9a08a342a7d2e63a3bb1333aea004c2bf4f4c25e571ba3ba2", "7259d91800cb92bc65aa6c7489b99dde3f64625dbfb63d195499b46f19958bb5", "379936d942374d3fe8b25c2d025a191198e524e08b236d4431cb665598459b76"]
+    },
+    {
+      "name": "low",
+      "min_inclusive": 0.125,
+      "max_inclusive": 0.25,
+      "pool_rows": 2536,
+      "dataset_indices": [20275, 2744, 16517, 1348, 12281, 19977, 20511, 7746, 11451, 851, 20438, 3152, 3023, 92, 16939, 14738],
+      "question_sha256": ["669911985270924b7db1a6a1a4ffb691c17ddbcbe76758cccdc4a38ebb0aa51d", "5083726f3bee6406cec3d532dc0431a8e63cb417e47ab68579d4dcd7648e2138", "ed5fae313c4460ede7e407e903790155b047288a78b9f51e698fadc7bfaee543", "6f00aca415b967ae413526cfd77f5a47f7da99a9e935392efeea1329f594d69d", "c7a76f814e502b865f527d744c2379d0963c0e04e62ada022ebbcb1bfecca1f4", "6455444e458e0f1124cd27d011930485e3251e23afb5036343a4c4add76fbd8b", "e84ea1f239fc15038fe0f8babcc5c92a357ecb8f57f5be4050d725034fc4a55e", "3dca021d2061265b79b7a4b3acc76d2f7a30ac7ef047227b7b7c20fb75838f16", "ae5792d4919861a2de2526154a47aad83241ed9370062e9d67e2cb56e603a8f9", "3b8ddaa1215e169992bef861d49a8738c822b5e187a6caf25cddac5b1ccfcc84", "ba9e733d62769eacf98c230047696ca21d7056fff70e9454844a7b247eeca5c0", "bf33b7bd2db016e86d7b6f5e576efc7850cb13ff0702cf6b53ff8710899e1897", "61c8311edaf1e834c1a15492ba47cd9b6bac80752d778206491477a72706185d", "ca782e49d6c92f9971638201213af589e438b802d2bf044e916921794bfc39f0", "4d89ee63bcd30c576cfd1bf5c08c44721e2e3b425c1e5e2328053ae21ecdd224", "c396e0af0d8923f09694e493f87d4d782ac91841699bae08c606f494c1ff29f1"]
+    },
+    {
+      "name": "mid",
+      "min_inclusive": 0.375,
+      "max_inclusive": 0.625,
+      "pool_rows": 3460,
+      "dataset_indices": [6931, 7090, 30, 11137, 2418, 7584, 12332, 12178, 13402, 20359, 13851, 16799, 10907, 3071, 20918, 18614],
+      "question_sha256": ["c64027d5923d615527ee13108439c4549a3328ea86b0eda728ba6bca2f3d2c18", "f90f8c62057d070897501874b9c03467b9841f6734033410855db98db388068f", "2bd1f641bfd4bbefb8b982501f9fe081b70915cefb9b000afa5ab39731e5a7b9", "4daf42ea3f84e296db3958d513db9e3d0c4471e5815aaeed310cc713667b29a1", "40b4e2acb5d9223b448bb0a3b7d03b13ddedcaee028e1e92e7ceefe9e759d846", "a1a3bc7c4c0db7e4d5f09c59f234862a4a0f88d4758ca8fc392499ce0304717e", "a0ad733dcb9909951192e73b2ea250e67bfea1e8339b346402ea5485ac96c221", "f2fd72eea1f0dbd65c17e81ed0197e660db46030b8236e96047afbf6c32c1818", "69fde5e483a1b9cc460b4455be0dc3823369a703844c669ec7366573a957b22c", "c1a6f37894dc1e1f71af16398c5b5c5d1f57dab64b8d737df18456367f8fdc93", "d6171e36a0cdd394cb255eb702f439a571a70fa131b2484a9e399ab20f18153a", "743321f9dc20b98ae6234401a7d3e2335c842f35eea46100de2d3c808ba542fe", "9030f120ab5d6a385d77f11a467a96dc7048cf12e17ce7bb65f083788987df0c", "201d807f4a9dd9b881b1d5c3735b151e98bed1091daa68cc423380dbf74fd3e3", "d57b65ada7bc02f9edb0ecfc0ba2a6250b6e0c8601d56fe34db03ec0f27a6f3b", "c9589e40d0b690e15e4768307df3e3bde433b69e24c4da9d7ea819b5d9f4b05f"]
+    },
+    {
+      "name": "high",
+      "min_inclusive": 0.75,
+      "max_inclusive": 1.0,
+      "pool_rows": 4809,
+      "dataset_indices": [11044, 18788, 8482, 253, 300, 10808, 2420, 7548, 17859, 18438, 10137, 7522, 3698, 5747, 21003, 9247],
+      "question_sha256": ["3c1e7458e5febe08b9bb33352762d99dbeed8564a86c350867d2f7bd200f0c2f", "9846362af36f29186280a932d9a218a3e616dae89f25a4f9374ca132fa83b917", "309ec9c1b8438d448f7b3f6174b0b3065c2cc7cce18343c40584bc47d373e552", "e7f70991aca9068c6a4455e77ec0e6536f8ee235f8bad153b17f8ec0dbc0d087", "5f51caeb25de0910a189010a127d494135713733acd1a9fb0a2965421c7c3cab", "2e2f5308467f26d086f79b0f131d0c86d5c1043b3a5a6bd3a8c82f70a55e952b", "29d03ee47f367ac3720cd5f1e613eb5e4185c551298852bfda75cdc3fc4e3181", "3eba46c175efbe559d7e090b6accc5f1c0b19fd8b52610419c44c6caedd817ee", "bec155d3fa08f88ddd1ce56bf37253974b17807690b6bdb00c7e883b0e008ea9", "221286ba44914e8be4cad99ecb42b319587cf757f26842a5fa1aa6b53df95057", "771e062e8883f75f00301b10bc31794aa02041998673a8a82bff3c09604eaa7a", "0191c40207add95fbea007af203a29100a817fd0dd3396859704c967af182d5e", "9c374564f3dd2ac3c09dd1a92e0219b3e2e0fc4504b107e79d81ce7017436d43", "702ef2f0817e3c5989ac6d3e1c778a0f0d24f3cfbbaaef7c0f53e7a3835ee1ec", "bf9028dfd0c0fb3b9cabd673df4972c6552824cf658f2271339284f90842b7c3", "1d3c825e211b91cc489a397e5e56e440dc4f419be37f0a0489f9a7a4d2378e87"]
+    }
+  ],
+  "smoke": {
+    "band": "mid",
+    "rank": 0,
+    "dataset_index": 6931,
+    "question_sha256": "c64027d5923d615527ee13108439c4549a3328ea86b0eda728ba6bca2f3d2c18",
+    "rollouts": 2
+  },
+  "measurements": {
+    "applicable": ["reward", "math_verify_score", "correct_answer", "errors", "error_types", "stop_condition", "truncation", "turns", "token_usage", "timing", "model", "sampling", "task_identity"],
+    "teacher_rows": "N/A: base-model evaluation has no teacher or distillation objective"
+  }
+}
