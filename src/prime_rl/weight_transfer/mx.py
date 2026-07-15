@@ -28,7 +28,7 @@ class MxChannel:
 
     def _identity(self, role: Role, channel: str) -> p2p_pb2.SourceIdentity:
         return p2p_pb2.SourceIdentity(
-            mx_version="0.3.0",
+            mx_version="0.4.1",
             mx_source_type=p2p_pb2.MX_SOURCE_TYPE_WEIGHTS,
             model_name=self.model,
             backend_framework=p2p_pb2.BACKEND_FRAMEWORK_VLLM,

@@ -536,6 +536,13 @@ async def init_weight_broadcast(
             f"inference_world_size not provided, defaulting to {inference_world_size} (one GPU per admin client)"
         )
 
+    if not admin_clients:
+        raise ValueError("weight broadcast requires at least one inference admin client")
+    if inference_world_size % len(admin_clients):
+        raise ValueError(
+            f"inference_world_size={inference_world_size} is not divisible by "
+            f"the {len(admin_clients)} inference servers"
+        )
     gpus_per_server = inference_world_size // len(admin_clients)
 
     logger.info(

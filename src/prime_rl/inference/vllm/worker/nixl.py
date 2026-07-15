@@ -21,7 +21,6 @@ from prime_rl.weight_transfer.nixl import NixlAgent, agent_name, configure_ucx
 from prime_rl.weight_transfer.publication import route_published_region
 from prime_rl.weight_transfer.sharding import zip_source_destination
 from prime_rl.weight_transfer.wire import (
-    PublishedTensor,
     SyncSignal,
     WeightManifest,
     decode_manifest,
@@ -320,11 +319,14 @@ class NIXLWeightUpdateWorker(Worker):
             initialize_layerwise_reload(model)
             for group in self._groups:
                 handles = [
-                    self._agent.read(local, indices, remote, indices)
-                    for local, remote, indices in group.pull_specs
+                    self._agent.read(local, indices, remote, indices) for local, remote, indices in group.pull_specs
                 ]
                 for handle in handles:
-                    self._agent.wait(handle, context=f"{type(group.layer).__name__} weight pull")
+                    self._agent.wait(
+                        handle,
+                        context=f"{type(group.layer).__name__} weight pull",
+                        timeout=self._timeout,
+                    )
 
                 for name in group.param_names:
                     shape, dtype = self._param_layout[(id(group.layer), name)]

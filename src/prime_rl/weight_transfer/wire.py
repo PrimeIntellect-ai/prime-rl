@@ -83,7 +83,5 @@ def encode_signal(signal: SyncSignal) -> bytes:
 def decode_signal(data: bytes) -> SyncSignal:
     signal = msgspec.msgpack.decode(data, type=SyncSignal)
     if signal.protocol_version != PROTOCOL_VERSION:
-        raise ValueError(
-            f"unsupported weight-transfer protocol {signal.protocol_version}; expected {PROTOCOL_VERSION}"
-        )
+        raise ValueError(f"unsupported weight-transfer protocol {signal.protocol_version}; expected {PROTOCOL_VERSION}")
     return signal

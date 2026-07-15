@@ -73,7 +73,8 @@ class NixlAgent:
             raise RuntimeError(f"NIXL READ submission failed with state {state}")
         return handle
 
-    def wait(self, handle: Any, context: str = "") -> None:
+    def wait(self, handle: Any, context: str = "", timeout: float | None = None) -> None:
+        deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             state = self._agent.check_xfer_state(handle)
             if state in {"DONE", "SUCCESS"}:
@@ -82,6 +83,9 @@ class NixlAgent:
             if state in {"ERR", "ERROR", "FAIL"}:
                 self._agent.release_xfer_handle(handle)
                 raise RuntimeError(f"NIXL transfer failed with state {state}: {context}")
+            if deadline is not None and time.monotonic() >= deadline:
+                self._agent.release_xfer_handle(handle)
+                raise TimeoutError(f"NIXL transfer timed out after {timeout}s: {context}")
             time.sleep(0.0005)
 
 
