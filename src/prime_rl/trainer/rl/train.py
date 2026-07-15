@@ -270,6 +270,7 @@ def train(config: TrainerConfig):
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function
+    start_step = progress.step
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -279,6 +280,18 @@ def train(config: TrainerConfig):
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
+
+        # Broadcast the incoming policy (v{progress.step-1}) before waiting for its rollouts. #2896
+        # broadcasts at the END of a step, so the first step would otherwise block on rollouts the
+        # inference engines cannot produce until they receive v{progress.step-1} (the orchestrator
+        # pauses inference at startup to sync it). This happens whether resuming (v{checkpoint_step})
+        # or starting fresh (v0), keeping trainer and orchestrator startup symmetric.
+        if progress.step == start_step and weight_broadcast is not None:
+            logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
+            multi_run_manager.wait_for_run(0)
+            for idx in multi_run_manager.used_idxs:
+                multi_run_manager.ready_to_update[idx] = True
+            weight_broadcast.broadcast_weights(model, step=progress.step - 1)
 
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")

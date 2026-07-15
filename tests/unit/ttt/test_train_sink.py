@@ -145,6 +145,7 @@ def make_qa_sink(env) -> TrainSink:
     sink.train_envs = FakeTrainEnvs(env)
     sink.tokenizer = RaisingTokenizer()
     sink.pre_filters = []
+    sink.pending_rollouts = TrainRollouts()
     sink.pending_batch = []
     sink.pending_tokens = 0
     sink.token_batch_size = None
@@ -152,6 +153,7 @@ def make_qa_sink(env) -> TrainSink:
     sink.pre_filter_dropped = 0
     sink.pre_filter_dropped_by_name = {}
     sink.pending_groups = {}
+    sink._group_meta_samples = {}
     sink._meta_clients = {}
     return sink
 
@@ -251,9 +253,8 @@ class TTTEnv:
     config = type("Cfg", (), {"ttt": type("TTT", (), {"enabled": True})()})()
 
 
-def test_token_batches_use_ttt_payload_but_leave_core_accounting_unchanged():
-    """Recycled/auxiliary samples count toward TTT batches; plain Prime-RL keeps its
-    established trace-token accounting."""
+def test_token_batches_use_serialized_payload_for_all_rollouts():
+    """Token batches count the serialized trainer payload for TTT and ordinary traces."""
     ttt_sink = TrainSink.__new__(TrainSink)
     ttt_sink.train_envs = FakeTrainEnvs(TTTEnv())
     ttt_sink.batch_size = None
@@ -272,10 +273,10 @@ def test_token_batches_use_ttt_payload_but_leave_core_accounting_unchanged():
     assert ttt_sink.pending_batch == [second]
     assert ttt_sink.pending_tokens == 7
 
-    core_sink = TrainSink.__new__(TrainSink)
-    core_sink.train_envs = FakeTrainEnvs(FakeEnv())
+    from prime_rl.orchestrator.train_sink import payload_tokens
+
     ordinary = Rollout(task=task(), env_name="e", samples=[sample(7)])
-    assert core_sink._rollout_batch_tokens(ordinary) == ordinary.num_total_tokens == 0
+    assert payload_tokens(ordinary) == 7
 
 
 def test_meta_samples_wait_for_a_post_filter_group_survivor(monkeypatch):

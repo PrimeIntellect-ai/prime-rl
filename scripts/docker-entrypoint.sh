@@ -59,9 +59,9 @@ if [ -n "$PRIME_RL_REF" ]; then
     # startup. --inexact keeps the seeded venv's pre-built wheels
     # (flash-attn-3, mamba-ssm) in place; uv only rebuilds them if the
     # override's lockfile pins different versions.
-    ( cd "$DEST" && uv sync --inexact --no-dev \
+    ( cd "$DEST" && uv sync --inexact --no-dev --all-packages \
         --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute \
-        --extra envs --extra gpt-oss --extra modelexpress \
+        --extra gpt-oss --extra modelexpress \
         --group mamba-ssm )
     export VIRTUAL_ENV="$DEST/.venv"
     export PATH="$DEST/.venv/bin:$PATH"

@@ -66,6 +66,14 @@ def test_recycle_and_meta_lessons_mutually_exclusive():
         )
 
 
+
+
+def test_nonpositive_qa_temperature_rejected():
+    with pytest.raises(ValueError, match="qa.temperature must be > 0"):
+        RLConfig.model_validate(
+            rl_payload({"base_url": "http://localhost:8092", "qa": {"temperature": 0}})
+        )
+
 def test_inflight_exceeding_max_loras_rejected():
     """Every in-flight rollout holds a vLLM adapter slot — inflight must fit max_loras."""
     with pytest.raises(ValueError, match="max_loras"):
@@ -113,6 +121,18 @@ def rl_ttt_service_payload(**overrides) -> dict:
         payload[key] = value
     return payload
 
+
+
+
+def test_managed_eval_ttt_rejects_policy_lora():
+    payload = rl_ttt_service_payload()
+    payload["orchestrator"]["train"]["env"] = [{"id": "dummy-env"}]
+    payload["orchestrator"]["eval"] = {
+        "env": [{"id": "dummy-eval-env", "ttt": {"base_url": "auto"}}]
+    }
+    payload["trainer"]["model"] = {"lora": {}}
+    with pytest.raises(ValueError, match="policy LoRA broadcasts cannot update"):
+        RLConfig.model_validate(payload)
 
 def test_ttt_service_autowires_output_dir_and_model():
     config = RLConfig.model_validate(rl_ttt_service_payload())

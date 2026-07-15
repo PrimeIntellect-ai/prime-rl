@@ -594,6 +594,7 @@ async def init_nccl_broadcast(
             if e.response.status_code == 404:
                 logger.warning("The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization.")
                 return
+            raise
 
     initializers = [
         _init_nccl_broadcast(admin_client, client_num * gpus_per_server)

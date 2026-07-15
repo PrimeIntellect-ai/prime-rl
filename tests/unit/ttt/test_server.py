@@ -386,6 +386,39 @@ async def test_v2_update_base_weights_route_acks_and_times_out():
             assert response.status_code == 503
 
 
+
+
+async def test_v2_broadcaster_init_is_idempotent():
+    import threading
+    from queue import Queue
+
+    from prime_rl.ttt.server_v2 import build_app_v2
+
+    config = TTTServiceConfig(engine={"type": "fsdp"}, weight_broadcast={"type": "nccl"})
+    trainer = type(
+        "Trainer",
+        (),
+        {"slots": {}, "free_idxs": set(), "base_version": -1, "weight_receiver": None},
+    )()
+    work_queue: Queue = Queue()
+
+    def fake_work_loop():
+        kind, _, ack = work_queue.get()
+        assert kind == "init_receiver"
+        trainer.weight_receiver = object()
+        ack.done.set()
+
+    app = build_app_v2(config, trainer, work_queue)
+    threading.Thread(target=fake_work_loop, daemon=True).start()
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://ttt") as client:
+            response = await client.post("/init_broadcaster", json={"host": "localhost"})
+            assert response.status_code == 200
+            response = await client.post("/init_broadcaster", json={"host": "localhost"})
+            assert response.status_code == 200
+            assert work_queue.empty()
+
 async def test_shared_nccl_receiver_module_is_vllm_free_importable():
     """The moved receiver lives in utils (importable without vLLM at module import time)
     and the vLLM worker re-exports it, so both sides share one implementation."""
