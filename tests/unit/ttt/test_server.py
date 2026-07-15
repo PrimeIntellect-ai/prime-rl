@@ -282,6 +282,16 @@ async def test_v2_rejects_malformed_identity_before_queueing():
     assert work_queue.empty()
 
 
+
+
+async def test_v1_rejects_malformed_identity_before_training(service):
+    async with service() as (client, trainer, engine):
+        response = await client.post("/update", json={**UPDATE, "rollout_id": "../evil"})
+        assert response.status_code == 409
+        response = await client.post("/release", json={"rollout_id": "/tmp/evil", "adapter_name": "ttt-r1"})
+        assert response.status_code == 409
+        assert trainer.updates == [] and trainer.released == []
+
 async def test_absent_adapter_404_matching_tolerates_message_churn():
     """The idempotent-unload detector must survive vLLM error-message rewording: any
     structured 404 naming the adapter (or typed NotFoundError) counts; a bare/route 404
@@ -335,20 +345,27 @@ async def test_v2_update_base_weights_route_acks_and_times_out():
 
     from prime_rl.ttt.server_v2 import build_app_v2
 
-    trainer = type("Trainer", (), {"slots": {}, "free_idxs": set(), "base_version": 0})()
+    trainer = type(
+        "Trainer",
+        (),
+        {"slots": {}, "free_idxs": set(), "base_version": 0, "weight_receiver": object()},
+    )()
     work_queue: Queue = Queue()
 
     def fake_work_loop():
-        kind, step, ack = work_queue.get()
-        assert kind == "recv_weights" and step == 3
+        kind, payload, ack = work_queue.get()
+        step, weight_dir = payload
+        assert kind == "recv_weights" and step == 3 and weight_dir is None
         trainer.base_version = step
-        ack.set()
+        ack.done.set()
 
-    app = build_app_v2(
-        TTTServiceConfig(engine={"type": "fsdp", "max_batch_wait_seconds": 0}, inference_admin_urls=[]),
-        trainer,
-        work_queue,
+    config = TTTServiceConfig(
+        engine={"type": "fsdp", "max_batch_wait_seconds": 0},
+        inference_admin_urls=[],
+        weight_broadcast={"type": "nccl"},
     )
+    trainer.config = config
+    app = build_app_v2(config, trainer, work_queue)
     threading.Thread(target=fake_work_loop, daemon=True).start()
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
@@ -358,6 +375,10 @@ async def test_v2_update_base_weights_route_acks_and_times_out():
             assert response.json() == {"status": "ok", "base_version": 3}
             health = await client.get("/health")
             assert health.json()["base_version"] == 3
+            # Lost-response retry is idempotent: no second one-shot receive is queued.
+            response = await client.post("/update_base_weights", json={"step": 3})
+            assert response.status_code == 200
+            assert work_queue.empty()
 
             # Wedged work loop (nothing drains the queue): bounded 503, not a hang.
             with patch("prime_rl.ttt.server_v2._RESULT_WAIT_SECONDS", 0.05):

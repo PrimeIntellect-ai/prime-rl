@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from prime_rl.configs.ttt import TTTServiceConfig
+from prime_rl.ttt.identity import validate_adapter_name, validate_rollout_id
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -109,6 +110,11 @@ def build_app(config: TTTServiceConfig, trainer: "TTTTrainer | None" = None) -> 
 
     @app.post("/update")
     async def update(request: UpdateRequest) -> UpdateResponse:
+        try:
+            validate_rollout_id(request.rollout_id)
+            validate_adapter_name(request.adapter_name)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
         async with app.state.semaphore:
             async with app.state.train_lock:
                 try:
@@ -138,6 +144,11 @@ def build_app(config: TTTServiceConfig, trainer: "TTTTrainer | None" = None) -> 
 
     @app.post("/release")
     async def release(request: ReleaseRequest) -> dict:
+        try:
+            validate_rollout_id(request.rollout_id)
+            validate_adapter_name(request.adapter_name)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
         async with app.state.train_lock:
             state = app.state.trainer.release(request.rollout_id)
         # Unload UNCONDITIONALLY: a retry after a lost response finds no state, but the

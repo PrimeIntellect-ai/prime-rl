@@ -331,6 +331,7 @@ class Orchestrator:
                 inference_world_size=config.weight_broadcast.inference_world_size,
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
                 ttt_world_size=config.weight_broadcast.ttt_world_size,
+                ttt_admin_client=self.ttt_admin,
             )
 
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")

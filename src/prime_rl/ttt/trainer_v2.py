@@ -237,11 +237,14 @@ class TTTTrainerV2:
         # Optional gloo group for control-plane collectives (set by run_server_v2): the
         # checkpoint barrier rides it so it shares the watchdog-free control plane.
         self.ctrl_pg = None
-        # Base-model policy version: 0 = the launch-time HF checkpoint; bumped by
-        # receive_base_weights on every successful broadcast receive.
-        self.base_version = 0
+        # A configured follower has not consumed any policy broadcast yet. Using -1 is
+        # important for the startup step-0 round: treating the launch checkpoint as v0
+        # would skip this receiver while trainer/vLLM enter the collective.
+        self.base_version = -1 if config.weight_broadcast is not None else 0
+        # NCCL membership is initialized through the HTTP control plane after every
+        # receiver is serving. Joining here would deadlock launcher startup: vLLM joins
+        # the same communicator only when the orchestrator initializes broadcasters.
         self.weight_receiver = None
-        self._setup_weight_receiver()
         self.logger.info(
             f"TTT v2 ready: {self.max_slots} adapter slots, rank={config.lora.rank}, "
             f"targets={config.lora.target_modules}"
@@ -249,15 +252,16 @@ class TTTTrainerV2:
 
     # -- base-weight broadcast (follow the policy) ---------------------------------------------
 
-    def _setup_weight_receiver(self) -> None:
-        """Join the trainer's NCCL broadcast group at startup (nccl receiver only).
+    def setup_weight_receiver(self) -> None:
+        """Join the trainer/inference/TTT NCCL broadcast group exactly once.
 
-        Every service rank occupies global receiver rank ``rank_offset + world.rank`` —
-        the slot after all inference GPUs — plus 1 for the trainer broadcaster on rank 0.
-        Group creation is collective, so this must run on every rank before serving.
+        The orchestrator invokes this through the service control plane concurrently with
+        vLLM broadcaster initialization, after all HTTP servers are ready.
         """
         wb = self.config.weight_broadcast
         if wb is None or wb.type != "nccl":
+            raise ValueError("NCCL receiver initialization requires [weight_broadcast] type = 'nccl'")
+        if self.weight_receiver is not None:
             return
         from prime_rl.utils.nccl_receiver import NCCLWeightBroadcastReceiver
 
@@ -271,7 +275,7 @@ class TTTTrainerV2:
         )
 
     @torch.no_grad()
-    def receive_base_weights(self, step: int) -> None:
+    def receive_base_weights(self, step: int, weight_dir: str | None = None) -> None:
         """Update the frozen base model to policy v{step} (all ranks, collective).
 
         The trainer broadcasts full HF-format tensors framed layer-by-layer (see
@@ -304,11 +308,17 @@ class TTTTrainerV2:
                 self._load_full_tensors(model_state_dict, layer_state_dict, layer_idx=message_idx - 1)
                 del layer_state_dict
         else:
-            # Filesystem broadcast: every rank reads the shared HF checkpoint step dir.
-            from prime_rl.trainer.weights import load_state_dict as load_fs_state_dict
-            from prime_rl.utils.pathing import get_broadcast_dir, get_step_path
+            # The orchestrator passes the exact published run directory. Deriving it from
+            # the service output root is wrong for multi-run layouts (run_default, run_N).
+            if weight_dir is None:
+                raise ValueError("filesystem base-weight updates require weight_dir")
+            from pathlib import Path
 
-            full_state_dict = load_fs_state_dict(get_step_path(get_broadcast_dir(self.config.output_dir), step))
+            from prime_rl.trainer.weights import load_state_dict as load_fs_state_dict
+
+            full_state_dict = load_fs_state_dict(Path(weight_dir))
+            if not full_state_dict:
+                raise FileNotFoundError(f"no safetensor weights found in {weight_dir}")
             self._load_full_tensors(model_state_dict, full_state_dict, layer_idx=None)
         self.base_version = step
         self.logger.info(f"ttt v2 base weights updated to policy v{step} in {time.perf_counter() - start_time:.2f}s")

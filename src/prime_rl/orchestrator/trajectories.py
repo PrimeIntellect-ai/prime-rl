@@ -15,6 +15,7 @@ the images it introduced (`branch.multi_modal_data`), rebuilt here into the flat
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator
 
 import numpy as np
@@ -155,6 +156,8 @@ def trace_to_samples(
             # branch with the QA temperature would put the bulk of the pre-compaction
             # trajectory at the wrong temperature in the importance ratio.
             node_temp = qa_temperature if (node.ttt_qa and qa_temperature is not None) else rollout_temperature
+            if node_temp is not None and (not math.isfinite(node_temp) or node_temp <= 0):
+                raise ValueError(f"training temperatures must be finite and > 0, got {node_temp}")
             node_temps.extend([node_temp] * len(node.mask))
         token_ids = branch.token_ids
         mm_kwargs: dict[str, EncodedTensor] | None = None

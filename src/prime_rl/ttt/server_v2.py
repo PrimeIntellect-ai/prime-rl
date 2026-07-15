@@ -43,8 +43,19 @@ _RESULT_WAIT_SECONDS = 3600.0
 _HEARTBEAT_SECONDS = 3600.0
 
 
+class InitBroadcasterRequest(BaseModel):
+    host: str
+
+
 class UpdateBaseWeightsRequest(BaseModel):
     step: int
+    weight_dir: str | None = None
+
+
+@dataclass
+class _BaseWeightsAck:
+    done: threading.Event = field(default_factory=threading.Event)
+    error: str | None = None
 
 
 @dataclass
@@ -145,19 +156,35 @@ def _work_loop(trainer, work_queue: Queue, world, ctrl_pg=None) -> None:
             raise RuntimeError(f"TTT v2 HTTP server failed: {data}")
         if kind == "noop":
             continue  # idle heartbeat: keeps the gloo broadcast fed (see run_server_v2)
-        if kind == "recv_weights":
-            # data = step; on rank 0, order[2] is the HTTP-side ack event. The collector
-            # already can't interleave (work orders are unary), but the batch queue may
-            # hold jobs — those ride later orders; this order only runs the receive.
+        if kind == "init_receiver":
             try:
-                trainer.receive_base_weights(data)
-            except Exception:
-                # A failed receive may leave ranks desynced mid-collective (some received
-                # tensors, some didn't) — fail fast loudly, do not limp.
-                logger.exception("ttt v2: base weight receive failed, aborting rank")
-                os._exit(1)
+                trainer.setup_weight_receiver()
+            except Exception as exc:
+                logger.exception("ttt v2: broadcaster initialization failed")
+                if world.is_master:
+                    order[2].error = f"{type(exc).__name__}: {exc}"
+                    order[2].done.set()
+                continue
             if world.is_master:
-                order[2].set()
+                order[2].done.set()
+            continue
+        if kind == "recv_weights":
+            # data = (step, exact filesystem weight dir or None). For NCCL a failed
+            # receive can desynchronize ranks, so preserve fail-fast behavior. Filesystem
+            # failures are coherent and can be returned without killing the service.
+            try:
+                trainer.receive_base_weights(*data)
+            except Exception as exc:
+                if trainer.config.weight_broadcast.type == "nccl":
+                    logger.exception("ttt v2: base weight receive failed, aborting rank")
+                    os._exit(1)
+                logger.exception("ttt v2: filesystem base weight update failed")
+                if world.is_master:
+                    order[2].error = f"{type(exc).__name__}: {exc}"
+                    order[2].done.set()
+                continue
+            if world.is_master:
+                order[2].done.set()
             continue
         if kind == "release":
             try:
@@ -244,6 +271,10 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
         # work loop, not as an HTTP pre-read, or it races an orphaned pending's completion.
         app.state.rollout_locks = {}
         app.state.deferred_rollout_releases = set()
+        # One transaction per policy step. Exact retries await/reuse it instead of
+        # enqueueing a second one-shot collective receive.
+        app.state.base_weight_updates = {}
+        app.state.broadcaster_init = None
         collector = threading.Thread(
             target=_collector_loop,
             args=(config, trainer, batch_queue, work_queue),
@@ -283,21 +314,52 @@ def build_app_v2(config: TTTServiceConfig, trainer, work_queue: Queue) -> FastAP
             "base_version": getattr(trainer, "base_version", 0),
         }
 
+    async def _wait_for_base_ack(ack: _BaseWeightsAck) -> None:
+        deadline = time.monotonic() + _RESULT_WAIT_SECONDS
+        while not ack.done.is_set():
+            if time.monotonic() >= deadline:
+                raise HTTPException(status_code=503, detail="TTT work loop did not answer in time")
+            await asyncio.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        if ack.error is not None:
+            raise HTTPException(status_code=500, detail=ack.error)
+
+    @app.post("/init_broadcaster")
+    async def init_broadcaster(request: InitBroadcasterRequest) -> dict:
+        wb = config.weight_broadcast
+        if wb is None or wb.type != "nccl":
+            raise HTTPException(status_code=409, detail="TTT service is not configured for NCCL weight broadcast")
+        if request.host != wb.host:
+            raise HTTPException(status_code=409, detail=f"NCCL host mismatch: expected {wb.host}, got {request.host}")
+        ack = app.state.broadcaster_init
+        if ack is None:
+            ack = _BaseWeightsAck()
+            app.state.broadcaster_init = ack
+            work_queue.put(("init_receiver", None, ack))
+        await _wait_for_base_ack(ack)
+        return {"status": "ok"}
+
     @app.post("/update_base_weights")
     async def update_base_weights(request: UpdateBaseWeightsRequest) -> dict:
-        """Follow a policy weight broadcast: all ranks join the collective receive.
+        """Apply one policy broadcast exactly once; retries share the original ack."""
+        wb = config.weight_broadcast
+        if wb is None:
+            raise HTTPException(status_code=409, detail="TTT service does not follow policy weight broadcasts")
+        if request.step < trainer.base_version:
+            raise HTTPException(
+                status_code=409,
+                detail=f"stale base-weight update {request.step}; current version is {trainer.base_version}",
+            )
+        if request.step == trainer.base_version:
+            return {"status": "ok", "base_version": request.step}
+        if wb.type == "nccl" and trainer.weight_receiver is None:
+            raise HTTPException(status_code=409, detail="NCCL broadcaster has not been initialized")
 
-        Enqueued directly on the work queue (not the batch collector): the work loop is
-        sequential, so the currently executing update batch drains before the receive.
-        For NCCL the orchestrator gathers this call with the vLLM /update_weights posts —
-        every receiver must join the one broadcast or the trainer hangs.
-        """
-        ack = threading.Event()
-        work_queue.put(("recv_weights", request.step, ack))
-        try:
-            await asyncio.wait_for(asyncio.to_thread(ack.wait), _RESULT_WAIT_SECONDS)
-        except TimeoutError:
-            raise HTTPException(status_code=503, detail="TTT work loop did not answer in time")
+        ack = app.state.base_weight_updates.get(request.step)
+        if ack is None:
+            ack = _BaseWeightsAck()
+            app.state.base_weight_updates[request.step] = ack
+            work_queue.put(("recv_weights", (request.step, request.weight_dir), ack))
+        await _wait_for_base_ack(ack)
         return {"status": "ok", "base_version": request.step}
 
     @app.post("/update")

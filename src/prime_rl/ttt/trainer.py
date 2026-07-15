@@ -17,6 +17,12 @@ import torch
 from torch import nn
 
 from prime_rl.configs.ttt import TTTServiceConfig
+from prime_rl.ttt.identity import (
+    checkpoint_rollout_dir,
+    update_fingerprint,
+    validate_adapter_name,
+    validate_rollout_id,
+)
 from prime_rl.ttt.validation import validate_qa_pairs
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.qa_render import assert_prefix_stable_template, tokenize_qa_pairs
@@ -43,8 +49,9 @@ class AdapterState:
     optim_state: dict | None = None
     """The optimizer state dict, restored per update so momentum carries across updates."""
     last_result: dict | None = None
-    """The successful result payload of the last applied update, so an exact replay
-    (client retry after a lost response) can be answered without re-training."""
+    """The successful result payload of the last applied update."""
+    last_fingerprint: str | None = None
+    """Semantic fingerprint proving that a same-sequence retry is exact."""
 
 
 class TTTTrainer:
@@ -101,7 +108,13 @@ class TTTTrainer:
     # -- adapter registry -------------------------------------------------------------------
 
     def _get_or_create(self, rollout_id: str, adapter_name: str) -> AdapterState:
+        validate_rollout_id(rollout_id)
+        validate_adapter_name(adapter_name)
         state = self.adapters.get(rollout_id)
+        if state is not None and state.adapter_name != adapter_name:
+            raise ValueError(
+                f"rollout {rollout_id!r} is bound to adapter {state.adapter_name!r}, not {adapter_name!r}"
+            )
         if state is None:
             state = AdapterState(
                 rollout_id=rollout_id,
@@ -113,9 +126,10 @@ class TTTTrainer:
 
     def release(self, rollout_id: str) -> AdapterState | None:
         """Drop a rollout's training state; optionally delete its checkpoints."""
+        rollout_dir = checkpoint_rollout_dir(self.ckpt_root, rollout_id)
         state = self.adapters.pop(rollout_id, None)
         if not self.config.keep_checkpoints:
-            shutil.rmtree(self.ckpt_root / rollout_id, ignore_errors=True)
+            shutil.rmtree(rollout_dir, ignore_errors=True)
         return state
 
     def _swap_in(self, state: AdapterState) -> None:
@@ -174,10 +188,27 @@ class TTTTrainer:
             raise ValueError("need at least 2 tokens to form a next-token target")
         # Validate seq_no BEFORE allocating: a bad first update must not leave a fresh
         # (never-trained) AdapterState behind that skews later expected seq_nos.
+        validate_rollout_id(rollout_id)
+        validate_adapter_name(adapter_name)
+        fingerprint = update_fingerprint(
+            rollout_id=rollout_id,
+            adapter_name=adapter_name,
+            token_ids=token_ids,
+            loss_mask=loss_mask,
+            seq_no=seq_no,
+            qa_pairs=qa_pairs,
+            train_rollout=train_rollout,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
         existing = self.adapters.get(rollout_id)
+        if existing is not None and existing.adapter_name != adapter_name:
+            raise ValueError(
+                f"rollout {rollout_id!r} is bound to adapter {existing.adapter_name!r}, not {adapter_name!r}"
+            )
         if existing is not None and seq_no == existing.version and existing.last_result is not None:
-            # Replay of the already-applied update (retry after a lost response): the
-            # training already happened — answer from cache, before any state mutation.
+            if fingerprint != existing.last_fingerprint:
+                raise ValueError(f"replayed update for {rollout_id} does not match the cached request")
             return existing.last_result
         expected = (existing.version if existing is not None else 0) + 1
         if seq_no != expected:
@@ -251,6 +282,7 @@ class TTTTrainer:
             "ckpt_path": str(ckpt_path),
             "num_loss_tokens": num_loss_tokens,
         }
+        state.last_fingerprint = fingerprint
         return state.last_result
 
     def save_checkpoint(self, state: AdapterState) -> Path:
@@ -259,7 +291,7 @@ class TTTTrainer:
         written to a tmp dir, then renamed."""
         import safetensors.torch
 
-        path = self.ckpt_root / state.rollout_id / f"v{state.version}"
+        path = checkpoint_rollout_dir(self.ckpt_root, state.rollout_id) / f"v{state.version}"
         tmp = path.with_name(f"{path.name}.tmp")
         shutil.rmtree(tmp, ignore_errors=True)
         tmp.mkdir(parents=True)

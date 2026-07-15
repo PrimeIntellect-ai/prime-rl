@@ -443,7 +443,6 @@ def test_recv_weights_order_drains_batch_then_receives_on_every_rank():
     work loop is sequential), calls the receive on the rank, bumps base_version, and
     leaves slot params/optimizer state untouched."""
     from queue import Queue
-    from threading import Event
 
     from prime_rl.ttt.server_v2 import _work_loop
 
@@ -458,7 +457,7 @@ def test_recv_weights_order_drains_batch_then_receives_on_every_rank():
         calls.append(("update", [j.rollout_id for j in jobs]))
         return original_update_batch(jobs)
 
-    def receive_base_weights(step):
+    def receive_base_weights(step, weight_dir=None):
         calls.append(("recv", step))
         trainer.base_version = step
 
@@ -466,18 +465,18 @@ def test_recv_weights_order_drains_batch_then_receives_on_every_rank():
     trainer.receive_base_weights = receive_base_weights
 
     j1 = job("r1")
-    from prime_rl.ttt.server_v2 import _Pending
+    from prime_rl.ttt.server_v2 import _BaseWeightsAck, _Pending
 
     pending = _Pending(job=j1)
-    ack = Event()
+    ack = _BaseWeightsAck()
     work_queue: Queue = Queue()
     work_queue.put(("update", [j1], [pending]))
-    work_queue.put(("recv_weights", 7, ack))
+    work_queue.put(("recv_weights", (7, None), ack))
     work_queue.put(("stop",))
     _work_loop(trainer, work_queue, SimpleNamespace(is_master=True, world_size=1))
 
     assert calls == [("update", ["r1"]), ("recv", 7)]  # batch drained BEFORE the receive
-    assert ack.is_set()
+    assert ack.done.is_set()
     assert trainer.base_version == 7
     # Slot state survives the receive: r1's slot, optimizer binding, and version.
     assert "r1" in trainer.slots and trainer.slots["r1"].version == 1

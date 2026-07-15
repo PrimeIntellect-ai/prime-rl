@@ -403,8 +403,15 @@ class RLConfig(BaseConfig):
             )
         if not ttt_envs:
             return self
-        # Full-weight policy is a REPLAY constraint — only train-env TTT triggers replay
-        # (eval adapters are dismissed per rollout, never replayed by the trainer).
+        # A managed service follows full policy checkpoints. Policy LoRA broadcasts
+        # contain adapter-only tensors and cannot be composed with per-rollout TTT LoRA.
+        if self.ttt is not None and self.trainer.model.lora is not None:
+            raise ValueError(
+                f"Managed TTT env(s) {[e.resolved_name for e in managed_ttt_envs]} require full-weight "
+                "policy training: policy LoRA broadcasts cannot update the TTT base model — "
+                "unset [trainer.model.lora] or run an external launch-frozen service."
+            )
+        # External train-time TTT still replays frozen adapters through the policy model.
         if active_train_ttt_envs and self.trainer.model.lora is not None:
             raise ValueError(
                 f"TTT env(s) {[e.resolved_name for e in active_train_ttt_envs]} require full-weight "
@@ -419,6 +426,10 @@ class RLConfig(BaseConfig):
             )
         for env in active_ttt_envs:
             qa = env.ttt.qa
+            if qa is not None and qa.temperature is not None and qa.temperature <= 0:
+                raise ValueError(
+                    f"TTT env '{env.resolved_name}' qa.temperature must be > 0 when QA tokens are trained"
+                )
             if qa is not None and qa.recycle_to_policy and qa.meta_lessons:
                 raise ValueError(
                     f"TTT env '{env.resolved_name}' sets both qa.recycle_to_policy and qa.meta_lessons: "

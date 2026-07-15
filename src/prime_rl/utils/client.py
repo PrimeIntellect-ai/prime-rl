@@ -467,7 +467,7 @@ async def update_weights(
                     _admin_post(
                         ttt_admin_client,
                         "/update_base_weights",
-                        json={"step": step},
+                        json={"step": step, "weight_dir": weight_dir_posix},
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                     )
                 )
@@ -552,6 +552,7 @@ async def init_nccl_broadcast(
     inference_world_size: int | None = None,
     quantize_in_weight_transfer: bool = False,
     ttt_world_size: int = 0,
+    ttt_admin_client: AsyncClient | None = None,
 ) -> None:
     """Initialize NCCL broadcast on all inference servers.
 
@@ -594,12 +595,17 @@ async def init_nccl_broadcast(
                 logger.warning("The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization.")
                 return
 
-    await asyncio.gather(
-        *[
-            _init_nccl_broadcast(admin_client, client_num * gpus_per_server)
-            for client_num, admin_client in enumerate(admin_clients)
-        ]
-    )
+    initializers = [
+        _init_nccl_broadcast(admin_client, client_num * gpus_per_server)
+        for client_num, admin_client in enumerate(admin_clients)
+    ]
+    # TTT occupies the ranks after inference and must join the same communicator
+    # concurrently. Its HTTP server is already live, avoiding a launcher dependency cycle.
+    if ttt_admin_client is not None:
+        initializers.append(
+            _admin_post(ttt_admin_client, "/init_broadcaster", json={"host": host}, timeout_s=float(timeout))
+        )
+    await asyncio.gather(*initializers)
 
 
 async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:
