@@ -31,7 +31,7 @@ from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
     convert_prime_layer_to_hf,
     convert_prime_to_hf,
 )
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 logger = logging.get_logger(__name__)
 
@@ -531,7 +531,12 @@ class NemotronHModel(NemotronHPreTrainedModel):
             # packed document boundaries.
             raise ValueError("Packed NemotronH batches require flash attention")
         if flash_attn_enabled:
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+            if seq_lens is None:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+            else:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                    seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+                )
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             max_seqlen = None

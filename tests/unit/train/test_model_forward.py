@@ -48,6 +48,8 @@ def test_forward_passes_renderer_mm_token_type_ids_through():
         model,
         input_ids,
         position_ids,
+        seq_lens=torch.tensor([input_ids.shape[1]]),
+        padding_len=0,
         mm_kwargs={"pixel_values": pixel_values, "image_grid_thw": image_grid_thw},
         mm_token_type_ids=mm_token_type_ids,
     )
@@ -72,6 +74,8 @@ def test_forward_omits_mm_token_type_ids_when_renderer_does_not_supply():
         model,
         input_ids,
         position_ids,
+        seq_lens=torch.tensor([input_ids.shape[1]]),
+        padding_len=0,
         mm_kwargs={"pixel_values": torch.ones(2, 3), "image_grid_thw": torch.tensor([[1, 1, 2]])},
     )
 
@@ -91,6 +95,8 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
         model,
         input_ids,
         position_ids,
+        seq_lens=torch.tensor([input_ids.shape[1]]),
+        padding_len=0,
         mm_kwargs={"pixel_values": torch.ones(2, 3)},
     )
 
@@ -104,7 +110,7 @@ def test_forward_does_not_leak_seq_lens_to_generic_text_models():
     position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
     seq_lens = torch.tensor([2, 2])
 
-    forward(model, input_ids, position_ids, seq_lens=seq_lens)
+    forward(model, input_ids, position_ids, seq_lens=seq_lens, padding_len=0)
 
     assert model.kwargs is not None
     assert "seq_lens" not in model.kwargs
@@ -116,7 +122,18 @@ def test_forward_passes_typed_seq_lens_to_custom_models():
     position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
     seq_lens = torch.tensor([2, 2])
 
-    forward(model, input_ids, position_ids, seq_lens=seq_lens)
+    forward(model, input_ids, position_ids, seq_lens=seq_lens, padding_len=0)
 
     assert model.kwargs is not None
     torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
+
+
+def test_forward_merges_padding_into_final_document_for_custom_models():
+    model = _PrimeCaptureModel()
+    input_ids = torch.tensor([[1, 2, 3, 0]])
+    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
+
+    forward(model, input_ids, position_ids, seq_lens=torch.tensor([3, 1]), padding_len=1)
+
+    assert model.kwargs is not None
+    torch.testing.assert_close(model.kwargs["seq_lens"], torch.tensor([4]))

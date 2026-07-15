@@ -368,7 +368,8 @@ def train(config: TrainerConfig):
                 else None
             )
 
-            seq_lens = micro_batch["seq_lens"].to("cuda") if micro_batch.get("seq_lens") is not None else None
+            seq_lens = micro_batch["seq_lens"].to("cuda")
+            padding_len = micro_batch["padding_len"]
 
             labels = shift_tensor_left(input_ids)
 
@@ -418,6 +419,7 @@ def train(config: TrainerConfig):
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
+                    padding_len=padding_len,
                     routed_experts=routed_experts,
                 )
 

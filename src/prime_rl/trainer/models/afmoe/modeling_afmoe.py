@@ -33,7 +33,7 @@ from prime_rl.trainer.models.layers.rotary_emb import (
     RotaryEmbeddingConfig,
     apply_rotary_pos_emb,
 )
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 from .configuration_afmoe import AfmoeConfig
 from .converting_afmoe import (
@@ -486,7 +486,12 @@ class AfmoeModel(AfmoePreTrainedModel):
             raise ValueError("Packed Afmoe batches require flash attention")
 
         if use_flash:
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+            if seq_lens is None:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+            else:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                    seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+                )
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
             causal_mask_mapping = None
         else:

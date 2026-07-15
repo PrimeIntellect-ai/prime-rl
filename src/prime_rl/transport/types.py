@@ -89,6 +89,8 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     sequence_lengths: list[int]
     temperatures: list[float]  # Per-token temperatures used during generation
     env_names: list[str]
+    seq_lens: list[int]
+    padding_len: int
     ref_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None
@@ -108,6 +110,3 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # Packer-derived metadata used for run-local token exports.
     run_id: str | None = None
     run_step: int | None = None
-
-    # Packed sample boundaries. Sum equals len(input_ids) when present.
-    seq_lens: list[int] | None = None

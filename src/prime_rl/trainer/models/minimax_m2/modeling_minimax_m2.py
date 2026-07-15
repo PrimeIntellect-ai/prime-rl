@@ -22,7 +22,7 @@ from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import (
     convert_tt_layer_to_hf,
     convert_tt_to_hf_moe,
 )
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 logger = logging.get_logger(__name__)
 
@@ -186,7 +186,12 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
             # packed document boundaries.
             raise ValueError("Packed MiniMaxM2 batches require flash attention")
         if flash_attn_enabled:
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+            if seq_lens is None:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+            else:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                    seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+                )
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             max_seqlen = None

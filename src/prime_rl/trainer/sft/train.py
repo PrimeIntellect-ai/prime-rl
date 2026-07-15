@@ -242,7 +242,8 @@ def train(config: SFTConfig):
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
-        seq_lens = micro_batch.get("seq_lens")
+        seq_lens = micro_batch["seq_lens"].to("cuda")
+        padding_len = micro_batch["padding_len"]
 
         if cp_enabled:
             # seq_lens spans the pre-shard pack; CP consumption needs global
@@ -263,10 +264,17 @@ def train(config: SFTConfig):
             if config.loss_impl in ("liger_fused", "quack_fused"):
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
-                out = forward(model, input_ids, position_ids, labels=masked_target_ids, seq_lens=seq_lens)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    seq_lens=seq_lens,
+                    padding_len=padding_len,
+                    labels=masked_target_ids,
+                )
                 loss_sum = out["loss"] * token_count
             else:
-                out = forward(model, input_ids, position_ids, seq_lens=seq_lens)
+                out = forward(model, input_ids, position_ids, seq_lens=seq_lens, padding_len=padding_len)
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)

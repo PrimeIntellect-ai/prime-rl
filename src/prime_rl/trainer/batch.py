@@ -215,6 +215,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         ce_weights=ce_weights,
         ref_kl_weights=ref_kl_weights,
         seq_lens=[len(input_ids)],
+        padding_len=0,
     )
 
 
@@ -324,7 +325,7 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
                 assert routed_experts.shape[1:] == sample.routed_experts.shape[1:]
                 routed_experts.data += sample.routed_experts.data
                 routed_experts.shape[0] += sample.routed_experts.shape[0]
-        seq_lens.extend(sample.seq_lens if sample.seq_lens is not None else [sample_len])
+        seq_lens.extend(sample.seq_lens)
         lora_num_tokens[lora_idx] += sample_len
 
     sequence_lengths = [len(sample.input_ids) for _, sample in bin_content.samples]
@@ -350,6 +351,7 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         ce_weights=streams["ce_weights"],
         ref_kl_weights=streams["ref_kl_weights"],
         seq_lens=seq_lens,
+        padding_len=0,
     )
 
 
@@ -451,6 +453,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
     micro_batch.sequence_lengths.append(padding_size)
+    micro_batch.seq_lens.append(padding_size)
+    micro_batch.padding_len = padding_size
     micro_batch.inference_logprobs.extend([0.0] * padding_size)
     # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)
     micro_batch.temperatures.extend([1.0] * padding_size)
@@ -469,8 +473,6 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         )
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
-    if micro_batch.seq_lens is not None:
-        micro_batch.seq_lens.append(padding_size)
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
     micro_batch.env_names.extend([""] * padding_size)
@@ -504,6 +506,11 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
     assert sum(micro_batch.sequence_lengths) == num_tokens, (
         f"sequence_lengths sum {sum(micro_batch.sequence_lengths)} != {num_tokens} tokens"
     )
+    assert micro_batch.seq_lens and all(seq_len > 0 for seq_len in micro_batch.seq_lens)
+    assert sum(micro_batch.seq_lens) == num_tokens, f"seq_lens sum {sum(micro_batch.seq_lens)} != {num_tokens} tokens"
+    assert micro_batch.padding_len >= 0
+    if micro_batch.padding_len:
+        assert micro_batch.seq_lens[-1] == micro_batch.padding_len
     if micro_batch.routed_experts is not None:
         assert micro_batch.routed_experts.shape[0] == num_tokens, (
             f"routed_experts misaligned after packing: {micro_batch.routed_experts.shape[0]} != {num_tokens} tokens"

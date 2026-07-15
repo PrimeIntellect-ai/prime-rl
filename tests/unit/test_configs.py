@@ -567,6 +567,11 @@ def test_sft_allows_unused_default_renderer_for_fake_data():
     assert config.renderer.name == "default"
 
 
+def test_sft_rejects_removed_pack_function():
+    with pytest.raises(ValidationError, match="pack_function"):
+        SFTConfig.model_validate({"data": {"pack_function": "stack"}})
+
+
 def test_orchestrator_explicit_renderer_skips_unmapped_check():
     """Explicit renderer.name bypasses the auto-resolution check — user opted in."""
     config = OrchestratorConfig.model_validate(

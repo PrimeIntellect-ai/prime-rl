@@ -118,6 +118,9 @@ def test_fake_dataset_single_rank_state_with_packing():
         num_packed_examples = len(micro_batch["input_ids"][micro_batch["loss_mask"]].unique())
         step += num_packed_examples
         assert micro_batch["input_ids"].shape == (1, 128)
+        assert micro_batch["seq_lens"].sum() == micro_batch["input_ids"].shape[1]
+        if micro_batch["padding_len"]:
+            assert micro_batch["seq_lens"][-1] == micro_batch["padding_len"]
         dataset_state = dataloader.state_dict()["dataset_state"]
         pending_sample = dataset_state.get("pending_sample")
         expected_dataset_step = step + (pending_sample is not None)
@@ -138,3 +141,4 @@ def test_fake_dataset_single_rank_state_with_packing():
 
     for key in ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens"):
         torch.testing.assert_close(resumed_batch[key], expected_batch[key])
+    assert resumed_batch["padding_len"] == expected_batch["padding_len"]

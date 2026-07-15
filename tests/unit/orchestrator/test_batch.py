@@ -178,6 +178,7 @@ def test_pad_micro_batch_preserves_explicit_sequence_lengths():
     assert len(padded.input_ids) == 6
     assert padded.sequence_lengths == [4, 2]
     assert padded.seq_lens == [4, 2]
+    assert padded.padding_len == 2
     assert sum(padded.sequence_lengths) == len(padded.input_ids)
     assert padded.loss_mask[-2:] == [False, False]
 

@@ -16,7 +16,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
 
 
 def _get_rope_type(config: Qwen3Config) -> str:
@@ -176,7 +176,12 @@ class Qwen3Model(Qwen3PreTrainedModel):
             # packed document boundaries.
             raise ValueError("Packed Qwen3 batches require flash attention")
         if flash_attn_enabled:
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+            if seq_lens is None:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+            else:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                    seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+                )
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             cu_seqlens = None

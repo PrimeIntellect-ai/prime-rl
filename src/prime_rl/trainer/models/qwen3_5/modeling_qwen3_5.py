@@ -209,7 +209,12 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
 
         flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
         if flash_attn_enabled:
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+            if seq_lens is None:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+            else:
+                cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                    seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+                )
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         elif seq_lens is not None:
             # seq_lens is only populated for batch size 1 (see cat_collate), so a

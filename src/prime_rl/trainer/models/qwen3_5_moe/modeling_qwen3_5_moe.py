@@ -900,7 +900,12 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
                         total_tokens=seq_len,
                     )
             else:
-                cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+                if seq_lens is None:
+                    cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+                else:
+                    cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                        seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+                    )
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         elif seq_lens is not None:
             # seq_lens is only populated for batch size 1 (see cat_collate), so this
