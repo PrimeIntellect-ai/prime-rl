@@ -1,0 +1,75 @@
+max_turns = 40
+max_input_tokens = 56000
+max_output_tokens = 24000
+max_total_tokens = 60000
+multiplex = 32
+model = "Qwen/Qwen3.5-35B-A3B"
+num_tasks = 40
+num_rollouts = 32
+shuffle = false
+max_concurrent = 32
+verbose = false
+dry_run = false
+rich = false
+server = false
+output_dir = "evals/genagent-base-band40-k32-local-r01-20260715"
+
+[taskset]
+id = "general-agent-v1"
+ref = "a2b76f6ac3469f7f50171760c0d0dba38360edc4"
+tasks = ["scholarship_office_t3", "sculpture_foundry_t4", "ferry_t3", "model_rocketry_t3", "demolition_planning_t3", "poetry_slam_t4", "boba_tea_t4", "cocktail_competition_t4", "flight_crew_scheduling_t3", "choir_festival_t4", "game_night_t4", "lighthouse_mgmt_t4", "semiconductor_fab_t4", "collision_repair_t3", "mine_rescue_t4", "watchmaker_t4", "kintsugi_repair_t4", "champagne_house_t4", "plant_clinic_t4", "translation_agency_t4", "consignment_boutique_t3", "immigration_office_t3", "museum_curation_t3", "paint_n_sip_t3", "transplant_registry_t3", "coffee_subscription_t4", "pipeline_inspection_t3", "game_night_t3", "leather_shop_t3", "bbq_competition_t3", "pest_control_t3", "distillery_t3", "shipwreck_salvage_t3", "factory_floor_t4", "olive_mill_t4", "toy_lending_t3", "trade_show_t4", "heist_planning_t3", "exoplanet_survey_t4", "airport_ops_t4"]
+min_tier = 3
+max_tier = 4
+pass_rate_model = "openai/gpt-5-mini"
+pass_rate_solver = "local"
+min_pass_rate = 0.0
+max_pass_rate = 1.0
+shuffle_seed = 20260715
+start_idx = 0
+limit = 40
+
+[taskset.tools]
+colocated = false
+shared = false
+fork = false
+
+[taskset.tools.runtime]
+type = "subprocess"
+
+[harness]
+id = "null"
+forward_env = []
+
+[harness.runtime]
+type = "subprocess"
+
+[harness.env]
+
+[timeout]
+setup = 120.0
+rollout = 600.0
+scoring = 60.0
+
+[retries.rollout]
+max_retries = 2
+include = ["ProviderError"]
+exclude = []
+
+[args]
+
+[extra_env_kwargs]
+
+[pool]
+type = "elastic"
+multiplex = 128
+
+[client]
+base_url = "http://127.0.0.1:8000/v1"
+api_key_var = "VLLM_API_KEY"
+type = "eval"
+
+[client.headers]
+
+[sampling]
+temperature = 1.0
+max_tokens = 4096

@@ -1,0 +1,49 @@
+enable_lora = false
+enable_prefix_caching = false
+gpu_memory_utilization = 0.7
+api_server_count = 1
+seed = 0
+enable_expert_parallel = false
+enable_eplb = false
+enable_dbo = false
+use_deep_gemm = false
+enable_fp32_lm_head = true
+
+[server]
+port = 8000
+liveness_timeout_seconds = 30.0
+
+[model]
+name = "Qwen/Qwen3.5-35B-A3B"
+trust_remote_code = false
+dtype = "auto"
+max_model_len = 65536
+max_logprobs = 64
+enforce_eager = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+[parallel]
+tp = 4
+dp = 1
+
+[log]
+level = "debug"
+vf_level = "info"
+json_logging = false
+log_data = false
+interval = 10.0
+
+[env_vars]
+VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS = "1800"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[vllm_extra]
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+enable_flashinfer_autotune = false
+language_model_only = true
+
+[deployment]
+gpus_per_node = 4
+type = "single_node"
