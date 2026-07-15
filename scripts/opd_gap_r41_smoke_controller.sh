@@ -95,7 +95,8 @@ ssh "${ssh_args[@]}" "$remote" \
   "test -d '$repo/.git' || git clone --branch codex/opsd-lora-stability --single-branch https://github.com/PrimeIntellect-ai/prime-rl.git '$repo'"
 
 for path in packages/prime-rl-configs src/prime_rl deps configs/opd-gap; do
-  rsync -az --exclude .git -e "$ssh_cmd" "$source_repo/$path/" "$remote:$repo/$path/"
+  rsync -az --exclude .git --exclude .venv --exclude __pycache__ --exclude .pytest_cache \
+    -e "$ssh_cmd" "$source_repo/$path/" "$remote:$repo/$path/"
 done
 rsync -az -e "$ssh_cmd" \
   "$source_repo/pyproject.toml" "$source_repo/uv.lock" \
@@ -119,7 +120,7 @@ ssh "${ssh_args[@]}" "$remote" \
 ssh "${ssh_args[@]}" "$remote" \
   "test -x '$uv' || curl -LsSf https://astral.sh/uv/install.sh | XDG_CONFIG_HOME=/tmp/uv-config UV_NO_MODIFY_PATH=1 sh"
 ssh "${ssh_args[@]}" "$remote" \
-  "cd '$repo' && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RENDERERS='$renderers_version' SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VERIFIERS='$verifiers_version' '$uv' sync --all-extras"
+  "cd '$repo' && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RENDERERS='$renderers_version' SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VERIFIERS='$verifiers_version' '$uv' sync --frozen --all-extras"
 ssh "${ssh_args[@]}" "$remote" \
   "cd '$repo' && '$uv' run --no-sync python -c 'import torch, verifiers; assert torch.cuda.device_count() == 8; print(torch.cuda.device_count())'"
 
