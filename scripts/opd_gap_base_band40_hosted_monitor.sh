@@ -5,7 +5,7 @@ set -euo pipefail
 service=${1:-opd-gap-base-band40-hosted-r03.service}
 results=${2:-/home/ubuntu/prime-rl/evals/genagent-base-band40-k32-hosted-r01-20260715/results.jsonl}
 state_file=${3:-/home/ubuntu/opd-gap-base-band40-hosted-state.json}
-expected=1280
+expected=${4:-1280}
 last_count=-1
 last_progress=$(date +%s)
 

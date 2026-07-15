@@ -1,0 +1,1439 @@
+{
+  "bands": [
+    {
+      "available_after_exclusions": 331,
+      "max_metadata_pass_rate_exclusive": 0.1,
+      "min_metadata_pass_rate": 0.0,
+      "name": "very_hard"
+    },
+    {
+      "available_after_exclusions": 305,
+      "max_metadata_pass_rate_exclusive": 0.3,
+      "min_metadata_pass_rate": 0.1,
+      "name": "hard"
+    },
+    {
+      "available_after_exclusions": 294,
+      "max_metadata_pass_rate_exclusive": 0.6,
+      "min_metadata_pass_rate": 0.3,
+      "name": "medium"
+    },
+    {
+      "available_after_exclusions": 291,
+      "max_metadata_pass_rate_exclusive": 1.0001,
+      "min_metadata_pass_rate": 0.6,
+      "name": "easy"
+    }
+  ],
+  "excluded_task_count": 59,
+  "group_size": 8,
+  "minimum_mixed_groups": 1,
+  "revision": "r01",
+  "rollouts_per_task": 8,
+  "selection": "50 random tier-3/4 tasks per metadata band; prior 40-task panel and fixed heldout excluded",
+  "selection_seed": 20260715,
+  "tasks": [
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.05,
+      "task": "chemistry_lab_t4",
+      "task_toml_sha256": "98a4b1dce28847bd4599a00fcdb8973e01cda86a66d8e9814d9851e4b0684262",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "falconry_t4",
+      "task_toml_sha256": "96dc467f711d298afe7927a601724014c5106818c7bd5dbd4553e59fc398a43b",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "birdwatching_t4",
+      "task_toml_sha256": "6d2655a37d39e06e548446f343bb324006e63cf7488070cb40cb653f0bc3b8c2",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "venture_capital_t4",
+      "task_toml_sha256": "470a1e8fe0f994bc1442cc611a1c584f876ab527c6ccbcc1fcdf6a7d24590a32",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "dna_testing_lab_t3",
+      "task_toml_sha256": "0a04fa5a4adb25b8145412ff84edc456256cbaf8e924007c20effbf5d26c7908",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "currency_exchange_t4",
+      "task_toml_sha256": "1841430b9ab9035a639be1c3cf06c819581025da12f9d938b2cefe7ceef64b72",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "elevator_dispatch_t4",
+      "task_toml_sha256": "e0b0dce9600982b7f3e6d033d732310e6c3e9e343fb8deebe86f52ae394bf9d8",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "lifeguard_t4",
+      "task_toml_sha256": "f225c45c55f14d564a1fb345728435a666c0327f8cec452f740d904c3ac7b251",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "farm_share_t4",
+      "task_toml_sha256": "1044883853afaf6946e2846885f406eec1b735b48274cbbdff8a41925b443f29",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "poke_bar_t3",
+      "task_toml_sha256": "479aed72d41d5f3907e021335990f993a7af5a475130f7f4e884cea6b0e3aaac",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "art_supply_t3",
+      "task_toml_sha256": "a77cdbffae7c6f63873b34e91816bd4e859a93847a39e427da070a7bc036def5",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "zipline_tour_t4",
+      "task_toml_sha256": "57ca3205ccc9e61ed907ef6ea82353caf730c7299df0325a63af2c8db95c536d",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "city_marathon_t3",
+      "task_toml_sha256": "bfbe4d8e9d05c2ba1c0e870e4e6e4c0e256a71ce5c413f7ad7ddde212ff34e56",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.02,
+      "task": "kart_track_t4",
+      "task_toml_sha256": "c39e28348366d218bdae011ac0f893aa01fda77e352212d278ac985b1a6dc0e1",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "wine_blend_t4",
+      "task_toml_sha256": "2b381184d84d3faa827a0528ade6f5e2e62c7d9de0268dba118b692a9bcd60bb",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.05,
+      "task": "seismic_station_t4",
+      "task_toml_sha256": "ec17f2207113fe502268a836e95c0436b732e8d9b908c5a9af485ad28a88aea8",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "comic_grading_t4",
+      "task_toml_sha256": "50c9cd4bdf7da5a998bbadf32d2a648887eb4f31e17a4082234e1a71b80b4835",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "drug_discovery_t3",
+      "task_toml_sha256": "4e7dc9fc96e79992bc4f10463c4022d9d46bc1b6e336dda138dc979699d82977",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "vintage_camera_t4",
+      "task_toml_sha256": "d9e331b0e5ff00fc95af51e761478f41fd454a8c700ccf4cfb12c33231aa2a9b",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0625,
+      "task": "vinyl_restoration_t4",
+      "task_toml_sha256": "6049e2c0613d89490a97a0a218e72d50b4b883cf3aed2249159a3527c82559ab",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "canal_lock_system_t3",
+      "task_toml_sha256": "da48deb1028ac00b21ab48558a33f877059b61f7b9a081b4d9c0d8f248b9c0a2",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "fiber_optic_t3",
+      "task_toml_sha256": "68485724662950b82c41e384699f3ccf9654c319ee5e66dd2b19725ef717fe47",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.05,
+      "task": "gas_station_t4",
+      "task_toml_sha256": "17df015a5dd348896e535c20c18a79012421d9d18574d3c195fa0c3a7ec42cac",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.05,
+      "task": "package_registry_t4",
+      "task_toml_sha256": "0e2240aa1c0fc153640d5a315060847fbe9d216560a9bfb94515d2c9ec8c2943",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "language_exchange_t4",
+      "task_toml_sha256": "a6bc131807acd2dadd6c104fa491395b2c9d850f3749fee5960af9bc9c723337",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "paint_n_sip_t4",
+      "task_toml_sha256": "41c6b9ecaf7587788258adb1fc52bbe8df37c4686a8fe47610e99d2a434cd20b",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "haberdashery_t4",
+      "task_toml_sha256": "4beb402b8ad55590a02798d7e8fb3353c5dcc36ccb6a6332c4565bd6518aa11a",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "dungeon_design_t4",
+      "task_toml_sha256": "e94a90640ada418d6fa5ccf010ae13f7d43d123cd5e051da6e8ffbaa0de7215b",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.05,
+      "task": "sneaker_consignment_t4",
+      "task_toml_sha256": "ec2856ce55a9c36bf588366edfdd71a1136b9b74f7bcfed1f1dde3550f6b2e61",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "award_show_t3",
+      "task_toml_sha256": "9bfdbbcbb4a353ece945b888e8d67f34cccf2509c86c22354c9c39f4580ffcc5",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "coral_reef_t3",
+      "task_toml_sha256": "246a0a539fe80a8f18df7540caa37e9e2529bcf1aa6afbf3a58b2d7cebef2234",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.05,
+      "task": "cave_exploration_t4",
+      "task_toml_sha256": "cc8ba755d81ec38ba7f34687dcc326b671e81e80d62c6f725fa3a112a28654b3",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "appliance_repair_t4",
+      "task_toml_sha256": "b32d2ece26529c6d551bb7095cab14422a0d59135c04d9d5bd5b7373e5dcf578",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "triathlon_t3",
+      "task_toml_sha256": "bda95e53c09aefaf8e7dcd73916d0c5d365812ed5b776624a6642abd6a6049d3",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "compounding_pharmacy_t4",
+      "task_toml_sha256": "d4e1ffe2365b4ddb2a8d61e81848b5b04f27ab89ed33ba67fafb3612bd836b5b",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "pen_shop_t3",
+      "task_toml_sha256": "cfdfa3ac99481cae47268ea524c11661a79aedca3a06f4c92d191982a859e492",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "coworking_space_t3",
+      "task_toml_sha256": "a36c02ef9911cc5454316740da694725164ae8a10c8af1ecf7bd6ab04fc65a4c",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "ghost_tour_t3",
+      "task_toml_sha256": "f7a69bff2b2fe077b4fee7d5ceb5c2df2e8cda2e1a7c5aa4df14a6f504184501",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "parade_planning_t4",
+      "task_toml_sha256": "65859784951672dcf6d9464af1e58133a69417c1e8f782d2e5a2524c5a55982f",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "puzzle_hunt_t4",
+      "task_toml_sha256": "ceb72492ecbf309c3a52d3de33a2979ff905495fae68e15a4f4952c7baa4ec63",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "axe_throwing_t4",
+      "task_toml_sha256": "a744ae61fec410929710a68b6e4ed8b96eb818d551964f7d72d2142c6b9d5a27",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "eclipse_chaser_t3",
+      "task_toml_sha256": "2459b4762f5683df50120ac7c217f2be86d0fb7c05382291b7efa5d626889f4a",
+      "tier": 3
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.05,
+      "task": "book_swap_t4",
+      "task_toml_sha256": "50ff0de033cbaf9aa41a78599204fa277591c45238ee497ed34566ffdcd7b87f",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.05,
+      "task": "student_club_t4",
+      "task_toml_sha256": "e07b2ccdd4a5829d77203f456d2353236c1fcb2cc9d201a29da23602a15cf5e1",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.099,
+      "task": "model_rocket_t4",
+      "task_toml_sha256": "bf5fe11e58ef467eded6cfbbea8fbf22f7750d5a530c380605cb1b3e483a932c",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "outbreak_tracking_t4",
+      "task_toml_sha256": "21a765c4cc6264344a5c9580c075f41c24cc52c170659090a97a3a6a3997ffa5",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "calligraphy_studio_t4",
+      "task_toml_sha256": "4421804bc0a933b63550b12cb60cf12520ba4ff0f79daf4168ab673358ca9062",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "wardrobe_stylist_t4",
+      "task_toml_sha256": "b65f8362d3b0758a8e3820c95e704e82b6b06f4afa41ac2542d662b322126745",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "pipeline_inspection_t4",
+      "task_toml_sha256": "37cc10f42e9d1c530e1cc82c0a9ea9a222957035829edac35ea296f47398d733",
+      "tier": 4
+    },
+    {
+      "band": "very_hard",
+      "metadata_pass_rate": 0.0,
+      "task": "kayak_rental_t3",
+      "task_toml_sha256": "ea7829653266ca6583b3d76ad1e5c0007e0d25d0da306c4a289fe32367732e70",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "nanny_agency_t3",
+      "task_toml_sha256": "b7c5d300e889e39b982bfefed874524a6915fa5014931cbdceba476bd5086db8",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.11,
+      "task": "water_utility_t4",
+      "task_toml_sha256": "52d4a8816a02d01554fa4917af9bb51cab10744d926e74a63643d0528cefe6e4",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "deep_sea_mining_t4",
+      "task_toml_sha256": "1ec8288769f9efe34a4ae77f56a37261f20b318ff9058b364ff942a1e980469d",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.1,
+      "task": "glassblowing_t4",
+      "task_toml_sha256": "1d8fa9149d8da49f8c946291d3bf04e3b6248a2d5c47e65fe03c8055af3510b6",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.25,
+      "task": "steel_mill_t3",
+      "task_toml_sha256": "9005e2a5c557e5ccf6bb575d28a4cbfbaab517c2aab6ceec4cd04e5b560e1683",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.15,
+      "task": "boarding_kennel_t4",
+      "task_toml_sha256": "35fd833fc565be32c3f031462eed0b42fe1059a08779097cb42d316f22953a52",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.1,
+      "task": "wedding_seating_t4",
+      "task_toml_sha256": "a4513436303dc9d917102c229bdf734aa5c0a9bc237cae830004a61d573f09e7",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "tcg_tournament_t4",
+      "task_toml_sha256": "b9fcccea1cf3b398ebe098fc3a98b94ca79cf6ee633389c6da5cd42f2d67755d",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.125,
+      "task": "fraud_detection_t4",
+      "task_toml_sha256": "f96d25b8c43589a3c24b26979a475c0667c5d2491674e2b98b6f086a179e089f",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.1,
+      "task": "supplement_shop_t4",
+      "task_toml_sha256": "947fedd7c51a29ab07637feb9be3fb1447b63596af299c998cfbf929cc685d14",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "coffee_competition_t3",
+      "task_toml_sha256": "6b942c0b9819be9135c5cabe68ce8c6e9fdb0ded8cb2348b1ea8a4f02291c3c9",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.15,
+      "task": "meal_kit_service_t4",
+      "task_toml_sha256": "42ebdef61f397ac91ce1947acd609b0a6fdbe44052ae19a5bc2fb6c2589d444b",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "driving_school_t4",
+      "task_toml_sha256": "67f05d53f341932183eee25eb065df593e8d07e68b44f812564461e367931130",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.25,
+      "task": "submarine_fleet_t3",
+      "task_toml_sha256": "d37e026a13157f5711e21f9413714914c1664927b1c92558f4413d2a25e07302",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.1,
+      "task": "meal_kit_t4",
+      "task_toml_sha256": "56d7b6136a98fae90dc933c17a4cc3c3b02fabb4933372e21132fafba4223251",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.175,
+      "task": "synth_workshop_t3",
+      "task_toml_sha256": "85987f1aeb3364e121797e7594e2088e36f05da4d20f9fbd2f73f4bc3bd27c8f",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "music_festival_t4",
+      "task_toml_sha256": "0da6e9c665607acd3f9b1e91ce2e5331cf8f110801d9bffa07fd08627bc60e46",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.25,
+      "task": "school_bus_t3",
+      "task_toml_sha256": "cda76a905f3a2dc9fe202181f2360cf6129fe4a34de9333614e5223b8d6d1bf2",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "sound_mixing_t3",
+      "task_toml_sha256": "19bb6b0dd82a0a3ff9f2eee7154d43d5f2b9c9e56413578341522a24a804bc1a",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "realty_t4",
+      "task_toml_sha256": "c8139e864b0435497dfe77a99ff0ccb831907d6991bf660957aa60559cd59458",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "rooftop_bar_t3",
+      "task_toml_sha256": "f6fbe59ab6f70d5b36f725136fa5e6a16351a38541979b04fd6464e43b78109a",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.25,
+      "task": "chimney_sweep_t3",
+      "task_toml_sha256": "a553e0cf7d939066312f23341a4a53a952777d2c58f95817bc464ad1a9903536",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.25,
+      "task": "rare_bookshop_t4",
+      "task_toml_sha256": "975e6ecd204411784528f87f713fb2c4dd21873fdeaba59416712fcafa075b0f",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.25,
+      "task": "dog_sled_race_t4",
+      "task_toml_sha256": "166cbfcf6e3a18ebb0344dff027691bffd4fde7654c34bb3f3e51b238d5abaf6",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "archery_range_t4",
+      "task_toml_sha256": "4098b0e4389554b3a1742fc89781e6b501a22eb74398a2297efc00ecb8c6be34",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.1,
+      "task": "timber_t4",
+      "task_toml_sha256": "e834518bf059031b1a2965a72838b82ab438392d65147fdae32920fdc7a6556b",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.18,
+      "task": "spelling_bee_t4",
+      "task_toml_sha256": "d75961d5bc378e52f8553980ed3ece5c9fdc5e1696676b4dd4254fca9a09b0f8",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.15,
+      "task": "mars_colony_t4",
+      "task_toml_sha256": "634a106e7a70b8e2616b293c95821dca56db654097b1e6b325ab03af6e3672b0",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "corporate_retreat_t3",
+      "task_toml_sha256": "4db559e9e93f1e8919f7a52adaab6159e6a4d4972e1d3ac48f556c6216b0ae4d",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.25,
+      "task": "dye_workshop_t4",
+      "task_toml_sha256": "d5b9a8f6429055b95017ff51f21dc38603285e4f027e5300900a384c07529fe0",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "creature_sanctuary_t4",
+      "task_toml_sha256": "e336fa4f14f1bc1c428787fe8d106f250e096e59aa0f091bcbf8b52afc77a67e",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "blood_bank_t4",
+      "task_toml_sha256": "61f6b044b19ee9d8f016cdace6d3b5caaed7323ff738789ecdc28674f9eb45c7",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.15,
+      "task": "biofuel_refinery_t4",
+      "task_toml_sha256": "99c893d0377f32e1acdaee9bf45864c205f6905d502c095036cc09100dc062b5",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.25,
+      "task": "charity_auction_t3",
+      "task_toml_sha256": "172d4415cb35c69d4e4ae3af90cdffc01b644cd58a3d6ae06977797b56446e00",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.1,
+      "task": "ice_road_t4",
+      "task_toml_sha256": "adcd580f1a8f57f4eb4e29c57c330dc72303eade16fd7aaf4e377d934f685e4d",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.25,
+      "task": "perfume_lab_t4",
+      "task_toml_sha256": "6e55fa1743131f0ebf371d360bd9a3e95bdb13dc98a806c6bfd0c99c69faf89d",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.28,
+      "task": "hydroponics_t3",
+      "task_toml_sha256": "885550f79cd811ccb9924379fcfa303aa9cc2b064fce041b699984f03e6cfeaf",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "property_title_t4",
+      "task_toml_sha256": "b0c29268822d275789993110510be56cee9e38f4646a28713bb6729f354b89e2",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "diagnostic_lab_t4",
+      "task_toml_sha256": "907d0e2dd76142a7ae3a45a05dc681b362a8f13babf6f81a44e95edd135a6de7",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.1,
+      "task": "county_fair_t4",
+      "task_toml_sha256": "e7c3f8397cf7ad415b9139ca75f5d00df1730dce2ea85f1811e004a1b46605a6",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "fulfillment_center_t3",
+      "task_toml_sha256": "2e7491ac59e494f6f8cad2bb43bb96948b5adf08f6e79618dab189fd4f2ead16",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "perfume_lab_t3",
+      "task_toml_sha256": "367bfe91e1b45fcfaa50fef0740478e1bd63e7edf5500e637db456db548ead11",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.1,
+      "task": "retro_game_shop_t4",
+      "task_toml_sha256": "6d4cad0f2ae28e619cdf1212629b54018f3113f2ada64154f3ed60a9ea68f324",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.25,
+      "task": "mining_operation_t4",
+      "task_toml_sha256": "4c89921f6e73a9df3375dd41e77114ef02a4a9de846dbd798e3c2c91d5285f65",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.15,
+      "task": "coffee_grading_t4",
+      "task_toml_sha256": "225de586f3073a2f488d4b5cc58aa7eb53db394895eedafbcbc2b68417e81b86",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.15,
+      "task": "plushie_workshop_t4",
+      "task_toml_sha256": "69ea83e42b6907fee0e7decff1bbd7668436f1a96295aa30851a17ec0b54b9ac",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.2,
+      "task": "volcano_observatory_t3",
+      "task_toml_sha256": "4045eee8e850b1fcaa6047ad73d242b8272e3bc08399de50dfd9c5a5e2daaa67",
+      "tier": 3
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.15,
+      "task": "pet_boarding_t4",
+      "task_toml_sha256": "72ff976b8e8de7feec43fc3e6e99fc71c1efa38675166aeb8d489327dd534bb1",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.1,
+      "task": "dog_breeding_t4",
+      "task_toml_sha256": "8799611b4af34f899fdb68a0ffc1a8da8d17989b2e99a64dcaff1c3a77ddbb82",
+      "tier": 4
+    },
+    {
+      "band": "hard",
+      "metadata_pass_rate": 0.15,
+      "task": "wedding_planner_t4",
+      "task_toml_sha256": "e2aa5319520d0c26709d43d9c64eb83de682a2c5db9db7a181d6ce786f4b978a",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.5,
+      "task": "lapidary_studio_t3",
+      "task_toml_sha256": "f71a96011f4a4eabe7717a91c6af8ca8cd2abd881a067812f8b80fc69d773756",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.5,
+      "task": "screen_printing_t3",
+      "task_toml_sha256": "f1d99a24f444db156524345d55461613ca10a4926a6a4c5b8d9ba5066e1efa98",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.55,
+      "task": "lapidary_t4",
+      "task_toml_sha256": "152cf3e86f6709399725027c720abbe8476019b26f78c9090a8ca49900d7bd24",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.3,
+      "task": "game_studio_t3",
+      "task_toml_sha256": "c4027c24f98412d82ba0b0fd430b033e4107b1cefedc92e3973b3b6a7a15e97b",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.4,
+      "task": "frame_shop_t3",
+      "task_toml_sha256": "8955239e5a7fe076d8c47a1428e8128632c2134bf0fb2afa086b0aaf20f6a619",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.45,
+      "task": "witness_relocation_t3",
+      "task_toml_sha256": "d68690e0151c082d007c1eddf67158403c05dd04fccf527eb754acf83ff4ab03",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.4,
+      "task": "mun_conference_t3",
+      "task_toml_sha256": "2c4e366712f36d843d7790c9c5be07dbc2b2b361487ea14d94df8510734f73f9",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.45,
+      "task": "influencer_campaign_t3",
+      "task_toml_sha256": "ba95a07962d63c83c0737a139e0d1be2a3bb1d87a6cc67610382c85a827cb2b7",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.3,
+      "task": "skateboard_builder_t3",
+      "task_toml_sha256": "ca2fac1e63b2304004bd914594bf1c64bca9495944092f7e41486fb8eef1b3cd",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.4,
+      "task": "translation_agency_t3",
+      "task_toml_sha256": "90d71c4848e72197bea983fb95e629a349635336463f2330e1fc2013f8770a61",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.35,
+      "task": "transit_network_t4",
+      "task_toml_sha256": "7837d9d9fd3969c33e4270c9ad695682d3ef0940e8d2123b6a3fbdcfd56f32ce",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.35,
+      "task": "food_truck_t4",
+      "task_toml_sha256": "c87c5a4e0f98527919a0ab7357c0e339d43561fa405c90ac70e85ca90fe11574",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.5,
+      "task": "band_battle_t3",
+      "task_toml_sha256": "cd5a8ca2540cc8eaf6dbc1d5f2651e287174bb0b3b3c124c20f8f7cdf27640dd",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.43,
+      "task": "model_rocket_t3",
+      "task_toml_sha256": "56585afe414dabdf26231da89a7e0fb0ed28c15b6850103ebdd5e7b6a75e2e1a",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.35,
+      "task": "hazmat_logistics_t3",
+      "task_toml_sha256": "ab2c83309b69394fc82cfc58be49a56bb8dcec8daf2da1996290982756f66087",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.3,
+      "task": "sticker_shop_t4",
+      "task_toml_sha256": "c4d229de2984d7a579d25369e841c79e0eb08b7f7b7000ffe058acbba5c7cf6e",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.4,
+      "task": "community_fridge_t3",
+      "task_toml_sha256": "9f8e442c5d84dc69359cba3f0e8fe281a855e0f28dc59fcd6df64ffeb26b9166",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.4,
+      "task": "coin_mint_t3",
+      "task_toml_sha256": "db165b4a212105b7ba8885982ccde886c5bf2f7db90dca534ba09c68828c9891",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.3,
+      "task": "investment_portfolio_t3",
+      "task_toml_sha256": "eeb205c6acdc94956eae23fbee8ad3127dffe6552849ca6e68ede8824a821164",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.55,
+      "task": "heist_planning_t4",
+      "task_toml_sha256": "e75c32b07d1cf93771aba12f8255df47b9e35d6d45fa732a13b1b538f69e2191",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.49,
+      "task": "bake_sale_t4",
+      "task_toml_sha256": "2c02eb987d55b4c01ff231f04bef30b38d8bf7801af89efd83a6a378a98d8c76",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.4,
+      "task": "wax_museum_t3",
+      "task_toml_sha256": "d99aeb35bd28148ca64b88df78a6fd9a34e23bd681b12b6bd353a6c1f26cb2d3",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.4,
+      "task": "arcade_t3",
+      "task_toml_sha256": "f97cf6be80d228442ec396c243d99b9877879bdcc9827d2215380b4b82c7e7c8",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.35,
+      "task": "herbal_apothecary_t3",
+      "task_toml_sha256": "dc0dc1302e03ba8e45577428b1a9c51de76fe938cbd10b4cabca3af104890ea0",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.3,
+      "task": "pet_food_lab_t3",
+      "task_toml_sha256": "d574ab143bd7ad4fa380fac0a61f556bfe9c5a6b2ac08b42c8a7508f66acad5c",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.4,
+      "task": "safari_tour_t3",
+      "task_toml_sha256": "c8c15a00ff7fbf685c9718bda79885dcdfb1be33c01044122e08d1275a212ba8",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.4,
+      "task": "volcano_monitoring_t3",
+      "task_toml_sha256": "0c2d7a280113df73bbbab7a34e8c2b7d2d56b9a4af74f26d45efda6863275c35",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.45,
+      "task": "food_truck_fleet_t4",
+      "task_toml_sha256": "f96a58c98f937fae10b566325e4fa2245b6f77b1afcacd87cb238bf2ae8affda",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.4,
+      "task": "smokehouse_t3",
+      "task_toml_sha256": "e04941ac70e8ff354181863d61f536b90b7c826b772e9d963543327d5f32bdbf",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.4,
+      "task": "origami_studio_t3",
+      "task_toml_sha256": "0b2f60524e724930d64aa02e536532eb9d5ad8bb66fa78033d2f5b4ab1da621f",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.3,
+      "task": "roller_coaster_design_t3",
+      "task_toml_sha256": "e68a6abbfe62d59a694cbef90dc55feb9e8ed16c6b6863b57121ac5937ee6067",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.45,
+      "task": "seismic_station_t3",
+      "task_toml_sha256": "3bf6c3d866c03285e914a0722e17d5711345daa023120ff2240d93978b52f949",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.35,
+      "task": "dog_daycare_t3",
+      "task_toml_sha256": "1517f0e1d8d067783f43b96244c392de4ddfeb7c1c78c203f310a41a5447ef35",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.35,
+      "task": "game_balance_t3",
+      "task_toml_sha256": "266ef529be92c956b88a7b9e2b8ceb84943363bb6b392d336c3c890d6e3924c2",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.597,
+      "task": "kennel_t4",
+      "task_toml_sha256": "1e2274160c11186c038557f370aa38bfda9b321ea3a264bb9879237f32031b6e",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.3,
+      "task": "wine_club_t3",
+      "task_toml_sha256": "a24247a65e82395aed7b615ea0aae8cdb4774a841395b3674702399af7404734",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.45,
+      "task": "film_dubbing_t3",
+      "task_toml_sha256": "83c1031661b7219e727861cec668c11e13a6f2fa4e6454a344ed0a9a9951e432",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.45,
+      "task": "whale_tour_t4",
+      "task_toml_sha256": "6ec83d75eac4176d06cc103f03bc263d92e3d2d37359a3a17650193fe3093c1b",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.55,
+      "task": "millinery_shop_t3",
+      "task_toml_sha256": "74106a2e5d229abebb96f368b4b98f091d0b1fab0bac00af0f6d1d38b429cc7e",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.3,
+      "task": "mural_project_t3",
+      "task_toml_sha256": "0cc519da97f9825a1628b1470cca472b86d496f781639ceccca162d29d269f6e",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.55,
+      "task": "ham_radio_t4",
+      "task_toml_sha256": "1bc9a30fd95ad4e209c957bd4e93cd8a7c491d721397c6a801f68cf3c8a65172",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.3,
+      "task": "helicopter_tour_t3",
+      "task_toml_sha256": "42f8f10c5434b05dc99f7b8eb1fc020f193ffa107fe405898927fcb8b6af798c",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.392,
+      "task": "foraging_guide_t3",
+      "task_toml_sha256": "2ff939200453b3e0abcbf420c6456b2c8cf2351f028bd16cce65a2c5b6fa9390",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.3,
+      "task": "mezcaleria_t3",
+      "task_toml_sha256": "ae790e6415de749f9b544fc8ff3e4a73b81ae92e1227f4b6ed8ddbd960e01418",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.55,
+      "task": "space_salvage_t4",
+      "task_toml_sha256": "b6098d8f8916a894e0e1dabf556d37203b5e2711a353669de4c8ca8b2a0ff494",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.3,
+      "task": "screen_printing_t4",
+      "task_toml_sha256": "64a6c426df1ffbff5fd9592a8730b98bd70959b44b380e5e6bb096a58497077c",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.3,
+      "task": "mining_operation_t3",
+      "task_toml_sha256": "0b2c84ac037aa85936d81991d025024dcfb3c949fff6e5d5deeba726986bff25",
+      "tier": 3
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.5,
+      "task": "fermentation_lab_t4",
+      "task_toml_sha256": "bff4d72d6f73113f5f535c4d031924e386277e454dbb5103613e774624fac61e",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.5,
+      "task": "billiard_club_t4",
+      "task_toml_sha256": "77af85640225b23a0dda1de55a71aff90ca65c333fea7c12c9e64efc3235ac51",
+      "tier": 4
+    },
+    {
+      "band": "medium",
+      "metadata_pass_rate": 0.4,
+      "task": "vending_machine_t3",
+      "task_toml_sha256": "856146ed4a69d76d4386412911e4d702032dab3a6518802e1e8073e6230bd83c",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 1.0,
+      "task": "locksmith_t3",
+      "task_toml_sha256": "b4ffc7150eb80ee0c86f3655105fca79b879d61e8a4365812253790f648fe5ab",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.6,
+      "task": "carnival_t4",
+      "task_toml_sha256": "6f72da592b08885fc76c1fcda72abb66a119b66fcd022ecb42384f5a4e91c529",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 1.0,
+      "task": "fossil_dig_t4",
+      "task_toml_sha256": "cbee9ddc994ed25d319825ccc171fe44c2709e4af644acc26c88fe85d618c52e",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.8,
+      "task": "barista_competition_t3",
+      "task_toml_sha256": "0d18d5888f95dde0a69b42cad4e8ded534cd675e0f065672e8e9b404bc76eedd",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.8,
+      "task": "toymaker_workshop_t3",
+      "task_toml_sha256": "5cd2344666236d2009b5a99397d08da4883d91101affc1664f0390f7c8845c02",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 1.0,
+      "task": "bonsai_nursery_t3",
+      "task_toml_sha256": "7dd5fef7cb90647f6f02107d5aca3111fe8069306c00462a590658105ad9d798",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.8,
+      "task": "food_truck_festival_t4",
+      "task_toml_sha256": "cd58809f20c62b057282a4b3edd896220a3bad17fa77366f836525bdb8d97c1f",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.85,
+      "task": "pet_sitting_t3",
+      "task_toml_sha256": "6df21d0def3fe0f39cebc736dba389d58b4c286c828121a3049a4d1cb07b1454",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 1.0,
+      "task": "research_lab_t4",
+      "task_toml_sha256": "f9aa964f43ddb81bf91b4c82a08d84463f7191cb9ff57b65389a300315a8d2d2",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.95,
+      "task": "trivia_night_t3",
+      "task_toml_sha256": "98398b4466c6ec05405304aa7aeb8312aa2de6cdc1fdf9b0637614b89d65f600",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 1.0,
+      "task": "charter_flight_t4",
+      "task_toml_sha256": "c9fd14f1e434dd40ec96ac3489316865767b39a83e5a9e09d6092a7ee0afb036",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.65,
+      "task": "coffee_grading_t3",
+      "task_toml_sha256": "e68c9ee2cfa764f47c1e35aadd66349385d74f4735570974d3ad1259c8ee85e5",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 1.0,
+      "task": "laser_cutting_t3",
+      "task_toml_sha256": "b4bac5629f3945cf914d6f2e938869c94ecc19172ca82e3d9c3b0fb640d9511b",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.67,
+      "task": "orchid_show_t3",
+      "task_toml_sha256": "23062d11a2ae76265833d6819151bd097dd9f7e1d50419b341559aec67bb2df8",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.9,
+      "task": "jazz_club_t3",
+      "task_toml_sha256": "09b52544306ab62fa774d285c31e4ce08c32c9835dfeceebe8e3dda0cf8245b9",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.75,
+      "task": "carnival_t3",
+      "task_toml_sha256": "0a8553a0d56d1a24eaba8f830151a184eca2dddc2925dddd44500dfefbf61f33",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.9,
+      "task": "food_truck_fleet_t3",
+      "task_toml_sha256": "f26f175fac4c69244eee76c103b2bbb6c4815e7d354155022a3b64c3e1b169a1",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 1.0,
+      "task": "arbitrage_trading_t3",
+      "task_toml_sha256": "157b92cd8f8011437405565d60aa2981a0191de9bc6c5e1a4652e8d5fa82e721",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.85,
+      "task": "airport_ops_t3",
+      "task_toml_sha256": "9a9b9198b394c31b402f3eb9b3b56f1a9aea48e124e98c414031b336347981fd",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.9,
+      "task": "food_truck_festival_t3",
+      "task_toml_sha256": "943291c8feba932aafde084a70ab842ef0f288349da947fd7b7a9bb30713eb5f",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 1.0,
+      "task": "ice_sculpture_t4",
+      "task_toml_sha256": "2789e181ee603fb143423c41c15b60f198b6a4fa0bbe01f39c8d019470bda1cf",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.9,
+      "task": "field_trip_t4",
+      "task_toml_sha256": "4c335d9b085fae944d2252595e1b30e45ab524b2493a95053c5677773d22d1bd",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.65,
+      "task": "product_recall_t3",
+      "task_toml_sha256": "fa85fafcecc2d2eb7286ba7fb3f555f192a6a6369bc4b0a995df7d4823f068f2",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.65,
+      "task": "instrument_rental_t4",
+      "task_toml_sha256": "ceed4a57f3d2cbeef35c2c75f66fc36c7176da062895bd7014b4559e23713fd3",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.85,
+      "task": "kintsugi_t3",
+      "task_toml_sha256": "201ff1fdffdbe1adc6e50aaa530d6aa9d7bb90985f58c772ef40bb33ce3eb632",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.9,
+      "task": "bicycle_workshop_t3",
+      "task_toml_sha256": "546446c4f1e941cda4de9649fda2469c6c95e72e6bc747c38867dc8eae9a6672",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.9,
+      "task": "dance_competition_t3",
+      "task_toml_sha256": "7c18fdb8c1228ea9cd24b3650750dcc8545a0467fa85dc4c45767d039b0c3755",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.8,
+      "task": "toymaker_workshop_t4",
+      "task_toml_sha256": "e01ff74b5ff727bf9c2201a9af7bcd97fde1d451df491f3024497483d9a4fd0c",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.75,
+      "task": "mosaic_studio_t4",
+      "task_toml_sha256": "d41c3b3a6a218514a39ff01eb70dfa43bfb592f84ffa88556de2d461702feaa1",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.9,
+      "task": "self_storage_t4",
+      "task_toml_sha256": "67d7eb69cd4e0e1de116295ea058024fe4f64434be2f8c797cf80af3cb55c02d",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.7,
+      "task": "nail_salon_t3",
+      "task_toml_sha256": "79cb1be54952ea53d9c9b426ca53047775ea6f5a303ea6d401c5cd902d10e3a0",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.6,
+      "task": "eyewear_store_t3",
+      "task_toml_sha256": "91acdfd703b0e04880dcc894a01fafe81e64139faa002bb51a65d9e7fed5d55b",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.9,
+      "task": "additive_mfg_t3",
+      "task_toml_sha256": "31a8dc7a05e932e7ecc0c0bc9926a2853fc2018e93e84d2c4c3e7871c844e31c",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.95,
+      "task": "archaeology_dig_t3",
+      "task_toml_sha256": "1e1598825075dbe1815816957431ad8e15ecc129ddd3bef25782055ee4d0f89d",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.9,
+      "task": "pr_firm_t4",
+      "task_toml_sha256": "848eb54a497768653e8d8e27b1de5b242c602b21f6af6f12ca4a5c7109e96c1f",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 1.0,
+      "task": "pr_firm_t3",
+      "task_toml_sha256": "641db76296c01cbf9c5722a4cc7ecbeb698253adaeac6aa626cf53baf88cbce7",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.7,
+      "task": "fashion_design_studio_t4",
+      "task_toml_sha256": "c3c708603f91abf263351e596f5082ffdb79f138c5b73b84c54b50c89ba91189",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 1.0,
+      "task": "hedge_fund_t3",
+      "task_toml_sha256": "084576502db74cda68ddf9032c6d0eecdfccf54cc658f57fd5498bb3e6fabf30",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 1.0,
+      "task": "puzzle_hunt_t3",
+      "task_toml_sha256": "6614f68c62e51cdb97c8376ea8ea4de7bc974770b57d8fa7350eff1b371c6b9b",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.8,
+      "task": "park_ranger_t3",
+      "task_toml_sha256": "05c5a7a8a911ee27f96f7655e8c1d361a958ff9c4c5e6ef9bbaa07eb634ff9d4",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.65,
+      "task": "coast_guard_t4",
+      "task_toml_sha256": "6f20828696ee7315b63139f7c5e4b722ae4870c3412d7ab1b58a3c0cba5e5312",
+      "tier": 4
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.65,
+      "task": "skydiving_center_t3",
+      "task_toml_sha256": "712a8fce1f557939a3136df757946b5cdd15de45a59466c82de0f6636433ca48",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 1.0,
+      "task": "speedrun_leaderboard_t3",
+      "task_toml_sha256": "cdc12dfdcb170de1dfcd16f88a08088fcb064ea83c6b5e7f808befd555c09767",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.75,
+      "task": "pickleball_t3",
+      "task_toml_sha256": "1c8b9ec9505dba8593d2f4c31b3ca049b4b293b5656a5cc8a8618d745f5cce44",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.9,
+      "task": "realty_t3",
+      "task_toml_sha256": "aac6df616fcaddcc69160d3e70a7ad253258007875b8d1fe937b816950d2ef0d",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.8,
+      "task": "art_vault_t3",
+      "task_toml_sha256": "b823285f59109f0dfd3a36d7ff1465f17bdb7515b3b6e299651b9d263083df31",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.95,
+      "task": "fishery_management_t3",
+      "task_toml_sha256": "bec205b1cd7c0c5c50e30212cc539be1180c234630621db6d7f35683e731ce5a",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.8,
+      "task": "aquaponics_farm_t3",
+      "task_toml_sha256": "f32e9d7813a218c5577d4e9f92bf01c42e52a784838496aa8c4f43d42b4126c7",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.85,
+      "task": "clock_repair_t3",
+      "task_toml_sha256": "8f0b2b6ae088ee15973829aee02c58b39c7a75d94eb40c0a5719b23b3dd24aac",
+      "tier": 3
+    },
+    {
+      "band": "easy",
+      "metadata_pass_rate": 0.95,
+      "task": "pedigree_registry_t3",
+      "task_toml_sha256": "eb571d069baf0204b261ea2026cdb96ba956aa488bb302786c4235221a089496",
+      "tier": 3
+    }
+  ],
+  "taskset_id": "general-agent-v1",
+  "taskset_ref": "a2b76f6ac3469f7f50171760c0d0dba38360edc4"
+}

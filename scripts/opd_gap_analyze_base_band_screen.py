@@ -58,6 +58,7 @@ def summarize_backend(
 ) -> dict[str, Any]:
     expected = int(manifest["rollouts_per_task"])
     group_size = int(manifest["group_size"])
+    minimum_mixed_groups = int(manifest.get("minimum_mixed_groups", 2))
     task_meta = {entry["task"]: entry for entry in manifest["tasks"]}
     by_task: dict[str, list[dict[str, Any]]] = defaultdict(list)
     unknown_tasks: set[str] = set()
@@ -83,7 +84,7 @@ def summarize_backend(
             len(samples) == expected
             and errors == 0
             and len(complete_groups) == expected // group_size
-            and mixed_groups >= 2
+            and mixed_groups >= minimum_mixed_groups
         )
         task_results.append(
             {
@@ -225,8 +226,9 @@ def main() -> None:
             f"groups of {manifest['group_size']}."
         ),
         "eligibility": (
-            "Exact rollout count, zero errors, all groups complete, and at least two observed "
-            "mixed-reward groups. Truncation is reported separately and only gates the preferred "
+            "Exact rollout count, zero errors, all groups complete, and at least "
+            f"{manifest.get('minimum_mixed_groups', 2)} observed mixed-reward group(s). "
+            "Truncation is reported separately and only gates the preferred "
             f"training subset at <= {args.max_preferred_truncation_rate:.1%}."
         ),
         "backends": backends,

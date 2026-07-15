@@ -72,3 +72,12 @@ def test_uniform_partial_reward_is_not_group_variance():
     assert task["uniform_partial_groups"] == 2
     assert task["mixed_groups"] == 0
     assert not task["eligible_for_group_relative_rl"]
+
+
+def test_manifest_can_require_one_mixed_group_for_pass_at_8_screen():
+    one_group_manifest = manifest()
+    one_group_manifest["rollouts_per_task"] = 8
+    one_group_manifest["minimum_mixed_groups"] = 1
+    rows = [row("task_a", reward, start) for start, reward in enumerate([0, 1] * 4)]
+    task = MODULE.summarize_backend(rows, one_group_manifest)["tasks"][0]
+    assert task["eligible_for_group_relative_rl"]
