@@ -142,21 +142,33 @@ class MultiCheckpointManager:
                 )
                 torch.save(run_state.state_dict(), ckpt_path / f"rank_{self.world.rank}.pt")
 
-                # Copy broadcast folder to checkpoint
-                # This way, we only need to save the checkpoint folder
+                # Copy broadcast weights so a stable checkpoint can restore the matching policy.
+                copied_weights = True
                 if self.world.is_master:
                     run_dir = self.multi_run_manager.get_run_dir(idx)
                     broadcast_src = run_dir / "broadcasts" / f"step_{step}"
                     weight_dst = run_dir / "checkpoints" / f"step_{step}" / "weight"
                     try:
                         shutil.copytree(broadcast_src, weight_dst)
-                    except FileNotFoundError:
+                    except (OSError, shutil.Error) as exc:
+                        copied_weights = False
                         self.logger.error(
-                            f"Broadcast folder not found for run {idx} at step {step}. Looking for it in {broadcast_src}"
+                            f"Failed to copy broadcast weights for run {idx} at step {step} from {broadcast_src}: {exc}"
                         )
-                dist.barrier()
-                manager.mark_stable(step)
-                manager.ckpt_steps.append(step)
+
+                # The stable marker and ckpt_steps must agree on every rank. Use the
+                # existing multi-run tensor device so this works with NCCL and Gloo.
+                copy_status = self.multi_run_manager.lora_num_tokens.new_tensor(
+                    [int(copied_weights)], dtype=torch.int32
+                )
+                dist.all_reduce(copy_status, op=dist.ReduceOp.MIN)
+                if copy_status.item():
+                    manager.mark_stable(step)
+                    manager.ckpt_steps.append(step)
+                elif self.world.is_master:
+                    self.logger.warning(
+                        f"Checkpoint for run {idx} at step {step} remains incomplete because its policy weights were not copied"
+                    )
             except FileNotFoundError:
                 self.logger.warning(f"Run {idx} deleted during checkpoint, skipping")
             except Exception as e:
