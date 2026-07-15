@@ -335,24 +335,37 @@ class CatDataset(StatefulIterableDataset):
         self.logger = get_logger()
         self.dataset = dataset
         self.seq_len = seq_len
+        self.pending_sample: Sample | None = None
 
     def state_dict(self) -> dict:
-        # Known limitation: the overflow sample pending at a yield boundary is
-        # not persisted, so a checkpoint resume drops at most one sample per
-        # dataloader worker.
-        return {"dataset": self.dataset.state_dict()}
+        return {
+            "dataset": self.dataset.state_dict(),
+            "pending_sample": self.pending_sample,
+        }
 
     def load_state_dict(self, state_dict: dict):
         self.dataset.load_state_dict(state_dict["dataset"])
+        self.pending_sample = state_dict.get("pending_sample")
 
     def __iter__(self):
         packed_samples = defaultdict(list)
         seq_len = 0
-        for sample in self.dataset:
+
+        pending_sample = self.pending_sample
+        self.pending_sample = None
+
+        def samples():
+            if pending_sample is not None:
+                yield pending_sample
+            yield from self.dataset
+
+        for sample in samples():
             sample_len = len(sample["input_ids"])
             would_overflow = seq_len + sample_len > self.seq_len
             if seq_len > 0 and would_overflow:
+                self.pending_sample = sample
                 yield self._finalize_pack(packed_samples, self.seq_len)
+                self.pending_sample = None
                 packed_samples = defaultdict(list)
                 seq_len = 0
 

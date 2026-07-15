@@ -1,6 +1,7 @@
 import os
 
 import pytest
+import torch
 from transformers import AutoTokenizer
 
 from prime_rl.configs.sft import FakeDataConfig
@@ -114,7 +115,23 @@ def test_fake_dataset_single_rank_state_with_packing():
     step = 0
     for _ in range(8):
         micro_batch = next(dataiter)
-        num_packed_examples = len(micro_batch["input_ids"].unique())
+        num_packed_examples = len(micro_batch["input_ids"][micro_batch["loss_mask"]].unique())
         step += num_packed_examples
         assert micro_batch["input_ids"].shape == (1, 128)
-        assert dataloader.state_dict()["dataset_state"] == {"dataset": {"step": step, "epoch": 0}}
+        dataset_state = dataloader.state_dict()["dataset_state"]
+        pending_sample = dataset_state["pending_sample"]
+        expected_dataset_step = step + (pending_sample is not None)
+        assert dataset_state["dataset"] == {"step": expected_dataset_step, "epoch": 0}
+        if pending_sample is not None:
+            assert pending_sample["input_ids"][0] == step
+
+    state_dict = dataloader.state_dict()
+    expected_batch = next(dataiter)
+
+    resumed_dataset = setup_dataset(tokenizer, config)
+    resumed_dataloader = setup_dataloader(resumed_dataset, config)
+    resumed_dataloader.load_state_dict(state_dict)
+    resumed_batch = next(iter(resumed_dataloader))
+
+    for key in ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens"):
+        torch.testing.assert_close(resumed_batch[key], expected_batch[key])
