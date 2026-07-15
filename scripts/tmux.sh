@@ -86,7 +86,20 @@ tmux send-keys -t "$SESSION_NAME:Logs.2" \
 tmux send-keys -t "$SESSION_NAME:Logs.3" \
   "tail -F ${LOG_DIR}/inference.log 2>/dev/null" C-m
 
-# Window 2: Claude Code with log context
+# Window 2: SUCCESS - grep SUCCESS on orch and trainer logs (two stacked panes)
+tmux new-window -t "$SESSION_NAME" -n "SUCCESS"
+
+tmux split-window -v -t "$SESSION_NAME:SUCCESS.0"
+tmux select-layout -t "$SESSION_NAME:SUCCESS" even-vertical
+
+tmux select-pane -t "$SESSION_NAME:SUCCESS.0" -T "Orchestrator"
+tmux select-pane -t "$SESSION_NAME:SUCCESS.1" -T "Trainer"
+
+tmux send-keys -t "$SESSION_NAME:SUCCESS.0"   "tail -F ${LOG_DIR}/orchestrator.log 2>/dev/null | grep --line-buffered SUCCESS" C-m
+
+tmux send-keys -t "$SESSION_NAME:SUCCESS.1"   "tail -F ${LOG_DIR}/trainer.log 2>/dev/null | grep --line-buffered SUCCESS" C-m
+
+# Window 3: Claude Code with log context
 tmux new-window -t "$SESSION_NAME" -n "Claude"
 tmux send-keys -t "$SESSION_NAME:Claude" \
   "claude --permission-mode auto --append-system-prompt 'You are monitoring a prime-rl training run. The output directory is ${OUTPUT_DIR}. Log paths:
