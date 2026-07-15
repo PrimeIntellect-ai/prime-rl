@@ -37,7 +37,7 @@ write_state() {
     --arg fullanswer_smoke "${smoke_jobs[fullanswer]}" \
     --arg answerplan_smoke "${smoke_jobs[answerplan]}" \
     --argjson full_jobs "$(cat "$artifact_root/full-job-ids.json" 2>/dev/null || printf '{}')" \
-    '{phase:$phase,detail:$detail,smoke_jobs:{grpo:$grpo_smoke,fullanswer:$fullanswer_smoke,answerplan:$answerplan_smoke},full_jobs:$full_jobs,updated_at_utc:(now|todateiso8601)}' \
+    '{phase:$phase,detail:$detail,provenance_revision:"r41",run_labels:{grpo:{label:"GRPO | no hint",display_name:"General Agent | GRPO | hint: none | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps",objective:"grpo",hint_style:"none"},fullanswer:{label:"OPSD (1-token, top-64) | full validated answer",display_name:"General Agent | OPSD 1-token top-64 | hint: full validated answer | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps",objective:"opsd",hint_style:"full_validated_answer"},answerplan:{label:"OPSD (1-token, top-64) | structural answer plan",display_name:"General Agent | OPSD 1-token top-64 | hint: structural answer plan | Qwen3.5-35B-A3B | train 938 | group 8 | 100 steps",objective:"opsd",hint_style:"structural_answer_plan"}},smoke_jobs:{grpo:$grpo_smoke,fullanswer:$fullanswer_smoke,answerplan:$answerplan_smoke},full_jobs:$full_jobs,updated_at_utc:(now|todateiso8601)}' \
     >"$state.tmp"
   mv "$state.tmp" "$state"
 }
