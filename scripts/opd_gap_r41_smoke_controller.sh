@@ -90,7 +90,7 @@ uv="$remote_home/.local/bin/uv"
 
 write_state setup "installing tools and syncing exact r41 runtime"
 ssh "${ssh_args[@]}" "$remote" \
-  "if ! command -v git >/dev/null || ! command -v rsync >/dev/null || ! command -v curl >/dev/null; then sudo apt-get update && sudo apt-get install -y git rsync curl; fi"
+  "if ! command -v git >/dev/null || ! command -v rsync >/dev/null || ! command -v curl >/dev/null || ! command -v g++ >/dev/null; then sudo apt-get update && sudo apt-get install -y git rsync curl g++; fi"
 ssh "${ssh_args[@]}" "$remote" \
   "test -d '$repo/.git' || git clone --branch codex/opsd-lora-stability --single-branch https://github.com/PrimeIntellect-ai/prime-rl.git '$repo'"
 
