@@ -118,7 +118,7 @@ case "$AGENT" in
     ;;
   codex)
     tmux send-keys -t "$SESSION_NAME:Agent" \
-      "codex --dangerously-bypass-approvals-and-sandbox \"${AGENT_PROMPT}\"" C-m
+      "codex --yolo \"${AGENT_PROMPT}\"" C-m
     ;;
   *)
     echo "Error: unknown agent '$AGENT' (expected claude|codex)" >&2
