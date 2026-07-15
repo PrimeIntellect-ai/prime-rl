@@ -308,6 +308,10 @@ def test_duplicate_seq_no_replays_cached_result(tmp_path, tiny_model_name):
     first = trainer.update("r1", "ttt-r1", tokens, mask, seq_no=1)
     replay = trainer.update("r1", "ttt-r1", tokens, mask, seq_no=1)
     assert replay is first  # cached — no state mutation, same ckpt_path/version
+    changed = tokens.copy()
+    changed[-1] += 1
+    with pytest.raises(ValueError, match="does not match the cached request"):
+        trainer.update("r1", "ttt-r1", changed, mask, seq_no=1)
     assert trainer.adapters["r1"].version == 1
     trainer.update("r1", "ttt-r1", tokens, mask, seq_no=2)
     with pytest.raises(ValueError, match="expected seq_no 3"):
