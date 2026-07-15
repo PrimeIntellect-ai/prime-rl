@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import random
 import tomllib
 from pathlib import Path
@@ -16,11 +17,17 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "configs" / "opd-gap"
 BASE_CONFIG = CONFIG_DIR / "genagent-p8var8lt-qwen35-opsd-d64-r37-full100.toml"
 GRPO_BASE_CONFIG = CONFIG_DIR / "genagent-p8var8lt-qwen35-grpo-r37-full100.toml"
-REVISION = "r40"
+REVISION = "r41"
 DATE = "20260715"
 SEED = 20260715
 TASKSET_REF = "a2b76f6ac3469f7f50171760c0d0dba38360edc4"
-TASK_ROOT = Path.home() / ".cache/verifiers/general_agent" / TASKSET_REF / "tasks"
+TASK_CACHE_ROOT = Path(
+    os.environ.get(
+        "GENERAL_AGENT_CACHE_DIR",
+        Path.home() / ".cache" / "verifiers" / "general_agent",
+    )
+)
+TASK_ROOT = TASK_CACHE_ROOT / TASKSET_REF / "tasks"
 MIN_METADATA_PASS_RATE = 0.0
 MAX_METADATA_PASS_RATE_EXCLUSIVE = 0.6
 GEPA_TRAIN_COUNT = 8
@@ -62,8 +69,6 @@ ANSWER_PLAN_TEMPLATE = """Use the validated structural plan below to reason abou
 ARMS = {
     "fullanswer": {"transform": "identity", "template": FULL_ANSWER_TEMPLATE},
     "answerplan": {"transform": "tool_sequence_plan", "template": ANSWER_PLAN_TEMPLATE},
-    # Replaced with the selected GEPA prompt before this arm is launched.
-    "gepaplan": {"transform": "tool_sequence_plan", "template": ANSWER_PLAN_TEMPLATE},
 }
 
 
@@ -74,28 +79,57 @@ def metadata_pass_rate(metadata: dict[str, Any]) -> float | None:
     return None
 
 
-def select_tasks() -> tuple[list[dict[str, Any]], list[str], list[str], list[str]]:
+def select_tasks() -> tuple[
+    list[dict[str, Any]],
+    list[str],
+    list[str],
+    list[str],
+    list[dict[str, str]],
+]:
     candidates: dict[str, dict[str, Any]] = {}
+    quarantined: list[dict[str, str]] = []
     for task_toml in sorted(TASK_ROOT.glob("*/task.toml")):
         raw = task_toml.read_bytes()
         metadata = tomllib.loads(raw.decode()).get("metadata", {})
         tier = metadata.get("tier")
         rate = metadata_pass_rate(metadata)
-        name = metadata.get("name")
+        directory_name = task_toml.parent.name
+        metadata_name = metadata.get("name")
+        if metadata_name != directory_name:
+            quarantined.append(
+                {
+                    "directory": directory_name,
+                    "metadata_name": str(metadata_name),
+                    "reason": "metadata_name_directory_mismatch",
+                }
+            )
+            continue
+        name = directory_name
+        gold_path = task_toml.parent / "gold.json"
         if (
-            name is None
-            or name in HELDOUT_TASKS
+            name in HELDOUT_TASKS
             or tier not in {3, 4}
             or rate is None
             or not MIN_METADATA_PASS_RATE <= rate < MAX_METADATA_PASS_RATE_EXCLUSIVE
         ):
             continue
+        if not gold_path.is_file():
+            quarantined.append(
+                {
+                    "directory": directory_name,
+                    "metadata_name": str(metadata_name),
+                    "reason": "missing_gold_json",
+                }
+            )
+            continue
+        if name in candidates:
+            raise RuntimeError(f"duplicate task identity: {name}")
         candidates[name] = {
             "task": name,
             "tier": int(tier),
             "metadata_pass_rate": rate,
             "task_toml_sha256": hashlib.sha256(raw).hexdigest(),
-            "gold_sha256": hashlib.sha256((task_toml.parent / "gold.json").read_bytes()).hexdigest(),
+            "gold_sha256": hashlib.sha256(gold_path.read_bytes()).hexdigest(),
         }
 
     entries = sorted(candidates.values(), key=lambda entry: entry["task"])
@@ -106,7 +140,7 @@ def select_tasks() -> tuple[list[dict[str, Any]], list[str], list[str], list[str
     gepa_train = [entry["task"] for entry in entries[:GEPA_TRAIN_COUNT]]
     gepa_eval = [entry["task"] for entry in entries[GEPA_TRAIN_COUNT : GEPA_TRAIN_COUNT + GEPA_EVAL_COUNT]]
     train = [entry["task"] for entry in entries[GEPA_TRAIN_COUNT + GEPA_EVAL_COUNT :]]
-    return entries, train, gepa_train, gepa_eval
+    return entries, train, gepa_train, gepa_eval, quarantined
 
 
 def set_algo(config: dict[str, Any], arm: str) -> None:
@@ -214,7 +248,7 @@ def configure_grpo(steps: int, placement: str, train_tasks: list[str]) -> dict[s
 
 
 def main() -> None:
-    task_entries, train_tasks, gepa_train_tasks, gepa_eval_tasks = select_tasks()
+    task_entries, train_tasks, gepa_train_tasks, gepa_eval_tasks, quarantined_tasks = select_tasks()
     configs: dict[str, Any] = {}
     for arm in ARMS:
         for steps in (2, 100):
@@ -255,6 +289,7 @@ def main() -> None:
         "minimum_metadata_pass_rate": MIN_METADATA_PASS_RATE,
         "maximum_metadata_pass_rate_exclusive": MAX_METADATA_PASS_RATE_EXCLUSIVE,
         "task_entries": task_entries,
+        "quarantined_tasks": quarantined_tasks,
         "train_tasks": train_tasks,
         "gepa_train_tasks": gepa_train_tasks,
         "gepa_eval_tasks": gepa_eval_tasks,
