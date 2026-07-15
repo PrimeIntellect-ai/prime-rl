@@ -270,7 +270,11 @@ def train(config: TrainerConfig):
         # v{progress.step-1}. Filesystem broadcast needs no startup rendezvous (fresh: base model
         # = v0; resume: the orchestrator reads its checkpoint dir), and a one-shot startup
         # broadcast would miss multi-run runs registered after the first step.
-        if progress.step == start_step and weight_broadcast is not None and config.weight_broadcast.type == "nccl":
+        if (
+            progress.step == start_step
+            and weight_broadcast is not None
+            and config.weight_broadcast.type in ("nccl", "nixl")
+        ):
             logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
             multi_run_manager.wait_for_run(0)
             for idx in multi_run_manager.used_idxs:
@@ -575,7 +579,7 @@ def train(config: TrainerConfig):
             broadcast_weights_time = 0
         else:
             nccl_broadcast_unused = (
-                config.weight_broadcast.type == "nccl"
+                config.weight_broadcast.type in ("nccl", "nixl")
                 and config.max_steps is not None
                 and progress.step >= config.max_steps - 1
             )

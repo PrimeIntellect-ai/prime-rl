@@ -7,6 +7,7 @@ from prime_rl.trainer.models.conversion_ops import apply_tt_to_hf
 from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import conversion_chain
 from prime_rl.weight_transfer.chains import region_elem_runs, resolve_chain_region, tensor_runs
 from prime_rl.weight_transfer.lazy import BakeRecorder, LazyWeight
+from prime_rl.weight_transfer.ownership import ShardCandidate, select_source_tensors
 from prime_rl.weight_transfer.publication import SourceTensor, publish_hf_tensors, route_published_region
 from prime_rl.weight_transfer.sharding import SourceShard, zip_source_destination
 from prime_rl.weight_transfer.wire import AgentDescriptor, WeightManifest, decode_manifest, encode_manifest
@@ -110,6 +111,7 @@ def test_manifest_round_trip() -> None:
     published = publish_hf_tensors(NemotronConverter(), (source,))
     manifest = WeightManifest(
         session_id="session",
+        epoch=1,
         model="nemotron",
         fingerprint="fingerprint",
         agents=(AgentDescriptor("trainer-0", b"metadata-0"), AgentDescriptor("trainer-1", b"metadata-1")),
@@ -117,3 +119,29 @@ def test_manifest_round_trip() -> None:
     )
     assert decode_manifest(encode_manifest(manifest)) == manifest
     assert keepalive
+
+
+def test_replica_ownership_is_deduplicated_and_balanced() -> None:
+    candidates: list[ShardCandidate] = []
+    for name in ("model.a", "model.b"):
+        for rank in range(4):
+            row = rank % 2
+            candidates.append(
+                ShardCandidate(
+                    rank=rank,
+                    name=name,
+                    dtype=torch.bfloat16,
+                    full_shape=(4, 8),
+                    global_offset=(row * 2, 0),
+                    shape=(2, 8),
+                    address=10_000 * rank + 1_000 * row,
+                    device_id=rank,
+                )
+            )
+
+    sources = select_source_tensors(tuple(candidates), {rank: rank for rank in range(4)})
+    assert len(sources) == 2
+    for source in sources:
+        assert len(source.shards) == 2
+        assert {shard.global_offset[0] for shard in source.shards} == {0, 2}
+    assert len({shard.agent for source in sources for shard in source.shards}) > 1

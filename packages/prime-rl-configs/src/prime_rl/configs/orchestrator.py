@@ -416,8 +416,19 @@ class NCCLWeightBroadcastConfig(BaseConfig):
     """Total inference GPUs across all servers. Used by ``init_nccl_broadcast`` to compute per-server rank offsets."""
 
 
+class NIXLWeightBroadcastConfig(BaseConfig):
+    type: Literal["nixl"] = "nixl"
+    host: str = "modelexpress"
+    port: int = 8001
+    timeout: int = 1200
+    inference_world_size: int = Field(1, ge=1)
+    session_id: str = ""
+    model_name: str = ""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 

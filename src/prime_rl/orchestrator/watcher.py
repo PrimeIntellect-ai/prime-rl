@@ -14,6 +14,8 @@ from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_step_path, wait_for_path
 from prime_rl.utils.utils import get_latest_ckpt_step
+from prime_rl.weight_transfer.mx import MxChannel
+from prime_rl.weight_transfer.wire import decode_signal
 
 
 class WeightWatcher:
@@ -45,12 +47,26 @@ class WeightWatcher:
         self.task: asyncio.Task | None = None
         self.update_lock = asyncio.Lock()
         self.stopped = asyncio.Event()
+        self.mx_channel = None
+        if config.weight_broadcast.type == "nixl":
+            self.mx_channel = MxChannel(
+                f"{config.weight_broadcast.host}:{config.weight_broadcast.port}",
+                config.weight_broadcast.session_id,
+                config.weight_broadcast.model_name,
+                "orchestrator",
+                "sync",
+                0,
+            )
 
     async def start(self) -> None:
         self.task = asyncio.current_task()
         try:
             while not self.stopped.is_set():
-                next_step = self.compute_next_ckpt_step()
+                next_step = (
+                    await asyncio.to_thread(self.compute_next_ckpt_step)
+                    if self.mx_channel is not None
+                    else self.compute_next_ckpt_step()
+                )
                 if next_step > self.ckpt_step:
                     await self.apply_policy_update(next_step)
                 await asyncio.sleep(self.poll_interval)
@@ -67,8 +83,15 @@ class WeightWatcher:
         """Next checkpoint to adopt — at least ``policy.version`` (we stay
         one step ahead of the trainer) plus anything fresher already
         published in ``broadcasts/``."""
-        broadcast_dir = get_broadcast_dir(self.config.output_dir)
-        latest_ckpt_step = get_latest_ckpt_step(broadcast_dir) or 0
+        if self.mx_channel is not None:
+            latest_ckpt_step = 0
+            for payload in self.mx_channel.payloads("trainer", "sync").values():
+                signal = decode_signal(payload)
+                if signal.phase == "trainer_ready" and signal.session_id == self.config.weight_broadcast.session_id:
+                    latest_ckpt_step = max(latest_ckpt_step, signal.step)
+        else:
+            broadcast_dir = get_broadcast_dir(self.config.output_dir)
+            latest_ckpt_step = get_latest_ckpt_step(broadcast_dir) or 0
         return max(self.policy.version, latest_ckpt_step)
 
     async def apply_policy_update(self, next_step: int) -> None:
@@ -78,9 +101,9 @@ class WeightWatcher:
                 return
 
             broadcast_dir = get_broadcast_dir(self.config.output_dir)
-            weights_path = get_step_path(broadcast_dir, next_step)
-            stable_marker = weights_path / "STABLE"
-            if not stable_marker.exists():
+            weights_path = None if self.mx_channel is not None else get_step_path(broadcast_dir, next_step)
+            stable_marker = None if weights_path is None else weights_path / "STABLE"
+            if stable_marker is not None and not stable_marker.exists():
                 get_logger().info(
                     f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
                     "Training is progressing normally."

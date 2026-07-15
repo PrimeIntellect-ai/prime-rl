@@ -68,6 +68,7 @@ def models(request: Request) -> OpenAIServingModels:
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
+    "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
 }
 
 
@@ -87,7 +88,10 @@ async def resume(request: Request):
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
-    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    await engine_client(request).collective_rpc(
+        "update_weights_from_path",
+        args=(data.get("weight_dir"), data.get("step", 0)),
+    )
     return {"status": "ok"}
 
 
@@ -143,9 +147,20 @@ async def init_broadcaster(request: Request):
     rank_offset = data.get("rank_offset")
     inference_world_size = data.get("inference_world_size")
     quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
+    session_id = data.get("session_id", "")
+    model_name = data.get("model_name", "")
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer),
+        args=(
+            host,
+            port,
+            rank_offset,
+            inference_world_size,
+            timeout,
+            quantize_in_weight_transfer,
+            session_id,
+            model_name,
+        ),
     )
     return {"status": "ok"}
 

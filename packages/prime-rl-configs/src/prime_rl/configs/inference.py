@@ -82,8 +82,15 @@ class ModelConfig(BaseModelConfig):
 
 
 class WeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem"] = "filesystem"
+    type: Literal["nccl", "filesystem", "nixl"] = "filesystem"
     """Weight broadcast transport."""
+
+    host: str = "modelexpress"
+    port: int = 8001
+    timeout: int = 1200
+    inference_world_size: int = Field(1, ge=1)
+    session_id: str = ""
+    model_name: str = ""
 
 
 class CPUOffloadTier(BaseConfig):

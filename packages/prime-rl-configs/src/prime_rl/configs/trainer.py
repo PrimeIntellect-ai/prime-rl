@@ -495,8 +495,30 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
 
+class NIXLWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    type: Literal["nixl"] = "nixl"
+
+    host: str = "modelexpress"
+    """ModelExpress service host."""
+
+    port: int = 8001
+    """ModelExpress service port."""
+
+    timeout: int = 1200
+    """Timeout in seconds for publication, pull, and acknowledgement."""
+
+    inference_world_size: int = Field(1, ge=1)
+    """Total number of inference workers expected to acknowledge each update."""
+
+    session_id: str = ""
+    """Stable identifier shared by all processes in one training run."""
+
+    model_name: str = ""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -638,10 +660,15 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_nixl_single_run(self):
+        if self.weight_broadcast.type == "nixl" and self.max_concurrent_runs != 1:
+            raise ValueError("NIXL weight broadcast currently supports max_concurrent_runs = 1.")
+        return self
+
+    @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.model.lora is not None and self.weight_broadcast.type == "nccl":
-            # TODO: Support NCCL broadcast with LoRA
-            raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+            raise ValueError(f"{self.weight_broadcast.type.upper()} weight broadcast does not support LoRA yet.")
         return self
 
     @model_validator(mode="after")
