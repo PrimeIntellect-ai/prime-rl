@@ -1,6 +1,6 @@
 """Versioned metadata exchanged for pull-based weight transfer."""
 
-from __future__ import annotations
+from typing import Literal
 
 import msgspec
 
@@ -43,10 +43,23 @@ class WeightManifest(msgspec.Struct, frozen=True):
     """Static, session-scoped description of all pullable model weights."""
 
     session_id: str
+    epoch: int
     model: str
     fingerprint: str
     agents: tuple[AgentDescriptor, ...]
     tensors: tuple[PublishedTensor, ...]
+    protocol_version: int = PROTOCOL_VERSION
+
+
+class SyncSignal(msgspec.Struct, frozen=True):
+    """Generation-aware control message for one synchronized update."""
+
+    session_id: str
+    epoch: int
+    step: int
+    phase: Literal["trainer_ready", "inference_applied"]
+    rank: int
+    fingerprint: str
     protocol_version: int = PROTOCOL_VERSION
 
 
@@ -61,3 +74,16 @@ def decode_manifest(data: bytes) -> WeightManifest:
             f"unsupported weight-transfer protocol {manifest.protocol_version}; expected {PROTOCOL_VERSION}"
         )
     return manifest
+
+
+def encode_signal(signal: SyncSignal) -> bytes:
+    return msgspec.msgpack.encode(signal)
+
+
+def decode_signal(data: bytes) -> SyncSignal:
+    signal = msgspec.msgpack.decode(data, type=SyncSignal)
+    if signal.protocol_version != PROTOCOL_VERSION:
+        raise ValueError(
+            f"unsupported weight-transfer protocol {signal.protocol_version}; expected {PROTOCOL_VERSION}"
+        )
+    return signal

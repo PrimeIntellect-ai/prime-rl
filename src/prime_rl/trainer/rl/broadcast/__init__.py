@@ -9,11 +9,17 @@ from prime_rl.trainer.rl.broadcast.nccl import NCCLWeightBroadcast
 
 
 def setup_weight_broadcast(
-    output_dir: Path, config: WeightBroadcastConfig, lora_config: LoRAConfig | None = None
+    output_dir: Path,
+    config: WeightBroadcastConfig,
+    lora_config: LoRAConfig | None = None,
 ) -> WeightBroadcast:
     if config.type == "nccl":
         return NCCLWeightBroadcast(output_dir, config, torch.cuda.current_device())
     elif config.type == "filesystem":
         return FileSystemWeightBroadcast(output_dir, config, lora_config)
+    elif config.type == "nixl":
+        from prime_rl.trainer.rl.broadcast.nixl import NIXLWeightBroadcast
+
+        return NIXLWeightBroadcast(output_dir, config)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")

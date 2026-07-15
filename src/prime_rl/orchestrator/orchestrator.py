@@ -71,7 +71,7 @@ from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
-from prime_rl.utils.client import init_nccl_broadcast
+from prime_rl.utils.client import init_weight_broadcast
 from prime_rl.utils.config import to_toml_dict
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
@@ -298,14 +298,16 @@ class Orchestrator:
             await self.inference_metrics.start()
 
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        if config.weight_broadcast.type == "nccl":
-            await init_nccl_broadcast(
+        if config.weight_broadcast.type in ("nccl", "nixl"):
+            await init_weight_broadcast(
                 self.policy_inference.admin_clients,
                 config.weight_broadcast.host,
                 config.weight_broadcast.port,
                 config.weight_broadcast.timeout,
                 inference_world_size=config.weight_broadcast.inference_world_size,
-                quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
+                quantize_in_weight_transfer=getattr(config.weight_broadcast, "quantize_in_weight_transfer", False),
+                session_id=getattr(config.weight_broadcast, "session_id", ""),
+                model_name=getattr(config.weight_broadcast, "model_name", config.model.name),
             )
 
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
@@ -327,13 +329,20 @@ class Orchestrator:
         # NCCL, which rendezvouses with the trainer's first-step broadcast (train.py). A fresh
         # filesystem run needs no sync (the base model IS policy v0) and must not wait for a
         # startup broadcast: runs registered after the trainer's first step never receive one.
-        if self.resume_step is not None or config.weight_broadcast.type == "nccl":
+        if self.resume_step is not None or config.weight_broadcast.type in ("nccl", "nixl"):
             sync_version = self.resume_step if self.resume_step is not None else 0
-            check_exists = config.weight_broadcast.type != "nccl"
+            check_exists = config.weight_broadcast.type not in ("nccl", "nixl")
             # Without a ckpt block, fall back to a default timeout instead of not waiting at all.
             wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
-            weights_path = get_weight_dir(
-                config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
+            weights_path = (
+                None
+                if config.weight_broadcast.type == "nixl"
+                else get_weight_dir(
+                    config.output_dir,
+                    sync_version,
+                    check_exists=check_exists,
+                    wait_timeout=wait_timeout,
+                )
             )
             await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
             if self.lora_name is not None:
@@ -833,7 +842,7 @@ class Orchestrator:
         # the gate deadlocks waiting for a version that will never be published.
         # The last batch uses the penultimate policy anyway, so let it through.
         building_final_batch_nccl = (
-            self.config.weight_broadcast.type == "nccl"
+            self.config.weight_broadcast.type in ("nccl", "nixl")
             and self.config.max_steps is not None
             and self.progress.step >= self.config.max_steps - 1
         )
