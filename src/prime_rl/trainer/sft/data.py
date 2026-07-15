@@ -338,10 +338,10 @@ class CatDataset(StatefulIterableDataset):
         self.pending_sample: Sample | None = None
 
     def state_dict(self) -> dict:
-        return {
-            "dataset": self.dataset.state_dict(),
-            "pending_sample": self.pending_sample,
-        }
+        state = {"dataset": self.dataset.state_dict()}
+        if self.pending_sample is not None:
+            state["pending_sample"] = self.pending_sample
+        return state
 
     def load_state_dict(self, state_dict: dict):
         self.dataset.load_state_dict(state_dict["dataset"])

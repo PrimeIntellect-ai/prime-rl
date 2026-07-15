@@ -119,18 +119,20 @@ def test_fake_dataset_single_rank_state_with_packing():
         step += num_packed_examples
         assert micro_batch["input_ids"].shape == (1, 128)
         dataset_state = dataloader.state_dict()["dataset_state"]
-        pending_sample = dataset_state["pending_sample"]
+        pending_sample = dataset_state.get("pending_sample")
         expected_dataset_step = step + (pending_sample is not None)
         assert dataset_state["dataset"] == {"step": expected_dataset_step, "epoch": 0}
         if pending_sample is not None:
             assert pending_sample["input_ids"][0] == step
 
     state_dict = dataloader.state_dict()
+    rng_state = torch.random.get_rng_state()
     expected_batch = next(dataiter)
 
     resumed_dataset = setup_dataset(tokenizer, config)
     resumed_dataloader = setup_dataloader(resumed_dataset, config)
     resumed_dataloader.load_state_dict(state_dict)
+    torch.random.set_rng_state(rng_state)
     resumed_batch = next(iter(resumed_dataloader))
 
     for key in ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens"):
