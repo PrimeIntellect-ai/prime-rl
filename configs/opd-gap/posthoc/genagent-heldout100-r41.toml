@@ -1,0 +1,182 @@
+max_turns = 40
+max_input_tokens = 56000
+max_output_tokens = 24000
+max_total_tokens = 60000
+multiplex = 32
+model = "Qwen/Qwen3.5-35B-A3B"
+num_tasks = 100
+num_rollouts = 1
+shuffle = false
+max_concurrent = 8
+verbose = false
+rich = false
+server = true
+
+[taskset]
+id = "general-agent-v1"
+ref = "a2b76f6ac3469f7f50171760c0d0dba38360edc4"
+tasks = [
+    "soap_making_t4",
+    "incense_crafting_t3",
+    "car_show_t3",
+    "timber_t3",
+    "bbq_competition_t3",
+    "textile_mill_t4",
+    "vertical_farm_t3",
+    "wine_blend_t3",
+    "space_debris_t4",
+    "freelance_platform_t3",
+    "sewing_workshop_t3",
+    "chocolate_boutique_t3",
+    "science_fair_t4",
+    "fulfillment_center_t4",
+    "film_archive_t4",
+    "fermentation_lab_t3",
+    "coffee_cupping_t3",
+    "cable_car_t4",
+    "zipline_tour_t3",
+    "thesis_defense_t3",
+    "piano_tuning_t3",
+    "biochar_facility_t3",
+    "fountain_pen_shop_t3",
+    "toy_lending_t3",
+    "fashion_design_studio_t3",
+    "language_school_t3",
+    "neon_workshop_t4",
+    "quilt_making_t3",
+    "sauna_spa_t4",
+    "nuclear_plant_t3",
+    "nail_salon_t3",
+    "glamping_resort_t4",
+    "matchmaking_service_t3",
+    "board_game_design_t3",
+    "self_storage_t3",
+    "ren_faire_t3",
+    "kennel_t3",
+    "additive_mfg_t4",
+    "repair_cafe_t4",
+    "meteorite_lab_t3",
+    "cobbler_shop_t3",
+    "trade_show_t4",
+    "hockey_team_t4",
+    "talent_show_t4",
+    "vintage_boutique_t3",
+    "seismic_monitor_t3",
+    "geothermal_plant_t4",
+    "repair_cafe_t3",
+    "improv_theater_t4",
+    "choir_t3",
+    "mixology_contest_t3",
+    "airport_ops_t4",
+    "pie_bakery_t4",
+    "trading_cards_t3",
+    "bake_sale_t3",
+    "fashion_design_studio_t4",
+    "courier_service_t4",
+    "quilting_workshop_t3",
+    "wine_judging_t4",
+    "pool_hall_t3",
+    "jazz_club_t3",
+    "aquaponics_farm_t3",
+    "flower_farm_t3",
+    "kombucha_brewery_t3",
+    "student_club_t3",
+    "stamp_collection_t3",
+    "speedrun_leaderboard_t3",
+    "clock_repair_t3",
+    "hat_shop_t4",
+    "comedy_festival_t3",
+    "park_ranger_t3",
+    "kennel_boarding_t3",
+    "bonsai_nursery_t4",
+    "aviary_t3",
+    "axe_throwing_t3",
+    "christmas_tree_t4",
+    "food_truck_park_t3",
+    "hat_shop_t3",
+    "trivia_night_t3",
+    "pet_sitting_t3",
+    "bird_band_station_t3",
+    "barista_competition_t3",
+    "biobank_t3",
+    "laser_cutting_t3",
+    "kelp_farming_t3",
+    "archaeology_dig_t4",
+    "private_island_rental_t3",
+    "keyboard_workshop_t3",
+    "lapidary_workshop_t3",
+    "model_rocketry_t4",
+    "realty_t3",
+    "pedigree_registry_t3",
+    "yarn_shop_t4",
+    "art_vault_t4",
+    "silk_weaving_t3",
+    "glamping_resort_t3",
+    "bicycle_workshop_t3",
+    "toymaker_workshop_t3",
+    "architecture_firm_t3",
+    "charter_flight_t4",
+]
+min_tier = 3
+max_tier = 4
+pass_rate_model = "openai/gpt-5-mini"
+pass_rate_solver = "local"
+min_pass_rate = 0.0
+max_pass_rate = 1.01
+shuffle_seed = 20260715
+start_idx = 0
+limit = 100
+
+[taskset.tools]
+colocated = false
+shared = false
+fork = false
+
+[taskset.tools.runtime]
+type = "subprocess"
+
+[harness]
+id = "null"
+forward_env = []
+
+[harness.runtime]
+type = "subprocess"
+
+[harness.env]
+
+[timeout]
+setup = 120.0
+rollout = 600.0
+scoring = 60.0
+
+[retries.rollout]
+max_retries = 0
+include = []
+exclude = []
+
+[args]
+
+[extra_env_kwargs]
+
+[pool]
+type = "elastic"
+multiplex = 128
+
+[client]
+base_url = "http://localhost:8000/v1"
+api_key_var = "VLLM_API_KEY"
+type = "train"
+pool_size = 1
+renderer_model_name = "Qwen/Qwen3.5-35B-A3B"
+
+[client.headers]
+
+[client.renderer]
+name = "qwen3.5"
+enable_thinking = true
+add_vision_id = false
+image_cache_max = 256
+
+[sampling]
+temperature = 1.0
+max_tokens = 4096

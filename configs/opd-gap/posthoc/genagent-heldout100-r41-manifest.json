@@ -1,0 +1,1614 @@
+{
+  "additional_selection": {
+    "metadata_0.6_0.8": 41,
+    "metadata_0.8_1.0": 41
+  },
+  "additional_task_entries": [
+    {
+      "gold_sha256": "d82f961eba45ab1c1926305d7ac67f4dcbfb1a5f7ab57436f5d8cee163e7925e",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "zipline_tour_t3",
+      "task_toml_sha256": "d07d2c96f4577337893ac2bb1fcb87f71ece7342a562eb48a08796462d4ee491",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "5f8467b2e3c491a8954daea124779fd228a37d45234299f322d729ee2b170964",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "thesis_defense_t3",
+      "task_toml_sha256": "561ca21f1806683f03b0bd855be0f44aa7da07d18f83fd19d4e237883423e95b",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "5004c440d34e84727c107e6c20148fe8784f50380bcffe8e30c3d255c9ac4b97",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "piano_tuning_t3",
+      "task_toml_sha256": "b2e4aaad7b21c09bb979ea6ea9a3ac12245e1df5210ab3047d36a9b0b03352be",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "60ae6a6d1dfc11c3c4c776515ad2e858cd67ad41c3ed9ada90750b0e2dc9481a",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "biochar_facility_t3",
+      "task_toml_sha256": "84de3e823046fa1c34732c794cf621ba78956ea652f3334e88df451e1bf25e91",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "a7f851710ca2f10b1e8a35206373bab4d0f98acacda98d53c4ee219047520a2d",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "fountain_pen_shop_t3",
+      "task_toml_sha256": "2d5674869901ebb125068ac3c02d0e719075c4ea97901e2595a0d5bbc947f1e9",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "f7455631e6902377cad192df2043a50d7497fc39e176e3dddc648b4c2ebbf4b5",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "toy_lending_t3",
+      "task_toml_sha256": "1c3a59e95fba8ee55d370fc693d370a867f84c7e54cb88e9e50ba3c8d04ddfe3",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "c1d5f22cd74e89334c1806888a8e9ba12cf664773871f3cde4ed8ef7f2b838d8",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "fashion_design_studio_t3",
+      "task_toml_sha256": "1c6996676539ef0e071a71dc48fb528cd13bec9c4b7659093a93245279b85616",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "c01018a674b8ce775544e07c5466eb9061f6a69e5f8c637a768caa0d0418f9d6",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "language_school_t3",
+      "task_toml_sha256": "f5eee20b78b39b4cf30534c1a5cb2f588fa62469ed7dce48a629befe9885f964",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "079506fda59bbe141e5fb26b91a5286461883a46c0f62d44baea528d18d5dc8a",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "neon_workshop_t4",
+      "task_toml_sha256": "6865d0cfbd36f892d93601de821fee23d8e53dfd8f8612d4833e59b466095e19",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "17e10a8fee106c0cfe65fd11e42fbdd54ece4ac5e09ce57f6a5913a305f12787",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "quilt_making_t3",
+      "task_toml_sha256": "a1a888312bbb09717add22834a8d088c2b11901dd39c2cacc5744499a086fbaa",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "2a7577662656fea67ce21f001212b5bdcd58531c283c7d5ddb1f3c97c8b3de87",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "sauna_spa_t4",
+      "task_toml_sha256": "8256fa7218c11488114ac1980bd03ee75b65d914e1a346c937426bffdfd84642",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "b5663b8a91244e5445e8e9b266961374e37e57f6bd50169c3e13aea28001479f",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "nuclear_plant_t3",
+      "task_toml_sha256": "a00bdec4b07e2d0bb962f51275b9aae31aa44ccd4b126abc83c56b6a2b9c86b4",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "e7196c1013df735a0d81044e602cc1fd53637d62056de2798f674c017c4777fa",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "nail_salon_t3",
+      "task_toml_sha256": "79cb1be54952ea53d9c9b426ca53047775ea6f5a303ea6d401c5cd902d10e3a0",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "a8ccccff5022a0378599427b7820fb2fbb157be12a654d1f848b26567e4f8bdb",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "glamping_resort_t4",
+      "task_toml_sha256": "5483757097c1cae2c6c9df96bb9dd02302de9721f8352716fcfab23bc59e5e5d",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "4d04cb832d0e2c26cbfaf8212a6b50f6645913789def9bf57db0d45d3227edb2",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "matchmaking_service_t3",
+      "task_toml_sha256": "defb64e2fceebd654fa5c12c69eab394d13a5fc9065c6663577a615b00d3e5fa",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "ebe762b34a4d37cc6c6e5a8f5bf9c6f65e06d4550ed19402f8fb1e6cd1419828",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "board_game_design_t3",
+      "task_toml_sha256": "5ce89c510b969f4169000b059f6e0ffb8c9c429a6d88a5b3c59e6cbc0ad55c44",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "13b300f96eeaec4f12a18a8cf74203636c3e997c8bfde3565d0a0bd2b643ba4c",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "self_storage_t3",
+      "task_toml_sha256": "9832e166548715af849f3a6dedf89e5fcea44d8558df1646996976881077f10c",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "f0c66f343f9e4e6f49c833ac4c0783d96576bada692e755905db942099329de2",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "ren_faire_t3",
+      "task_toml_sha256": "7320a8f1a618bab35473cb957cf9a2919c9a0e8fe6c11ef5b72e7a408ffd2ff0",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "8d0efd15818735f84a5ca1d42208069eb23ae7e42feeb82c9f47591c9491a660",
+      "metadata_pass_rate": 0.767,
+      "stratum": "metadata_0.6_0.8",
+      "task": "kennel_t3",
+      "task_toml_sha256": "ab0af80646cb472adc95a3b835a745150f9ed652c6f292e01a21d3d508e26c1a",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "ea6e8401909eb8978562ea1e99608896b87e3b164333ad498a4a60955dc71f60",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "additive_mfg_t4",
+      "task_toml_sha256": "3c2e002275b88fc9a459b0325a3c0b68b3e6ffa8ea46fc9caae0dc2248e6d2e9",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "47bf827d8812be40aa07689b60c1f65cb03a0e434955aff33eb7a37ba8dbd03f",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "repair_cafe_t4",
+      "task_toml_sha256": "d43db60171e7660e237bb2c6059b67f51f6dfd45ce43532e868765be1fbf7cae",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "1aabee0bf13210489b32247a18eb067b3ef3647735513f48400561496428dccf",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "meteorite_lab_t3",
+      "task_toml_sha256": "f72cf4d3b9a5d015bd1f7f3121bdba0225c98dd4d2f879c98346890683be667a",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "bd91fca72ae456fe4ee3533c5d1ad2390d9664ecdc5836fd16b42b5e39a21a0b",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "cobbler_shop_t3",
+      "task_toml_sha256": "810d23264e03cae327a7e106de514654365b952f0114bab7c39d3e252e2e24b7",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "8408ecf2259e84a76998ccdd0222a4db4a8c4c75632dd48ca1b56257057a9abb",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "trade_show_t4",
+      "task_toml_sha256": "6abc3ad27ad8ff2b5ad8a6c1e3d827ef3800b618a78d5d8b7767a1b2e055d0b3",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "229dcfe694141c1a5ee7868a68b79a8dcdd317d13a87279a85b9a9062c3f9f7b",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "hockey_team_t4",
+      "task_toml_sha256": "c34e94a011febdbf867c1eb0ab0ef893c7c030686d977e79a7b5d5a5a2afd3de",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "be106685fd7fac1d5e6f99a1aa98428f9913f6c5d62a8f7bbcdcbd5fa4173375",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "talent_show_t4",
+      "task_toml_sha256": "08381ceb7d0a1681d44697466ec8c97529d1da514f4d8345c62a10384717370b",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "b316a2d6a6bd577688693621b070ffd5e015f414690beffc25a329cbf8e5a701",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "vintage_boutique_t3",
+      "task_toml_sha256": "54c0135da83c278971132f77e36a3319e8c61dc26d06ce553ac88347ad663356",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "815a6756e93e8a6a62de4bfe27822f39a0ba323be17427d8908d4a53de4fea73",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "seismic_monitor_t3",
+      "task_toml_sha256": "2657985e4305308729af18dbe92cad701cfc8a0861e65b62a21c5eb0691ab806",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "b8ae7131a6854e59b457a0c5915099ca78402071e8983dfdb333b67d84106ef0",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "geothermal_plant_t4",
+      "task_toml_sha256": "f5e6cf7dd775940ba8dec4262312b58c71179ff6f75b10a9d4e4d1751d1a2604",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "857b8b45a931f88e6956a7f35cc27fec8b71b3540d3472ff1dff3b494890d809",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "repair_cafe_t3",
+      "task_toml_sha256": "de7062f1da25a9a8689dfd965d21c2e24649c4e60654cba7b54bba1c0f249d81",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "d9b45f4439583a9a8dc27c1e61056364099c54849df3009c4b8fa4d8ace021cb",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "improv_theater_t4",
+      "task_toml_sha256": "94d46b483b19c6f2400af2337b4c75db08ea041e32e199cc1993f62f415202da",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "f03e4ac430b0a4fa08f6b25852f91bf339db563c383f85cc52ac3ba19dbd7414",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "choir_t3",
+      "task_toml_sha256": "8755a114a95eceeb984c0182ff057e9ba93ae3fd22c8de88b263b809a5e212bf",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "ddef40fad0b60990ae42018ffaa32c0ff46135505ad92682c7ba01d5390b926a",
+      "metadata_pass_rate": 0.794,
+      "stratum": "metadata_0.6_0.8",
+      "task": "mixology_contest_t3",
+      "task_toml_sha256": "7aeffbbe55e7418f36b9813864f0ee4374a50523ccd6b7902fa9c7308541f946",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "86100af1a54e1d8f0b72b8c32b209c9bf881f07c471ceb66b18f111e111e3ef4",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "airport_ops_t4",
+      "task_toml_sha256": "4cc27a492c1a8bcb8f1684821e82651e3f0fd818f6c9d57d3c17ce6e50eea3d9",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "cddf2c60a469467f628fa8ea663064f18f81baeb24cf27bc3f715d0114d716ab",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "pie_bakery_t4",
+      "task_toml_sha256": "2f94925180ed74f9d931b741e8b0e712c754b7b3501272af1dca0480552d8e8f",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "6a70ab64e5ea72fdf3d947b07e6dd1d170158b08e85846850ed221e2a93aff37",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "trading_cards_t3",
+      "task_toml_sha256": "83c697c9ae536075a5fa5f43155e9f7f46649d77c575c4f3be2470c961028465",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "6e120ac9031964bb7ced2ccf7b6300efa396abee4ce44933d8b56310da2343ca",
+      "metadata_pass_rate": 0.79,
+      "stratum": "metadata_0.6_0.8",
+      "task": "bake_sale_t3",
+      "task_toml_sha256": "0316d57a53cad374ec9e76698baffef92e0d17911a1cc592a880a0824e2d8d53",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "cc2a7847d663bab83a66dc96a0461582e7be41c30c548fbc7869a2a670cd42cb",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "fashion_design_studio_t4",
+      "task_toml_sha256": "c3c708603f91abf263351e596f5082ffdb79f138c5b73b84c54b50c89ba91189",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "5c2824b4dc766a40b556b38d5bbab2300de429ddd36511630c59082d8f6d5b57",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "courier_service_t4",
+      "task_toml_sha256": "e9cafd96e60e86dc4b3d920a9f715d6ca01fbf3c2b821accbb354b88e591061f",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "4dd85e49790db6964e6c357741e4dac73c79d3a8dcf552383fcc947cb4183f98",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "quilting_workshop_t3",
+      "task_toml_sha256": "13fd4a9ebbb0a139f1732ace3414e4e8957e33887f967b1e660fb60682588187",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "52c4bc6e4d3404e8c12a2a5191f1d6cfc5caaf156a6d815d851f807fc9e0b7da",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "wine_judging_t4",
+      "task_toml_sha256": "64ef9a0fa0a27def29e6af2ec79dee4bae8f6c6998668c8911feaf13a968dfc2",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "00ed457a7b42a05da61f87a7aa90a9f244bfc275e249b106e9ae4db49d5a1cf1",
+      "metadata_pass_rate": 0.94,
+      "stratum": "metadata_0.8_1.0",
+      "task": "pool_hall_t3",
+      "task_toml_sha256": "d372e9db1965bb7072eb2b6b99e75227747e96e55e2a943f707f18b8e5bc1c1a",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "dd3e40842c8a36afb90fe2be2363060633b6722734364939acae90a8b5d6592b",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "jazz_club_t3",
+      "task_toml_sha256": "09b52544306ab62fa774d285c31e4ce08c32c9835dfeceebe8e3dda0cf8245b9",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "d11b1ce131315fc94aed5ee3909cc3b3dcdcc2032973d364ecf207c1f8e9d26a",
+      "metadata_pass_rate": 0.8,
+      "stratum": "metadata_0.8_1.0",
+      "task": "aquaponics_farm_t3",
+      "task_toml_sha256": "f32e9d7813a218c5577d4e9f92bf01c42e52a784838496aa8c4f43d42b4126c7",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "1454cc7693045b6268ca235e1ea30d7b372e7469156436169b4f3b6beaf871a2",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "flower_farm_t3",
+      "task_toml_sha256": "0423a1150e7c40bff7465b1690ff4d391bc5eb488c518d571d690e61317195fc",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "40895c484c185f6b8200e57fcc735ff2187a055a93c0137456b6a680ca8bb884",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "kombucha_brewery_t3",
+      "task_toml_sha256": "ef1e671a4ebd48e66ca39b88038f0c9b379925329506b8b60b567f5902e98aed",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "0757e3a1c55dec4c1fb3af13305875a116940c31f8a969cf9ce01248fb06dd5e",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "student_club_t3",
+      "task_toml_sha256": "5d46487b4b82619c63841d8fd148650c963c768e54b83b59a69b3903d238bb98",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "8f6871dc44a373999d17c92b33e46798990d9fc58aff5b4d1d0c121984072f99",
+      "metadata_pass_rate": 0.85,
+      "stratum": "metadata_0.8_1.0",
+      "task": "stamp_collection_t3",
+      "task_toml_sha256": "b47983a600d5b1f42e831a510d9f73415af427ad283c41e894d511eca55b448c",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "92b3cf5b4d481dad6b50f0ee0fda2f6a8f7640570ec1ae48aff42a61a6e951b0",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "speedrun_leaderboard_t3",
+      "task_toml_sha256": "cdc12dfdcb170de1dfcd16f88a08088fcb064ea83c6b5e7f808befd555c09767",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "291938e15a1024dd8a3015f69eb21fbfaa83f0aa65aee122cf1f615d4d40c195",
+      "metadata_pass_rate": 0.85,
+      "stratum": "metadata_0.8_1.0",
+      "task": "clock_repair_t3",
+      "task_toml_sha256": "8f0b2b6ae088ee15973829aee02c58b39c7a75d94eb40c0a5719b23b3dd24aac",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "54e5c7da1f2edcaaf2c8b3aee3c95151eccd4172707facd6cb7652fa21a8ffb0",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "hat_shop_t4",
+      "task_toml_sha256": "570809e8795b802a83618a391d6316ea026e18220b285cc49f74d04b7525de04",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "4d148715d895115e5d4a76c445e79992e4643a423103dd24b0eeb92b1c409c62",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "comedy_festival_t3",
+      "task_toml_sha256": "39b149668e3686f64d46a5635c00c9ec85a9c5b309dda2ecf8d30b13d88e1d03",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "abce91dca21878920c8337673749b6f8a877378b59df349a31b8a2550a21e46e",
+      "metadata_pass_rate": 0.8,
+      "stratum": "metadata_0.8_1.0",
+      "task": "park_ranger_t3",
+      "task_toml_sha256": "05c5a7a8a911ee27f96f7655e8c1d361a958ff9c4c5e6ef9bbaa07eb634ff9d4",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "cda40c6340fd69075e791f2f8d0f2322b425f98a8defa88a91697248c546b65d",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "kennel_boarding_t3",
+      "task_toml_sha256": "d8fa7b50b20fffeb8c748c517fa240d61493a0930f483bc4f429865bef398172",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "aa714873f64e4a5f4d4081d38c721682a0bb6ca65d16c0d6938f78ae4226b972",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "bonsai_nursery_t4",
+      "task_toml_sha256": "e6f6c8760824881038df0d2ae93996850019e49d41b0dbb4b1cb335d6fcabd79",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "6ef9b9d5037f3796918e28aabc85d1d512ef116023a9523cf91db942919f1ade",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "aviary_t3",
+      "task_toml_sha256": "14b8aebe648fdaa8ca063de1e49c54882df7daf8235733ccf88bb88d03468b47",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "712f66ac06ecf112bdbe32b426b2f2a28568f21db00b8a6b52ed4b43356e075e",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "axe_throwing_t3",
+      "task_toml_sha256": "07303a989ff9625607b8a19ad68571b890977195725a888b4b43bc7c9b1ca17f",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "948f7d990504959f33691b257db8a6bd2fe7a9b5c22ac4f90d3fbf146e9927b9",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "christmas_tree_t4",
+      "task_toml_sha256": "c5b9ec8818575f583ef1924bdbe5a7850656844cf7361e003aacc7816d5a52ed",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "919f121ee3234927b8466d637ef0566f6c7c7f6a902ffe6b5fad17c7ae43e87c",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "food_truck_park_t3",
+      "task_toml_sha256": "9319ce8795b5e4b16264050eb49b146b487f04ed925458aafee1e2a943517904",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "b14c8ba6cbf91860ee2e0125505ccc755efc2a8a6643a34e6f26aa04995e98d9",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "hat_shop_t3",
+      "task_toml_sha256": "ec43189bc79477f56a808af6204224463b83d5fae6ee2b8d6919e3cc6b4ef1f6",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "f3abe9768f26b8645fcbe087100989359547bc67f11d0539bb838ab6bf34cb75",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "trivia_night_t3",
+      "task_toml_sha256": "98398b4466c6ec05405304aa7aeb8312aa2de6cdc1fdf9b0637614b89d65f600",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "7dc159c8940bb669dcbdba4b7e53e0aabbf498d2cbe31948d6744e1442766610",
+      "metadata_pass_rate": 0.85,
+      "stratum": "metadata_0.8_1.0",
+      "task": "pet_sitting_t3",
+      "task_toml_sha256": "6df21d0def3fe0f39cebc736dba389d58b4c286c828121a3049a4d1cb07b1454",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "6ee57da6c6a00d9d1a54c63e1d80c2c47a55da927fb58a19d56f0c4119890e6d",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "bird_band_station_t3",
+      "task_toml_sha256": "305bd5a8f8e1da74b6125b368e499b69a4c4ddebe3d0d7e65887c5f770cfe104",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "28206855b1952b413e7b09ef612ab55980e0abcb0732a3688992f77710217b85",
+      "metadata_pass_rate": 0.8,
+      "stratum": "metadata_0.8_1.0",
+      "task": "barista_competition_t3",
+      "task_toml_sha256": "0d18d5888f95dde0a69b42cad4e8ded534cd675e0f065672e8e9b404bc76eedd",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "2a1291d9adb501d449fb575589d3481ebfe94af24693c66832979d13257cf81d",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "biobank_t3",
+      "task_toml_sha256": "2f63e5ac59db1d701ca0a8a96e9b855f52ba371affab6808ac3cf8d5aaa19315",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "960ca5db43f8e48bf15ac794134de2eae36902d769fb6628272dd564c14d5798",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "laser_cutting_t3",
+      "task_toml_sha256": "b4bac5629f3945cf914d6f2e938869c94ecc19172ca82e3d9c3b0fb640d9511b",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "14c7e97290eec787f9cbb47a3c72d67c99a6dfdcc7156c4dfc780cee4edc0f88",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "kelp_farming_t3",
+      "task_toml_sha256": "3a2b282e9ce2b14cc5c92dfa020305cd778612d4aa9a81b6b90753fdaaa7db84",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "a7ac7addd2052f5d757732465de377b97a0360d604faa3fff76420ca01b8c84e",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "archaeology_dig_t4",
+      "task_toml_sha256": "bc1914076c7bd9a073bb06ebbb6c18a5d0bcf0974d2b2c058cfe164d3b01283f",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "5de66e8d64210dea25982eebbf36708bca66eefce6732a5089cf38e6f5bcb34a",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "private_island_rental_t3",
+      "task_toml_sha256": "d1f8016ae6b90094b34c0091a3b43c9134963e51bd952c20e35856d25f0c023d",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "3027d24a89ef03534c94fda9a8562f8c6c80af95cc1cb10e23ee8dfe4b14a598",
+      "metadata_pass_rate": 0.8,
+      "stratum": "metadata_0.8_1.0",
+      "task": "keyboard_workshop_t3",
+      "task_toml_sha256": "15d1e8fbaabd7ff92fd7b422dc58d1e9741f0846e0d417326a12408cbe21c420",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "2fc274d26aafdcd5c3d81d4effc6269153cf5505e0ed93edc4b4a8e5fcc97d2b",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "lapidary_workshop_t3",
+      "task_toml_sha256": "6713bd470fc7eb0aa5374f7630617f4a03e20c35ac1966f7130fb75733ea2afb",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "f1025d4f1d47736e310f89a23cb5522951d912adbff45dc5f175d4a12135600f",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "model_rocketry_t4",
+      "task_toml_sha256": "5d7874ba37ad6a543e9c43344b70f6f875be37ff9e53e72a2fff751b6e437f76",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "083beeb6b162215a3facf2fd49d96d965c85479555e8548156de5053891efb4f",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "realty_t3",
+      "task_toml_sha256": "aac6df616fcaddcc69160d3e70a7ad253258007875b8d1fe937b816950d2ef0d",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "4ae8c01f552ba79a9ce9c5eed1b9afdc37a724b1309895206af3fbfb78b00eb7",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "pedigree_registry_t3",
+      "task_toml_sha256": "eb571d069baf0204b261ea2026cdb96ba956aa488bb302786c4235221a089496",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "e792716147fa3f18b2960db8ed41731cc028fef32a9991aaf7d06e439be3492d",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "yarn_shop_t4",
+      "task_toml_sha256": "993f23cf37b0a9ba530bfc67357e6124bf9e830fbe1ec4c31211d4640a3eb0dc",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "da8df980b0bfda765a728a1734a2f86c7b223d861cfbd3330bda1708382d8203",
+      "metadata_pass_rate": 0.85,
+      "stratum": "metadata_0.8_1.0",
+      "task": "art_vault_t4",
+      "task_toml_sha256": "793ce985476ed6acf805250889d36d73774b429e37c41c0ec3807436272ea3cb",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "393ed57dc8d358d9fcce0a1fffc5bc60111358da1ddf2cf90dcdfea2a01225f2",
+      "metadata_pass_rate": 0.85,
+      "stratum": "metadata_0.8_1.0",
+      "task": "silk_weaving_t3",
+      "task_toml_sha256": "b3cc9b6dbc190ff340321ae671c6f628e53d35bf4cd52523b7ec036b0ac07914",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "de329fc5477c555a9feaaf8b41ac2e0434f92ded4f9b01fbf02ffa6840c4041f",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "glamping_resort_t3",
+      "task_toml_sha256": "b35d50bcdd460b2010cde43a103db6527cdf45ddea41549767a586ab188c690e",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "2db8ed474b86de4bae0b43fe9440c1d5863e6bbd61c240121c8121b92827db49",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "bicycle_workshop_t3",
+      "task_toml_sha256": "546446c4f1e941cda4de9649fda2469c6c95e72e6bc747c38867dc8eae9a6672",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "abc1d7ff28dd2a9c03fcd5f5d85b6e3fb4741d82574eb7c676c0fb5878fcd616",
+      "metadata_pass_rate": 0.8,
+      "stratum": "metadata_0.8_1.0",
+      "task": "toymaker_workshop_t3",
+      "task_toml_sha256": "5cd2344666236d2009b5a99397d08da4883d91101affc1664f0390f7c8845c02",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "72675a76a509f83ae203aad4b8f8882e11807821daa23fb363457ef918ec45f6",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "architecture_firm_t3",
+      "task_toml_sha256": "bf26f2f409d53fc3a0602df05cd0eb3f50eb39c2318173a89b3501f84d783c78",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "64bcdab9089500d9bc7b2f71908cdd5bd91f68f14d6f1df377a4f1681376578b",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "charter_flight_t4",
+      "task_toml_sha256": "c9fd14f1e434dd40ec96ac3489316865767b39a83e5a9e09d6092a7ee0afb036",
+      "tier": 4
+    }
+  ],
+  "excluded_drifted_original_heldout": [
+    {
+      "directory": "fireworks_show_t4",
+      "metadata_name": "fireworks_show_t3",
+      "reason": "identity_drift"
+    },
+    {
+      "directory": "party_rental_t4",
+      "metadata_name": "party_rental_t3",
+      "reason": "identity_drift"
+    }
+  ],
+  "gepa_overlap": [],
+  "preserved_original_heldout": [
+    "soap_making_t4",
+    "incense_crafting_t3",
+    "car_show_t3",
+    "timber_t3",
+    "bbq_competition_t3",
+    "textile_mill_t4",
+    "vertical_farm_t3",
+    "wine_blend_t3",
+    "space_debris_t4",
+    "freelance_platform_t3",
+    "sewing_workshop_t3",
+    "chocolate_boutique_t3",
+    "science_fair_t4",
+    "fulfillment_center_t4",
+    "film_archive_t4",
+    "fermentation_lab_t3",
+    "coffee_cupping_t3",
+    "cable_car_t4"
+  ],
+  "purpose": "fixed post-hoc General Agent evaluation for r41 OPSD/GRPO",
+  "reporting_rule": "report overall and separately for original18, metadata_0.6_0.8, metadata_0.8_1.0",
+  "sampling": {
+    "max_tokens": 4096,
+    "rollouts_per_task": 1,
+    "temperature": 1.0
+  },
+  "schema_version": 1,
+  "selection_seed": 20260715,
+  "task_count": 100,
+  "task_entries": [
+    {
+      "gold_sha256": "dc78b556c5e73288fb1160be720c4e580a161a04aaeceb0751c61bb7f1c1ad2a",
+      "metadata_pass_rate": 0.25,
+      "stratum": "original18",
+      "task": "soap_making_t4",
+      "task_toml_sha256": "bb827d139ba6a266cfb90177917456370db630769cdac0d782676879252ef7c9",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "68c06a7b2284e841472f910ccd4d4e2d150e37cba66f419883db3f0bf9a97827",
+      "metadata_pass_rate": 0.25,
+      "stratum": "original18",
+      "task": "incense_crafting_t3",
+      "task_toml_sha256": "97eaadc2a914f26f7efd10555619ea2be09d42d13db6ebb06c8a835e4e01b3ed",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "e29c57ebf66c106e001a849785b0f460323305aa8077b37f65aa452948ebffe5",
+      "metadata_pass_rate": 0.2,
+      "stratum": "original18",
+      "task": "car_show_t3",
+      "task_toml_sha256": "73e193f505a5cb0c53ae5aba016d44e1cb7be14b8ebc372d7cf327f9f130b2d5",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "338789a7ff1ec387661c68702d11181e423435c83684bf3786b0175f1d19d849",
+      "metadata_pass_rate": 0.4,
+      "stratum": "original18",
+      "task": "timber_t3",
+      "task_toml_sha256": "0d50442d693a12331f93c3f541f86dd4b76026ea080ab5af010036b31ecdfd71",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "ed2dfcd588235e29f7a4a21530b05cd8cbc94773cd0c9f6d2d3347043832c386",
+      "metadata_pass_rate": 0.3,
+      "stratum": "original18",
+      "task": "bbq_competition_t3",
+      "task_toml_sha256": "a8afacfc39ca230814658e0928aecd0bb07f1ee741310c45c509b880b96bfeff",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "9b3b5fd0dbd8a054663dc981a5edc812d693754542e87913405976a6dc8e9408",
+      "metadata_pass_rate": 0.2,
+      "stratum": "original18",
+      "task": "textile_mill_t4",
+      "task_toml_sha256": "62019784ff9ee26c969aa96a94006ccfe8ab7981e9dfe4f8a878c2be3865cac1",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "36f27eba28efa1fef6576cdc4f8f49c0fa64f950b85cd122d6d90271c72c5410",
+      "metadata_pass_rate": 0.3,
+      "stratum": "original18",
+      "task": "vertical_farm_t3",
+      "task_toml_sha256": "ea9185e4dd16fc003a61887b4dbc5c72523bfbf7ef5490d6a10ba37b2a5b4460",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "7532a1e095bdfdd326b793ab3f57be91fc13305bc9150243e79fccefe35edf7f",
+      "metadata_pass_rate": 0.2,
+      "stratum": "original18",
+      "task": "wine_blend_t3",
+      "task_toml_sha256": "7d806c11811bf7768e2f20ea2edb440ea0ea153acffe70029a334456ebcb158a",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "eefc93ae177f15107db807c9058e2d01380dfa012ae980b291d95d3a9ac83fd4",
+      "metadata_pass_rate": 0.1,
+      "stratum": "original18",
+      "task": "space_debris_t4",
+      "task_toml_sha256": "255ac3439491a22c866fb0e0c7c1d6170512e011f37bb400dcaa5b5d4b100f01",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "005b7614ee3e18eebe489ea98db4501e7f9d808cbbc9a41b2bf977d116b3bc15",
+      "metadata_pass_rate": 0.4,
+      "stratum": "original18",
+      "task": "freelance_platform_t3",
+      "task_toml_sha256": "49bace5609698181afd476108436398a63402c0104911f83186b6915cd67564c",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "96877ea45c97e378201195a510606dd94af278cfc975c04b955e77ebe19f5326",
+      "metadata_pass_rate": 0.35,
+      "stratum": "original18",
+      "task": "sewing_workshop_t3",
+      "task_toml_sha256": "812f2bb1bd6a7bc7df7934d0e261366583b1a748caebcae947b0eba0d7c3cb54",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "5c849d96fa9d5936210d2a257c21e0abb6800d6390b9b3017b837d4c3f0dcf70",
+      "metadata_pass_rate": 0.3,
+      "stratum": "original18",
+      "task": "chocolate_boutique_t3",
+      "task_toml_sha256": "df7f3aa777e28a3dd1d30524f52dfb212b4a6994ef71d9e98c1d5c9b5ce70e3a",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "0b2538caf81f2981a0429cab70d4afc8204eda725eb25b4a43b5040ef6916009",
+      "metadata_pass_rate": 0.15,
+      "stratum": "original18",
+      "task": "science_fair_t4",
+      "task_toml_sha256": "7ab9782ade51f29ddc6f5ab29dc3bd9e22b93bb415d5da0922be7780715ca35e",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "d5ea1cc47779b3967307931e3454d72a55140f433146d548bca88f2b1a83bbea",
+      "metadata_pass_rate": 0.1,
+      "stratum": "original18",
+      "task": "fulfillment_center_t4",
+      "task_toml_sha256": "b1c2960314165bc927c8fe9e10d152ff5618656320fff833bd7f8e3fd22e03e8",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "4d62325cadef434301a4dbc01481eba8ef8d8010e423c75b032a1ace02e100d8",
+      "metadata_pass_rate": 0.15,
+      "stratum": "original18",
+      "task": "film_archive_t4",
+      "task_toml_sha256": "660b59544f83d1032bbf5647afe0dfaa3843d291d3f41ec85e7e00e8726596a6",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "e7374b9132c5b2c24bbd1749906dd9d79f3edf4f03a9e215fb0ecffddcd4ad06",
+      "metadata_pass_rate": 0.45,
+      "stratum": "original18",
+      "task": "fermentation_lab_t3",
+      "task_toml_sha256": "e279fc70e3d67d23a53ee0e39ba388cf366d4287c0fad1f2d77ff983f2e44bf9",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "b79e20618fa109a56489ec697b90b61f1d7dcf95f377dabd234a560c3da90fcf",
+      "metadata_pass_rate": 0.2,
+      "stratum": "original18",
+      "task": "coffee_cupping_t3",
+      "task_toml_sha256": "c9313f7ed8b8e1917ec503b7762412e601baedb1fedfa394ebb4405e96d39976",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "7bc3a039adc7080209fdba02b5059697b855e63d5668fd6efde8770f65d5f3a9",
+      "metadata_pass_rate": 0.1,
+      "stratum": "original18",
+      "task": "cable_car_t4",
+      "task_toml_sha256": "b9544b3d327f9a62382276e63de48cc8a5481b68d582f5c8a81fe557883fdd98",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "d82f961eba45ab1c1926305d7ac67f4dcbfb1a5f7ab57436f5d8cee163e7925e",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "zipline_tour_t3",
+      "task_toml_sha256": "d07d2c96f4577337893ac2bb1fcb87f71ece7342a562eb48a08796462d4ee491",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "5f8467b2e3c491a8954daea124779fd228a37d45234299f322d729ee2b170964",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "thesis_defense_t3",
+      "task_toml_sha256": "561ca21f1806683f03b0bd855be0f44aa7da07d18f83fd19d4e237883423e95b",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "5004c440d34e84727c107e6c20148fe8784f50380bcffe8e30c3d255c9ac4b97",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "piano_tuning_t3",
+      "task_toml_sha256": "b2e4aaad7b21c09bb979ea6ea9a3ac12245e1df5210ab3047d36a9b0b03352be",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "60ae6a6d1dfc11c3c4c776515ad2e858cd67ad41c3ed9ada90750b0e2dc9481a",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "biochar_facility_t3",
+      "task_toml_sha256": "84de3e823046fa1c34732c794cf621ba78956ea652f3334e88df451e1bf25e91",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "a7f851710ca2f10b1e8a35206373bab4d0f98acacda98d53c4ee219047520a2d",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "fountain_pen_shop_t3",
+      "task_toml_sha256": "2d5674869901ebb125068ac3c02d0e719075c4ea97901e2595a0d5bbc947f1e9",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "f7455631e6902377cad192df2043a50d7497fc39e176e3dddc648b4c2ebbf4b5",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "toy_lending_t3",
+      "task_toml_sha256": "1c3a59e95fba8ee55d370fc693d370a867f84c7e54cb88e9e50ba3c8d04ddfe3",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "c1d5f22cd74e89334c1806888a8e9ba12cf664773871f3cde4ed8ef7f2b838d8",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "fashion_design_studio_t3",
+      "task_toml_sha256": "1c6996676539ef0e071a71dc48fb528cd13bec9c4b7659093a93245279b85616",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "c01018a674b8ce775544e07c5466eb9061f6a69e5f8c637a768caa0d0418f9d6",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "language_school_t3",
+      "task_toml_sha256": "f5eee20b78b39b4cf30534c1a5cb2f588fa62469ed7dce48a629befe9885f964",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "079506fda59bbe141e5fb26b91a5286461883a46c0f62d44baea528d18d5dc8a",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "neon_workshop_t4",
+      "task_toml_sha256": "6865d0cfbd36f892d93601de821fee23d8e53dfd8f8612d4833e59b466095e19",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "17e10a8fee106c0cfe65fd11e42fbdd54ece4ac5e09ce57f6a5913a305f12787",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "quilt_making_t3",
+      "task_toml_sha256": "a1a888312bbb09717add22834a8d088c2b11901dd39c2cacc5744499a086fbaa",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "2a7577662656fea67ce21f001212b5bdcd58531c283c7d5ddb1f3c97c8b3de87",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "sauna_spa_t4",
+      "task_toml_sha256": "8256fa7218c11488114ac1980bd03ee75b65d914e1a346c937426bffdfd84642",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "b5663b8a91244e5445e8e9b266961374e37e57f6bd50169c3e13aea28001479f",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "nuclear_plant_t3",
+      "task_toml_sha256": "a00bdec4b07e2d0bb962f51275b9aae31aa44ccd4b126abc83c56b6a2b9c86b4",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "e7196c1013df735a0d81044e602cc1fd53637d62056de2798f674c017c4777fa",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "nail_salon_t3",
+      "task_toml_sha256": "79cb1be54952ea53d9c9b426ca53047775ea6f5a303ea6d401c5cd902d10e3a0",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "a8ccccff5022a0378599427b7820fb2fbb157be12a654d1f848b26567e4f8bdb",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "glamping_resort_t4",
+      "task_toml_sha256": "5483757097c1cae2c6c9df96bb9dd02302de9721f8352716fcfab23bc59e5e5d",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "4d04cb832d0e2c26cbfaf8212a6b50f6645913789def9bf57db0d45d3227edb2",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "matchmaking_service_t3",
+      "task_toml_sha256": "defb64e2fceebd654fa5c12c69eab394d13a5fc9065c6663577a615b00d3e5fa",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "ebe762b34a4d37cc6c6e5a8f5bf9c6f65e06d4550ed19402f8fb1e6cd1419828",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "board_game_design_t3",
+      "task_toml_sha256": "5ce89c510b969f4169000b059f6e0ffb8c9c429a6d88a5b3c59e6cbc0ad55c44",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "13b300f96eeaec4f12a18a8cf74203636c3e997c8bfde3565d0a0bd2b643ba4c",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "self_storage_t3",
+      "task_toml_sha256": "9832e166548715af849f3a6dedf89e5fcea44d8558df1646996976881077f10c",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "f0c66f343f9e4e6f49c833ac4c0783d96576bada692e755905db942099329de2",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "ren_faire_t3",
+      "task_toml_sha256": "7320a8f1a618bab35473cb957cf9a2919c9a0e8fe6c11ef5b72e7a408ffd2ff0",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "8d0efd15818735f84a5ca1d42208069eb23ae7e42feeb82c9f47591c9491a660",
+      "metadata_pass_rate": 0.767,
+      "stratum": "metadata_0.6_0.8",
+      "task": "kennel_t3",
+      "task_toml_sha256": "ab0af80646cb472adc95a3b835a745150f9ed652c6f292e01a21d3d508e26c1a",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "ea6e8401909eb8978562ea1e99608896b87e3b164333ad498a4a60955dc71f60",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "additive_mfg_t4",
+      "task_toml_sha256": "3c2e002275b88fc9a459b0325a3c0b68b3e6ffa8ea46fc9caae0dc2248e6d2e9",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "47bf827d8812be40aa07689b60c1f65cb03a0e434955aff33eb7a37ba8dbd03f",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "repair_cafe_t4",
+      "task_toml_sha256": "d43db60171e7660e237bb2c6059b67f51f6dfd45ce43532e868765be1fbf7cae",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "1aabee0bf13210489b32247a18eb067b3ef3647735513f48400561496428dccf",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "meteorite_lab_t3",
+      "task_toml_sha256": "f72cf4d3b9a5d015bd1f7f3121bdba0225c98dd4d2f879c98346890683be667a",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "bd91fca72ae456fe4ee3533c5d1ad2390d9664ecdc5836fd16b42b5e39a21a0b",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "cobbler_shop_t3",
+      "task_toml_sha256": "810d23264e03cae327a7e106de514654365b952f0114bab7c39d3e252e2e24b7",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "8408ecf2259e84a76998ccdd0222a4db4a8c4c75632dd48ca1b56257057a9abb",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "trade_show_t4",
+      "task_toml_sha256": "6abc3ad27ad8ff2b5ad8a6c1e3d827ef3800b618a78d5d8b7767a1b2e055d0b3",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "229dcfe694141c1a5ee7868a68b79a8dcdd317d13a87279a85b9a9062c3f9f7b",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "hockey_team_t4",
+      "task_toml_sha256": "c34e94a011febdbf867c1eb0ab0ef893c7c030686d977e79a7b5d5a5a2afd3de",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "be106685fd7fac1d5e6f99a1aa98428f9913f6c5d62a8f7bbcdcbd5fa4173375",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "talent_show_t4",
+      "task_toml_sha256": "08381ceb7d0a1681d44697466ec8c97529d1da514f4d8345c62a10384717370b",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "b316a2d6a6bd577688693621b070ffd5e015f414690beffc25a329cbf8e5a701",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "vintage_boutique_t3",
+      "task_toml_sha256": "54c0135da83c278971132f77e36a3319e8c61dc26d06ce553ac88347ad663356",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "815a6756e93e8a6a62de4bfe27822f39a0ba323be17427d8908d4a53de4fea73",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "seismic_monitor_t3",
+      "task_toml_sha256": "2657985e4305308729af18dbe92cad701cfc8a0861e65b62a21c5eb0691ab806",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "b8ae7131a6854e59b457a0c5915099ca78402071e8983dfdb333b67d84106ef0",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "geothermal_plant_t4",
+      "task_toml_sha256": "f5e6cf7dd775940ba8dec4262312b58c71179ff6f75b10a9d4e4d1751d1a2604",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "857b8b45a931f88e6956a7f35cc27fec8b71b3540d3472ff1dff3b494890d809",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "repair_cafe_t3",
+      "task_toml_sha256": "de7062f1da25a9a8689dfd965d21c2e24649c4e60654cba7b54bba1c0f249d81",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "d9b45f4439583a9a8dc27c1e61056364099c54849df3009c4b8fa4d8ace021cb",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "improv_theater_t4",
+      "task_toml_sha256": "94d46b483b19c6f2400af2337b4c75db08ea041e32e199cc1993f62f415202da",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "f03e4ac430b0a4fa08f6b25852f91bf339db563c383f85cc52ac3ba19dbd7414",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "choir_t3",
+      "task_toml_sha256": "8755a114a95eceeb984c0182ff057e9ba93ae3fd22c8de88b263b809a5e212bf",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "ddef40fad0b60990ae42018ffaa32c0ff46135505ad92682c7ba01d5390b926a",
+      "metadata_pass_rate": 0.794,
+      "stratum": "metadata_0.6_0.8",
+      "task": "mixology_contest_t3",
+      "task_toml_sha256": "7aeffbbe55e7418f36b9813864f0ee4374a50523ccd6b7902fa9c7308541f946",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "86100af1a54e1d8f0b72b8c32b209c9bf881f07c471ceb66b18f111e111e3ef4",
+      "metadata_pass_rate": 0.6,
+      "stratum": "metadata_0.6_0.8",
+      "task": "airport_ops_t4",
+      "task_toml_sha256": "4cc27a492c1a8bcb8f1684821e82651e3f0fd818f6c9d57d3c17ce6e50eea3d9",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "cddf2c60a469467f628fa8ea663064f18f81baeb24cf27bc3f715d0114d716ab",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "pie_bakery_t4",
+      "task_toml_sha256": "2f94925180ed74f9d931b741e8b0e712c754b7b3501272af1dca0480552d8e8f",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "6a70ab64e5ea72fdf3d947b07e6dd1d170158b08e85846850ed221e2a93aff37",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "trading_cards_t3",
+      "task_toml_sha256": "83c697c9ae536075a5fa5f43155e9f7f46649d77c575c4f3be2470c961028465",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "6e120ac9031964bb7ced2ccf7b6300efa396abee4ce44933d8b56310da2343ca",
+      "metadata_pass_rate": 0.79,
+      "stratum": "metadata_0.6_0.8",
+      "task": "bake_sale_t3",
+      "task_toml_sha256": "0316d57a53cad374ec9e76698baffef92e0d17911a1cc592a880a0824e2d8d53",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "cc2a7847d663bab83a66dc96a0461582e7be41c30c548fbc7869a2a670cd42cb",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "fashion_design_studio_t4",
+      "task_toml_sha256": "c3c708603f91abf263351e596f5082ffdb79f138c5b73b84c54b50c89ba91189",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "5c2824b4dc766a40b556b38d5bbab2300de429ddd36511630c59082d8f6d5b57",
+      "metadata_pass_rate": 0.75,
+      "stratum": "metadata_0.6_0.8",
+      "task": "courier_service_t4",
+      "task_toml_sha256": "e9cafd96e60e86dc4b3d920a9f715d6ca01fbf3c2b821accbb354b88e591061f",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "4dd85e49790db6964e6c357741e4dac73c79d3a8dcf552383fcc947cb4183f98",
+      "metadata_pass_rate": 0.7,
+      "stratum": "metadata_0.6_0.8",
+      "task": "quilting_workshop_t3",
+      "task_toml_sha256": "13fd4a9ebbb0a139f1732ace3414e4e8957e33887f967b1e660fb60682588187",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "52c4bc6e4d3404e8c12a2a5191f1d6cfc5caaf156a6d815d851f807fc9e0b7da",
+      "metadata_pass_rate": 0.65,
+      "stratum": "metadata_0.6_0.8",
+      "task": "wine_judging_t4",
+      "task_toml_sha256": "64ef9a0fa0a27def29e6af2ec79dee4bae8f6c6998668c8911feaf13a968dfc2",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "00ed457a7b42a05da61f87a7aa90a9f244bfc275e249b106e9ae4db49d5a1cf1",
+      "metadata_pass_rate": 0.94,
+      "stratum": "metadata_0.8_1.0",
+      "task": "pool_hall_t3",
+      "task_toml_sha256": "d372e9db1965bb7072eb2b6b99e75227747e96e55e2a943f707f18b8e5bc1c1a",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "dd3e40842c8a36afb90fe2be2363060633b6722734364939acae90a8b5d6592b",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "jazz_club_t3",
+      "task_toml_sha256": "09b52544306ab62fa774d285c31e4ce08c32c9835dfeceebe8e3dda0cf8245b9",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "d11b1ce131315fc94aed5ee3909cc3b3dcdcc2032973d364ecf207c1f8e9d26a",
+      "metadata_pass_rate": 0.8,
+      "stratum": "metadata_0.8_1.0",
+      "task": "aquaponics_farm_t3",
+      "task_toml_sha256": "f32e9d7813a218c5577d4e9f92bf01c42e52a784838496aa8c4f43d42b4126c7",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "1454cc7693045b6268ca235e1ea30d7b372e7469156436169b4f3b6beaf871a2",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "flower_farm_t3",
+      "task_toml_sha256": "0423a1150e7c40bff7465b1690ff4d391bc5eb488c518d571d690e61317195fc",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "40895c484c185f6b8200e57fcc735ff2187a055a93c0137456b6a680ca8bb884",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "kombucha_brewery_t3",
+      "task_toml_sha256": "ef1e671a4ebd48e66ca39b88038f0c9b379925329506b8b60b567f5902e98aed",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "0757e3a1c55dec4c1fb3af13305875a116940c31f8a969cf9ce01248fb06dd5e",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "student_club_t3",
+      "task_toml_sha256": "5d46487b4b82619c63841d8fd148650c963c768e54b83b59a69b3903d238bb98",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "8f6871dc44a373999d17c92b33e46798990d9fc58aff5b4d1d0c121984072f99",
+      "metadata_pass_rate": 0.85,
+      "stratum": "metadata_0.8_1.0",
+      "task": "stamp_collection_t3",
+      "task_toml_sha256": "b47983a600d5b1f42e831a510d9f73415af427ad283c41e894d511eca55b448c",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "92b3cf5b4d481dad6b50f0ee0fda2f6a8f7640570ec1ae48aff42a61a6e951b0",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "speedrun_leaderboard_t3",
+      "task_toml_sha256": "cdc12dfdcb170de1dfcd16f88a08088fcb064ea83c6b5e7f808befd555c09767",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "291938e15a1024dd8a3015f69eb21fbfaa83f0aa65aee122cf1f615d4d40c195",
+      "metadata_pass_rate": 0.85,
+      "stratum": "metadata_0.8_1.0",
+      "task": "clock_repair_t3",
+      "task_toml_sha256": "8f0b2b6ae088ee15973829aee02c58b39c7a75d94eb40c0a5719b23b3dd24aac",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "54e5c7da1f2edcaaf2c8b3aee3c95151eccd4172707facd6cb7652fa21a8ffb0",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "hat_shop_t4",
+      "task_toml_sha256": "570809e8795b802a83618a391d6316ea026e18220b285cc49f74d04b7525de04",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "4d148715d895115e5d4a76c445e79992e4643a423103dd24b0eeb92b1c409c62",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "comedy_festival_t3",
+      "task_toml_sha256": "39b149668e3686f64d46a5635c00c9ec85a9c5b309dda2ecf8d30b13d88e1d03",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "abce91dca21878920c8337673749b6f8a877378b59df349a31b8a2550a21e46e",
+      "metadata_pass_rate": 0.8,
+      "stratum": "metadata_0.8_1.0",
+      "task": "park_ranger_t3",
+      "task_toml_sha256": "05c5a7a8a911ee27f96f7655e8c1d361a958ff9c4c5e6ef9bbaa07eb634ff9d4",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "cda40c6340fd69075e791f2f8d0f2322b425f98a8defa88a91697248c546b65d",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "kennel_boarding_t3",
+      "task_toml_sha256": "d8fa7b50b20fffeb8c748c517fa240d61493a0930f483bc4f429865bef398172",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "aa714873f64e4a5f4d4081d38c721682a0bb6ca65d16c0d6938f78ae4226b972",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "bonsai_nursery_t4",
+      "task_toml_sha256": "e6f6c8760824881038df0d2ae93996850019e49d41b0dbb4b1cb335d6fcabd79",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "6ef9b9d5037f3796918e28aabc85d1d512ef116023a9523cf91db942919f1ade",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "aviary_t3",
+      "task_toml_sha256": "14b8aebe648fdaa8ca063de1e49c54882df7daf8235733ccf88bb88d03468b47",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "712f66ac06ecf112bdbe32b426b2f2a28568f21db00b8a6b52ed4b43356e075e",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "axe_throwing_t3",
+      "task_toml_sha256": "07303a989ff9625607b8a19ad68571b890977195725a888b4b43bc7c9b1ca17f",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "948f7d990504959f33691b257db8a6bd2fe7a9b5c22ac4f90d3fbf146e9927b9",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "christmas_tree_t4",
+      "task_toml_sha256": "c5b9ec8818575f583ef1924bdbe5a7850656844cf7361e003aacc7816d5a52ed",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "919f121ee3234927b8466d637ef0566f6c7c7f6a902ffe6b5fad17c7ae43e87c",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "food_truck_park_t3",
+      "task_toml_sha256": "9319ce8795b5e4b16264050eb49b146b487f04ed925458aafee1e2a943517904",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "b14c8ba6cbf91860ee2e0125505ccc755efc2a8a6643a34e6f26aa04995e98d9",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "hat_shop_t3",
+      "task_toml_sha256": "ec43189bc79477f56a808af6204224463b83d5fae6ee2b8d6919e3cc6b4ef1f6",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "f3abe9768f26b8645fcbe087100989359547bc67f11d0539bb838ab6bf34cb75",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "trivia_night_t3",
+      "task_toml_sha256": "98398b4466c6ec05405304aa7aeb8312aa2de6cdc1fdf9b0637614b89d65f600",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "7dc159c8940bb669dcbdba4b7e53e0aabbf498d2cbe31948d6744e1442766610",
+      "metadata_pass_rate": 0.85,
+      "stratum": "metadata_0.8_1.0",
+      "task": "pet_sitting_t3",
+      "task_toml_sha256": "6df21d0def3fe0f39cebc736dba389d58b4c286c828121a3049a4d1cb07b1454",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "6ee57da6c6a00d9d1a54c63e1d80c2c47a55da927fb58a19d56f0c4119890e6d",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "bird_band_station_t3",
+      "task_toml_sha256": "305bd5a8f8e1da74b6125b368e499b69a4c4ddebe3d0d7e65887c5f770cfe104",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "28206855b1952b413e7b09ef612ab55980e0abcb0732a3688992f77710217b85",
+      "metadata_pass_rate": 0.8,
+      "stratum": "metadata_0.8_1.0",
+      "task": "barista_competition_t3",
+      "task_toml_sha256": "0d18d5888f95dde0a69b42cad4e8ded534cd675e0f065672e8e9b404bc76eedd",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "2a1291d9adb501d449fb575589d3481ebfe94af24693c66832979d13257cf81d",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "biobank_t3",
+      "task_toml_sha256": "2f63e5ac59db1d701ca0a8a96e9b855f52ba371affab6808ac3cf8d5aaa19315",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "960ca5db43f8e48bf15ac794134de2eae36902d769fb6628272dd564c14d5798",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "laser_cutting_t3",
+      "task_toml_sha256": "b4bac5629f3945cf914d6f2e938869c94ecc19172ca82e3d9c3b0fb640d9511b",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "14c7e97290eec787f9cbb47a3c72d67c99a6dfdcc7156c4dfc780cee4edc0f88",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "kelp_farming_t3",
+      "task_toml_sha256": "3a2b282e9ce2b14cc5c92dfa020305cd778612d4aa9a81b6b90753fdaaa7db84",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "a7ac7addd2052f5d757732465de377b97a0360d604faa3fff76420ca01b8c84e",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "archaeology_dig_t4",
+      "task_toml_sha256": "bc1914076c7bd9a073bb06ebbb6c18a5d0bcf0974d2b2c058cfe164d3b01283f",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "5de66e8d64210dea25982eebbf36708bca66eefce6732a5089cf38e6f5bcb34a",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "private_island_rental_t3",
+      "task_toml_sha256": "d1f8016ae6b90094b34c0091a3b43c9134963e51bd952c20e35856d25f0c023d",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "3027d24a89ef03534c94fda9a8562f8c6c80af95cc1cb10e23ee8dfe4b14a598",
+      "metadata_pass_rate": 0.8,
+      "stratum": "metadata_0.8_1.0",
+      "task": "keyboard_workshop_t3",
+      "task_toml_sha256": "15d1e8fbaabd7ff92fd7b422dc58d1e9741f0846e0d417326a12408cbe21c420",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "2fc274d26aafdcd5c3d81d4effc6269153cf5505e0ed93edc4b4a8e5fcc97d2b",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "lapidary_workshop_t3",
+      "task_toml_sha256": "6713bd470fc7eb0aa5374f7630617f4a03e20c35ac1966f7130fb75733ea2afb",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "f1025d4f1d47736e310f89a23cb5522951d912adbff45dc5f175d4a12135600f",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "model_rocketry_t4",
+      "task_toml_sha256": "5d7874ba37ad6a543e9c43344b70f6f875be37ff9e53e72a2fff751b6e437f76",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "083beeb6b162215a3facf2fd49d96d965c85479555e8548156de5053891efb4f",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "realty_t3",
+      "task_toml_sha256": "aac6df616fcaddcc69160d3e70a7ad253258007875b8d1fe937b816950d2ef0d",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "4ae8c01f552ba79a9ce9c5eed1b9afdc37a724b1309895206af3fbfb78b00eb7",
+      "metadata_pass_rate": 0.95,
+      "stratum": "metadata_0.8_1.0",
+      "task": "pedigree_registry_t3",
+      "task_toml_sha256": "eb571d069baf0204b261ea2026cdb96ba956aa488bb302786c4235221a089496",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "e792716147fa3f18b2960db8ed41731cc028fef32a9991aaf7d06e439be3492d",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "yarn_shop_t4",
+      "task_toml_sha256": "993f23cf37b0a9ba530bfc67357e6124bf9e830fbe1ec4c31211d4640a3eb0dc",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "da8df980b0bfda765a728a1734a2f86c7b223d861cfbd3330bda1708382d8203",
+      "metadata_pass_rate": 0.85,
+      "stratum": "metadata_0.8_1.0",
+      "task": "art_vault_t4",
+      "task_toml_sha256": "793ce985476ed6acf805250889d36d73774b429e37c41c0ec3807436272ea3cb",
+      "tier": 4
+    },
+    {
+      "gold_sha256": "393ed57dc8d358d9fcce0a1fffc5bc60111358da1ddf2cf90dcdfea2a01225f2",
+      "metadata_pass_rate": 0.85,
+      "stratum": "metadata_0.8_1.0",
+      "task": "silk_weaving_t3",
+      "task_toml_sha256": "b3cc9b6dbc190ff340321ae671c6f628e53d35bf4cd52523b7ec036b0ac07914",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "de329fc5477c555a9feaaf8b41ac2e0434f92ded4f9b01fbf02ffa6840c4041f",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "glamping_resort_t3",
+      "task_toml_sha256": "b35d50bcdd460b2010cde43a103db6527cdf45ddea41549767a586ab188c690e",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "2db8ed474b86de4bae0b43fe9440c1d5863e6bbd61c240121c8121b92827db49",
+      "metadata_pass_rate": 0.9,
+      "stratum": "metadata_0.8_1.0",
+      "task": "bicycle_workshop_t3",
+      "task_toml_sha256": "546446c4f1e941cda4de9649fda2469c6c95e72e6bc747c38867dc8eae9a6672",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "abc1d7ff28dd2a9c03fcd5f5d85b6e3fb4741d82574eb7c676c0fb5878fcd616",
+      "metadata_pass_rate": 0.8,
+      "stratum": "metadata_0.8_1.0",
+      "task": "toymaker_workshop_t3",
+      "task_toml_sha256": "5cd2344666236d2009b5a99397d08da4883d91101affc1664f0390f7c8845c02",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "72675a76a509f83ae203aad4b8f8882e11807821daa23fb363457ef918ec45f6",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "architecture_firm_t3",
+      "task_toml_sha256": "bf26f2f409d53fc3a0602df05cd0eb3f50eb39c2318173a89b3501f84d783c78",
+      "tier": 3
+    },
+    {
+      "gold_sha256": "64bcdab9089500d9bc7b2f71908cdd5bd91f68f14d6f1df377a4f1681376578b",
+      "metadata_pass_rate": 1.0,
+      "stratum": "metadata_0.8_1.0",
+      "task": "charter_flight_t4",
+      "task_toml_sha256": "c9fd14f1e434dd40ec96ac3489316865767b39a83e5a9e09d6092a7ee0afb036",
+      "tier": 4
+    }
+  ],
+  "tasks": [
+    "soap_making_t4",
+    "incense_crafting_t3",
+    "car_show_t3",
+    "timber_t3",
+    "bbq_competition_t3",
+    "textile_mill_t4",
+    "vertical_farm_t3",
+    "wine_blend_t3",
+    "space_debris_t4",
+    "freelance_platform_t3",
+    "sewing_workshop_t3",
+    "chocolate_boutique_t3",
+    "science_fair_t4",
+    "fulfillment_center_t4",
+    "film_archive_t4",
+    "fermentation_lab_t3",
+    "coffee_cupping_t3",
+    "cable_car_t4",
+    "zipline_tour_t3",
+    "thesis_defense_t3",
+    "piano_tuning_t3",
+    "biochar_facility_t3",
+    "fountain_pen_shop_t3",
+    "toy_lending_t3",
+    "fashion_design_studio_t3",
+    "language_school_t3",
+    "neon_workshop_t4",
+    "quilt_making_t3",
+    "sauna_spa_t4",
+    "nuclear_plant_t3",
+    "nail_salon_t3",
+    "glamping_resort_t4",
+    "matchmaking_service_t3",
+    "board_game_design_t3",
+    "self_storage_t3",
+    "ren_faire_t3",
+    "kennel_t3",
+    "additive_mfg_t4",
+    "repair_cafe_t4",
+    "meteorite_lab_t3",
+    "cobbler_shop_t3",
+    "trade_show_t4",
+    "hockey_team_t4",
+    "talent_show_t4",
+    "vintage_boutique_t3",
+    "seismic_monitor_t3",
+    "geothermal_plant_t4",
+    "repair_cafe_t3",
+    "improv_theater_t4",
+    "choir_t3",
+    "mixology_contest_t3",
+    "airport_ops_t4",
+    "pie_bakery_t4",
+    "trading_cards_t3",
+    "bake_sale_t3",
+    "fashion_design_studio_t4",
+    "courier_service_t4",
+    "quilting_workshop_t3",
+    "wine_judging_t4",
+    "pool_hall_t3",
+    "jazz_club_t3",
+    "aquaponics_farm_t3",
+    "flower_farm_t3",
+    "kombucha_brewery_t3",
+    "student_club_t3",
+    "stamp_collection_t3",
+    "speedrun_leaderboard_t3",
+    "clock_repair_t3",
+    "hat_shop_t4",
+    "comedy_festival_t3",
+    "park_ranger_t3",
+    "kennel_boarding_t3",
+    "bonsai_nursery_t4",
+    "aviary_t3",
+    "axe_throwing_t3",
+    "christmas_tree_t4",
+    "food_truck_park_t3",
+    "hat_shop_t3",
+    "trivia_night_t3",
+    "pet_sitting_t3",
+    "bird_band_station_t3",
+    "barista_competition_t3",
+    "biobank_t3",
+    "laser_cutting_t3",
+    "kelp_farming_t3",
+    "archaeology_dig_t4",
+    "private_island_rental_t3",
+    "keyboard_workshop_t3",
+    "lapidary_workshop_t3",
+    "model_rocketry_t4",
+    "realty_t3",
+    "pedigree_registry_t3",
+    "yarn_shop_t4",
+    "art_vault_t4",
+    "silk_weaving_t3",
+    "glamping_resort_t3",
+    "bicycle_workshop_t3",
+    "toymaker_workshop_t3",
+    "architecture_firm_t3",
+    "charter_flight_t4"
+  ],
+  "taskset_id": "general-agent-v1",
+  "taskset_ref": "a2b76f6ac3469f7f50171760c0d0dba38360edc4",
+  "train_overlap": []
+}
