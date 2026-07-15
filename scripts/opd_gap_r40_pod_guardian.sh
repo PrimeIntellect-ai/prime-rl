@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-pod_id=${R40_POD_ID:-3994c58679144dca95b0197c2208e8b8}
+pod_id=${R40_POD_ID:-e87271e0b59843ce88a7181a5ce75c69}
 controller=${R40_CONTROLLER:-opd-gap-r40-smoke-controller.service}
 state_file=${R40_STATE_FILE:-/home/ubuntu/opd-gap-r40-smoke-controller-state.json}
 guardian_state=${R40_GUARDIAN_STATE:-/home/ubuntu/opd-gap-r40-pod-guardian-state.json}
