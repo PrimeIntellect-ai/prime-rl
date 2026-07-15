@@ -1294,8 +1294,22 @@ wheels = [
 
 [[package]]
 name = "deep-ep"
+version = "1.1.0+1fd57b0"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" }
+resolution-markers = [
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
+wheels = [
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl", hash = "sha256:fdfa7e1f79ed152948fb86330d4fcbf560d7d50fd78d3a96caf83d4bd1b61521" },
+]
+
+[[package]]
+name = "deep-ep"
 version = "1.2.1+29d31c0"
 source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
 wheels = [
     { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", hash = "sha256:a52b709d62c4dfc46a018b988724a7c10894125091aef596bf6d68e94c2b564e" },
 ]
@@ -4876,7 +4890,8 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
-    { name = "deep-ep", marker = "platform_machine == 'x86_64'" },
+    { name = "deep-ep", version = "1.1.0+1fd57b0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
+    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
     { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64'" },
@@ -4889,7 +4904,8 @@ all = [
     { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
 ]
 disagg = [
-    { name = "deep-ep", marker = "platform_machine == 'x86_64'" },
+    { name = "deep-ep", version = "1.1.0+1fd57b0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
+    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
     { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "nixl" },
@@ -4934,6 +4950,7 @@ requires-dist = [
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "datasets", specifier = ">=4.0.0" },
+    { name = "deep-ep", marker = "platform_machine == 'aarch64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" },
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
     { name = "deep-gemm", marker = "platform_machine == 'aarch64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" },
     { name = "deep-gemm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'disagg'" },
