@@ -125,7 +125,7 @@ latest_stable_step() {
 }
 
 audit_full_milestones() {
-  local arm=$1 output=${full_outputs[$1]} latest=$2 step
+  local arm=$1 output=$2 latest=$3 step
   for step in 0 10 20 30 40 50 60 70 80 90 99; do
     (( step <= latest )) || continue
     audit_policy_step "$arm-full" "$output" "$step"
