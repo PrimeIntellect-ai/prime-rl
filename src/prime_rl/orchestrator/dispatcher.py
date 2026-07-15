@@ -386,6 +386,7 @@ class RolloutDispatcher:
             kind=kind,
             env_name=env_name,
             task_idx=example["task_idx"],
+            task=example.get("task"),
             rollouts_to_schedule=group_size,
             target_rollouts=group_size,
             eval_step=eval_step,
@@ -436,6 +437,12 @@ class RolloutDispatcher:
         else:
             cache_salt = None
 
+        # A v1 env takes the task itself; the legacy bridge is addressed by dataset row.
+        if group.task is not None:
+            addressing = {"task_data": group.task.data.full_dump()}
+        else:
+            addressing = {"task_idx": group.task_idx}
+
         if env.requires_group_scoring:
             permits = group.rollouts_to_schedule
             group.rollouts_to_schedule = 0
@@ -443,10 +450,10 @@ class RolloutDispatcher:
             task: asyncio.Task = asyncio.create_task(
                 env.run_group(
                     client=client,
-                    task_idx=group.task_idx,
                     model_name=model_name,
                     group_size=permits,
                     cache_salt=cache_salt,
+                    **addressing,
                 )
             )
         else:
@@ -456,9 +463,9 @@ class RolloutDispatcher:
             task = asyncio.create_task(
                 env.run_rollout(
                     client=client,
-                    task_idx=group.task_idx,
                     model_name=model_name,
                     cache_salt=cache_salt,
+                    **addressing,
                 )
             )
 

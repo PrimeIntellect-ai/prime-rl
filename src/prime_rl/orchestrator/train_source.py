@@ -1,14 +1,18 @@
 """TrainSource: weighted round-robin across train envs, infinite pull.
 
 Weights are each env's configured ``ratio`` (default 1, i.e. equal weight
-per env). A finite env serves a shuffled task-index table, reshuffled on
-cursor exhaustion; an infinite env (``num_tasks is None``) streams a
-monotonic ``task_idx`` — the server generates tasks on demand, so every
-pull is a fresh task and there are no epochs to shuffle."""
+per env). A v1 env serves the tasks the orchestrator loaded client-side: a
+finite one as a shuffled table (reshuffled on cursor exhaustion), an
+infinite one (``num_tasks is None``) straight off its generator — every
+pull is a fresh task and there are no epochs to shuffle. A legacy env's
+dataset lives on its server, so it serves shuffled task *indices*."""
 
 from __future__ import annotations
 
 import random
+from collections.abc import Iterator
+
+import verifiers.v1 as vf
 
 from prime_rl.orchestrator.envs import TrainEnvs
 
@@ -17,7 +21,8 @@ class TrainSource:
     """``next_example(available_permits)`` picks a weighted-RR env and
     returns its next example (or ``None`` when the env's per-call permit
     cost doesn't fit — the dispatch loop retries when permits free up).
-    Returned dicts carry ``env_name`` + ``task_idx``."""
+    Returned dicts carry ``env_name`` + ``task_idx`` (+ ``task`` for v1 envs,
+    whose data is shipped to the env server at dispatch)."""
 
     def __init__(self, train_envs: TrainEnvs, *, seed: int | None) -> None:
         self.rng = random.Random(seed)
@@ -25,20 +30,27 @@ class TrainSource:
         if not self.envs:
             raise ValueError("TrainSource needs at least one train env")
 
-        # A finite env's shuffled index table; ``None`` for an infinite env,
-        # whose cursor alone is the (monotonic) task_idx stream.
+        # A finite env's shuffled example table; ``None`` for an infinite env,
+        # whose generator (``self.iters``) is pulled per example.
         self.examples: dict[str, list[dict] | None] = {}
+        self.iters: dict[str, Iterator[vf.Task]] = {}
         self.cursors: dict[str, int] = {}
         # Group-scoring envs reserve ``group_size`` permits up front;
         # per-rollout envs need 1
         self.env_costs: dict[str, int] = {}
         for env in self.envs:
-            # The orchestrator never loads the env: sample over the task-index
-            # range the server reported via info() (num_tasks; None = infinite).
             if env.num_tasks is None:
+                assert env.task_iter is not None
                 self.examples[env.name] = None
-            else:
-                rows: list[dict] = [{"task_idx": i, "env_name": env.name} for i in range(env.num_tasks)]
+                self.iters[env.name] = env.task_iter
+            elif env.tasks is not None:
+                rows: list[dict] = [
+                    {"task_idx": task.data.idx, "task": task, "env_name": env.name} for task in env.tasks
+                ]
+                self.rng.shuffle(rows)
+                self.examples[env.name] = rows
+            else:  # legacy: sample over the index range the server reported via info()
+                rows = [{"task_idx": i, "env_name": env.name} for i in range(env.num_tasks)]
                 self.rng.shuffle(rows)
                 self.examples[env.name] = rows
             self.cursors[env.name] = 0
@@ -53,9 +65,9 @@ class TrainSource:
             return None
         rows = self.examples[env_name]
         cursor = self.cursors[env_name]
-        if rows is None:  # infinite env: the cursor is the task_idx
-            self.cursors[env_name] = cursor + 1
-            return {"task_idx": cursor, "env_name": env_name}
+        if rows is None:  # infinite env: pull the next generated task
+            task = next(self.iters[env_name])
+            return {"task_idx": task.data.idx, "task": task, "env_name": env_name}
         if cursor >= len(rows):
             self.rng.shuffle(rows)
             cursor = 0

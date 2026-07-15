@@ -63,6 +63,9 @@ class GroupState:
     task_idx: int
     rollouts_to_schedule: int
     target_rollouts: int
+    task: vf.Task | None = None
+    """The group's task (v1 envs — its data is shipped on every dispatch). ``None`` for
+    legacy envs, which are addressed by ``task_idx`` alone."""
     emitted: int = 0
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None
