@@ -439,7 +439,7 @@ class RolloutDispatcher:
 
         # A v1 env takes the task itself; the legacy bridge is addressed by dataset row.
         if group.task is not None:
-            addressing = {"task_data": group.task.data.full_dump()}
+            addressing = {"task_data": group.task.data.model_dump(mode="json")}
         else:
             addressing = {"task_idx": group.task_idx}
 
