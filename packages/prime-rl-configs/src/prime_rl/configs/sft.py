@@ -3,7 +3,8 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
-from renderers import RendererConfig
+from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
+from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.shared import (
     EnvVars,
@@ -175,13 +176,8 @@ class SFTConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig | None = None
-    """Typed renderer config (``renderers.RendererConfig`` discriminated
-    union). When set, SFT tokenizes samples through the ``renderers``
-    library (single ``render()`` + ``message_indices`` mask) instead of
-    the default ``build_incremental_token_mask`` path. Required for chat
-    templates that render position-dependently (e.g. Qwen3, Qwen3.5).
-    ``None`` (default) uses the legacy tokenization path."""
+    renderer: RendererConfig = AutoRendererConfig()
+    """Renderer config. Defaults to auto-selecting from the tokenizer model name."""
 
     data: DataConfig = SFTDataConfig()
 
@@ -272,6 +268,28 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_typed_renderer(self):
+        """Require a typed renderer whenever SFT renders real samples."""
+        if self.data.type == "fake" and self.val is None:
+            return self
+
+        model_id = self.tokenizer.name or self.model.name
+        if isinstance(self.renderer, AutoRendererConfig):
+            if model_id in MODEL_RENDERER_MAP:
+                return self
+            reason = f"no typed renderer is registered for {model_id!r}"
+        elif isinstance(self.renderer, DefaultRendererConfig):
+            reason = "renderer.name='default' selects DefaultRenderer"
+        else:
+            return self
+
+        raise ValueError(
+            f"SFT requires a typed renderer with sampled-token and content attribution, but {reason}. "
+            "Implement and register the renderer in the renderers package, or explicitly select an existing "
+            "typed renderer only when its template is verified to match."
+        )
+
+    @model_validator(mode="after")
     def validate_pack_function(self):
         if self.model.cp > 1:
             if self.data.pack_function != "cat":
@@ -319,9 +337,9 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_renderer_vs_vlm(self):
-        if self.renderer is not None and self.model.vlm is not None:
+        if self.model.vlm is not None:
             raise ValueError(
-                "renderer is not supported for VLMs in SFT. The renderer tokenizes "
+                "renderer-only SFT does not support VLMs yet. The renderer tokenizes "
                 "text-only message dicts client-side and cannot handle image inputs."
             )
         return self
