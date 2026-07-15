@@ -71,6 +71,13 @@ def supports_custom_impl(model_config: PretrainedConfig) -> bool:
     return type(model_config) in _CUSTOM_CAUSAL_LM_MAPPING
 
 
+def get_custom_causal_lm_cls(model_config: PretrainedConfig) -> type[PreTrainedModelPrimeRL] | None:
+    """Return the custom PrimeRL causal LM class for this config, or None if unsupported."""
+    if type(model_config) not in _CUSTOM_CAUSAL_LM_MAPPING:
+        return None
+    return _CUSTOM_CAUSAL_LM_MAPPING[type(model_config)]
+
+
 # Mapping from HF composite VLM model_type to custom PrimeRL class.
 # Used by get_model() to dispatch VLMs that have a custom text model implementation.
 # Points to the same unified class — the config drives text-only vs VLM behavior.
@@ -88,6 +95,7 @@ __all__ = [
     "AutoModelForCausalLMPrimeRL",
     "PreTrainedModelPrimeRL",
     "supports_custom_impl",
+    "get_custom_causal_lm_cls",
     "get_custom_vlm_cls",
     "PrimeLmOutput",
     "cast_float_and_contiguous",

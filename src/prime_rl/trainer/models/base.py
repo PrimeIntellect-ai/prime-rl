@@ -1,5 +1,8 @@
 from torch import Tensor
+from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_utils import PreTrainedModel
+
+from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, require_flash_attn_kernels
 
 
 class PreTrainedModelPrimeRL(PreTrainedModel):
@@ -10,6 +13,25 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     (e.g., HuggingFace format vs. training-optimized format) and buffer initialization
     after loading with meta device.
     """
+
+    # Attention implementations this model's modeling code can dispatch. The default covers the
+    # shared `layers.attn` classes; models with their own attention declare a different set or
+    # override `validate_attn_impl` for conditional (e.g. hardware-dependent) constraints.
+    supported_attn_impls: frozenset[str] = frozenset(ATTN_IMPL2CLASS)
+
+    @classmethod
+    def validate_attn_impl(cls, config: PretrainedConfig, attn_impl: str) -> None:
+        """Validate the requested attention implementation at load time.
+
+        Raises a ValueError naming the model and its supported implementations instead of
+        failing with a KeyError mid-init or a kernel error at the first forward pass.
+        """
+        if attn_impl not in cls.supported_attn_impls:
+            raise ValueError(
+                f"{cls.__name__} does not support attn='{attn_impl}'. "
+                f"Supported: {sorted(cls.supported_attn_impls)}. Set [trainer.model] attn accordingly."
+            )
+        require_flash_attn_kernels(attn_impl)
 
     @classmethod
     def from_config(cls, config, **kwargs):

@@ -794,6 +794,8 @@ def _create_rotary_emb(config: Qwen3_5MoeConfig) -> Qwen3_5MoeRotaryEmbedding:
 class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
     config_class = Qwen3_5MoeConfig
     base_model_prefix = "model"
+    # _get_gated_attention aliases eager to the SDPA implementation
+    supported_attn_impls = frozenset({"eager", "sdpa", "flash_attention_2", "flash_attention_3", "fa4"})
     supports_gradient_checkpointing = True
     _no_split_modules = ["Qwen3_5MoeDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
