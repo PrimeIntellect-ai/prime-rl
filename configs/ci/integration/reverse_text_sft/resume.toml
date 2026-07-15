@@ -1,4 +1,4 @@
-max_steps = 15
+max_steps = 20
 
 [ckpt]
 resume_step = 10
