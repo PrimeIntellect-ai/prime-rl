@@ -56,6 +56,17 @@ HELDOUT_TASKS = [
     "cable_car_t4",
 ]
 
+SMOKE_TASKS = [
+    "consignment_boutique_t3",
+    "game_night_t4",
+    "immigration_office_t3",
+    "lighthouse_mgmt_t4",
+    "museum_curation_t3",
+    "paint_n_sip_t3",
+    "semiconductor_fab_t4",
+    "transplant_registry_t3",
+]
+
 FULL_ANSWER_TEMPLATE = """Use the validated reference tool-call chain below as privileged information when scoring the original trajectory. Preserve the original task and trajectory exactly.
 <validated_tool_calls>
 {demonstration}
@@ -249,12 +260,20 @@ def configure_grpo(steps: int, placement: str, train_tasks: list[str]) -> dict[s
 
 def main() -> None:
     task_entries, train_tasks, gepa_train_tasks, gepa_eval_tasks, quarantined_tasks = select_tasks()
+    missing_smoke_tasks = sorted(set(SMOKE_TASKS) - set(train_tasks))
+    if missing_smoke_tasks:
+        raise RuntimeError(f"smoke tasks are not in the full training split: {missing_smoke_tasks}")
     configs: dict[str, Any] = {}
     for arm in ARMS:
         for steps in (2, 100):
             phase = "smoke2" if steps == 2 else "full100"
             for placement in ("ar", "pod"):
-                config = configure(arm, steps, placement, train_tasks)
+                config = configure(
+                    arm,
+                    steps,
+                    placement,
+                    SMOKE_TASKS if steps == 2 else train_tasks,
+                )
                 path = CONFIG_DIR / f"genagent-band000060-qwen35-opsd-{arm}-{placement}-{REVISION}-{phase}.toml"
                 path.write_bytes(tomli_w.dumps(config, multiline_strings=True).encode())
                 configs[f"{arm}-{placement}-{phase}"] = {
@@ -267,7 +286,11 @@ def main() -> None:
     for steps in (2, 100):
         phase = "smoke2" if steps == 2 else "full100"
         for placement in ("ar", "pod"):
-            config = configure_grpo(steps, placement, train_tasks)
+            config = configure_grpo(
+                steps,
+                placement,
+                SMOKE_TASKS if steps == 2 else train_tasks,
+            )
             path = CONFIG_DIR / f"genagent-band000060-qwen35-grpo-{placement}-{REVISION}-{phase}.toml"
             path.write_bytes(tomli_w.dumps(config, multiline_strings=True).encode())
             configs[f"grpo-{placement}-{phase}"] = {
@@ -291,6 +314,7 @@ def main() -> None:
         "task_entries": task_entries,
         "quarantined_tasks": quarantined_tasks,
         "train_tasks": train_tasks,
+        "smoke_tasks": SMOKE_TASKS,
         "gepa_train_tasks": gepa_train_tasks,
         "gepa_eval_tasks": gepa_eval_tasks,
         "heldout_tasks": HELDOUT_TASKS,

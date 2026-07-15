@@ -8,7 +8,7 @@
     "answerplan-ar-smoke2": {
       "output_dir": "outputs-genagent-opsd-1lp-d64-answerplan-band000060-k8-tp4-ar-r41-smoke2-20260715",
       "path": "configs/opd-gap/genagent-band000060-qwen35-opsd-answerplan-ar-r41-smoke2.toml",
-      "sha256": "7d05aa790d25b7a4fed7c587acdf178116a5528904e001b1c1a4c5775e0ea0eb"
+      "sha256": "727ce1e3904461d1de8e5f46cb3fefdb4b4cd1349686d3f0a7f088a48af7e251"
     },
     "answerplan-pod-full100": {
       "output_dir": "outputs-genagent-opsd-1lp-d64-answerplan-band000060-k8-tp4-pod-r41-full100-20260715",
@@ -18,7 +18,7 @@
     "answerplan-pod-smoke2": {
       "output_dir": "outputs-genagent-opsd-1lp-d64-answerplan-band000060-k8-tp4-pod-r41-smoke2-20260715",
       "path": "configs/opd-gap/genagent-band000060-qwen35-opsd-answerplan-pod-r41-smoke2.toml",
-      "sha256": "7e103f6a1d2874d9393e72dbfa9b8875a3006459313a18f835fbe909b1b4ef03"
+      "sha256": "47df3adf91ef9a8c83ba750decd3f5185e2695102ed41ea29bb2ba0cbdff52a2"
     },
     "fullanswer-ar-full100": {
       "output_dir": "outputs-genagent-opsd-1lp-d64-fullanswer-band000060-k8-tp4-ar-r41-full100-20260715",
@@ -28,7 +28,7 @@
     "fullanswer-ar-smoke2": {
       "output_dir": "outputs-genagent-opsd-1lp-d64-fullanswer-band000060-k8-tp4-ar-r41-smoke2-20260715",
       "path": "configs/opd-gap/genagent-band000060-qwen35-opsd-fullanswer-ar-r41-smoke2.toml",
-      "sha256": "8793e5267b0945134b6013c14148f6a2375ecf7414a8ab4859159d2fbd0c0ce5"
+      "sha256": "23dbdcea86c7559dd7749ac6fcde1b2a5a30033aee3009a8db311f8d2442f806"
     },
     "fullanswer-pod-full100": {
       "output_dir": "outputs-genagent-opsd-1lp-d64-fullanswer-band000060-k8-tp4-pod-r41-full100-20260715",
@@ -38,7 +38,7 @@
     "fullanswer-pod-smoke2": {
       "output_dir": "outputs-genagent-opsd-1lp-d64-fullanswer-band000060-k8-tp4-pod-r41-smoke2-20260715",
       "path": "configs/opd-gap/genagent-band000060-qwen35-opsd-fullanswer-pod-r41-smoke2.toml",
-      "sha256": "6be19d40466e8dc23b49421be456798798634608331cd76a8ae814f0a6b251e3"
+      "sha256": "a2ca1eb3ecbb4ce746a99fb498bbe4c56816e3a574ee366ce7ed4d50b4b9dadc"
     },
     "grpo-ar-full100": {
       "output_dir": "outputs-genagent-grpo-band000060-k8-tp4-ar-r41-full100-20260715",
@@ -48,7 +48,7 @@
     "grpo-ar-smoke2": {
       "output_dir": "outputs-genagent-grpo-band000060-k8-tp4-ar-r41-smoke2-20260715",
       "path": "configs/opd-gap/genagent-band000060-qwen35-grpo-ar-r41-smoke2.toml",
-      "sha256": "f7f3672ab03fad0ffcb8aa96a2f24363a45cf3e4329de1810b920b091e450adc"
+      "sha256": "ab6d6ae9027fe01c266c1a4c3e012576b5857dcc2a86a30809f158734b3daaf9"
     },
     "grpo-pod-full100": {
       "output_dir": "outputs-genagent-grpo-band000060-k8-tp4-pod-r41-full100-20260715",
@@ -58,7 +58,7 @@
     "grpo-pod-smoke2": {
       "output_dir": "outputs-genagent-grpo-band000060-k8-tp4-pod-r41-smoke2-20260715",
       "path": "configs/opd-gap/genagent-band000060-qwen35-grpo-pod-r41-smoke2.toml",
-      "sha256": "2b51977ca492b0e798a98b9acf2024fcb34edbc527537661241e394b49df57fc"
+      "sha256": "43e0b54c15f5c15a41f404c8c9925ccedda78ca02536e070459e6aee17d7fa49"
     }
   },
   "diagnostic_top_k": 64,
@@ -554,6 +554,16 @@
   "revision": "r41",
   "selection": "all unique tier-3/4 tasks with local openai/gpt-5-mini metadata pass rate >=0.0 and <0.6; no Qwen-success filtering",
   "selection_seed": 20260715,
+  "smoke_tasks": [
+    "consignment_boutique_t3",
+    "game_night_t4",
+    "immigration_office_t3",
+    "lighthouse_mgmt_t4",
+    "museum_curation_t3",
+    "paint_n_sip_t3",
+    "semiconductor_fab_t4",
+    "transplant_registry_t3"
+  ],
   "task_entries": [
     {
       "gold_sha256": "6fff14d6111b1525c3db2a17ce57a9fdce2290cdd2799b778905f5938a2df03a",

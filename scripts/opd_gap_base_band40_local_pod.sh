@@ -158,8 +158,8 @@ while ! smoke_rc=$("${remote_ssh[@]}" "cat '$remote_home/opd-gap-base-band40-smo
   sleep 30
 done
 [[ "$smoke_rc" == "0" ]]
-"${remote_ssh[@]}" "jq -se 'length == 8 and all(.is_completed == true and (.errors | length) == 0 and .stop_condition != \"error\")' '$remote_smoke/results.jsonl' >/dev/null"
-log "smoke passed: 8/8 complete and error-free"
+"${remote_ssh[@]}" "jq -se 'length == 8 and all(.is_completed == true and (.errors | length) == 0 and .stop_condition == \"agent_completed\")' '$remote_smoke/results.jsonl' >/dev/null"
+log "smoke passed: 8/8 agent-completed and error-free"
 
 write_state evaluating "40 tasks x 32 rollouts"
 log "running full local base-model screen"

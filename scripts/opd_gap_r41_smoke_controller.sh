@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-pod_id=${R41_POD_ID:-602b6b39786a40a39e4663510f45bfca}
+pod_id=${R41_POD_ID:?set R41_POD_ID to the allocated smoke pod}
 prime=${R41_PRIME:-/home/ubuntu/.local/bin/prime}
 key=${R41_SSH_KEY:-/home/ubuntu/.ssh/primeintellect_ed25519}
 source_repo=${R41_SOURCE_REPO:-/home/ubuntu/prime-rl}
@@ -10,7 +10,8 @@ state=${R41_STATE:-/home/ubuntu/opd-gap-r41-smoke-controller-state.json}
 log=${R41_LOG:-/home/ubuntu/opd-gap-r41-smoke-controller.log}
 artifact_root=${R41_ARTIFACT_ROOT:-/home/ubuntu/opd-gap-artifacts/r41-exact-band-smokes}
 task_ref=a2b76f6ac3469f7f50171760c0d0dba38360edc4
-repo=/home/ubuntu/prime-rl
+repo=
+remote_home=
 remote=
 port=22
 
@@ -29,7 +30,7 @@ pod_ssh() {
 }
 
 preserve_artifacts() {
-  [[ -n "$remote" ]] || return 0
+  [[ -n "$remote" && -n "$repo" ]] || return 0
   local ssh_cmd="ssh -i $key -p $port -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
   mkdir -p "$artifact_root"
   for arm in fullanswer answerplan; do
@@ -42,6 +43,7 @@ preserve_artifacts() {
       "$remote:$repo/$output/" "$artifact_root/$arm/" || true
   done
   cp -f /home/ubuntu/opd-gap-r41-*-audit-step*.json "$artifact_root/" 2>/dev/null || true
+  cp -f /home/ubuntu/opd-gap-r41-*-rollout-step*.json "$artifact_root/" 2>/dev/null || true
   cp -f "$log" "$state" "$artifact_root/" 2>/dev/null || true
 }
 
@@ -77,6 +79,9 @@ for _ in $(seq 1 40); do
   sleep 15
 done
 ssh "${ssh_args[@]}" "$remote" true
+remote_home=$(ssh "${ssh_args[@]}" "$remote" 'printf %s "$HOME"')
+repo="$remote_home/prime-rl"
+uv="$remote_home/.local/bin/uv"
 
 write_state setup "installing tools and syncing exact r41 runtime"
 ssh "${ssh_args[@]}" "$remote" \
@@ -94,19 +99,19 @@ if [[ -f "$source_repo/.env" ]]; then
   scp -q -i "$key" -P "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$source_repo/.env" "$remote:$repo/.env"
 fi
 if [[ -f /home/ubuntu/.netrc ]]; then
-  scp -q -i "$key" -P "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /home/ubuntu/.netrc "$remote:/home/ubuntu/.netrc"
-  ssh "${ssh_args[@]}" "$remote" 'chmod 600 /home/ubuntu/.netrc'
+  scp -q -i "$key" -P "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /home/ubuntu/.netrc "$remote:$remote_home/.netrc"
+  ssh "${ssh_args[@]}" "$remote" "chmod 600 '$remote_home/.netrc'"
 fi
 
-ssh "${ssh_args[@]}" "$remote" "mkdir -p '/home/ubuntu/.cache/verifiers/general_agent/$task_ref'"
+ssh "${ssh_args[@]}" "$remote" "mkdir -p '$remote_home/.cache/verifiers/general_agent/$task_ref'"
 rsync -az -e "$ssh_cmd" \
-  "/home/ubuntu/.cache/verifiers/general_agent/$task_ref/" \
-  "$remote:/home/ubuntu/.cache/verifiers/general_agent/$task_ref/"
+  "/home/ubuntu/.cache/verifiers/general_agent_verified/$task_ref/" \
+  "$remote:$remote_home/.cache/verifiers/general_agent/$task_ref/"
 
 ssh "${ssh_args[@]}" "$remote" 'command -v uv >/dev/null || UV_NO_MODIFY_PATH=1 sh -c "$(curl -LsSf https://astral.sh/uv/install.sh)"'
-ssh "${ssh_args[@]}" "$remote" "cd '$repo' && /home/ubuntu/.local/bin/uv sync --all-extras"
+ssh "${ssh_args[@]}" "$remote" "cd '$repo' && '$uv' sync --all-extras"
 ssh "${ssh_args[@]}" "$remote" \
-  "cd '$repo' && /home/ubuntu/.local/bin/uv run --no-sync python -c 'import torch, verifiers; assert torch.cuda.device_count() == 8; print(torch.cuda.device_count())'"
+  "cd '$repo' && '$uv' run --no-sync python -c 'import torch, verifiers; assert torch.cuda.device_count() == 8; print(torch.cuda.device_count())'"
 
 run_arm() {
   local arm=$1
@@ -114,15 +119,21 @@ run_arm() {
   local output="outputs-genagent-opsd-1lp-d64-${arm}-band000060-k8-tp4-pod-r41-smoke2-20260715"
   write_state "${arm}_dryrun" "$config"
   ssh "${ssh_args[@]}" "$remote" \
-    "cd '$repo' && rm -rf '/tmp/r41-${arm}-dry' && /home/ubuntu/.local/bin/uv run --no-sync rl @ '$config' --dry-run --output-dir '/tmp/r41-${arm}-dry'"
+    "cd '$repo' && rm -rf '/tmp/r41-${arm}-dry' && '$uv' run --no-sync rl @ '$config' --dry-run --output-dir '/tmp/r41-${arm}-dry'"
   write_state "${arm}_running" "$output"
   timeout --signal=TERM --kill-after=5m 3h \
     ssh "${ssh_args[@]}" "$remote" \
-      "cd '$repo' && set -a && source .env && set +a && export PATH='/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin' && /home/ubuntu/.local/bin/uv run --no-sync rl @ '$config'"
+      "cd '$repo' && set -a && source .env && set +a && export PATH='$remote_home/.local/bin:/usr/local/bin:/usr/bin:/bin' && '$uv' run --no-sync rl @ '$config'"
   write_state "${arm}_auditing" "$output"
   for step in 0 1; do
+    local rollouts="$output/run_default/rollouts/step_${step}/train_rollouts.jsonl"
     ssh "${ssh_args[@]}" "$remote" \
-      "cd '$repo' && /home/ubuntu/.local/bin/uv run --no-sync scripts/opd_gap_audit_diag_topk.py '$output/token_exports/step_${step}'" \
+      "cd '$repo' && jq -s '{rows:length,error_rows:([.[]|select((.errors|length)>0)]|length),agent_completed:([.[]|select(.stop_condition==\"agent_completed\")]|length),harness_timeouts:([.[]|select(.stop_condition==\"harness_timeout\")]|length)}' '$rollouts'" \
+      | tee "/home/ubuntu/opd-gap-r41-${arm}-rollout-step${step}.json"
+    ssh "${ssh_args[@]}" "$remote" \
+      "cd '$repo' && jq -se 'length == 8 and all((.errors|length) == 0) and any(.stop_condition == \"agent_completed\")' '$rollouts' >/dev/null"
+    ssh "${ssh_args[@]}" "$remote" \
+      "cd '$repo' && '$uv' run --no-sync scripts/opd_gap_audit_diag_topk.py '$output/token_exports/step_${step}'" \
       | tee "/home/ubuntu/opd-gap-r41-${arm}-audit-step${step}.json"
   done
   preserve_artifacts
