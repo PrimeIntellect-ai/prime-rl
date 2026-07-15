@@ -23,6 +23,7 @@ base_model="Qwen/Qwen3.5-35B-A3B"
 expected_rows=${POSTHOC_EXPECTED_ROWS:-20}
 posthoc_steps=${POSTHOC_STEPS:-"10 20 30 40 50 60 70 80 90 100"}
 posthoc_steps=${posthoc_steps//,/ }
+posthoc_steps=${posthoc_steps//:/ }
 
 mkdir -p "$eval_root"
 export VLLM_API_KEY=${VLLM_API_KEY:-EMPTY}
