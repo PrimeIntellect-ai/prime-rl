@@ -123,6 +123,11 @@ All metrics print to the console log (and W&B when configured).
 | orchestrator | `scheduler/async_level`, `scheduler/inflight_rollouts` | scheduler state |
 | env server | event loop lag (min/mean/p90/p99/max), active task distribution | periodic |
 
+During an eval, `Starting evals ... with policy vN pinned until completion` marks the live-policy
+lease. Simultaneous train and eval rollouts are expected after the full eval cohort has been
+dispatched. A delayed watcher may then jump directly to the latest stable checkpoint when the eval
+finishes instead of applying every intermediate checkpoint.
+
 For live vLLM stats, query Prometheus directly:
 
 ```bash

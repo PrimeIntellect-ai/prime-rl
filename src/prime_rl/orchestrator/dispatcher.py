@@ -8,14 +8,13 @@
   (env error, empty trajectory, task exception, off-policy cancel) carry
   ``trace.error`` set; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
-  schedule next. Transitions are level-triggered (driven by the eval
-  source's emptiness), so in-flight rollouts of the opposite kind drain
-  naturally on either side of an eval boundary.
+  schedule next. An eval window drains pre-existing train work, dispatches
+  the complete eval cohort, then refills spare capacity with train while the
+  version-pinned eval tail finishes.
 - ``on_version_pending`` (called by the watcher before the engines pause for
   the weight update) bumps ``off_policy_steps`` on in-flight train rollouts and
   drops groups past ``max_off_policy_steps``.
-  Eval rollouts are measurements for the policy version they started with,
-  so they are allowed to finish even if training advances. Train rollouts
+  Eval epochs hold the live-policy update lock until they finish. Train rollouts
   sampled from a frozen model never age — their sampler doesn't change
   with policy updates.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
@@ -212,6 +211,11 @@ class RolloutDispatcher:
         )
 
     @property
+    def train_has_open_groups(self) -> bool:
+        """Whether a train group still has members that have not been dispatched."""
+        return any(g.kind == "train" and g.rollouts_to_schedule > 0 for g in self.groups.values())
+
+    @property
     def is_idle(self) -> bool:
         """True once nothing is in flight, no eval work remains (queued *or* a partly-scheduled eval
         group), and ``out_q`` is empty — the pipeline has fully drained."""
@@ -270,7 +274,7 @@ class RolloutDispatcher:
         """Bump off-policy counters and drop groups past
         ``max_off_policy_steps`` (drop_group emits ``Cancelled`` markers so
         the sink still finalizes the partial group). Eval rollouts are not
-        aged because they are tied to their start-time policy version.
+        aged because their epoch holds the live-policy update lock.
 
         Runs *before* the inference engines are paused for the weight update so
         the resulting aborts are processed while the engine is still stepping —
@@ -306,8 +310,9 @@ class RolloutDispatcher:
         """Schedule new rollouts up to ``max_inflight``, honoring
         ``self.mode``. Eval scheduling ignores the orchestrator's dispatch
         gate (evals are version-pinned measurements); only train scheduling
-        respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
-        ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
+        respects it. ``PREFER_EVAL`` drains existing train work before sampling
+        eval, then returns spare capacity to train once the full eval cohort is
+        dispatched."""
         while True:
             if self.available_permits <= 0:
                 return
@@ -316,11 +321,20 @@ class RolloutDispatcher:
                 # PREFER_EVAL is only entered when the orchestrator triggers
                 # eval, which requires ``eval_source`` to be configured
                 assert self.eval_source is not None
+                # Finish a train group opened before the mode flip, then let the existing train
+                # tail drain. No fresh train group opens until the eval cohort starts dispatching.
+                if not self.train_scheduling_disabled and self.train_has_open_groups:
+                    scheduled = await self.try_schedule_existing("train")
+                    if not scheduled:
+                        return
+                    continue
+                if self.inflight_train_count:
+                    return
                 if not self.eval_has_work:
                     # Eval source + all eval groups fully dispatched. Flip
                     # to PREFER_TRAIN so any remaining permits go to train
                     # while the in-flight eval tail completes naturally
-                    self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
+                    self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval rollouts were dispatched")
                     continue
                 scheduled = await self.try_schedule("eval")
                 if not scheduled:
@@ -346,17 +360,13 @@ class RolloutDispatcher:
         scheduled."""
         if kind == "train" and self.train_scheduling_disabled:
             return False
+        scheduled = await self.try_schedule_existing(kind)
+        if scheduled:
+            return True
+
         envs = self.train_envs if kind == "train" else self.eval_envs
         if envs is None:
             return False
-
-        for gid, group in list(self.groups.items()):
-            if group.kind != kind or group.rollouts_to_schedule <= 0:
-                continue
-            env = envs.get(group.env_name)
-            cost = group.rollouts_to_schedule if env.requires_group_scoring else 1
-            if cost <= self.available_permits:
-                return await self.schedule_group_rollout(gid, group)
 
         fresh = self.next_fresh_group(kind, envs)
         if fresh is None:
@@ -364,6 +374,20 @@ class RolloutDispatcher:
         gid = uuid.uuid4()
         self.groups[gid] = fresh
         return await self.schedule_group_rollout(gid, fresh)
+
+    async def try_schedule_existing(self, kind: RolloutKind) -> bool:
+        """Schedule one remaining member from an already-opened group."""
+        envs = self.train_envs if kind == "train" else self.eval_envs
+        if envs is None:
+            return False
+        for gid, group in list(self.groups.items()):
+            if group.kind != kind or group.rollouts_to_schedule <= 0:
+                continue
+            env = envs.get(group.env_name)
+            cost = group.rollouts_to_schedule if env.requires_group_scoring else 1
+            if cost <= self.available_permits:
+                return await self.schedule_group_rollout(gid, group)
+        return False
 
     def next_fresh_group(self, kind: RolloutKind, envs) -> GroupState | None:
         """Pop the next example from the corresponding source and wrap it in
