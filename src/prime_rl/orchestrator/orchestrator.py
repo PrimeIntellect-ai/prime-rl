@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import tomli_w
@@ -458,6 +459,12 @@ class Orchestrator:
                 get_logger().info("Writing final checkpoint")
                 self.ckpt_manager.save(self.progress, step=self.progress.step)
             await self.stop()
+            if os.environ.get("PRIME_RL_FINAL_RACE_REPRO") == "failure":
+                repro_dir = Path(os.environ["PRIME_RL_FINAL_RACE_REPRO_DIR"])
+                repro_dir.mkdir(parents=True, exist_ok=True)
+                (repro_dir / "orchestrator_receiver_stopped").touch()
+                (repro_dir / "release_trainer").touch()
+                get_logger().warning("Race repro: released trainer after orchestrator receiver stopped")
             if clean_exit:
                 get_logger().success("Orchestrator finished.")
             else:
@@ -520,6 +527,19 @@ class Orchestrator:
         self.last_batch_at = now
 
         if config.max_steps is not None and step > config.max_steps:
+            if os.environ.get("PRIME_RL_FINAL_RACE_REPRO") == "success" and config.weight_broadcast.type == "nccl":
+                final_required_policy = max(config.max_steps - 2, 0)
+                repro_dir = Path(os.environ["PRIME_RL_FINAL_RACE_REPRO_DIR"])
+                repro_dir.mkdir(parents=True, exist_ok=True)
+                (repro_dir / "orchestrator_waiting_before_drain").touch()
+                get_logger().warning(
+                    f"Race repro: holding drain until policy v{final_required_policy} is live "
+                    f"(currently v{self.policy.version})"
+                )
+                while self.policy.version < final_required_policy:
+                    await asyncio.sleep(0.1)
+                (repro_dir / "final_required_policy_live").touch()
+                get_logger().warning(f"Race repro: policy v{self.policy.version} live; allowing drain")
             self.draining = True
             self.dispatcher.disable_train_scheduling()
             n_cancelled = await self.dispatcher.cancel_inflight_train_rollouts()

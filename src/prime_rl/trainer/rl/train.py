@@ -1,6 +1,8 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 from contextlib import nullcontext
+import os
+from pathlib import Path
 import time
 from datetime import timedelta
 
@@ -582,6 +584,21 @@ def train(config: TrainerConfig):
                 and progress.step >= config.max_steps - 1
             )
             if not nccl_broadcast_unused:
+                if (
+                    os.environ.get("PRIME_RL_FINAL_RACE_REPRO") == "failure"
+                    and config.max_steps is not None
+                    and progress.step == max(config.max_steps - 3, 0)
+                ):
+                    repro_dir = Path(os.environ["PRIME_RL_FINAL_RACE_REPRO_DIR"])
+                    repro_dir.mkdir(parents=True, exist_ok=True)
+                    (repro_dir / "trainer_blocked_before_first_strandable_broadcast").touch()
+                    release = repro_dir / "release_trainer"
+                    logger.warning(
+                        f"Race repro: trainer blocked before policy v{progress.step} broadcast; waiting for {release}"
+                    )
+                    while not release.exists():
+                        time.sleep(0.1)
+                    logger.warning("Race repro: trainer released after orchestrator receiver stopped")
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
