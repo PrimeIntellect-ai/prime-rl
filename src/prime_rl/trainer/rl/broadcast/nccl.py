@@ -168,7 +168,13 @@ class NCCLWeightBroadcastSender:
     def _resolve_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         for key, value in list(state_dict.items()):
             if isinstance(value, DTensor):
-                state_dict[key] = cast(DTensor, value.to(self.dtype)).full_tensor()
+                value = cast(DTensor, value.to(self.dtype))
+                if value.device.type != "cuda":
+                    # CPU-offloaded shards would full_tensor() over Gloo (hours for
+                    # 100B+ params); move the local shard to CUDA so the gather runs
+                    # over NCCL, one tensor at a time.
+                    value = cast(DTensor, value.to("cuda"))
+                state_dict[key] = value.full_tensor()
         return state_dict
 
 
