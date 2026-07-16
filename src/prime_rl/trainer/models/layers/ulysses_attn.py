@@ -19,8 +19,17 @@ Key benefit: the attention kernel itself does not need to be CP-aware. The
 all-to-all is purely on Q/K/V tensors, so this works out of the box with
 softmax flash-attn, linear attention, mamba, etc., without rewriting kernels.
 
+GQA models with fewer KV heads than cp_size (e.g. NemotronH: 32 query heads, 2
+KV heads) are handled by replicating each KV head cp_size / num_key_value_heads
+times before the seq->head all-to-all. Query heads are grouped contiguously in
+GQA, so the replicated layout lands every rank on exactly the KV head its local
+query-head slice attends to; the backward of the replication sums gradients
+over replicas, which is the exact GQA KV gradient.
+
 Constraints:
-- cp_size must divide both num_attention_heads and num_key_value_heads.
+- cp_size must divide num_attention_heads.
+- cp_size must divide num_key_value_heads, OR num_key_value_heads must divide
+  cp_size (the KV-replication path).
 - Sequence length must be divisible by cp_size.
 """
 
@@ -41,6 +50,24 @@ def update_ulysses_params(cu_seqlens: torch.Tensor, max_seqlen: int) -> None:
     ULYSSES_PARAMS["max_seqlen"] = int(max_seqlen)
 
 
+def _replicate_kv_heads(t: torch.Tensor, cp_size: int) -> torch.Tensor:
+    """Replicate KV heads so a GQA tensor with fewer heads than cp_size can be
+    head-sharded: [S_local, H_kv, D] -> [S_local, cp_size, D].
+
+    Each KV head is repeated cp_size / H_kv times. GQA groups query heads
+    contiguously (query head j attends KV head j // (H_q / H_kv)), so after the
+    seq->head all-to-all rank r holds query heads [r * H_q/cp, (r+1) * H_q/cp)
+    — all attending KV head floor(r * H_kv / cp) — and replica index r maps to
+    the same head: floor(r / (cp / H_kv)). The backward sums gradients over
+    replicas, which is exactly the GQA KV gradient.
+    """
+    s_local, h, d = t.shape
+    assert cp_size % h == 0, (
+        f"num_key_value_heads ({h}) must divide cp_size ({cp_size}) for the ulysses KV-replication path"
+    )
+    return t.repeat_interleave(cp_size // h, dim=1)
+
+
 def _all_to_all_seq_to_head(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
     """Redistribute [S_local, H, D] -> [S_global, H_local, D].
 
@@ -48,7 +75,10 @@ def _all_to_all_seq_to_head(t: torch.Tensor, cp_size: int, cp_group: dist.Proces
     ends up with the full sequence but only H/cp_size heads. Differentiable.
     """
     s_local, h, d = t.shape
-    assert h % cp_size == 0, f"num_heads ({h}) must be divisible by cp_size ({cp_size})"
+    assert h % cp_size == 0, (
+        f"num_heads ({h}) must be divisible by cp_size ({cp_size}); "
+        "for GQA KV tensors with fewer heads than cp_size, replicate first via _replicate_kv_heads"
+    )
     h_local = h // cp_size
 
     # [S_local, cp_size, H_local, D] -> [cp_size, S_local, H_local, D]
@@ -96,8 +126,15 @@ def ulysses_flash_attn_varlen_func(
 
     `cu_seqlens_*` and `max_seqlen_*` describe the *full* (un-sharded) sequence,
     because after the seq->head all-to-all each rank holds the full sequence.
+
+    GQA with num_key_value_heads < cp_size: K/V heads are replicated up to
+    cp_size before the all-to-all (see `_replicate_kv_heads`), so each rank runs
+    grouped attention on its query-head slice with the single matching KV head.
     """
     q = _all_to_all_seq_to_head(q, cp_size, cp_group)
+    if k.shape[1] < cp_size:
+        k = _replicate_kv_heads(k, cp_size)
+        v = _replicate_kv_heads(v, cp_size)
     k = _all_to_all_seq_to_head(k, cp_size, cp_group)
     v = _all_to_all_seq_to_head(v, cp_size, cp_group)
 

@@ -798,6 +798,7 @@ class MoE(nn.Module):
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
 
 
+@torch.compile(dynamic=True)
 def relu2(x: torch.Tensor) -> torch.Tensor:
     return F.relu(x).square()
 
