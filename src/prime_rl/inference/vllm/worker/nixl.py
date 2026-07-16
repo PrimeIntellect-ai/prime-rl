@@ -263,7 +263,7 @@ class NIXLWeightUpdateWorker(Worker):
                 consumed_names = {copy.src_name for copy in recorder.copies}
                 unconsumed = sorted(published_names - consumed_names)
                 logger.info(
-                    "NIXL bake coverage: rank={} published={} consumed={} copies={} unconsumed={}",
+                    "NIXL bake coverage: rank=%d published=%d consumed=%d copies=%d unconsumed=%d",
                     self._rank,
                     len(published_names),
                     len(consumed_names),
@@ -272,7 +272,7 @@ class NIXLWeightUpdateWorker(Worker):
                 )
                 if unconsumed:
                     logger.info(
-                        "NIXL rank-local bake did not consume {} published tensors; first entries: {}",
+                        "NIXL rank-local bake did not consume %d published tensors; first entries: %s",
                         len(unconsumed),
                         unconsumed[:20],
                     )
@@ -502,8 +502,8 @@ class NIXLWeightUpdateWorker(Worker):
                             else None
                         )
                         logger.warning(
-                            "NIXL reload validation mismatch: layer={} tensor={} "
-                            "shape={} changed={}/{} nonfinite={} max_abs={}",
+                            "NIXL reload validation mismatch: layer=%s tensor=%s "
+                            "shape=%s changed=%d/%d nonfinite=%d max_abs=%s",
                             self._layer_names.get(id(group.layer), type(group.layer).__name__),
                             name,
                             tuple(actual.shape),
@@ -546,9 +546,9 @@ class NIXLWeightUpdateWorker(Worker):
                 self._previous_kernel_signatures[layer_id] = kernel_signature
 
             logger.info(
-                "NIXL reload diagnostics v{}: rank={} groups={} logical_changed={} "
-                "kernel_changed={} logical_changed_kernel_unchanged={} "
-                "logical_unchanged_kernel_changed={}",
+                "NIXL reload diagnostics v%d: rank=%d groups=%d logical_changed=%d "
+                "kernel_changed=%d logical_changed_kernel_unchanged=%d "
+                "logical_unchanged_kernel_changed=%d",
                 step,
                 self._rank,
                 len(logical_signatures),
@@ -559,11 +559,11 @@ class NIXLWeightUpdateWorker(Worker):
             )
             if logical_changed_kernel_unchanged:
                 logger.warning(
-                    "NIXL logical inputs changed but kernel tensors did not; first layers: {}",
+                    "NIXL logical inputs changed but kernel tensors did not; first layers: %s",
                     logical_changed_kernel_unchanged[:20],
                 )
             if logical_unchanged_kernel_changed:
                 logger.warning(
-                    "NIXL kernel tensors changed without changed logical inputs; first layers: {}",
+                    "NIXL kernel tensors changed without changed logical inputs; first layers: %s",
                     logical_unchanged_kernel_changed[:20],
                 )
