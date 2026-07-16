@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections import defaultdict
 from math import prod
+from os import environ
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -152,6 +153,7 @@ class NIXLWeightUpdateWorker(Worker):
 
         recorder = BakeRecorder()
         model = self.raw_model
+        self._layer_names = {id(module): name or "<root>" for name, module in model.named_modules()}
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
             for module in model.modules():
@@ -335,9 +337,18 @@ class NIXLWeightUpdateWorker(Worker):
         )
 
         model = self.raw_model
+        validate_reload = environ.get("PRIME_RL_NIXL_VALIDATE_RELOAD") == "1"
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
             for group in self._groups:
+                info = LAYERWISE_INFO.get(group.layer)
+                before = None
+                if validate_reload and info is not None and info.kernel_tensors is not None:
+                    parameters, buffers = info.kernel_tensors
+                    before = {
+                        **{name: tensor.detach().clone() for name, tensor in parameters.items()},
+                        **{name: tensor.detach().clone() for name, tensor in buffers.items()},
+                    }
                 handles = [
                     self._agent.read(local, indices, remote, indices) for local, remote, indices in group.pull_specs
                 ]
@@ -375,9 +386,33 @@ class NIXLWeightUpdateWorker(Worker):
                     if hasattr(group.layer, "_already_called_process_weights_after_loading"):
                         delattr(group.layer, "_already_called_process_weights_after_loading")
                     quant_method.process_weights_after_loading(group.layer)
-                info = LAYERWISE_INFO.get(group.layer)
                 if info is not None and info.kernel_tensors is not None:
                     _copy_and_restore_kernel_tensors(group.layer, info)
+                if before is not None:
+                    for name, expected in before.items():
+                        actual = getattr(group.layer, name, None)
+                        if not isinstance(actual, torch.Tensor) or torch.equal(actual, expected):
+                            continue
+                        changed = torch.count_nonzero(actual != expected).item()
+                        nonfinite = (
+                            torch.count_nonzero(~torch.isfinite(actual)).item() if actual.is_floating_point() else 0
+                        )
+                        max_abs = (
+                            (actual.float() - expected.float()).abs().max().item()
+                            if actual.is_floating_point() and actual.numel()
+                            else None
+                        )
+                        logger.warning(
+                            "NIXL reload validation mismatch: layer=%s tensor=%s "
+                            "shape=%s changed=%d/%d nonfinite=%d max_abs=%s",
+                            self._layer_names.get(id(group.layer), type(group.layer).__name__),
+                            name,
+                            tuple(actual.shape),
+                            changed,
+                            actual.numel(),
+                            nonfinite,
+                            max_abs,
+                        )
                 if info is not None:
                     info.reset()
             finalize_layerwise_reload(model, self.model_runner.model_config)
