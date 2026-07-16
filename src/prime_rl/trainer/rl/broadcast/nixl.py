@@ -259,8 +259,8 @@ class NIXLWeightBroadcast(WeightBroadcast):
             if self.world.is_master:
                 changed_ranks = [rank for rank, _, did_change, _ in diagnostics if did_change]
                 self.logger.info(
-                    "NIXL trainer source diagnostics v%d: ranks=%d changed_ranks=%d/%d "
-                    "local_shards=%s signatures=%s",
+                    "NIXL trainer source diagnostics v{}: ranks={} changed_ranks={}/{} "
+                    "local_shards={} signatures={}",
                     step,
                     len(diagnostics),
                     len(changed_ranks),
