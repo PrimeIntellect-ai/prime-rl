@@ -424,6 +424,8 @@ class NIXLWeightBroadcastConfig(BaseConfig):
     inference_world_size: int = Field(1, ge=1)
     session_id: str = ""
     model_name: str = ""
+    validate_reload: bool = False
+    """Enable inference-side validation of NIXL-reloaded vLLM kernel tensors."""
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[

@@ -521,6 +521,7 @@ async def init_weight_broadcast(
     quantize_in_weight_transfer: bool = False,
     session_id: str = "",
     model_name: str = "",
+    validate_reload: bool = False,
 ) -> None:
     """Initialize a live weight-transfer backend on all inference servers.
 
@@ -564,6 +565,7 @@ async def init_weight_broadcast(
                     "quantize_in_weight_transfer": quantize_in_weight_transfer,
                     "session_id": session_id,
                     "model_name": model_name,
+                    "validate_reload": validate_reload,
                 },
             )
             response.raise_for_status()

@@ -308,6 +308,7 @@ class Orchestrator:
                 quantize_in_weight_transfer=getattr(config.weight_broadcast, "quantize_in_weight_transfer", False),
                 session_id=getattr(config.weight_broadcast, "session_id", ""),
                 model_name=getattr(config.weight_broadcast, "model_name", config.model.name),
+                validate_reload=getattr(config.weight_broadcast, "validate_reload", False),
             )
 
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")

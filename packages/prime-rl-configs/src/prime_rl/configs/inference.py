@@ -91,6 +91,8 @@ class WeightBroadcastConfig(BaseConfig):
     inference_world_size: int = Field(1, ge=1)
     session_id: str = ""
     model_name: str = ""
+    validate_reload: bool = False
+    """Audit NIXL-reloaded vLLM kernel tensors against the previous weights, one layer at a time."""
 
 
 class CPUOffloadTier(BaseConfig):

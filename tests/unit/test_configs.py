@@ -399,6 +399,22 @@ def test_shared_seq_len_propagates_to_subconfigs():
     assert config.orchestrator.seq_len == 4096
 
 
+def test_nixl_validate_reload_propagates_to_subconfigs():
+    config = RLConfig.model_validate(
+        {
+            "weight_broadcast": {"type": "nixl", "validate_reload": True},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+            "inference": {},
+        }
+    )
+
+    assert config.trainer.weight_broadcast.validate_reload is True
+    assert config.orchestrator.weight_broadcast.validate_reload is True
+    assert config.inference is not None
+    assert config.inference.weight_broadcast.validate_reload is True
+
+
 def test_shared_and_sub_seq_len_conflict_raises():
     """Setting seq_len at the shared level and on a sub-config is a conflict —
     forces the user to pick one place to express the value rather than

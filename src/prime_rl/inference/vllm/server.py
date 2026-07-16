@@ -150,6 +150,7 @@ async def init_broadcaster(request: Request):
     quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
     session_id = data.get("session_id", "")
     model_name = data.get("model_name", "")
+    validate_reload = data.get("validate_reload", False)
     await engine_client(request).collective_rpc(
         "init_broadcaster",
         args=(
@@ -162,6 +163,7 @@ async def init_broadcaster(request: Request):
             quantize_in_weight_transfer,
             session_id,
             model_name,
+            validate_reload,
         ),
     )
     return {"status": "ok"}

@@ -136,6 +136,9 @@ class SharedWeightBroadcastConfig(BaseConfig):
     session_id: str | None = None
     """Optional ModelExpress namespace. Defaults to a stable digest of ``output_dir``."""
 
+    validate_reload: bool = False
+    """Audit NIXL-reloaded vLLM kernel tensors against the previous weights, one layer at a time."""
+
 
 class BaseDeploymentConfig(BaseConfig):
     gpus_per_node: int = 8
@@ -403,6 +406,7 @@ class RLConfig(BaseConfig):
                 "inference_world_size": inference_world_size,
                 "session_id": session_id,
                 "model_name": self.trainer.model.name,
+                "validate_reload": self.weight_broadcast.validate_reload,
             }
             self.trainer.weight_broadcast = TrainerNIXLWeightBroadcastConfig(**common)
             self.orchestrator.weight_broadcast = OrchestratorNIXLWeightBroadcastConfig(**common)

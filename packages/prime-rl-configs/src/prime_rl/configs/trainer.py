@@ -515,6 +515,9 @@ class NIXLWeightBroadcastConfig(BaseWeightBroadcastConfig):
 
     model_name: str = ""
 
+    validate_reload: bool = False
+    """Enable inference-side validation of NIXL-reloaded vLLM kernel tensors."""
+
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,

@@ -6,7 +6,6 @@ import time
 from collections import defaultdict
 from inspect import getclosurevars
 from math import prod
-from os import environ
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -79,6 +78,7 @@ class NIXLWeightUpdateWorker(Worker):
         quantize_in_weight_transfer: bool = False,
         session_id: str = "",
         model_name: str = "",
+        validate_reload: bool = False,
     ) -> None:
         if self.vllm_config.parallel_config.enable_eplb:
             raise NotImplementedError("NIXL weight broadcast does not support EPLB")
@@ -105,6 +105,7 @@ class NIXLWeightUpdateWorker(Worker):
         self._timeout = timeout
         self._session_id = session_id
         self._model_name = model_name or self.model_runner.model_config.model
+        self._validate_reload = validate_reload
         self._mx = MxChannel(
             f"{host}:{port}",
             session_id,
@@ -345,13 +346,12 @@ class NIXLWeightUpdateWorker(Worker):
         )
 
         model = self.raw_model
-        validate_reload = environ.get("PRIME_RL_NIXL_VALIDATE_RELOAD") == "1"
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
             for group in self._groups:
                 info = LAYERWISE_INFO.get(group.layer)
                 before = None
-                if validate_reload and info is not None and info.kernel_tensors is not None:
+                if self._validate_reload and info is not None and info.kernel_tensors is not None:
                     parameters, buffers = info.kernel_tensors
                     before = {
                         **{name: tensor.detach().clone() for name, tensor in parameters.items()},
