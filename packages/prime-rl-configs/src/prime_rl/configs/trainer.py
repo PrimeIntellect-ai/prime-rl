@@ -116,6 +116,42 @@ class DebugModelConfig(BaseConfig):
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
 
 
+MXFP8Recipe: TypeAlias = Literal["mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp"]
+
+_DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
+    "lm_head",
+    "router",
+    # Use escaped dots — re.search treats `.` as any-char, so the previous
+    # "mlp.gate." pattern was also matching dense MLP `mlp.gate_proj` (the
+    # trailing `.` was matching `_`). That left the dense MLP gate projection
+    # in BF16 on the trainer while inference quantized it to FP8, causing
+    # hidden-state drift before the MoE router.
+    r"mlp\.gate\.",
+    "shared_expert_gate",  # Qwen3.5 MoE: nn.Linear(hidden, 1, bias=False)
+    "eh_proj",
+    "weights_proj",
+    "in_proj_a",
+    "in_proj_b",
+]
+
+
+class FP8Config(BaseConfig):
+    type: Literal["fp8"] = "fp8"
+    enable_grouped_gemm: bool = True
+    ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
+
+
+class MXFP8Config(BaseConfig):
+    type: Literal["mxfp8"] = "mxfp8"
+    recipe: MXFP8Recipe = "mxfp8_rceil"
+    enable_grouped_gemm: bool = True
+    enable_a2a: bool = True
+    ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
+
+
+QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
+
+
 class ModelConfig(BaseModelConfig):
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
@@ -180,8 +216,7 @@ class ModelConfig(BaseModelConfig):
     moe_use_grouped_mm: bool = True
     """Use grouped mm for MoE layers. Requires compute capability ≥ 9.0."""
 
-    fp8: bool = False
-    """FP8 training via DeepGEMM. Replaces ``nn.Linear`` with FP8 blockwise linear and uses FP8 grouped GEMM for MoE experts. Requires SM90 (Hopper) GPUs and ``model.impl='custom'``."""
+    quantization: QuantizationConfig | None = None
 
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
@@ -255,9 +290,9 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
-    def fp8_only_with_custom_impl(self):
-        if self.fp8 and self.impl not in ("custom", "auto"):
-            raise ValueError("FP8 training is only supported with model.impl='custom' or 'auto'.")
+    def quantization_only_with_custom_impl(self):
+        if self.quantization is not None and self.impl not in ("custom", "auto"):
+            raise ValueError(f"{self.quantization.type} training is only supported with model.impl='custom' or 'auto'.")
         return self
 
     @model_validator(mode="after")
@@ -268,6 +303,12 @@ class ModelConfig(BaseModelConfig):
         if isinstance(self.ep, int) and self.ep <= 1:
             raise ValueError(f"model.ep_comm_backend='{self.ep_comm_backend}' requires model.ep > 1.")
 
+        return self
+
+    @model_validator(mode="after")
+    def mxfp8_only_with_torch_ep_backend(self):
+        if isinstance(self.quantization, MXFP8Config) and self.ep_comm_backend != "torch":
+            raise ValueError("MXFP8 quantization requires model.ep_comm_backend='torch'.")
         return self
 
 
