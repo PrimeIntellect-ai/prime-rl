@@ -262,19 +262,42 @@ class NIXLWeightUpdateWorker(Worker):
                 published_names = {tensor.name for tensor in manifest.tensors}
                 consumed_names = {copy.src_name for copy in recorder.copies}
                 unconsumed = sorted(published_names - consumed_names)
+                coverage_mismatches: list[str] = []
+                for group in groups:
+                    for param_name in group.param_names:
+                        parameter = getattr(group.layer, param_name)
+                        coverage = torch.zeros(parameter.numel(), dtype=torch.uint8, device="cpu")
+                        for copy in group.copies:
+                            if copy.param_name != param_name:
+                                continue
+                            coverage.as_strided(copy.shape, copy.stride, copy.offset).add_(1)
+                        missing = torch.count_nonzero(coverage == 0).item()
+                        overlapping = torch.count_nonzero(coverage > 1).item()
+                        if missing or overlapping:
+                            coverage_mismatches.append(
+                                f"{self._layer_names.get(id(group.layer), type(group.layer).__name__)}."
+                                f"{param_name}: missing={missing}/{parameter.numel()} overlapping={overlapping}"
+                            )
                 logger.info(
-                    "NIXL bake coverage: rank=%d published=%d consumed=%d copies=%d unconsumed=%d",
+                    "NIXL bake coverage: rank=%d published=%d consumed=%d copies=%d unconsumed=%d "
+                    "destination_coverage_mismatches=%d",
                     self._rank,
                     len(published_names),
                     len(consumed_names),
                     len(recorder.copies),
                     len(unconsumed),
+                    len(coverage_mismatches),
                 )
                 if unconsumed:
                     logger.info(
                         "NIXL rank-local bake did not consume %d published tensors; first entries: %s",
                         len(unconsumed),
                         unconsumed[:20],
+                    )
+                if coverage_mismatches:
+                    logger.warning(
+                        "NIXL destination views do not cover logical parameters exactly; first entries: %s",
+                        coverage_mismatches[:20],
                     )
 
             self._param_layout: dict[tuple[int, str], tuple[torch.Size, torch.dtype]] = {}
@@ -421,6 +444,10 @@ class NIXLWeightUpdateWorker(Worker):
         model = self.raw_model
         logical_signatures: dict[int, tuple[int, int, float, float, float, float, float]] = {}
         kernel_tensor_sets: dict[int, tuple[_BakedGroup, tuple[str, ...]]] = {}
+        write_checks = 0
+        write_mismatch_count = 0
+        write_mismatches: list[str] = []
+        dtype_casts: dict[tuple[torch.dtype, torch.dtype], int] = defaultdict(int)
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
             for group in self._groups:
@@ -456,6 +483,56 @@ class NIXLWeightUpdateWorker(Worker):
                         copy.offset,
                     )
                     destination.copy_(source)
+
+                # Validate the actual logical destinations after *all* writes
+                # for this layer.  Checking only immediately after copy_ would
+                # miss overlapping destination views, where a later loader
+                # write silently clobbers an earlier one.  This boundary also
+                # distinguishes correct RDMA payloads from a bad destination
+                # offset/stride or an unintended dtype conversion before any
+                # vLLM kernel processing runs.
+                if self._validate_reload:
+                    for index, copy in enumerate(group.copies):
+                        source_dtype = group.arena_dtypes[index]
+                        num_bytes = prod(copy.shape) * source_dtype.itemsize
+                        source = (
+                            self._arena.narrow(0, group.arena_offsets[index], num_bytes)
+                            .view(source_dtype)
+                            .view(copy.shape)
+                        )
+                        destination = getattr(group.layer, copy.param_name).as_strided(
+                            copy.shape,
+                            copy.stride,
+                            copy.offset,
+                        )
+                        if source.dtype != destination.dtype:
+                            dtype_casts[(source.dtype, destination.dtype)] += 1
+                            expected = source.to(destination.dtype)
+                        else:
+                            expected = source
+                        write_checks += 1
+                        if torch.equal(destination, expected):
+                            continue
+                        write_mismatch_count += 1
+                        changed = torch.count_nonzero(destination != expected).item()
+                        nonfinite = (
+                            torch.count_nonzero(~torch.isfinite(destination)).item()
+                            if destination.is_floating_point()
+                            else 0
+                        )
+                        max_abs = (
+                            (destination.float() - expected.float()).abs().max().item()
+                            if destination.is_floating_point() and destination.numel()
+                            else None
+                        )
+                        if len(write_mismatches) < 20:
+                            write_mismatches.append(
+                                f"{self._layer_names.get(id(group.layer), type(group.layer).__name__)}."
+                                f"{copy.param_name} <- {copy.src_name}: shape={copy.shape} "
+                                f"stride={copy.stride} offset={copy.offset} "
+                                f"src_dtype={source.dtype} dst_dtype={destination.dtype} "
+                                f"changed={changed}/{destination.numel()} nonfinite={nonfinite} max_abs={max_abs}"
+                            )
 
                 # vLLM's composed loaders first load a tensor and then apply
                 # a destination-side transform.  The lazy bake observes the
@@ -548,7 +625,7 @@ class NIXLWeightUpdateWorker(Worker):
             logger.info(
                 "NIXL reload diagnostics v%d: rank=%d groups=%d logical_changed=%d "
                 "kernel_changed=%d logical_changed_kernel_unchanged=%d "
-                "logical_unchanged_kernel_changed=%d",
+                "logical_unchanged_kernel_changed=%d write_checks=%d write_mismatches=%d dtype_casts=%s",
                 step,
                 self._rank,
                 len(logical_signatures),
@@ -556,7 +633,12 @@ class NIXLWeightUpdateWorker(Worker):
                 kernel_changed,
                 len(logical_changed_kernel_unchanged),
                 len(logical_unchanged_kernel_changed),
+                write_checks,
+                write_mismatch_count,
+                {f"{source}->{destination}": count for (source, destination), count in dtype_casts.items()},
             )
+            if write_mismatches:
+                logger.warning("NIXL logical destination write mismatches; first copies: %s", write_mismatches)
             if logical_changed_kernel_unchanged:
                 logger.warning(
                     "NIXL logical inputs changed but kernel tensors did not; first layers: %s",
