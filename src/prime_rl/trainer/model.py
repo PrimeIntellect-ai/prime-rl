@@ -19,7 +19,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoi
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
+from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from torch.distributed.tensor.parallel import parallelize_module
 from torchtitan.distributed.expert_parallel import ExpertParallel
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
@@ -666,11 +666,9 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
-    offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 
     fsdp_config = {
         "mp_policy": mp_policy,
-        "offload_policy": offload_policy,
         "reshard_after_forward": config.reshard_after_forward,
     }
 
@@ -711,7 +709,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 block_mlp.router,
                 mesh=hsdp_mesh,
                 mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
-                offload_policy=offload_policy,
                 reshard_after_forward=config.reshard_after_forward,
             )
 
@@ -736,7 +733,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             [model.lm_head, norm_module],
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
-            offload_policy=offload_policy,
             reshard_after_forward=False,
         )
     else:
@@ -746,7 +742,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         model,
         mesh=hsdp_mesh,
         mp_policy=mp_policy,
-        offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
     )
 
@@ -805,8 +800,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
-    device = "cpu" if config.fsdp_cpu_offload else "cuda"
-    model.to_empty(device=device)
+    model.to_empty(device="cuda")
     torch.distributed.barrier()
 
     def _init_buffers_post_meta():
@@ -819,7 +813,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
         _init_buffers_post_meta()
-        _move_buffers_to_cuda(model, config)
         return
 
     if not Path(config.name).exists():
@@ -884,8 +877,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
         model.tie_weights()
     _init_buffers_post_meta()
-
-    _move_buffers_to_cuda(model, config)
 
     lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
     if lora_modules:
@@ -1053,15 +1044,6 @@ def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims)
             )
 
 
-def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
-    """FSDP CPU offloading only manages parameters, not buffers. Move buffers to CUDA."""
-    if not config.fsdp_cpu_offload:
-        return
-    for _, buffer in model.named_buffers():
-        if buffer.device.type == "cpu":
-            buffer.data = buffer.data.to("cuda")
-
-
 def _reset_runtime_moe_buffers(model: nn.Module) -> None:
     for module in model.modules():
         if isinstance(module, (MoE, LatentMoE)) and module.tokens_per_expert.device.type != "meta":
@@ -1180,9 +1162,6 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
-    if not possible_to_load_to_meta:
-        _move_buffers_to_cuda(model, config)
-
     # 2. if we can load to meta, we either:
     if possible_to_load_to_meta:
         # - load from checkpoint later if needed
@@ -1190,8 +1169,7 @@ def setup_model(
             logger.warning(
                 "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
             )
-            device = "cpu" if config.fsdp_cpu_offload else "cuda"
-            model.to_empty(device=device)
+            model.to_empty(device="cuda")
             torch.distributed.barrier()
             if isinstance(model, PreTrainedModelPrimeRL):
                 model.init_buffers_post_meta()
@@ -1200,8 +1178,6 @@ def setup_model(
                 # Restore weight tying broken by to_empty() for HF models
                 if model.config.tie_word_embeddings:
                     model.tie_weights()
-
-            _move_buffers_to_cuda(model, config)
         # - or load from HF with dcp
         else:
             load_dcp_from_hf(model, config, parallel_dims)
