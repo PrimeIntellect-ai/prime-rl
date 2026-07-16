@@ -27,6 +27,7 @@ import time
 from typing import TYPE_CHECKING
 
 import tomli_w
+import verifiers.v1 as vf
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -485,13 +486,19 @@ class Orchestrator:
             # eval rollouts to the step whose eval triggered them.
             step = rollout.eval_step if rollout.kind == "eval" else self.progress.step
             assert step is not None
+            if rollout.kind == "eval":
+                # The trigger step keeps eval records placeable; the run itself is an eval.
+                run: vf.RunInfo = vf.EvalRunInfo(id=self.monitor.run_id)
+                extra_info = {"eval_step": step}
+            else:
+                run = vf.TrainRunInfo(id=self.monitor.run_id, step=step)
+                extra_info = {}
             rollout.stamp(
-                run_id=self.monitor.run_id,
-                run_type=rollout.kind,
-                step=step,
+                run,
                 env_name=rollout.env_name,
                 group_id=str(rollout.group_id),
                 policy_version=rollout.policy_version,
+                **extra_info,
             )
             await asyncio.to_thread(
                 save_rollouts,
