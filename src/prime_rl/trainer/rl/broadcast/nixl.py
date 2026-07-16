@@ -20,11 +20,11 @@ from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
+from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc
 from prime_rl.weight_transfer.mx import MxChannel
 from prime_rl.weight_transfer.nixl import NixlAgent, agent_name, configure_ucx
 from prime_rl.weight_transfer.ownership import ShardCandidate, select_shard_owners, select_source_tensors
 from prime_rl.weight_transfer.publication import publish_hf_tensors
-from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc
 from prime_rl.weight_transfer.wire import (
     AgentDescriptor,
     SyncSignal,
