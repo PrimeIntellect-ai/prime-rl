@@ -82,7 +82,9 @@ def train(config: SFTConfig):
         heart = Heartbeat(config.heartbeat.url)
 
     # Set precision
-    setup_torch_distributed(timeout=timedelta(seconds=config.dist_timeout_seconds))
+    setup_torch_distributed(
+        timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
+    )
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.

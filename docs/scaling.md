@@ -85,6 +85,7 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 |---|---|
 | `trainer.model.dp_replicate` | Number of dimensions to **replicate** instead of shard. Set to 2 to run 2-way DP replication × FSDP sharding within each replica — useful for very large clusters where pure FSDP communication dominates. |
 | `trainer.model.reshard_after_forward` | If `true` (default), parameters are resharded after the forward pass to free memory; the backward pass re-gathers. Set `false` to keep params resident — faster but more memory. |
+| `trainer.model.fsdp_cpu_offload` | Offload params + grads + optimizer state to CPU. Big memory win, large throughput hit. |
 | `trainer.model.optim_cpu_offload` | Offload only optimizer state. Mid-ground — small throughput cost, decent memory savings, especially at low GPU count. |
 
 ### Expert Parallelism
@@ -143,7 +144,7 @@ Offloading optimizer states to CPU is enabled by default (`optim_cpu_offload = t
 optim_cpu_offload = true   # already the default
 ```
 
-Incompatible with `trainer.max_concurrent_runs > 1` (multi-tenant training) — set `optim_cpu_offload = false` for multi-run.
+Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_concurrent_runs > 1` (multi-tenant training) — set `optim_cpu_offload = false` for multi-run. Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
 
 ### LM Head Chunking
 
