@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from inspect import getclosurevars
 from math import prod
 from os import environ
 from typing import TYPE_CHECKING, Any
@@ -154,6 +155,7 @@ class NIXLWeightUpdateWorker(Worker):
         recorder = BakeRecorder()
         model = self.raw_model
         self._layer_names = {id(module): name or "<root>" for name, module in model.named_modules()}
+        self._post_load_transforms: dict[tuple[int, str], Any] = {}
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
             for module in model.modules():
@@ -163,7 +165,13 @@ class NIXLWeightUpdateWorker(Worker):
                     # Nemotron's e_score_correction_bias) still load those via
                     # vLLM's default loader, and the bake must attribute that
                     # copy to its destination like any custom loader copy.
-                    tensor.weight_loader = self._stamp(recorder, module, name, _get_original_loader(tensor))
+                    loader = _get_original_loader(tensor)
+                    if loader.__name__ == "composed_loader":
+                        transform = getclosurevars(loader).nonlocals.get("fn")
+                        if not callable(transform):
+                            raise RuntimeError(f"vLLM composed loader for {name!r} has no callable transform")
+                        self._post_load_transforms[(id(module), name)] = transform
+                    tensor.weight_loader = self._stamp(recorder, module, name, loader)
 
             weights = (
                 (
@@ -380,6 +388,18 @@ class NIXLWeightUpdateWorker(Worker):
                         copy.offset,
                     )
                     destination.copy_(source)
+
+                # vLLM's composed loaders first load a tensor and then apply
+                # a destination-side transform.  The lazy bake observes the
+                # source copy but cannot see operations on the materialized
+                # destination (for example Nemotron's A = -exp(A_log)).
+                # Replay that recorded transform over the already-sharded
+                # destination so TP/EP ranks do not need the full HF tensor.
+                for name in group.param_names:
+                    transform = self._post_load_transforms.get((id(group.layer), name))
+                    if transform is not None:
+                        parameter = getattr(group.layer, name)
+                        parameter.copy_(transform(parameter))
 
                 quant_method = getattr(group.layer, "quant_method", None)
                 if isinstance(quant_method, QuantizeMethodBase):
