@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from itertools import cycle
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -12,7 +13,15 @@ import verifiers.v1 as vf
 from httpx import AsyncClient
 from openai import AsyncOpenAI, NotFoundError
 from renderers import RendererConfig
-from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
+from tenacity import (
+    AsyncRetrying,
+    retry,
+    retry_if_exception,
+    retry_if_exception_type,
+    stop_after_attempt,
+    stop_after_delay,
+    wait_exponential,
+)
 from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.shared import ClientConfig
@@ -46,6 +55,11 @@ class InferencePool(Protocol):
     @property
     def admin_clients(self) -> list[AsyncClient]:
         """Get admin clients."""
+        ...
+
+    @property
+    def admin_world_sizes(self) -> list[int] | None:
+        """Per-admin-client inference world sizes, when discovered."""
         ...
 
     def update_model_name(self, model_name: str) -> None:
@@ -151,6 +165,10 @@ class StaticInferencePool:
     def admin_clients(self) -> list[AsyncClient]:
         return self._admin_clients
 
+    @property
+    def admin_world_sizes(self) -> list[int] | None:
+        return None
+
     def update_model_name(self, model_name: str) -> None:
         self.model_name = model_name
 
@@ -184,6 +202,119 @@ class StaticInferencePool:
         await self._scorer.aclose()
 
 
+@dataclass(frozen=True)
+class DiscoveredDynamoWorker:
+    component: str
+    instance_id: int
+    admin_base_url: str
+    world_size: int
+
+
+class DynamoDiscoveryPending(ValueError):
+    """A well-formed discovery snapshot that is not ready yet."""
+
+
+def _parse_dynamo_workers(payload: object, model_name: str) -> tuple[DiscoveredDynamoWorker, ...]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("workers"), list):
+        raise ValueError("Dynamo RL discovery response must contain a workers list")
+
+    discovered: list[DiscoveredDynamoWorker] = []
+    seen_admin_urls: set[str] = set()
+    seen_worker_ids: set[tuple[str, int]] = set()
+    for raw_worker in payload["workers"]:
+        if not isinstance(raw_worker, dict):
+            raise ValueError("Dynamo RL discovery returned a malformed worker")
+        if raw_worker.get("error"):
+            raise DynamoDiscoveryPending(f"Dynamo RL worker probe is not ready: {raw_worker['error']}")
+        if raw_worker.get("model") != model_name:
+            raise ValueError(
+                f"Dynamo RL worker model {raw_worker.get('model')!r} does not match {model_name!r}"
+            )
+
+        component = raw_worker.get("component")
+        instance_id = raw_worker.get("instance_id")
+        admin_base_url = raw_worker.get("admin_base_url")
+        world_size = raw_worker.get("world_size")
+        if not isinstance(component, str) or not component:
+            raise ValueError("Dynamo RL worker is missing component identity")
+        if not isinstance(instance_id, int) or isinstance(instance_id, bool) or instance_id < 0:
+            raise ValueError("Dynamo RL worker has an invalid instance_id")
+        if not isinstance(admin_base_url, str):
+            raise ValueError("Dynamo RL worker is missing a valid admin_base_url")
+        try:
+            parsed_admin_url = httpx.URL(admin_base_url)
+        except httpx.InvalidURL as error:
+            raise ValueError("Dynamo RL worker has an invalid admin_base_url") from error
+        if (
+            parsed_admin_url.scheme not in {"http", "https"}
+            or parsed_admin_url.host is None
+            or parsed_admin_url.username
+            or parsed_admin_url.password
+            or parsed_admin_url.path not in {"", "/"}
+            or parsed_admin_url.query
+            or parsed_admin_url.fragment
+        ):
+            raise ValueError("Dynamo RL worker has an invalid admin_base_url")
+        admin_base_url = admin_base_url.rstrip("/")
+        worker_id = (component, instance_id)
+        if worker_id in seen_worker_ids:
+            raise ValueError(f"Dynamo RL discovery returned duplicate worker identity {worker_id}")
+        if admin_base_url in seen_admin_urls:
+            raise ValueError(f"Dynamo RL discovery returned duplicate admin endpoint {admin_base_url}")
+        if not isinstance(world_size, int) or isinstance(world_size, bool) or world_size <= 0:
+            raise ValueError("Dynamo RL worker has an invalid world_size")
+
+        seen_admin_urls.add(admin_base_url)
+        seen_worker_ids.add(worker_id)
+        discovered.append(
+            DiscoveredDynamoWorker(
+                component=component,
+                instance_id=instance_id,
+                admin_base_url=admin_base_url,
+                world_size=world_size,
+            )
+        )
+
+    if not discovered:
+        raise DynamoDiscoveryPending("Dynamo RL discovery returned no workers yet")
+    return tuple(sorted(discovered, key=lambda worker: (worker.component, worker.instance_id)))
+
+
+class DynamoInferencePool(StaticInferencePool):
+    """Static request pool whose direct vLLM admin clients come from Dynamo discovery."""
+
+    def __init__(self, client_config: ClientConfig, workers: tuple[DiscoveredDynamoWorker, ...], **kwargs):
+        discovered_config = client_config.model_copy(
+            update={"admin_base_url": [worker.admin_base_url for worker in workers]}
+        )
+        super().__init__(discovered_config, **kwargs)
+        self._admin_world_sizes = [worker.world_size for worker in workers]
+
+    @property
+    def admin_world_sizes(self) -> list[int]:
+        return list(self._admin_world_sizes)
+
+    @classmethod
+    async def from_config(cls, client_config: ClientConfig, model_name: str, **kwargs) -> DynamoInferencePool:
+        if client_config.rl_base_url is None:
+            raise ValueError("Dynamo inference pool requires rl_base_url")
+        discovery_url = client_config.rl_base_url.rstrip("/").removesuffix("/v1")
+        async with AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+            workers = None
+            async for attempt in AsyncRetrying(
+                stop=stop_after_delay(client_config.wait_for_ready_timeout),
+                wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
+                retry=retry_if_exception_type((DynamoDiscoveryPending, httpx.TransportError)),
+                reraise=True,
+            ):
+                with attempt:
+                    response = await client.get(f"{discovery_url}/v1/rl/workers")
+                    response.raise_for_status()
+                    workers = _parse_dynamo_workers(response.json(), model_name)
+        assert workers is not None
+        return cls(client_config, workers, model_name=model_name, **kwargs)
+
+
 async def setup_inference_pool(
     client_config: ClientConfig,
     model_name: str,
@@ -197,6 +328,16 @@ async def setup_inference_pool(
         from prime_rl.utils.elastic import ElasticInferencePool
 
         return await ElasticInferencePool.from_config(
+            client_config,
+            model_name=model_name,
+            train_client_type=train_client_type,
+            eval_client_type=eval_client_type,
+            renderer_config=renderer_config,
+            pool_size=pool_size,
+        )
+
+    if client_config.rl_base_url is not None and client_config.admin_base_url is None:
+        return await DynamoInferencePool.from_config(
             client_config,
             model_name=model_name,
             train_client_type=train_client_type,
@@ -518,6 +659,7 @@ async def init_nccl_broadcast(
     port: int,
     timeout: int,
     inference_world_size: int | None = None,
+    engine_world_sizes: list[int] | None = None,
     quantize_in_weight_transfer: bool = False,
 ) -> None:
     """Initialize NCCL broadcast on all inference servers.
@@ -529,16 +671,27 @@ async def init_nccl_broadcast(
     logger = get_logger()
 
     if inference_world_size is None:
-        inference_world_size = len(admin_clients)
-        logger.warning(
-            f"inference_world_size not provided, defaulting to {inference_world_size} (one GPU per admin client)"
-        )
+        if engine_world_sizes is not None:
+            inference_world_size = sum(engine_world_sizes)
+            logger.info(f"Using discovered inference_world_size={inference_world_size}")
+        else:
+            inference_world_size = len(admin_clients)
+            logger.warning(
+                f"inference_world_size not provided, defaulting to {inference_world_size} "
+                "(one GPU per admin client)"
+            )
 
-    gpus_per_server = inference_world_size // len(admin_clients)
+    if engine_world_sizes is None:
+        if inference_world_size % len(admin_clients) != 0:
+            raise ValueError("inference_world_size must be divisible by the number of admin clients")
+        engine_world_sizes = [inference_world_size // len(admin_clients)] * len(admin_clients)
+    if len(engine_world_sizes) != len(admin_clients):
+        raise ValueError("one engine world size is required for each admin client")
+    rank_offsets = _rank_offsets(engine_world_sizes, inference_world_size)
 
     logger.info(
         f"Initializing NCCL broadcast: {len(admin_clients)} servers, "
-        f"inference_world_size={inference_world_size}, gpus_per_server={gpus_per_server}"
+        f"inference_world_size={inference_world_size}, engine_world_sizes={engine_world_sizes}"
     )
 
     async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
@@ -562,10 +715,23 @@ async def init_nccl_broadcast(
 
     await asyncio.gather(
         *[
-            _init_nccl_broadcast(admin_client, client_num * gpus_per_server)
-            for client_num, admin_client in enumerate(admin_clients)
+            _init_nccl_broadcast(admin_client, rank_offset)
+            for admin_client, rank_offset in zip(admin_clients, rank_offsets, strict=True)
         ]
     )
+
+
+def _rank_offsets(engine_world_sizes: list[int], inference_world_size: int) -> list[int]:
+    if not engine_world_sizes or any(isinstance(size, bool) or size <= 0 for size in engine_world_sizes):
+        raise ValueError("engine world sizes must be positive integers")
+    if sum(engine_world_sizes) != inference_world_size:
+        raise ValueError("discovered engine world sizes do not match inference_world_size")
+    offsets: list[int] = []
+    offset = 0
+    for world_size in engine_world_sizes:
+        offsets.append(offset)
+        offset += world_size
+    return offsets
 
 
 async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:

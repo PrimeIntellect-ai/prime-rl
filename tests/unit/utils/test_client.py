@@ -1,12 +1,169 @@
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from verifiers.v1.clients.config import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter, setup_clients
+from prime_rl.utils.client import (
+    DynamoInferencePool,
+    _is_retryable_lora_error,
+    _parse_dynamo_workers,
+    _rank_offsets,
+    load_lora_adapter,
+    setup_clients,
+)
+
+
+def test_parse_dynamo_workers_uses_stable_identity_order_not_url_order():
+    workers = _parse_dynamo_workers(
+        {
+            "namespace": "training",
+            "workers": [
+                {
+                    "component": "prefill",
+                    "instance_id": 20,
+                    "model": "Qwen/Qwen3-0.6B",
+                    "admin_base_url": "http://prefill:8121",
+                    "world_size": 2,
+                    "routes": [],
+                },
+                {
+                    "component": "backend",
+                    "instance_id": 10,
+                    "model": "Qwen/Qwen3-0.6B",
+                    "admin_base_url": "http://decode:8120",
+                    "world_size": 2,
+                    "routes": [],
+                },
+            ],
+        },
+        model_name="Qwen/Qwen3-0.6B",
+    )
+
+    assert [worker.admin_base_url for worker in workers] == [
+        "http://decode:8120",
+        "http://prefill:8121",
+    ]
+    assert [worker.world_size for worker in workers] == [2, 2]
+
+
+def test_parse_dynamo_workers_fails_closed_on_partial_or_duplicate_snapshot():
+    valid = {
+        "component": "backend",
+        "instance_id": 10,
+        "model": "Qwen/Qwen3-0.6B",
+        "admin_base_url": "http://decode:8120",
+        "world_size": 2,
+        "routes": [],
+    }
+
+    for invalid in (
+        {**valid, "error": "probe timed out"},
+        {**valid, "admin_base_url": None},
+        {**valid, "world_size": 0},
+        {**valid, "model": "other/model"},
+    ):
+        try:
+            _parse_dynamo_workers({"namespace": "training", "workers": [invalid]}, "Qwen/Qwen3-0.6B")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid worker snapshot: {invalid}")
+
+    try:
+        _parse_dynamo_workers(
+            {"namespace": "training", "workers": [valid, {**valid, "instance_id": 11}]},
+            "Qwen/Qwen3-0.6B",
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("accepted duplicate admin endpoint")
+
+    try:
+        _parse_dynamo_workers(
+            {"namespace": "training", "workers": [valid, {**valid, "admin_base_url": "http://other:8120"}]},
+            "Qwen/Qwen3-0.6B",
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("accepted duplicate worker identity")
+
+    try:
+        _parse_dynamo_workers(
+            {
+                "namespace": "training",
+                "workers": [{**valid, "admin_base_url": "http://user:password@decode:8120"}],
+            },
+            "Qwen/Qwen3-0.6B",
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("accepted credentialed admin URL")
+
+
+def test_rank_offsets_support_heterogeneous_engine_world_sizes():
+    assert _rank_offsets([2, 2], inference_world_size=4) == [0, 2]
+    assert _rank_offsets([1, 2], inference_world_size=3) == [0, 1]
+
+    try:
+        _rank_offsets([2, 2], inference_world_size=3)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("accepted a world-size mismatch")
+
+
+def test_dynamo_inference_pool_discovers_admin_clients_from_one_snapshot():
+    response = MagicMock()
+    response.json.return_value = {
+        "namespace": "training",
+        "workers": [
+            {
+                "component": "backend",
+                "instance_id": 10,
+                "model": "Qwen/Qwen3-0.6B",
+                "admin_base_url": "http://decode:8120",
+                "world_size": 2,
+                "routes": [],
+            },
+            {
+                "component": "prefill",
+                "instance_id": 20,
+                "model": "Qwen/Qwen3-0.6B",
+                "admin_base_url": "http://prefill:8121",
+                "world_size": 2,
+                "routes": [],
+            },
+        ],
+    }
+    discovery_client = AsyncMock()
+    empty_response = MagicMock()
+    empty_response.json.return_value = {"namespace": "training", "workers": []}
+    discovery_client.get.side_effect = [empty_response, response]
+    context = AsyncMock()
+    context.__aenter__.return_value = discovery_client
+
+    client_factory = MagicMock(return_value=context)
+    with patch("prime_rl.utils.client.AsyncClient", client_factory):
+        pool = asyncio.run(
+            DynamoInferencePool.from_config(
+                ClientConfig(base_url=["http://frontend:8000/v1"], rl_base_url="http://frontend:8001"),
+                model_name="Qwen/Qwen3-0.6B",
+            )
+        )
+
+    assert discovery_client.get.await_count == 2
+    discovery_client.get.assert_awaited_with("http://frontend:8001/v1/rl/workers")
+    assert [call.kwargs["base_url"] for call in client_factory.call_args_list[1:]] == [
+        "http://decode:8120",
+        "http://prefill:8121",
+    ]
+    assert pool.admin_world_sizes == [2, 2]
 
 
 def test_is_retryable_lora_error_returns_true_for_404():

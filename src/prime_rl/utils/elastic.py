@@ -173,6 +173,10 @@ class ElasticInferencePool:
     def update_model_name(self, model_name: str) -> None:
         self.model_name = model_name
 
+    @property
+    def admin_world_sizes(self) -> list[int] | None:
+        return None
+
     def _build_url(self, ip: str) -> str:
         return f"http://{ip}:{self.port}"
 
