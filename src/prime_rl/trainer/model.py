@@ -362,14 +362,20 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
 
     for layer in language_model.layers:
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
+        router = None
         if isinstance(mlp, (MoE, LatentMoE)):
-            mlp.router.to(torch.float32)
-            if isinstance(mlp.router, TokenChoiceTopKRouter):
-                mlp.router.fp32_gate = True
+            router = mlp.router
+        elif type(getattr(layer, "router", None)).__name__ == "Gemma4TextRouter":
+            router = layer.router
+
+        if router is not None:
+            router.to(torch.float32)
+            if isinstance(router, TokenChoiceTopKRouter):
+                router.fp32_gate = True
             num_routers += 1
 
-    # No-op for non-MoE and HF-impl models: moe_router_dtype='float32' is the default,
-    # so absence of custom-impl MoE routers is the common case, not an error.
+    # No-op for non-MoE models and HF implementations whose routers already
+    # guarantee fp32 internally.
     if num_routers > 0:
         logger.info(f"Running {num_routers} MoE router gates in fp32")
 
@@ -484,14 +490,24 @@ def get_model(
         _patch_qwen3_5_moe_conversion_mapping()
         _patch_qwen3_5_linear_attn_varlen()
 
+    # Custom PrimeRL implementations use the short internal ``fa4`` name.
+    # HF implementations can use Transformers' native FA4 integration directly.
+    hf_attn_implementation = "flash_attention_4" if config.attn == "fa4" and config.impl == "hf" else config.attn
+
     model_config = cast(
         PretrainedConfig,
         AutoConfig.from_pretrained(
-            config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
+            config.name,
+            attn_implementation=hf_attn_implementation,
+            trust_remote_code=config.trust_remote_code,
         ),
     )
     model_config.use_cache = False
     is_vlm_arch = is_vlm_architecture(model_config)
+    if config.attn == "fa4" and config.impl == "hf" and model_config.model_type == "gemma4":
+        from prime_rl.trainer.models.layers.gemma4_hybrid_attention import register_gemma4_hybrid_attention
+
+        register_gemma4_hybrid_attention()
 
     if is_vlm_training:
         logger.info(f"Detected vision-language model: {config.name}")
@@ -699,16 +715,22 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block in transformer_layers:
         block_mlp = getattr(transformer_block, "mlp", None)
+        block_router = None
+        if isinstance(block_mlp, (MoE, LatentMoE)):
+            block_router = block_mlp.router
+        elif type(getattr(transformer_block, "router", None)).__name__ == "Gemma4TextRouter":
+            block_router = transformer_block.router
+
         if parallel_dims.ep_enabled and block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
             fully_shard(block_mlp.experts, mesh=dp_mod_ep_mesh, **fsdp_config)
 
             block_mlp.experts.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
 
-        if config.moe_router_dtype == "float32" and isinstance(block_mlp, (MoE, LatentMoE)):
+        if config.moe_router_dtype == "float32" and block_router is not None:
             # Own FSDP unit with an fp32 policy so the gate weight is not cast to
             # bf16 for forward and its gradients reduce in fp32.
             fully_shard(
-                block_mlp.router,
+                block_router,
                 mesh=hsdp_mesh,
                 mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
                 offload_policy=offload_policy,
@@ -1117,7 +1139,8 @@ def setup_model(
 
     if config.attn == "fa4":
         _validate_flash_attn_4_installed()
-        _register_fa4_attention_interface()
+        if config.impl != "hf":
+            _register_fa4_attention_interface()
 
     logger = get_logger()
 

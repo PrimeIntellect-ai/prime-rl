@@ -41,4 +41,4 @@ echo "    target venv: $VENV_PATH"
 
 echo "=== reinstalling flash-attn-cute (flash-attn overwrites it with a stub) ==="
 uv pip install --python "$VENV_PATH/bin/python" --reinstall --no-deps \
-    "flash-attn-4 @ git+https://github.com/Dao-AILab/flash-attention.git@96bd151#subdirectory=flash_attn/cute"
+    "flash-attn-4 @ git+https://github.com/Dao-AILab/flash-attention.git@ebeff90#subdirectory=flash_attn/cute"
