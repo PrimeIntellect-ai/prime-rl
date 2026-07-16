@@ -126,7 +126,7 @@ def ulysses_flash_attn_varlen_func(
 
 def substitute_ulysses_attn(
     process_group: dist.ProcessGroup,
-    attn_impl: str = "flash_attention_2",
+    attn_impl: str = "flash_attention_3",
 ) -> None:
     """Patch FlashAttention._compute_attention to do Ulysses all-to-all + local FA.
 

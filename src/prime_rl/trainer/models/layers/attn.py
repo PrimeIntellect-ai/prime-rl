@@ -291,7 +291,7 @@ ATTN_IMPL2CLASS = {
 def substitute_ring_attn(
     process_group: torch.distributed.ProcessGroup,
     heads_k_stride: int,
-    attn_impl: str = "flash_attention_2",
+    attn_impl: str = "flash_attention_3",
 ) -> None:
     """Patch _compute_attention on FlashAttention variants to use ring attention."""
     from ring_flash_attn import llama3_flash_attn_varlen_func

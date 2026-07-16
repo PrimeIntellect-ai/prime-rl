@@ -75,7 +75,7 @@ class BenchmarkConfig(BaseConfig):
     attention: Annotated[
         Literal["sdpa", "flash_attention_2", "flash_attention_3", "flash_attention_4"],
         Field(description="Attention implementation"),
-    ] = "flash_attention_2"
+    ] = "flash_attention_3"
 
     output: Annotated[Path, Field(description="Output JSON file path")] = Path("benchmark_result.json")
 
