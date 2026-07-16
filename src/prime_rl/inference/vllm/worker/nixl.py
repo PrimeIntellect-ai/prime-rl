@@ -220,10 +220,17 @@ class NIXLWeightUpdateWorker(Worker):
         model = self.raw_model
         self._layer_names = {id(module): name or "<root>" for name, module in model.named_modules()}
         self._post_load_transforms: dict[tuple[int, str], Any] = {}
+        stamped_tensors: set[int] = set()
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
             for module in model.modules():
                 for name, tensor in get_layer_tensors(module).items():
+                    # Shared/aliased parameters can be registered on more than
+                    # one module. Stamping the same callable repeatedly hides
+                    # loader identity checks in model-specific load_weights.
+                    if id(tensor) in stamped_tensors:
+                        continue
+                    stamped_tensors.add(id(tensor))
                     # Stamp tensors even when layerwise reload deliberately
                     # skipped wrapping them. Some models (for example
                     # Nemotron's e_score_correction_bias) still load those via
@@ -515,9 +522,18 @@ class NIXLWeightUpdateWorker(Worker):
 
     @staticmethod
     def _stamp(recorder: BakeRecorder, layer: nn.Module, name: str, loader: Any):
+        is_default_loader = getattr(loader, "__name__", "") == "default_weight_loader"
+
         def stamped(*args, **kwargs):
             recorder.current = (layer, name)
             try:
+                # Several vLLM model loaders branch on identity with
+                # default_weight_loader before deciding whether to pass
+                # shard/expert routing arguments. The recording wrapper hides
+                # that identity, so preserve its two-argument calling
+                # convention explicitly.
+                if is_default_loader:
+                    return loader(*args[:2])
                 return loader(*args, **kwargs)
             finally:
                 recorder.current = None
