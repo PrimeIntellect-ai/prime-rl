@@ -131,7 +131,9 @@ def test_lazy_copy_records_materialized_destination_without_copying() -> None:
         torch.device("cpu"),
         recorder,
     )
-    destination = torch.full((2, 4), 7, dtype=torch.bfloat16)
+    # vLLM deliberately keeps some parameters (for example Mamba A_log) in
+    # fp32 even when the checkpoint and trainer parameter are bf16.
+    destination = torch.full((2, 4), 7, dtype=torch.float32)
 
     recorder.current = (layer, "weight")
     result = destination.copy_(source)

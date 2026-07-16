@@ -49,6 +49,7 @@ class _BakedGroup:
         self.copies = copies
         self.param_names = sorted({copy.param_name for copy in copies})
         self.arena_offsets: dict[int, int] = {}
+        self.arena_dtypes: dict[int, torch.dtype] = {}
         self.pull_specs: list[tuple[Any, Any, list[int]]] = []
         self.num_bytes = 0
 
@@ -132,7 +133,7 @@ class NIXLWeightUpdateWorker(Worker):
         configure_ucx(self.device.index or 0)
         self._agent = NixlAgent(agent_name("inference", self._rank, f"{self._session_id}-{self._manifest.epoch}"))
         self._groups = self._bake(self._manifest)
-        self._allocate_arena(self._groups)
+        self._allocate_arena(self._manifest, self._groups)
         self._build_pull_plans(self._manifest, self._groups)
         self._initialized = True
         logger.info(
@@ -225,14 +226,16 @@ class NIXLWeightUpdateWorker(Worker):
 
         return stamped
 
-    def _allocate_arena(self, groups: list[_BakedGroup]) -> None:
+    def _allocate_arena(self, manifest: WeightManifest, groups: list[_BakedGroup]) -> None:
+        source_dtypes = {tensor.name: _torch_dtype(tensor.dtype) for tensor in manifest.tensors}
         max_bytes = 0
         for group in groups:
             offset = 0
             for index, copy in enumerate(group.copies):
-                dtype = self._param_layout[(id(group.layer), copy.param_name)][1]
+                dtype = source_dtypes[copy.src_name]
                 offset = (offset + 255) // 256 * 256
                 group.arena_offsets[index] = offset
+                group.arena_dtypes[index] = dtype
                 offset += prod(copy.shape) * dtype.itemsize
             group.num_bytes = offset
             max_bytes = max(max_bytes, offset)
@@ -264,11 +267,6 @@ class NIXLWeightUpdateWorker(Worker):
                 if tensor is None:
                     raise KeyError(f"vLLM requested unpublished HF tensor {copy.src_name!r}")
                 source_dtype = _torch_dtype(tensor.dtype)
-                destination_dtype = self._param_layout[(id(group.layer), copy.param_name)][1]
-                if source_dtype != destination_dtype:
-                    raise ValueError(
-                        f"dtype mismatch for {copy.src_name!r}: source={source_dtype}, destination={destination_dtype}"
-                    )
                 offset, shape, stride = resolve_chain_region(tensor.shape, source_dtype, copy.ops)
                 source = route_published_region(
                     tensor,
@@ -354,9 +352,13 @@ class NIXLWeightUpdateWorker(Worker):
                     shape, dtype = self._param_layout[(id(group.layer), name)]
                     setattr(group.layer, name, nn.Parameter(torch.empty(shape, dtype=dtype, device=self.device), False))
                 for index, copy in enumerate(group.copies):
-                    dtype = self._param_layout[(id(group.layer), copy.param_name)][1]
-                    num_bytes = prod(copy.shape) * dtype.itemsize
-                    source = self._arena.narrow(0, group.arena_offsets[index], num_bytes).view(dtype).view(copy.shape)
+                    source_dtype = group.arena_dtypes[index]
+                    num_bytes = prod(copy.shape) * source_dtype.itemsize
+                    source = (
+                        self._arena.narrow(0, group.arena_offsets[index], num_bytes)
+                        .view(source_dtype)
+                        .view(copy.shape)
+                    )
                     destination = getattr(group.layer, copy.param_name).as_strided(
                         copy.shape,
                         copy.stride,
