@@ -236,24 +236,7 @@ class NIXLWeightUpdateWorker(Worker):
                     # Nemotron's e_score_correction_bias) still load those via
                     # vLLM's default loader, and the bake must attribute that
                     # copy to its destination like any custom loader copy.
-                    # The meta restore metadata can predate model-specific
-                    # loader installation. In particular, a restored Qwen
-                    # expert parameter may expose the default loader even
-                    # though its saved live kernel parameter retains the
-                    # FusedMoE loader. The saved live tensor is what vLLM will
-                    # restore after processing, so use it as the source of
-                    # truth for the loader graph as well.
-                    loader_tensor = tensor
-                    info = LAYERWISE_INFO.get(module)
-                    if info is not None and info.kernel_tensors is not None:
-                        kernel_params, kernel_buffers = info.kernel_tensors
-                        loader_tensor = kernel_params.get(name, kernel_buffers.get(name, tensor))
-                    loader = _get_original_loader(loader_tensor)
-                    # Shared tensors may surface through several module
-                    # aliases. Do not compose recorder wrappers when that
-                    # happens; stamp the actual vLLM loader once for the
-                    # current destination.
-                    loader = getattr(loader, "_prime_rl_original_loader", loader)
+                    loader = _get_original_loader(tensor)
                     if loader.__name__ == "composed_loader":
                         transform = getclosurevars(loader).nonlocals.get("fn")
                         if not callable(transform):
@@ -555,7 +538,6 @@ class NIXLWeightUpdateWorker(Worker):
             finally:
                 recorder.current = None
 
-        stamped._prime_rl_original_loader = loader
         return stamped
 
     def _allocate_arena(self, manifest: WeightManifest, groups: list[_BakedGroup]) -> None:
