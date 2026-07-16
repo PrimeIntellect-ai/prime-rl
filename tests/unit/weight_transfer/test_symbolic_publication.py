@@ -97,7 +97,9 @@ def test_nemotron_symbolic_conversion_and_mismatched_expert_pull() -> None:
         offset, shape, stride = resolve_chain_region(tensor.shape, torch.bfloat16, copy.ops)
         source = route_published_region(tensor, region_elem_runs(offset, shape, stride), itemsize=2)
         destination = destinations[copy.param_name].as_strided(copy.shape, copy.stride, copy.offset)
-        for _, source_address, destination_address, num_bytes in zip_source_destination(source, tensor_runs(destination)):
+        for _, source_address, destination_address, num_bytes in zip_source_destination(
+            source, tensor_runs(destination)
+        ):
             ctypes.memmove(destination_address, source_address, num_bytes)
 
     for global_expert, local_expert in local_experts.items():

@@ -393,7 +393,9 @@ class RLConfig(BaseConfig):
             if self.inference.enable_eplb:
                 raise ValueError("NIXL weight broadcast does not support EPLB because it changes the baked expert map.")
             inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp
-            session_id = self.weight_broadcast.session_id or sha256(str(self.trainer.output_dir).encode()).hexdigest()[:16]
+            session_id = (
+                self.weight_broadcast.session_id or sha256(str(self.trainer.output_dir).encode()).hexdigest()[:16]
+            )
             common = {
                 "host": self.weight_broadcast.host,
                 "port": self.weight_broadcast.port or 8001,

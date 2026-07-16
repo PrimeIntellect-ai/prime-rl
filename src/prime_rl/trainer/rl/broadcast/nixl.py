@@ -152,12 +152,15 @@ class NIXLWeightBroadcast(WeightBroadcast):
         candidate_groups = self._all_gather_objects(tuple(shard.candidate for shard in local))
         all_candidates = tuple(candidate for group in candidate_groups for candidate in group)
         selected = select_shard_owners(all_candidates)
-        selected_keys = {(
-            candidate.rank,
-            candidate.name,
-            candidate.global_offset,
-            candidate.shape,
-        ) for candidate in selected}
+        selected_keys = {
+            (
+                candidate.rank,
+                candidate.name,
+                candidate.global_offset,
+                candidate.shape,
+            )
+            for candidate in selected
+        }
         self.local_shards = [shard for shard in local if shard.key in selected_keys]
 
         agent_payload = None
@@ -183,7 +186,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
 
         agent_groups = self._all_gather_objects(agent_payload)
         if self.world.is_master:
-            active = sorted((payload for payload in agent_groups if payload is not None), key=lambda payload: payload[0])
+            active = sorted(
+                (payload for payload in agent_groups if payload is not None), key=lambda payload: payload[0]
+            )
             agents = tuple(payload[1] for payload in active)
             rank_to_agent = {payload[0]: index for index, payload in enumerate(active)}
             finalized = tuple(candidate for payload in active for candidate in payload[2])
@@ -206,9 +211,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 "manifest",
                 0,
             ).publish(encode_manifest(self.manifest))
-            self.logger.info(
-                f"Published {len(tensors)} HF logical tensors over {len(agents)} trainer NIXL agents"
-            )
+            self.logger.info(f"Published {len(tensors)} HF logical tensors over {len(agents)} trainer NIXL agents")
         self.initialized = True
 
     @torch.no_grad()

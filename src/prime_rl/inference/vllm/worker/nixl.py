@@ -355,9 +355,7 @@ class NIXLWeightUpdateWorker(Worker):
                     source_dtype = group.arena_dtypes[index]
                     num_bytes = prod(copy.shape) * source_dtype.itemsize
                     source = (
-                        self._arena.narrow(0, group.arena_offsets[index], num_bytes)
-                        .view(source_dtype)
-                        .view(copy.shape)
+                        self._arena.narrow(0, group.arena_offsets[index], num_bytes).view(source_dtype).view(copy.shape)
                     )
                     destination = getattr(group.layer, copy.param_name).as_strided(
                         copy.shape,
