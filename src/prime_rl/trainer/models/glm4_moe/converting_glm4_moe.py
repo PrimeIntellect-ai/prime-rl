@@ -24,11 +24,8 @@ with GLM-MoE-DSA, whose attention/MLA weights pass through untouched.
 
 from __future__ import annotations
 
-import torch
-
 from prime_rl.trainer.models.conversion_ops import (
     GATE_DOWN_UP,
-    Cast,
     ConvOp,
     Drop,
     Rename,
@@ -45,9 +42,6 @@ def glm_moe_layer_ops(layer_idx: int) -> list[ConvOp]:
     p = f"model.layers.{layer_idx}.mlp"
     ops: list[ConvOp] = [
         Rename(f"{p}.gate.weight", f"{p}.router.gate.weight"),
-        # Played after Rename on TT -> HF: vLLM keeps this routing bias in
-        # fp32, so NIXL must materialize fp32 bytes before publishing it.
-        Cast(f"{p}.gate.e_score_correction_bias", torch.float32),
         Rename(f"{p}.gate.e_score_correction_bias", f"{p}.expert_bias"),
         routed_experts_op(
             f"model.layers.{layer_idx}",

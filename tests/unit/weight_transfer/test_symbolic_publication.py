@@ -1,20 +1,14 @@
 import ctypes
 from types import SimpleNamespace
 
-import pytest
 import torch
 
-from prime_rl.trainer.models.conversion_ops import Cast, apply_tt_to_hf
+from prime_rl.trainer.models.conversion_ops import apply_tt_to_hf
 from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import conversion_chain
 from prime_rl.weight_transfer.chains import region_elem_runs, resolve_chain_region, tensor_runs
 from prime_rl.weight_transfer.lazy import BakeRecorder, LazyWeight
 from prime_rl.weight_transfer.ownership import ShardCandidate, select_source_tensors
-from prime_rl.weight_transfer.publication import (
-    SourceTensor,
-    publish_hf_tensors,
-    resolve_source_dtypes,
-    route_published_region,
-)
+from prime_rl.weight_transfer.publication import SourceTensor, publish_hf_tensors, route_published_region
 from prime_rl.weight_transfer.sharding import SourceShard, zip_source_destination
 from prime_rl.weight_transfer.wire import AgentDescriptor, WeightManifest, decode_manifest, encode_manifest
 
@@ -180,24 +174,6 @@ def test_lazy_to_defers_dtype_cast_to_destination_copy() -> None:
     assert converted.op_chain == ()
     assert len(recorder.copies) == 1
     assert recorder.copies[0].src_name == "model.weight"
-
-
-def test_conversion_dtype_is_resolved_before_publication() -> None:
-    class Converter:
-        def convert_to_hf(self, state_dict):
-            return apply_tt_to_hf(state_dict, [Cast("model.bias", torch.float32)])
-
-    tensor = torch.zeros(8, dtype=torch.bfloat16)
-    source, keepalive = make_source("model.bias", tensor)
-    assert resolve_source_dtypes(Converter(), (source,)) == {"model.bias": torch.float32}
-
-    with pytest.raises(ValueError, match="requires torch.float32"):
-        publish_hf_tensors(Converter(), (source,))
-
-    fp32_source = SourceTensor(source.name, torch.float32, source.shape, source.shards)
-    published = publish_hf_tensors(Converter(), (fp32_source,))
-    assert published[0].dtype == "torch.float32"
-    assert keepalive
 
 
 def test_replica_ownership_is_deduplicated_and_balanced() -> None:

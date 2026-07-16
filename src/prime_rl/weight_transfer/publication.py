@@ -120,60 +120,18 @@ def publish_hf_tensors(converter: WeightConverter, sources: tuple[SourceTensor, 
         source = by_name.get(value.source_name)
         if source is None:
             raise KeyError(f"converted tensor {name!r} references unknown source {value.source_name!r}")
-        if value.dtype != source.dtype:
-            raise ValueError(
-                f"converted tensor {name!r} requires {value.dtype}, but source {value.source_name!r} "
-                f"is registered as {source.dtype}; materialize the conversion dtype before publication"
-            )
         published.append(
             PublishedTensor(
                 name=name,
-                dtype=str(value.dtype),
+                # The manifest describes the registered RDMA bytes, not a
+                # dtype cast requested symbolically by a consumer/conversion.
+                # That cast is performed by the destination copy after pull.
+                dtype=str(source.dtype),
                 shape=tuple(value.shape),
                 segments=_segments_for_view(source, value),
             )
         )
     return tuple(published)
-
-
-def resolve_source_dtypes(
-    converter: WeightConverter,
-    sources: tuple[SourceTensor, ...],
-) -> dict[str, torch.dtype]:
-    """Resolve the registered wire dtype required for every Prime source.
-
-    ``sources`` should carry the default serving dtype. Explicit conversion
-    casts may override it. A single source cannot currently back outputs with
-    different wire dtypes because one registered byte region cannot represent
-    both encodings.
-    """
-
-    recorder = BakeRecorder()
-    state_dict: dict[str, torch.Tensor] = {
-        source.name: LazyWeight(
-            name=source.name,
-            shape=torch.Size(source.shape),
-            dtype=source.dtype,
-            device=torch.device("meta"),
-            recorder=recorder,
-        )
-        for source in sources
-    }
-    converted = converter.convert_to_hf(state_dict)
-    required: dict[str, torch.dtype] = {}
-    for name, value in converted.items():
-        if not isinstance(value, LazyWeight):
-            raise TypeError(
-                f"Prime->HF conversion for {name!r} materialized {type(value).__name__}; "
-                "NIXL publication only supports symbolic layout operations"
-            )
-        previous = required.setdefault(value.source_name, value.dtype)
-        if previous != value.dtype:
-            raise ValueError(
-                f"Prime source {value.source_name!r} feeds incompatible wire dtypes "
-                f"{previous} and {value.dtype}; split the source staging allocation"
-            )
-    return required
 
 
 def route_published_region(

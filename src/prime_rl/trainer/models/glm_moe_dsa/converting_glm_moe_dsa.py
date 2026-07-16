@@ -18,7 +18,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.models.conversion_ops import Cast, ConvOp
+from prime_rl.trainer.models.conversion_ops import ConvOp
 from prime_rl.trainer.models.fp8 import quantize_to_vllm_kernel_format
 from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import glm_moe_layer_ops
 
@@ -27,13 +27,6 @@ def conversion_chain(config) -> list[ConvOp]:
     ops: list[ConvOp] = []
     for i in range(config.num_hidden_layers):
         ops.extend(glm_moe_layer_ops(i))
-        prefix = f"model.layers.{i}.self_attn.indexer.k_norm"
-        ops.extend(
-            [
-                Cast(f"{prefix}.weight", torch.float32),
-                Cast(f"{prefix}.bias", torch.float32),
-            ]
-        )
     return ops
 
 

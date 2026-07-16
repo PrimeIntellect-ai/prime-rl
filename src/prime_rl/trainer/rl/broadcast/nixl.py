@@ -27,7 +27,7 @@ from prime_rl.weight_transfer.diagnostics import fingerprint_tensor
 from prime_rl.weight_transfer.mx import MxChannel
 from prime_rl.weight_transfer.nixl import NixlAgent, agent_name, configure_ucx
 from prime_rl.weight_transfer.ownership import ShardCandidate, select_shard_owners, select_source_tensors
-from prime_rl.weight_transfer.publication import publish_hf_tensors, resolve_source_dtypes
+from prime_rl.weight_transfer.publication import publish_hf_tensors
 from prime_rl.weight_transfer.wire import (
     AgentDescriptor,
     DiagnosticSnapshot,
@@ -40,11 +40,6 @@ from prime_rl.weight_transfer.wire import (
 )
 
 _DIAGNOSTIC_SAMPLES_PER_SHARD = 64
-_DEFAULT_WIRE_DTYPE = torch.bfloat16
-
-
-def _default_wire_dtype(dtype: torch.dtype) -> torch.dtype:
-    return _DEFAULT_WIRE_DTYPE if dtype.is_floating_point else dtype
 
 
 def _local_source_signature(shards: list["_LocalShard"]) -> tuple[int, int, float, float, float, float]:
@@ -78,7 +73,6 @@ def _local_source_signature(shards: list["_LocalShard"]) -> tuple[int, int, floa
 class _LocalShard:
     candidate: ShardCandidate
     source: torch.Tensor
-    wire_dtype: torch.dtype = _DEFAULT_WIRE_DTYPE
     buffer: torch.Tensor | None = None
 
     @property
@@ -91,10 +85,12 @@ class _LocalShard:
         )
 
     def allocate(self, device: torch.device) -> None:
-        # RDMA moves raw bytes. Materialize the conversion-selected inference
-        # dtype in stable cudaMalloc storage before registering the region.
+        # FSDP/DTensor state-dict tensors may be views into allocator-owned
+        # flattened storage. Register a dedicated, stable cudaMalloc region
+        # with the same dtype instead of exposing that aliased storage to
+        # long-lived RDMA reads.
         with classic_cuda_alloc():
-            self.buffer = torch.empty(self.source.shape, dtype=self.wire_dtype, device=device)
+            self.buffer = torch.empty(self.source.shape, dtype=self.source.dtype, device=device)
 
     def refresh(self) -> None:
         if self.buffer is None:
@@ -197,31 +193,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
         }
         self.local_shards = [shard for shard in local if shard.key in selected_keys]
 
-        # Resolve dtype requirements symbolically with bf16 as the ordinary HF
-        # serving dtype. Conversion ops can request fp32 (or another dtype) for
-        # exceptional inference tensors before any NIXL region is registered.
-        planning_candidates = tuple(
-            ShardCandidate(
-                rank=candidate.rank,
-                name=candidate.name,
-                dtype=_default_wire_dtype(candidate.dtype),
-                full_shape=candidate.full_shape,
-                global_offset=candidate.global_offset,
-                shape=candidate.shape,
-                address=candidate.address,
-                device_id=candidate.device_id,
-            )
-            for candidate in selected
-        )
-        planning_sources = select_source_tensors(
-            planning_candidates,
-            {candidate.rank: candidate.rank for candidate in planning_candidates},
-        )
-        wire_dtypes = resolve_source_dtypes(model, planning_sources)
-        self.local_shards = [shard for shard in self.local_shards if shard.candidate.name in wire_dtypes]
-        for shard in self.local_shards:
-            shard.wire_dtype = wire_dtypes[shard.candidate.name]
-
         agent_payload = None
         if self.local_shards:
             device = torch.device("cuda", torch.cuda.current_device())
@@ -295,7 +266,8 @@ class NIXLWeightBroadcast(WeightBroadcast):
             if self.world.is_master:
                 changed_ranks = [rank for rank, _, did_change, _ in diagnostics if did_change]
                 self.logger.info(
-                    "NIXL trainer source diagnostics v{}: ranks={} changed_ranks={}/{} local_shards={} signatures={}",
+                    "NIXL trainer source diagnostics v{}: ranks={} changed_ranks={}/{} "
+                    "local_shards={} signatures={}",
                     step,
                     len(diagnostics),
                     len(changed_ranks),
@@ -312,7 +284,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     session_id=self.config.session_id,
                     model=self.config.model_name,
                     step=step,
-                    tensors=tuple(fingerprint_tensor(name, tensor) for name, tensor in sorted(reference_state.items())),
+                    tensors=tuple(
+                        fingerprint_tensor(name, tensor) for name, tensor in sorted(reference_state.items())
+                    ),
                 )
                 MxChannel(
                     f"{self.config.host}:{self.config.port}",
@@ -322,7 +296,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     "diagnostics",
                     0,
                 ).publish(encode_diagnostics(reference))
-                self.logger.info("NIXL trainer reference diagnostics v{}: hf_tensors={}", step, len(reference.tensors))
+                self.logger.info(
+                    "NIXL trainer reference diagnostics v{}: hf_tensors={}", step, len(reference.tensors)
+                )
         dist.barrier()
 
         if self.world.is_master:
