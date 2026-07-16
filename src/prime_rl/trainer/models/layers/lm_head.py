@@ -73,6 +73,19 @@ class VanillaOutputLinear(torch.nn.Linear):
         return PrimeLmOutput(logits=super().forward(hidden_states))
 
 
+def _online_logsumexp_and_weighted_update(
+    m: torch.Tensor, s: torch.Tensor, t: torch.Tensor, chunk_logits: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    chunk_m = torch.amax(chunk_logits, dim=-1)
+    m_new = torch.maximum(m, chunk_m)
+    exp_old = torch.exp(m - m_new)
+
+    chunk_exp = torch.exp(chunk_logits - m_new.unsqueeze(-1))
+    s_new = s * exp_old + chunk_exp.sum(dim=-1)
+    t_new = t * exp_old + (chunk_exp * chunk_logits).sum(dim=-1)
+    return m_new, s_new, t_new
+
+
 class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
     @staticmethod
     def forward(  # type: ignore[override]
