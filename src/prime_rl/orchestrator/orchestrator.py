@@ -605,21 +605,6 @@ class Orchestrator:
             "time/wait_for_policy": self.wait_for_policy_time,
             "step": step,
         }
-
-        # Staleness of the shipped batch, in policy versions: batch ``step`` trains on
-        # policy v{step-1}, each rollout was generated from v{r.policy_version}. Decomposed
-        # into pre-queue (versions elapsed while the rollout generated — aged per weight
-        # update by the dispatcher) and in-queue (versions elapsed while it sat finished in
-        # the sink waiting to be batched/shipped).
-        total_staleness = [(step - 1) - r.policy_version for r in effective]
-        pre_queue_staleness = [r.off_policy_steps for r in effective]
-        metrics |= {
-            "staleness/total": sum(total_staleness) / len(total_staleness),
-            "staleness/total_max": float(max(total_staleness)),
-            "staleness/pre_queue": sum(pre_queue_staleness) / len(pre_queue_staleness),
-            "staleness/in_queue": sum(t - p for t, p in zip(total_staleness, pre_queue_staleness))
-            / len(total_staleness),
-        }
         for env_name, env_pool in batch.rollouts.by_env().items():
             metrics[f"batch/{env_name}"] = len(env_pool) / len(batch.rollouts)
         if self.train_sink.pre_filter_seen > 0:
