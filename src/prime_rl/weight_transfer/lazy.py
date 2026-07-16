@@ -137,24 +137,26 @@ class LazyWeight(torch.Tensor):
                         f"copy_ shape mismatch for {src._name!r}: src {tuple(src.shape)} vs dst {tuple(dst.shape)}"
                     )
                 current = src._recorder.current
-                if current is not None:
-                    layer, param_name = current
-                    src._recorder.copies.append(
-                        RecordedCopy(
-                            src_name=src._name,
-                            ops=src._ops,
-                            layer=layer,
-                            param_name=param_name,
-                            offset=dst.storage_offset(),
-                            shape=tuple(dst.shape),
-                            stride=tuple(dst.stride()),
-                        )
+                if current is None:
+                    raise RuntimeError(f"copy_ for lazy weight {src._name!r} has no destination loader stamp")
+                layer, param_name = current
+                src._recorder.copies.append(
+                    RecordedCopy(
+                        src_name=src._name,
+                        ops=src._ops,
+                        layer=layer,
+                        param_name=param_name,
+                        offset=dst.storage_offset(),
+                        shape=tuple(dst.shape),
+                        stride=tuple(dst.stride()),
                     )
-                # Fire a meta copy_ so layerwise's load-numel counter still
-                # advances (otherwise the layer never reaches "fully loaded").
-                meta_src = torch.empty(src.shape, dtype=src.dtype, device="meta")
-                with torch._C.DisableTorchFunctionSubclass():
-                    return dst.copy_(meta_src)
+                )
+                # This is a recording dry run: never move data. In particular,
+                # vLLM's default loader may call ``param.data.copy_`` on a
+                # materialized destination, where a meta source cannot be
+                # copied. Returning the destination preserves copy_'s API while
+                # the stamped loader supplies all accounting we need.
+                return dst
 
         # Allowlisted view/slice/shape ops: append to the chain, return a child.
         op_name = SUPPORTED_OPS.get(func)

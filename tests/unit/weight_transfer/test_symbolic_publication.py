@@ -121,6 +121,34 @@ def test_manifest_round_trip() -> None:
     assert keepalive
 
 
+def test_lazy_copy_records_materialized_destination_without_copying() -> None:
+    recorder = BakeRecorder()
+    layer = object()
+    source = LazyWeight(
+        "model.weight",
+        torch.Size((2, 4)),
+        torch.bfloat16,
+        torch.device("cpu"),
+        recorder,
+    )
+    destination = torch.full((2, 4), 7, dtype=torch.bfloat16)
+
+    recorder.current = (layer, "weight")
+    result = destination.copy_(source)
+    recorder.current = None
+
+    assert result is destination
+    assert torch.equal(destination, torch.full_like(destination, 7))
+    assert len(recorder.copies) == 1
+    copy = recorder.copies[0]
+    assert copy.src_name == "model.weight"
+    assert copy.layer is layer
+    assert copy.param_name == "weight"
+    assert copy.offset == 0
+    assert copy.shape == (2, 4)
+    assert copy.stride == (4, 1)
+
+
 def test_replica_ownership_is_deduplicated_and_balanced() -> None:
     candidates: list[ShardCandidate] = []
     for name in ("model.a", "model.b"):
