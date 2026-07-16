@@ -321,32 +321,6 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     def num_nodes(self) -> int:
         return self.num_prefill_nodes + self.num_decode_nodes
 
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_node_counts(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-
-        data = dict(data)
-
-        def normalize_total_nodes(total_key: str, per_replica_key: str, replicas_key: str) -> None:
-            has_total = total_key in data
-            has_per_replica = per_replica_key in data
-            if has_total and has_per_replica:
-                raise ValueError(f"Set only {per_replica_key}; {total_key} is derived from it.")
-            if not has_total:
-                return
-
-            total_nodes = int(data.pop(total_key))
-            replicas = int(data.get(replicas_key, 1))
-            if total_nodes % replicas != 0:
-                raise ValueError(f"{total_key} ({total_nodes}) must be divisible by {replicas_key} ({replicas}).")
-            data[per_replica_key] = total_nodes // replicas
-
-        normalize_total_nodes("num_prefill_nodes", "prefill_nodes_per_replica", "num_prefill_replicas")
-        normalize_total_nodes("num_decode_nodes", "decode_nodes_per_replica", "num_decode_replicas")
-        return data
-
 
 InferenceDeploymentConfig: TypeAlias = Annotated[
     SingleNodeInferenceDeploymentConfig | MultiNodeInferenceDeploymentConfig | DisaggregatedInferenceDeploymentConfig,
@@ -391,6 +365,9 @@ class InferenceConfig(BaseConfig):
 
     gpu_memory_utilization: float = 0.9
     """GPU memory utilization. Forwarded as ``--gpu-memory-utilization``."""
+
+    quantization: Literal["mxfp8", "fp8_per_block"] | None = None
+    """Online inference quantization method. Forwarded as ``--quantization``."""
 
     api_server_count: int = Field(1, ge=0)
     """API servers to run. Forwarded as ``--api-server-count``. Set to 0 for headless mode."""
@@ -456,6 +433,24 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_mxfp8_requires_sm100(self):
+        """Reject MXFP8 when validation runs on a non-SM100 CUDA host."""
+        if self.quantization != "mxfp8":
+            return self
+
+        try:
+            import torch
+        except ModuleNotFoundError as exc:
+            raise ValueError("inference.quantization='mxfp8' requires torch to validate SM100 support.") from exc
+
+        if torch.cuda.is_available():
+            capability = torch.cuda.get_device_capability()
+            if capability != (10, 0):
+                detected = f"SM{capability[0]}{capability[1]}"
+                raise ValueError(f"inference.quantization='mxfp8' requires SM100, detected {detected}.")
         return self
 
     @model_validator(mode="after")
@@ -602,6 +597,7 @@ class InferenceConfig(BaseConfig):
             "max_lora_rank": "max_lora_rank",
             "lora_target_modules": "lora_target_modules",
             "gpu_memory_utilization": "gpu_memory_utilization",
+            "quantization": "quantization",
             "api_server_count": "api_server_count",
             "enable_return_routed_experts": "enable_return_routed_experts",
             "enable_expert_parallel": "enable_expert_parallel",
@@ -650,6 +646,10 @@ class InferenceConfig(BaseConfig):
         # Remove lora_target_modules if not set (vLLM doesn't accept None)
         if hasattr(namespace, "lora_target_modules") and namespace.lora_target_modules is None:
             delattr(namespace, "lora_target_modules")
+
+        # Remove quantization if not set so vLLM can infer it from the checkpoint.
+        if namespace.quantization is None:
+            delattr(namespace, "quantization")
 
         # Remove rope_scaling if not set (vLLM doesn't accept None)
         if hasattr(namespace, "rope_scaling"):

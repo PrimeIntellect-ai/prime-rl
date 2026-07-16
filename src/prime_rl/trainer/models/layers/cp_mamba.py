@@ -18,6 +18,45 @@ import torch
 import torch.distributed as dist
 
 
+def _build_seq_idx(boundaries: list[int], seq_len: int, device: torch.device) -> torch.Tensor:
+    """Return the packed-document id for each token in a full CP sequence."""
+    if boundaries[0] != 0 or boundaries[-1] != seq_len:
+        raise ValueError(f"cu_seqlens must span the full sequence length {seq_len}, got {boundaries}")
+
+    seq_idx = torch.empty(seq_len, dtype=torch.int32, device=device)
+    for sequence_id, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:])):
+        if end <= start:
+            raise ValueError(f"cu_seqlens must be strictly increasing, got {boundaries}")
+        seq_idx[start:end] = sequence_id
+    return seq_idx.unsqueeze(0)
+
+
+def _causal_conv1d_varlen(
+    hidden_states: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None,
+    boundaries: list[int],
+) -> torch.Tensor:
+    """Apply a depthwise causal convolution independently to packed documents."""
+    batch_size, _, channels = hidden_states.shape
+    if batch_size != 1:
+        raise ValueError(f"packed CP Mamba expects batch_size=1, got {batch_size}")
+
+    inputs = hidden_states.transpose(1, 2)
+    outputs = []
+    for start, end in zip(boundaries[:-1], boundaries[1:]):
+        convolved = torch.nn.functional.conv1d(
+            inputs[:, :, start:end],
+            weight,
+            bias,
+            groups=channels,
+            padding=weight.shape[2] - 1,
+        )
+        outputs.append(convolved[:, :, : end - start])
+
+    return torch.cat(outputs, dim=-1).transpose(1, 2)
+
+
 class _SeqToHeadParallel(torch.autograd.Function):
     """[B, S/cp, D] -> [B, S, D/cp] via all-to-all."""
 
@@ -93,7 +132,14 @@ def head_to_seq_parallel(x: torch.Tensor, cp_group: dist.ProcessGroup, cp_size: 
     return _HeadToSeqParallel.apply(x, cp_group, cp_size)
 
 
-def mamba_cp_forward(mixer, hidden_states: torch.Tensor, cp_group: dist.ProcessGroup, cp_rank: int, cp_size: int):
+def mamba_cp_forward(
+    mixer,
+    hidden_states: torch.Tensor,
+    cp_group: dist.ProcessGroup,
+    cp_rank: int,
+    cp_size: int,
+    cu_seqlens: torch.Tensor,
+):
     """CP-aware Mamba-2 forward: in_proj -> all-to-all -> conv+SSM(local heads) -> all-to-all -> out_proj.
 
     Replaces the mixer's cuda_kernels_forward when CP > 1. Parameters are
@@ -134,6 +180,8 @@ def mamba_cp_forward(mixer, hidden_states: torch.Tensor, cp_group: dist.ProcessG
     hidden_states_B_C = torch.cat([x_part, B_part, C_part], dim=-1)
 
     full_seq_len = hidden_states_B_C.shape[1]  # S (full sequence)
+    boundaries = cu_seqlens.tolist()
+    seq_idx = _build_seq_idx(boundaries, full_seq_len, hidden_states.device)
 
     # ── 3. Local head dimensions ──
     local_num_heads = mixer.num_heads // cp_size
@@ -151,7 +199,6 @@ def mamba_cp_forward(mixer, hidden_states: torch.Tensor, cp_group: dist.ProcessG
     # Slice conv1d weight/bias for local channels
     # conv1d channels = intermediate_size + 2 * ngroups * dstate (same as conv_dim)
     # After all-to-all, we have local channels: local_intermediate + 2 * local_ngroups * dstate
-    local_conv_dim = local_intermediate_size + 2 * local_n_groups * mixer.ssm_state_size
     conv_x_start = cp_rank * local_intermediate_size
     conv_x_end = conv_x_start + local_intermediate_size
     conv_b_start = mixer.intermediate_size + cp_rank * local_n_groups * mixer.ssm_state_size
@@ -169,15 +216,9 @@ def mamba_cp_forward(mixer, hidden_states: torch.Tensor, cp_group: dist.ProcessG
     local_conv_weight = mixer.conv1d.weight[conv_indices]
     local_conv_bias = mixer.conv1d.bias[conv_indices] if mixer.conv1d.bias is not None else None
 
-    # ── 4. Conv1d on full sequence, local heads ──
+    # ── 4. Conv1d on each packed document, local heads ──
     hidden_states_B_C = torch.nn.functional.silu(
-        torch.nn.functional.conv1d(
-            hidden_states_B_C.transpose(1, 2),
-            local_conv_weight,
-            local_conv_bias,
-            groups=local_conv_dim,
-            padding=mixer.conv1d.weight.shape[2] - 1,
-        ).transpose(1, 2)[:, :full_seq_len]
+        _causal_conv1d_varlen(hidden_states_B_C, local_conv_weight, local_conv_bias, boundaries)
     )
 
     local_groups_time_state_size = local_n_groups * mixer.ssm_state_size
@@ -190,7 +231,7 @@ def mamba_cp_forward(mixer, hidden_states: torch.Tensor, cp_group: dist.ProcessG
     # ── 5. SSM scan on full sequence, local heads ──
     dt_limit_kwargs = {} if mixer.time_step_limit is None else {"dt_limit": mixer.time_step_limit}
 
-    scan_output, _ = mamba_chunk_scan_combined(
+    scan_output = mamba_chunk_scan_combined(
         hidden_states_local.view(batch_size, full_seq_len, local_num_heads, mixer.head_dim),
         time_step,
         local_A,
@@ -199,8 +240,8 @@ def mamba_cp_forward(mixer, hidden_states: torch.Tensor, cp_group: dist.ProcessG
         chunk_size=mixer.chunk_size,
         D=local_D,
         z=None,
-        seq_idx=None,
-        return_final_states=True,
+        seq_idx=seq_idx,
+        return_final_states=False,
         dt_bias=local_dt_bias,
         dt_softplus=True,
         **dt_limit_kwargs,

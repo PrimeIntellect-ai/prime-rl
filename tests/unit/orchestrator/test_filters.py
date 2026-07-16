@@ -57,7 +57,9 @@ def _make_rollout(
         ]
     else:
         nodes = [_assistant_node(completion_ids, completion_logprobs)]
-    rollout = Rollout[vf.Task](task=vf.Task(idx=0, prompt=""), nodes=nodes, rewards={"reward": reward})
+    rollout = Rollout[vf.TaskData](
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="")), nodes=nodes, rewards={"reward": reward}
+    )
     rollout.env_name = "test"
     rollout.group_id = uuid.uuid4()
     return rollout
@@ -135,8 +137,8 @@ def test_gibberish_aligns_logprobs_under_generation_prompt_scaffold():
     it; reading the aligned branch streams detects it."""
     gibberish_filter = _make_gibberish_filter()
 
-    rollout = Rollout[vf.Task](
-        task=vf.Task(idx=0, prompt=""),
+    rollout = Rollout[vf.TaskData](
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="")),
         nodes=[_scaffold_assistant_node([50, 80, 120_000], [-1.0, -0.5, gibberish_filter.logprob_threshold - 1.0])],
         rewards={"reward": 1.0},
     )

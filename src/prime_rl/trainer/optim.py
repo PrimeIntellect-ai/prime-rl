@@ -1,5 +1,4 @@
 import copy
-import time
 from typing import Callable
 
 import torch
@@ -12,7 +11,6 @@ from prime_rl.configs.trainer import OptimizerConfig
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.sign_sgd import SignSGD
-from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
 
@@ -121,14 +119,7 @@ def setup_optimizer(
         # Wait for run 0 to be created in the multi run manager
         # Otherwise, the creation will reset the parameters
         multi_run_manager = get_multi_run_manager()
-        world = get_world()
-        logger = get_logger()
-        while 0 not in multi_run_manager.idx_2_id:
-            if world.is_master:
-                multi_run_manager.discover_runs()
-            multi_run_manager.synchronize_state()
-            logger.info(f"Waiting for run 0 to be created {multi_run_manager.id_2_idx=}")
-            time.sleep(1)
+        multi_run_manager.wait_for_run(0)
         named_params = multi_run_manager.get_named_parameters_for_run(0)
 
     optimizer = _create_optimizer(config, named_params, parallel_dims)

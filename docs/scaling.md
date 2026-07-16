@@ -85,7 +85,6 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 |---|---|
 | `trainer.model.dp_replicate` | Number of dimensions to **replicate** instead of shard. Set to 2 to run 2-way DP replication × FSDP sharding within each replica — useful for very large clusters where pure FSDP communication dominates. |
 | `trainer.model.reshard_after_forward` | If `true` (default), parameters are resharded after the forward pass to free memory; the backward pass re-gathers. Set `false` to keep params resident — faster but more memory. |
-| `trainer.model.fsdp_cpu_offload` | Offload params + grads + optimizer state to CPU. Big memory win, large throughput hit. |
 | `trainer.model.optim_cpu_offload` | Offload only optimizer state. Mid-ground — small throughput cost, decent memory savings, especially at low GPU count. |
 
 ### Expert Parallelism
@@ -106,6 +105,8 @@ ep_comm_backend = "torch"  # or "deepep"
 ### Context Parallelism
 
 CP shards a single sequence across multiple GPUs along the token dimension — for long-context sequences. We reccomend using `ulysses` style CP for most of the models to get the most throughput. Some models (e.g. GLM-5) only support `ring` style CP. Wrong setting will be rejected on validation.
+
+`ulysses` head-shards Q/K/V, so the CP degree must divide `num_attention_heads`. GQA models with fewer KV heads than the CP degree (e.g. NemotronH: 32 query heads, 2 KV heads) are supported via KV-head replication; the CP degree must then be a multiple of `num_key_value_heads`. Hybrid Mamba layers head-shard independently (`cp_mamba`), which requires the CP degree to divide `mamba_num_heads` and `n_groups`.
 
 ```toml
 [trainer.model]
@@ -142,7 +143,7 @@ Offloading optimizer states to CPU is enabled by default (`optim_cpu_offload = t
 optim_cpu_offload = true   # already the default
 ```
 
-Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_concurrent_runs > 1` (multi-tenant training) — set `optim_cpu_offload = false` for multi-run. Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
+Incompatible with `trainer.max_concurrent_runs > 1` (multi-tenant training) — set `optim_cpu_offload = false` for multi-run.
 
 ### LM Head Chunking
 
@@ -179,7 +180,7 @@ The defaults already cover: fused LM head chunking (`1024`), `torch.compile` (fu
 
 The `rl`, `sft`, and `inference` entrypoints all submit to SLURM when a `[slurm]` table is present — there's no separate entrypoint.
 
-> **The prime-rl checkout and its `uv` venv must live on a shared filesystem** visible to every node. The generated sbatch script runs a single `uv sync --all-extras` on the batch node (not once per node), so all ranks share that one environment — a node-local venv would leave the other nodes stale.
+> **The prime-rl checkout and its `uv` venv must live on a shared filesystem** visible to every node. The generated sbatch script runs a single `uv sync --all-extras --all-packages` on the batch node (not once per node), so all ranks share that one environment — a node-local venv would leave the other nodes stale.
 
 ### Activation
 

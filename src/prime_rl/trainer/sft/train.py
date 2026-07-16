@@ -5,7 +5,6 @@ from contextlib import nullcontext
 from datetime import timedelta
 
 from renderers.base import create_renderer
-from renderers.default import DefaultRenderer
 from ring_flash_attn import substitute_hf_flash_attn
 from torch.nn import CrossEntropyLoss
 
@@ -83,9 +82,7 @@ def train(config: SFTConfig):
         heart = Heartbeat(config.heartbeat.url)
 
     # Set precision
-    setup_torch_distributed(
-        timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
-    )
+    setup_torch_distributed(timeout=timedelta(seconds=config.dist_timeout_seconds))
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -162,17 +159,12 @@ def train(config: SFTConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
+    # Fake data never renders messages, so a model without a hand-coded renderer
+    # can still be used to benchmark step time / memory. Validation data is
+    # always real, so it needs the renderer even when training data is fake.
     renderer = None
-    if config.renderer is not None:
+    if config.data.type != "fake" or config.val is not None:
         renderer = create_renderer(tokenizer, config.renderer)
-        if isinstance(renderer, DefaultRenderer):
-            raise ValueError(
-                f"renderer set for {config.tokenizer.name!r} resolved to DefaultRenderer. "
-                "DefaultRenderer falls back to incremental apply_chat_template and does NOT "
-                "fix position-dependent chat templates — the bug the renderer client is meant to solve. "
-                "Either use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
-                "set [renderer] name=<hand-coded renderer> explicitly, or remove the [renderer] block."
-            )
         logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
 
     # Set up the optimizer

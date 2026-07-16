@@ -19,7 +19,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoi
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
+from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from torch.distributed.tensor.parallel import parallelize_module
 from torchtitan.distributed.expert_parallel import ExpertParallel
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
@@ -666,11 +666,9 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
-    offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 
     fsdp_config = {
         "mp_policy": mp_policy,
-        "offload_policy": offload_policy,
         "reshard_after_forward": config.reshard_after_forward,
     }
 
@@ -711,7 +709,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 block_mlp.router,
                 mesh=hsdp_mesh,
                 mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
-                offload_policy=offload_policy,
                 reshard_after_forward=config.reshard_after_forward,
             )
 
@@ -736,7 +733,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             [model.lm_head, norm_module],
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
-            offload_policy=offload_policy,
             reshard_after_forward=False,
         )
     else:
@@ -746,7 +742,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         model,
         mesh=hsdp_mesh,
         mp_policy=mp_policy,
-        offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
     )
 
@@ -805,8 +800,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
-    device = "cpu" if config.fsdp_cpu_offload else "cuda"
-    model.to_empty(device=device)
+    model.to_empty(device="cuda")
     torch.distributed.barrier()
 
     def _init_buffers_post_meta():
@@ -819,7 +813,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
         _init_buffers_post_meta()
-        _move_buffers_to_cuda(model, config)
         return
 
     if not Path(config.name).exists():
@@ -834,19 +827,21 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     # All ranks read just the key names (cheap) to determine the path independently.
     # Only master loads the full state dict when conversion is actually needed.
     if isinstance(model, PreTrainedModelPrimeRL):
-        snapshot_keys = dict.fromkeys(load_state_dict_keys(snapshot_path))
+        source_path = snapshot_path
+        convert_dir = config.conversion_dir or source_path
+        snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
         model_keys = dict.fromkeys(model.state_dict().keys())
 
         if model.is_hf_state_dict(snapshot_keys) and model.is_prime_state_dict(model_keys):
             logger.warning(
                 "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
             )
-            snapshot_path = snapshot_path / "prime"
+            snapshot_path = convert_dir / "prime"
             if not snapshot_path.exists() and get_world().is_master:
                 logger.debug(
                     f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
                 )
-                snapshot_state_dict = load_state_dict(snapshot_path.parent)
+                snapshot_state_dict = load_state_dict(source_path)
                 model.convert_to_prime(snapshot_state_dict)
                 save_state_dict(snapshot_state_dict, snapshot_path)
                 del snapshot_state_dict
@@ -855,12 +850,12 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
             logger.warning(
                 "Found PrimeRL weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
             )
-            snapshot_path = snapshot_path / "hf"
+            snapshot_path = convert_dir / "hf"
             if not snapshot_path.exists() and get_world().is_master:
                 logger.debug(
                     f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
                 )
-                snapshot_state_dict = load_state_dict(snapshot_path.parent)
+                snapshot_state_dict = load_state_dict(source_path)
                 model.convert_to_hf(snapshot_state_dict)
                 save_state_dict(snapshot_state_dict, snapshot_path)
                 del snapshot_state_dict
@@ -882,8 +877,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
         model.tie_weights()
     _init_buffers_post_meta()
-
-    _move_buffers_to_cuda(model, config)
 
     lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
     if lora_modules:
@@ -1051,15 +1044,6 @@ def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims)
             )
 
 
-def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
-    """FSDP CPU offloading only manages parameters, not buffers. Move buffers to CUDA."""
-    if not config.fsdp_cpu_offload:
-        return
-    for _, buffer in model.named_buffers():
-        if buffer.device.type == "cpu":
-            buffer.data = buffer.data.to("cuda")
-
-
 def _reset_runtime_moe_buffers(model: nn.Module) -> None:
     for module in model.modules():
         if isinstance(module, (MoE, LatentMoE)) and module.tokens_per_expert.device.type != "meta":
@@ -1178,9 +1162,6 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
-    if not possible_to_load_to_meta:
-        _move_buffers_to_cuda(model, config)
-
     # 2. if we can load to meta, we either:
     if possible_to_load_to_meta:
         # - load from checkpoint later if needed
@@ -1188,8 +1169,7 @@ def setup_model(
             logger.warning(
                 "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
             )
-            device = "cpu" if config.fsdp_cpu_offload else "cuda"
-            model.to_empty(device=device)
+            model.to_empty(device="cuda")
             torch.distributed.barrier()
             if isinstance(model, PreTrainedModelPrimeRL):
                 model.init_buffers_post_meta()
@@ -1198,8 +1178,6 @@ def setup_model(
                 # Restore weight tying broken by to_empty() for HF models
                 if model.config.tie_word_embeddings:
                     model.tie_weights()
-
-            _move_buffers_to_cuda(model, config)
         # - or load from HF with dcp
         else:
             load_dcp_from_hf(model, config, parallel_dims)

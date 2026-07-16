@@ -72,10 +72,11 @@ from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast
+from prime_rl.utils.config import to_toml_dict
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
+from prime_rl.utils.pathing import get_log_dir, get_trace_path
 from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
     clean_exit,
@@ -99,6 +100,11 @@ MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 # dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
+
+# Default wait for the trainer's startup weight broadcast when no ckpt block
+# configures ``wait_for_weights_timeout`` (e.g. a from-scratch run). The
+# broadcast is always coming, so wait rather than fail immediately.
+STARTUP_WEIGHT_WAIT_TIMEOUT_S = 1200
 
 
 class Orchestrator:
@@ -195,7 +201,7 @@ class Orchestrator:
         config_dir = config.output_dir / "control"
         config_dir.mkdir(parents=True, exist_ok=True)
         with open(config_dir / "orch.toml", "wb") as f:
-            tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
+            tomli_w.dump(to_toml_dict(config), f)
 
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
@@ -314,18 +320,26 @@ class Orchestrator:
             # trainer even when ``ckpt.skip_progress`` left the counter unrestored.
             self.progress.step = self.resume_step + 1
             get_logger().info(f"Resuming orchestrator from checkpoint step {self.resume_step}")
+        else:
+            get_logger().info("Training from scratch")
+
+        # Sync inference to the incoming policy before the first step when resuming or when using
+        # NCCL, which rendezvouses with the trainer's first-step broadcast (train.py). A fresh
+        # filesystem run needs no sync (the base model IS policy v0) and must not wait for a
+        # startup broadcast: runs registered after the trainer's first step never receive one.
+        if self.resume_step is not None or config.weight_broadcast.type == "nccl":
+            sync_version = self.resume_step if self.resume_step is not None else 0
             check_exists = config.weight_broadcast.type != "nccl"
-            wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
+            # Without a ckpt block, fall back to a default timeout instead of not waiting at all.
+            wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
             weights_path = get_weight_dir(
-                config.output_dir, self.resume_step, check_exists=check_exists, wait_timeout=wait_timeout
+                config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
             )
-            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=self.resume_step)
+            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
             if self.lora_name is not None:
                 self.policy_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
-            self.policy.version = self.resume_step
-        else:
-            get_logger().info("Training from scratch")
+            self.policy.version = sync_version
 
         self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source: EvalSource | None = (
@@ -465,6 +479,18 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 continue
 
+            # Every completed rollout — errored, filtered, or never batched — lands in the
+            # ``all`` trace file the moment it arrives, so it survives crashes and drains.
+            # Train rollouts belong to the batch window currently collecting (``progress.step``),
+            # eval rollouts to the step whose eval triggered them.
+            step = rollout.eval_step if rollout.kind == "eval" else self.progress.step
+            assert step is not None
+            await asyncio.to_thread(
+                save_rollouts,
+                [rollout.to_record()],
+                get_trace_path(self.config.output_dir, step, rollout.kind, "all"),
+            )
+
             if rollout.kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(rollout)
@@ -524,12 +550,13 @@ class Orchestrator:
                 f"({n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
-        # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables); to_record
-        # drops the per-node training tensors — they're for training, not the rollout record, and
-        # can't round-trip json (raw numpy bytes).
-        rollout_dicts = [r.to_record() for r in batch.rollouts]
-        step_path = get_step_path(get_rollout_dir(config.output_dir), step)
-        await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
+        # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
+        # at ship time; the full arrival window already streamed into ``all`` on arrival.
+        # to_record drops the per-node training tensors — they're for training, not the rollout
+        # record, and can't round-trip json (raw numpy bytes).
+        effective = batch.rollouts.effective
+        records = [r.to_record() for r in effective]
+        await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.progress.step += 1
@@ -540,7 +567,6 @@ class Orchestrator:
 
         # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``batch.rollouts`` is the
         # full arrival window (errored + filtered included); ``.effective`` is the clean subset.
-        effective = batch.rollouts.effective
         metrics: dict[str, float] = {}
         for subset, pool in (("all", batch.rollouts), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
@@ -740,12 +766,13 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
             return
 
-        rollout_dicts = [r.to_record() for r in batch.rollouts]
-        step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
+        # The non-errored subset lands in the per-step ``effective`` trace file on epoch
+        # completion (multiple eval envs share the step file — each epoch appends its cohort
+        # once, and every record carries ``env_name``); the full returned cohort already
+        # streamed into ``all`` on arrival.
+        records = [r.to_record() for r in batch.rollouts.effective]
         await asyncio.to_thread(
-            save_rollouts,
-            rollout_dicts,
-            step_path / f"eval_rollouts_{batch.env_name}.jsonl",
+            save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
         policy_versions = {r.policy_version for r in batch.rollouts}
@@ -801,9 +828,18 @@ class Orchestrator:
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
         count is ``progress.step - 1``."""
         lead = (self.progress.step - 1) - self.policy.version
+        # The trainer skips the final NCCL weight broadcast (inference group is
+        # torn down), so policy.version never reaches the last step. Without this
+        # the gate deadlocks waiting for a version that will never be published.
+        # The last batch uses the penultimate policy anyway, so let it through.
+        building_final_batch_nccl = (
+            self.config.weight_broadcast.type == "nccl"
+            and self.config.max_steps is not None
+            and self.progress.step >= self.config.max_steps - 1
+        )
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG:
+        if lead > TARGET_LAG and not building_final_batch_nccl:
             if was_set:
                 get_logger().info(
                     "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."

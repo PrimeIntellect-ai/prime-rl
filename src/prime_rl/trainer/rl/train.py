@@ -108,9 +108,7 @@ def train(config: TrainerConfig):
             health_server.start()
 
     # Set precision
-    setup_torch_distributed(
-        timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
-    )
+    setup_torch_distributed(timeout=timedelta(seconds=config.dist_timeout_seconds))
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -255,6 +253,7 @@ def train(config: TrainerConfig):
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function
+    start_step = progress.step
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -264,6 +263,19 @@ def train(config: TrainerConfig):
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
+
+        # With NCCL, broadcast the incoming policy (v{progress.step-1}) before waiting for its
+        # rollouts: #2896 broadcasts at the END of a step, so the first step would otherwise block
+        # on rollouts the paused inference engines cannot produce until they receive
+        # v{progress.step-1}. Filesystem broadcast needs no startup rendezvous (fresh: base model
+        # = v0; resume: the orchestrator reads its checkpoint dir), and a one-shot startup
+        # broadcast would miss multi-run runs registered after the first step.
+        if progress.step == start_step and weight_broadcast is not None and config.weight_broadcast.type == "nccl":
+            logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
+            multi_run_manager.wait_for_run(0)
+            for idx in multi_run_manager.used_idxs:
+                multi_run_manager.ready_to_update[idx] = True
+            weight_broadcast.broadcast_weights(model, step=progress.step - 1)
 
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")

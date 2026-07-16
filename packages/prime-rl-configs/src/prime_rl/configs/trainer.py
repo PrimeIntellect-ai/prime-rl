@@ -117,6 +117,9 @@ class DebugModelConfig(BaseConfig):
 
 
 class ModelConfig(BaseModelConfig):
+    conversion_dir: Path | None = None
+    """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
+
     seq_len: int = 2048
     """Sequence length the model is trained on."""
 
@@ -131,9 +134,6 @@ class ModelConfig(BaseModelConfig):
 
     ac_offloading: ActivationOffloadingConfig | None = ActivationOffloadingConfig()
     """Activation offloading configuration. If None, activation offloading is disabled."""
-
-    fsdp_cpu_offload: bool = False
-    """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
     optim_cpu_offload: bool = True
     """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
@@ -237,12 +237,6 @@ class ModelConfig(BaseModelConfig):
     def selective_ac_only_with_custom_impl(self):
         if self.ac is not None and self.ac.mode == "selective" and self.impl not in ("custom", "auto"):
             raise ValueError("Selective activation checkpointing requires model.impl='custom' or 'auto'")
-        return self
-
-    @model_validator(mode="after")
-    def cpu_offload_mutual_exclusion(self):
-        if self.fsdp_cpu_offload and self.optim_cpu_offload:
-            raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
         return self
 
     @model_validator(mode="after")
@@ -638,12 +632,6 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_opt_and_fsdp_offload(self):
-        if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
-            raise ValueError("Muon optimizer does not support FSDP CPU offload")
-        return self
-
-    @model_validator(mode="after")
     def validate_optim_cpu_offload_single_run(self):
         if self.model.optim_cpu_offload and self.max_concurrent_runs > 1:
             raise ValueError("Optimizer CPU offload is not supported with max_concurrent_runs > 1")
@@ -652,7 +640,7 @@ class TrainerConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
         if self.model.lora is not None and self.weight_broadcast.type == "nccl":
-            # TODO: Support this
+            # TODO: Support NCCL broadcast with LoRA
             raise ValueError("NCCL weight broadcast does not support LoRA yet.")
         return self
 

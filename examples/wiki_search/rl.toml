@@ -45,7 +45,7 @@ type = "zero_advantage"
 enforce = true
 
 [[orchestrator.train.env]]
-id = "primeintellect/wiki-search"
+id = "wiki-search"
 
 [ckpt] # Checkpoint at the end of training
 

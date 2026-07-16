@@ -5,12 +5,12 @@ external one given by ``config.address``) and an ``EnvClient`` to drive it. The
 orchestrator never *runs* an environment: it asks the server for ``info``
 (``num_tasks`` + whether group scoring is needed), then runs rollouts purely by
 **task index**. The server returns a ``Trace`` (a plain ``model_dump`` — derived values are
-properties, not serialized) which we validate into a ``Trace[WireTask]`` — a real ``vf.Trace``
+properties, not serialized) which we validate into a ``Trace[WireTaskData]`` — a real ``vf.Trace``
 (never a loose dict) whose task keeps the env's
-task-specific fields as extras (``WireTask`` allows them). The orchestrator never imports the
+task-specific fields as extras (``WireTaskData`` allows them). The orchestrator never imports the
 env package: the env's *type* and *runtime* both live only in the server, and the orchestrator
 drives it purely by task index. (Nothing here reads typed env task fields — only ``task.idx``
-and a full ``task.model_dump``, both of which ``WireTask`` preserves.)
+and a full ``task.model_dump``, both of which ``WireTaskData`` preserves.)
 """
 
 from __future__ import annotations
@@ -35,10 +35,10 @@ from prime_rl.orchestrator.sampler import Sampler
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
 
-# Every wire trace validates into this type. WireTask (extra="allow") keeps the env's task
+# Every wire trace validates into this type. WireTaskData (extra="allow") keeps the env's task
 # fields without importing the env package — the orchestrator never reads them typed (only
 # task.idx + task.model_dump).
-ROLLOUT_TYPE = Rollout[vf.WireTask]
+ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 
 # Max wait for a spawned env server to bind and report its address. The child
 # loads the taskset (possibly downloading a dataset) before reporting, so this
@@ -83,7 +83,8 @@ class Env:
     def __init__(self, config: EnvConfig):
         self.config = config
         self.sampling_args: dict = {}
-        self.num_tasks: int = 0
+        self.num_tasks: int | None = 0
+        """Task count reported by the server; ``None`` means the taskset is infinite."""
         self.requires_group_scoring: bool = False
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
@@ -112,9 +113,8 @@ class Env:
         info = await self.env_client.info()
         self.num_tasks = info.num_tasks
         self.requires_group_scoring = info.requires_group_scoring
-        get_logger().info(
-            f"Env {self.name} ready: num_tasks={self.num_tasks} group_scoring={self.requires_group_scoring}"
-        )
+        num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
+        get_logger().info(f"Env {self.name} ready: num_tasks={num_tasks} group_scoring={self.requires_group_scoring}")
 
     async def _spawn(self, log_dir: Path, log_level: str, json_logging: bool) -> str:
         """Spawn a v1 EnvServer child process (it loads the env; we never do).
@@ -220,7 +220,12 @@ class EvalEnv(Env):
 
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
-        n = self.num_tasks if self.config.num_examples < 0 else min(self.config.num_examples, self.num_tasks)
+        if self.num_tasks is None:
+            if self.config.num_examples < 0:
+                raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
+            n = self.config.num_examples
+        else:
+            n = self.num_tasks if self.config.num_examples < 0 else min(self.config.num_examples, self.num_tasks)
         self.examples = [{"task_idx": i} for i in range(n)]
 
 
