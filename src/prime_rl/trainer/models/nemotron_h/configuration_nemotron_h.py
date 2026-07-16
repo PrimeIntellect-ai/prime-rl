@@ -1,4 +1,4 @@
-from transformers.configuration_utils import PretrainedConfig, remap_legacy_layer_types
+from transformers.configuration_utils import PretrainedConfig
 
 
 class NemotronHConfig(PretrainedConfig):
@@ -222,6 +222,8 @@ class NemotronHConfig(PretrainedConfig):
         # schedule (kept in NemotronH's own "mamba"/"attention"/"moe" naming) so the two stay in
         # sync. Read-only on purpose: the base validation skips writing back when the value is
         # already canonical, which keeps `layers_block_type` untouched.
+        from transformers.configuration_utils import remap_legacy_layer_types
+
         return remap_legacy_layer_types(self.layers_block_type)
 
     @property

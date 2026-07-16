@@ -8,7 +8,6 @@ from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAuto
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
-from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 
 from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
@@ -21,7 +20,6 @@ from prime_rl.trainer.models.llama import LlamaForCausalLM
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config, MiniMaxM2ForCausalLM
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
-from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig, Qwen3_5MoeForCausalLM
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
@@ -33,23 +31,36 @@ AutoConfig.register("laguna", LagunaConfig, exist_ok=True)
 AutoConfig.register("minimax_m2", MiniMaxM2Config, exist_ok=True)
 AutoConfig.register("nemotron_h", NemotronHConfig, exist_ok=True)
 AutoConfig.register("qwen3_moe", Qwen3MoeConfig, exist_ok=True)
-AutoConfig.register("qwen3_5_text", Qwen3_5TextConfig, exist_ok=True)
 AutoConfig.register("qwen3_5_moe_text", Qwen3_5MoeConfig, exist_ok=True)
 # GptOssConfig is just HF's class - already registered by transformers, no override needed.
 
 _CUSTOM_CAUSAL_LM_MAPPING = _LazyAutoMapping(CONFIG_MAPPING_NAMES, OrderedDict())
-_CUSTOM_CAUSAL_LM_MAPPING.register(LlamaConfig, LlamaForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3Config, Qwen3ForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(AfmoeConfig, AfmoeForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(Glm4MoeConfig, Glm4MoeForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(GlmMoeDsaConfig, GlmMoeDsaForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(LagunaConfig, LagunaForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(MiniMaxM2Config, MiniMaxM2ForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(NemotronHConfig, NemotronHForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3MoeConfig, Qwen3MoeForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3_5TextConfig, Qwen3_5ForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3_5MoeConfig, Qwen3_5MoeForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(GptOssConfig, GptOssForCausalLM, exist_ok=True)
+
+
+def _register_custom_causal_lm(config_cls: type, model_cls: type) -> None:
+    """Map a config type to its PrimeRL model class in the custom AutoModel mapping.
+
+    transformers >= 5.13 makes `_LazyAutoMapping.register()` a silent no-op for configs
+    defined under `transformers.*` (a guard against remote code hijacking native configs).
+    prime-rl deliberately overrides native implementations (Llama, Qwen3, GPT-OSS) with
+    optimized custom models, so we write straight to the mapping's extra content — exactly
+    what `register()` does past that guard — to preserve the override. Custom PrimeRL configs
+    resolve identically either way.
+    """
+    _CUSTOM_CAUSAL_LM_MAPPING._extra_content[config_cls] = model_cls
+
+
+_register_custom_causal_lm(LlamaConfig, LlamaForCausalLM)
+_register_custom_causal_lm(Qwen3Config, Qwen3ForCausalLM)
+_register_custom_causal_lm(AfmoeConfig, AfmoeForCausalLM)
+_register_custom_causal_lm(Glm4MoeConfig, Glm4MoeForCausalLM)
+_register_custom_causal_lm(GlmMoeDsaConfig, GlmMoeDsaForCausalLM)
+_register_custom_causal_lm(LagunaConfig, LagunaForCausalLM)
+_register_custom_causal_lm(MiniMaxM2Config, MiniMaxM2ForCausalLM)
+_register_custom_causal_lm(NemotronHConfig, NemotronHForCausalLM)
+_register_custom_causal_lm(Qwen3MoeConfig, Qwen3MoeForCausalLM)
+_register_custom_causal_lm(Qwen3_5MoeConfig, Qwen3_5MoeForCausalLM)
+_register_custom_causal_lm(GptOssConfig, GptOssForCausalLM)
 
 
 class AutoModelForCausalLMPrimeRL(_BaseAutoModelClass):
