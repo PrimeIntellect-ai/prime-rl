@@ -168,21 +168,18 @@ class NCCLWeightBroadcastSender:
     def _resolve_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         for key, value in list(state_dict.items()):
             if isinstance(value, DTensor):
-                value = cast(DTensor, value.to(self.dtype))
                 local = value.to_local()
                 if local.device.type != "cuda":
-                    # FSDP CPU offload keeps the local shard on CPU while the device
-                    # mesh is CUDA; full_tensor() would then gather over Gloo (hours
-                    # for 100B+ params). Rebuild the DTensor from a CUDA-staged local
-                    # shard so the gather runs over NCCL, one tensor at a time.
-                    # (DTensor.to("cuda") does not migrate the collective backend.)
+                    # FSDP CPU offload keeps local shards on CPU (pinned); gathering
+                    # them there would run over Gloo (hours for 100B+ params). Stage
+                    # the shard to CUDA asynchronously and rebuild the DTensor on the
+                    # same (CUDA) mesh so full_tensor() gathers over NCCL. The bf16
+                    # cast happens on GPU, after the copy.
+                    local = local.to("cuda", non_blocking=True)
                     value = DTensor.from_local(
-                        local.to("cuda", non_blocking=False),
-                        device_mesh=value.device_mesh,
-                        placements=value.placements,
-                        run_check=False,
+                        local, device_mesh=value.device_mesh, placements=value.placements, run_check=False
                     )
-                state_dict[key] = value.full_tensor()
+                state_dict[key] = cast(DTensor, value.to(self.dtype)).full_tensor()
         return state_dict
 
 
