@@ -165,7 +165,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
+        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "flash_attention_4"):
             cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:

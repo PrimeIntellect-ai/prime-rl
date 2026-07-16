@@ -198,7 +198,7 @@ def _get_laguna_attention(config: LagunaConfig, layer_idx: int):
             return LagunaFlashAttention(config, layer_idx, num_heads, flash_attn_version=2)
         case "flash_attention_3":
             return LagunaFlashAttention(config, layer_idx, num_heads, flash_attn_version=3)
-        case "fa4":
+        case "flash_attention_4":
             return LagunaFlashAttention(config, layer_idx, num_heads, flash_attn_version=4)
         case "sdpa":
             return LagunaSDPAAttention(config, layer_idx, num_heads)
@@ -354,7 +354,7 @@ class LagunaModel(LagunaPreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
+        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "flash_attention_4"):
             cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
             causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)

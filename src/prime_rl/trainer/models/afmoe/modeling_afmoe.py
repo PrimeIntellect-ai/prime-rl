@@ -266,7 +266,7 @@ AFMOE_ATTN_IMPL2CLASS = {
     "sdpa": AfmoeSDPAAttention,
     "flash_attention_2": functools.partial(AfmoeFlashAttention, flash_attn_version=2),
     "flash_attention_3": functools.partial(AfmoeFlashAttention, flash_attn_version=3),
-    "fa4": functools.partial(AfmoeFlashAttention, flash_attn_version=4),
+    "flash_attention_4": functools.partial(AfmoeFlashAttention, flash_attn_version=4),
 }
 
 
@@ -478,7 +478,7 @@ class AfmoeModel(AfmoePreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        use_flash = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
+        use_flash = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "flash_attention_4")
 
         if use_flash:
             cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)

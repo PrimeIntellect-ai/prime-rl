@@ -563,7 +563,7 @@ QWEN35MOE_ATTN_IMPL2CLASS = {
     "sdpa": Qwen3_5MoeGatedSDPAAttention,
     "flash_attention_2": functools.partial(Qwen3_5MoeGatedFlashAttention, flash_attn_version=2),
     "flash_attention_3": functools.partial(Qwen3_5MoeGatedFlashAttention, flash_attn_version=3),
-    "fa4": functools.partial(Qwen3_5MoeGatedFlashAttention, flash_attn_version=4),
+    "flash_attention_4": functools.partial(Qwen3_5MoeGatedFlashAttention, flash_attn_version=4),
 }
 
 
@@ -885,7 +885,7 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
+        flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "flash_attention_4")
         if flash_attn_enabled:
             if position_ids.ndim == 3:
                 if inputs_embeds.shape[0] != 1:

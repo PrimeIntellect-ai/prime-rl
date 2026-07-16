@@ -273,7 +273,7 @@ def _patch_qwen3_5_linear_attn_varlen():
     ):
         attn_impl = getattr(self.config, "_attn_implementation", None)
         cu_seqlens = None
-        if attn_impl in ("flash_attention_2", "flash_attention_3", "fa4") and position_ids is not None:
+        if attn_impl in ("flash_attention_2", "flash_attention_3", "flash_attention_4") and position_ids is not None:
             pids = position_ids
             if pids.ndim == 3:
                 pids = pids[0]
@@ -501,16 +501,16 @@ def get_model(
             )
 
     # GPT-OSS only supports FlashAttention via kernels-community/vllm-flash-attn3, which requires Hopper (SM 90).
-    # On other architectures (e.g. Blackwell), users must fall back to eager attention.
+    # On other architectures (e.g. Blackwell), users must fall back to sdpa attention.
     HOPPER_MAJOR = 9
     if getattr(model_config, "model_type", "") == "gpt_oss":
-        if config.attn != "eager":
+        if config.attn != "sdpa":
             major, minor = torch.cuda.get_device_capability()
             if major != HOPPER_MAJOR:
                 raise ValueError(
-                    f"GPT-OSS requires 'attn = \"eager\"' on non-Hopper GPUs (detected SM {major}{minor}). "
+                    f"GPT-OSS requires 'attn = \"sdpa\"' on non-Hopper GPUs (detected SM {major}{minor}). "
                     f"The only flash attention kernel supported by GPT-OSS (kernels-community/vllm-flash-attn3) is Hopper-only. "
-                    f'Set [trainer.model] attn = "eager" in your config.'
+                    f'Set [trainer.model] attn = "sdpa" in your config.'
                 )
         # Enable hub kernels for GPT-OSS (disabled by default to avoid interfering with other models).
         import transformers.integrations.hub_kernels as _hub_kernels
@@ -1088,22 +1088,6 @@ def _validate_flash_attn_4_installed() -> None:
         )
 
 
-def _register_fa4_attention_interface() -> None:
-    """Register a dummy `fa4` attention with transformers so AutoConfig accepts it.
-
-    The `flash_attention_*` naming pattern triggers transformers to attempt
-    installing a kernel from the hub, so we use the short name `fa4` internally.
-    This dummy is never called because fa4 is only supported with our custom
-    model implementation.
-    """
-    from transformers import AttentionInterface
-
-    def _noop(*args, **kwargs) -> None:
-        pass
-
-    AttentionInterface.register("fa4", _noop)
-
-
 def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
@@ -1115,9 +1099,8 @@ def setup_model(
             "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"
         )
 
-    if config.attn == "fa4":
+    if config.attn == "flash_attention_4":
         _validate_flash_attn_4_installed()
-        _register_fa4_attention_interface()
 
     logger = get_logger()
 

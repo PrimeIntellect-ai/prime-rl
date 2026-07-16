@@ -284,7 +284,7 @@ ATTN_IMPL2CLASS = {
     "flash_attention_2": functools.partial(FlashAttention, flash_attn_version=2),
     "sdpa": SDPAAttention,
     "flash_attention_3": functools.partial(FlashAttention, flash_attn_version=3),
-    "fa4": functools.partial(FlashAttention, flash_attn_version=4),
+    "flash_attention_4": functools.partial(FlashAttention, flash_attn_version=4),
 }
 
 
@@ -298,7 +298,7 @@ def substitute_ring_attn(
 
     from .ring_attn import ring_fa3_varlen_func, ring_fa4_varlen_func
 
-    if attn_impl == "fa4":
+    if attn_impl == "flash_attention_4":
         ring_func = ring_fa4_varlen_func
     elif attn_impl == "flash_attention_3":
         ring_func = ring_fa3_varlen_func
