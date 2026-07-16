@@ -601,14 +601,21 @@ def get_model(
 
     is_vlm_training = config.vlm is not None
 
+    hf_attn_implementation = config.attn
     model_config = cast(
         PretrainedConfig,
         AutoConfig.from_pretrained(
-            config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
+            config.name,
+            attn_implementation=hf_attn_implementation,
+            trust_remote_code=config.trust_remote_code,
         ),
     )
     model_config.use_cache = False
     is_vlm_arch = is_vlm_architecture(model_config)
+    if config.attn == "flash_attention_4" and config.impl == "hf" and model_config.model_type == "gemma4":
+        from prime_rl.trainer.models.layers.gemma4_hybrid_attention import register_gemma4_hybrid_attention
+
+        register_gemma4_hybrid_attention()
 
     if is_vlm_training:
         logger.info(f"Detected vision-language model: {config.name}")
@@ -731,7 +738,12 @@ def get_model(
     else:
         impl_to_use = config.impl
 
-    if config.attn in ("flash_attention_3", "flash_attention_4") and impl_to_use == "hf":
+    gemma4_hybrid_fa4 = (
+        config.attn == "flash_attention_4"
+        and impl_to_use == "hf"
+        and model_config.model_type == "gemma4"
+    )
+    if config.attn in ("flash_attention_3", "flash_attention_4") and impl_to_use == "hf" and not gemma4_hybrid_fa4:
         raise ValueError(
             f"{config.attn} requires model.impl='custom' or 'auto' (resolved to 'custom'), "
             f"but model.impl resolved to 'hf'. Set model.impl='custom' explicitly."

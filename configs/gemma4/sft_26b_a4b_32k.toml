@@ -1,0 +1,55 @@
+output_dir = "outputs/gemma4-26b-a4b-intellect3-32k-fa4-full-epoch"
+clean_output_dir = true
+max_steps = 4019
+loss_impl = "liger_fused"
+
+[deployment]
+type = "single_node"
+num_gpus = 8
+
+[wandb]
+entity = "primeintellect"
+project = "gemma4-sft"
+name = "gemma4-26b-a4b-base-intellect3-32k-fa4-full-epoch"
+tags = ["gemma4", "base", "sft", "intellect3", "32k", "fa4"]
+
+[model]
+name = "/home/google-gemma-4-26B-A4B"
+impl = "hf"
+attn = "flash_attention_4"
+seq_len = 32768
+ep = 1
+compile = "None"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+optim_cpu_offload = true
+
+[model.ac]
+mode = "full"
+freq = 1
+
+[model.ac_offloading]
+max_inflight_activations = 5
+
+[tokenizer]
+name = "/home/google-gemma-4-26B-A4B-glm45-tokenizer"
+
+[renderer]
+name = "glm-4.5"
+enable_thinking = true
+
+[data]
+type = "sft"
+name = "/home/intellect3-sft-stratified-1gb-sft"
+splits = ["train"]
+batch_size = 8
+micro_batch_size = 1
+seq_len = 32768
+pack_function = "cat"
+shuffle = true
+seed = 42
+
+[optim]
+lr = 1e-5
+weight_decay = 0.01
+max_norm = 0.2
