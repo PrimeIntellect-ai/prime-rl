@@ -97,13 +97,11 @@ class NCCLWeightUpdateWorker(Worker):
         host: str,
         port: int,
         rank_offset: int,
-        server_world_size: int,
         inference_world_size: int,
         timeout: int,
         quantize_in_weight_transfer: bool = False,
         session_id: str = "",
         model_name: str = "",
-        validate_reload: bool = False,
     ) -> None:
         """Initialize the NCCL broadcast receiver.
 
@@ -112,25 +110,15 @@ class NCCLWeightUpdateWorker(Worker):
             inference_world_size: Total number of inference GPUs across all servers.
         """
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
-        tp_size = self.parallel_config.tensor_parallel_size
-        tp_rank = self.rank % tp_size
-        dp_rank = self.parallel_config.data_parallel_index
-        candidate_rank = dp_rank * tp_size + tp_rank
-        if server_world_size == tp_size:
-            relative_rank = tp_rank
-        elif rank_offset <= candidate_rank < rank_offset + server_world_size:
-            relative_rank = candidate_rank - rank_offset
-        elif candidate_rank < server_world_size:
-            relative_rank = candidate_rank
-        else:
-            raise ValueError(
-                f"vLLM rank {candidate_rank} is outside this admin server's "
-                f"rank span [{rank_offset}, {rank_offset + server_world_size})"
-            )
-        global_rank_inference = rank_offset + relative_rank
+        # Use the worker's device index directly as the local rank.
+        # The previous dp_group-based computation broke in vLLM v1 multiprocess
+        # DP mode where each worker is a separate process with a singleton
+        # DP group (rank_in_group is always 0).
+        local_rank = self.device.index
+        global_rank_inference = rank_offset + local_rank
 
         logger.info(
-            f"Worker [dp_rank={dp_rank} tp_rank={tp_rank} rank_offset={rank_offset}] "
+            f"Worker [local_rank={local_rank} rank_offset={rank_offset}] "
             f"-> [global_rank={global_rank_inference} inference_world_size={inference_world_size}]"
         )
 
