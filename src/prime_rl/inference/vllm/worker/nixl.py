@@ -350,7 +350,13 @@ class NIXLWeightUpdateWorker(Worker):
 
                 for name in group.param_names:
                     shape, dtype = self._param_layout[(id(group.layer), name)]
-                    setattr(group.layer, name, nn.Parameter(torch.empty(shape, dtype=dtype, device=self.device), False))
+                    # Weight loaders are allowed to populate only the logical
+                    # region of a kernel tensor.  FusedMoE, for example, pads
+                    # Nemotron's intermediate dimension from 1856 to 1920 and
+                    # leaves the padding at zero.  Re-materializing with
+                    # ``empty`` makes that padding undefined and can feed NaNs
+                    # into the kernel after an otherwise correct reload.
+                    setattr(group.layer, name, nn.Parameter(torch.zeros(shape, dtype=dtype, device=self.device), False))
                 for index, copy in enumerate(group.copies):
                     source_dtype = group.arena_dtypes[index]
                     num_bytes = prod(copy.shape) * source_dtype.itemsize
