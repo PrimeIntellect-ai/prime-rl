@@ -141,9 +141,9 @@ JSONL files of `vf.Trace` records (training tensors excluded). `all` gets every 
 rollout the moment it arrives — errored, filtered, and never-batched ones included — so it's
 crash-durable; `effective` gets the clean subset that went into the step's train batch (eval:
 the non-errored epoch cohort; multiple eval envs share the step file). Each record carries
-`tag` (train/eval), `step`, `run_id`, `taskset_id`, `model`, `harness`, and `runtime` (config +
-provisioned resource id, e.g. the sandbox id), plus `env_name`, `group_id`, and
-`policy_version` under `info`.
+`tag` (train/eval), `step`, `run_id`, `verifiers` (producing build), `agent` (model, sampling,
+harness), and `runtime` (config + provisioned resource id, e.g. the sandbox id), plus
+`env_name`, `group_id`, and `policy_version` under `info`.
 
 ```bash
 wc -l {output_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
