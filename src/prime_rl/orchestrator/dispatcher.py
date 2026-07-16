@@ -11,13 +11,17 @@
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight rollouts of the opposite kind drain
   naturally on either side of an eval boundary.
-- ``on_version_pending`` (called by the watcher before the engines pause for
-  the weight update) bumps ``off_policy_steps`` on in-flight train rollouts and
-  drops groups past ``max_off_policy_steps``.
-  Eval rollouts are measurements for the policy version they started with,
-  so they are allowed to finish even if training advances. Train rollouts
-  sampled from a frozen model never age — their sampler doesn't change
-  with policy updates.
+- Train scheduling is demand-driven: the injected ``train_demand`` callable
+  (owned by the orchestrator) says how many more train rollouts the batch
+  being collected still needs; ``fill_inflight`` re-evaluates it per
+  scheduled group, so dispatch stops the moment the batch is covered.
+- ``cancel_stale_train_groups`` (driven by the orchestrator's
+  ``on_version_pending``, before the engines pause for the weight update)
+  drops in-flight train groups whose generation policy fell below the
+  staleness cutoff. Eval rollouts are measurements for the policy version
+  they started with, so they are allowed to finish even if training
+  advances; train rollouts sampled from a frozen model never go stale —
+  their sampler doesn't change with policy updates.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
   count-to-``group_size`` finalization still fires.
 """
@@ -29,7 +33,7 @@ import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Literal
+from typing import Callable, Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
@@ -117,8 +121,9 @@ class RolloutDispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules
     rollouts under shared capacity, and emits ``Rollout``\\ s to
-    ``out_q``. The watcher drives ``on_version_pending`` for off-policy
-    cancellation; the orchestrator triggers eval epochs."""
+    ``out_q``. The orchestrator supplies ``train_demand``, drives
+    ``cancel_stale_train_groups`` on weight updates, and triggers eval
+    epochs."""
 
     def __init__(
         self,
@@ -131,7 +136,7 @@ class RolloutDispatcher:
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
-        max_off_policy_steps: int,
+        train_demand: Callable[[], int],
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -141,7 +146,7 @@ class RolloutDispatcher:
         self.policy_pool = policy_pool
         self.train_source = train_source
         self.eval_source = eval_source
-        self.max_off_policy_steps = max_off_policy_steps
+        self.train_demand = train_demand
 
         self.max_inflight = max_inflight_rollouts
         self.inflight_permits = 0
@@ -160,12 +165,9 @@ class RolloutDispatcher:
         # winds down without scheduling new train rollouts
         self.train_scheduling_disabled: bool = False
         self.metrics = DispatcherMetrics()
-
-        # Orchestrator-owned gate. When clear, ``fill_inflight`` returns
-        # without scheduling new groups. The dispatcher itself doesn't know
-        # *why* — the orchestrator toggles this based on step / policy lead.
-        self.dispatch_allowed = asyncio.Event()
-        self.dispatch_allowed.set()
+        # Last observed sign of ``train_demand`` so pause/resume transitions
+        # log once instead of every scheduling pass
+        self._train_paused = False
 
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
@@ -222,15 +224,24 @@ class RolloutDispatcher:
         triggered eval drain naturally."""
         self.train_scheduling_disabled = True
 
+    def _inflight_train_lags(self) -> list[int]:
+        """Policy versions each in-flight live-sampled train rollout is behind
+        the current policy."""
+        return [
+            self.policy.version - m.policy_version
+            for m in self.inflight.values()
+            if m.kind == "train" and self.train_envs.get(m.env_name).sampler.samples_from_live_policy
+        ]
+
     @property
     def max_off_policy_level(self) -> int:
-        steps = [m.off_policy_steps for m in self.inflight.values() if m.kind == "train"]
-        return max(steps) if steps else 0
+        lags = self._inflight_train_lags()
+        return max(lags) if lags else 0
 
     @property
     def mean_off_policy_level(self) -> float:
-        steps = [m.off_policy_steps for m in self.inflight.values() if m.kind == "train"]
-        return sum(steps) / len(steps) if steps else 0.0
+        lags = self._inflight_train_lags()
+        return sum(lags) / len(lags) if lags else 0.0
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -266,48 +277,49 @@ class RolloutDispatcher:
             await safe_cancel(self.task)
             self.task = None
 
-    async def on_version_pending(self, step: int) -> None:
-        """Bump off-policy counters and drop groups past
-        ``max_off_policy_steps`` (drop_group emits ``Cancelled`` markers so
-        the sink still finalizes the partial group). Eval rollouts are not
-        aged because they are tied to their start-time policy version.
+    async def cancel_stale_train_groups(self, min_policy_version: int) -> int:
+        """Drop in-flight train groups generated by a policy older than
+        ``min_policy_version`` (``drop_group`` emits ``Cancelled`` markers so
+        the sink still finalizes the partial group). Eval rollouts are tied
+        to their start-time policy version and never dropped; frozen-sourced
+        train rollouts never go stale — their sampler doesn't change with
+        policy updates.
 
-        Runs *before* the inference engines are paused for the weight update so
-        the resulting aborts are processed while the engine is still stepping —
-        otherwise the orphaned KV transfers crash the decode engine on resume
-        (see ``WeightWatcher.apply_policy_update``)."""
+        Must run *before* the inference engines are paused for a weight update
+        so the resulting aborts are processed while the engine is still
+        stepping — otherwise the orphaned KV transfers crash the decode engine
+        on resume (see ``WeightWatcher.apply_policy_update``). The
+        orchestrator drives this from its ``on_version_pending`` hook."""
         stale_groups: set[uuid.UUID] = set()
-        cancelled = 0
         for meta in self.inflight.values():
             if meta.kind != "train":
                 continue
-            # Frozen-sourced rollouts never go stale — their sampler doesn't
-            # change with policy updates.
             if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
                 continue
-            meta.off_policy_steps += 1
-            if meta.off_policy_steps > self.max_off_policy_steps:
+            if meta.policy_version < min_policy_version:
                 stale_groups.add(meta.group_id)
 
+        cancelled = 0
         for gid in stale_groups:
-            removed = await self.drop_group(gid)
-            cancelled += removed
+            cancelled += await self.drop_group(gid)
 
         if cancelled:
             get_logger().warning(
-                f"Cancelled {cancelled} train rollouts past max_off_policy_steps={self.max_off_policy_steps}. "
+                f"Cancelled {cancelled} in-flight train rollouts generated by policy < v{min_policy_version} — "
+                "they would exceed max_off_policy_steps by the time they train. "
                 "Consider increasing it to avoid this."
             )
-
-    async def on_new_version(self, step: int) -> None:
-        """No-op: the dispatcher drains in ``on_version_pending`` (pre-pause)."""
+        return cancelled
 
     async def fill_inflight(self) -> None:
         """Schedule new rollouts up to ``max_inflight``, honoring
-        ``self.mode``. Eval scheduling ignores the orchestrator's dispatch
-        gate (evals are version-pinned measurements); only train scheduling
-        respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
-        ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
+        ``self.mode``. Eval scheduling is unbounded by train demand (evals
+        are version-pinned measurements); train scheduling re-evaluates
+        ``train_demand`` per group, so it stops the moment the batch being
+        collected is covered and resumes as soon as demand reappears (next
+        batch, staleness drops, errored arrivals). When ``PREFER_EVAL``'s
+        source exhausts we flip back to ``PREFER_TRAIN`` so the eval tail
+        drains alongside fresh train."""
         while True:
             if self.available_permits <= 0:
                 return
@@ -325,8 +337,16 @@ class RolloutDispatcher:
                 scheduled = await self.try_schedule("eval")
                 if not scheduled:
                     return
-            else:  # PREFER_TRAIN — respects the orchestrator's dispatch gate
-                if not self.dispatch_allowed.is_set():
+            else:  # PREFER_TRAIN — bounded by the orchestrator's train demand
+                paused = self.train_demand() <= 0
+                if paused != self._train_paused:
+                    self._train_paused = paused
+                    get_logger().debug(
+                        "Pausing train dispatch (batch covered or policy too far behind)"
+                        if paused
+                        else "Resuming train dispatch"
+                    )
+                if paused:
                     return
                 scheduled = await self.try_schedule("train")
                 if not scheduled:
@@ -544,7 +564,6 @@ class RolloutDispatcher:
         rollout.env_name = meta.env_name
         rollout.group_id = meta.group_id
         rollout.policy_version = policy_version
-        rollout.off_policy_steps = meta.off_policy_steps
         if meta.kind == "eval":
             assert eval_step is not None, "eval rollout missing eval_step"
             rollout.eval_step = eval_step

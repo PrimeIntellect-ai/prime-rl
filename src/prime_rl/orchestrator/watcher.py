@@ -1,6 +1,6 @@
 """WeightWatcher: polls the broadcast dir, advances ``Policy``, notifies
-observers (dispatcher → off-policy cancel). Standalone async task; the
-orchestrator's barrier bounds the in-flight lead."""
+observers (orchestrator → staleness drops, ship-hold wakeup). Standalone
+async task."""
 
 from __future__ import annotations
 
