@@ -15,6 +15,7 @@ from torch import Tensor, nn
 from torch.nn.attention.flex_attention import BlockMask, create_block_mask, flex_attention
 from transformers import AttentionInterface
 from transformers.integrations.flash_attention import flash_attention_forward
+from transformers.masking_utils import find_packed_sequence_indices
 
 _GLOBAL_HEAD_DIM = 512
 _FLEX_KERNEL_OPTIONS = {
@@ -28,6 +29,36 @@ _compiled_flex_attention = torch.compile(flex_attention, dynamic=False)
 
 def _causal_mask(_batch: Tensor, _head: Tensor, query: Tensor, key: Tensor) -> Tensor:
     return query >= key
+
+
+def _get_packed_causal_block_mask(
+    position_ids: Tensor,
+    query_length: int,
+    key_length: int,
+    device_index: int,
+) -> BlockMask | None:
+    """Build a causal block mask that also isolates packed sequences."""
+    packed_sequence_indices = find_packed_sequence_indices(position_ids)
+    if packed_sequence_indices is None:
+        return None
+    if position_ids.shape[-1] != query_length or query_length != key_length:
+        raise ValueError(
+            "Gemma 4 packed FlexAttention requires matching position, query, and key lengths, "
+            f"got positions={position_ids.shape[-1]}, query={query_length}, key={key_length}"
+        )
+
+    def packed_causal_mask(batch: Tensor, _head: Tensor, query: Tensor, key: Tensor) -> Tensor:
+        same_sequence = packed_sequence_indices[batch, query] == packed_sequence_indices[batch, key]
+        return (query >= key) & same_sequence
+
+    return create_block_mask(
+        packed_causal_mask,
+        B=position_ids.shape[0],
+        H=None,
+        Q_LEN=query_length,
+        KV_LEN=key_length,
+        device=torch.device("cuda", device_index),
+    )
 
 
 @lru_cache(maxsize=16)
@@ -89,7 +120,16 @@ def gemma4_hybrid_attention_forward(
         device_index = query.device.index
         if device_index is None:
             raise ValueError("Gemma 4 hybrid attention requires CUDA tensors")
-        block_mask = _get_causal_block_mask(query.shape[-2], key.shape[-2], device_index)
+        position_ids = kwargs.get("position_ids")
+        if position_ids is not None:
+            block_mask = _get_packed_causal_block_mask(
+                position_ids,
+                query.shape[-2],
+                key.shape[-2],
+                device_index,
+            )
+        if block_mask is None:
+            block_mask = _get_causal_block_mask(query.shape[-2], key.shape[-2], device_index)
 
     output = _compiled_flex_attention(
         query,
