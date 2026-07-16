@@ -155,9 +155,12 @@ class NIXLWeightUpdateWorker(Worker):
             initialize_layerwise_reload(model)
             for module in model.modules():
                 for name, tensor in get_layer_tensors(module).items():
-                    loader = getattr(tensor, "weight_loader", None)
-                    if loader is not None:
-                        tensor.weight_loader = self._stamp(recorder, module, name, _get_original_loader(tensor))
+                    # Stamp tensors even when layerwise reload deliberately
+                    # skipped wrapping them. Some models (for example
+                    # Nemotron's e_score_correction_bias) still load those via
+                    # vLLM's default loader, and the bake must attribute that
+                    # copy to its destination like any custom loader copy.
+                    tensor.weight_loader = self._stamp(recorder, module, name, _get_original_loader(tensor))
 
             weights = (
                 (
