@@ -1,4 +1,4 @@
-# ECHO on the multi-turn alphabet-sort env (bundled with verifiers): GRPO on
+# ECHO on the multi-turn alphabet-sort V1 taskset: GRPO on
 # action tokens + weighted CE on the env's observation tokens.
 #   uv run rl @ configs/debug/algorithms/echo.toml
 
@@ -25,8 +25,9 @@ type = "echo"
 alpha = 0.1
 
 [[orchestrator.train.env]]
-id = "alphabet-sort"
-args = { min_turns = 3, max_turns = 5, power_per_turn = false }
+name = "alphabet-sort"
+taskset = { id = "alphabet-sort-v1", min_turns = 3, max_turns = 5, task = { power_per_turn = false } }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.train.sampling]
 max_completion_tokens = 512

@@ -1,21 +1,15 @@
 # Wordle
 
-In this example, we demonstrate how to train `Qwen3-1.7B` to play Wordle. This will require a SFT warmup to learn the format of the environment and, finally, multi-turn RL against the [`wordle`](https://app.primeintellect.ai/dashboard/environments/will/wordle) environment to improve performance.
+In this example, we demonstrate how to train `Qwen3-1.7B` to play Wordle. This will require a SFT warmup to learn the format and, finally, multi-turn RL against the `wordle-v1` taskset to improve performance.
 
 > The commands in this example were designed to be run on 2 GPUs (one trainer and one inference GPU). It is possible to run on less or more GPUs using different deployment strategies. If you run on a different setup, you may need to adjust the start commands.
 
 ## Setup
 
-First, let's install the environment using the `prime` (`uv tool install prime`)
+The taskset is included through the Verifiers workspace. After syncing the repository, verify it with:
 
 ```bash
-prime env install will/wordle
-```
-
-Verify your installation by trying to import the environment.
-
-```bash
-uv run python -c "import wordle"
+uv run python -c "import wordle_v1"
 ```
 
 Start the pre-layouted `tmux` session which we will use to run all experiments and view logs conveniently
@@ -35,7 +29,7 @@ Then, use the `vf-eval` entrypoint to evaluate the model in the `wordle` environ
 
 ```bash
 # Run this in the `Trainer` pane
-uv run vf-eval wordle -m Qwen/Qwen3-1.7B -b http://localhost:8000/v1 -n 20 -t 1024
+uv run vf-eval wordle-v1 -m Qwen/Qwen3-1.7B -b http://localhost:8000/v1 -n 20 -t 1024
 ```
 
 We got an **average reward of ~0.2** across the 20x3 rollouts. From the summary, we can see that the most of the reward is coming from format and partial rewards. In fact, the model does not guess the correct word within any game, leading to a win rate of **0%**. Looking at some samples, it is evident repeatedly submitting guesses in the wrong format and is not able to revise its strategy from the environment feedback. Let's do some SFT warmup to get the model to learn the format of the environment.
@@ -111,7 +105,7 @@ uv run inference --model.name PrimeIntellect/Qwen3-1.7B-Wordle-RL
 
 ```bash
 # Run this in the `Trainer` pane
-uv run vf-eval wordle -m PrimeIntellect/Qwen3-1.7B-Wordle-RL -b http://localhost:8000/v1 -n 20 --max-tokens 1024
+uv run vf-eval wordle-v1 -m PrimeIntellect/Qwen3-1.7B-Wordle-RL -b http://localhost:8000/v1 -n 20 --max-tokens 1024
 ```
 
 Way better! Our model now wins **~60%** and gets an average reward of **~1.5**.

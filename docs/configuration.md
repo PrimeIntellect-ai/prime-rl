@@ -148,26 +148,28 @@ Training environments are an array of tables — set one per env, optionally wit
 
 ```toml
 [[orchestrator.train.env]]
-id = "math-env"
 name = "gsm8k"
-args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
+taskset = { id = "gsm8k-v1", split = "train" }
+harness = { id = "null", runtime = { type = "subprocess" } }
 ratio = 3  # 75% of batches
 
 [[orchestrator.train.env]]
-id = "reverse-text"
+name = "reverse-text"
+taskset = { id = "reverse-text-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
 ratio = 1  # default — 25% of batches
 
 [[orchestrator.eval.env]]
-id = "math-env"
 name = "gsm8k-eval"
-args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
+taskset = { id = "gsm8k-v1", split = "test" }
+harness = { id = "null", runtime = { type = "subprocess" } }
 ```
 
 `ratio` defaults to `1` (equal weight per env); values are relative weights normalized to probabilities across envs.
 
-`args` is forwarded verbatim to the environment's `load_environment(**args)`.
+Fields in `taskset` configure the V1 taskset. `harness` selects how its tasks are run.
 
-The same `id` can appear multiple times across train and eval (or with different `args`) — useful for evaluating on a held-out split of the env you're training on, or comparing two configurations of the same env side by side. When `id` is reused, set a distinct `name` on each entry; `name` defaults to `id` and must be unique across all envs in the same group.
+The same taskset can appear multiple times across train and eval (or with different settings) — useful for evaluating on a held-out split or comparing two configurations side by side. When it is reused, set a distinct `name` on each entry; `name` defaults to the taskset id and must be unique across all envs in the same group.
 
 ### Environment Variables
 

@@ -38,7 +38,9 @@ name = "qwen3"
 max_completion_tokens = 128
 
 [[orchestrator.train.env]]
-id = "reverse-text"
+name = "reverse-text"
+taskset = { id = "reverse-text-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
 interval = 1
@@ -48,7 +50,9 @@ num_examples = 16
 max_completion_tokens = 128
 
 [[orchestrator.eval.env]]
-id = "reverse-text"
+name = "reverse-text"
+taskset = { id = "reverse-text-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [trainer.optim]
 lr = 3e-6
