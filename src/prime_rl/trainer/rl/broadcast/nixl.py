@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -19,27 +20,30 @@ from prime_rl.configs.trainer import NIXLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
+from prime_rl.trainer.weights import gather_weights_on_master
 from prime_rl.trainer.world import get_world
 from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc
+from prime_rl.weight_transfer.diagnostics import fingerprint_tensor
 from prime_rl.weight_transfer.mx import MxChannel
 from prime_rl.weight_transfer.nixl import NixlAgent, agent_name, configure_ucx
 from prime_rl.weight_transfer.ownership import ShardCandidate, select_shard_owners, select_source_tensors
 from prime_rl.weight_transfer.publication import publish_hf_tensors
 from prime_rl.weight_transfer.wire import (
     AgentDescriptor,
+    DiagnosticSnapshot,
     SyncSignal,
     WeightManifest,
     decode_signal,
+    encode_diagnostics,
     encode_manifest,
     encode_signal,
 )
 
-SERVING_DTYPE = torch.bfloat16
 _DIAGNOSTIC_SAMPLES_PER_SHARD = 64
 
 
 def _local_source_signature(shards: list["_LocalShard"]) -> tuple[int, int, float, float, float, float]:
-    """Bounded-cost signature of the exact registered BF16 source buffers."""
+    """Bounded-cost signature of the exact registered source buffers."""
 
     accumulator = None
     shard_count = 0
@@ -81,11 +85,11 @@ class _LocalShard:
         )
 
     def allocate(self, device: torch.device) -> None:
-        if self.source.dtype == SERVING_DTYPE and self.source.is_cuda and self.source.is_contiguous():
+        if self.source.is_cuda and self.source.is_contiguous():
             self.buffer = self.source
         else:
             with classic_cuda_alloc():
-                self.buffer = torch.empty(self.source.shape, dtype=SERVING_DTYPE, device=device)
+                self.buffer = torch.empty(self.source.shape, dtype=self.source.dtype, device=device)
 
     def refresh(self) -> None:
         if self.buffer is None:
@@ -102,7 +106,7 @@ class _LocalShard:
         return ShardCandidate(
             rank=self.candidate.rank,
             name=self.candidate.name,
-            dtype=SERVING_DTYPE,
+            dtype=self.buffer.dtype,
             full_shape=self.candidate.full_shape,
             global_offset=self.candidate.global_offset,
             shape=self.candidate.shape,
@@ -151,7 +155,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             candidate = ShardCandidate(
                 rank=self.world.rank,
                 name=name,
-                dtype=SERVING_DTYPE,
+                dtype=tensor.dtype,
                 full_shape=full_shape,
                 global_offset=offset,
                 shape=shape,
@@ -240,7 +244,13 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 "manifest",
                 0,
             ).publish(encode_manifest(self.manifest))
-            self.logger.info(f"Published {len(tensors)} HF logical tensors over {len(agents)} trainer NIXL agents")
+            dtype_counts = Counter(tensor.dtype for tensor in tensors)
+            self.logger.info(
+                "Published {} HF logical tensors over {} trainer NIXL agents; source_dtypes={}",
+                len(tensors),
+                len(agents),
+                dict(sorted(dtype_counts.items())),
+            )
         self.initialized = True
 
     @torch.no_grad()
@@ -267,6 +277,30 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     len(diagnostics),
                     [count for _, count, _, _ in diagnostics],
                     [signature for _, _, _, signature in diagnostics],
+                )
+
+            reference_state = gather_weights_on_master(model, is_master=self.world.is_master)
+            if self.world.is_master:
+                assert isinstance(model, PreTrainedModelPrimeRL)
+                model.convert_to_hf(reference_state)
+                reference = DiagnosticSnapshot(
+                    session_id=self.config.session_id,
+                    model=self.config.model_name,
+                    step=step,
+                    tensors=tuple(
+                        fingerprint_tensor(name, tensor) for name, tensor in sorted(reference_state.items())
+                    ),
+                )
+                MxChannel(
+                    f"{self.config.host}:{self.config.port}",
+                    self.config.session_id,
+                    self.config.model_name,
+                    "trainer",
+                    "diagnostics",
+                    0,
+                ).publish(encode_diagnostics(reference))
+                self.logger.info(
+                    "NIXL trainer reference diagnostics v{}: hf_tensors={}", step, len(reference.tensors)
                 )
         dist.barrier()
 

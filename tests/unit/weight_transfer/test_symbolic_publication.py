@@ -153,6 +153,29 @@ def test_lazy_copy_records_materialized_destination_without_copying() -> None:
     assert copy.stride == (4, 1)
 
 
+def test_lazy_to_defers_dtype_cast_to_destination_copy() -> None:
+    recorder = BakeRecorder()
+    layer = object()
+    source = LazyWeight(
+        "model.weight",
+        torch.Size((2, 4)),
+        torch.float32,
+        torch.device("cpu"),
+        recorder,
+    )
+    converted = source.to(dtype=torch.bfloat16)
+    destination = torch.empty((2, 4), dtype=torch.bfloat16)
+
+    recorder.current = (layer, "weight")
+    destination.copy_(converted)
+    recorder.current = None
+
+    assert converted.dtype is torch.bfloat16
+    assert converted.op_chain == ()
+    assert len(recorder.copies) == 1
+    assert recorder.copies[0].src_name == "model.weight"
+
+
 def test_replica_ownership_is_deduplicated_and_balanced() -> None:
     candidates: list[ShardCandidate] = []
     for name in ("model.a", "model.b"):

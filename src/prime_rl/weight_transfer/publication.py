@@ -123,7 +123,10 @@ def publish_hf_tensors(converter: WeightConverter, sources: tuple[SourceTensor, 
         published.append(
             PublishedTensor(
                 name=name,
-                dtype=str(value.dtype),
+                # The manifest describes the registered RDMA bytes, not a
+                # dtype cast requested symbolically by a consumer/conversion.
+                # That cast is performed by the destination copy after pull.
+                dtype=str(source.dtype),
                 shape=tuple(value.shape),
                 segments=_segments_for_view(source, value),
             )

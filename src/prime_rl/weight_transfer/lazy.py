@@ -16,7 +16,7 @@ that layout is bf16, so per sync the worker materializes bf16 params, fills
 them with the pulled slices, and re-runs ``process_weights_after_loading`` to
 re-quantize to fp8 — exactly as a normal vLLM weight reload.
 
-Any op outside the allowlist (arithmetic, ``.to``/``.float``, ``.item``,
+Any op outside the allowlist (arithmetic, ``.float``, ``.item``,
 ``.data``, bool-mask indexing) raises :class:`UnsupportedOpError` — a loud
 failure instead of silently transferring the wrong bytes.
 """
@@ -125,6 +125,30 @@ class LazyWeight(torch.Tensor):
     def __torch_function__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
 
+        # A dtype/device-only ``to`` does not change which source elements are
+        # consumed. Keep the existing region chain and expose the requested
+        # dtype to the remainder of the loader; the real cast is deferred to
+        # the final destination ``copy_`` after the raw source bytes arrive.
+        if func is torch.Tensor.to:
+            self_ = args[0]
+            if isinstance(self_, cls):
+                target_dtype = kwargs.get("dtype", self_.dtype)
+                positional = args[1:]
+                if positional:
+                    first = positional[0]
+                    if isinstance(first, torch.dtype):
+                        target_dtype = first
+                    elif isinstance(first, torch.Tensor):
+                        target_dtype = first.dtype
+                    elif len(positional) > 1 and isinstance(positional[1], torch.dtype):
+                        target_dtype = positional[1]
+                memory_format = kwargs.get("memory_format", torch.preserve_format)
+                if memory_format is not torch.preserve_format:
+                    raise UnsupportedOpError(
+                        f"to(memory_format={memory_format}) for lazy weight {self_._name!r} may change layout"
+                    )
+                return self_._make_child(self_.shape, target_dtype)
+
         # copy_ with a lazy source is the recording sink.
         if func is torch.Tensor.copy_:
             dst = args[0]
@@ -203,7 +227,7 @@ class LazyWeight(torch.Tensor):
                     f"unsupported op {func} reached __torch_dispatch__ on lazy weight "
                     f"{value._name!r} (chain={value._ops!r}). Supported ops: "
                     f"{sorted(set(SUPPORTED_OPS.values()))}, plus copy_ as the sink. "
-                    "Loaders that need .to(), .float(), .item(), arithmetic, bool-mask "
+                    "Loaders that need .float(), .item(), arithmetic, bool-mask "
                     "indexing, or .data access are not supported by the NIXL weight broadcast."
                 )
         return func(*args, **kwargs)

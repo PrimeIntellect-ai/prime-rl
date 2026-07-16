@@ -63,6 +63,26 @@ class SyncSignal(msgspec.Struct, frozen=True):
     protocol_version: int = PROTOCOL_VERSION
 
 
+class TensorFingerprint(msgspec.Struct, frozen=True):
+    """Compact BF16-bit fingerprint for one logical HF tensor."""
+
+    name: str
+    numel: int
+    word_sum: int
+    word_square_sum: int
+    samples: tuple[int, ...]
+
+
+class DiagnosticSnapshot(msgspec.Struct, frozen=True):
+    """Trainer reference fingerprints for one policy version."""
+
+    session_id: str
+    model: str
+    step: int
+    tensors: tuple[TensorFingerprint, ...]
+    protocol_version: int = PROTOCOL_VERSION
+
+
 def encode_manifest(manifest: WeightManifest) -> bytes:
     return msgspec.msgpack.encode(manifest)
 
@@ -85,3 +105,16 @@ def decode_signal(data: bytes) -> SyncSignal:
     if signal.protocol_version != PROTOCOL_VERSION:
         raise ValueError(f"unsupported weight-transfer protocol {signal.protocol_version}; expected {PROTOCOL_VERSION}")
     return signal
+
+
+def encode_diagnostics(snapshot: DiagnosticSnapshot) -> bytes:
+    return msgspec.msgpack.encode(snapshot)
+
+
+def decode_diagnostics(data: bytes) -> DiagnosticSnapshot:
+    snapshot = msgspec.msgpack.decode(data, type=DiagnosticSnapshot)
+    if snapshot.protocol_version != PROTOCOL_VERSION:
+        raise ValueError(
+            f"unsupported weight-transfer protocol {snapshot.protocol_version}; expected {PROTOCOL_VERSION}"
+        )
+    return snapshot

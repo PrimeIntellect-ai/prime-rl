@@ -16,6 +16,7 @@ from vllm.logger import init_logger
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
 from prime_rl.weight_transfer.chains import region_elem_runs, resolve_chain_region
 from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc
+from prime_rl.weight_transfer.diagnostics import fingerprint_tensor
 from prime_rl.weight_transfer.lazy import BakeRecorder, LazyWeight, RecordedCopy
 from prime_rl.weight_transfer.mx import MxChannel
 from prime_rl.weight_transfer.nixl import NixlAgent, agent_name, configure_ucx
@@ -24,6 +25,7 @@ from prime_rl.weight_transfer.sharding import zip_source_destination
 from prime_rl.weight_transfer.wire import (
     SyncSignal,
     WeightManifest,
+    decode_diagnostics,
     decode_manifest,
     decode_signal,
     encode_signal,
@@ -411,6 +413,21 @@ class NIXLWeightUpdateWorker(Worker):
             )
 
         self._mx.wait_for("trainer", "sync", 1, ready, self._timeout)
+        self._reference_fingerprints = None
+        if self._validate_reload:
+            def matching_diagnostics(payload: bytes) -> bool:
+                snapshot = decode_diagnostics(payload)
+                return (
+                    snapshot.session_id == manifest.session_id
+                    and snapshot.model == manifest.model
+                    and snapshot.step == step
+                )
+
+            payloads = self._mx.wait_for(
+                "trainer", "diagnostics", 1, matching_diagnostics, self._timeout
+            )
+            snapshot = decode_diagnostics(next(iter(payloads.values())))
+            self._reference_fingerprints = {fingerprint.name: fingerprint for fingerprint in snapshot.tensors}
         started = time.perf_counter()
         self._reload_groups(step)
         update_mla_absorbed_weights(self.raw_model)
@@ -448,6 +465,12 @@ class NIXLWeightUpdateWorker(Worker):
         write_mismatch_count = 0
         write_mismatches: list[str] = []
         dtype_casts: dict[tuple[torch.dtype, torch.dtype], int] = defaultdict(int)
+        source_checks = 0
+        source_partial = 0
+        source_value_mismatch_count = 0
+        source_layout_mismatch_count = 0
+        source_value_mismatches: list[str] = []
+        source_layout_mismatches: list[str] = []
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
             for group in self._groups:
@@ -477,6 +500,29 @@ class NIXLWeightUpdateWorker(Worker):
                     source = (
                         self._arena.narrow(0, group.arena_offsets[index], num_bytes).view(source_dtype).view(copy.shape)
                     )
+                    if self._validate_reload and self._reference_fingerprints is not None:
+                        reference = self._reference_fingerprints.get(copy.src_name)
+                        if reference is None or reference.numel != source.numel():
+                            source_partial += 1
+                        else:
+                            actual = fingerprint_tensor(copy.src_name, source)
+                            source_checks += 1
+                            invariant_matches = (
+                                actual.word_sum == reference.word_sum
+                                and actual.word_square_sum == reference.word_square_sum
+                            )
+                            if not invariant_matches:
+                                source_value_mismatch_count += 1
+                                if len(source_value_mismatches) < 20:
+                                    source_value_mismatches.append(
+                                        f"{copy.src_name}: expected=(sum={reference.word_sum},"
+                                        f"sq={reference.word_square_sum}) "
+                                        f"actual=(sum={actual.word_sum},sq={actual.word_square_sum})"
+                                    )
+                            elif actual.samples != reference.samples:
+                                source_layout_mismatch_count += 1
+                                if len(source_layout_mismatches) < 20:
+                                    source_layout_mismatches.append(copy.src_name)
                     destination = getattr(group.layer, copy.param_name).as_strided(
                         copy.shape,
                         copy.stride,
@@ -639,6 +685,20 @@ class NIXLWeightUpdateWorker(Worker):
             )
             if write_mismatches:
                 logger.warning("NIXL logical destination write mismatches; first copies: %s", write_mismatches)
+            logger.info(
+                "NIXL source reference diagnostics v%d: rank=%d checked=%d partial=%d value_mismatches=%d "
+                "layout_mismatches=%d",
+                step,
+                self._rank,
+                source_checks,
+                source_partial,
+                source_value_mismatch_count,
+                source_layout_mismatch_count,
+            )
+            if source_value_mismatches:
+                logger.warning("NIXL pulled source value mismatches; first tensors: %s", source_value_mismatches)
+            if source_layout_mismatches:
+                logger.warning("NIXL pulled source layout mismatches; first tensors: %s", source_layout_mismatches)
             if logical_changed_kernel_unchanged:
                 logger.warning(
                     "NIXL logical inputs changed but kernel tensors did not; first layers: %s",
