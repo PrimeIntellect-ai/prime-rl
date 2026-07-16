@@ -35,6 +35,34 @@ from prime_rl.weight_transfer.wire import (
 )
 
 SERVING_DTYPE = torch.bfloat16
+_DIAGNOSTIC_SAMPLES_PER_SHARD = 64
+
+
+def _local_source_signature(shards: list["_LocalShard"]) -> tuple[int, int, float, float, float, float]:
+    """Bounded-cost signature of the exact registered BF16 source buffers."""
+
+    accumulator = None
+    shard_count = 0
+    total_numel = 0
+    for index, shard in enumerate(shards):
+        if shard.buffer is None or shard.buffer.numel() == 0:
+            continue
+        flat = shard.buffer.detach().reshape(-1)
+        stride = max(flat.numel() // _DIAGNOSTIC_SAMPLES_PER_SHARD, 1)
+        values = flat[::stride][:_DIAGNOSTIC_SAMPLES_PER_SHARD].to(torch.float64)
+        if accumulator is None:
+            accumulator = torch.zeros(4, dtype=torch.float64, device=values.device)
+        salt = 1 + sum((i + 1) * ord(char) for i, char in enumerate(shard.candidate.name)) % 997
+        positions = torch.arange(1, values.numel() + 1, dtype=torch.float64, device=values.device)
+        accumulator[0] += values.sum() * salt
+        accumulator[1] += values.abs().sum() * salt
+        accumulator[2] += values.square().sum() * salt
+        accumulator[3] += (values * positions).sum() * (salt + index % 31)
+        shard_count += 1
+        total_numel += flat.numel()
+    if accumulator is None:
+        return (0, 0, 0.0, 0.0, 0.0, 0.0)
+    return (shard_count, total_numel, *accumulator.cpu().tolist())
 
 
 @dataclass
@@ -94,6 +122,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.local_shards: list[_LocalShard] = []
         self.manifest: WeightManifest | None = None
         self.initialized = False
+        self._previous_source_signature: tuple[int, int, float, float, float, float] | None = None
 
     def _local_candidates(self, model: nn.Module) -> list[_LocalShard]:
         local: list[_LocalShard] = []
@@ -222,6 +251,23 @@ class NIXLWeightBroadcast(WeightBroadcast):
             shard.refresh()
         if self.local_shards:
             torch.cuda.synchronize()
+        if getattr(self.config, "validate_reload", False):
+            signature = _local_source_signature(self.local_shards)
+            changed = self._previous_source_signature is not None and signature != self._previous_source_signature
+            diagnostics = self._all_gather_objects((self.world.rank, len(self.local_shards), changed, signature))
+            self._previous_source_signature = signature
+            if self.world.is_master:
+                changed_ranks = [rank for rank, _, did_change, _ in diagnostics if did_change]
+                self.logger.info(
+                    "NIXL trainer source diagnostics v%d: ranks=%d changed_ranks=%d/%d "
+                    "local_shards=%s signatures=%s",
+                    step,
+                    len(diagnostics),
+                    len(changed_ranks),
+                    len(diagnostics),
+                    [count for _, count, _, _ in diagnostics],
+                    [signature for _, _, _, signature in diagnostics],
+                )
         dist.barrier()
 
         if self.world.is_master:

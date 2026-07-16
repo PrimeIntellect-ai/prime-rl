@@ -36,12 +36,63 @@ else:
 
 logger = init_logger("vllm.inference.vllm.worker_nixl")
 
+_DIAGNOSTIC_SAMPLES_PER_TENSOR = 256
+
 
 def _torch_dtype(name: str) -> torch.dtype:
     dtype = getattr(torch, name.removeprefix("torch."), None)
     if not isinstance(dtype, torch.dtype):
         raise ValueError(f"unsupported published dtype {name!r}")
     return dtype
+
+
+def _tensor_set_signature(
+    module: nn.Module,
+    names: tuple[str, ...] | list[str],
+) -> tuple[int, int, float, float, float, float, float]:
+    """Return a deterministic, bounded-cost signature for a set of tensors.
+
+    This is intentionally a diagnostic rather than a cryptographic checksum.
+    It samples every tensor, salts samples by tensor name, and includes several
+    independent moments so update-to-update equality is very unlikely to hide
+    a changed or permuted tensor. Only the final seven scalars synchronize to
+    the host, regardless of how many tensors are represented.
+    """
+
+    device = None
+    accumulator = None
+    tensor_count = 0
+    total_numel = 0
+    for name in names:
+        tensor = getattr(module, name, None)
+        if not isinstance(tensor, torch.Tensor) or tensor.numel() == 0:
+            continue
+        if device is None:
+            device = tensor.device
+            accumulator = torch.zeros(5, dtype=torch.float64, device=device)
+        if tensor.device != device:
+            raise RuntimeError("reload diagnostic tensor set spans multiple devices")
+
+        flat = tensor.detach().reshape(-1)
+        stride = max(flat.numel() // _DIAGNOSTIC_SAMPLES_PER_TENSOR, 1)
+        sample = flat[::stride][:_DIAGNOSTIC_SAMPLES_PER_TENSOR].to(torch.float64)
+        finite = torch.isfinite(sample)
+        values = torch.where(finite, sample, torch.zeros_like(sample))
+        salt = 1 + sum((index + 1) * ord(char) for index, char in enumerate(name)) % 997
+        positions = torch.arange(1, values.numel() + 1, dtype=torch.float64, device=device)
+        assert accumulator is not None
+        accumulator[0] += values.sum() * salt
+        accumulator[1] += values.abs().sum() * salt
+        accumulator[2] += values.square().sum() * salt
+        accumulator[3] += (values * positions).sum() * salt
+        accumulator[4] += (~finite).sum()
+        tensor_count += 1
+        total_numel += tensor.numel()
+
+    if accumulator is None:
+        return (0, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    stats = accumulator.cpu().tolist()
+    return (tensor_count, total_numel, *stats)
 
 
 class _BakedGroup:
@@ -207,6 +258,25 @@ class NIXLWeightUpdateWorker(Worker):
                     )
                 groups.append(_BakedGroup(layer, copies))
 
+            if self._validate_reload:
+                published_names = {tensor.name for tensor in manifest.tensors}
+                consumed_names = {copy.src_name for copy in recorder.copies}
+                unconsumed = sorted(published_names - consumed_names)
+                logger.info(
+                    "NIXL bake coverage: rank=%d published=%d consumed=%d copies=%d unconsumed=%d",
+                    self._rank,
+                    len(published_names),
+                    len(consumed_names),
+                    len(recorder.copies),
+                    len(unconsumed),
+                )
+                if unconsumed:
+                    logger.info(
+                        "NIXL rank-local bake did not consume %d published tensors; first entries: %s",
+                        len(unconsumed),
+                        unconsumed[:20],
+                    )
+
             self._param_layout: dict[tuple[int, str], tuple[torch.Size, torch.dtype]] = {}
             for group in groups:
                 for name in group.param_names:
@@ -221,6 +291,9 @@ class NIXLWeightUpdateWorker(Worker):
                     info.reset()
             if hasattr(model, "_original_do_torchao_reload"):
                 model._do_torchao_reload = model._original_do_torchao_reload
+
+        self._previous_logical_signatures: dict[int, tuple[int, int, float, float, float, float, float]] = {}
+        self._previous_kernel_signatures: dict[int, tuple[int, int, float, float, float, float, float]] = {}
 
         if not groups:
             raise RuntimeError("vLLM consumed no published weights during the NIXL bake")
@@ -316,7 +389,7 @@ class NIXLWeightUpdateWorker(Worker):
 
         self._mx.wait_for("trainer", "sync", 1, ready, self._timeout)
         started = time.perf_counter()
-        self._reload_groups()
+        self._reload_groups(step)
         update_mla_absorbed_weights(self.raw_model)
         torch.cuda.synchronize(self.device)
         self._mx.publish(
@@ -336,7 +409,7 @@ class NIXLWeightUpdateWorker(Worker):
             f"in {time.perf_counter() - started:.2f}s"
         )
 
-    def _reload_groups(self) -> None:
+    def _reload_groups(self, step: int) -> None:
         from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
         from vllm.model_executor.model_loader.reload.layerwise import (
             LAYERWISE_INFO,
@@ -346,6 +419,8 @@ class NIXLWeightUpdateWorker(Worker):
         )
 
         model = self.raw_model
+        logical_signatures: dict[int, tuple[int, int, float, float, float, float, float]] = {}
+        kernel_tensor_sets: dict[int, tuple[_BakedGroup, tuple[str, ...]]] = {}
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
             for group in self._groups:
@@ -394,6 +469,9 @@ class NIXLWeightUpdateWorker(Worker):
                         parameter = getattr(group.layer, name)
                         parameter.copy_(transform(parameter))
 
+                if self._validate_reload:
+                    logical_signatures[id(group.layer)] = _tensor_set_signature(group.layer, group.param_names)
+
                 quant_method = getattr(group.layer, "quant_method", None)
                 if isinstance(quant_method, QuantizeMethodBase):
                     if hasattr(group.layer, "_already_called_process_weights_after_loading"):
@@ -434,6 +512,58 @@ class NIXLWeightUpdateWorker(Worker):
                             nonfinite,
                             max_abs,
                         )
+                if self._validate_reload:
+                    if info is not None and info.kernel_tensors is not None:
+                        parameters, buffers = info.kernel_tensors
+                        kernel_names = tuple((*parameters, *buffers))
+                    else:
+                        kernel_names = tuple(group.param_names)
+                    kernel_tensor_sets[id(group.layer)] = (group, kernel_names)
                 if info is not None:
                     info.reset()
             finalize_layerwise_reload(model, self.model_runner.model_config)
+
+        if self._validate_reload:
+            logical_changed = 0
+            kernel_changed = 0
+            logical_changed_kernel_unchanged: list[str] = []
+            logical_unchanged_kernel_changed: list[str] = []
+            for layer_id, logical_signature in logical_signatures.items():
+                group, kernel_names = kernel_tensor_sets[layer_id]
+                kernel_signature = _tensor_set_signature(group.layer, kernel_names)
+                previous_logical = self._previous_logical_signatures.get(layer_id)
+                previous_kernel = self._previous_kernel_signatures.get(layer_id)
+                did_logical_change = previous_logical is not None and logical_signature != previous_logical
+                did_kernel_change = previous_kernel is not None and kernel_signature != previous_kernel
+                logical_changed += int(did_logical_change)
+                kernel_changed += int(did_kernel_change)
+                layer_name = self._layer_names.get(layer_id, type(group.layer).__name__)
+                if did_logical_change and not did_kernel_change:
+                    logical_changed_kernel_unchanged.append(layer_name)
+                elif did_kernel_change and not did_logical_change:
+                    logical_unchanged_kernel_changed.append(layer_name)
+                self._previous_logical_signatures[layer_id] = logical_signature
+                self._previous_kernel_signatures[layer_id] = kernel_signature
+
+            logger.info(
+                "NIXL reload diagnostics v%d: rank=%d groups=%d logical_changed=%d "
+                "kernel_changed=%d logical_changed_kernel_unchanged=%d "
+                "logical_unchanged_kernel_changed=%d",
+                step,
+                self._rank,
+                len(logical_signatures),
+                logical_changed,
+                kernel_changed,
+                len(logical_changed_kernel_unchanged),
+                len(logical_unchanged_kernel_changed),
+            )
+            if logical_changed_kernel_unchanged:
+                logger.warning(
+                    "NIXL logical inputs changed but kernel tensors did not; first layers: %s",
+                    logical_changed_kernel_unchanged[:20],
+                )
+            if logical_unchanged_kernel_changed:
+                logger.warning(
+                    "NIXL kernel tensors changed without changed logical inputs; first layers: %s",
+                    logical_unchanged_kernel_changed[:20],
+                )
