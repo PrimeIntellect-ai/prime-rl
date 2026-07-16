@@ -120,7 +120,7 @@ def test_fake_dataset_single_rank_state_with_packing():
         assert micro_batch["input_ids"].shape == (1, 128)
         assert micro_batch["seq_lens"].sum() == micro_batch["input_ids"].shape[1]
         if micro_batch["padding_len"]:
-            assert micro_batch["seq_lens"][-1] == micro_batch["padding_len"]
+            assert micro_batch["seq_lens"][-1] > micro_batch["padding_len"]
         dataset_state = dataloader.state_dict()["dataset_state"]
         pending_sample = dataset_state.get("pending_sample")
         expected_dataset_step = step + (pending_sample is not None)

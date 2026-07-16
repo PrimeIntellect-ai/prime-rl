@@ -63,7 +63,7 @@ def test_qwen3_moe_attn_only():
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
-    prime_output = prime_model(input_ids, position_ids)
+    prime_output = prime_model(input_ids, position_ids, seq_lens=torch.tensor([input_ids.shape[1]], device="cuda"))
     hf_output.logits.sum().backward()
     prime_output["logits"].sum().backward()
 
@@ -91,7 +91,7 @@ def test_qwen3_moe_mlp_only():
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
-    prime_output = prime_model(input_ids, position_ids)
+    prime_output = prime_model(input_ids, position_ids, seq_lens=torch.tensor([input_ids.shape[1]], device="cuda"))
     hf_output.logits.sum().backward()
     prime_output["logits"].sum().backward()
 
@@ -111,7 +111,7 @@ def test_qwen3_moe():
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
-    prime_output = prime_model(input_ids, position_ids)
+    prime_output = prime_model(input_ids, position_ids, seq_lens=torch.tensor([input_ids.shape[1]], device="cuda"))
     hf_output.logits.sum().backward()
     prime_output["logits"].sum().backward()
 
@@ -132,7 +132,8 @@ def test_qwen3_moe_router_replay():
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
     # Forward without router replay
-    out_normal = prime_model(input_ids, position_ids)
+    seq_lens = torch.tensor([input_ids.shape[1]], device="cuda")
+    out_normal = prime_model(input_ids, position_ids, seq_lens=seq_lens)
 
     # Construct routed_experts with fixed expert indices
     # Shape: [batch=1, seq_len=100, num_hidden_layers=3, num_experts_per_tok=4]
@@ -142,7 +143,7 @@ def test_qwen3_moe_router_replay():
 
     # Forward with router replay
     prime_model.zero_grad()
-    out_replay = prime_model(input_ids, position_ids, routed_experts=routed_experts)
+    out_replay = prime_model(input_ids, position_ids, routed_experts=routed_experts, seq_lens=seq_lens)
 
     # Outputs should differ because routing is forced to different experts
     assert out_replay["logits"].shape == out_normal["logits"].shape

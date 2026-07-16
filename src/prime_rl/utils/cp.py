@@ -11,7 +11,7 @@ import torch.distributed.nn as dist_nn
 import torch.nn as nn
 from ring_flash_attn import update_ring_flash_attn_params
 
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 CPStyle = Literal["ring", "ulysses"]
 
@@ -161,20 +161,25 @@ def setup_cp_params(
     cp_rank: int,
     cp_world_size: int,
     cp_group: dist.ProcessGroup,
+    *,
+    seq_lens: torch.Tensor,
     cp_style: CPStyle = "ring",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Prepare the input for context parallelism and set required attention params.
 
-    Both ring and ulysses styles need cu_seqlens computed from the *full*
-    (un-sharded) position_ids, then publish them to the patched attention layer:
+    Both ring and ulysses styles need cu_seqlens computed from the full,
+    unsharded sequence lengths, then publish them to the patched attention layer:
       - ring: via ring_flash_attn's DATA_PARAMS (with local_k_slice).
       - ulysses: via ULYSSES_PARAMS (just the full cu_seqlens / max_seqlen).
 
     Returns the sequence-sharded input_ids and position_ids — the rest of the
     model still runs sequence-sharded; only attention sees the full sequence.
     """
-    cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+    cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+        seq_lens.to(device=position_ids.device),
+        total_tokens=position_ids.shape[-1],
+    )
 
     if cp_style == "ring":
         update_ring_flash_attn_params(cu_seqlens, cp_group)

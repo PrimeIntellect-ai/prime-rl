@@ -25,7 +25,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
 from .converting_qwen3_5_moe import (
@@ -874,7 +874,8 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
-        seq_lens: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -887,37 +888,17 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
 
         flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
         if flash_attn_enabled:
-            if position_ids.ndim == 3:
-                if inputs_embeds.shape[0] != 1:
-                    raise ValueError("3D Qwen3.5 MRoPE positions require batch size 1 for varlen attention")
-                seq_len = inputs_embeds.shape[1]
-                if seq_lens is None:
-                    cu_seqlens = torch.tensor([0, seq_len], dtype=torch.int32, device=inputs_embeds.device)
-                    max_seqlen = seq_len
-                else:
-                    cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-                        seq_lens.to(device=inputs_embeds.device),
-                        total_tokens=seq_len,
-                    )
-            else:
-                if seq_lens is None:
-                    cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-                else:
-                    cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-                        seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
-                    )
+            if position_ids.ndim == 3 and inputs_embeds.shape[0] != 1:
+                raise ValueError("3D Qwen3.5 MRoPE positions require batch size 1 for varlen attention")
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+            )
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        elif seq_lens is not None:
-            # seq_lens is only populated for batch size 1 (see cat_collate), so this
-            # covers both 2D text-only packs and 3D MRoPE packs identically.
+        else:
             seq_lens = seq_lens.to(device=inputs_embeds.device)
             if seq_lens.numel() > 1 and "full_attention" in self.config.layer_types:
                 raise ValueError("Packed Qwen3.5 batches with full_attention layers require flash attention")
             cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens, total_tokens=inputs_embeds.shape[1])
-        else:
-            max_seqlen = None
-            cu_seqlens = None
-
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
@@ -988,7 +969,8 @@ class Qwen3_5MoeVLMModel(nn.Module):
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
-        seq_lens: torch.LongTensor | None = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs,
     ) -> MoeModelOutputWithPast:
         if inputs_embeds is None:
@@ -1201,7 +1183,8 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.LongTensor] = None,
         mm_token_type_ids: Optional[torch.LongTensor] = None,
-        seq_lens: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5_moe for now"

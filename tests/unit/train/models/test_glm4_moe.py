@@ -64,7 +64,7 @@ def test_glm4_moe_attn_only() -> None:
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
-    prime_output = prime_model(input_ids, position_ids)
+    prime_output = prime_model(input_ids, position_ids, seq_lens=torch.tensor([input_ids.shape[1]], device="cuda"))
     hf_output.logits.sum().backward()
     prime_output["logits"].sum().backward()
 
@@ -92,7 +92,7 @@ def test_glm4_moe_mlp_only() -> None:
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
-    prime_output = prime_model(input_ids, position_ids)
+    prime_output = prime_model(input_ids, position_ids, seq_lens=torch.tensor([input_ids.shape[1]], device="cuda"))
     hf_output.logits.sum().backward()
     prime_output["logits"].sum().backward()
 
@@ -112,7 +112,7 @@ def test_glm4_moe() -> None:
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids)
-    prime_output = prime_model(input_ids, position_ids)
+    prime_output = prime_model(input_ids, position_ids, seq_lens=torch.tensor([input_ids.shape[1]], device="cuda"))
     hf_output.logits.sum().backward()
     prime_output["logits"].sum().backward()
 

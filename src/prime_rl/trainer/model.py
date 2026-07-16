@@ -1215,8 +1215,7 @@ def forward(
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
     *,
-    seq_lens: Int[Tensor, "segments"] | None,
-    padding_len: int,
+    seq_lens: Int[Tensor, "segments"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
@@ -1253,15 +1252,7 @@ def forward(
         kwargs["position_ids"] = position_ids
 
     if isinstance(model, PreTrainedModelPrimeRL):
-        # Padding is an explicit final segment in transport metadata, but it is
-        # not a document. Merge it into the final real document before model
-        # guards count boundaries; no trainable token follows the padding.
-        model_seq_lens = seq_lens
-        if model_seq_lens is not None and padding_len:
-            if model_seq_lens.numel() < 2:
-                raise ValueError("Padding metadata requires at least one real sequence")
-            model_seq_lens = torch.cat([model_seq_lens[:-2], (model_seq_lens[-2] + model_seq_lens[-1]).view(1)])
-        kwargs["seq_lens"] = model_seq_lens
+        kwargs["seq_lens"] = seq_lens
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts

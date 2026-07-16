@@ -49,6 +49,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.sequence import get_cp_local_seq_lens
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
@@ -243,15 +244,19 @@ def train(config: SFTConfig):
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
         seq_lens = micro_batch["seq_lens"].to("cuda")
-        padding_len = micro_batch["padding_len"]
 
         if cp_enabled:
-            # seq_lens spans the pre-shard pack; CP consumption needs global
-            # boundary semantics the models don't have yet.
-            seq_lens = None
+            total_tokens = input_ids.shape[1]
             input_ids, position_ids = setup_cp_params(
-                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                input_ids,
+                position_ids,
+                cp_rank,
+                cp_size,
+                cp_group,
+                seq_lens=seq_lens,
+                cp_style=config.model.cp_style,
             )
+            seq_lens = get_cp_local_seq_lens(seq_lens, total_tokens, cp_rank, cp_size)
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
@@ -269,12 +274,11 @@ def train(config: SFTConfig):
                     input_ids,
                     position_ids,
                     seq_lens=seq_lens,
-                    padding_len=padding_len,
                     labels=masked_target_ids,
                 )
                 loss_sum = out["loss"] * token_count
             else:
-                out = forward(model, input_ids, position_ids, seq_lens=seq_lens, padding_len=padding_len)
+                out = forward(model, input_ids, position_ids, seq_lens=seq_lens)
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)

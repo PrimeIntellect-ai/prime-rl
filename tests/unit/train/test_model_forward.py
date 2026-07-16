@@ -2,10 +2,8 @@ from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
-from transformers import PretrainedConfig
 
 from prime_rl.trainer.model import forward
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 
 
 class _CaptureModel(nn.Module):
@@ -16,19 +14,6 @@ class _CaptureModel(nn.Module):
 
     def forward(self, **kwargs):
         self.kwargs = kwargs
-        input_ids = kwargs["input_ids"]
-        return {"logits": torch.zeros(*input_ids.shape, 4)}
-
-
-class _PrimeCaptureModel(PreTrainedModelPrimeRL):
-    config_class = PretrainedConfig
-
-    def __init__(self):
-        super().__init__(PretrainedConfig())
-        self.kwargs = None
-
-    def forward(self, seq_lens: torch.Tensor | None = None, **kwargs):
-        self.kwargs = {**kwargs, "seq_lens": seq_lens}
         input_ids = kwargs["input_ids"]
         return {"logits": torch.zeros(*input_ids.shape, 4)}
 
@@ -49,7 +34,6 @@ def test_forward_passes_renderer_mm_token_type_ids_through():
         input_ids,
         position_ids,
         seq_lens=torch.tensor([input_ids.shape[1]]),
-        padding_len=0,
         mm_kwargs={"pixel_values": pixel_values, "image_grid_thw": image_grid_thw},
         mm_token_type_ids=mm_token_type_ids,
     )
@@ -75,7 +59,6 @@ def test_forward_omits_mm_token_type_ids_when_renderer_does_not_supply():
         input_ids,
         position_ids,
         seq_lens=torch.tensor([input_ids.shape[1]]),
-        padding_len=0,
         mm_kwargs={"pixel_values": torch.ones(2, 3), "image_grid_thw": torch.tensor([[1, 1, 2]])},
     )
 
@@ -96,44 +79,8 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
         input_ids,
         position_ids,
         seq_lens=torch.tensor([input_ids.shape[1]]),
-        padding_len=0,
         mm_kwargs={"pixel_values": torch.ones(2, 3)},
     )
 
     assert model.kwargs is not None
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
-
-
-def test_forward_does_not_leak_seq_lens_to_generic_text_models():
-    model = _CaptureModel(SimpleNamespace(model_type="qwen3"))
-    input_ids = torch.tensor([[1, 2, 3, 4]])
-    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
-    seq_lens = torch.tensor([2, 2])
-
-    forward(model, input_ids, position_ids, seq_lens=seq_lens, padding_len=0)
-
-    assert model.kwargs is not None
-    assert "seq_lens" not in model.kwargs
-
-
-def test_forward_passes_typed_seq_lens_to_custom_models():
-    model = _PrimeCaptureModel()
-    input_ids = torch.tensor([[1, 2, 3, 4]])
-    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
-    seq_lens = torch.tensor([2, 2])
-
-    forward(model, input_ids, position_ids, seq_lens=seq_lens, padding_len=0)
-
-    assert model.kwargs is not None
-    torch.testing.assert_close(model.kwargs["seq_lens"], seq_lens)
-
-
-def test_forward_merges_padding_into_final_document_for_custom_models():
-    model = _PrimeCaptureModel()
-    input_ids = torch.tensor([[1, 2, 3, 0]])
-    position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
-
-    forward(model, input_ids, position_ids, seq_lens=torch.tensor([3, 1]), padding_len=1)
-
-    assert model.kwargs is not None
-    torch.testing.assert_close(model.kwargs["seq_lens"], torch.tensor([4]))

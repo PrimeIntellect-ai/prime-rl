@@ -406,7 +406,7 @@ class CatDataset(StatefulIterableDataset):
             result["position_ids"].extend(range(pad_len))
             result["loss_mask"].extend([False] * pad_len)
             result["target_ids"].extend([0] * pad_len)
-            result["seq_lens"].append(pad_len)
+            result["seq_lens"][-1] += pad_len
             result["padding_len"] = pad_len
         return result
 

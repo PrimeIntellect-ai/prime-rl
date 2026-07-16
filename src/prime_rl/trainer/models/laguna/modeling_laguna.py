@@ -27,7 +27,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
 class LagunaRotaryEmbedding(nn.Module):
@@ -345,7 +345,8 @@ class LagunaModel(LagunaPreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
-        seq_lens: torch.LongTensor | None = None,
+        *,
+        seq_lens: torch.LongTensor,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -356,17 +357,14 @@ class LagunaModel(LagunaPreTrainedModel):
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
         flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
-        if seq_lens is not None and seq_lens.numel() > 1 and not flash_attn_enabled:
+        if seq_lens.numel() > 1 and not flash_attn_enabled:
             # SDPA/eager attention has no varlen support and would attend across
             # packed document boundaries.
             raise ValueError("Packed Laguna batches require flash attention")
         if flash_attn_enabled:
-            if seq_lens is None:
-                cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-            else:
-                cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-                    seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
-                )
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+            )
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
             causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)
         else:
@@ -444,7 +442,8 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
-        seq_lens: torch.LongTensor | None = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom Laguna"

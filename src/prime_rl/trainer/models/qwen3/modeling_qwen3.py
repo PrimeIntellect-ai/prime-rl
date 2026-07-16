@@ -16,7 +16,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
 def _get_rope_type(config: Qwen3Config) -> str:
@@ -156,10 +156,11 @@ class Qwen3Model(Qwen3PreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        seq_lens: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
     ) -> BaseModelOutputWithPast:
         r"""
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`, *optional*):
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -171,17 +172,14 @@ class Qwen3Model(Qwen3PreTrainedModel):
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
         flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
-        if seq_lens is not None and seq_lens.numel() > 1 and not flash_attn_enabled:
+        if seq_lens.numel() > 1 and not flash_attn_enabled:
             # SDPA/eager attention has no varlen support and would attend across
             # packed document boundaries.
             raise ValueError("Packed Qwen3 batches require flash attention")
         if flash_attn_enabled:
-            if seq_lens is None:
-                cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-            else:
-                cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-                    seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
-                )
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+                seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+            )
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             cu_seqlens = None
@@ -236,11 +234,12 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[torch.Tensor] = None,
-        seq_lens: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`, *optional*):
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
             Indices of input tokens in the KV cache. Accepted only for HuggingFace API

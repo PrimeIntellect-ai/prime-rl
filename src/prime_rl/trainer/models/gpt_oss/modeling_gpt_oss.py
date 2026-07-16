@@ -307,11 +307,12 @@ class GptOssForCausalLM(GptOssPreTrainedModel, GenerationMixin):
         temperature: torch.Tensor | None = None,
         # Document boundaries derive from position_ids (HF packed-sequence masks);
         # seq_lens is accepted to satisfy the trainer's universal contract.
-        seq_lens: torch.LongTensor | None = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`, *optional*):
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are provided.
