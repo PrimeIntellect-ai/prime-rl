@@ -487,7 +487,7 @@ class Orchestrator:
             assert step is not None
             rollout.stamp(
                 run_id=self.monitor.run_id,
-                tag=rollout.kind,
+                run_type=rollout.kind,
                 step=step,
                 env_name=rollout.env_name,
                 group_id=str(rollout.group_id),

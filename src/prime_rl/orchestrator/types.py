@@ -75,8 +75,8 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
     fields are ``exclude=True``, so dumping a Rollout yields a plain trace on the wire; the
     orchestrator mirrors them onto the trace's own fields via ``vf.Trace.stamp`` (``kind`` as
-    ``tag``, the step, run id, and ``env_name``/``group_id``/``policy_version`` into ``info``)
-    when a rollout arrives, so the on-disk records stay fully placeable.
+    ``run.type``, the run id, the step, and ``env_name``/``group_id``/``policy_version`` into
+    ``info``) when a rollout arrives, so the on-disk records stay fully placeable.
 
     It is also the single currency the scoring hooks receive: a hook reads the trace
     directly (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``) and writes
