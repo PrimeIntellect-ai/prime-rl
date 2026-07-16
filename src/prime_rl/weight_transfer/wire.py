@@ -83,6 +83,59 @@ class DiagnosticSnapshot(msgspec.Struct, frozen=True):
     protocol_version: int = PROTOCOL_VERSION
 
 
+class KernelSourceCopy(msgspec.Struct, frozen=True):
+    """One HF slice copied into a logical vLLM parameter before postprocess."""
+
+    source_name: str
+    operations: bytes
+    offset: int
+    shape: tuple[int, ...]
+    stride: tuple[int, ...]
+
+
+class KernelInput(msgspec.Struct, frozen=True):
+    name: str
+    shape: tuple[int, ...]
+    dtype: str
+    copies: tuple[KernelSourceCopy, ...]
+
+
+class KernelOutput(msgspec.Struct, frozen=True):
+    name: str
+    shape: tuple[int, ...]
+    dtype: str
+
+
+class KernelLayerPlan(msgspec.Struct, frozen=True):
+    name: str
+    inputs: tuple[KernelInput, ...]
+    outputs: tuple[KernelOutput, ...]
+    graph: bytes
+
+
+class KernelPlan(msgspec.Struct, frozen=True):
+    """Inference-rank-specific HF -> live vLLM kernel conversion plan."""
+
+    session_id: str
+    epoch: int
+    model: str
+    rank: int
+    layers: tuple[KernelLayerPlan, ...]
+    protocol_version: int = PROTOCOL_VERSION
+
+
+class KernelBufferManifest(msgspec.Struct, frozen=True):
+    """Final kernel-format buffers produced for one inference rank."""
+
+    session_id: str
+    epoch: int
+    model: str
+    inference_rank: int
+    agent: AgentDescriptor
+    tensors: tuple[PublishedTensor, ...]
+    protocol_version: int = PROTOCOL_VERSION
+
+
 def encode_manifest(manifest: WeightManifest) -> bytes:
     return msgspec.msgpack.encode(manifest)
 
@@ -118,3 +171,27 @@ def decode_diagnostics(data: bytes) -> DiagnosticSnapshot:
             f"unsupported weight-transfer protocol {snapshot.protocol_version}; expected {PROTOCOL_VERSION}"
         )
     return snapshot
+
+
+def encode_kernel_plan(plan: KernelPlan) -> bytes:
+    return msgspec.msgpack.encode(plan)
+
+
+def decode_kernel_plan(data: bytes) -> KernelPlan:
+    plan = msgspec.msgpack.decode(data, type=KernelPlan)
+    if plan.protocol_version != PROTOCOL_VERSION:
+        raise ValueError(f"unsupported weight-transfer protocol {plan.protocol_version}; expected {PROTOCOL_VERSION}")
+    return plan
+
+
+def encode_kernel_buffers(manifest: KernelBufferManifest) -> bytes:
+    return msgspec.msgpack.encode(manifest)
+
+
+def decode_kernel_buffers(data: bytes) -> KernelBufferManifest:
+    manifest = msgspec.msgpack.decode(data, type=KernelBufferManifest)
+    if manifest.protocol_version != PROTOCOL_VERSION:
+        raise ValueError(
+            f"unsupported weight-transfer protocol {manifest.protocol_version}; expected {PROTOCOL_VERSION}"
+        )
+    return manifest

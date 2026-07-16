@@ -24,6 +24,7 @@ from prime_rl.trainer.weights import gather_weights_on_master
 from prime_rl.trainer.world import get_world
 from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc
 from prime_rl.weight_transfer.diagnostics import fingerprint_tensor
+from prime_rl.weight_transfer.kernel_executor import KernelPlanExecutor
 from prime_rl.weight_transfer.mx import MxChannel
 from prime_rl.weight_transfer.nixl import NixlAgent, agent_name, configure_ucx
 from prime_rl.weight_transfer.ownership import ShardCandidate, select_shard_owners, select_source_tensors
@@ -33,8 +34,10 @@ from prime_rl.weight_transfer.wire import (
     DiagnosticSnapshot,
     SyncSignal,
     WeightManifest,
+    decode_kernel_plan,
     decode_signal,
     encode_diagnostics,
+    encode_kernel_buffers,
     encode_manifest,
     encode_signal,
 )
@@ -122,6 +125,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.agent: NixlAgent | None = None
         self.local_shards: list[_LocalShard] = []
         self.manifest: WeightManifest | None = None
+        self.kernel_executors: list[KernelPlanExecutor] = []
         self.initialized = False
         self._previous_source_signature: tuple[int, int, float, float, float, float] | None = None
 
@@ -193,32 +197,28 @@ class NIXLWeightBroadcast(WeightBroadcast):
         }
         self.local_shards = [shard for shard in local if shard.key in selected_keys]
 
-        agent_payload = None
-        if self.local_shards:
-            device = torch.device("cuda", torch.cuda.current_device())
-            configure_ucx(device.index or 0)
-            self.agent = NixlAgent(agent_name("trainer", self.world.rank, f"{self.config.session_id}-{self.epoch}"))
-            registered: set[tuple[int, int]] = set()
-            for shard in self.local_shards:
-                shard.allocate(device)
-                shard.refresh()
-                assert shard.buffer is not None
-                region = (shard.buffer.data_ptr(), shard.buffer.numel() * shard.buffer.element_size())
-                if region not in registered:
-                    self.agent.register_tensor(shard.buffer)
-                    registered.add(region)
-            torch.cuda.synchronize(device)
-            agent_payload = (
-                self.world.rank,
-                AgentDescriptor(self.agent.name, self.agent.metadata()),
-                tuple(shard.finalized_candidate() for shard in self.local_shards),
-            )
+        device = torch.device("cuda", torch.cuda.current_device())
+        configure_ucx(device.index or 0)
+        self.agent = NixlAgent(agent_name("trainer", self.world.rank, f"{self.config.session_id}-{self.epoch}"))
+        registered: set[tuple[int, int]] = set()
+        for shard in self.local_shards:
+            shard.allocate(device)
+            shard.refresh()
+            assert shard.buffer is not None
+            region = (shard.buffer.data_ptr(), shard.buffer.numel() * shard.buffer.element_size())
+            if region not in registered:
+                self.agent.register_tensor(shard.buffer)
+                registered.add(region)
+        torch.cuda.synchronize(device)
+        agent_payload = (
+            self.world.rank,
+            AgentDescriptor(self.agent.name, self.agent.metadata()),
+            tuple(shard.finalized_candidate() for shard in self.local_shards),
+        )
 
         agent_groups = self._all_gather_objects(agent_payload)
         if self.world.is_master:
-            active = sorted(
-                (payload for payload in agent_groups if payload is not None), key=lambda payload: payload[0]
-            )
+            active = sorted(agent_groups, key=lambda payload: payload[0])
             agents = tuple(payload[1] for payload in active)
             rank_to_agent = {payload[0]: index for index, payload in enumerate(active)}
             finalized = tuple(candidate for payload in active for candidate in payload[2])
@@ -248,6 +248,61 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 len(agents),
                 dict(sorted(dtype_counts.items())),
             )
+
+        manifest_box = [self.manifest]
+        dist.broadcast_object_list(manifest_box, src=0)
+        self.manifest = manifest_box[0]
+        assert self.manifest is not None and self.agent is not None
+        dist.barrier()
+
+        def valid_kernel_plan(payload: bytes) -> bool:
+            plan = decode_kernel_plan(payload)
+            return (
+                plan.session_id == self.manifest.session_id
+                and plan.epoch == self.manifest.epoch
+                and plan.model == self.manifest.model
+            )
+
+        plan_payloads = MxChannel(
+            f"{self.config.host}:{self.config.port}",
+            self.config.session_id,
+            self.config.model_name,
+            "trainer",
+            "kernel_plan",
+            self.world.rank,
+        ).wait_for(
+            "inference",
+            "kernel_plan",
+            self.config.inference_world_size,
+            valid_kernel_plan,
+            self.config.timeout,
+        )
+        plans = [decode_kernel_plan(payload) for _, payload in sorted(plan_payloads.items())]
+        assigned = [plan for plan in plans if plan.rank % self.world.world_size == self.world.rank]
+        local_buffers = tuple(shard.buffer for shard in self.local_shards if shard.buffer is not None)
+        for plan in assigned:
+            executor = KernelPlanExecutor(
+                plan=plan,
+                source_manifest=self.manifest,
+                agent=self.agent,
+                local_source_buffers=local_buffers,
+                device=device,
+                timeout=self.config.timeout,
+            )
+            self.kernel_executors.append(executor)
+            MxChannel(
+                f"{self.config.host}:{self.config.port}",
+                self.config.session_id,
+                self.config.model_name,
+                "trainer",
+                "kernel_buffers",
+                plan.rank,
+            ).publish(encode_kernel_buffers(executor.buffer_manifest()))
+        self.logger.info(
+            "Initialized {} recorded vLLM kernel plans on trainer rank {}",
+            len(self.kernel_executors),
+            self.world.rank,
+        )
         self.initialized = True
 
     @torch.no_grad()
@@ -258,6 +313,10 @@ class NIXLWeightBroadcast(WeightBroadcast):
             shard.refresh()
         if self.local_shards:
             torch.cuda.synchronize()
+        dist.barrier()
+        for executor in self.kernel_executors:
+            executor.materialize()
+        dist.barrier()
         if getattr(self.config, "validate_reload", False):
             signature = _local_source_signature(self.local_shards)
             changed = self._previous_source_signature is not None and signature != self._previous_source_signature
@@ -266,8 +325,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             if self.world.is_master:
                 changed_ranks = [rank for rank, _, did_change, _ in diagnostics if did_change]
                 self.logger.info(
-                    "NIXL trainer source diagnostics v{}: ranks={} changed_ranks={}/{} "
-                    "local_shards={} signatures={}",
+                    "NIXL trainer source diagnostics v{}: ranks={} changed_ranks={}/{} local_shards={} signatures={}",
                     step,
                     len(diagnostics),
                     len(changed_ranks),
@@ -284,9 +342,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     session_id=self.config.session_id,
                     model=self.config.model_name,
                     step=step,
-                    tensors=tuple(
-                        fingerprint_tensor(name, tensor) for name, tensor in sorted(reference_state.items())
-                    ),
+                    tensors=tuple(fingerprint_tensor(name, tensor) for name, tensor in sorted(reference_state.items())),
                 )
                 MxChannel(
                     f"{self.config.host}:{self.config.port}",
@@ -296,9 +352,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     "diagnostics",
                     0,
                 ).publish(encode_diagnostics(reference))
-                self.logger.info(
-                    "NIXL trainer reference diagnostics v{}: hf_tensors={}", step, len(reference.tensors)
-                )
+                self.logger.info("NIXL trainer reference diagnostics v{}: hf_tensors={}", step, len(reference.tensors))
         dist.barrier()
 
         if self.world.is_master:

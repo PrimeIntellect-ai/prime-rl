@@ -14,20 +14,28 @@ from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
-from prime_rl.weight_transfer.chains import region_elem_runs, resolve_chain_region
+from prime_rl.weight_transfer.chains import region_elem_runs, resolve_chain_region, tensor_runs
 from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc
 from prime_rl.weight_transfer.diagnostics import fingerprint_tensor
+from prime_rl.weight_transfer.kernel_graph import KernelGraphRecorder, TensorMeta, encode_graph_value
 from prime_rl.weight_transfer.lazy import BakeRecorder, LazyWeight, RecordedCopy
 from prime_rl.weight_transfer.mx import MxChannel
 from prime_rl.weight_transfer.nixl import NixlAgent, agent_name, configure_ucx
 from prime_rl.weight_transfer.publication import route_published_region
 from prime_rl.weight_transfer.sharding import zip_source_destination
 from prime_rl.weight_transfer.wire import (
+    KernelInput,
+    KernelLayerPlan,
+    KernelOutput,
+    KernelPlan,
+    KernelSourceCopy,
     SyncSignal,
     WeightManifest,
     decode_diagnostics,
+    decode_kernel_buffers,
     decode_manifest,
     decode_signal,
+    encode_kernel_plan,
     encode_signal,
 )
 
@@ -106,6 +114,8 @@ class _BakedGroup:
         self.arena_dtypes: dict[int, torch.dtype] = {}
         self.pull_specs: list[tuple[Any, Any, list[int]]] = []
         self.num_bytes = 0
+        self.kernel_graph = None
+        self.kernel_outputs: dict[str, TensorMeta] = {}
 
 
 class NIXLWeightUpdateWorker(Worker):
@@ -189,8 +199,8 @@ class NIXLWeightUpdateWorker(Worker):
         configure_ucx(self.device.index or 0)
         self._agent = NixlAgent(agent_name("inference", self._rank, f"{self._session_id}-{self._manifest.epoch}"))
         self._groups = self._bake(self._manifest)
-        self._allocate_arena(self._manifest, self._groups)
-        self._build_pull_plans(self._manifest, self._groups)
+        self._publish_kernel_plan(self._manifest, self._groups)
+        self._build_kernel_pulls(self._manifest, self._groups)
         self._initialized = True
         logger.info(
             f"NIXL pull plan baked in {time.perf_counter() - started:.2f}s: "
@@ -308,6 +318,9 @@ class NIXLWeightUpdateWorker(Worker):
                     parameter = getattr(group.layer, name)
                     self._param_layout[(id(group.layer), name)] = (parameter.shape, parameter.dtype)
 
+            for group in groups:
+                self._record_kernel_graph(group, LAYERWISE_INFO.get(group.layer))
+
             for layer in model.modules():
                 info = LAYERWISE_INFO.get(layer)
                 if info is not None and info.can_load():
@@ -323,6 +336,182 @@ class NIXLWeightUpdateWorker(Worker):
         if not groups:
             raise RuntimeError("vLLM consumed no published weights during the NIXL bake")
         return groups
+
+    def _record_kernel_graph(self, group: _BakedGroup, info: Any) -> None:
+        """Continue the load bake through vLLM's real kernel postprocessing."""
+
+        from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
+
+        recorder = KernelGraphRecorder()
+        for name in group.param_names:
+            shape, dtype = self._param_layout[(id(group.layer), name)]
+            parameter = nn.Parameter(torch.zeros(shape, dtype=dtype, device=self.device), requires_grad=False)
+            setattr(group.layer, name, parameter)
+            recorder.add_input(name, parameter)
+
+        with recorder:
+            for name in group.param_names:
+                transform = self._post_load_transforms.get((id(group.layer), name))
+                if transform is not None:
+                    parameter = getattr(group.layer, name)
+                    parameter.copy_(transform(parameter))
+
+            quant_method = getattr(group.layer, "quant_method", None)
+            if isinstance(quant_method, QuantizeMethodBase):
+                if hasattr(group.layer, "_already_called_process_weights_after_loading"):
+                    delattr(group.layer, "_already_called_process_weights_after_loading")
+                quant_method.process_weights_after_loading(group.layer)
+
+        if info is not None and info.kernel_tensors is not None:
+            parameters, buffers = info.kernel_tensors
+            output_names = tuple((*parameters, *buffers))
+        else:
+            output_names = tuple(group.param_names)
+        outputs = {
+            name: tensor
+            for name in output_names
+            if isinstance((tensor := getattr(group.layer, name, None)), torch.Tensor)
+        }
+        if not outputs:
+            raise RuntimeError(f"vLLM kernel bake produced no tensors for {self._layer_names[id(group.layer)]}")
+        group.kernel_graph = recorder.finish(outputs)
+        group.kernel_outputs = {name: TensorMeta.from_tensor(tensor) for name, tensor in outputs.items()}
+
+    def _publish_kernel_plan(self, manifest: WeightManifest, groups: list[_BakedGroup]) -> None:
+        layers: list[KernelLayerPlan] = []
+        for group in groups:
+            if group.kernel_graph is None:
+                raise RuntimeError("kernel graph was not recorded")
+            inputs: list[KernelInput] = []
+            for param_name in group.param_names:
+                shape, dtype = self._param_layout[(id(group.layer), param_name)]
+                copies = tuple(
+                    KernelSourceCopy(
+                        source_name=copy.src_name,
+                        operations=encode_graph_value(copy.ops),
+                        offset=copy.offset,
+                        shape=copy.shape,
+                        stride=copy.stride,
+                    )
+                    for copy in group.copies
+                    if copy.param_name == param_name
+                )
+                inputs.append(
+                    KernelInput(
+                        name=param_name,
+                        shape=tuple(shape),
+                        dtype=str(dtype),
+                        copies=copies,
+                    )
+                )
+            layers.append(
+                KernelLayerPlan(
+                    name=self._layer_names[id(group.layer)],
+                    inputs=tuple(inputs),
+                    outputs=tuple(
+                        KernelOutput(name=name, shape=meta.shape, dtype=str(meta.dtype))
+                        for name, meta in sorted(group.kernel_outputs.items())
+                    ),
+                    graph=group.kernel_graph.encode(),
+                )
+            )
+
+        plan = KernelPlan(
+            session_id=manifest.session_id,
+            epoch=manifest.epoch,
+            model=manifest.model,
+            rank=self._rank,
+            layers=tuple(layers),
+        )
+        MxChannel(
+            self._mx.server_url,
+            manifest.session_id,
+            manifest.model,
+            "inference",
+            "kernel_plan",
+            self._rank,
+        ).publish(encode_kernel_plan(plan))
+        logger.info(
+            "Published recorded vLLM kernel plan: rank=%d layers=%d outputs=%d",
+            self._rank,
+            len(layers),
+            sum(len(layer.outputs) for layer in layers),
+        )
+
+    def _build_kernel_pulls(self, manifest: WeightManifest, groups: list[_BakedGroup]) -> None:
+        def valid_buffers(payload: bytes) -> bool:
+            buffers = decode_kernel_buffers(payload)
+            return (
+                buffers.session_id == manifest.session_id
+                and buffers.epoch == manifest.epoch
+                and buffers.model == manifest.model
+                and buffers.inference_rank == self._rank
+            )
+
+        payloads = self._mx.wait_for("trainer", "kernel_buffers", 1, valid_buffers, self._timeout)
+        buffers = decode_kernel_buffers(next(iter(payloads.values())))
+        remote_name = self._agent.add_remote_agent(buffers.agent.metadata)
+        self._agent.connect(remote_name)
+        published = {tensor.name: tensor for tensor in buffers.tensors}
+        local_descriptors: list[tuple[int, int, int]] = []
+        remote_descriptors: list[tuple[int, int, int]] = []
+        registered: set[tuple[int, int]] = set()
+        self._kernel_tensors: dict[str, torch.Tensor] = {}
+        self._total_pull_bytes = 0
+
+        for group in groups:
+            for output_name, meta in group.kernel_outputs.items():
+                full_name = (
+                    output_name
+                    if self._layer_names[id(group.layer)] == "<root>"
+                    else (f"{self._layer_names[id(group.layer)]}.{output_name}")
+                )
+                tensor = getattr(group.layer, output_name)
+                if not isinstance(tensor, torch.Tensor):
+                    raise RuntimeError(f"live vLLM kernel tensor {full_name!r} is missing")
+                if tuple(tensor.shape) != meta.shape or tensor.dtype != meta.dtype:
+                    raise RuntimeError(
+                        f"live vLLM kernel tensor {full_name!r} is {tuple(tensor.shape)}/{tensor.dtype}; "
+                        f"recorded {meta.shape}/{meta.dtype}"
+                    )
+                source = published.get(full_name)
+                if source is None:
+                    raise KeyError(f"trainer did not publish recorded kernel tensor {full_name!r}")
+                if tuple(source.shape) != tuple(tensor.shape) or _torch_dtype(source.dtype) != tensor.dtype:
+                    raise RuntimeError(
+                        f"kernel RDMA contract mismatch for {full_name}: "
+                        f"trainer={source.shape}/{source.dtype}, inference={tuple(tensor.shape)}/{tensor.dtype}"
+                    )
+                if len(source.segments) != 1 or source.segments[0].logical_offset != 0:
+                    raise RuntimeError(f"kernel tensor {full_name!r} is not a single contiguous trainer buffer")
+                segment = source.segments[0]
+                num_bytes = tensor.numel() * tensor.element_size()
+                if segment.numel != tensor.numel():
+                    raise RuntimeError(f"kernel tensor {full_name!r} has incomplete trainer coverage")
+                region = (tensor.data_ptr(), num_bytes)
+                if region not in registered:
+                    self._agent.register_tensor(tensor)
+                    registered.add(region)
+                transfers = zip_source_destination(
+                    [(0, segment.address, num_bytes)],
+                    tensor_runs(tensor),
+                )
+                for _, source_address, destination_address, length in transfers:
+                    local_descriptors.append((destination_address, length, self.device.index or 0))
+                    remote_descriptors.append((source_address, length, segment.device_id))
+                    self._total_pull_bytes += length
+                self._kernel_tensors[full_name] = tensor
+
+        local = self._agent.prepare_local(local_descriptors)
+        remote = self._agent.prepare_remote(remote_name, remote_descriptors)
+        indices = list(range(len(local_descriptors)))
+        self._kernel_pull_specs = [(local, remote, indices)]
+        logger.info(
+            "Prepared direct kernel-format NIXL pull: rank=%d tensors=%d bytes=%d",
+            self._rank,
+            len(self._kernel_tensors),
+            self._total_pull_bytes,
+        )
 
     @staticmethod
     def _stamp(recorder: BakeRecorder, layer: nn.Module, name: str, loader: Any):
@@ -415,6 +604,7 @@ class NIXLWeightUpdateWorker(Worker):
         self._mx.wait_for("trainer", "sync", 1, ready, self._timeout)
         self._reference_fingerprints = None
         if self._validate_reload:
+
             def matching_diagnostics(payload: bytes) -> bool:
                 snapshot = decode_diagnostics(payload)
                 return (
@@ -423,13 +613,11 @@ class NIXLWeightUpdateWorker(Worker):
                     and snapshot.step == step
                 )
 
-            payloads = self._mx.wait_for(
-                "trainer", "diagnostics", 1, matching_diagnostics, self._timeout
-            )
+            payloads = self._mx.wait_for("trainer", "diagnostics", 1, matching_diagnostics, self._timeout)
             snapshot = decode_diagnostics(next(iter(payloads.values())))
             self._reference_fingerprints = {fingerprint.name: fingerprint for fingerprint in snapshot.tensors}
         started = time.perf_counter()
-        self._reload_groups(step)
+        self._pull_kernel_weights(step)
         update_mla_absorbed_weights(self.raw_model)
         torch.cuda.synchronize(self.device)
         self._mx.publish(
@@ -445,9 +633,36 @@ class NIXLWeightUpdateWorker(Worker):
             )
         )
         logger.info(
-            f"NIXL weight update v{step}: {self._total_pull_bytes / 1e9:.2f} GB pulled and processed "
+            f"NIXL weight update v{step}: {self._total_pull_bytes / 1e9:.2f} GB kernel bytes pulled "
             f"in {time.perf_counter() - started:.2f}s"
         )
+
+    def _pull_kernel_weights(self, step: int) -> None:
+        previous = None
+        if self._validate_reload:
+            previous = {name: fingerprint_tensor(name, tensor) for name, tensor in sorted(self._kernel_tensors.items())}
+        handles = [
+            self._agent.read(local, indices, remote, indices) for local, remote, indices in self._kernel_pull_specs
+        ]
+        for handle in handles:
+            self._agent.wait(handle, context=f"kernel weight pull v{step}", timeout=self._timeout)
+        torch.cuda.synchronize(self.device)
+        if previous is not None:
+            changed = 0
+            unchanged: list[str] = []
+            for name, tensor in sorted(self._kernel_tensors.items()):
+                if fingerprint_tensor(name, tensor) != previous[name]:
+                    changed += 1
+                elif len(unchanged) < 20:
+                    unchanged.append(name)
+            logger.info(
+                "NIXL direct kernel diagnostics v%d: rank=%d changed=%d/%d unchanged_sample=%s",
+                step,
+                self._rank,
+                changed,
+                len(self._kernel_tensors),
+                unchanged,
+            )
 
     def _reload_groups(self, step: int) -> None:
         from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
