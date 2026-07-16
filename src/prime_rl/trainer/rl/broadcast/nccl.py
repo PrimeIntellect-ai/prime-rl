@@ -61,6 +61,10 @@ def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclComm
         # Flatten all tensors and concatenate
         flat_tensors = [value.flatten() for _, value in items]
         concatenated = torch.cat(flat_tensors)
+        if not concatenated.is_cuda:
+            # fsdp_cpu_offload keeps parameters on CPU; NCCL requires device tensors,
+            # so stage the (per-layer, per-dtype) buffer through CUDA transiently.
+            concatenated = concatenated.cuda()
         communicator.broadcast(concatenated, src=0)
         del concatenated
         # Clean up individual tensors
@@ -164,6 +168,17 @@ class NCCLWeightBroadcastSender:
     def _resolve_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         for key, value in list(state_dict.items()):
             if isinstance(value, DTensor):
+                local = value.to_local()
+                if local.device.type != "cuda":
+                    # FSDP CPU offload keeps local shards on CPU (pinned); gathering
+                    # them there would run over Gloo (hours for 100B+ params). Stage
+                    # the shard to CUDA asynchronously and rebuild the DTensor on the
+                    # same (CUDA) mesh so full_tensor() gathers over NCCL. The bf16
+                    # cast happens on GPU, after the copy.
+                    local = local.to("cuda", non_blocking=True)
+                    value = DTensor.from_local(
+                        local, device_mesh=value.device_mesh, placements=value.placements, run_check=False
+                    )
                 state_dict[key] = cast(DTensor, value.to(self.dtype)).full_tensor()
         return state_dict
 
