@@ -221,9 +221,6 @@ class SFTConfig(BaseConfig):
     dist_timeout_seconds: int = 3600
     """Timeout in seconds for torch distributed ops."""
 
-    loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "torch"
-    """Cross-entropy loss implementation. ``liger_fused`` fuses the lm_head projection with the CE loss to avoid materializing full logits. ``quack_fused`` uses quack-kernels for chunked linear + CE with CuTe DSL CUDA kernels."""
-
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
@@ -359,11 +356,6 @@ class SFTConfig(BaseConfig):
     def validate_opt_and_fsdp_offload(self):
         if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
             raise ValueError("Muon optimizer does not support FSDP CPU offload")
-        return self
-
-    @model_validator(mode="after")
-    def validate_and_disable_chunked_loss(self):
-        self.model.fused_lm_head_token_chunk_size = "disabled"
         return self
 
     @model_validator(mode="after")

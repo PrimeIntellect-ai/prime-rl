@@ -1108,7 +1108,6 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
-    fused_cross_entropy: bool | str = False,
 ) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
@@ -1142,7 +1141,7 @@ def setup_model(
     if isinstance(config.fused_lm_head_token_chunk_size, int):
         lm_head_chunk_size = config.fused_lm_head_token_chunk_size
 
-    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, fused_cross_entropy=fused_cross_entropy)
+    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
 
     if config.fp8:
         replace_linear_with_fp8_blockwise_linear(model)
