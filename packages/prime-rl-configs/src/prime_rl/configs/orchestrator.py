@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
@@ -416,8 +416,35 @@ class NCCLWeightBroadcastConfig(BaseConfig):
     """Total inference GPUs across all servers. Used by ``init_nccl_broadcast`` to compute per-server rank offsets."""
 
 
+class NIXLWeightBroadcastConfig(BaseConfig):
+    type: Literal["nixl"] = "nixl"
+
+    host: str = "localhost"
+    """ModelExpress server host."""
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    timeout: int = 1200
+    """Timeout for initialization and each synchronized pull."""
+
+    inference_world_size: int = Field(1, ge=1)
+    """Total vLLM workers across all inference servers."""
+
+    session_id: str = Field(min_length=1)
+    """Run-unique ModelExpress rendezvous namespace."""
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_session_id(cls, session_id: str) -> str:
+        if session_id == "default":
+            raise ValueError("NIXL weight transfer requires a run-unique, non-default session_id")
+        return session_id
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 

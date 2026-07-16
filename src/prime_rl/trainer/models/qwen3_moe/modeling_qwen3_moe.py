@@ -35,6 +35,7 @@ from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
 from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
+    conversion_chain,
     convert_hf_layer_to_tt,
     convert_hf_to_tt_moe,
     convert_tt_layer_to_hf,
@@ -134,6 +135,10 @@ class Qwen3MoePreTrainedModel(PreTrainedModelPrimeRL):
     _can_record_outputs = {
         "hidden_states": Qwen3MoeDecoderLayer,
     }
+
+    def conversion_chain(self):
+        """Return the declarative HF<->PrimeRL conversion graph."""
+        return conversion_chain(self.config)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
