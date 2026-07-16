@@ -85,19 +85,16 @@ class _LocalShard:
         )
 
     def allocate(self, device: torch.device) -> None:
-        if self.source.is_cuda and self.source.is_contiguous():
-            self.buffer = self.source
-        else:
-            with classic_cuda_alloc():
-                self.buffer = torch.empty(self.source.shape, dtype=self.source.dtype, device=device)
+        # FSDP/DTensor state-dict tensors may be views into allocator-owned
+        # flattened storage. Register a dedicated, stable cudaMalloc region
+        # with the same dtype instead of exposing that aliased storage to
+        # long-lived RDMA reads.
+        with classic_cuda_alloc():
+            self.buffer = torch.empty(self.source.shape, dtype=self.source.dtype, device=device)
 
     def refresh(self) -> None:
         if self.buffer is None:
             raise RuntimeError(f"source buffer for {self.candidate.name!r} has not been allocated")
-        if self.buffer is self.source:
-            if self.buffer.data_ptr() != self.candidate.address:
-                raise RuntimeError(f"live source storage for {self.candidate.name!r} moved after NIXL registration")
-            return
         self.buffer.copy_(self.source, non_blocking=True)
 
     def finalized_candidate(self) -> ShardCandidate:
