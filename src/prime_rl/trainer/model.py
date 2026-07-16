@@ -1066,6 +1066,11 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
     if isinstance(quant, FP8Config):
         replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
     elif isinstance(quant, MXFP8Config):
+        capability = torch.cuda.get_device_capability()
+        if capability < (10, 0):
+            raise ValueError(
+                f"MXFP8 quantization requires SM100 (Blackwell) or newer, but device is SM{capability[0]}{capability[1]}."
+            )
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
         if quant.enable_grouped_gemm:
             apply_mxfp8_moe_grouped_gemm(model, recipe=quant.recipe)
