@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from itertools import cycle
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -69,7 +69,15 @@ class InferencePool(Protocol):
         """Wait for inference pool to be ready."""
         ...
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+    async def update_weights(
+        self,
+        weight_dir: Path | None,
+        lora_name: str | None = None,
+        step: int = 0,
+        on_engines_paused: Callable[[], Awaitable[None] | None] | None = None,
+        update_timeout_s: float | None = None,
+        retry_update: bool = True,
+    ) -> None:
         """Update weights on all inference servers."""
         ...
 
@@ -172,8 +180,24 @@ class StaticInferencePool:
         )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+    async def update_weights(
+        self,
+        weight_dir: Path | None,
+        lora_name: str | None = None,
+        step: int = 0,
+        on_engines_paused: Callable[[], Awaitable[None] | None] | None = None,
+        update_timeout_s: float | None = None,
+        retry_update: bool = True,
+    ) -> None:
+        await update_weights(
+            self._admin_clients,
+            weight_dir,
+            lora_name=lora_name,
+            step=step,
+            on_engines_paused=on_engines_paused,
+            update_timeout_s=update_timeout_s,
+            retry_update=retry_update,
+        )
 
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this pool's model (one logprob per
@@ -349,18 +373,28 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
 # that tenacity retries. Sized for `/pause`, which drains in-flight requests
 # (mode="keep") and so can legitimately take a while.
 ADMIN_TIMEOUT_S = 300.0
-# `/update_weights` runs a collective NCCL receive across all DP workers, which
-# can take longer than the other admin ops.
+# `/update_weights` synchronizes every DP worker and can take longer than the
+# other admin operations.
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+async def _admin_post(
+    client: AsyncClient,
+    path: str,
+    *,
+    timeout_s: float = ADMIN_TIMEOUT_S,
+    retry_transient: bool = True,
+    **kwargs,
+) -> None:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
+    retry_policy = (
+        retry_if_exception(_is_retryable_admin_error) if retry_transient else retry_if_exception(lambda _: False)
+    )
     async for attempt in AsyncRetrying(
-        retry=retry_if_exception(_is_retryable_admin_error),
+        retry=retry_policy,
         stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
@@ -400,12 +434,16 @@ async def update_weights(
     weight_dir: Path | None,
     lora_name: str | None = None,
     step: int = 0,
+    on_engines_paused: Callable[[], Awaitable[None] | None] | None = None,
+    update_timeout_s: float | None = None,
+    retry_update: bool = True,
 ) -> None:
     """Update weights on static inference servers.
 
     Pauses all engines first to drain in-flight requests, then performs the
-    weight update, then resumes. This ensures all DP workers are idle and can
-    participate in the collective weight transfer.
+    weight update, then resumes only after every server succeeds. A failed or
+    timed-out update leaves all engines paused because some workers may already
+    contain the new policy.
 
     Note: the prefix cache is intentionally not reset on weight update. The orchestrator
     salts the prefix cache per weight version (``cache_salt`` in the sampling request, see
@@ -418,29 +456,45 @@ async def update_weights(
     if lora_name is not None and weight_dir is not None:
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
-        # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
+        # Pause engines so all DP workers drain in-flight work before replacing the policy.
         await _pause_engines(admin_clients, step=step)
 
-        try:
-            # Create ready marker before servers enter receive path (used by NCCL broadcast)
-            if weight_dir is not None:
-                nccl_ready_file = weight_dir / NCCL_READY_MARKER
-                nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
-                nccl_ready_file.touch()
-                logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
+        if on_engines_paused is not None:
+            callback_result = await asyncio.to_thread(on_engines_paused)
+            if callback_result is not None:
+                await callback_result
 
-            await asyncio.gather(
-                *[
-                    _admin_post(
-                        admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
-                        timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-                    )
-                    for admin_client in admin_clients
-                ]
+        # Create ready marker before servers enter receive path (used by NCCL broadcast)
+        if weight_dir is not None:
+            nccl_ready_file = weight_dir / NCCL_READY_MARKER
+            nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+            nccl_ready_file.touch()
+            logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
+
+        update_tasks = [
+            asyncio.create_task(
+                _admin_post(
+                    admin_client,
+                    "/update_weights",
+                    json={"weight_dir": weight_dir_posix},
+                    timeout_s=update_timeout_s or UPDATE_WEIGHTS_TIMEOUT_S,
+                    retry_transient=retry_update,
+                )
             )
-        finally:
+            for admin_client in admin_clients
+        ]
+        try:
+            await asyncio.gather(*update_tasks)
+        except BaseException:
+            for task in update_tasks:
+                task.cancel()
+            await asyncio.gather(*update_tasks, return_exceptions=True)
+            # A failed collective may already have changed a subset of workers
+            # or tensors. Keep every engine paused: serving that mixed policy is
+            # worse than making the failed run unavailable.
+            logger.exception("Weight update failed; inference engines remain paused")
+            raise
+        else:
             await _resume_engines(admin_clients)
 
 
@@ -565,6 +619,43 @@ async def init_nccl_broadcast(
             _init_nccl_broadcast(admin_client, client_num * gpus_per_server)
             for client_num, admin_client in enumerate(admin_clients)
         ]
+    )
+
+
+async def init_nixl_broadcast(
+    admin_clients: list[AsyncClient],
+    host: str,
+    port: int,
+    timeout: int,
+    inference_world_size: int,
+    session_id: str,
+) -> None:
+    """Configure every vLLM worker for NIXL + ModelExpress pulls."""
+    if inference_world_size % len(admin_clients) != 0:
+        raise ValueError(
+            f"inference_world_size={inference_world_size} is not divisible by {len(admin_clients)} admin servers"
+        )
+    workers_per_server = inference_world_size // len(admin_clients)
+
+    async def initialize(admin_client: AsyncClient, rank_offset: int) -> None:
+        await _admin_post(
+            admin_client,
+            "/init_broadcaster",
+            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
+            retry_transient=False,
+            json={
+                "host": host,
+                "port": port,
+                "rank_offset": rank_offset,
+                "inference_world_size": inference_world_size,
+                "timeout": timeout,
+                "quantize_in_weight_transfer": False,
+                "session_id": session_id,
+            },
+        )
+
+    await asyncio.gather(
+        *[initialize(admin_client, index * workers_per_server) for index, admin_client in enumerate(admin_clients)]
     )
 
 

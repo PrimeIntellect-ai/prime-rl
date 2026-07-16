@@ -187,7 +187,9 @@ def train(config: TrainerConfig):
         logger.info("Skipping weight broadcast setup (fake data mode)")
     else:
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast, config.model.lora)
+        weight_broadcast = setup_weight_broadcast(
+            config.output_dir, config.weight_broadcast, config.model.lora, parallel_dims
+        )
 
     if parallel_dims.cp_enabled:
         cp_group = parallel_dims.world_mesh["cp"].get_group()
@@ -273,7 +275,11 @@ def train(config: TrainerConfig):
         # v{progress.step-1}. Filesystem broadcast needs no startup rendezvous (fresh: base model
         # = v0; resume: the orchestrator reads its checkpoint dir), and a one-shot startup
         # broadcast would miss multi-run runs registered after the first step.
-        if progress.step == start_step and weight_broadcast is not None and config.weight_broadcast.type == "nccl":
+        if (
+            progress.step == start_step
+            and weight_broadcast is not None
+            and config.weight_broadcast.type in ("nccl", "nixl")
+        ):
             logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
             multi_run_manager.wait_for_run(0)
             for idx in multi_run_manager.used_idxs:
@@ -588,12 +594,12 @@ def train(config: TrainerConfig):
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
-            nccl_broadcast_unused = (
-                config.weight_broadcast.type == "nccl"
+            in_memory_broadcast_unused = (
+                config.weight_broadcast.type in ("nccl", "nixl")
                 and config.max_steps is not None
                 and progress.step >= config.max_steps - 1
             )
-            if not nccl_broadcast_unused:
+            if not in_memory_broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time

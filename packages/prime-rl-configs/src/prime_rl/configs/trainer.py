@@ -2,7 +2,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -536,8 +536,35 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
 
+class NIXLWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    type: Literal["nixl"] = "nixl"
+
+    host: str = "localhost"
+    """ModelExpress server host."""
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    timeout: int = 1200
+    """Timeout for initialization and each synchronized pull."""
+
+    inference_world_size: int = Field(1, ge=1)
+    """Number of vLLM workers which must acknowledge every update."""
+
+    session_id: str = Field(min_length=1)
+    """Run-unique ModelExpress rendezvous namespace."""
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_session_id(cls, session_id: str) -> str:
+        if session_id == "default":
+            raise ValueError("NIXL weight transfer requires a run-unique, non-default session_id")
+        return session_id
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -686,9 +713,8 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.model.lora is not None and self.weight_broadcast.type == "nccl":
-            # TODO: Support NCCL broadcast with LoRA
-            raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+            raise ValueError("In-memory weight broadcast does not support LoRA yet.")
         return self
 
     @model_validator(mode="after")

@@ -72,7 +72,7 @@ from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
-from prime_rl.utils.client import init_nccl_broadcast
+from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.config import to_toml_dict
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
@@ -189,6 +189,7 @@ class Orchestrator:
         self.lora_name = None
         self.resume_step = None
         self.lag_task = None
+        self.mx_rendezvous = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -308,6 +309,30 @@ class Orchestrator:
                 inference_world_size=config.weight_broadcast.inference_world_size,
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
             )
+        elif config.weight_broadcast.type == "nixl":
+            await init_nixl_broadcast(
+                self.policy_inference.admin_clients,
+                config.weight_broadcast.host,
+                config.weight_broadcast.port,
+                config.weight_broadcast.timeout,
+                config.weight_broadcast.inference_world_size,
+                config.weight_broadcast.session_id,
+            )
+            from modelexpress import p2p_pb2
+            from modelexpress.client import MxClient
+
+            from prime_rl.weight_transfer.mx import MxRendezvous
+
+            self.mx_rendezvous = MxRendezvous(
+                client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
+                role="orchestrator",
+                rank=0,
+                peer_world_size=1,
+                session_id=config.weight_broadcast.session_id,
+                worker_id="orchestrator",
+            )
+            self.mx_rendezvous.publish()
+            self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
         self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
@@ -325,18 +350,45 @@ class Orchestrator:
             get_logger().info("Training from scratch")
 
         # Sync inference to the incoming policy before the first step when resuming or when using
-        # NCCL, which rendezvouses with the trainer's first-step broadcast (train.py). A fresh
+        # an in-memory transport, which rendezvouses with the trainer's first-step broadcast. A fresh
         # filesystem run needs no sync (the base model IS policy v0) and must not wait for a
         # startup broadcast: runs registered after the trainer's first step never receive one.
-        if self.resume_step is not None or config.weight_broadcast.type == "nccl":
+        if self.resume_step is not None or config.weight_broadcast.type in ("nccl", "nixl"):
             sync_version = self.resume_step if self.resume_step is not None else 0
-            check_exists = config.weight_broadcast.type != "nccl"
+            check_exists = config.weight_broadcast.type not in ("nccl", "nixl")
             # Without a ckpt block, fall back to a default timeout instead of not waiting at all.
             wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
-            weights_path = get_weight_dir(
-                config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
+            weights_path = (
+                None
+                if config.weight_broadcast.type == "nixl"
+                else get_weight_dir(
+                    config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
+                )
             )
-            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
+            signal_paused = None
+            if self.mx_rendezvous is not None:
+                from modelexpress import p2p_pb2
+
+                signal_paused = lambda: self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
+            try:
+                await self.policy_inference.update_weights(
+                    weights_path,
+                    lora_name=self.lora_name,
+                    step=sync_version,
+                    on_engines_paused=signal_paused,
+                    update_timeout_s=(
+                        config.weight_broadcast.timeout + 60 if config.weight_broadcast.type == "nixl" else None
+                    ),
+                    retry_update=config.weight_broadcast.type != "nixl",
+                )
+            finally:
+                if self.mx_rendezvous is not None:
+                    from modelexpress import p2p_pb2
+
+                    await asyncio.to_thread(
+                        self.mx_rendezvous.set_status,
+                        p2p_pb2.SOURCE_STATUS_INITIALIZING,
+                    )
             if self.lora_name is not None:
                 self.policy_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
@@ -385,6 +437,7 @@ class Orchestrator:
             observers=[self.dispatcher, self],
             lora_name=self.lora_name,
             ckpt_step=self.policy.version,
+            mx_rendezvous=self.mx_rendezvous,
         )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
@@ -420,15 +473,13 @@ class Orchestrator:
         start_time = time.perf_counter()
 
         # Spawn background loops (dispatcher schedules, watcher polls). The
-        # pipeline ``main_loop`` runs inline in this task; the single
-        # ``PeriodicLogger`` polls dispatcher / watcher / sinks / lag
-        # monitor each ``log.interval`` seconds for the pipeline-view log
+        # single ``PeriodicLogger`` polls dispatcher / watcher / sinks / lag
+        # monitor each ``log.interval`` seconds for the pipeline-view log.
         self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
         await self.periodic_logger.start()
-        self.component_tasks = [
-            asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
-            asyncio.create_task(self.watcher.start(), name="watcher"),
-        ]
+        dispatcher_task = asyncio.create_task(self.dispatcher.start(), name="dispatcher")
+        watcher_task = asyncio.create_task(self.watcher.start(), name="watcher")
+        self.component_tasks = [dispatcher_task, watcher_task]
 
         # Base-model eval (policy v0) — fires before any train rollouts, logged at the first
         # step, unless ``eval.skip_first_step=True`` (or this is a resume)
@@ -442,7 +493,7 @@ class Orchestrator:
         # logs a forced-cleanup warning instead of a clean-exit success.
         clean_exit = False
         try:
-            await self.main_loop()
+            await self._run_main_loop_with_watcher(watcher_task)
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
@@ -464,6 +515,31 @@ class Orchestrator:
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced).")
             trim_process_memory()
+
+    async def _run_main_loop_with_watcher(self, watcher_task: asyncio.Task) -> None:
+        """Run the pipeline while treating the weight watcher as critical.
+
+        The watcher used to be a fire-and-forget task, so an update exception
+        left the orchestrator dispatching against a stale or partially updated
+        policy. Race it with the main loop and propagate its failure immediately.
+        """
+        main_loop_task = asyncio.create_task(self.main_loop(), name="orchestrator_main_loop")
+        try:
+            done, _ = await asyncio.wait(
+                {main_loop_task, watcher_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if watcher_task in done:
+                if watcher_task.cancelled():
+                    raise RuntimeError("Weight watcher was cancelled unexpectedly")
+                exception = watcher_task.exception()
+                if exception is not None:
+                    raise RuntimeError("Weight watcher failed") from exception
+                raise RuntimeError("Weight watcher exited unexpectedly")
+            await main_loop_task
+        finally:
+            if not main_loop_task.done():
+                await safe_cancel(main_loop_task)
 
     async def main_loop(self) -> None:
         """Consume ``Rollout``\\ s from the dispatcher and route them
@@ -840,18 +916,18 @@ class Orchestrator:
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
         count is ``progress.step - 1``."""
         lead = (self.progress.step - 1) - self.policy.version
-        # The trainer skips the final NCCL weight broadcast (inference group is
+        # The trainer skips the final in-memory weight broadcast (inference is
         # torn down), so policy.version never reaches the last step. Without this
         # the gate deadlocks waiting for a version that will never be published.
         # The last batch uses the penultimate policy anyway, so let it through.
-        building_final_batch_nccl = (
-            self.config.weight_broadcast.type == "nccl"
+        building_final_batch_in_memory = (
+            self.config.weight_broadcast.type in ("nccl", "nixl")
             and self.config.max_steps is not None
             and self.progress.step >= self.config.max_steps - 1
         )
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG and not building_final_batch_nccl:
+        if lead > TARGET_LAG and not building_final_batch_in_memory:
             if was_set:
                 get_logger().info(
                     "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."
