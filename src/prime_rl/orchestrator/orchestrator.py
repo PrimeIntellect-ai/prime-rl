@@ -485,6 +485,14 @@ class Orchestrator:
             # eval rollouts to the step whose eval triggered them.
             step = rollout.eval_step if rollout.kind == "eval" else self.progress.step
             assert step is not None
+            rollout.stamp(
+                run_id=self.monitor.run_id,
+                tag=rollout.kind,
+                step=step,
+                env_name=rollout.env_name,
+                group_id=str(rollout.group_id),
+                policy_version=rollout.policy_version,
+            )
             await asyncio.to_thread(
                 save_rollouts,
                 [rollout.to_record()],

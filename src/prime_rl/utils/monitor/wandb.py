@@ -135,6 +135,7 @@ class WandbMonitor(Monitor):
         # Everyone else still retries to absorb transient W&B server errors (e.g. 404 on upsertBucket).
         max_retries = 30 if shared_mode and not primary else 5
         self.wandb = init_wandb(max_retries)
+        self.run_id = self.wandb.id
 
         wandb.define_metric("*", step_metric="step")
 
