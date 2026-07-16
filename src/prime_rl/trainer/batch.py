@@ -7,12 +7,6 @@ import numpy as np
 from prime_rl.trainer.utils import balanced_partition
 from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
 
-ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
-    "uint8": 1,
-    "int16": 2,
-    "int32": 4,
-}
-
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
 # means no component (weight 0.0).
@@ -28,7 +22,7 @@ def _copy_routed_experts(routed_experts: RoutedExperts) -> RoutedExperts:
 
 
 def _routed_experts_row_size(routed_experts: RoutedExperts) -> int:
-    return routed_experts.shape[1] * routed_experts.shape[2] * ROUTED_EXPERTS_DTYPE_ITEMSIZE[routed_experts.dtype]
+    return routed_experts.shape[1] * routed_experts.shape[2] * np.dtype(routed_experts.dtype).itemsize
 
 
 def _slice_routed_experts(routed_experts: RoutedExperts, seq_len: int) -> RoutedExperts:
