@@ -558,6 +558,7 @@ async def init_weight_broadcast(
                     "host": host,
                     "port": port,
                     "rank_offset": rank_offset,
+                    "server_world_size": gpus_per_server,
                     "inference_world_size": inference_world_size,
                     "timeout": timeout,
                     "quantize_in_weight_transfer": quantize_in_weight_transfer,

@@ -145,6 +145,7 @@ async def init_broadcaster(request: Request):
     port = data.get("port")
     timeout = data.get("timeout")
     rank_offset = data.get("rank_offset")
+    server_world_size = data.get("server_world_size")
     inference_world_size = data.get("inference_world_size")
     quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
     session_id = data.get("session_id", "")
@@ -155,6 +156,7 @@ async def init_broadcaster(request: Request):
             host,
             port,
             rank_offset,
+            server_world_size,
             inference_world_size,
             timeout,
             quantize_in_weight_transfer,

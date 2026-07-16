@@ -70,6 +70,7 @@ class NIXLWeightUpdateWorker(Worker):
         host: str,
         port: int,
         rank_offset: int,
+        server_world_size: int,
         inference_world_size: int,
         timeout: int,
         quantize_in_weight_transfer: bool = False,
@@ -80,8 +81,23 @@ class NIXLWeightUpdateWorker(Worker):
             raise NotImplementedError("NIXL weight broadcast does not support EPLB")
         if quantize_in_weight_transfer:
             raise ValueError("NIXL uses vLLM layerwise processing; configure inference quantization instead")
-        local_rank = self.device.index or 0
-        self._rank = rank_offset + local_rank
+        tp_size = self.parallel_config.tensor_parallel_size
+        tp_rank = self.rank % tp_size
+        if server_world_size == tp_size:
+            relative_rank = tp_rank
+        else:
+            dp_rank = self.parallel_config.data_parallel_index
+            candidate_rank = dp_rank * tp_size + tp_rank
+            if rank_offset <= candidate_rank < rank_offset + server_world_size:
+                relative_rank = candidate_rank - rank_offset
+            elif candidate_rank < server_world_size:
+                relative_rank = candidate_rank
+            else:
+                raise ValueError(
+                    f"vLLM rank {candidate_rank} is outside this admin server's "
+                    f"rank span [{rank_offset}, {rank_offset + server_world_size})"
+                )
+        self._rank = rank_offset + relative_rank
         self._world_size = inference_world_size
         self._timeout = timeout
         self._session_id = session_id
@@ -95,7 +111,10 @@ class NIXLWeightUpdateWorker(Worker):
             self._rank,
         )
         self._initialized = False
-        logger.info(f"NIXL pull worker configured: rank={self._rank}, session={session_id}")
+        logger.info(
+            f"NIXL pull worker configured: rank={self._rank}, rank_offset={rank_offset}, "
+            f"server_world_size={server_world_size}, session={session_id}"
+        )
 
     @torch.no_grad()
     def _lazy_init(self) -> None:
