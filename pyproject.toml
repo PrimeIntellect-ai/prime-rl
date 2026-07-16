@@ -18,7 +18,7 @@ dependencies = [
     "torchvision",
     "torchaudio",
     "torchdata>=0.11.0",
-    "transformers==5.6.2",
+    "transformers==5.14.1",
     "vllm>=0.24.0",
     "mooncake-transfer-engine>=0.3.10.post2",
     "wandb>=0.26.1",
@@ -188,7 +188,7 @@ environments = [
 override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
-    "transformers==5.6.2",
+    "transformers==5.14.1",
     "torch>=2.9.0",
     "openenv-core",
 ]
@@ -212,6 +212,8 @@ requires-dist = [
 [tool.uv.exclude-newer-package]
 # we want latest vllm, remove next patch
 vllm = false
+# Bumped to newest transformers ahead of the 7-day cooldown window
+transformers = false
 tokenspeed-mla = false
 fastokens = false
 flash_attn_3 = false

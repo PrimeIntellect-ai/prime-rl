@@ -487,13 +487,11 @@ class AfmoeModel(AfmoePreTrainedModel):
         else:
             cu_seqlens = None
             max_seqlen = None
-            cache_position = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device)
             if not isinstance(causal_mask_mapping := attention_mask, dict):
                 mask_kwargs = {
                     "config": self.config,
                     "inputs_embeds": inputs_embeds,
                     "attention_mask": attention_mask,
-                    "cache_position": cache_position,
                     "past_key_values": None,
                     "position_ids": position_ids,
                 }
