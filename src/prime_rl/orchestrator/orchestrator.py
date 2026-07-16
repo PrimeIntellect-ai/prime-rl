@@ -96,9 +96,14 @@ SHUTDOWN_TIMEOUT_S = 300
 # dataset; fail loudly instead of spinning
 MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
-# Maximum batches the orchestrator may run ahead of the trainer. The
-# dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
-# resumed when the watcher advances ``policy.version``.
+# Maximum batches the orchestrator may run ahead of the trainer. Enforced in
+# two places: the dispatcher is paused via ``update_dispatch_gate`` once this
+# is exceeded (bounds pre-queue staleness — new rollouts aren't started against
+# a policy that is too far behind), and ``hold_for_target_lag`` blocks shipping
+# a finalized batch until the trainer has published the required policy version
+# (bounds in-queue staleness — buffered rollouts can fill batches faster than
+# the trainer consumes them). Both resume when the watcher advances
+# ``policy.version``.
 TARGET_LAG = 1
 
 # Default wait for the trainer's startup weight broadcast when no ckpt block
@@ -173,6 +178,8 @@ class Orchestrator:
         self.consecutive_empty_batches = 0
         self.gate_closed_at = None
         self.wait_for_policy_time = 0.0
+        # Pulsed by ``on_new_version`` so ``hold_for_target_lag`` can re-check
+        self.version_advanced = asyncio.Event()
         self.component_tasks = []
 
         # Optional attributes — ``setup()`` populates them when the relevant
@@ -550,6 +557,8 @@ class Orchestrator:
                 f"({n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
+        await self.hold_for_target_lag(step)
+
         # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
         # at ship time; the full arrival window already streamed into ``all`` on arrival.
         # to_record drops the per-node training tensors — they're for training, not the rollout
@@ -595,6 +604,21 @@ class Orchestrator:
             "time/save_ckpt": save_ckpt_time,
             "time/wait_for_policy": self.wait_for_policy_time,
             "step": step,
+        }
+
+        # Staleness of the shipped batch, in policy versions: batch ``step`` trains on
+        # policy v{step-1}, each rollout was generated from v{r.policy_version}. Decomposed
+        # into pre-queue (versions elapsed while the rollout generated — aged per weight
+        # update by the dispatcher) and in-queue (versions elapsed while it sat finished in
+        # the sink waiting to be batched/shipped).
+        total_staleness = [(step - 1) - r.policy_version for r in effective]
+        pre_queue_staleness = [r.off_policy_steps for r in effective]
+        metrics |= {
+            "staleness/total": sum(total_staleness) / len(total_staleness),
+            "staleness/total_max": float(max(total_staleness)),
+            "staleness/pre_queue": sum(pre_queue_staleness) / len(pre_queue_staleness),
+            "staleness/in_queue": sum(t - p for t, p in zip(total_staleness, pre_queue_staleness))
+            / len(total_staleness),
         }
         for env_name, env_pool in batch.rollouts.by_env().items():
             metrics[f"batch/{env_name}"] = len(env_pool) / len(batch.rollouts)
@@ -854,13 +878,45 @@ class Orchestrator:
                     self.gate_closed_at = None
             gate.set()
 
+    async def hold_for_target_lag(self, step: int) -> None:
+        """Block shipping batch ``step`` until the trainer has published policy
+        v{step - 1 - TARGET_LAG}. The dispatch gate only stops *new* rollouts;
+        already-buffered ones can fill batches faster than the trainer consumes
+        them (tiny fast envs), letting the orchestrator finish all its steps and
+        tear down while the trainer still has pending NCCL broadcasts — which
+        then hang forever without the watcher to serve the receive handshake.
+        Holding here strictly bounds in-queue staleness instead.
+
+        Never waits for an unpublishable version: under NCCL the trainer's last
+        broadcast is v{max_steps - 2} (``nccl_broadcast_unused``), exactly what
+        the final batch requires. Bench runs have no trainer publishing
+        versions, so they ship freely."""
+        if self.config.bench:
+            return
+        required_version = step - 1 - TARGET_LAG
+        if self.policy.version >= required_version:
+            return
+        get_logger().info(
+            f"Holding batch {step} until the trainer publishes policy v{required_version} "
+            f"(currently v{self.policy.version})"
+        )
+        hold_start = time.perf_counter()
+        while True:
+            self.version_advanced.clear()
+            if self.policy.version >= required_version:
+                break
+            await self.version_advanced.wait()
+        self.wait_for_policy_time += time.perf_counter() - hold_start
+
     async def on_version_pending(self, step: int) -> None:
         """No-op: the dispatch gate is re-evaluated in ``on_new_version`` once
         the new policy version is live."""
 
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
-        re-evaluate the dispatch gate (may resume if the trainer caught up)."""
+        re-evaluate the dispatch gate (may resume if the trainer caught up) and
+        wake a ship held in ``hold_for_target_lag``."""
+        self.version_advanced.set()
         self.update_dispatch_gate()
 
     async def stop(self) -> None:
