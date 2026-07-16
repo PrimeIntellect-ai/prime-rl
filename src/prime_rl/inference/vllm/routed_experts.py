@@ -15,15 +15,21 @@ def serialize_routed_experts(routed_experts: Any, start: int = 0) -> dict[str, A
     array = np.asarray(routed_experts)
     assert array.ndim == 3
     assert np.issubdtype(array.dtype, np.integer)
+    dtype = np.uint8
     if array.size:
         assert array.min() >= 0
-        assert array.max() <= np.iinfo(np.uint8).max
+        if array.max() > np.iinfo(np.uint8).max:
+            # Models with >256 experts (e.g. NemotronH Super/Ultra: 512) need wider
+            # indices. The payload self-describes via "dtype" so consumers pick it up.
+            assert array.max() <= np.iinfo(np.uint16).max
+            dtype = np.uint16
 
-    compact = np.ascontiguousarray(array.astype(np.uint8, copy=False))
+    compact = np.ascontiguousarray(array.astype(dtype, copy=False))
     return {
         "data": pybase64.b64encode(memoryview(compact)).decode("ascii"),
         "shape": list(compact.shape),
         "start": start,
+        "dtype": np.dtype(dtype).name,
     }
 
 
