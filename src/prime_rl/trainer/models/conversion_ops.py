@@ -252,6 +252,28 @@ class MapValue(ConvOp):
 
 
 @dataclass
+class Cast(ConvOp):
+    """Declare the dtype required on each side of a logical weight.
+
+    Besides normal checkpoint conversion, this is consumed by the NIXL
+    publisher to choose the dtype of the registered RDMA staging allocation.
+    The cast therefore happens before raw bytes are exposed to inference.
+    """
+
+    name: str
+    hf_dtype: torch.dtype
+    tt_dtype: "torch.dtype | None" = None
+
+    def hf_to_tt(self, sd: StateDict) -> None:
+        if self.tt_dtype is not None and self.name in sd:
+            sd[self.name] = sd[self.name].to(dtype=self.tt_dtype)
+
+    def tt_to_hf(self, sd: StateDict) -> None:
+        if self.name in sd:
+            sd[self.name] = sd[self.name].to(dtype=self.hf_dtype)
+
+
+@dataclass
 class SqueezeLeading(ConvOp):
     """Backward-only: if a prime key carries a leading singleton dim that HF
     doesn't expect, drop it (GLM shared experts stored as ``(1, …)``). Forward
