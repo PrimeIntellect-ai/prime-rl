@@ -318,18 +318,20 @@ class RolloutDispatcher:
                 scheduled = await self.try_schedule("eval")
                 if not scheduled:
                     return
-            else:  # PREFER_TRAIN — bounded by the orchestrator's train demand
-                paused = not self.train_needed()
+            else:  # PREFER_TRAIN — fresh groups bounded by the orchestrator's train demand
+                needed = self.train_needed()
+                paused = not needed
                 if paused != self._train_paused:
                     self._train_paused = paused
                     get_logger().debug(
-                        "Pausing train dispatch (batch covered or policy too far behind)"
+                        "Pausing fresh train dispatch (batch covered or policy too far behind)"
                         if paused
                         else "Resuming train dispatch"
                     )
-                if paused:
-                    return
-                scheduled = await self.try_schedule("train")
+                # Already-open groups keep scheduling regardless of demand: their
+                # buffered members count as batch coverage, so an unfinishable
+                # partial group would deadlock the batch two rollouts short.
+                scheduled = await self.try_schedule("train", allow_fresh=needed)
                 if not scheduled:
                     return
 
@@ -340,11 +342,11 @@ class RolloutDispatcher:
         get_logger().info(f"Switching dispatcher mode to prefer {prefer} rollouts because {reason}")
         self.mode = new_mode
 
-    async def try_schedule(self, kind: RolloutKind) -> bool:
+    async def try_schedule(self, kind: RolloutKind, *, allow_fresh: bool = True) -> bool:
         """Schedule one rollout of ``kind``: prefer continuing an existing
-        group (keeps prefix-cache hits); otherwise open a fresh group from
-        the corresponding source. Returns False if nothing could be
-        scheduled."""
+        group (keeps prefix-cache hits); otherwise, when ``allow_fresh``, open
+        a fresh group from the corresponding source. Returns False if nothing
+        could be scheduled."""
         if kind == "train" and self.train_scheduling_disabled:
             return False
         envs = self.train_envs if kind == "train" else self.eval_envs
@@ -359,6 +361,8 @@ class RolloutDispatcher:
             if cost <= self.available_permits:
                 return await self.schedule_group_rollout(gid, group)
 
+        if not allow_fresh:
+            return False
         fresh = self.next_fresh_group(kind, envs)
         if fresh is None:
             return False
