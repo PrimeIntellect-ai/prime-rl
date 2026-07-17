@@ -435,7 +435,6 @@ def _sft_sample(
         "loss_mask": [True] * len(input_ids),
         "target_ids": [x + 1 for x in input_ids],
         "seq_lens": [len(input_ids)],
-        "padding_len": 0,
         "mm_kwargs": mm_kwargs,
         "mm_token_type_ids": mm_token_type_ids,
     }
@@ -497,11 +496,11 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
 
     assert packed["input_ids"] == [1, 2, 3, 4, 0]
     assert packed["loss_mask"] == [True, True, True, True, False]
-    assert packed["seq_lens"] == [1, 2, 1, 1]
+    assert packed["seq_lens"] == [1, 2, 2]
     assert packed["mm_kwargs"] is not None
     assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0]
     assert text_pack["input_ids"] == [5, 6, 0, 0, 0]
     assert text_pack["loss_mask"] == [True, True, False, False, False]
-    assert text_pack["seq_lens"] == [2, 3]
+    assert text_pack["seq_lens"] == [5]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
