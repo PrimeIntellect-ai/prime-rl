@@ -705,6 +705,20 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_off_policy_reachable(self):
+        # The trainer skips the final NCCL broadcasts (no receiver once the
+        # inference group tears down), so the last batch necessarily trains at
+        # least one version behind its generation policy — a zero budget can
+        # never be met and the run would hang collecting the final batch.
+        if self.max_off_policy_steps == 0 and self.max_steps is not None and self.weight_broadcast.type == "nccl":
+            raise ValueError(
+                "max_off_policy_steps=0 cannot be satisfied with NCCL weight broadcast and max_steps set: "
+                "the trainer never broadcasts the final policy versions, so the last batch trains at least "
+                "one version off-policy. Use max_off_policy_steps >= 1."
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps

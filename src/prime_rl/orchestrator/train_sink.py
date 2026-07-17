@@ -178,13 +178,22 @@ class TrainSink:
         counting everything already committed to it: buffered survivors,
         partial-group arrivals, and ``in_transit`` rollouts (in flight or
         completed but not yet routed into the sink). The dispatcher stops
-        scheduling when this reaches zero. For token batching the shortfall is
-        translated via the running mean payload size; before any survivor has
-        been observed the raw token shortfall is used (effectively unbounded —
+        scheduling when this reaches zero. The rollout-mode target is
+        ``max(batch_size, max_inflight_rollouts)``: with over-provisioning
+        configured (``oversampling_factor`` > 1 or an explicit
+        ``max_inflight_rollouts`` above the batch), extra rollouts race the
+        batch's stragglers and the surplus spills into the next batch, aging
+        one version; with capacity capped below the batch the target stays
+        ``batch_size`` so the batch can still complete (permits bound the
+        concurrency). For token batching the shortfall is translated via the
+        running mean payload size; before any survivor has been observed the
+        raw token shortfall is used (effectively unbounded —
         ``max_inflight`` caps the first batch, as before)."""
         committed = self.buffered_count() + in_transit
         if self.batch_size is not None:
-            needed = self.batch_size - len(self.pending_batch)
+            assert self.config.max_inflight_rollouts is not None
+            target = max(self.batch_size, self.config.max_inflight_rollouts)
+            needed = target - len(self.pending_batch)
         else:
             assert self.token_batch_size is not None
             remaining_tokens = self.token_batch_size - self.pending_tokens

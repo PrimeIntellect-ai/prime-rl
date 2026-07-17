@@ -88,9 +88,6 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     env_name: str = Field(default="", exclude=True)
     group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
     policy_version: int = Field(default=0, exclude=True)
-    # Policy versions between generation and training — batch N trains on
-    # v{N-1}, so this is (N-1) - policy_version, stamped by the orchestrator
-    # when the batch ships (0 until then, and for frozen-sampler envs).
     off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
     # Per-token rl advantage stream, full-length-N (= len(token_ids)) per

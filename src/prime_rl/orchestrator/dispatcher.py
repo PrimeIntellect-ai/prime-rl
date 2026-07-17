@@ -11,10 +11,10 @@
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight rollouts of the opposite kind drain
   naturally on either side of an eval boundary.
-- Train scheduling is demand-driven: the injected ``train_demand`` callable
-  (owned by the orchestrator) says how many more train rollouts the batch
-  being collected still needs; ``fill_inflight`` re-evaluates it per
-  scheduled group, so dispatch stops the moment the batch is covered.
+- Train scheduling is demand-driven: the injected ``train_needed`` predicate
+  (owned by the orchestrator) says whether the batch being collected still
+  needs rollouts; ``fill_inflight`` re-evaluates it per scheduled group, so
+  dispatch stops the moment the batch is covered.
 - ``cancel_stale_train_groups`` (driven by the orchestrator's
   ``on_version_pending``, before the engines pause for the weight update)
   drops in-flight train groups whose generation policy fell below the
@@ -121,7 +121,7 @@ class RolloutDispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules
     rollouts under shared capacity, and emits ``Rollout``\\ s to
-    ``out_q``. The orchestrator supplies ``train_demand``, drives
+    ``out_q``. The orchestrator supplies ``train_needed``, drives
     ``cancel_stale_train_groups`` on weight updates, and triggers eval
     epochs."""
 
@@ -136,7 +136,7 @@ class RolloutDispatcher:
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
-        train_demand: Callable[[], int],
+        train_needed: Callable[[], bool],
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -146,7 +146,7 @@ class RolloutDispatcher:
         self.policy_pool = policy_pool
         self.train_source = train_source
         self.eval_source = eval_source
-        self.train_demand = train_demand
+        self.train_needed = train_needed
 
         self.max_inflight = max_inflight_rollouts
         self.inflight_permits = 0
@@ -165,7 +165,7 @@ class RolloutDispatcher:
         # winds down without scheduling new train rollouts
         self.train_scheduling_disabled: bool = False
         self.metrics = DispatcherMetrics()
-        # Last observed sign of ``train_demand`` so pause/resume transitions
+        # Last observed value of ``train_needed`` so pause/resume transitions
         # log once instead of every scheduling pass
         self._train_paused = False
 
@@ -223,25 +223,6 @@ class RolloutDispatcher:
         """Stop scheduling new train rollouts; in-flight train + any
         triggered eval drain naturally."""
         self.train_scheduling_disabled = True
-
-    def _inflight_train_lags(self) -> list[int]:
-        """Policy versions each in-flight live-sampled train rollout is behind
-        the current policy."""
-        return [
-            self.policy.version - m.policy_version
-            for m in self.inflight.values()
-            if m.kind == "train" and self.train_envs.get(m.env_name).sampler.samples_from_live_policy
-        ]
-
-    @property
-    def max_off_policy_level(self) -> int:
-        lags = self._inflight_train_lags()
-        return max(lags) if lags else 0
-
-    @property
-    def mean_off_policy_level(self) -> float:
-        lags = self._inflight_train_lags()
-        return sum(lags) / len(lags) if lags else 0.0
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -315,7 +296,7 @@ class RolloutDispatcher:
         """Schedule new rollouts up to ``max_inflight``, honoring
         ``self.mode``. Eval scheduling is unbounded by train demand (evals
         are version-pinned measurements); train scheduling re-evaluates
-        ``train_demand`` per group, so it stops the moment the batch being
+        ``train_needed`` per group, so it stops the moment the batch being
         collected is covered and resumes as soon as demand reappears (next
         batch, staleness drops, errored arrivals). When ``PREFER_EVAL``'s
         source exhausts we flip back to ``PREFER_TRAIN`` so the eval tail
@@ -338,7 +319,7 @@ class RolloutDispatcher:
                 if not scheduled:
                     return
             else:  # PREFER_TRAIN — bounded by the orchestrator's train demand
-                paused = self.train_demand() <= 0
+                paused = not self.train_needed()
                 if paused != self._train_paused:
                     self._train_paused = paused
                     get_logger().debug(
@@ -691,12 +672,18 @@ class RolloutDispatcher:
 
     def gauges(self) -> dict[str, float]:
         """Instantaneous, read-only gauges sampled by the periodic logger."""
+        # Versions each in-flight live-sampled train rollout is behind the policy
+        lags = [
+            self.policy.version - m.policy_version
+            for m in self.inflight.values()
+            if m.kind == "train" and self.train_envs.get(m.env_name).sampler.samples_from_live_policy
+        ]
         return {
             "dispatcher/inflight_train": float(self.inflight_train_count),
             "dispatcher/inflight_eval": float(self.inflight_eval_count),
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
             "dispatcher/groups_in_flight": float(len(self.groups)),
-            "dispatcher/off_policy_level_max": float(self.max_off_policy_level),
-            "dispatcher/off_policy_level_mean": self.mean_off_policy_level,
+            "dispatcher/off_policy_level_max": float(max(lags) if lags else 0),
+            "dispatcher/off_policy_level_mean": sum(lags) / len(lags) if lags else 0.0,
         }
