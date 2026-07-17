@@ -1,6 +1,5 @@
-# Wordle (classic v0 TextArena env) on 2 GPUs (1 trainer + 1 inference), run via the
-# legacy bridge. The Wordle-SFT model plays a full ~6-turn game per rollout; the bridge
-# serves each multi-turn rollout to the orchestrator as a vf.Trace.
+# Wordle on 2 GPUs (1 trainer + 1 inference). The Wordle-SFT model plays a
+# full ~6-turn game per rollout.
 
 max_steps = 200
 seq_len = 8192
@@ -23,8 +22,9 @@ batch_size = 128
 group_size = 8
 
 [[orchestrator.train.env]]
-id = "wordle"
 name = "wordle"
+taskset = { id = "wordle-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.train.sampling]
 max_completion_tokens = 1024

@@ -32,7 +32,7 @@ def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
     # TODO: We should test this path because it's the most performant
     # But the grad seems to be off in attn because of precision
     # hf_config._attn_implementation = "flash_attention_2"
-    hf_config._attn_implementation = "sdpa"
+    hf_config._attn_implementation = "flash_attention_2"
     with torch.device("cuda"), default_dtype(torch.float32):
         hf_model = HFGlm4MoeForCausalLM._from_config(hf_config)
         prime_model = PrimeRLGlm4MoeForCausalLM._from_config(hf_config)

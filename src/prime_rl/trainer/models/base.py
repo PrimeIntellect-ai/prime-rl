@@ -21,6 +21,22 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """PrimeRL models use custom MoE implementations and don't support dynamic experts implementation."""
         return False
 
+    def _check_and_adjust_attn_implementation(
+        self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
+    ) -> str:
+        """Bypass transformers' flash attention availability checks.
+
+        PrimeRL custom models dispatch attention through their own ``ATTN_IMPL2CLASS``
+        dictionaries, not through transformers' ``ALL_ATTENTION_FUNCTIONS``.  The default
+        ``_check_and_adjust_attn_implementation`` validates that the requested flash
+        attention package is installed and the device is supported, which fails on
+        CPU-only machines and is unnecessary because we never call transformers'
+        attention dispatch for custom models.
+        """
+        if attn_implementation is None:
+            attn_implementation = "flash_attention_3"
+        return attn_implementation
+
     def get_correct_experts_implementation(self, requested_experts: str | None) -> str:
         """PrimeRL models always use eager experts implementation."""
         return "eager"

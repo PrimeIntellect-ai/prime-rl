@@ -23,7 +23,9 @@ group_size = 16
 max_completion_tokens = 128
 
 [[orchestrator.train.env]]
-id = "reverse-text"
+name = "reverse-text"
+taskset = { id = "reverse-text-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [inference]
 

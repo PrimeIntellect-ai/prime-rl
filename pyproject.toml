@@ -10,7 +10,6 @@ dependencies = [
     "beartype>=0.21.0",
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
-    "liger-kernel>=0.5.10",
     "loguru>=0.7.3",
     "pyarrow>=21.0.0",
     "numpy>=2.2.6",
@@ -44,6 +43,7 @@ dependencies = [
     "orjson>=3.10",
     "pandas>=2.0",
     "msgspec>=0.18",
+    "torchao>=0.17.0",
 ]
 
 [project.scripts]
@@ -132,6 +132,8 @@ override-dependencies = [
 members = [
     "deps/research-environments/environments/*/*",
     "deps/verifiers/environments/*",
+    # Env support packages (e.g. openenv-v1, needed by openenv-wordle-v1).
+    "deps/verifiers/packages/*",
 ]
 # tau2-synth-v1 and tau3-bench-v1 pin `tau2` forks/revs that conflict with the
 # canonical tau2-bench-v1; a workspace shares one lock, so these can't coexist.
@@ -179,6 +181,7 @@ dion = false
 deep-ep = false
 deep-gemm = false
 nixl-cu12 = false
+torchao = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
@@ -193,6 +196,7 @@ torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "23e4dfc" }
+torchao = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
 vllm-router = [

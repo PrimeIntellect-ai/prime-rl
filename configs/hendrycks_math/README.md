@@ -6,16 +6,10 @@ In this example, we demonstrate how to train `Qwen/Qwen3-4B-Instruct-2507` to an
 
 ## Setup
 
-Install the environment:
+The taskset is included through the research-environments workspace. After syncing the repository, verify it with:
 
 ```bash
-prime env install primeintellect/math-env
-```
-
-Verify installation:
-
-```bash
-uv run python -c "import math_env"
+uv run python -c "import math_env_v1"
 ```
 
 Start the tmux session:
@@ -37,7 +31,7 @@ Evaluate the base model:
 
 ```bash
 # In the `Trainer` pane
-uv run vf-eval math-env \
+uv run vf-eval math-env-v1 \
   -a '{"dataset_name": "PrimeIntellect/Hendrycks-Math", "dataset_subset": "default"}' \
   -m Qwen/Qwen3-4B-Instruct-2507 \
   -b http://localhost:8000/v1 \

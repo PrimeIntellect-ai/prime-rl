@@ -91,10 +91,6 @@ COPY scripts/docker-editable-pretend-versions.sh /app/scripts/docker-editable-pr
 # Use submodule git metadata from the build context when present. Docker copies
 # only the submodule .git pointer files into /app/deps, so we temporarily link
 # /app/.git/modules to the read-only context before resolving versions.
-# Opt-in extras for disaggregated P/D inference (deep-ep, deep-gemm, quack).
-# Default off — they're heavy source builds only the disagg-MoE path needs.
-# Enable via `--build-arg INCLUDE_DISAGG_EXTRAS=1`.
-ARG INCLUDE_DISAGG_EXTRAS=0
 ARG VERIFIERS_PRETEND_VERSION
 ARG RENDERERS_PRETEND_VERSION
 RUN --mount=type=cache,target=/app/.cache/uv \
@@ -109,9 +105,9 @@ RUN --mount=type=cache,target=/app/.cache/uv \
     && \
     sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${RENDERERS_PRETEND_VERSION}\"/" /app/deps/renderers/pyproject.toml \
     && \
-    EXTRA_DISAGG_FLAG=""; if [ "$INCLUDE_DISAGG_EXTRAS" = "1" ]; then EXTRA_DISAGG_FLAG="--extra disagg"; fi \
+    uv sync --all-packages --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra gpt-oss --extra modelexpress --extra quack --group mamba-ssm --locked --no-dev \
     && \
-    uv sync --all-packages --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra gpt-oss --extra modelexpress $EXTRA_DISAGG_FLAG --group mamba-ssm --locked --no-dev
+    /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "quack-kernels", "vllm", "vllm-router")]'
 
 # Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
 # nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer

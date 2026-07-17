@@ -116,7 +116,6 @@ jobs:
   build:
     name: Build and push (${{ matrix.suffix }})
     needs: prepare
-    environment: ghcr-publish
     strategy:
       fail-fast: true
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
