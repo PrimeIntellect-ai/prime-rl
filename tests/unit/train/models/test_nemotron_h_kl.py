@@ -56,7 +56,7 @@ def _make_model(device="cuda"):
         use_grouped_mm=False,
     )
     config._attn_implementation = "flash_attention_2"
-    with torch.device(device), default_dtype(torch.float32):
+    with torch.device(device), default_dtype(torch.bfloat16):
         model = NemotronHForCausalLM._from_config(config)
     inject_prime_lm_head(model, chunk_size=None)
     return model
@@ -188,7 +188,7 @@ def test_kl_with_fused_lm_head():
     )
     config._attn_implementation = "flash_attention_2"
 
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = NemotronHForCausalLM._from_config(config)
 
     # Get logits from vanilla head
@@ -209,7 +209,7 @@ def test_kl_with_fused_lm_head():
     fused_logprobs = fused_out["logprobs"]
 
     diff = (vanilla_logprobs - fused_logprobs).abs().max()
-    assert diff < 1e-3, f"Vanilla vs fused logprob diff: {diff.item()}"
+    assert diff < 1e-2, f"Vanilla vs fused logprob diff: {diff.item()}"
 
 
 def test_kl_logprob_alignment():

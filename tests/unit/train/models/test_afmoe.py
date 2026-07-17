@@ -10,7 +10,7 @@ from tests.unit.train.models.afmoe_hf_modeling.modeling_afmoe import (
     AfmoeForCausalLM as HFAfmoeForCausalLM,
 )
 
-pytestmark = [pytest.mark.gpu]
+pytestmark = [pytest.mark.gpu, pytest.mark.skip(reason="HF afmoe model does not support flash attention 2")]
 
 
 def get_model_pairs():

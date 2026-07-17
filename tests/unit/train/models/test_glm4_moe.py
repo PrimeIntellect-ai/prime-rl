@@ -33,7 +33,7 @@ def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
     # But the grad seems to be off in attn because of precision
     # hf_config._attn_implementation = "flash_attention_2"
     hf_config._attn_implementation = "flash_attention_2"
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         hf_model = HFGlm4MoeForCausalLM._from_config(hf_config)
         prime_model = PrimeRLGlm4MoeForCausalLM._from_config(hf_config)
     with torch.no_grad():
@@ -59,7 +59,7 @@ def test_glm4_moe_attn_only() -> None:
     for layer in prime_model.model.layers:
         layer.mlp = _IdentityMLP()
 
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
@@ -87,7 +87,7 @@ def test_glm4_moe_mlp_only() -> None:
     for layer in prime_model.model.layers:
         layer.self_attn.forward = foo
 
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
@@ -107,7 +107,7 @@ def test_glm4_moe_mlp_only() -> None:
 def test_glm4_moe() -> None:
     hf_model, prime_model = get_model_pairs()
 
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
