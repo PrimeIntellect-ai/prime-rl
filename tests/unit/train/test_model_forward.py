@@ -17,11 +17,8 @@ class _CaptureModel(nn.Module):
 
     def forward(self, **kwargs):
         self.kwargs = kwargs
-        if "input_ids" in kwargs:
-            shape = kwargs["input_ids"].shape
-        else:
-            shape = kwargs["inputs_embeds"].shape[:2]
-        return {"logits": torch.zeros(*shape, 4)}
+        input_ids = kwargs["input_ids"]
+        return {"logits": torch.zeros(*input_ids.shape, 4)}
 
 
 class _ToyVLM(nn.Module):
