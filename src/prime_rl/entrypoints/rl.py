@@ -72,8 +72,12 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
 
     if config.inference is not None:
-        # Exclude launcher-only fields that are not needed by the vLLM server
-        exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
+        # Dynamo's local supervisor consumes the deployment topology after the
+        # inference subconfig is reloaded. Native multi-node ranks are already
+        # placed by the SLURM template and do not need the launcher-only block.
+        exclude_inference = {"slurm", "output_dir", "dry_run"}
+        if config.inference.backend.type != "dynamo":
+            exclude_inference.add("deployment")
         with open(output_dir / INFERENCE_TOML, "wb") as f:
             tomli_w.dump(config.inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"), f)
 
