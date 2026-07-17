@@ -1073,7 +1073,13 @@ def _validate_flash_attn_4_installed() -> None:
     real implementation.  We detect this by checking the line count of the interface
     module (the real one is >1000 lines).
     """
-    import flash_attn.cute.interface as fa4_interface
+    try:
+        import flash_attn.cute.interface as fa4_interface
+    except ImportError as e:
+        raise ImportError(
+            "Flash attention 4 (flash-attn-cute) is not installed. "
+            "Install with `uv sync --extra flash-attn-cute --all-packages`."
+        ) from e
 
     with open(fa4_interface.__file__, "r") as f:
         num_lines = sum(1 for _ in f)
