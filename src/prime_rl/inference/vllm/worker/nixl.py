@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import wraps
@@ -42,6 +42,7 @@ else:
 
 logger = init_logger("vllm.inference.vllm.worker_nixl")
 _BUFFER_POLL_INTERVAL = 0.01
+_MAX_INFLIGHT_READS = 4
 
 
 @dataclass
@@ -95,6 +96,8 @@ class PulledWeightTransferGroup:
     group: WeightTransferGroup
     source_wait_seconds: float
     transfer_seconds: float
+    post_seconds: float
+    handle_wait_seconds: float
     acknowledgement_seconds: float
 
 
@@ -116,7 +119,7 @@ class NIXLWeightUpdateWorker(Worker):
         quantize_in_weight_transfer: bool = False,
         session_id: str = "default",
     ) -> None:
-        del inference_world_size, quantize_in_weight_transfer
+        del quantize_in_weight_transfer
         global_rank = rank_offset + int(self.local_rank)
         server_url = f"{host}:{port}"
         set_ucx_env_defaults()
@@ -130,6 +133,7 @@ class NIXLWeightUpdateWorker(Worker):
             worker_id=f"inference-{global_rank}",
         )
         self.weight_transfer_timeout = timeout
+        self.inference_world_size = inference_world_size
         self.weight_transfer_plan: WeightTransferPlan | None = None
         logger.info(
             "NIXL worker configured: global_rank=%d, ModelExpress=%s, session=%s",
@@ -319,7 +323,7 @@ class NIXLWeightUpdateWorker(Worker):
             largest_group_bytes,
             max_receive_buffers,
             self.device,
-            extra_headroom_bytes=largest_group_bytes + peak_growth_bytes,
+            extra_headroom_bytes=max(largest_group_bytes, peak_growth_bytes),
         )
         receive_arena_elements = receive_buffer_count * largest_group_elements
         with classic_cuda_alloc():
@@ -418,6 +422,9 @@ class NIXLWeightUpdateWorker(Worker):
                 local_prepared = self.nixl_agent.prep_local(local_descs[agent_index])
                 remote_prepared = self.nixl_agent.prep_remote(peer_name, remote)
                 pulls.append((local_prepared, remote_prepared, list(range(len(remote)))))
+            if receive_buffer_count > 1 and pulls:
+                offset = (group_index + self.mx_rendezvous.rank * len(pulls) // self.inference_world_size) % len(pulls)
+                pulls = pulls[offset:] + pulls[:offset]
             transfer_groups.append(
                 WeightTransferGroup(
                     name=group_name,
@@ -510,20 +517,49 @@ class NIXLWeightUpdateWorker(Worker):
             source_wait_seconds = time.perf_counter() - source_wait_started
 
             transfer_started = time.perf_counter()
-            for local, remote, indices in transfer_group.pulls:
-                handle = self.nixl_agent.post_read(local, indices, remote)
-                self.nixl_agent.wait(
-                    handle,
-                    context=f"weight pull for {transfer_group.name}",
-                    timeout=self.weight_transfer_timeout,
-                    cancelled=cancelled.is_set,
-                )
+            post_seconds = 0.0
+            handle_wait_seconds = 0.0
+            if plan.receive_buffer_count == 1:
+                for local, remote, indices in transfer_group.pulls:
+                    handle = self.nixl_agent.post_read(local, indices, remote)
+                    self.nixl_agent.wait(
+                        handle,
+                        context=f"weight pull for {transfer_group.name}",
+                        timeout=self.weight_transfer_timeout,
+                        cancelled=cancelled.is_set,
+                    )
+            else:
+                handles: deque[Any] = deque()
+                for local, remote, indices in transfer_group.pulls:
+                    post_started = time.perf_counter()
+                    handles.append(self.nixl_agent.post_read(local, indices, remote))
+                    post_seconds += time.perf_counter() - post_started
+                    if len(handles) == _MAX_INFLIGHT_READS:
+                        wait_started = time.perf_counter()
+                        self.nixl_agent.wait(
+                            handles.popleft(),
+                            context=f"weight pull for {transfer_group.name}",
+                            timeout=self.weight_transfer_timeout,
+                            cancelled=cancelled.is_set,
+                        )
+                        handle_wait_seconds += time.perf_counter() - wait_started
+                while handles:
+                    wait_started = time.perf_counter()
+                    self.nixl_agent.wait(
+                        handles.popleft(),
+                        context=f"weight pull for {transfer_group.name}",
+                        timeout=self.weight_transfer_timeout,
+                        cancelled=cancelled.is_set,
+                    )
+                    handle_wait_seconds += time.perf_counter() - wait_started
             transfer_seconds = time.perf_counter() - transfer_started
 
             return PulledWeightTransferGroup(
                 group=transfer_group,
                 source_wait_seconds=source_wait_seconds,
                 transfer_seconds=transfer_seconds,
+                post_seconds=post_seconds,
+                handle_wait_seconds=handle_wait_seconds,
                 acknowledgement_seconds=0.0,
             )
 
@@ -583,8 +619,12 @@ class NIXLWeightUpdateWorker(Worker):
             executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nixl-prefetch") if pipelined else None
             source_wait_seconds = 0.0
             transfer_seconds = 0.0
+            post_seconds = 0.0
+            handle_wait_seconds = 0.0
             acknowledgement_seconds = 0.0
             replay_seconds = 0.0
+            slowest_transfer_seconds = 0.0
+            slowest_transfer_group = plan.groups[0].name
             try:
                 pull = executor.submit(prefetch_group, 0) if executor is not None else None
                 for group_index in range(len(plan.groups)):
@@ -592,7 +632,12 @@ class NIXLWeightUpdateWorker(Worker):
                     transfer_group = pulled.group
                     source_wait_seconds += pulled.source_wait_seconds
                     transfer_seconds += pulled.transfer_seconds
+                    post_seconds += pulled.post_seconds
+                    handle_wait_seconds += pulled.handle_wait_seconds
                     acknowledgement_seconds += pulled.acknowledgement_seconds
+                    if pulled.transfer_seconds > slowest_transfer_seconds:
+                        slowest_transfer_seconds = pulled.transfer_seconds
+                        slowest_transfer_group = transfer_group.name
 
                     torch.cuda.synchronize(self.device)
                     if executor is not None and group_index + 1 < len(plan.groups):
@@ -612,17 +657,38 @@ class NIXLWeightUpdateWorker(Worker):
 
             finalize_started = time.perf_counter()
             finalize_layerwise_reload(model, self.model_runner.model_config)
-            logger.info(
-                "NIXL update profile rank=%d: groups=%d, source_wait=%.2fs, "
-                "sequential_rdma=%.2fs, source_ack=%.2fs, replay=%.2fs, finalize=%.2fs",
-                self.mx_rendezvous.rank,
-                len(plan.groups),
-                source_wait_seconds,
-                transfer_seconds,
-                acknowledgement_seconds,
-                replay_seconds,
-                time.perf_counter() - finalize_started,
-            )
+            finalize_seconds = time.perf_counter() - finalize_started
+            if pipelined:
+                logger.info(
+                    "NIXL update profile rank=%d: groups=%d, source_wait=%.2fs, "
+                    "rdma=%.2fs (post=%.2fs, wait=%.2fs, window=%d, %.1f Gb/s, "
+                    "slowest=%s/%.2fs), source_ack=%.2fs, replay=%.2fs, finalize=%.2fs",
+                    self.mx_rendezvous.rank,
+                    len(plan.groups),
+                    source_wait_seconds,
+                    transfer_seconds,
+                    post_seconds,
+                    handle_wait_seconds,
+                    _MAX_INFLIGHT_READS,
+                    plan.total_bytes * 8 / max(transfer_seconds, 1e-9) / 1e9,
+                    slowest_transfer_group,
+                    slowest_transfer_seconds,
+                    acknowledgement_seconds,
+                    replay_seconds,
+                    finalize_seconds,
+                )
+            else:
+                logger.info(
+                    "NIXL update profile rank=%d: groups=%d, source_wait=%.2fs, "
+                    "sequential_rdma=%.2fs, source_ack=%.2fs, replay=%.2fs, finalize=%.2fs",
+                    self.mx_rendezvous.rank,
+                    len(plan.groups),
+                    source_wait_seconds,
+                    transfer_seconds,
+                    acknowledgement_seconds,
+                    replay_seconds,
+                    finalize_seconds,
+                )
 
     @staticmethod
     def _copy_plan(plan: TensorCopyPlan) -> None:
