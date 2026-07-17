@@ -262,7 +262,13 @@ def test_dynamo_inference_pool_loads_lora_through_discovered_system_routes():
         frontend_response = MagicMock()
         frontend_response.raise_for_status = MagicMock()
         frontend_response.json.return_value = {"data": [{"id": "math-r8"}]}
-        frontend_client.get.return_value = frontend_response
+        transient_frontend_response = MagicMock()
+        transient_frontend_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Service unavailable",
+            request=httpx.Request("GET", "http://frontend:8000/v1/models"),
+            response=httpx.Response(503),
+        )
+        frontend_client.get.side_effect = [transient_frontend_response, frontend_response]
         client_factory.side_effect = [admin_client, system_client, frontend_client]
         pool = DynamoInferencePool(
             ClientConfig(base_url=["http://frontend:8000/v1"]),
@@ -282,7 +288,8 @@ def test_dynamo_inference_pool_loads_lora_through_discovered_system_routes():
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
     assert [call.args[0] for call in admin_client.post.await_args_list] == ["/pause", "/resume"]
-    frontend_client.get.assert_awaited_once_with("/v1/models")
+    assert frontend_client.get.await_count == 2
+    frontend_client.get.assert_awaited_with("/v1/models")
 
 
 def test_dynamo_inference_pool_resumes_workers_when_lora_update_fails():
@@ -364,7 +371,7 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     )
 
 
-def test_load_lora_adapter_falls_back_to_native_vllm_route():
+def test_load_lora_adapter_retries_wrapper_404_without_native_fallback():
     mock_client = AsyncMock()
     missing_wrapper = MagicMock()
     missing_wrapper.status_code = 404
@@ -373,19 +380,17 @@ def test_load_lora_adapter_falls_back_to_native_vllm_route():
         request=MagicMock(),
         response=missing_wrapper,
     )
-    native_response = MagicMock()
-    native_response.raise_for_status = MagicMock()
-    mock_client.post.side_effect = [missing_wrapper, native_response]
+    success_response = MagicMock()
+    success_response.raise_for_status = MagicMock()
+    mock_client.post.side_effect = [missing_wrapper, success_response]
 
     asyncio.run(load_lora_adapter([mock_client], "test-lora", Path("/test/path")))
 
-    assert mock_client.post.await_args_list[0].args == ("/load_lora_adapter",)
-    assert mock_client.post.await_args_list[1].args == ("/v1/load_lora_adapter",)
-    assert mock_client.post.await_args_list[1].kwargs["json"] == {
-        "lora_name": "test-lora",
-        "lora_path": "/test/path",
-        "load_inplace": True,
-    }
+    assert [call.args for call in mock_client.post.await_args_list] == [
+        ("/load_lora_adapter",),
+        ("/load_lora_adapter",),
+    ]
+    assert all("load_inplace" not in call.kwargs["json"] for call in mock_client.post.await_args_list)
 
 
 def test_init_nccl_broadcast_falls_back_to_native_collective_rpc():

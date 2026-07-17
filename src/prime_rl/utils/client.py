@@ -17,7 +17,6 @@ from tenacity import (
     AsyncRetrying,
     retry,
     retry_if_exception,
-    retry_if_exception_type,
     stop_after_attempt,
     stop_after_delay,
     wait_exponential,
@@ -216,7 +215,7 @@ class DynamoDiscoveryPending(ValueError):
     """A well-formed discovery snapshot that is not ready yet."""
 
 
-def _is_retryable_dynamo_discovery_error(exception: BaseException) -> bool:
+def _is_retryable_dynamo_error(exception: BaseException) -> bool:
     if isinstance(exception, httpx.HTTPStatusError):
         return exception.response.status_code == 429 or exception.response.status_code >= 500
     return isinstance(exception, (DynamoDiscoveryPending, httpx.TransportError))
@@ -346,7 +345,7 @@ class DynamoInferencePool(StaticInferencePool):
             async for attempt in AsyncRetrying(
                 stop=stop_after_delay(client_config.wait_for_ready_timeout),
                 wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
-                retry=retry_if_exception(_is_retryable_dynamo_discovery_error),
+                retry=retry_if_exception(_is_retryable_dynamo_error),
                 reraise=True,
             ):
                 with attempt:
@@ -702,17 +701,7 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
             json={"lora_name": lora_name, "lora_path": lora_path_posix},
             timeout=timeout,
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code != 404:
-                raise
-            response = await admin_client.post(
-                "/v1/load_lora_adapter",
-                json={"lora_name": lora_name, "lora_path": lora_path_posix, "load_inplace": True},
-                timeout=timeout,
-            )
-            response.raise_for_status()
+        response.raise_for_status()
 
     await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
 
@@ -751,7 +740,7 @@ async def wait_for_model(clients: list[AsyncClient], model_name: str, timeout: i
     async for attempt in AsyncRetrying(
         stop=stop_after_delay(timeout),
         wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
-        retry=retry_if_exception_type((DynamoDiscoveryPending, httpx.TransportError)),
+        retry=retry_if_exception(_is_retryable_dynamo_error),
         reraise=True,
     ):
         with attempt:
