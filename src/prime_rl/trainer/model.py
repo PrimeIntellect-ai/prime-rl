@@ -616,6 +616,12 @@ def get_model(
     else:
         impl_to_use = config.impl
 
+    if config.attn in ("flash_attention_3", "flash_attention_4") and impl_to_use == "hf":
+        raise ValueError(
+            f"{config.attn} requires model.impl='custom' or 'auto' (resolved to 'custom'), "
+            f"but model.impl resolved to 'hf'. Set model.impl='custom' explicitly."
+        )
+
     with device:
         if impl_to_use == "custom" and custom_vlm_cls is not None:
             model_cls = custom_vlm_cls
@@ -1128,11 +1134,33 @@ def _validate_flash_attn_4_installed() -> None:
         )
 
 
+def resolve_auto_attn(config: ModelConfig) -> None:
+    """Resolve ``attn='auto'`` to a concrete flash attention implementation based on GPU architecture.
+
+    FA3 on Hopper (SM90), FA4 on Blackwell (SM100+). Falls back to FA3 on older architectures
+    where FA3 is available, otherwise FA2.
+    """
+    if config.attn != "auto":
+        return
+    major, _ = torch.cuda.get_device_capability()
+    if major >= 10:
+        resolved = "flash_attention_4"
+    elif major >= 9:
+        resolved = "flash_attention_3"
+    else:
+        resolved = "flash_attention_2"
+    logger = get_logger()
+    logger.info(f"Auto-resolved attn='auto' to '{resolved}' (SM{major}x)")
+    config.attn = resolved
+
+
 def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
 ) -> nn.Module:
+    resolve_auto_attn(config)
+
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
             "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"

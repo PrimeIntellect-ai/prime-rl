@@ -29,6 +29,7 @@ from prime_rl.trainer.model import (
     get_load_balance_stats,
     is_tt_moe_model,
     setup_tokenizer,
+    resolve_auto_attn,
     setup_model,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -105,6 +106,9 @@ def train(config: SFTConfig):
         f"world_size * micro_batch_size ({micro_batches_per_step})"
     )
     grad_accum_steps = total_micro_batches // micro_batches_per_step
+
+    # Resolve attn='auto' before CP setup so ring/ulysses patches use the correct kernel
+    resolve_auto_attn(config.model)
 
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
