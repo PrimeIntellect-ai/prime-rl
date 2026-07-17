@@ -533,6 +533,7 @@ class CatDataset(StatefulIterableDataset):
 
 def cat_collate(samples: list[Sample]) -> Batch:
     (sample,) = samples
+    mm_kwargs = sample.get("mm_kwargs")
     mm_token_type_ids = sample.get("mm_token_type_ids")
     return {
         "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
@@ -540,19 +541,13 @@ def cat_collate(samples: list[Sample]) -> Batch:
         "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda").unsqueeze(0),
         "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
         "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long, device="cuda"),
-        "mm_kwargs": _move_mm_kwargs_to_cuda(sample.get("mm_kwargs")),
+        "mm_kwargs": {key: value.to("cuda") for key, value in mm_kwargs.items()} if mm_kwargs is not None else None,
         "mm_token_type_ids": (
             torch.tensor(mm_token_type_ids, dtype=torch.long, device="cuda").unsqueeze(0)
             if mm_token_type_ids is not None
             else None
         ),
     }
-
-
-def _move_mm_kwargs_to_cuda(mm_kwargs: dict[str, Tensor] | None) -> dict[str, Tensor] | None:
-    if mm_kwargs is None:
-        return None
-    return {key: value.to("cuda") for key, value in mm_kwargs.items()}
 
 
 def setup_and_interleave_datasets(
