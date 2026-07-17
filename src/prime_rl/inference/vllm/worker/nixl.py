@@ -62,15 +62,21 @@ class LayerWeightCopies:
 
 
 @dataclass
-class WeightTransferGroup:
+class LayerWeightTransferPlan:
     reload_layer: nn.Module | None
     copies: list[TensorCopyPlan]
     persistent_copies: list[TensorCopyPlan]
-    pulls: list[tuple[Any, Any, list[int]]]
 
     @property
     def destination_names(self) -> set[str]:
         return {plan.recorded_copy.param_name for plan in self.copies}
+
+
+@dataclass
+class WeightTransferGroup:
+    name: str
+    layers: list[LayerWeightTransferPlan]
+    pulls: list[tuple[Any, Any, list[int]]]
 
 
 @dataclass
@@ -111,6 +117,14 @@ class NIXLWeightUpdateWorker(Worker):
             session_id=session_id,
             worker_id=f"inference-{global_rank}",
         )
+        self.layer_rendezvous = MxRendezvous(
+            client=MxClient(server_url=server_url),
+            role="inference",
+            rank=global_rank,
+            peer_world_size=1,
+            session_id=f"{session_id}:layers",
+            worker_id=f"inference-layers-{global_rank}",
+        )
         self.weight_transfer_timeout = timeout
         self.weight_transfer_plan: WeightTransferPlan | None = None
         logger.info(
@@ -130,18 +144,20 @@ class NIXLWeightUpdateWorker(Worker):
         table = decode_table(self.mx_rendezvous.fetch(trainer_ref).nixl_metadata)
         layers, persistent = self._bake(table)
         plan = self._build_pull_plan(table, layers, persistent)
-        self.mx_rendezvous.publish(nixl_metadata=self.nixl_agent.get_metadata())
+        self.layer_rendezvous.publish()
+        self.layer_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         # Join the current generation directly. Publishing a transient READY
         # before the first pull would let the trainer mistake initialization
         # for a completed acknowledgement.
+        self.mx_rendezvous.publish(nixl_metadata=self.nixl_agent.get_metadata())
         self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.weight_transfer_plan = plan
         logger.info(
             "NIXL plan baked in %.2fs: rank=%d, groups=%d, copies=%d, bytes=%d, pull_lists=%d",
             time.perf_counter() - started,
             self.mx_rendezvous.rank,
-            len(layers),
-            sum(len(group.copies) + len(group.persistent_copies) for group in plan.groups),
+            len(plan.groups),
+            sum(len(layer.copies) + len(layer.persistent_copies) for group in plan.groups for layer in group.layers),
             plan.total_bytes,
             sum(len(group.pulls) for group in plan.groups),
         )
@@ -236,6 +252,7 @@ class NIXLWeightUpdateWorker(Worker):
         tensors = {tensor.name: tensor for tensor in table.tensors}
         copies = [copy for layer in layers for copy in layer.copies] + persistent
         specifications: dict[int, TensorCopySpec] = {}
+        copies_by_group: dict[int, list[RecordedCopy]] = defaultdict(list)
         for copy in copies:
             source = tensors[copy.src_name]
             source_dtype = getattr(torch, source.dtype)
@@ -247,21 +264,31 @@ class NIXLWeightUpdateWorker(Worker):
                 replay_ops=replay_ops,
                 staging_shape=staging_shape,
             )
+            copies_by_group[source.group].append(copy)
 
-        persistent_by_layer: dict[int, list[RecordedCopy]] = defaultdict(list)
-        for copy in persistent:
-            persistent_by_layer[id(copy.layer)].append(copy)
-        work: list[tuple[nn.Module | None, list[RecordedCopy]]] = []
-        for layer in layers:
-            layer_copies = layer.copies + persistent_by_layer.pop(id(layer.layer), [])
-            work.append((layer.layer, layer_copies))
-        work.extend((None, layer_copies) for layer_copies in persistent_by_layer.values())
+        reload_layer_ids = {id(layer.layer) for layer in layers}
+        reload_layer_groups: dict[int, int] = {}
+        for copy in copies:
+            layer_id = id(copy.layer)
+            if layer_id not in reload_layer_ids:
+                continue
+            source_group = tensors[copy.src_name].group
+            previous_group = reload_layer_groups.setdefault(layer_id, source_group)
+            if previous_group != source_group:
+                raise RuntimeError(
+                    f"vLLM reload layer {type(copy.layer).__name__} reads trainer groups "
+                    f"{table.groups[previous_group]!r} and {table.groups[source_group]!r}"
+                )
 
         arena_elements = max(
-            sum(prod(specifications[id(copy)].staging_shape) for copy in layer_copies) for _, layer_copies in work
+            (
+                sum(prod(specifications[id(copy)].staging_shape) for copy in copies_by_group[group_index])
+                for group_index in range(len(table.groups))
+            ),
+            default=0,
         )
         with classic_cuda_alloc():
-            receive_arena = torch.empty(arena_elements, dtype=torch.bfloat16, device=self.device)
+            receive_arena = torch.empty(max(1, arena_elements), dtype=torch.bfloat16, device=self.device)
         self.nixl_agent.register_tensor(receive_arena)
 
         agent_devices: dict[int, int] = {
@@ -271,14 +298,14 @@ class NIXLWeightUpdateWorker(Worker):
         peer_names: dict[int, str] = {}
         transfer_groups: list[WeightTransferGroup] = []
 
-        for reload_layer, layer_copies in work:
-            copy_plans: list[TensorCopyPlan] = []
-            persistent_copy_plans: list[TensorCopyPlan] = []
+        for group_index, group_name in enumerate(table.groups):
+            copy_plans_by_layer: dict[int, list[TensorCopyPlan]] = defaultdict(list)
+            persistent_plans_by_layer: dict[int, list[TensorCopyPlan]] = defaultdict(list)
             local_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
             remote_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
             cursor = 0
 
-            for copy in layer_copies:
+            for copy in copies_by_group[group_index]:
                 specification = specifications[id(copy)]
                 numel = prod(specification.staging_shape)
                 staging_tensor = receive_arena.narrow(0, cursor, numel).view(specification.staging_shape)
@@ -288,7 +315,8 @@ class NIXLWeightUpdateWorker(Worker):
                     staging_tensor=staging_tensor,
                     replay_ops=specification.replay_ops,
                 )
-                (persistent_copy_plans if copy.persistent else copy_plans).append(copy_plan)
+                plans = persistent_plans_by_layer if copy.persistent else copy_plans_by_layer
+                plans[id(copy.layer)].append(copy_plan)
 
                 source = tensors[copy.src_name]
                 source_dtype = getattr(torch, source.dtype)
@@ -309,6 +337,37 @@ class NIXLWeightUpdateWorker(Worker):
                     remote_descs[agent].append((source_addr, nbytes, agent_devices[agent]))
                     total_bytes += nbytes
 
+            layer_plans: list[LayerWeightTransferPlan] = []
+            for layer in layers:
+                layer_id = id(layer.layer)
+                regular = copy_plans_by_layer.pop(layer_id, [])
+                live = persistent_plans_by_layer.pop(layer_id, [])
+                if regular:
+                    layer_plans.append(
+                        LayerWeightTransferPlan(
+                            reload_layer=layer.layer,
+                            copies=regular,
+                            persistent_copies=live,
+                        )
+                    )
+                elif live:
+                    layer_plans.append(
+                        LayerWeightTransferPlan(
+                            reload_layer=None,
+                            copies=[],
+                            persistent_copies=live,
+                        )
+                    )
+            remaining_persistent = [plan for plans in persistent_plans_by_layer.values() for plan in plans]
+            if remaining_persistent:
+                layer_plans.append(
+                    LayerWeightTransferPlan(
+                        reload_layer=None,
+                        copies=[],
+                        persistent_copies=remaining_persistent,
+                    )
+                )
+
             pulls: list[tuple[Any, Any, list[int]]] = []
             for agent_index, remote in sorted(remote_descs.items()):
                 peer_name = peer_names.get(agent_index)
@@ -321,9 +380,8 @@ class NIXLWeightUpdateWorker(Worker):
                 pulls.append((local_prepared, remote_prepared, list(range(len(remote)))))
             transfer_groups.append(
                 WeightTransferGroup(
-                    reload_layer=reload_layer,
-                    copies=copy_plans,
-                    persistent_copies=persistent_copy_plans,
+                    name=group_name,
+                    layers=layer_plans,
                     pulls=pulls,
                 )
             )
@@ -378,43 +436,58 @@ class NIXLWeightUpdateWorker(Worker):
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
             for transfer_group in plan.groups:
+                self.layer_rendezvous.wait_for(
+                    "trainer",
+                    count=1,
+                    status=p2p_pb2.SOURCE_STATUS_READY,
+                    timeout=self.weight_transfer_timeout,
+                )
                 for local, remote, indices in transfer_group.pulls:
                     handle = self.nixl_agent.post_read(local, indices, remote)
                     self.nixl_agent.wait(
                         handle,
-                        context="weight pull",
+                        context=f"weight pull for {transfer_group.name}",
                         timeout=self.weight_transfer_timeout,
                     )
                 torch.cuda.synchronize(self.device)
 
-                layer = transfer_group.reload_layer
-                if layer is None:
-                    for copy_plan in transfer_group.persistent_copies:
+                for layer_plan in transfer_group.layers:
+                    layer = layer_plan.reload_layer
+                    if layer is None:
+                        for copy_plan in layer_plan.persistent_copies:
+                            self._copy_plan(copy_plan)
+                        continue
+
+                    info = LAYERWISE_INFO[layer]
+                    materialize_layer(layer, info)
+                    # Match loader semantics for destinations with unwritten padding.
+                    destination_names = layer_plan.destination_names
+                    for name, tensor in get_layer_tensors(layer).items():
+                        if name in destination_names and not tensor.is_meta:
+                            tensor.zero_()
+                    for copy_plan in layer_plan.copies:
                         self._copy_plan(copy_plan)
-                    torch.cuda.synchronize(self.device)
-                    continue
+                    for copy_plan in layer_plan.persistent_copies:
+                        self._copy_plan(copy_plan)
 
-                info = LAYERWISE_INFO[layer]
-                materialize_layer(layer, info)
-                # Match loader semantics for destinations with unwritten padding.
-                destination_names = transfer_group.destination_names
-                for name, tensor in get_layer_tensors(layer).items():
-                    if name in destination_names and not tensor.is_meta:
-                        tensor.zero_()
-                for copy_plan in transfer_group.copies:
-                    self._copy_plan(copy_plan)
-                for copy_plan in transfer_group.persistent_copies:
-                    self._copy_plan(copy_plan)
-
-                if hasattr(layer, "_already_called_process_weights_after_loading"):
-                    delattr(layer, "_already_called_process_weights_after_loading")
-                quant_method = getattr(layer, "quant_method", None)
-                if isinstance(quant_method, QuantizeMethodBase):
-                    quant_method.process_weights_after_loading(layer)
-                if info.kernel_tensors is not None:
-                    _copy_and_restore_kernel_tensors(layer, info)
-                info.reset()
+                    if hasattr(layer, "_already_called_process_weights_after_loading"):
+                        delattr(layer, "_already_called_process_weights_after_loading")
+                    quant_method = getattr(layer, "quant_method", None)
+                    if isinstance(quant_method, QuantizeMethodBase):
+                        quant_method.process_weights_after_loading(layer)
+                    if info.kernel_tensors is not None:
+                        _copy_and_restore_kernel_tensors(layer, info)
+                    info.reset()
                 torch.cuda.synchronize(self.device)
+
+                self.layer_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
+                self.layer_rendezvous.wait_for(
+                    "trainer",
+                    count=1,
+                    status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
+                    timeout=self.weight_transfer_timeout,
+                )
+                self.layer_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
             finalize_layerwise_reload(model, self.model_runner.model_config)
 

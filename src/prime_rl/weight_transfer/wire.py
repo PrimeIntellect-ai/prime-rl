@@ -24,21 +24,25 @@ class TrainerShard(msgspec.Struct, frozen=True):
 
 
 class TrainerTensor(msgspec.Struct):
-    """One trainer-format tensor served as persistent BF16 shards.
+    """One trainer-format tensor served as BF16 shards.
 
     ``master_dtype`` documents the optimizer-owned source precision. ``dtype``
-    is the wire precision and is deliberately independent of it.
+    is the wire precision and is deliberately independent of it. Shard
+    addresses are valid for this tensor's transfer group and may overlap with
+    addresses used by other groups.
     """
 
     name: str
     master_dtype: str
     dtype: str
     shape: tuple[int, ...]
+    group: int
     shards: list[TrainerShard]
 
 
 class TrainerTable(msgspec.Struct):
     agents: list[TrainerAgent]
+    groups: list[str]
     tensors: list[TrainerTensor]
 
 
