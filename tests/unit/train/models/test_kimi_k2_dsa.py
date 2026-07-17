@@ -10,7 +10,9 @@ import torch
 from prime_rl.trainer.models.kimi_k2_dsa import KimiK2DsaConfig, KimiK2DsaForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 
-requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="DSA kernels (fp8_indexer, sparse_mla_fwd) require CUDA")
+requires_cuda = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="DSA kernels (fp8_indexer, sparse_mla_fwd) require CUDA"
+)
 
 
 def _tiny_config(**overrides) -> KimiK2DsaConfig:

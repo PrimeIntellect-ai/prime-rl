@@ -15,7 +15,9 @@ from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig, GlmMoeDsaForCau
 from prime_rl.trainer.models.layers.dsa import compute_indexer_kl_loss
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 
-requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="DSA kernels (fp8_indexer, sparse_mla_fwd) require CUDA")
+requires_cuda = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="DSA kernels (fp8_indexer, sparse_mla_fwd) require CUDA"
+)
 
 
 def _tiny_config(**overrides) -> GlmMoeDsaConfig:
@@ -96,9 +98,7 @@ def test_indexer_kl_loss_trains_indexer_toward_dense_attention():
             if "indexer" not in name:
                 param.requires_grad = False
 
-    optimizer = torch.optim.Adam(
-        [p for p in model.parameters() if p.requires_grad], lr=1e-2
-    )
+    optimizer = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=1e-2)
 
     seq_len = 64
     torch.manual_seed(1)
