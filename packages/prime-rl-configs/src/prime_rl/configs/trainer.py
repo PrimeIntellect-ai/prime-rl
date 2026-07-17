@@ -17,7 +17,7 @@ from prime_rl.utils.config import BaseConfig
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
-AttnImplementation: TypeAlias = Literal["eager", "sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
+AttnImplementation: TypeAlias = Literal["eager", "sdpa", "flash_attention_2", "flash_attention_3", "fa4", "auto"]
 EPCommBackend: TypeAlias = Literal["torch", "deepep"]
 
 # User-facing name -> internal name. Users set `flash_attention_4` in configs,
@@ -119,8 +119,8 @@ class ModelConfig(BaseModelConfig):
     seq_len: int = 2048
     """Sequence length the model is trained on."""
 
-    attn: AttnImplementation = "flash_attention_2"
-    """Attention implementation. With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
+    attn: AttnImplementation = "auto"
+    """Attention implementation. ``auto`` selects FA3 on Hopper (SM90) and FA4 on Blackwell (SM100+). With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
 
     compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""
@@ -209,9 +209,13 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def cp_only_with_flash_attn(self):
-        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "fa4"]:
-            raise ValueError("CP is only supported with flash attention 2, flash attention 3, or fa4")
-        if self.cp > 1 and self.attn in ("flash_attention_3", "fa4") and self.impl != "custom":
+        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "fa4", "auto"]:
+            raise ValueError("CP is only supported with flash attention 2, 3, or 4")
+        if (
+            self.cp > 1
+            and self.attn in ("flash_attention_3", "fa4", "auto")
+            and self.impl not in ("custom", "auto")
+        ):
             # Both ring and ulysses route FA3/FA4 through our custom FlashAttention class:
             # ring patches `_compute_attention` with the ring kernel, ulysses patches it with
             # the all-to-all wrapper around the FA3/FA4 kernel. The HF path patches
@@ -243,8 +247,9 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def flash_attention_4_only_with_custom_impl(self):
-        if self.attn == "fa4" and self.impl != "custom":
-            raise ValueError("Flash attention 4 is only supported with the custom implementation")
+        # "auto" may resolve to FA4 on Blackwell, so apply the same impl constraint.
+        if self.attn in ("fa4", "auto") and self.impl not in ("custom", "auto"):
+            raise ValueError("Flash attention 4 is only supported with model.impl='custom' or 'auto'")
         return self
 
     @model_validator(mode="after")
