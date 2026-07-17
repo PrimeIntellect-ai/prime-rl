@@ -507,17 +507,7 @@ class ElasticInferencePool:
 
         raise TimeoutError(f"Timed out waiting for {min_servers} ready servers (got {self.num_ready_servers})")
 
-    async def update_weights(
-        self,
-        weight_dir: Path | None,
-        lora_name: str | None = None,
-        step: int = 0,
-        on_engines_paused=None,
-        update_timeout_s: float | None = None,
-        retry_update: bool = True,
-    ) -> None:
-        if on_engines_paused is not None or update_timeout_s is not None or not retry_update:
-            raise ValueError("NIXL weight transfer is not supported by the elastic LoRA pool")
+    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         if lora_name is None:
             raise ValueError("Elastic inference pool requires LoRA training (lora_name must be set)")
         await self.sync_weights(weight_dir, lora_name, step)

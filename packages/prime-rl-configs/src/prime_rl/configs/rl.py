@@ -1,7 +1,6 @@
 import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
-from uuid import uuid4
 
 from pydantic import Field, model_validator
 
@@ -117,24 +116,45 @@ class SharedModelConfig(BaseConfig):
     """VLM configuration. Set this to enable vision-language model support."""
 
 
-class SharedWeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem", "nixl"] = "nccl"
-    """Weight broadcast transport."""
-
+class SharedInMemoryWeightBroadcastConfig(BaseConfig):
     host: str = "localhost"
-    """NCCL rendezvous or ModelExpress host."""
+    """Weight transfer host."""
 
-    port: int | None = None
-    """Transport port. Defaults to 29501 for NCCL and 8001 for NIXL."""
+    port: int
+    """Weight transfer port."""
 
     timeout: int = 1200
     """Timeout in seconds for in-memory weight transfer."""
 
+
+class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
+    type: Literal["nccl"] = "nccl"
+
+    port: int = 29501
+    """Port for NCCL weight broadcast."""
+
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
-    session_id: str | None = None
-    """Run-unique namespace used by ModelExpress. Generated for NIXL when unset."""
+
+class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
+    type: Literal["nixl"] = "nixl"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    session_id: str = "default"
+    """ModelExpress session ID."""
+
+
+class SharedFileSystemWeightBroadcastConfig(BaseConfig):
+    type: Literal["filesystem"] = "filesystem"
+
+
+SharedWeightBroadcastConfig: TypeAlias = Annotated[
+    SharedFileSystemWeightBroadcastConfig | SharedNCCLWeightBroadcastConfig | SharedNIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
+]
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -297,30 +317,22 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_enough_devices_for_in_memory_broadcast(self):
-        broadcast_type = (
-            self.weight_broadcast.type if self.weight_broadcast is not None else self.trainer.weight_broadcast.type
-        )
+    def validate_enough_devices_for_nccl(self):
         if self.deployment.type == "single_node":
-            if broadcast_type in ("nccl", "nixl"):
-                if self.deployment.num_train_gpus < 1 or self.deployment.num_infer_gpus < 1:
+            if self.trainer.weight_broadcast.type == "nccl":
+                if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
                     raise ValueError(
-                        f"{broadcast_type} weight broadcast requires at least one trainer and one inference GPU."
+                        "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
                     )
-        if broadcast_type == "nixl":
-            if self.inference is None:
-                raise ValueError("NIXL weight broadcast requires an inference config.")
-            if self.orchestrator.model.client.is_elastic:
-                raise ValueError("NIXL weight broadcast does not support elastic inference pools.")
         return self
 
     @model_validator(mode="after")
     def validate_quantize_in_weight_transfer(self):
-        if self.weight_broadcast is None or not self.weight_broadcast.quantize_in_weight_transfer:
+        if not isinstance(self.weight_broadcast, SharedNCCLWeightBroadcastConfig):
             return self
 
-        if self.weight_broadcast.type != "nccl":
-            raise ValueError("weight_broadcast.quantize_in_weight_transfer requires weight_broadcast.type = 'nccl'.")
+        if not self.weight_broadcast.quantize_in_weight_transfer:
+            return self
 
         if self.inference is None:
             raise ValueError("weight_broadcast.quantize_in_weight_transfer requires an inference config.")
@@ -365,61 +377,37 @@ class RLConfig(BaseConfig):
         """
         if self.weight_broadcast is None:
             if self.trainer.model.lora is not None or self.inference is None:
-                self.weight_broadcast = SharedWeightBroadcastConfig(type="filesystem")
+                self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
             else:
-                self.weight_broadcast = SharedWeightBroadcastConfig()
-        if self.weight_broadcast.type in ("nccl", "nixl") and self.trainer.model.lora is not None:
-            # LoRA adapters are transferred via the filesystem and cannot use the full-weight
-            # in-memory transports.
+                self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
+        if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
                 "LoRA training is not yet supported with in-memory weight broadcast. "
                 "Set weight_broadcast.type = 'filesystem'."
             )
-        if self.weight_broadcast.port is None:
-            self.weight_broadcast.port = 8001 if self.weight_broadcast.type == "nixl" else 29501
-        port = self.weight_broadcast.port
-        assert port is not None
-        if self.weight_broadcast.type == "nccl":
+        if self.weight_broadcast.type in ("nccl", "nixl"):
             inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
-            self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
-                type=self.weight_broadcast.type,
-                inference_world_size=inference_world_size,
+            common_config = dict(
                 host=self.weight_broadcast.host,
-                port=port,
-                timeout=self.weight_broadcast.timeout,
-                quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
-            )
-            self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
-                type=self.weight_broadcast.type,
-                host=self.weight_broadcast.host,
-                port=port,
+                port=self.weight_broadcast.port,
                 timeout=self.weight_broadcast.timeout,
                 inference_world_size=inference_world_size,
-                quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
             )
+            if self.weight_broadcast.type == "nccl":
+                transport_config = dict(
+                    quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
+                )
+                trainer_config_type = TrainerNCCLWeightBroadcastConfig
+                orchestrator_config_type = OrchestratorNCCLWeightBroadcastConfig
+            else:
+                transport_config = dict(session_id=self.weight_broadcast.session_id)
+                trainer_config_type = TrainerNIXLWeightBroadcastConfig
+                orchestrator_config_type = OrchestratorNIXLWeightBroadcastConfig
+            self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
+            self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
         elif self.weight_broadcast.type == "filesystem":
             self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
             self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
-        elif self.weight_broadcast.type == "nixl":
-            inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
-            session_id = self.weight_broadcast.session_id
-            if session_id is None:
-                session_id = f"prime-rl-{uuid4().hex}"
-                self.weight_broadcast.session_id = session_id
-            self.trainer.weight_broadcast = TrainerNIXLWeightBroadcastConfig(
-                host=self.weight_broadcast.host,
-                port=port,
-                timeout=self.weight_broadcast.timeout,
-                inference_world_size=inference_world_size,
-                session_id=session_id,
-            )
-            self.orchestrator.weight_broadcast = OrchestratorNIXLWeightBroadcastConfig(
-                host=self.weight_broadcast.host,
-                port=port,
-                timeout=self.weight_broadcast.timeout,
-                inference_world_size=inference_world_size,
-                session_id=session_id,
-            )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
@@ -463,9 +451,6 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_lora(self):
         if self.trainer.model.lora is not None:
-            if self.trainer.weight_broadcast.type in ("nccl", "nixl"):
-                raise ValueError("In-memory weight broadcast does not support LoRA yet.")
-
             if self.orchestrator.model.lora is None:
                 from prime_rl.configs.orchestrator import LoRAConfig
 
@@ -599,13 +584,6 @@ class RLConfig(BaseConfig):
                 dp = self.inference.parallel.dp
                 if self.inference.api_server_count < dp and not self.inference.enable_lora:
                     self.inference.api_server_count = dp
-
-                if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
-                    inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp
-                    assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
-                    self.trainer.weight_broadcast.inference_world_size = inference_world_size
-                    assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
-                    self.orchestrator.weight_broadcast.inference_world_size = inference_world_size
 
         elif self.deployment.type == "multi_node":  # multi-node
             self.orchestrator.num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node

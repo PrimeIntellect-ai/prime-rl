@@ -269,16 +269,16 @@ def train(config: TrainerConfig):
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
 
-        # With NCCL, broadcast the incoming policy (v{progress.step-1}) before waiting for its
-        # rollouts: #2896 broadcasts at the END of a step, so the first step would otherwise block
-        # on rollouts the paused inference engines cannot produce until they receive
-        # v{progress.step-1}. Filesystem broadcast needs no startup rendezvous (fresh: base model
-        # = v0; resume: the orchestrator reads its checkpoint dir), and a one-shot startup
-        # broadcast would miss multi-run runs registered after the first step.
+        # NCCL broadcasts the incoming policy (v{progress.step-1}) before waiting for its
+        # rollouts. NIXL only needs this rendezvous after resume; a fresh inference pool already
+        # has policy v0 and joins the first update after the first training step.
         if (
             progress.step == start_step
             and weight_broadcast is not None
-            and config.weight_broadcast.type in ("nccl", "nixl")
+            and (
+                config.weight_broadcast.type == "nccl"
+                or (config.weight_broadcast.type == "nixl" and checkpoint_step is not None)
+            )
         ):
             logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
             multi_run_manager.wait_for_run(0)
@@ -587,19 +587,19 @@ def train(config: TrainerConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
-        # sample its next step from it. Skip the final NCCL broadcasts: with a 1-step async barrier
-        # the orchestrator's last step uses the trainer's penultimate ckpt, so they have no receiver
-        # (the inference NCCL group is torn down). Filesystem broadcast still writes them so we can
-        # resume from the broadcast directory.
+        # sample its next step from it. NCCL retains its two-step shutdown window; NIXL updates
+        # through the final sampling policy and skips only the model produced after the last batch.
+        # Filesystem broadcast still writes every version for resume.
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
-            in_memory_broadcast_unused = (
-                config.weight_broadcast.type in ("nccl", "nixl")
+            nccl_broadcast_unused = (
+                config.weight_broadcast.type == "nccl"
                 and config.max_steps is not None
                 and progress.step >= config.max_steps - 1
             )
-            if not in_memory_broadcast_unused:
+            nixl_broadcast_unused = config.weight_broadcast.type == "nixl" and is_last_step
+            if not (nccl_broadcast_unused or nixl_broadcast_unused):
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time

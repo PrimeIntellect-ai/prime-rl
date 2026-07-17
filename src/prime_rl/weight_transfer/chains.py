@@ -69,12 +69,12 @@ def _shares_root_storage(root: torch.Tensor, result: torch.Tensor) -> bool:
 
 def split_transport_chain(
     shape: tuple[int, ...], dtype: torch.dtype, ops: OpChain
-) -> tuple[OpChain, OpChain, tuple[int, ...], torch.dtype]:
+) -> tuple[OpChain, OpChain, tuple[int, ...]]:
     """Split a graph into a source-view prefix and local replay suffix.
 
-    The prefix must remain a view of the BF16 trainer root and can therefore
-    be addressed by RDMA. The first materializing operation (notably a dtype
-    cast) and everything after it is replayed on the receive arena.
+    The prefix must remain a same-dtype view of the trainer root and can
+    therefore be addressed by RDMA. The first materializing or dtype-changing
+    operation and everything after it is replayed on the receive arena.
     """
     root = torch.empty(shape, dtype=dtype, device="meta")
     prefix_len = 0
@@ -85,11 +85,11 @@ def split_transport_chain(
             candidate = apply_chain(root, candidate_ops)
         except (UnsupportedOpError, RuntimeError, TypeError, ValueError):
             break
-        if not _shares_root_storage(root, candidate):
+        if candidate.dtype != dtype or not _shares_root_storage(root, candidate):
             break
         prefix_len = index + 1
         prefix_value = candidate
-    return ops[:prefix_len], ops[prefix_len:], tuple(prefix_value.shape), prefix_value.dtype
+    return ops[:prefix_len], ops[prefix_len:], tuple(prefix_value.shape)
 
 
 def resolve_chain_region(

@@ -19,31 +19,7 @@ class RecordedCopy:
     offset: int
     shape: tuple[int, ...]
     stride: tuple[int, ...]
-    destination_dtype: torch.dtype
     persistent: bool = False
-
-
-@dataclass(frozen=True)
-class ExpectedDestination:
-    layer: Any
-    param_name: str
-    tensor: torch.Tensor
-    label: str
-
-
-def checkpoint_destinations(model: torch.nn.Module, *, skip_names: set[str]) -> list[ExpectedDestination]:
-    """Return materialized parameters and persistent buffers that a checkpoint must refresh."""
-    destinations: list[ExpectedDestination] = []
-    for module_name, module in model.named_modules():
-        prefix = f"{module_name}." if module_name else ""
-        for name, tensor in module._parameters.items():
-            if tensor is not None and name not in skip_names and tensor.numel() > 0:
-                destinations.append(ExpectedDestination(module, name, tensor, f"{prefix}{name}"))
-        non_persistent = module._non_persistent_buffers_set
-        for name, tensor in module._buffers.items():
-            if tensor is not None and name not in skip_names and name not in non_persistent and tensor.numel() > 0:
-                destinations.append(ExpectedDestination(module, name, tensor, f"{prefix}{name}"))
-    return destinations
 
 
 @dataclass
@@ -68,47 +44,6 @@ class BakeRecorder:
             if base <= pointer < base + nbytes:
                 return layer, name, (pointer - base) // itemsize, True
         return None
-
-    def validate_expected_destinations(self, expected: list[ExpectedDestination]) -> None:
-        """Fail if any checkpoint-backed destination was wholly omitted by vLLM's loaders.
-
-        Exact full-storage aliases are treated as tied weights: replaying either
-        destination refreshes the shared kernel storage. Non-persistent buffers
-        are excluded by ``checkpoint_destinations`` because they are synthesized
-        by the model rather than loaded from the checkpoint.
-        """
-        expected_by_key = {(id(item.layer), item.param_name): item for item in expected}
-        recorded_keys = {(id(copy.layer), copy.param_name) for copy in self.copies}
-        recorded_aliases = {
-            alias
-            for key in recorded_keys
-            if (item := expected_by_key.get(key)) is not None
-            if (alias := _full_storage_alias(item.tensor)) is not None
-        }
-        missing = [
-            item.label
-            for key, item in expected_by_key.items()
-            if key not in recorded_keys and _full_storage_alias(item.tensor) not in recorded_aliases
-        ]
-        if missing:
-            raise RuntimeError(f"vLLM lazy load omitted checkpoint destinations: {sorted(missing)}")
-
-
-def _full_storage_alias(tensor: torch.Tensor) -> tuple[Any, ...] | None:
-    """Identify an exact tensor view of storage without conflating partial aliases."""
-    try:
-        storage_pointer = tensor.untyped_storage().data_ptr()
-    except (RuntimeError, ValueError):
-        return None
-    itemsize = tensor.element_size()
-    return (
-        tensor.device,
-        storage_pointer,
-        tensor.storage_offset() * itemsize,
-        tuple(tensor.shape),
-        tuple(stride * itemsize for stride in tensor.stride()),
-        tensor.dtype,
-    )
 
 
 class LazyWeight(torch.Tensor):
@@ -183,7 +118,6 @@ class LazyWeight(torch.Tensor):
                             offset=offset,
                             shape=tuple(dst.shape),
                             stride=tuple(dst.stride()),
-                            destination_dtype=dst.dtype,
                             persistent=persistent,
                         )
                     )

@@ -26,7 +26,7 @@ from prime_rl.weight_transfer.chains import (
 )
 from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc
 from prime_rl.weight_transfer.graph import make_hf_lazy_weights
-from prime_rl.weight_transfer.lazy import BakeRecorder, RecordedCopy, checkpoint_destinations
+from prime_rl.weight_transfer.lazy import BakeRecorder, RecordedCopy
 from prime_rl.weight_transfer.mx import MxRendezvous
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.sharding import route_region, zip_src_dst
@@ -49,7 +49,6 @@ class _CopyPlan:
 
 @dataclass
 class _CopySpecification:
-    copy: RecordedCopy
     transport_ops: OpChain
     replay_ops: OpChain
     stage_shape: tuple[int, ...]
@@ -171,7 +170,6 @@ class NIXLWeightUpdateWorker(Worker):
         groups: list[_BakedGroup] = []
         persistent: list[RecordedCopy] = []
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
-            expected_destinations = checkpoint_destinations(model, skip_names=SKIP_TENSORS)
             initialize_layerwise_reload(model)
             try:
                 for module in model.modules():
@@ -200,8 +198,6 @@ class NIXLWeightUpdateWorker(Worker):
                         layers[id(copy.layer)] = copy.layer
 
                 self._validate_persistent_coverage(persistent)
-                recorder.validate_expected_destinations(expected_destinations)
-
                 for layer_id, copies in by_layer.items():
                     layer = layers[layer_id]
                     expected = {name for name in get_layer_tensors(layer) if name not in SKIP_TENSORS}
@@ -317,8 +313,6 @@ class NIXLWeightUpdateWorker(Worker):
         expected_numel: int,
     ) -> None:
         label = f"{type(layer).__name__}.{name}"
-        if tensor.dtype not in (torch.bfloat16, torch.float32):
-            raise RuntimeError(f"unsupported NIXL destination dtype for {label}: {tensor.dtype}")
         if not tensor.is_contiguous():
             raise RuntimeError(
                 f"NIXL destination coverage requires a contiguous tensor, got {label} stride={tuple(tensor.stride())}"
@@ -362,36 +356,16 @@ class NIXLWeightUpdateWorker(Worker):
         copies = [copy for group in groups for copy in group.copies] + persistent
         specifications: dict[int, _CopySpecification] = {}
         for copy in copies:
-            source = tensors.get(copy.src_name)
-            if source is None:
-                raise RuntimeError(f"lazy graph references missing trainer tensor {copy.src_name!r}")
+            source = tensors[copy.src_name]
             source_dtype = getattr(torch, source.dtype)
-            if source.master_dtype != "float32" or source_dtype != torch.bfloat16:
-                raise RuntimeError(
-                    f"{source.name}: expected FP32 master and BF16 wire, got "
-                    f"master={source.master_dtype}, wire={source.dtype}"
-                )
-            transport_ops, replay_ops, stage_shape, stage_dtype = split_transport_chain(
-                tuple(source.shape), source_dtype, copy.ops
-            )
-            if stage_dtype != torch.bfloat16:
-                raise RuntimeError(
-                    f"transport prefix for {source.name!r} changed dtype to {stage_dtype}; casts must replay locally"
-                )
-            if copy.destination_dtype not in (torch.bfloat16, torch.float32):
-                raise RuntimeError(
-                    f"unsupported NIXL destination dtype for {copy.src_name!r}: {copy.destination_dtype}"
-                )
-            replayed = apply_chain(torch.empty(stage_shape, dtype=stage_dtype, device="meta"), replay_ops)
+            transport_ops, replay_ops, stage_shape = split_transport_chain(tuple(source.shape), source_dtype, copy.ops)
+            replayed = apply_chain(torch.empty(stage_shape, dtype=source_dtype, device="meta"), replay_ops)
             if tuple(replayed.shape) != copy.shape:
                 raise RuntimeError(
                     f"lazy replay shape mismatch for {copy.src_name!r}: "
                     f"replayed={tuple(replayed.shape)}, destination={copy.shape}"
                 )
-            if replayed.dtype not in (torch.bfloat16, torch.float32):
-                raise RuntimeError(f"unsupported NIXL replay dtype for {copy.src_name!r}: {replayed.dtype}")
             specifications[id(copy)] = _CopySpecification(
-                copy=copy,
                 transport_ops=transport_ops,
                 replay_ops=replay_ops,
                 stage_shape=stage_shape,
@@ -406,12 +380,8 @@ class NIXLWeightUpdateWorker(Worker):
         work.extend((None, layer_copies) for layer_copies in persistent_by_layer.values())
 
         arena_elements = max(
-            (sum(prod(specifications[id(copy)].stage_shape) for copy in group_copies) for _, group_copies in work),
-            default=0,
+            sum(prod(specifications[id(copy)].stage_shape) for copy in group_copies) for _, group_copies in work
         )
-        if arena_elements <= 0:
-            raise RuntimeError("NIXL pull plan has no receive elements")
-
         with classic_cuda_alloc():
             self._receive_arena = torch.empty(arena_elements, dtype=torch.bfloat16, device=self.device)
         self.nixl_agent.register_tensor(self._receive_arena)
@@ -519,79 +489,48 @@ class NIXLWeightUpdateWorker(Worker):
         model = self.raw_model
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
-            try:
-                for transfer_group in self._transfer_groups:
-                    # The arena is reused by every group, so all reads and
-                    # scatters for this group must finish before the next pull.
-                    for local, remote, indices in transfer_group.pull_specs:
-                        handle = self.nixl_agent.post_read(local, indices, remote)
-                        self.nixl_agent.wait(handle, context="weight pull", timeout=self._timeout)
-                    torch.cuda.synchronize(self.device)
+            for transfer_group in self._transfer_groups:
+                for local, remote, indices in transfer_group.pull_specs:
+                    handle = self.nixl_agent.post_read(local, indices, remote)
+                    self.nixl_agent.wait(handle, context="weight pull", timeout=self._timeout)
+                torch.cuda.synchronize(self.device)
 
-                    group = transfer_group.baked
-                    if group is None:
-                        # A persistent-only destination has no materialized
-                        # load-time parameters or post-processing step.
-                        for plan in transfer_group.persistent_plans:
-                            self._copy_plan(plan)
-                        torch.cuda.synchronize(self.device)
-                        continue
-
-                    info = LAYERWISE_INFO[group.layer]
-                    materialize_layer(group.layer, info)
-                    # Vocab loaders explicitly zero their trailing padding.
-                    # Zeroing every loaded destination also makes any allowed
-                    # padding deterministic before the recorded prefix copies.
-                    for name, tensor in get_layer_tensors(group.layer).items():
-                        if name in group.param_names and not tensor.is_meta:
-                            tensor.zero_()
-                    for plan in transfer_group.plans:
-                        self._copy_plan(plan)
-
-                    # SKIP_TENSORS remain live across layerwise reload. Load
-                    # them before post-processing so an upcast/downcast or
-                    # repack observes the new generation.
+                group = transfer_group.baked
+                if group is None:
                     for plan in transfer_group.persistent_plans:
                         self._copy_plan(plan)
-
-                    if hasattr(group.layer, "_already_called_process_weights_after_loading"):
-                        delattr(group.layer, "_already_called_process_weights_after_loading")
-                    quant_method = getattr(group.layer, "quant_method", None)
-                    if isinstance(quant_method, QuantizeMethodBase):
-                        quant_method.process_weights_after_loading(group.layer)
-                    if info.kernel_tensors is not None:
-                        _copy_and_restore_kernel_tensors(group.layer, info)
-                    info.reset()
-                    # Deferred casts and kernel conversion can read the shared
-                    # arena asynchronously. Finish them before RDMA reuses it.
                     torch.cuda.synchronize(self.device)
+                    continue
 
-                finalize_layerwise_reload(model, self.model_runner.model_config)
-            except Exception:
-                try:
-                    torch.cuda.synchronize(self.device)
-                except Exception:
-                    logger.exception("Failed to synchronize CUDA while aborting a NIXL update")
-                try:
-                    self._restore_layerwise_state(model)
-                except Exception:
-                    logger.exception("Failed to restore vLLM layerwise state after NIXL update failure")
-                raise
+                info = LAYERWISE_INFO[group.layer]
+                materialize_layer(group.layer, info)
+                # Vocab loaders explicitly zero their trailing padding.
+                # Zeroing every loaded destination also makes any allowed
+                # padding deterministic before the recorded prefix copies.
+                for name, tensor in get_layer_tensors(group.layer).items():
+                    if name in group.param_names and not tensor.is_meta:
+                        tensor.zero_()
+                for plan in transfer_group.plans:
+                    self._copy_plan(plan)
+                for plan in transfer_group.persistent_plans:
+                    self._copy_plan(plan)
+
+                if hasattr(group.layer, "_already_called_process_weights_after_loading"):
+                    delattr(group.layer, "_already_called_process_weights_after_loading")
+                quant_method = getattr(group.layer, "quant_method", None)
+                if isinstance(quant_method, QuantizeMethodBase):
+                    quant_method.process_weights_after_loading(group.layer)
+                if info.kernel_tensors is not None:
+                    _copy_and_restore_kernel_tensors(group.layer, info)
+                info.reset()
+                torch.cuda.synchronize(self.device)
+
+            finalize_layerwise_reload(model, self.model_runner.model_config)
 
     @staticmethod
     def _copy_plan(plan: _CopyPlan) -> None:
         copy = plan.copy
         parameter = getattr(copy.layer, copy.param_name)
-        if parameter.dtype != copy.destination_dtype or parameter.dtype not in (torch.bfloat16, torch.float32):
-            raise RuntimeError(
-                f"NIXL destination dtype changed for {type(copy.layer).__name__}.{copy.param_name}: "
-                f"baked={copy.destination_dtype}, runtime={parameter.dtype}"
-            )
         destination = parameter.as_strided(copy.shape, copy.stride, copy.offset)
         value = apply_chain(plan.stage, plan.replay_ops)
-        if tuple(value.shape) != copy.shape or value.dtype not in (torch.bfloat16, torch.float32):
-            raise RuntimeError(
-                f"invalid NIXL replay for {copy.src_name!r}: "
-                f"shape={tuple(value.shape)}, dtype={value.dtype}, destination_shape={copy.shape}"
-            )
         destination.copy_(value)
