@@ -25,7 +25,6 @@ class Sample(TypedDict):
     loss_mask: list[bool]
     target_ids: list[int]
     seq_lens: list[int]
-    padding_len: int
 
 
 class Batch(TypedDict):
@@ -34,7 +33,6 @@ class Batch(TypedDict):
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
     seq_lens: Int[Tensor, "packed"]
-    padding_len: int
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -105,7 +103,6 @@ class FakeDataset(StatefulIterableDataset):
                 "position_ids": position_ids,
                 "loss_mask": loss_mask,
                 "seq_lens": [seq_len],
-                "padding_len": 0,
             }
             self.num_samples["fake"] += 1
             self.num_tokens["fake"] += len(input_ids)
@@ -283,7 +280,6 @@ class SFTDataset(StatefulIterableDataset):
             "loss_mask": loss_mask,
             "position_ids": list(range(len(input_ids))),
             "seq_lens": [len(input_ids)],
-            "padding_len": 0,
         }
 
     def __iter__(self):
@@ -391,7 +387,6 @@ class CatDataset(StatefulIterableDataset):
             k: packed[k][:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
         }
         result["seq_lens"] = []
-        result["padding_len"] = 0
         remaining = len(result["input_ids"])
         for sample_len in packed["seq_lens"]:
             if remaining <= 0:
@@ -407,22 +402,17 @@ class CatDataset(StatefulIterableDataset):
             result["loss_mask"].extend([False] * pad_len)
             result["target_ids"].extend([0] * pad_len)
             result["seq_lens"][-1] += pad_len
-            result["padding_len"] = pad_len
         return result
 
 
 def cat_collate(samples: list[Sample]) -> Batch:
-    if len(samples) != 1:
-        raise ValueError(f"CatDataset collate expects exactly one packed row, got {len(samples)}")
+    (sample,) = samples
     return {
-        "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long().to("cuda"),
-        "position_ids": torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0)
-        .long()
-        .to("cuda"),
-        "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to("cuda"),
-        "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to("cuda"),
-        "seq_lens": torch.tensor(samples[0]["seq_lens"], dtype=torch.long, device="cuda"),
-        "padding_len": samples[0]["padding_len"],
+        "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+        "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+        "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda").unsqueeze(0),
+        "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+        "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long, device="cuda"),
     }
 
 

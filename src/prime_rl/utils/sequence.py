@@ -59,11 +59,6 @@ def get_cp_local_seq_lens(
     cp_world_size: int,
 ) -> torch.Tensor:
     """Intersect global sequence boundaries with one contiguous CP shard."""
-    if total_tokens % cp_world_size != 0:
-        raise ValueError(f"Sequence length {total_tokens} must be divisible by CP size {cp_world_size}")
-    if not 0 <= cp_rank < cp_world_size:
-        raise ValueError(f"CP rank {cp_rank} must be in [0, {cp_world_size})")
-
     shard_size = total_tokens // cp_world_size
     shard_start = seq_lens.new_tensor(cp_rank * shard_size)
     shard_end = shard_start + shard_size
