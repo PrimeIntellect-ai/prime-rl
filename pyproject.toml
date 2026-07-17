@@ -132,8 +132,6 @@ override-dependencies = [
 members = [
     "deps/research-environments/environments/*/*",
     "deps/verifiers/environments/*",
-    # Env support packages (e.g. openenv-v1, needed by openenv-wordle-v1).
-    "deps/verifiers/packages/*",
 ]
 # tau2-synth-v1 and tau3-bench-v1 pin `tau2` forks/revs that conflict with the
 # canonical tau2-bench-v1; a workspace shares one lock, so these can't coexist.
