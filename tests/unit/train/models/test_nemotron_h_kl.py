@@ -55,7 +55,7 @@ def _make_model(device="cuda"):
         layers_block_type=["mamba", "moe", "attention", "moe"],
         use_grouped_mm=False,
     )
-    config._attn_implementation = "sdpa"
+    config._attn_implementation = "flash_attention_2"
     with torch.device(device), default_dtype(torch.float32):
         model = NemotronHForCausalLM._from_config(config)
     inject_prime_lm_head(model, chunk_size=None)
@@ -186,7 +186,7 @@ def test_kl_with_fused_lm_head():
         layers_block_type=["mamba", "moe", "attention", "moe"],
         use_grouped_mm=False,
     )
-    config._attn_implementation = "sdpa"
+    config._attn_implementation = "flash_attention_2"
 
     with torch.device("cuda"), default_dtype(torch.float32):
         model = NemotronHForCausalLM._from_config(config)

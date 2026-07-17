@@ -26,8 +26,15 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, Genera
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
-from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
-from prime_rl.trainer.distributed import DeepEPExpertParallel
+from prime_rl.configs.trainer import (
+    ActivationCheckpointConfig,
+    CompileConfig,
+    FP8Config,
+    ModelConfig,
+    MXFP8Config,
+    TokenizerConfig,
+)
+from prime_rl.trainer.distributed import DeepEPExpertParallel, MXFP8AllToAllExpertParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -46,6 +53,8 @@ from prime_rl.trainer.models.layers.checkpointing import (
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
+from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -273,7 +282,7 @@ def _patch_qwen3_5_linear_attn_varlen():
     ):
         attn_impl = getattr(self.config, "_attn_implementation", None)
         cu_seqlens = None
-        if attn_impl in ("flash_attention_2", "flash_attention_3", "fa4") and position_ids is not None:
+        if attn_impl in ("flash_attention_2", "flash_attention_3", "flash_attention_4") and position_ids is not None:
             pids = position_ids
             if pids.ndim == 3:
                 pids = pids[0]
@@ -501,17 +510,14 @@ def get_model(
             )
 
     # GPT-OSS only supports FlashAttention via kernels-community/vllm-flash-attn3, which requires Hopper (SM 90).
-    # On other architectures (e.g. Blackwell), users must fall back to eager attention.
     HOPPER_MAJOR = 9
     if getattr(model_config, "model_type", "") == "gpt_oss":
-        if config.attn != "eager":
-            major, minor = torch.cuda.get_device_capability()
-            if major != HOPPER_MAJOR:
-                raise ValueError(
-                    f"GPT-OSS requires 'attn = \"eager\"' on non-Hopper GPUs (detected SM {major}{minor}). "
-                    f"The only flash attention kernel supported by GPT-OSS (kernels-community/vllm-flash-attn3) is Hopper-only. "
-                    f'Set [trainer.model] attn = "eager" in your config.'
-                )
+        major, minor = torch.cuda.get_device_capability()
+        if major != HOPPER_MAJOR:
+            raise ValueError(
+                f"GPT-OSS requires Hopper (SM 90) for flash attention, detected SM {major}{minor}. "
+                f"GPT-OSS is not supported on non-Hopper GPUs."
+            )
         # Enable hub kernels for GPT-OSS (disabled by default to avoid interfering with other models).
         import transformers.integrations.hub_kernels as _hub_kernels
 
@@ -527,7 +533,11 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
-    model_config.fp8 = config.fp8
+    # MoEArgs.fp8 (read via getattr(config, "fp8") in the modeling files) gates the
+    # DeepGEMM FP8 grouped GEMM. MXFP8 grouped GEMM is applied by wrapping the expert
+    # weights with torchao (see apply_quantization), so it leaves this flag False and
+    # the experts keep calling torch._grouped_mm — which the wrapper tensor intercepts.
+    model_config.fp8 = isinstance(config.quantization, FP8Config) and config.quantization.enable_grouped_gemm
 
     if config.index_cache is not None:
         model_config.use_index_cache = True
@@ -1037,13 +1047,43 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     get_logger().info(f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph})")
 
 
+def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
+    """Swap dense linears and MoE expert GEMMs to the configured low-precision path.
+
+    Runs after the LM head is injected but before LoRA / EP / FSDP so the swapped
+    modules and wrapped parameters are picked up by the later parallelisms. The
+    FP8 grouped GEMM (DeepGEMM) is gated separately via ``model_config.fp8`` since
+    it lives inside the modeling code; here we only handle the dense-linear swap
+    and the torchao MXFP8 expert-weight wrapping.
+    """
+    quant = config.quantization
+    if quant is None:
+        return
+
+    if isinstance(quant, FP8Config):
+        replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
+    elif isinstance(quant, MXFP8Config):
+        capability = torch.cuda.get_device_capability()
+        if capability < (10, 0):
+            raise ValueError(
+                f"MXFP8 quantization requires SM100 (Blackwell) or newer, but device is SM{capability[0]}{capability[1]}."
+            )
+        replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
+        if quant.enable_grouped_gemm:
+            apply_mxfp8_moe_grouped_gemm(model, recipe=quant.recipe)
+
+
 def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     language_model = get_language_model(model)
     for transformer_block in language_model.layers:
         block_mlp = getattr(transformer_block, "mlp", None)
         if block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
             if config.ep_comm_backend == "torch":
-                parallelize_plan = ExpertParallel()
+                quant = config.quantization
+                if isinstance(quant, MXFP8Config) and quant.enable_a2a:
+                    parallelize_plan = MXFP8AllToAllExpertParallel()
+                else:
+                    parallelize_plan = ExpertParallel()
             else:
                 parallelize_plan = DeepEPExpertParallel()
             parallelize_module(
@@ -1088,36 +1128,18 @@ def _validate_flash_attn_4_installed() -> None:
         )
 
 
-def _register_fa4_attention_interface() -> None:
-    """Register a dummy `fa4` attention with transformers so AutoConfig accepts it.
-
-    The `flash_attention_*` naming pattern triggers transformers to attempt
-    installing a kernel from the hub, so we use the short name `fa4` internally.
-    This dummy is never called because fa4 is only supported with our custom
-    model implementation.
-    """
-    from transformers import AttentionInterface
-
-    def _noop(*args, **kwargs) -> None:
-        pass
-
-    AttentionInterface.register("fa4", _noop)
-
-
 def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
-    fused_cross_entropy: bool | str = False,
 ) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
             "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"
         )
 
-    if config.attn == "fa4":
+    if config.attn == "flash_attention_4":
         _validate_flash_attn_4_installed()
-        _register_fa4_attention_interface()
 
     logger = get_logger()
 
@@ -1142,10 +1164,9 @@ def setup_model(
     if isinstance(config.fused_lm_head_token_chunk_size, int):
         lm_head_chunk_size = config.fused_lm_head_token_chunk_size
 
-    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, fused_cross_entropy=fused_cross_entropy)
+    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
 
-    if config.fp8:
-        replace_linear_with_fp8_blockwise_linear(model)
+    apply_quantization(model, config)
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:

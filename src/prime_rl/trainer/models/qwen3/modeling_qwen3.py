@@ -50,8 +50,6 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         )
         self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
         if self.layer_type == "sliding_attention":
-            if config._attn_implementation == "sdpa":
-                raise ValueError("Qwen3 sliding attention is only supported by the custom model with flash attention.")
             self.self_attn.sliding_window = config.sliding_window
 
         mlp_config = MLPConfig(
@@ -95,7 +93,7 @@ class Qwen3PreTrainedModel(PreTrainedModelPrimeRL):
     _no_split_modules = ["Qwen3DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _supports_flex_attn = True
     _can_compile_fullgraph = True
     _supports_attention_backend = True
@@ -165,7 +163,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
+        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "flash_attention_4"):
             cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:

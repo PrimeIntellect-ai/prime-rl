@@ -31,7 +31,7 @@ def get_model_pairs():
         linear_num_value_heads=8,
         use_grouped_mm=False,
     )
-    config._attn_implementation = "sdpa"
+    config._attn_implementation = "flash_attention_2"
     with torch.device("cuda"), default_dtype(torch.float32):
         hf_model = HFQwen3_5MoeForCausalLM._from_config(config)
         prime_model = PrimeRLQwen3_5MoeForCausalLM._from_config(config)

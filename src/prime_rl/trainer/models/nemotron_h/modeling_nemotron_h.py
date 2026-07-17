@@ -342,7 +342,7 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     supports_gradient_checkpointing = True
     _no_split_modules = ["NemotronHMambaLayer", "NemotronHMoELayer", "NemotronHAttentionLayer"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _can_compile_fullgraph = False
 
     def _init_weights(self, module):
@@ -522,7 +522,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         # Compute cu_seqlens and max_seqlen for flash attention
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
+        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "flash_attention_4"):
             cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
