@@ -102,7 +102,7 @@ tp = 2
 dp = 4
 ```
 
-This configuration will run 2 independent vLLM replicas, each with `tp=2` and `dp=4`. Routing is handled by a router instance running on the same node as the 1st replica — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via the `[...deployment.router]` block. You can read more about the supported routing options in the [router](#router) section.
+This configuration will run 2 independent vLLM replicas, each with `tp=2` and `dp=4`. Routing is handled by a single global router instance running on the first inference node, fronting the per-rank backends of *all* replicas — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via the `[...deployment.router]` block. Replicas only delimit vLLM DP/EP groups; the client-facing interface is always one router URL, so a deployment of N single-node replicas and one N-node replica behave the same from the orchestrator's perspective. You can read more about the supported routing options in the [router](#router) section.
 
 ### Wide-EP
 
@@ -160,12 +160,12 @@ num_train_nodes = 4
 num_infer_replicas = 3
 ```
 
-This will run 3 inference islands, each running on 6 nodes. The total inference deployment will span 18 nodes and start 3 separate router instances.
+This will run 3 inference islands, each running on 6 nodes. The total inference deployment will span 18 nodes, fronted by one global router instance on the first inference node.
 
 
 ## Router
 
-Multi-node and disaggregated deployments front their vLLM backends with a router, configured via a discriminated `[...deployment.router]` block (`type = "vllm-router" | "llm-d"`):
+Multi-node and disaggregated deployments front their vLLM backends with a router, configured via a discriminated `[...deployment.router]` block (`type = "vllm-router" | "llm-d"`). Non-disaggregated deployments start one global router fronting all backends; disaggregated (P/D) deployments start one router per replica:
 
 ```toml
 [inference.deployment.router]   # or [deployment.router] for the standalone inference entrypoint

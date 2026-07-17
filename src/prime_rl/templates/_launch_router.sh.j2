@@ -30,7 +30,7 @@ LLMD_EOF
     for ((d=0; d<NUM_DECODE_NODES; d++)); do ip=$(getent hosts "${HOSTNAMES[$((node_base + NUM_PREFILL_NODES + d))]}" | awk "{print \$1}"); sed -i "s|__LLMD_ADDR_${node}__|${ip}|g" "$LLMD_DIR/endpoints.yaml"; node=$((node + 1)); done
 {%- else %}
 {%- set ep_disaggregated = false %}
-{%- set ep_num_nodes = infer_nodes_per_replica %}
+{%- set ep_num_nodes = num_infer_nodes %}
 {%- set ep_dp = dp_per_node %}
 {%- set ep_backend_port = backend_port %}
     cat > "$LLMD_DIR/epp.yaml" <<LLMD_EOF

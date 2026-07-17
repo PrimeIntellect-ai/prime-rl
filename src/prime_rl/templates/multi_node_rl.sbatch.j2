@@ -106,22 +106,19 @@ for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
     ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS|}$REPLICA_ROUTER_ARGS"
 done
 {%- else -%}
-for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
-    head_idx=$((r * NODES_PER_INFER_REPLICA))
-    router_host="${INFER_HOSTS[$head_idx]}"
-    INFER_URLS="${INFER_URLS:+$INFER_URLS }http://${router_host}:${ROUTER_PORT}/v1"
-
-    REPLICA_ROUTER_ARGS=""
-    for ((n=0; n<NODES_PER_INFER_REPLICA; n++)); do
-        node_idx=$((head_idx + n))
-        host="${INFER_HOSTS[$node_idx]}"
-        # External-LB: one endpoint per DP rank (BACKEND_PORT + dp_local) on each node.
-        for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
-            ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + k))/v1"
-            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS http://${host}:$((BACKEND_PORT + k))"
-        done
+# One global router on the first inference node fronts every per-rank backend
+# across all replicas: single client URL, prefix-affine routing over the whole
+# pool. Replicas keep their meaning for vLLM DP/EP grouping only — a deployment
+# of N single-node replicas and one N-node replica present the same interface.
+router_host="${INFER_HOSTS[0]}"
+INFER_URLS="http://${router_host}:${ROUTER_PORT}/v1"
+for ((n=0; n<NUM_INFER_NODES; n++)); do
+    host="${INFER_HOSTS[$n]}"
+    # External-LB: one endpoint per DP rank (BACKEND_PORT + dp_local) on each node.
+    for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
+        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + k))/v1"
+        ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS }http://${host}:$((BACKEND_PORT + k))"
     done
-    ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS|}$REPLICA_ROUTER_ARGS"
 done
 {%- endif %}
 export INFER_URLS
@@ -348,10 +345,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
     done
 {%- else -%}
-    # Start the router on the first node of each replica
-    if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-        REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-        launch_router regular "$REPLICA_ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log" "$REPLICA_IDX" "$((REPLICA_IDX * NODES_PER_INFER_REPLICA))" "$NODES_PER_INFER_REPLICA"
+    # Start the global router on the first inference node, fronting all backends
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        launch_router regular "$ALL_ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log" "" 0 "$NUM_INFER_NODES"
     fi
 
     # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + d),
