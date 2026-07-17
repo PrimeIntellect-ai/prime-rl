@@ -54,7 +54,7 @@ def _tiny_vlm_config():
     return config
 
 
-def _make_image_inputs(config, device="cuda", dtype=torch.float32):
+def _make_image_inputs(config, device="cuda", dtype=torch.bfloat16):
     """Create minimal image inputs matching the vision config."""
     vc = config.vision_config
     patch_dim = vc.in_channels * vc.temporal_patch_size * vc.patch_size * vc.patch_size
@@ -78,7 +78,7 @@ def _seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
 def test_vlm_forward():
     """Custom VLM produces logits for both text-only and multimodal inputs."""
     config = _tiny_vlm_config()
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = Qwen3_5MoeForCausalLM(config)
     inject_prime_lm_head(model)
 
@@ -110,7 +110,7 @@ def test_vlm_forward():
 def test_vlm_backward():
     """Gradients flow through both vision scatter and text model."""
     config = _tiny_vlm_config()
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = Qwen3_5MoeForCausalLM(config)
     inject_prime_lm_head(model)
 
@@ -140,7 +140,7 @@ def test_vlm_weight_load_from_hf():
     This test verifies that VLM weight conversion + loading produces a working model.
     """
     config = _tiny_vlm_config()
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         hf_model = HFQwen3_5MoeVLM._from_config(config)
         prime_model = Qwen3_5MoeForCausalLM(config)
 
@@ -167,7 +167,7 @@ def test_vlm_weight_load_from_hf():
 def test_vlm_weight_roundtrip():
     """HF -> PrimeRL -> HF weight conversion is lossless (vision keys untouched, text keys converted)."""
     config = _tiny_vlm_config()
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         hf_model = HFQwen3_5MoeVLM._from_config(config)
 
     hf_sd = hf_model.state_dict()
@@ -200,7 +200,7 @@ def test_vlm_weight_roundtrip():
 def test_vlm_forward_requires_mm_token_type_ids():
     """Image MRoPE needs renderer-supplied modality token types."""
     config = _tiny_vlm_config()
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = Qwen3_5MoeForCausalLM(config)
     inject_prime_lm_head(model)
 
@@ -219,7 +219,7 @@ def test_vlm_forward_requires_mm_token_type_ids():
 def test_vlm_forward_rejects_2d_positions_with_images():
     """Trainer 1D/2D packed positions are not valid image MRoPE coordinates."""
     config = _tiny_vlm_config()
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = Qwen3_5MoeForCausalLM(config)
     inject_prime_lm_head(model)
 
@@ -242,7 +242,7 @@ def test_vlm_forward_rejects_2d_positions_with_images():
 def test_vlm_router_replay():
     """routed_experts bypasses router computation in VLM multimodal forward."""
     config = _tiny_vlm_config()
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = Qwen3_5MoeForCausalLM(config)
     inject_prime_lm_head(model)
 

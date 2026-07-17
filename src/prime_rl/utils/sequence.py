@@ -11,7 +11,7 @@ def get_cu_seqlens_from_position_ids(position_ids: torch.Tensor) -> tuple[torch.
     position id, so cumulative offsets must be anchored to the local tensor rather
     than to the absolute position id value.
     """
-    flat_position_ids = position_ids.view(-1)
+    flat_position_ids = position_ids.reshape(-1)
     total_tokens = flat_position_ids.numel()
     assert total_tokens > 0, "Cannot build cu_seqlens for an empty position_ids tensor"
 
