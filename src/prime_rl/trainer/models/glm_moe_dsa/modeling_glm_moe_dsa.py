@@ -308,9 +308,16 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        # Document boundaries derive from position_ids (sparse MLA builds its
+        # varlen indices from them); seq_lens is accepted to satisfy the
+        # trainer's universal contract.
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
         cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
             Indices of input tokens in the KV cache. Accepted only for HuggingFace API
             compatibility — prime-rl asserts `use_cache is None` since training does not

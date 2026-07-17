@@ -1,7 +1,11 @@
 import pytest
 import torch
 
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
+from prime_rl.utils.sequence import (
+    get_cp_local_seq_lens,
+    get_cu_seqlens_from_position_ids,
+    get_cu_seqlens_from_seq_lens,
+)
 
 
 @pytest.mark.parametrize(
@@ -36,3 +40,10 @@ def test_get_cu_seqlens_from_seq_lens():
 def test_get_cu_seqlens_from_seq_lens_rejects_wrong_total():
     with pytest.raises(ValueError, match="sum must equal"):
         get_cu_seqlens_from_seq_lens(torch.tensor([4, 3]), total_tokens=9)
+
+
+@pytest.mark.parametrize(("cp_rank", "expected"), [(0, [3, 1]), (1, [4])])
+def test_get_cp_local_seq_lens(cp_rank: int, expected: list[int]):
+    local_seq_lens = get_cp_local_seq_lens(torch.tensor([3, 5]), 8, cp_rank, 2)
+
+    assert local_seq_lens.tolist() == expected

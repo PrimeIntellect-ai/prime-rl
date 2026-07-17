@@ -62,10 +62,14 @@ def _make_model(device="cuda"):
     return model
 
 
+def _seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
+    return torch.tensor([input_ids.shape[1]], device=input_ids.device)
+
+
 def _get_logprobs_vanilla(model, input_ids):
     """Get logprobs using VanillaOutputLinear (returns logits, we compute logprobs)."""
     with torch.no_grad():
-        out = model(input_ids)
+        out = model(input_ids, seq_lens=_seq_lens(input_ids))
     logits = out["logits"]
     labels = torch.cat(
         [input_ids[:, 1:], torch.zeros(input_ids.shape[0], 1, dtype=torch.long, device=input_ids.device)], dim=1
@@ -197,7 +201,7 @@ def test_kl_with_fused_lm_head():
     labels = torch.cat([input_ids[:, 1:], torch.zeros(1, 1, dtype=torch.long, device="cuda")], dim=1)
 
     with torch.no_grad():
-        vanilla_out = model(input_ids)
+        vanilla_out = model(input_ids, seq_lens=_seq_lens(input_ids))
     vanilla_logits = vanilla_out["logits"]
     temperature = torch.ones(1, 16, device="cuda")
     vanilla_logprobs = selective_log_softmax(vanilla_logits / temperature.unsqueeze(-1), labels)
@@ -205,7 +209,7 @@ def test_kl_with_fused_lm_head():
     # Now switch to fused head and compare
     inject_prime_lm_head(model, chunk_size=16)
     with torch.no_grad():
-        fused_out = model(input_ids, labels=labels, temperature=temperature)
+        fused_out = model(input_ids, labels=labels, temperature=temperature, seq_lens=_seq_lens(input_ids))
     fused_logprobs = fused_out["logprobs"]
 
     diff = (vanilla_logprobs - fused_logprobs).abs().max()
@@ -220,7 +224,7 @@ def test_kl_logprob_alignment():
 
     # Simulate what the training loop does
     with torch.no_grad():
-        out = model(input_ids)
+        out = model(input_ids, seq_lens=_seq_lens(input_ids))
     logits = out["logits"]
 
     # Labels = shifted input_ids (predict next token)
@@ -257,14 +261,14 @@ def test_kl_backward_through_policy():
 
     # Reference logprobs (detached)
     with torch.no_grad():
-        ref_out = ref_model(input_ids)
+        ref_out = ref_model(input_ids, seq_lens=_seq_lens(input_ids))
     ref_logprobs = selective_log_softmax(ref_out["logits"], labels)
     ref_logprobs = shift_tensor_right(
         ref_logprobs, pad_value=torch.log(torch.tensor(1.0 / ref_model.config.vocab_size)).item()
     ).detach()
 
     # Policy logprobs (with grad)
-    policy_out = policy_model(input_ids)
+    policy_out = policy_model(input_ids, seq_lens=_seq_lens(input_ids))
     policy_logprobs = selective_log_softmax(policy_out["logits"], labels)
     policy_logprobs = shift_tensor_right(
         policy_logprobs, pad_value=torch.log(torch.tensor(1.0 / policy_model.config.vocab_size)).item()

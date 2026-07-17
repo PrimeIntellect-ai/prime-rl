@@ -53,7 +53,11 @@ def test_qwen3_5_moe():
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids=position_ids)
+    prime_output = prime_model(
+        input_ids,
+        position_ids=position_ids,
+        seq_lens=torch.tensor([input_ids.shape[1]], device="cuda"),
+    )
     hf_output.logits.sum().backward()
     prime_output["logits"].sum().backward()
 
@@ -98,14 +102,20 @@ def test_qwen3_5_moe_router_replay():
         input_ids = torch.randint(0, prime_model.config.vocab_size, (1, 100))
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
-    out_normal = prime_model(input_ids, position_ids=position_ids)
+    seq_lens = torch.tensor([input_ids.shape[1]], device="cuda")
+    out_normal = prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)
 
     num_layers = prime_model.config.num_hidden_layers
     topk = prime_model.config.num_experts_per_tok
     routed_experts = torch.randint(0, prime_model.config.num_experts, (1, 100, num_layers, topk), device="cuda")
 
     prime_model.zero_grad()
-    out_replay = prime_model(input_ids, position_ids=position_ids, routed_experts=routed_experts)
+    out_replay = prime_model(
+        input_ids,
+        position_ids=position_ids,
+        routed_experts=routed_experts,
+        seq_lens=seq_lens,
+    )
 
     assert out_replay["logits"].shape == out_normal["logits"].shape
 

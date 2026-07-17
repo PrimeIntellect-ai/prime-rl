@@ -44,6 +44,10 @@ _BASE = dict(
 )
 
 
+def _seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
+    return torch.tensor([input_ids.shape[1]], device=input_ids.device)
+
+
 def get_model_pairs():
     """Create an HF model and a PrimeRL model with shared weights."""
     hf_config = HFNemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
@@ -90,7 +94,7 @@ def test_nemotron_h_mamba_moe_only():
         position_ids = torch.arange(0, 32).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids=position_ids)
+    prime_output = prime_model(input_ids, position_ids=position_ids, seq_lens=_seq_lens(input_ids))
     hf_output.logits.sum().backward()
     prime_output["logits"].sum().backward()
 
@@ -144,7 +148,7 @@ def test_nemotron_h_reverse():
         position_ids = torch.arange(0, 32).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids=position_ids)
+    prime_output = prime_model(input_ids, position_ids=position_ids, seq_lens=_seq_lens(input_ids))
 
     logits_diff = prime_output["logits"] - hf_output.logits
     assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=1e-2), (
@@ -161,7 +165,7 @@ def test_nemotron_h():
         position_ids = torch.arange(0, 32).unsqueeze(0)
 
     hf_output = hf_model(input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids=position_ids)
+    prime_output = prime_model(input_ids, position_ids=position_ids, seq_lens=_seq_lens(input_ids))
     # Slightly larger tolerance due to different SDPA attention implementations
     logits_diff = prime_output["logits"] - hf_output.logits
     assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=5e-2), (
@@ -180,7 +184,7 @@ def test_nemotron_h_backward():
     inject_prime_lm_head(model)
 
     input_ids = torch.randint(0, 256, (2, 16), device="cuda")
-    output = model(input_ids)
+    output = model(input_ids, seq_lens=_seq_lens(input_ids))
     output["logits"].sum().backward()
 
     zero_grads = []
@@ -231,7 +235,7 @@ def test_nemotron_h_no_latent_projection():
     inject_prime_lm_head(model)
 
     input_ids = torch.randint(0, 256, (2, 16), device="cuda")
-    output = model(input_ids)
+    output = model(input_ids, seq_lens=_seq_lens(input_ids))
     assert output["logits"].shape == (2, 16, 256)
 
     output["logits"].sum().backward()

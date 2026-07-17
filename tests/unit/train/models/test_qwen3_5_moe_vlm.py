@@ -71,6 +71,10 @@ def _make_mm_token_type_ids(input_ids, image_token_id):
     return mm_token_type_ids
 
 
+def _seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
+    return torch.tensor([input_ids.shape[1]], device=input_ids.device)
+
+
 def test_vlm_forward():
     """Custom VLM produces logits for both text-only and multimodal inputs."""
     config = _tiny_vlm_config()
@@ -83,7 +87,7 @@ def test_vlm_forward():
     # Text-only (avoid special token range 250-253)
     input_ids = torch.randint(0, 200, (1, 20), device="cuda")
     position_ids = torch.arange(1, 21, device="cuda").unsqueeze(0)
-    out_text = model(input_ids=input_ids, position_ids=position_ids)
+    out_text = model(input_ids=input_ids, position_ids=position_ids, seq_lens=_seq_lens(input_ids))
     assert out_text["logits"].shape == (1, 20, vocab)
 
     # Multimodal
@@ -98,6 +102,7 @@ def test_vlm_forward():
         pixel_values=pixel_values,
         image_grid_thw=image_grid_thw,
         mm_token_type_ids=mm_token_type_ids,
+        seq_lens=_seq_lens(input_ids_mm),
     )
     assert out_mm["logits"].shape == (1, input_ids_mm.shape[1], vocab)
 
@@ -120,6 +125,7 @@ def test_vlm_backward():
         pixel_values=pixel_values,
         image_grid_thw=image_grid_thw,
         mm_token_type_ids=mm_token_type_ids,
+        seq_lens=_seq_lens(input_ids),
     )
     out["logits"].sum().backward()
 
@@ -153,7 +159,7 @@ def test_vlm_weight_load_from_hf():
     # Verify model produces output after weight loading
     input_ids = torch.randint(0, 200, (1, 20), device="cuda")
     position_ids = torch.arange(1, 21, device="cuda").unsqueeze(0)
-    out = prime_model(input_ids=input_ids, position_ids=position_ids)
+    out = prime_model(input_ids=input_ids, position_ids=position_ids, seq_lens=_seq_lens(input_ids))
     assert out["logits"].shape[2] == config.text_config.vocab_size
     assert not torch.isnan(out["logits"]).any()
 
@@ -202,7 +208,12 @@ def test_vlm_forward_requires_mm_token_type_ids():
     input_ids = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
 
     with pytest.raises(ValueError, match="mm_token_type_ids"):
-        model(input_ids=input_ids, pixel_values=pixel_values, image_grid_thw=image_grid_thw)
+        model(
+            input_ids=input_ids,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            seq_lens=_seq_lens(input_ids),
+        )
 
 
 def test_vlm_forward_rejects_2d_positions_with_images():
@@ -224,6 +235,7 @@ def test_vlm_forward_rejects_2d_positions_with_images():
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
             mm_token_type_ids=mm_token_type_ids,
+            seq_lens=_seq_lens(input_ids),
         )
 
 
@@ -252,6 +264,7 @@ def test_vlm_router_replay():
         image_grid_thw=image_grid_thw,
         mm_token_type_ids=mm_token_type_ids,
         routed_experts=routed_experts,
+        seq_lens=_seq_lens(input_ids),
     )
     assert out["logits"].shape == (1, seq_len, vocab)
 
