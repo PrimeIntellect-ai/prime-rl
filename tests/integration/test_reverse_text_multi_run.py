@@ -15,7 +15,10 @@ from tests.utils import check_reward_goes_up, check_reward_in_range, strip_escap
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
-TIMEOUT = 300  # 5 minutes
+# Resumed orchestrators pace to the shared trainer (a batch only ships once the
+# trainer has produced the required policy version), so with three runs
+# round-robining one trainer their wall time is coupled to its scheduling.
+TIMEOUT = 600  # 10 minutes
 ORCHESTRATOR_NAMES = ["alpha", "beta", "gamma"]
 
 
