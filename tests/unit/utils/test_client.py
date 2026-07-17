@@ -65,7 +65,7 @@ def test_parse_dynamo_workers_rejects_partial_lora_control_discovery():
         "routes": ["update/load_lora"],
     }
 
-    try:
+    with pytest.raises(ValueError):
         _parse_dynamo_workers(
             {
                 "workers": [
@@ -87,10 +87,6 @@ def test_parse_dynamo_workers_rejects_partial_lora_control_discovery():
             },
             "Qwen/Qwen3-0.6B",
         )
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("accepted a partial Dynamo LoRA control snapshot")
 
 
 def test_parse_dynamo_workers_fails_closed_on_partial_or_duplicate_snapshot():
@@ -109,45 +105,36 @@ def test_parse_dynamo_workers_fails_closed_on_partial_or_duplicate_snapshot():
         {**valid, "world_size": 0},
         {**valid, "model": "other/model"},
     ):
-        try:
+        with pytest.raises(ValueError):
             _parse_dynamo_workers({"namespace": "training", "workers": [invalid]}, "Qwen/Qwen3-0.6B")
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"accepted invalid worker snapshot: {invalid}")
 
-    try:
+    with pytest.raises(ValueError):
         _parse_dynamo_workers(
             {"namespace": "training", "workers": [valid, {**valid, "instance_id": 11}]},
             "Qwen/Qwen3-0.6B",
         )
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("accepted duplicate admin endpoint")
 
-    try:
+    with pytest.raises(ValueError):
         _parse_dynamo_workers(
             {"namespace": "training", "workers": [valid, {**valid, "admin_base_url": "http://other:8120"}]},
             "Qwen/Qwen3-0.6B",
         )
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("accepted duplicate worker identity")
 
-    try:
-        _parse_dynamo_workers(
-            {
-                "namespace": "training",
-                "workers": [{**valid, "admin_base_url": "http://user:password@decode:8120"}],
-            },
-            "Qwen/Qwen3-0.6B",
-        )
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("accepted credentialed admin URL")
+    workers = _parse_dynamo_workers(
+        {
+            "namespace": "training",
+            "workers": [
+                {
+                    **valid,
+                    "admin_base_url": "http://user:password@decode:8120/admin",
+                    "system_url": "http://sidecar:8181/control",
+                }
+            ],
+        },
+        "Qwen/Qwen3-0.6B",
+    )
+    assert workers[0].admin_base_url == "http://user:password@decode:8120/admin"
+    assert workers[0].system_url == "http://sidecar:8181/control"
 
 
 def test_rank_offsets_support_heterogeneous_engine_world_sizes():
@@ -155,15 +142,17 @@ def test_rank_offsets_support_heterogeneous_engine_world_sizes():
     assert _rank_offsets([1, 2], inference_world_size=3) == [0, 1]
     assert _rank_offsets([2, 2, 2, 2], inference_world_size=8) == [0, 2, 4, 6]
 
-    try:
+    with pytest.raises(ValueError):
         _rank_offsets([2, 2], inference_world_size=3)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("accepted a world-size mismatch")
 
 
 def test_dynamo_inference_pool_discovers_admin_clients_from_one_snapshot():
+    transient_response = MagicMock()
+    transient_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "Service unavailable",
+        request=httpx.Request("GET", "http://frontend:8001/v1/rl/workers"),
+        response=httpx.Response(503),
+    )
     partial_response = MagicMock()
     partial_response.json.return_value = {
         "namespace": "training",
@@ -214,7 +203,7 @@ def test_dynamo_inference_pool_discovers_admin_clients_from_one_snapshot():
         ],
     }
     discovery_client = AsyncMock()
-    discovery_client.get.side_effect = [partial_response, response]
+    discovery_client.get.side_effect = [transient_response, partial_response, response]
     context = AsyncMock()
     context.__aenter__.return_value = discovery_client
 
@@ -222,13 +211,13 @@ def test_dynamo_inference_pool_discovers_admin_clients_from_one_snapshot():
     with patch("prime_rl.utils.client.AsyncClient", client_factory):
         pool = asyncio.run(
             DynamoInferencePool.from_config(
-                ClientConfig(base_url=["http://frontend:8000/v1"], rl_base_url="http://frontend:8001"),
+                ClientConfig(base_url=["http://frontend:8000/v1"], dynamo_base_url="http://frontend:8001"),
                 model_name="Qwen/Qwen3-0.6B",
                 expected_inference_world_size=8,
             )
         )
 
-    assert discovery_client.get.await_count == 2
+    assert discovery_client.get.await_count == 3
     discovery_client.get.assert_awaited_with("http://frontend:8001/v1/rl/workers")
     assert [call.kwargs["base_url"] for call in client_factory.call_args_list[1:]] == [
         "http://decode:8120",

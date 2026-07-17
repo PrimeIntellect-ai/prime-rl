@@ -46,7 +46,7 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
         eval_client_type="openai_chat_completions",
         renderer_config=config.renderer,
         pool_size=config.pool_size,
-        expected_inference_world_size=config.weight_broadcast.inference_world_size,
+        expected_inference_world_size=getattr(config.weight_broadcast, "inference_world_size", None),
     )
     return renderer, inference_pool
 

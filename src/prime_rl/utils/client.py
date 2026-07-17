@@ -216,105 +216,73 @@ class DynamoDiscoveryPending(ValueError):
     """A well-formed discovery snapshot that is not ready yet."""
 
 
+def _is_retryable_dynamo_discovery_error(exception: BaseException) -> bool:
+    if isinstance(exception, httpx.HTTPStatusError):
+        return exception.response.status_code == 429 or exception.response.status_code >= 500
+    return isinstance(exception, (DynamoDiscoveryPending, httpx.TransportError))
+
+
+def _parse_dynamo_worker(raw_worker: object, model_name: str) -> DiscoveredDynamoWorker:
+    if not isinstance(raw_worker, dict):
+        raise ValueError("Dynamo RL discovery returned a malformed worker")
+    if raw_worker.get("error"):
+        raise DynamoDiscoveryPending(f"Dynamo RL worker probe is not ready: {raw_worker['error']}")
+    if raw_worker.get("model") != model_name:
+        raise ValueError(f"Dynamo RL worker model {raw_worker.get('model')!r} does not match {model_name!r}")
+
+    component = raw_worker.get("component")
+    instance_id = raw_worker.get("instance_id")
+    admin_base_url = raw_worker.get("admin_base_url")
+    system_url = raw_worker.get("system_url")
+    world_size = raw_worker.get("world_size")
+    routes = raw_worker.get("routes", [])
+    if not isinstance(component, str) or not component:
+        raise ValueError("Dynamo RL worker is missing component identity")
+    if not isinstance(instance_id, int) or isinstance(instance_id, bool) or instance_id < 0:
+        raise ValueError("Dynamo RL worker has an invalid instance_id")
+    if not isinstance(admin_base_url, str) or not admin_base_url:
+        raise ValueError("Dynamo RL worker is missing admin_base_url")
+    if system_url is not None and (not isinstance(system_url, str) or not system_url):
+        raise ValueError("Dynamo RL worker has an invalid system_url")
+    if not isinstance(world_size, int) or isinstance(world_size, bool) or world_size <= 0:
+        raise ValueError("Dynamo RL worker has an invalid world_size")
+    if not isinstance(routes, list) or any(not isinstance(route, str) or not route for route in routes):
+        raise ValueError("Dynamo RL worker has an invalid routes list")
+    return DiscoveredDynamoWorker(
+        component=component,
+        instance_id=instance_id,
+        admin_base_url=admin_base_url.rstrip("/"),
+        world_size=world_size,
+        system_url=system_url.rstrip("/") if system_url is not None else None,
+        routes=tuple(sorted(set(routes))),
+    )
+
+
+def _validate_dynamo_snapshot(workers: tuple[DiscoveredDynamoWorker, ...]) -> None:
+    if not workers:
+        raise DynamoDiscoveryPending("Dynamo RL discovery returned no workers yet")
+    identities = [(worker.component, worker.instance_id) for worker in workers]
+    admin_urls = [worker.admin_base_url for worker in workers]
+    system_urls = [worker.system_url for worker in workers if worker.system_url is not None]
+    if len(set(identities)) != len(identities):
+        raise ValueError("Dynamo RL discovery returned duplicate worker identities")
+    if len(set(admin_urls)) != len(admin_urls):
+        raise ValueError("Dynamo RL discovery returned duplicate admin endpoints")
+    if len(set(system_urls)) != len(system_urls):
+        raise ValueError("Dynamo RL discovery returned duplicate system endpoints")
+    lora_route_presence = ["update/load_lora" in worker.routes for worker in workers]
+    if any(lora_route_presence) and not all(lora_route_presence):
+        raise ValueError("Dynamo RL discovery returned a partial update/load_lora capability snapshot")
+    if all(lora_route_presence) and any(worker.system_url is None for worker in workers):
+        raise ValueError("Dynamo RL discovery returned update/load_lora without a system_url")
+
+
 def _parse_dynamo_workers(payload: object, model_name: str) -> tuple[DiscoveredDynamoWorker, ...]:
     if not isinstance(payload, dict) or not isinstance(payload.get("workers"), list):
         raise ValueError("Dynamo RL discovery response must contain a workers list")
-
-    discovered: list[DiscoveredDynamoWorker] = []
-    seen_admin_urls: set[str] = set()
-    seen_system_urls: set[str] = set()
-    seen_worker_ids: set[tuple[str, int]] = set()
-    for raw_worker in payload["workers"]:
-        if not isinstance(raw_worker, dict):
-            raise ValueError("Dynamo RL discovery returned a malformed worker")
-        if raw_worker.get("error"):
-            raise DynamoDiscoveryPending(f"Dynamo RL worker probe is not ready: {raw_worker['error']}")
-        if raw_worker.get("model") != model_name:
-            raise ValueError(f"Dynamo RL worker model {raw_worker.get('model')!r} does not match {model_name!r}")
-
-        component = raw_worker.get("component")
-        instance_id = raw_worker.get("instance_id")
-        admin_base_url = raw_worker.get("admin_base_url")
-        system_url = raw_worker.get("system_url")
-        world_size = raw_worker.get("world_size")
-        routes = raw_worker.get("routes", [])
-        if not isinstance(component, str) or not component:
-            raise ValueError("Dynamo RL worker is missing component identity")
-        if not isinstance(instance_id, int) or isinstance(instance_id, bool) or instance_id < 0:
-            raise ValueError("Dynamo RL worker has an invalid instance_id")
-        if not isinstance(admin_base_url, str):
-            raise ValueError("Dynamo RL worker is missing a valid admin_base_url")
-        try:
-            parsed_admin_url = httpx.URL(admin_base_url)
-        except httpx.InvalidURL as error:
-            raise ValueError("Dynamo RL worker has an invalid admin_base_url") from error
-        if (
-            parsed_admin_url.scheme not in {"http", "https"}
-            or parsed_admin_url.host is None
-            or parsed_admin_url.username
-            or parsed_admin_url.password
-            or parsed_admin_url.path not in {"", "/"}
-            or parsed_admin_url.query
-            or parsed_admin_url.fragment
-        ):
-            raise ValueError("Dynamo RL worker has an invalid admin_base_url")
-        admin_base_url = admin_base_url.rstrip("/")
-        if system_url is not None:
-            if not isinstance(system_url, str):
-                raise ValueError("Dynamo RL worker has an invalid system_url")
-            try:
-                parsed_system_url = httpx.URL(system_url)
-            except httpx.InvalidURL as error:
-                raise ValueError("Dynamo RL worker has an invalid system_url") from error
-            if (
-                parsed_system_url.scheme not in {"http", "https"}
-                or parsed_system_url.host is None
-                or parsed_system_url.username
-                or parsed_system_url.password
-                or parsed_system_url.path not in {"", "/"}
-                or parsed_system_url.query
-                or parsed_system_url.fragment
-            ):
-                raise ValueError("Dynamo RL worker has an invalid system_url")
-            if parsed_system_url.scheme != parsed_admin_url.scheme or parsed_system_url.host != parsed_admin_url.host:
-                raise ValueError("Dynamo RL worker system_url must be co-hosted with admin_base_url")
-            system_url = system_url.rstrip("/")
-        if not isinstance(routes, list) or any(not isinstance(route, str) or not route for route in routes):
-            raise ValueError("Dynamo RL worker has an invalid routes list")
-        worker_routes = tuple(sorted(set(routes)))
-        worker_id = (component, instance_id)
-        if worker_id in seen_worker_ids:
-            raise ValueError(f"Dynamo RL discovery returned duplicate worker identity {worker_id}")
-        if admin_base_url in seen_admin_urls:
-            raise ValueError(f"Dynamo RL discovery returned duplicate admin endpoint {admin_base_url}")
-        if system_url is not None and system_url in seen_system_urls:
-            raise ValueError(f"Dynamo RL discovery returned duplicate system endpoint {system_url}")
-        if not isinstance(world_size, int) or isinstance(world_size, bool) or world_size <= 0:
-            raise ValueError("Dynamo RL worker has an invalid world_size")
-
-        seen_admin_urls.add(admin_base_url)
-        if system_url is not None:
-            seen_system_urls.add(system_url)
-        seen_worker_ids.add(worker_id)
-        discovered.append(
-            DiscoveredDynamoWorker(
-                component=component,
-                instance_id=instance_id,
-                admin_base_url=admin_base_url,
-                world_size=world_size,
-                system_url=system_url,
-                routes=worker_routes,
-            )
-        )
-
-    if not discovered:
-        raise DynamoDiscoveryPending("Dynamo RL discovery returned no workers yet")
-    lora_route_presence = ["update/load_lora" in worker.routes for worker in discovered]
-    if any(lora_route_presence) and not all(lora_route_presence):
-        raise ValueError("Dynamo RL discovery returned a partial update/load_lora capability snapshot")
-    if all(lora_route_presence) and any(worker.system_url is None for worker in discovered):
-        raise ValueError("Dynamo RL discovery returned update/load_lora without a system_url")
-    return tuple(sorted(discovered, key=lambda worker: (worker.component, worker.instance_id)))
+    workers = tuple(_parse_dynamo_worker(worker, model_name) for worker in payload["workers"])
+    _validate_dynamo_snapshot(workers)
+    return tuple(sorted(workers, key=lambda worker: (worker.component, worker.instance_id)))
 
 
 class DynamoInferencePool(StaticInferencePool):
@@ -370,15 +338,15 @@ class DynamoInferencePool(StaticInferencePool):
         expected_inference_world_size: int | None = None,
         **kwargs,
     ) -> DynamoInferencePool:
-        if client_config.rl_base_url is None:
-            raise ValueError("Dynamo inference pool requires rl_base_url")
-        discovery_url = client_config.rl_base_url.rstrip("/").removesuffix("/v1")
+        if client_config.dynamo_base_url is None:
+            raise ValueError("Dynamo inference pool requires dynamo_base_url")
+        discovery_url = client_config.dynamo_base_url.rstrip("/").removesuffix("/v1")
         async with AsyncClient(timeout=httpx.Timeout(30.0)) as client:
             workers = None
             async for attempt in AsyncRetrying(
                 stop=stop_after_delay(client_config.wait_for_ready_timeout),
                 wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
-                retry=retry_if_exception_type((DynamoDiscoveryPending, httpx.TransportError)),
+                retry=retry_if_exception(_is_retryable_dynamo_discovery_error),
                 reraise=True,
             ):
                 with attempt:
@@ -421,7 +389,7 @@ async def setup_inference_pool(
             pool_size=pool_size,
         )
 
-    if client_config.rl_base_url is not None and client_config.admin_base_url is None:
+    if client_config.dynamo_base_url is not None and client_config.admin_base_url is None:
         return await DynamoInferencePool.from_config(
             client_config,
             model_name=model_name,

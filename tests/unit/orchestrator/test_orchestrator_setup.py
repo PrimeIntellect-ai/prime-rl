@@ -19,7 +19,7 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
             renderer=renderer_settings,
             pool_size=None,
             any_policy_sourced=True,
-            weight_broadcast=SimpleNamespace(inference_world_size=8),
+            weight_broadcast=SimpleNamespace(type="filesystem"),
         )
         renderer = object()
         inference_pool = object()
@@ -46,7 +46,7 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
             eval_client_type="openai_chat_completions",
             renderer_config=renderer_settings,
             pool_size=None,
-            expected_inference_world_size=8,
+            expected_inference_world_size=None,
         )
 
     asyncio.run(run())
