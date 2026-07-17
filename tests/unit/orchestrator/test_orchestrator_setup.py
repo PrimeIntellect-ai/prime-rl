@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from renderers import Qwen3VLRendererConfig
 
-from prime_rl.configs.orchestrator import FileSystemWeightBroadcastConfig
+from prime_rl.configs.orchestrator import FileSystemWeightBroadcastConfig, NCCLWeightBroadcastConfig
 from prime_rl.orchestrator.utils import setup_policy_inference_pool
 
 
@@ -109,7 +109,12 @@ def test_filesystem_broadcast_accepts_expected_dynamo_world_size():
     assert config.inference_world_size == 8
 
 
-def test_setup_policy_inference_pool_requires_world_size_for_dynamo_filesystem():
+@pytest.mark.parametrize(
+    "weight_broadcast",
+    [FileSystemWeightBroadcastConfig(), NCCLWeightBroadcastConfig()],
+    ids=["filesystem-missing", "nccl-default"],
+)
+def test_setup_policy_inference_pool_requires_explicit_world_size_for_dynamo(weight_broadcast):
     async def run() -> None:
         config = SimpleNamespace(
             model=SimpleNamespace(
@@ -122,7 +127,7 @@ def test_setup_policy_inference_pool_requires_world_size_for_dynamo_filesystem()
             renderer=Qwen3VLRendererConfig(),
             pool_size=None,
             any_policy_sourced=True,
-            weight_broadcast=SimpleNamespace(type="filesystem"),
+            weight_broadcast=weight_broadcast,
         )
         with (
             patch("renderers.base.create_renderer", return_value=object()),

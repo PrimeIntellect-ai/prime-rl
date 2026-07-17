@@ -34,7 +34,11 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     client_config = config.model.client
     model_name = config.model.name
     expected_inference_world_size = getattr(config.weight_broadcast, "inference_world_size", None)
-    if getattr(client_config, "dynamo_base_url", None) is not None and expected_inference_world_size is None:
+    configured_fields = getattr(config.weight_broadcast, "model_fields_set", None)
+    world_size_is_default = configured_fields is not None and "inference_world_size" not in configured_fields
+    if getattr(client_config, "dynamo_base_url", None) is not None and (
+        expected_inference_world_size is None or world_size_is_default
+    ):
         raise ValueError("Dynamo inference requires weight_broadcast.inference_world_size")
     renderer = create_renderer(tokenizer, config.renderer)
     get_logger().info(f"Initialized {type(renderer).__name__} for {model_name}")
