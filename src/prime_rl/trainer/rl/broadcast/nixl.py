@@ -73,6 +73,22 @@ class TrainerShardSource:
         self.buffer.copy_(self.source)
 
 
+@dataclass(frozen=True)
+class TrainerArenaStats:
+    has_observed_peak_growth: bool
+    free_before_reclaim: int
+    free_after_reclaim: int
+    total: int
+    allocated: int
+    peak_allocated: int
+    recurring_peak_growth: int
+    headroom: int
+    post_allocation_free: int
+    memory_buffer_count: int
+    group_total: int
+    largest_group: int
+
+
 class NIXLWeightBroadcast(WeightBroadcast):
     def __init__(self, output_dir: Path, config: NIXLWeightBroadcastConfig, parallel_dims: ParallelDims) -> None:
         super().__init__(output_dir)
@@ -157,24 +173,31 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 owned.append(TrainerShardSource(name, full_shape, group, row_start, local))
         return owned
 
-    def _allocate_arena(self) -> tuple[int, int, int, int, int, int, int]:
+    def _allocate_arena(self, allocated_bytes: int, peak_allocated_bytes: int) -> TrainerArenaStats:
         group_elements = [0] * len(self.groups)
         for shard in self.shards:
             group_elements[shard.group] += shard.source.numel()
         largest_group_elements = max(group_elements, default=0)
         largest_group_bytes = largest_group_elements * _WIRE_DTYPE.itemsize
 
-        free_bytes = total_bytes = headroom_bytes = 0
-        memory_buffer_count = len(self.groups)
+        free_before_reclaim = free_after_reclaim = total_bytes = headroom_bytes = 0
+        recurring_peak_growth = max(0, peak_allocated_bytes - allocated_bytes)
+        has_observed_peak_growth = recurring_peak_growth > 0
+        memory_buffer_count = min(len(self.groups), _MAX_SOURCE_BUFFER_COUNT)
         local_buffer_count = min(len(self.groups), _MAX_SOURCE_BUFFER_COUNT)
         if self.is_serving_rank and largest_group_bytes:
             device = self.shards[0].source.device
-            memory_buffer_count, free_bytes, total_bytes, headroom_bytes = cuda_buffer_capacity(
+            free_before_reclaim, total_bytes = torch.cuda.mem_get_info(device)
+            max_buffers = min(len(self.groups), _MAX_SOURCE_BUFFER_COUNT) if has_observed_peak_growth else 1
+            if has_observed_peak_growth or free_before_reclaim < largest_group_bytes:
+                torch.cuda.empty_cache()
+            memory_buffer_count, free_after_reclaim, total_bytes, headroom_bytes = cuda_buffer_capacity(
                 largest_group_bytes,
-                len(self.groups),
+                max_buffers,
                 device,
+                extra_headroom_bytes=recurring_peak_growth,
             )
-            local_buffer_count = min(memory_buffer_count, _MAX_SOURCE_BUFFER_COUNT)
+            local_buffer_count = memory_buffer_count
 
         buffer_count = torch.tensor(
             local_buffer_count,
@@ -184,12 +207,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
         dist.all_reduce(buffer_count, op=dist.ReduceOp.MIN)
         self.buffer_count = int(buffer_count.item())
 
-        post_free_bytes = free_bytes
+        post_free_bytes = free_after_reclaim
         if self.is_serving_rank and largest_group_elements:
             arena_elements = self.buffer_count * largest_group_elements
-            arena_bytes = arena_elements * _WIRE_DTYPE.itemsize
-            if free_bytes < arena_bytes:
-                torch.cuda.empty_cache()
             with classic_cuda_alloc():
                 self.arena = torch.empty(
                     arena_elements,
@@ -206,24 +226,31 @@ class NIXLWeightBroadcast(WeightBroadcast):
         for shard in self.shards:
             grouped[shard.group].append(shard)
         self.shards_by_group = dict(grouped)
-        return (
-            free_bytes,
-            total_bytes,
-            headroom_bytes,
-            post_free_bytes,
-            memory_buffer_count,
-            sum(group_elements) * _WIRE_DTYPE.itemsize,
-            largest_group_bytes,
+        return TrainerArenaStats(
+            has_observed_peak_growth=has_observed_peak_growth,
+            free_before_reclaim=free_before_reclaim,
+            free_after_reclaim=free_after_reclaim,
+            total=total_bytes,
+            allocated=allocated_bytes,
+            peak_allocated=peak_allocated_bytes,
+            recurring_peak_growth=recurring_peak_growth,
+            headroom=headroom_bytes,
+            post_allocation_free=post_free_bytes,
+            memory_buffer_count=memory_buffer_count,
+            group_total=sum(group_elements) * _WIRE_DTYPE.itemsize,
+            largest_group=largest_group_bytes,
         )
 
     def _lazy_init(self, model: nn.Module) -> None:
         if self.initialized:
             return
+        allocated_bytes = torch.cuda.memory_allocated() if self.is_serving_rank else 0
+        peak_allocated_bytes = torch.cuda.max_memory_allocated() if self.is_serving_rank else 0
         state_dict = model.state_dict()
         self.groups, layer_groups = self._transfer_groups(state_dict)
         if self.is_serving_rank:
             self.shards = self._owned_shards(state_dict, layer_groups)
-        buffer_stats = self._allocate_arena()
+        buffer_stats = self._allocate_arena(allocated_bytes, peak_allocated_bytes)
 
         payload = None
         if self.is_serving_rank:
@@ -320,20 +347,34 @@ class NIXLWeightBroadcast(WeightBroadcast):
             self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
             total_bytes = sum(shard.num_rows * shard.row_bytes for tensor in table.tensors for shard in tensor.shards)
             max_arena_bytes = max((part[3] for part in parts), default=0)
-            free_values = [part[4][0] for part in parts]
-            total_values = [part[4][1] for part in parts]
-            headroom_values = [part[4][2] for part in parts]
-            post_free_values = [part[4][3] for part in parts]
-            memory_buffer_values = [part[4][4] for part in parts]
-            group_total = sum(part[4][5] for part in parts)
-            buffer_min = min((part[4][6] for part in parts if part[4][6]), default=0)
-            group_max = max((part[4][6] for part in parts), default=0)
+            stats = [part[4] for part in parts]
+            sizing_modes = {"measured" if item.has_observed_peak_growth else "unmeasured" for item in stats}
+            free_before_values = [item.free_before_reclaim for item in stats]
+            free_after_values = [item.free_after_reclaim for item in stats]
+            reclaimed_values = [after - before for before, after in zip(free_before_values, free_after_values)]
+            total_values = [item.total for item in stats]
+            allocated_values = [item.allocated for item in stats]
+            peak_allocated_values = [item.peak_allocated for item in stats]
+            peak_growth_values = [item.recurring_peak_growth for item in stats]
+            headroom_values = [item.headroom for item in stats]
+            post_free_values = [item.post_allocation_free for item in stats]
+            memory_buffer_values = [item.memory_buffer_count for item in stats]
+            group_total = sum(item.group_total for item in stats)
+            buffer_min = min((item.largest_group for item in stats if item.largest_group), default=0)
+            group_max = max((item.largest_group for item in stats), default=0)
             gib = 1024**3
             self.logger.info(
-                f"NIXL staging ring selected {self.buffer_count} buffers from "
-                f"{min(free_values) / gib:.2f}-{max(free_values) / gib:.2f} GiB CUDA free per rank "
-                f"({min(total_values) / gib:.2f} GiB total, {max(headroom_values) / gib:.2f} GiB target headroom); "
-                f"memory permits {min(memory_buffer_values)}-{max(memory_buffer_values)} buffers per rank, "
+                f"NIXL staging ring selected {self.buffer_count} buffers from one-time first-transfer sizing "
+                f"({','.join(sorted(sizing_modes))} peak mode); CUDA free before cache reclaim "
+                f"{min(free_before_values) / gib:.2f}-{max(free_before_values) / gib:.2f} GiB per rank, "
+                f"after reclaim {min(free_after_values) / gib:.2f}-{max(free_after_values) / gib:.2f} GiB "
+                f"({min(reclaimed_values) / gib:.2f}-{max(reclaimed_values) / gib:.2f} GiB reclaimed); "
+                f"active allocation {min(allocated_values) / gib:.2f}-{max(allocated_values) / gib:.2f} GiB, "
+                f"observed peak {min(peak_allocated_values) / gib:.2f}-{max(peak_allocated_values) / gib:.2f} GiB, "
+                f"preserving {min(peak_growth_values) / gib:.2f}-{max(peak_growth_values) / gib:.2f} GiB peak growth "
+                f"inside {min(headroom_values) / gib:.2f}-{max(headroom_values) / gib:.2f} GiB total headroom "
+                f"on {min(total_values) / gib:.2f} GiB GPUs; local ring candidates "
+                f"{min(memory_buffer_values)}-{max(memory_buffer_values)} after the {_MAX_SOURCE_BUFFER_COUNT}-buffer cap, "
                 f"each buffer {buffer_min / gib:.2f}-{group_max / gib:.2f} GiB across ranks, "
                 f"arenas up to {max_arena_bytes / gib:.2f} GiB, "
                 f"post-allocation free {min(post_free_values) / gib:.2f}-{max(post_free_values) / gib:.2f} GiB, "
