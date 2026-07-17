@@ -204,13 +204,17 @@ class ModelConfig(BaseModelConfig):
     def cp_only_with_flash_attn(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4"]:
             raise ValueError("CP is only supported with flash attention 2, flash attention 3, or flash attention 4")
-        if self.cp > 1 and self.attn in ("flash_attention_3", "flash_attention_4") and self.impl != "custom":
+        if (
+            self.cp > 1
+            and self.attn in ("flash_attention_3", "flash_attention_4")
+            and self.impl not in ("custom", "auto")
+        ):
             # Both ring and ulysses route FA3/FA4 through our custom FlashAttention class:
             # ring patches `_compute_attention` with the ring kernel, ulysses patches it with
             # the all-to-all wrapper around the FA3/FA4 kernel. The HF path patches
             # `_flash_attention_forward` which only wraps FA2.
             raise ValueError(
-                f"CP with {self.attn} requires model.impl='custom' "
+                f"CP with {self.attn} requires model.impl='custom' or 'auto' "
                 "(FA3/FA4 paths are only implemented for the custom model attention class)"
             )
         return self
