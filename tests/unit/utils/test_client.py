@@ -11,6 +11,7 @@ from prime_rl.utils.client import (
     _is_retryable_lora_error,
     _parse_dynamo_workers,
     _rank_offsets,
+    init_nccl_broadcast,
     load_lora_adapter,
     setup_clients,
 )
@@ -204,6 +205,63 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
+
+
+def test_load_lora_adapter_falls_back_to_native_vllm_route():
+    mock_client = AsyncMock()
+    missing_wrapper = MagicMock()
+    missing_wrapper.status_code = 404
+    missing_wrapper.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "Not found",
+        request=MagicMock(),
+        response=missing_wrapper,
+    )
+    native_response = MagicMock()
+    native_response.raise_for_status = MagicMock()
+    mock_client.post.side_effect = [missing_wrapper, native_response]
+
+    asyncio.run(load_lora_adapter([mock_client], "test-lora", Path("/test/path")))
+
+    assert mock_client.post.await_args_list[0].args == ("/load_lora_adapter",)
+    assert mock_client.post.await_args_list[1].args == ("/v1/load_lora_adapter",)
+    assert mock_client.post.await_args_list[1].kwargs["json"] == {
+        "lora_name": "test-lora",
+        "lora_path": "/test/path",
+        "load_inplace": True,
+    }
+
+
+def test_init_nccl_broadcast_falls_back_to_native_collective_rpc():
+    mock_client = AsyncMock()
+    missing_wrapper = MagicMock()
+    missing_wrapper.status_code = 404
+    missing_wrapper.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "Not found",
+        request=MagicMock(),
+        response=missing_wrapper,
+    )
+    native_response = MagicMock()
+    native_response.raise_for_status = MagicMock()
+    mock_client.post.side_effect = [missing_wrapper, native_response]
+
+    asyncio.run(
+        init_nccl_broadcast(
+            [mock_client],
+            host="127.0.0.1",
+            port=29519,
+            timeout=1200,
+            engine_world_sizes=[2],
+        )
+    )
+
+    assert mock_client.post.await_args_list[0].args == ("/init_broadcaster",)
+    assert mock_client.post.await_args_list[1].args == ("/collective_rpc",)
+    assert mock_client.post.await_args_list[1].kwargs == {
+        "json": {
+            "method": "init_broadcaster",
+            "args": ["127.0.0.1", 29519, 0, 2, 1200, False],
+        }
+    }
 
 
 def test_setup_clients_assigns_renderer_and_dp_rank_headers():

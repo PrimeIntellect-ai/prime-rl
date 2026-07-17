@@ -630,12 +630,23 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     )
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
+        timeout = httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0)
         response = await admin_client.post(
             "/load_lora_adapter",
             json={"lora_name": lora_name, "lora_path": lora_path_posix},
-            timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
+            timeout=timeout,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 404:
+                raise
+            response = await admin_client.post(
+                "/v1/load_lora_adapter",
+                json={"lora_name": lora_name, "lora_path": lora_path_posix, "load_inplace": True},
+                timeout=timeout,
+            )
+            response.raise_for_status()
 
     await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
 
@@ -695,23 +706,36 @@ async def init_nccl_broadcast(
     )
 
     async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
+        args = [
+            host,
+            port,
+            rank_offset,
+            inference_world_size,
+            timeout,
+            quantize_in_weight_transfer,
+        ]
         try:
             response = await admin_client.post(
                 "/init_broadcaster",
                 json={
-                    "host": host,
-                    "port": port,
-                    "rank_offset": rank_offset,
-                    "inference_world_size": inference_world_size,
-                    "timeout": timeout,
-                    "quantize_in_weight_transfer": quantize_in_weight_transfer,
+                    "host": args[0],
+                    "port": args[1],
+                    "rank_offset": args[2],
+                    "inference_world_size": args[3],
+                    "timeout": args[4],
+                    "quantize_in_weight_transfer": args[5],
                 },
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.warning("The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization.")
-                return
+            if e.response.status_code != 404:
+                raise
+            logger.info("The route /init_broadcaster does not exist; using vLLM's native collective RPC")
+            response = await admin_client.post(
+                "/collective_rpc",
+                json={"method": "init_broadcaster", "args": args},
+            )
+            response.raise_for_status()
 
     await asyncio.gather(
         *[
