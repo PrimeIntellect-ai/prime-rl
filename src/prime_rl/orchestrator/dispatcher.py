@@ -328,9 +328,12 @@ class RolloutDispatcher:
                         if paused
                         else "Resuming train dispatch"
                     )
-                # Already-open groups keep scheduling regardless of demand: their
-                # buffered members count as batch coverage, so an unfinishable
-                # partial group would deadlock the batch two rollouts short.
+                # Demand only gates *opening* fresh groups. A group schedules its
+                # group_size rollouts one at a time, and the sink can only
+                # finalize it once all of them arrive — so cutting a group off
+                # mid-schedule would leave it unable to ever finalize while its
+                # arrived members still count as batch coverage, wedging the
+                # batch a few rollouts short with dispatch paused.
                 scheduled = await self.try_schedule("train", allow_fresh=needed)
                 if not scheduled:
                     return

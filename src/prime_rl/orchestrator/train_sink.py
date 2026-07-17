@@ -161,8 +161,13 @@ class TrainSink:
         for r in self.pending_batch:
             if self.is_stale(r):
                 dropped += 1
+                tokens = payload_tokens(r)
                 if self.token_batch_size is not None:
-                    self.pending_tokens -= payload_tokens(r)
+                    self.pending_tokens -= tokens
+                # Retract the dropped rollout from the payload-size estimate so
+                # it mirrors what entering ``pending_batch`` added
+                self._payload_total -= tokens
+                self._payload_count -= 1
             else:
                 kept.append(r)
         self.pending_batch = kept
