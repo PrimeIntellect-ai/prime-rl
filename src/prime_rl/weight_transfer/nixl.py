@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import time
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from torch import Tensor
 
@@ -59,9 +59,18 @@ class NixlAgent:
             raise RuntimeError(f"NIXL READ post failed with state {state}")
         return handle
 
-    def wait(self, handle: Any, context: str = "", timeout: float | None = None) -> None:
+    def wait(
+        self,
+        handle: Any,
+        context: str = "",
+        timeout: float | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> None:
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
+            if cancelled is not None and cancelled():
+                self._agent.release_xfer_handle(handle)
+                raise RuntimeError(f"NIXL transfer cancelled, context={context!r}")
             state = self._agent.check_xfer_state(handle)
             if state in ("DONE", "SUCCESS"):
                 self._agent.release_xfer_handle(handle)
