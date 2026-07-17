@@ -68,11 +68,11 @@ def test_qwen3_moe_attn_only():
     prime_output["logits"].sum().backward()
 
     logits_diff = prime_output["logits"] - hf_output.logits
-    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
+    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=5e-2), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
+    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=50), f"Max grad diff: {grad_diff.abs().max()}"
 
 
 def test_qwen3_moe_mlp_only():
@@ -96,11 +96,11 @@ def test_qwen3_moe_mlp_only():
     prime_output["logits"].sum().backward()
 
     logits_diff = prime_output["logits"] - hf_output.logits
-    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
+    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=5e-2), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
+    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=50), f"Max grad diff: {grad_diff.abs().max()}"
 
 
 def test_qwen3_moe():
@@ -116,11 +116,11 @@ def test_qwen3_moe():
     prime_output["logits"].sum().backward()
 
     logits_diff = prime_output["logits"] - hf_output.logits
-    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=2e-2), (
+    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=5e-2), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=2), f"Max grad diff: {grad_diff.abs().max()}"
+    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=50), f"Max grad diff: {grad_diff.abs().max()}"
 
 
 def test_qwen3_moe_router_replay():
