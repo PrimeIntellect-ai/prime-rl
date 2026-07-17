@@ -1,7 +1,6 @@
 # Multimodal (VLM) SFT on a Mixture-of-Experts model — single 8xH200 node.
 max_steps = 1000
 dist_timeout_seconds = 3600
-loss_impl = "liger_fused"
 
 [model]
 name = "Qwen/Qwen3.6-35B-A3B"
