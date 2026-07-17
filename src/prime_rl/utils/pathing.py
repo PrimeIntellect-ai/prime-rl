@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 import time
 from pathlib import Path
@@ -7,7 +8,55 @@ from prime_rl.utils.logger import get_logger
 
 
 def get_log_dir(output_dir: Path) -> Path:
+    """Return the log directory for ``output_dir``.
+
+    ``logs`` is a symlink to ``runs/<uuid>/`` (see :func:`setup_log_dir`).
+    Falls back to the plain ``output_dir / "logs"`` directory when no
+    symlink exists yet (e.g. in unit tests that don't call ``setup_log_dir``).
+    """
     return output_dir / "logs"
+
+
+def setup_log_dir(output_dir: Path, *, resuming: bool = False) -> Path:
+    """Create a per-run UUID log directory and symlink ``logs`` to it.
+
+    ``output_dir/runs/<uuid>/`` holds the actual log files for this run.
+    ``output_dir/logs`` is a symlink pointing there, so existing code that
+    reads ``get_log_dir(output_dir) / "trainer.log"`` continues to work.
+
+    When *resuming* and the symlink already exists, the existing run
+    directory is reused so logs from the resumed run are appended to the
+    same directory.
+
+    Returns the resolved log directory (the symlink path, i.e. what
+    ``get_log_dir`` would return).
+    """
+    import uuid
+
+    logger = get_logger()
+    logs_link = output_dir / "logs"
+    runs_dir = output_dir / "runs"
+
+    # Reuse existing run directory when resuming
+    if resuming and logs_link.is_symlink():
+        target = logs_link.resolve()
+        logger.debug(f"Reusing existing log directory: {target}")
+        return logs_link
+
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    run_uuid = uuid.uuid4().hex
+    run_dir = runs_dir / run_uuid
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Atomically update the symlink: create a temp link then rename
+    tmp_link = output_dir / f".logs.tmp.{run_uuid}"
+    if tmp_link.exists() or tmp_link.is_symlink():
+        tmp_link.unlink()
+    os.symlink(run_dir, tmp_link)
+    os.replace(tmp_link, logs_link)
+
+    logger.debug(f"Created log directory: {run_dir} (symlinked at {logs_link})")
+    return logs_link
 
 
 def format_log_message(

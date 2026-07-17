@@ -10,7 +10,7 @@ import tomli_w
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.config import cli, to_toml_dict
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir
+from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir, setup_log_dir
 from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, DEFAULT_INFERENCE_ENV_VARS, set_proc_title
 
 INFERENCE_TOML = "inference.toml"
@@ -168,6 +168,8 @@ def inference_local(config: InferenceConfig):
 
 
 def inference(config: InferenceConfig):
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    setup_log_dir(config.output_dir)
     if config.slurm is not None:
         inference_slurm(config)
     else:

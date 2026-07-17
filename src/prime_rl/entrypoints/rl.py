@@ -24,6 +24,7 @@ from prime_rl.utils.pathing import (
     get_ckpt_dir,
     get_log_dir,
     resolve_latest_ckpt_step,
+    setup_log_dir,
     validate_output_dir,
 )
 from prime_rl.utils.process import (
@@ -534,6 +535,10 @@ def rl(config: RLConfig):
     config.output_dir.mkdir(parents=True, exist_ok=True)
     if ckpt_output_dir is not None:
         ckpt_output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create a UUID-isolated log directory and symlink output_dir/logs to it.
+    # When resuming, reuse the existing run's log directory.
+    setup_log_dir(config.output_dir, resuming=resuming)
 
     # Clean stale rollouts and broadcasts. When resuming, anything past the resume
     # step is stale. When training from scratch, every existing step directory is
