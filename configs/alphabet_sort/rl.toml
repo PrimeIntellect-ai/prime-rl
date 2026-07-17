@@ -17,19 +17,19 @@ group_size = 16
 max_completion_tokens = 512
 
 [[orchestrator.train.env]]
-id = "alphabet-sort"
 name = "alphabet-sort"
-args = { min_turns = 2, max_turns = 2 }
+taskset = { id = "alphabet-sort-v1", min_turns = 2, max_turns = 2 }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
 interval = 50
 
 [[orchestrator.eval.env]]
-id = "alphabet-sort"
 name = "alphabet-sort"
 num_examples = 50
 group_size = 4
-args = { min_turns = 2, max_turns = 2 }
+taskset = { id = "alphabet-sort-v1", min_turns = 2, max_turns = 2 }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [trainer]
 

@@ -19,8 +19,9 @@ batch_size = 1024
 group_size = 16
 
 [[orchestrator.train.env]]
-id = "wordle"
 name = "wordle"
+taskset = { id = "wordle-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.train.sampling]
 max_completion_tokens = 1024
