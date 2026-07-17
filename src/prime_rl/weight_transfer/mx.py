@@ -1,9 +1,8 @@
 """Role-scoped synchronization over ModelExpress.
 
-The trainer publishes ``READY`` after refreshing its transfer buffers.
-Inference workers enter ``INITIALIZING``, pull that published generation,
-and publish ``READY`` after the new weights are live. The trainer returns to
-``INITIALIZING`` after the receivers acknowledge the update.
+The policy session coordinates a complete weight update with the orchestrator.
+A separate layer session uses the same READY/INITIALIZING handshake to keep a
+bounded transfer arena live until every inference worker has acknowledged it.
 """
 
 from __future__ import annotations
