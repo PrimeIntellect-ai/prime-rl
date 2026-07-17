@@ -27,16 +27,18 @@ def test_parse_dynamo_workers_uses_stable_identity_order_not_url_order():
                     "instance_id": 20,
                     "model": "Qwen/Qwen3-0.6B",
                     "admin_base_url": "http://prefill:8121",
+                    "system_url": "http://prefill:8182",
                     "world_size": 2,
-                    "routes": [],
+                    "routes": ["update/load_lora"],
                 },
                 {
                     "component": "backend",
                     "instance_id": 10,
                     "model": "Qwen/Qwen3-0.6B",
                     "admin_base_url": "http://decode:8120",
+                    "system_url": "http://decode:8181",
                     "world_size": 2,
-                    "routes": [],
+                    "routes": ["update/load_lora"],
                 },
             ],
         },
@@ -48,6 +50,46 @@ def test_parse_dynamo_workers_uses_stable_identity_order_not_url_order():
         "http://prefill:8121",
     ]
     assert [worker.world_size for worker in workers] == [2, 2]
+    assert [worker.system_url for worker in workers] == [
+        "http://decode:8181",
+        "http://prefill:8182",
+    ]
+    assert all("update/load_lora" in worker.routes for worker in workers)
+
+
+def test_parse_dynamo_workers_rejects_partial_lora_control_discovery():
+    common = {
+        "model": "Qwen/Qwen3-0.6B",
+        "world_size": 1,
+        "routes": ["update/load_lora"],
+    }
+
+    try:
+        _parse_dynamo_workers(
+            {
+                "workers": [
+                    {
+                        **common,
+                        "component": "backend",
+                        "instance_id": 10,
+                        "admin_base_url": "http://decode:8120",
+                        "system_url": "http://decode:8181",
+                    },
+                    {
+                        **common,
+                        "component": "prefill",
+                        "instance_id": 20,
+                        "admin_base_url": "http://prefill:8121",
+                        "system_url": None,
+                    },
+                ]
+            },
+            "Qwen/Qwen3-0.6B",
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("accepted a partial Dynamo LoRA control snapshot")
 
 
 def test_parse_dynamo_workers_fails_closed_on_partial_or_duplicate_snapshot():
@@ -129,16 +171,18 @@ def test_dynamo_inference_pool_discovers_admin_clients_from_one_snapshot():
                 "instance_id": 10,
                 "model": "Qwen/Qwen3-0.6B",
                 "admin_base_url": "http://decode:8120",
+                "system_url": "http://decode:8181",
                 "world_size": 2,
-                "routes": [],
+                "routes": ["update/load_lora"],
             },
             {
                 "component": "prefill",
                 "instance_id": 20,
                 "model": "Qwen/Qwen3-0.6B",
                 "admin_base_url": "http://prefill:8121",
+                "system_url": "http://prefill:8182",
                 "world_size": 2,
-                "routes": [],
+                "routes": ["update/load_lora"],
             },
         ],
     }
@@ -163,8 +207,63 @@ def test_dynamo_inference_pool_discovers_admin_clients_from_one_snapshot():
     assert [call.kwargs["base_url"] for call in client_factory.call_args_list[1:]] == [
         "http://decode:8120",
         "http://prefill:8121",
+        "http://decode:8181",
+        "http://prefill:8182",
+        "http://frontend:8000",
     ]
     assert pool.admin_world_sizes == [2, 2]
+
+
+def test_dynamo_inference_pool_loads_lora_through_discovered_system_routes():
+    workers = _parse_dynamo_workers(
+        {
+            "workers": [
+                {
+                    "component": "backend",
+                    "instance_id": 10,
+                    "model": "Qwen/Qwen3-0.6B",
+                    "admin_base_url": "http://decode:8120",
+                    "system_url": "http://decode:8181",
+                    "world_size": 1,
+                    "routes": ["update/load_lora"],
+                }
+            ]
+        },
+        "Qwen/Qwen3-0.6B",
+    )
+    with patch("prime_rl.utils.client.AsyncClient") as client_factory:
+        admin_client = AsyncMock()
+        system_client = AsyncMock()
+        frontend_client = AsyncMock()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {"status": "success"}
+        admin_client.post.return_value = response
+        system_client.post.return_value = response
+        frontend_response = MagicMock()
+        frontend_response.raise_for_status = MagicMock()
+        frontend_response.json.return_value = {"data": [{"id": "math-r8"}]}
+        frontend_client.get.return_value = frontend_response
+        client_factory.side_effect = [admin_client, system_client, frontend_client]
+        pool = DynamoInferencePool(
+            ClientConfig(base_url=["http://frontend:8000/v1"]),
+            workers,
+            model_name="Qwen/Qwen3-0.6B",
+        )
+
+    asyncio.run(pool.update_weights(Path("/shared/adapter/step_1"), lora_name="math-r8", step=1))
+
+    system_client.post.assert_awaited_once_with(
+        "/v1/loras",
+        json={
+            "lora_name": "math-r8",
+            "source": {"uri": "file:///shared/adapter/step_1"},
+            "load_inplace": True,
+        },
+        timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
+    )
+    admin_client.post.assert_not_awaited()
+    frontend_client.get.assert_awaited_once_with("/v1/models")
 
 
 def test_is_retryable_lora_error_returns_true_for_404():

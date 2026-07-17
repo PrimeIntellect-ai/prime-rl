@@ -208,6 +208,8 @@ class DiscoveredDynamoWorker:
     instance_id: int
     admin_base_url: str
     world_size: int
+    system_url: str | None
+    routes: tuple[str, ...]
 
 
 class DynamoDiscoveryPending(ValueError):
@@ -220,6 +222,7 @@ def _parse_dynamo_workers(payload: object, model_name: str) -> tuple[DiscoveredD
 
     discovered: list[DiscoveredDynamoWorker] = []
     seen_admin_urls: set[str] = set()
+    seen_system_urls: set[str] = set()
     seen_worker_ids: set[tuple[str, int]] = set()
     for raw_worker in payload["workers"]:
         if not isinstance(raw_worker, dict):
@@ -227,14 +230,14 @@ def _parse_dynamo_workers(payload: object, model_name: str) -> tuple[DiscoveredD
         if raw_worker.get("error"):
             raise DynamoDiscoveryPending(f"Dynamo RL worker probe is not ready: {raw_worker['error']}")
         if raw_worker.get("model") != model_name:
-            raise ValueError(
-                f"Dynamo RL worker model {raw_worker.get('model')!r} does not match {model_name!r}"
-            )
+            raise ValueError(f"Dynamo RL worker model {raw_worker.get('model')!r} does not match {model_name!r}")
 
         component = raw_worker.get("component")
         instance_id = raw_worker.get("instance_id")
         admin_base_url = raw_worker.get("admin_base_url")
+        system_url = raw_worker.get("system_url")
         world_size = raw_worker.get("world_size")
+        routes = raw_worker.get("routes", [])
         if not isinstance(component, str) or not component:
             raise ValueError("Dynamo RL worker is missing component identity")
         if not isinstance(instance_id, int) or isinstance(instance_id, bool) or instance_id < 0:
@@ -256,15 +259,42 @@ def _parse_dynamo_workers(payload: object, model_name: str) -> tuple[DiscoveredD
         ):
             raise ValueError("Dynamo RL worker has an invalid admin_base_url")
         admin_base_url = admin_base_url.rstrip("/")
+        if system_url is not None:
+            if not isinstance(system_url, str):
+                raise ValueError("Dynamo RL worker has an invalid system_url")
+            try:
+                parsed_system_url = httpx.URL(system_url)
+            except httpx.InvalidURL as error:
+                raise ValueError("Dynamo RL worker has an invalid system_url") from error
+            if (
+                parsed_system_url.scheme not in {"http", "https"}
+                or parsed_system_url.host is None
+                or parsed_system_url.username
+                or parsed_system_url.password
+                or parsed_system_url.path not in {"", "/"}
+                or parsed_system_url.query
+                or parsed_system_url.fragment
+            ):
+                raise ValueError("Dynamo RL worker has an invalid system_url")
+            if parsed_system_url.scheme != parsed_admin_url.scheme or parsed_system_url.host != parsed_admin_url.host:
+                raise ValueError("Dynamo RL worker system_url must be co-hosted with admin_base_url")
+            system_url = system_url.rstrip("/")
+        if not isinstance(routes, list) or any(not isinstance(route, str) or not route for route in routes):
+            raise ValueError("Dynamo RL worker has an invalid routes list")
+        worker_routes = tuple(sorted(set(routes)))
         worker_id = (component, instance_id)
         if worker_id in seen_worker_ids:
             raise ValueError(f"Dynamo RL discovery returned duplicate worker identity {worker_id}")
         if admin_base_url in seen_admin_urls:
             raise ValueError(f"Dynamo RL discovery returned duplicate admin endpoint {admin_base_url}")
+        if system_url is not None and system_url in seen_system_urls:
+            raise ValueError(f"Dynamo RL discovery returned duplicate system endpoint {system_url}")
         if not isinstance(world_size, int) or isinstance(world_size, bool) or world_size <= 0:
             raise ValueError("Dynamo RL worker has an invalid world_size")
 
         seen_admin_urls.add(admin_base_url)
+        if system_url is not None:
+            seen_system_urls.add(system_url)
         seen_worker_ids.add(worker_id)
         discovered.append(
             DiscoveredDynamoWorker(
@@ -272,11 +302,18 @@ def _parse_dynamo_workers(payload: object, model_name: str) -> tuple[DiscoveredD
                 instance_id=instance_id,
                 admin_base_url=admin_base_url,
                 world_size=world_size,
+                system_url=system_url,
+                routes=worker_routes,
             )
         )
 
     if not discovered:
         raise DynamoDiscoveryPending("Dynamo RL discovery returned no workers yet")
+    lora_route_presence = ["update/load_lora" in worker.routes for worker in discovered]
+    if any(lora_route_presence) and not all(lora_route_presence):
+        raise ValueError("Dynamo RL discovery returned a partial update/load_lora capability snapshot")
+    if all(lora_route_presence) and any(worker.system_url is None for worker in discovered):
+        raise ValueError("Dynamo RL discovery returned update/load_lora without a system_url")
     return tuple(sorted(discovered, key=lambda worker: (worker.component, worker.instance_id)))
 
 
@@ -289,10 +326,37 @@ class DynamoInferencePool(StaticInferencePool):
         )
         super().__init__(discovered_config, **kwargs)
         self._admin_world_sizes = [worker.world_size for worker in workers]
+        self._lora_update_clients = []
+        if workers and all("update/load_lora" in worker.routes for worker in workers):
+            system_urls = [worker.system_url for worker in workers if worker.system_url is not None]
+            self._lora_update_clients = setup_discovered_control_clients(system_urls)
+        frontend_config = client_config.model_copy(update={"admin_base_url": None})
+        self._frontend_model_clients = setup_admin_clients(frontend_config)
 
     @property
     def admin_world_sizes(self) -> list[int]:
         return list(self._admin_world_sizes)
+
+    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+        if lora_name is not None and weight_dir is not None:
+            if not self._lora_update_clients:
+                raise RuntimeError(
+                    "Dynamo LoRA update requires every worker to advertise system_url and update/load_lora"
+                )
+            await load_dynamo_lora_adapter(self._lora_update_clients, lora_name, weight_dir)
+            await wait_for_model(
+                self._frontend_model_clients,
+                lora_name,
+                timeout=self._wait_for_ready_timeout,
+            )
+            return
+        await super().update_weights(weight_dir, lora_name=lora_name, step=step)
+
+    async def stop(self) -> None:
+        await super().stop()
+        await asyncio.gather(
+            *(client.aclose() for client in [*self._lora_update_clients, *self._frontend_model_clients])
+        )
 
     @classmethod
     async def from_config(cls, client_config: ClientConfig, model_name: str, **kwargs) -> DynamoInferencePool:
@@ -420,6 +484,18 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
         )
 
     return [_setup_admin_client(base_url) for base_url in urls]
+
+
+def setup_discovered_control_clients(urls: list[str]) -> list[AsyncClient]:
+    """Create credential-free clients for worker-advertised control URLs."""
+    return [
+        AsyncClient(
+            base_url=url.rstrip("/"),
+            limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
+            timeout=httpx.Timeout(None),
+        )
+        for url in urls
+    ]
 
 
 async def maybe_check_has_model(
@@ -651,6 +727,52 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
 
 
+async def load_dynamo_lora_adapter(update_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
+    """Load and advertise a LoRA through each discovered Dynamo worker."""
+    timeout = httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0)
+    payload = {
+        "lora_name": lora_name,
+        "source": {"uri": lora_path.resolve().as_uri()},
+        "load_inplace": True,
+    }
+
+    @retry(
+        retry=retry_if_exception(_is_retryable_lora_error),
+        stop=stop_after_delay(LORA_LOAD_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
+    async def _load(update_client: AsyncClient) -> None:
+        response = await update_client.post(
+            "/v1/loras",
+            json=payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        result = response.json()
+        if isinstance(result, dict) and result.get("status") == "error":
+            raise RuntimeError(result.get("message") or "Dynamo LoRA update failed")
+
+    await asyncio.gather(*[_load(update_client) for update_client in update_clients])
+
+
+async def wait_for_model(clients: list[AsyncClient], model_name: str, timeout: int) -> None:
+    """Wait until every Dynamo request-plane endpoint advertises a model."""
+    async for attempt in AsyncRetrying(
+        stop=stop_after_delay(timeout),
+        wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
+        retry=retry_if_exception_type((DynamoDiscoveryPending, httpx.TransportError)),
+        reraise=True,
+    ):
+        with attempt:
+            responses = await asyncio.gather(*(client.get("/v1/models") for client in clients))
+            for response in responses:
+                response.raise_for_status()
+                models = response.json().get("data", [])
+                if not any(model.get("id") == model_name for model in models):
+                    raise DynamoDiscoveryPending(f"Dynamo frontend has not published model {model_name!r}")
+
+
 async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) -> None:
     """Make a HTTP post request to the vLLM server to unload a LoRA adapter."""
     logger = get_logger()
@@ -688,8 +810,7 @@ async def init_nccl_broadcast(
         else:
             inference_world_size = len(admin_clients)
             logger.warning(
-                f"inference_world_size not provided, defaulting to {inference_world_size} "
-                "(one GPU per admin client)"
+                f"inference_world_size not provided, defaulting to {inference_world_size} (one GPU per admin client)"
             )
 
     if engine_world_sizes is None:
