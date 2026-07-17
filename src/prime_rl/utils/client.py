@@ -363,7 +363,13 @@ class DynamoInferencePool(StaticInferencePool):
         )
 
     @classmethod
-    async def from_config(cls, client_config: ClientConfig, model_name: str, **kwargs) -> DynamoInferencePool:
+    async def from_config(
+        cls,
+        client_config: ClientConfig,
+        model_name: str,
+        expected_inference_world_size: int | None = None,
+        **kwargs,
+    ) -> DynamoInferencePool:
         if client_config.rl_base_url is None:
             raise ValueError("Dynamo inference pool requires rl_base_url")
         discovery_url = client_config.rl_base_url.rstrip("/").removesuffix("/v1")
@@ -379,6 +385,16 @@ class DynamoInferencePool(StaticInferencePool):
                     response = await client.get(f"{discovery_url}/v1/rl/workers")
                     response.raise_for_status()
                     workers = _parse_dynamo_workers(response.json(), model_name)
+                    discovered_world_size = sum(worker.world_size for worker in workers)
+                    if (
+                        expected_inference_world_size is not None
+                        and discovered_world_size != expected_inference_world_size
+                    ):
+                        raise DynamoDiscoveryPending(
+                            "Dynamo RL discovery returned "
+                            f"inference_world_size={discovered_world_size}; "
+                            f"waiting for expected inference_world_size={expected_inference_world_size}"
+                        )
         assert workers is not None
         return cls(client_config, workers, model_name=model_name, **kwargs)
 
@@ -390,6 +406,7 @@ async def setup_inference_pool(
     eval_client_type: str = "openai_chat_completions",
     renderer_config: RendererConfig | None = None,
     pool_size: int | None = None,
+    expected_inference_world_size: int | None = None,
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     if client_config.is_elastic:
@@ -412,6 +429,7 @@ async def setup_inference_pool(
             eval_client_type=eval_client_type,
             renderer_config=renderer_config,
             pool_size=pool_size,
+            expected_inference_world_size=expected_inference_world_size,
         )
 
     return StaticInferencePool(

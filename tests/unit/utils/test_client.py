@@ -153,6 +153,7 @@ def test_parse_dynamo_workers_fails_closed_on_partial_or_duplicate_snapshot():
 def test_rank_offsets_support_heterogeneous_engine_world_sizes():
     assert _rank_offsets([2, 2], inference_world_size=4) == [0, 2]
     assert _rank_offsets([1, 2], inference_world_size=3) == [0, 1]
+    assert _rank_offsets([2, 2, 2, 2], inference_world_size=8) == [0, 2, 4, 6]
 
     try:
         _rank_offsets([2, 2], inference_world_size=3)
@@ -163,8 +164,8 @@ def test_rank_offsets_support_heterogeneous_engine_world_sizes():
 
 
 def test_dynamo_inference_pool_discovers_admin_clients_from_one_snapshot():
-    response = MagicMock()
-    response.json.return_value = {
+    partial_response = MagicMock()
+    partial_response.json.return_value = {
         "namespace": "training",
         "workers": [
             {
@@ -173,6 +174,22 @@ def test_dynamo_inference_pool_discovers_admin_clients_from_one_snapshot():
                 "model": "Qwen/Qwen3-0.6B",
                 "admin_base_url": "http://decode:8120",
                 "system_url": "http://decode:8181",
+                "world_size": 2,
+                "routes": ["update/load_lora"],
+            },
+        ],
+    }
+    response = MagicMock()
+    response.json.return_value = {
+        "namespace": "training",
+        "workers": [
+            *partial_response.json.return_value["workers"],
+            {
+                "component": "backend",
+                "instance_id": 11,
+                "model": "Qwen/Qwen3-0.6B",
+                "admin_base_url": "http://decode-1:8120",
+                "system_url": "http://decode-1:8181",
                 "world_size": 2,
                 "routes": ["update/load_lora"],
             },
@@ -185,12 +202,19 @@ def test_dynamo_inference_pool_discovers_admin_clients_from_one_snapshot():
                 "world_size": 2,
                 "routes": ["update/load_lora"],
             },
+            {
+                "component": "prefill",
+                "instance_id": 21,
+                "model": "Qwen/Qwen3-0.6B",
+                "admin_base_url": "http://prefill-1:8121",
+                "system_url": "http://prefill-1:8182",
+                "world_size": 2,
+                "routes": ["update/load_lora"],
+            },
         ],
     }
     discovery_client = AsyncMock()
-    empty_response = MagicMock()
-    empty_response.json.return_value = {"namespace": "training", "workers": []}
-    discovery_client.get.side_effect = [empty_response, response]
+    discovery_client.get.side_effect = [partial_response, response]
     context = AsyncMock()
     context.__aenter__.return_value = discovery_client
 
@@ -200,6 +224,7 @@ def test_dynamo_inference_pool_discovers_admin_clients_from_one_snapshot():
             DynamoInferencePool.from_config(
                 ClientConfig(base_url=["http://frontend:8000/v1"], rl_base_url="http://frontend:8001"),
                 model_name="Qwen/Qwen3-0.6B",
+                expected_inference_world_size=8,
             )
         )
 
@@ -207,12 +232,16 @@ def test_dynamo_inference_pool_discovers_admin_clients_from_one_snapshot():
     discovery_client.get.assert_awaited_with("http://frontend:8001/v1/rl/workers")
     assert [call.kwargs["base_url"] for call in client_factory.call_args_list[1:]] == [
         "http://decode:8120",
+        "http://decode-1:8120",
         "http://prefill:8121",
+        "http://prefill-1:8121",
         "http://decode:8181",
+        "http://decode-1:8181",
         "http://prefill:8182",
+        "http://prefill-1:8182",
         "http://frontend:8000",
     ]
-    assert pool.admin_world_sizes == [2, 2]
+    assert pool.admin_world_sizes == [2, 2, 2, 2]
 
 
 def test_dynamo_inference_pool_loads_lora_through_discovered_system_routes():
@@ -371,36 +400,41 @@ def test_load_lora_adapter_falls_back_to_native_vllm_route():
 
 
 def test_init_nccl_broadcast_falls_back_to_native_collective_rpc():
-    mock_client = AsyncMock()
-    missing_wrapper = MagicMock()
-    missing_wrapper.status_code = 404
-    missing_wrapper.raise_for_status.side_effect = httpx.HTTPStatusError(
-        "Not found",
-        request=MagicMock(),
-        response=missing_wrapper,
-    )
-    native_response = MagicMock()
-    native_response.raise_for_status = MagicMock()
-    mock_client.post.side_effect = [missing_wrapper, native_response]
+    mock_clients = []
+    for _ in range(4):
+        mock_client = AsyncMock()
+        missing_wrapper = MagicMock()
+        missing_wrapper.status_code = 404
+        missing_wrapper.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Not found",
+            request=MagicMock(),
+            response=missing_wrapper,
+        )
+        native_response = MagicMock()
+        native_response.raise_for_status = MagicMock()
+        mock_client.post.side_effect = [missing_wrapper, native_response]
+        mock_clients.append(mock_client)
 
     asyncio.run(
         init_nccl_broadcast(
-            [mock_client],
+            mock_clients,
             host="127.0.0.1",
             port=29519,
             timeout=1200,
-            engine_world_sizes=[2],
+            inference_world_size=8,
+            engine_world_sizes=[2, 2, 2, 2],
         )
     )
 
-    assert mock_client.post.await_args_list[0].args == ("/init_broadcaster",)
-    assert mock_client.post.await_args_list[1].args == ("/collective_rpc",)
-    assert mock_client.post.await_args_list[1].kwargs == {
-        "json": {
-            "method": "init_broadcaster",
-            "args": ["127.0.0.1", 29519, 0, 2, 1200, False],
+    for mock_client, rank_offset in zip(mock_clients, [0, 2, 4, 6], strict=True):
+        assert mock_client.post.await_args_list[0].args == ("/init_broadcaster",)
+        assert mock_client.post.await_args_list[1].args == ("/collective_rpc",)
+        assert mock_client.post.await_args_list[1].kwargs == {
+            "json": {
+                "method": "init_broadcaster",
+                "args": ["127.0.0.1", 29519, rank_offset, 8, 1200, False],
+            }
         }
-    }
 
 
 def test_setup_clients_assigns_renderer_and_dp_rank_headers():
