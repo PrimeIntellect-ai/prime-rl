@@ -15,9 +15,7 @@ pytestmark = [pytest.mark.gpu]
 
 def _tiny_vlm_config():
     """HF composite config shrunk for unit testing."""
-    config = AutoConfig.from_pretrained(
-        "Qwen/Qwen3.5-35B-A3B", trust_remote_code=True, attn_implementation="flash_attention_2"
-    )
+    config = AutoConfig.from_pretrained("Qwen/Qwen3.5-35B-A3B", trust_remote_code=True, attn_implementation="sdpa")
     config.use_cache = False
     tc = config.text_config
     tc.vocab_size = 256

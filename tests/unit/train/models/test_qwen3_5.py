@@ -12,7 +12,7 @@ from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedFlashAt
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig
 
 
-def _tiny_text_config(attn_impl: str = "flash_attention_2") -> Qwen3_5TextConfig:
+def _tiny_text_config(attn_impl: str = "sdpa") -> Qwen3_5TextConfig:
     config = Qwen3_5TextConfig(
         vocab_size=128,
         hidden_size=64,
@@ -33,7 +33,7 @@ def _tiny_text_config(attn_impl: str = "flash_attention_2") -> Qwen3_5TextConfig
     return config
 
 
-def _tiny_moe_config(attn_impl: str = "flash_attention_2") -> Qwen3_5MoeConfig:
+def _tiny_moe_config(attn_impl: str = "sdpa") -> Qwen3_5MoeConfig:
     config = Qwen3_5MoeConfig(
         vocab_size=128,
         hidden_size=64,
@@ -58,7 +58,6 @@ def _tiny_moe_config(attn_impl: str = "flash_attention_2") -> Qwen3_5MoeConfig:
     return config
 
 
-@pytest.mark.gpu
 def test_qwen3_5_dense_matches_hf_state_keys_on_meta():
     config = _tiny_text_config()
     with torch.device("meta"):

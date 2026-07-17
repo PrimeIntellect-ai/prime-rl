@@ -31,7 +31,7 @@ def get_model_pairs():
     # TODO: We should test this path because it's the most performant
     # But the grad seems to be off in attn because of precision
     # hf_config._attn_implementation = "flash_attention_2"
-    hf_config._attn_implementation = "flash_attention_2"
+    hf_config._attn_implementation = "sdpa"
     with torch.device("cuda"), default_dtype(torch.float32):
         hf_model = HFQwen3MoeForCausalLM._from_config(hf_config)
         prime_model = PrimeRLQwen3MoeForCausalLM._from_config(hf_config)

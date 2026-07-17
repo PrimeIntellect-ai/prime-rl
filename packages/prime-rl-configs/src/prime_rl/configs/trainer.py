@@ -18,8 +18,14 @@ from prime_rl.utils.config import BaseConfig
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
-AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4"]
+AttnImplementation: TypeAlias = Literal["eager", "sdpa", "flash_attention_2", "flash_attention_3", "fa4"]
 EPCommBackend: TypeAlias = Literal["torch", "deepep"]
+
+# User-facing name -> internal name. Users set `flash_attention_4` in configs,
+# which gets rewritten to `fa4` before pydantic validation.
+# We use `fa4` internally because `flash_attention_*` triggers transformers
+# to attempt installing a kernel from hub.
+_ATTN_ALIASES = {"flash_attention_4": "fa4"}
 
 
 class GCConfig(BaseConfig):
@@ -153,7 +159,7 @@ class ModelConfig(BaseModelConfig):
     seq_len: int = 2048
     """Sequence length the model is trained on."""
 
-    attn: AttnImplementation = "flash_attention_3"
+    attn: AttnImplementation = "flash_attention_2"
     """Attention implementation. With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
 
     compile: CompileConfig | None = CompileConfig()
@@ -227,6 +233,14 @@ class ModelConfig(BaseModelConfig):
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 1024
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. SFT training silently disables this (not supported yet)."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_attn_alias(cls, data):
+        """Rewrite user-facing `flash_attention_4` to internal `fa4` before validation."""
+        if isinstance(data, dict) and data.get("attn") in _ATTN_ALIASES:
+            data["attn"] = _ATTN_ALIASES[data["attn"]]
+        return data
+
     @model_validator(mode="after")
     def trust_remote_code_only_with_hf(self):
         """Trust remote code only if the model is from HF."""
@@ -237,19 +251,15 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def cp_only_with_flash_attn(self):
-        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4"]:
-            raise ValueError("CP is only supported with flash attention 2, 3, or 4")
-        if (
-            self.cp > 1
-            and self.attn in ("flash_attention_3", "flash_attention_4")
-            and self.impl not in ("custom", "auto")
-        ):
+        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "fa4"]:
+            raise ValueError("CP is only supported with flash attention 2, flash attention 3, or fa4")
+        if self.cp > 1 and self.attn in ("flash_attention_3", "fa4") and self.impl != "custom":
             # Both ring and ulysses route FA3/FA4 through our custom FlashAttention class:
             # ring patches `_compute_attention` with the ring kernel, ulysses patches it with
             # the all-to-all wrapper around the FA3/FA4 kernel. The HF path patches
             # `_flash_attention_forward` which only wraps FA2.
             raise ValueError(
-                f"CP with {self.attn} requires model.impl='custom' or 'auto' "
+                f"CP with {self.attn} requires model.impl='custom' "
                 "(FA3/FA4 paths are only implemented for the custom model attention class)"
             )
         return self
@@ -275,8 +285,8 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def flash_attention_4_only_with_custom_impl(self):
-        if self.attn == "flash_attention_4" and self.impl not in ("custom", "auto"):
-            raise ValueError("Flash attention 4 is only supported with model.impl='custom' or 'auto'")
+        if self.attn == "fa4" and self.impl != "custom":
+            raise ValueError("Flash attention 4 is only supported with the custom implementation")
         return self
 
     @model_validator(mode="after")

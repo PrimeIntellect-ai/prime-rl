@@ -25,7 +25,7 @@ def get_model_pairs():
         attention_bias=False,
         mlp_bias=False,
     )
-    hf_config._attn_implementation = "flash_attention_2"
+    hf_config._attn_implementation = "sdpa"
     with torch.device("cuda"), default_dtype(torch.float32):
         hf_model = HFLlamaForCausalLM._from_config(hf_config)
         prime_model = PrimeRLLlamaForCausalLM._from_config(hf_config)
