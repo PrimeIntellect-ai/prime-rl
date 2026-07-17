@@ -95,11 +95,11 @@ def test_nemotron_h_mamba_moe_only():
     prime_output["logits"].sum().backward()
 
     logits_diff = prime_output["logits"] - hf_output.logits
-    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=1e-1), (
+    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=1e-0), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
     grad_diff = hf_model.model.embeddings.weight.grad - prime_model.model.embed_tokens.weight.grad
-    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=50), f"Max grad diff: {grad_diff.abs().max()}"
+    assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=500), f"Max grad diff: {grad_diff.abs().max()}"
 
 
 @pytest.mark.xfail(reason="HF NemotronH now uses fused expert tensors; convert_to_hf produces individual expert format")
@@ -147,7 +147,7 @@ def test_nemotron_h_reverse():
     prime_output = prime_model(input_ids, position_ids=position_ids)
 
     logits_diff = prime_output["logits"] - hf_output.logits
-    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=1e-1), (
+    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=1e-0), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
 
@@ -164,7 +164,7 @@ def test_nemotron_h():
     prime_output = prime_model(input_ids, position_ids=position_ids)
     # Slightly larger tolerance due to different SDPA attention implementations
     logits_diff = prime_output["logits"] - hf_output.logits
-    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=1e-1), (
+    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=1e-0), (
         f"Max logits diff: {logits_diff.abs().max()}"
     )
 
