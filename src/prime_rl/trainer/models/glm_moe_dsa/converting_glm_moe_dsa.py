@@ -1,146 +1,67 @@
+"""HF<->PrimeRL weight conversion for GLM-MoE-DSA."""
+
+from __future__ import annotations
+
 import torch
 from torch import Tensor
 
 from prime_rl.trainer.conversion_utils import get_max_layer_num
+from prime_rl.trainer.models.conversion_ops import (
+    GATE_DOWN_UP,
+    ConvOp,
+    Drop,
+    Rename,
+    SqueezeLeading,
+    apply_hf_to_tt,
+    apply_tt_to_hf,
+    routed_experts_op,
+)
 from prime_rl.trainer.models.fp8 import quantize_to_vllm_kernel_format
 
 
-def _is_moe_layer(state_dict: dict[str, Tensor], layer_idx: int) -> bool:
-    """Check if a layer is an MoE layer by looking for the router gate weight."""
-    return f"model.layers.{layer_idx}.mlp.gate.weight" in state_dict
+def _layer_conversion_chain(layer_idx: int) -> list[ConvOp]:
+    prefix = f"model.layers.{layer_idx}"
+    mlp = f"{prefix}.mlp"
+    ops: list[ConvOp] = [
+        Rename(f"{mlp}.gate.weight", f"{mlp}.router.gate.weight"),
+        Rename(f"{mlp}.gate.e_score_correction_bias", f"{mlp}.expert_bias"),
+        routed_experts_op(prefix, hf_experts="mlp.experts", tt_experts="mlp.experts", fused=True),
+    ]
+    for prime_name, hf_name in GATE_DOWN_UP:
+        hf_key = f"{mlp}.shared_experts.{hf_name}.weight"
+        ops.extend(
+            [
+                SqueezeLeading(hf_key),
+                Rename(hf_key, f"{mlp}.shared_expert.{prime_name}"),
+            ]
+        )
+    ops.append(Drop(f"{mlp}.tokens_per_expert"))
+    return ops
+
+
+def conversion_chain(config) -> list[ConvOp]:
+    """Build the complete, present-guarded conversion chain for ``config``."""
+    return [op for layer_idx in range(config.num_hidden_layers) for op in _layer_conversion_chain(layer_idx)]
 
 
 def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
-    i = layer_idx
-
-    if not _is_moe_layer(state_dict, i):
-        return
-
-    # Router: gate.weight -> router.gate.weight
-    state_dict[f"model.layers.{i}.mlp.router.gate.weight"] = state_dict[f"model.layers.{i}.mlp.gate.weight"]
-    del state_dict[f"model.layers.{i}.mlp.gate.weight"]
-
-    # Routed experts: fused or per-expert format -> stacked w1/w2/w3
-    if f"model.layers.{i}.mlp.experts.gate_up_proj" in state_dict:
-        gate_up_proj = state_dict[f"model.layers.{i}.mlp.experts.gate_up_proj"]
-        down_proj = state_dict[f"model.layers.{i}.mlp.experts.down_proj"]
-
-        num_experts, fused_dim, dim = gate_up_proj.shape
-        moe_dim = fused_dim // 2
-
-        w1 = gate_up_proj[:, :moe_dim, :]
-        w3 = gate_up_proj[:, moe_dim:, :]
-        w2 = down_proj
-
-        del state_dict[f"model.layers.{i}.mlp.experts.gate_up_proj"]
-        del state_dict[f"model.layers.{i}.mlp.experts.down_proj"]
-    else:
-        num_experts = len([j for j in state_dict.keys() if f"model.layers.{i}.mlp.experts" in j]) // 3
-        if num_experts == 0:
-            return
-
-        dim, moe_dim = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].shape
-        dtype = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].dtype
-        w1 = torch.empty((num_experts, moe_dim, dim), dtype=dtype)
-        w2 = torch.empty((num_experts, dim, moe_dim), dtype=dtype)
-        w3 = torch.empty((num_experts, moe_dim, dim), dtype=dtype)
-        for j in range(num_experts):
-            w1[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"])
-            w2[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"])
-            w3[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"])
-
-            del state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"]
-            del state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"]
-            del state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"]
-
-    state_dict[f"model.layers.{i}.mlp.experts.w1"] = w1
-    state_dict[f"model.layers.{i}.mlp.experts.w2"] = w2
-    state_dict[f"model.layers.{i}.mlp.experts.w3"] = w3
-
-    # Shared experts
-    state_dict[f"model.layers.{i}.mlp.shared_expert.w1"] = state_dict[
-        f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"
-    ]
-    state_dict[f"model.layers.{i}.mlp.shared_expert.w2"] = state_dict[
-        f"model.layers.{i}.mlp.shared_experts.down_proj.weight"
-    ]
-    state_dict[f"model.layers.{i}.mlp.shared_expert.w3"] = state_dict[
-        f"model.layers.{i}.mlp.shared_experts.up_proj.weight"
-    ]
-    del state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"]
-    del state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"]
-    del state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"]
-
-    # Expert bias for load balancing
-    state_dict[f"model.layers.{i}.mlp.expert_bias"] = state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"]
-    del state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"]
+    """Convert one layer from HF to PrimeRL format in place."""
+    apply_hf_to_tt(state_dict, _layer_conversion_chain(layer_idx))
 
 
 def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
-    num_layers = get_max_layer_num(state_dict)
-    for i in range(num_layers):
-        convert_hf_layer_to_tt(state_dict, i)
+    for layer_idx in range(get_max_layer_num(state_dict)):
+        convert_hf_layer_to_tt(state_dict, layer_idx)
 
 
 def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
-    i = layer_index
-
-    # Expert bias
-    if f"model.layers.{i}.mlp.expert_bias" in state_dict:
-        state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"] = state_dict[
-            f"model.layers.{i}.mlp.expert_bias"
-        ]
-        del state_dict[f"model.layers.{i}.mlp.expert_bias"]
-    if f"model.layers.{i}.mlp.tokens_per_expert" in state_dict:
-        del state_dict[f"model.layers.{i}.mlp.tokens_per_expert"]
-
-    # Shared experts
-    if f"model.layers.{i}.mlp.shared_expert.w1" in state_dict:
-        state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"] = state_dict[
-            f"model.layers.{i}.mlp.shared_expert.w1"
-        ]
-        state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"] = state_dict[
-            f"model.layers.{i}.mlp.shared_expert.w2"
-        ]
-        state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"] = state_dict[
-            f"model.layers.{i}.mlp.shared_expert.w3"
-        ]
-
-        if state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"].shape[0] == 1:
-            state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"] = state_dict[
-                f"model.layers.{i}.mlp.shared_experts.up_proj.weight"
-            ][0]
-            state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"] = state_dict[
-                f"model.layers.{i}.mlp.shared_experts.down_proj.weight"
-            ][0]
-            state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"] = state_dict[
-                f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"
-            ][0]
-        del state_dict[f"model.layers.{i}.mlp.shared_expert.w1"]
-        del state_dict[f"model.layers.{i}.mlp.shared_expert.w2"]
-        del state_dict[f"model.layers.{i}.mlp.shared_expert.w3"]
-
-    # Router
-    if f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
-        state_dict[f"model.layers.{i}.mlp.gate.weight"] = state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
-        del state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
-
-        # Routed experts - convert to per-expert format (compatible with vLLM and transformers)
-        w1 = state_dict.pop(f"model.layers.{i}.mlp.experts.w1")  # (num_experts, moe_dim, dim)
-        w2 = state_dict.pop(f"model.layers.{i}.mlp.experts.w2")  # (num_experts, dim, moe_dim)
-        w3 = state_dict.pop(f"model.layers.{i}.mlp.experts.w3")  # (num_experts, moe_dim, dim)
-
-        num_experts = w1.shape[0]
-        for j in range(num_experts):
-            state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"] = w1[j]
-            state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"] = w2[j]
-            state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"] = w3[j]
+    """Convert one layer from PrimeRL to HF format in place."""
+    apply_tt_to_hf(state_dict, _layer_conversion_chain(layer_index))
 
 
 def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
-    num_layers = get_max_layer_num(state_dict)
-    for i in range(num_layers):
-        convert_tt_layer_to_hf(state_dict, i)
+    for layer_idx in range(get_max_layer_num(state_dict)):
+        convert_tt_layer_to_hf(state_dict, layer_idx)
 
 
 def convert_tt_layer_to_vllm_kernel(

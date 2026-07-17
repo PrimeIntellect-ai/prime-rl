@@ -38,6 +38,11 @@ def make_hf_lazy_weights(
         from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import conversion_chain
 
         apply_tt_to_hf(state, conversion_chain(hf_config))
+    elif model_type == "glm_moe_dsa":
+        from prime_rl.trainer.models.conversion_ops import apply_tt_to_hf
+        from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import conversion_chain
+
+        apply_tt_to_hf(state, conversion_chain(hf_config))
     else:
         raise NotImplementedError(
             f"NIXL composed weight transfer does not yet declare a trainer-to-HF graph for {model_type!r}"
