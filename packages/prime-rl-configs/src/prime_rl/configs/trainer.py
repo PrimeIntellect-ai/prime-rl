@@ -240,8 +240,8 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def flash_attention_4_only_with_custom_impl(self):
-        if self.attn == "flash_attention_4" and self.impl != "custom":
-            raise ValueError("Flash attention 4 is only supported with the custom implementation")
+        if self.attn == "flash_attention_4" and self.impl not in ("custom", "auto"):
+            raise ValueError("Flash attention 4 is only supported with model.impl='custom' or 'auto'")
         return self
 
     @model_validator(mode="after")
