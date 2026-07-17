@@ -59,6 +59,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_multi_run_manager, Progress, get_multi_run_manager
+from prime_rl.trainer.models.layers.dsa import compute_indexer_kl_loss
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
@@ -455,6 +456,11 @@ def train(config: TrainerConfig):
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
             )
+
+            if config.model.indexer_kl_coeff is not None:
+                indexer_kl_loss = compute_indexer_kl_loss(model, config.model.indexer_kl_coeff)
+                if indexer_kl_loss is not None:
+                    loss = loss + indexer_kl_loss * (loss_mask.sum() / rl_scale)
 
             # Backward pass
             with maybe_record_function("backward"):

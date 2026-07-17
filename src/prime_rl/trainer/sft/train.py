@@ -20,6 +20,7 @@ from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.runs import Progress, get_multi_run_manager, setup_multi_run_manager
+from prime_rl.trainer.models.layers.dsa import compute_indexer_kl_loss
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
@@ -33,7 +34,7 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
+from prime_rl.trainer.sft.data import load_hf_interleaved_dataset, setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -191,7 +192,7 @@ def train(config: SFTConfig):
     val_raw_dataset = None
     if config.val is not None:
         logger.info(f"Loading validation dataset ({config.val.data.name})")
-        val_raw_dataset = load_sft_dataset(config.val.data)
+        val_raw_dataset = load_hf_interleaved_dataset(config.val.data)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -256,6 +257,11 @@ def train(config: SFTConfig):
                 token_loss = CrossEntropyLoss(reduction="none")(logits.view(-1, V), target_ids.view(-1)).view(B, L)
                 loss_sum = token_loss[loss_mask].sum()
                 del logits
+
+        if config.model.indexer_kl_coeff is not None:
+            indexer_kl_loss = compute_indexer_kl_loss(model, config.model.indexer_kl_coeff)
+            if indexer_kl_loss is not None:
+                loss_sum = loss_sum + indexer_kl_loss * token_count
 
         del out
         return loss_sum, token_count

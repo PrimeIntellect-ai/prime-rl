@@ -1,4 +1,3 @@
-import warnings
 from typing import Optional, Union
 
 import torch
@@ -13,23 +12,23 @@ from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
-from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
+from prime_rl.trainer.models.kimi_k2_dsa.configuration_kimi_k2_dsa import KimiK2DsaConfig, _index_cache_skip_topk
+from prime_rl.trainer.models.kimi_k2_dsa.converting_kimi_k2_dsa import (
     convert_hf_layer_to_tt,
     convert_hf_to_tt_moe,
     convert_tt_layer_to_hf,
-    convert_tt_layer_to_vllm_kernel,
     convert_tt_to_hf_moe,
+    strip_multimodal_wrapper,
 )
 from prime_rl.trainer.models.layers.dsa import SparseMlaAttention, SparseMlaAttentionArgs
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
-from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
+from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 
 
-def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> SparseMlaAttentionArgs:
+def _sparse_mla_attention_args(config: KimiK2DsaConfig, layer_idx: int) -> SparseMlaAttentionArgs:
     if config.q_lora_rank is None:
         raise ValueError("Sparse MLA attention requires q_lora_rank to be set")
     return SparseMlaAttentionArgs(
@@ -39,7 +38,7 @@ def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> Spars
         q_lora_rank=config.q_lora_rank,
         qk_rope_head_dim=config.qk_rope_head_dim,
         qk_nope_head_dim=config.qk_nope_head_dim,
-        qk_head_dim=config.qk_head_dim,
+        qk_head_dim=config.qk_nope_head_dim + config.qk_rope_head_dim,
         v_head_dim=config.v_head_dim,
         attention_bias=config.attention_bias,
         rms_norm_eps=config.rms_norm_eps,
@@ -53,8 +52,8 @@ def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> Spars
     )
 
 
-class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
-    def __init__(self, config: GlmMoeDsaConfig, layer_idx: int):
+class KimiK2DsaDecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config: KimiK2DsaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.self_attn = SparseMlaAttention(_sparse_mla_attention_args(config, layer_idx))
@@ -62,7 +61,7 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         moe_args = MoEArgs(
             num_experts=config.n_routed_experts,
             num_shared_experts=config.n_shared_experts,
-            score_func="sigmoid",
+            score_func=config.scoring_func,
             route_norm=config.norm_topk_prob,
             route_scale=config.routed_scaling_factor,
             score_before_experts=False,
@@ -100,7 +99,6 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         ks: Optional[torch.Tensor] = None,
         ke: Optional[torch.Tensor] = None,
         cached_indices: Optional[torch.Tensor] = None,
-        routed_experts: Optional[torch.LongTensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -115,17 +113,17 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
+        hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
         return hidden_states, cached_indices
 
 
 @auto_docstring
-class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
-    config: GlmMoeDsaConfig
+class KimiK2DsaPreTrainedModel(PreTrainedModelPrimeRL):
+    config: KimiK2DsaConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules = ["GlmMoeDsaDecoderLayer"]
+    _no_split_modules = ["KimiK2DsaDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
     _supports_sdpa = False
@@ -133,7 +131,7 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     _can_compile_fullgraph = False
     _supports_attention_backend = True
     _can_record_outputs = {
-        "hidden_states": GlmMoeDsaDecoderLayer,
+        "hidden_states": KimiK2DsaDecoderLayer,
     }
 
     def _init_weights(self, module):
@@ -154,6 +152,7 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        strip_multimodal_wrapper(state_dict)  # no-op for a plain (non-K2.7) checkpoint
         convert_hf_to_tt_moe(state_dict)
         return state_dict
 
@@ -167,16 +166,10 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         convert_hf_layer_to_tt(state_dict, layer_idx)
         return state_dict
 
-    @classmethod
-    def convert_layer_to_vllm_kernel(
-        cls, state_dict: dict[str, Tensor], layer_idx: int, quantize_fp8: bool = False
-    ) -> dict[str, Tensor]:
-        return convert_tt_layer_to_vllm_kernel(state_dict, layer_idx, quantize_fp8=quantize_fp8)
-
 
 @auto_docstring
-class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
-    def __init__(self, config: GlmMoeDsaConfig):
+class KimiK2DsaModel(KimiK2DsaPreTrainedModel):
+    def __init__(self, config: KimiK2DsaConfig):
         super().__init__(config)
 
         self.padding_idx = config.pad_token_id
@@ -184,12 +177,14 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [GlmMoeDsaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [KimiK2DsaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
-        rope_parameters = getattr(config, "rope_parameters", None) or {}
-        rope_type = rope_parameters.get("rope_type", "default") if isinstance(rope_parameters, dict) else "default"
+        if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
+            rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
+        else:
+            rope_type = "default"
         rotary_config = RotaryEmbeddingConfig(
             max_position_embeddings=config.max_position_embeddings,
             rope_type=rope_type,
@@ -223,12 +218,7 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        routed_experts: Optional[torch.LongTensor] = None,
     ) -> BaseModelOutputWithPast:
-        """
-        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
-            Routed experts for each token in the sequence. Only used for router replay.
-        """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -248,10 +238,6 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         )
         ke_full = torch.arange(1, S_full + 1, dtype=torch.int32, device=flat_position_ids.device)
 
-        # Position embeddings are computed over the full sequence: K uses cos/sin[0:S_full]
-        # while Q uses the local CP slice. ks/ke are computed in K's global coordinate
-        # system and then sharded to the local Q range so the indexer's per-token
-        # causal/varlen mask aligns with the gathered K.
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids_full)
 
@@ -264,15 +250,13 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
 
         cached_indices = None
         use_index_cache = getattr(self.config, "use_index_cache", False)
-        for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states, next_cached_indices = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
                 ks=ks,
                 ke=ke,
                 cached_indices=cached_indices,
-                routed_experts=routed_experts_layer,
             )
             cached_indices = next_cached_indices if use_index_cache else None
 
@@ -281,19 +265,16 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
 
 
 @auto_docstring
-class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
+class KimiK2DsaForCausalLM(KimiK2DsaPreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
     _tp_plan = {"lm_head": "colwise_rep"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = GlmMoeDsaModel(config)
+        self.model = KimiK2DsaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-
-        warnings.warn("GlmMoeDsaForCausalLM is experimental, higher trainer<->inference KL mismatch may be observed.")
-        warnings.warn("`model.attn` is ignored, GlmMoeDsa uses only its own MLA/DSA attention (see `use_sparse_attn`).")
 
         self.post_init()
 
@@ -309,7 +290,6 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[torch.Tensor] = None,
-        routed_experts: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -321,11 +301,9 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
             Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are provided.
-        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
-            Routed experts for each token in the sequence. Only used for router replay.
         """
-        assert use_cache is None, "use_cache is not supported for custom glm_moe_dsa for now"
-        assert past_key_values is None, "past_key_values is not supported for custom glm_moe_dsa for now"
+        assert use_cache is None, "use_cache is not supported for custom kimi_k2_dsa for now"
+        assert past_key_values is None, "past_key_values is not supported for custom kimi_k2_dsa for now"
 
         if position_ids is None:
             if inputs_embeds is not None:
@@ -337,7 +315,6 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            routed_experts=routed_experts,
         )
 
         hidden_states = outputs.last_hidden_state
@@ -358,4 +335,4 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
             rotary_emb.inv_freq.copy_(inv_freq)
 
 
-__all__ = ["GlmMoeDsaConfig", "GlmMoeDsaPreTrainedModel", "GlmMoeDsaModel", "GlmMoeDsaForCausalLM"]
+__all__ = ["KimiK2DsaConfig", "KimiK2DsaPreTrainedModel", "KimiK2DsaModel", "KimiK2DsaForCausalLM"]

@@ -116,6 +116,14 @@ def setup_sparse_mla_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: 
         if not hasattr(layer, "set_context_parallel_attributes"):
             continue
 
+        self_attn = getattr(layer, "self_attn", None)
+        if cp_world_size > 1 and getattr(self_attn, "use_sparse_attn", True) is False:
+            raise ValueError(
+                "Context parallelism is not supported with DSA conversion's dense-attention "
+                "mode (model.use_sparse_attn=False) — fails fast here rather than deep inside "
+                "the forward pass. Set cp=1 for the indexer warm-up / dense-mode stage."
+            )
+
         layer.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
         count += 1
 

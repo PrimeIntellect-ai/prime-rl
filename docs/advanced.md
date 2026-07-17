@@ -6,6 +6,7 @@ This page covers the specialized features layered on top of the core training st
 
 - [Custom Modeling](#custom-modeling)
   - [Expert Parallelism Backends](#expert-parallelism-backends)
+  - [DSA Conversion](#dsa-conversion)
 - [Multimodal Training](#multimodal-training)
   - [Supported Families](#supported-families)
   - [Enabling VLM Mode](#enabling-vlm-mode)
@@ -66,6 +67,68 @@ GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset 
 DeepEP requires some careful tuning to achieve optimal performance, tuning parameters are `deepep_num_sms` and `deepep_token_chunk_size`.
 
 With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is set to `None` automatically.)
+
+### DSA Conversion
+
+DSA-capable families (`glm_moe_dsa`, `kimi_k2_dsa`) share one attention module (`src/prime_rl/trainer/models/layers/dsa.py`) that runs in two modes, toggled by the model's `use_sparse_attn` field (default `True`): the normal DeepSeek Sparse Attention (DSA) top-k path, or an ordinary dense-causal fallback over the same MLA projections. Dense mode exists to convert an existing dense-MLA checkpoint to DSA via continued pretraining, mirroring the two-stage recipe DeepSeek (arXiv:2512.02556) and GLM (arXiv:2602.15763) used. Any dense-MLA family gets this for free by building its DSA sibling on the same module — see `kimi_k2_dsa` alongside `kimi_k2` for the pattern.
+
+**0. Bootstrap.** A dense checkpoint has no `indexer.*` weights at all. Point `model.name` at the dense checkpoint, force the DSA config/model class (`impl = "custom"`), and set `[model.debug] random_init_indexer = true` for exactly this one run: the loader strips the (absent) indexer keys from the strict checkpoint load instead of erroring, then randomly initializes them. Turn it back off from the very next run onward — by then the checkpoint has real indexer weights.
+
+**1. Indexer warm-up.** On `[model]`: `use_sparse_attn = false`, `freeze_all_except_indexer = true` (freezes everything *but* the indexer — plain `freeze_sparse_indexer = false` alone does not freeze the rest of the model) and `indexer_kl_coeff = <coeff>` (also flips the HF config's `train_indexer` on). Only the indexer trains, against a KL loss to the real dense attention distribution.
+
+**2. Sparse adaptation.** `use_sparse_attn = true`, `indexer_kl_coeff = <coeff>` (still on); `freeze_all_except_indexer = false` (the default) so everything trains jointly with the ordinary LM loss; the indexer's KL target now comes from the actual sparse-selected keys instead of the full distribution.
+
+Both stages are continued-pretraining over raw text, not chat data — use `[data] type = "raw_text"` (`RawTextDataConfig`) instead of `type = "sft"`. Run each stage as a separate `uv run sft` invocation, chained via checkpoint resume (`ckpt.resume_step`/`ckpt.resume_path`).
+
+Once converted, recover any quality lost to sparsification with the existing `opd` algorithm: point `algorithm.teacher` at the *original* dense checkpoint (served independently — never wired into the DSA student's weight-broadcast group, since it lacks the `indexer.*` parameters) and train the converted checkpoint as the student.
+
+**Example: converting Kimi K2 to DSA.**
+
+First prepare a local checkpoint directory: copy `moonshotai/Kimi-K2-Instruct`'s safetensors files as-is, but replace its `config.json` with one whose `model_type` is `"kimi_k2_dsa"` (not `"kimi_k2"`) and which adds the indexer fields (`index_topk`, `index_n_heads`, `index_head_dim`, ...) — this is what tells prime-rl to load the checkpoint's (otherwise-identical) weights into the DSA-capable model class instead of the plain dense one.
+
+```toml
+# bootstrap.toml — one-off, produces the first real (randomly-initialized-indexer) checkpoint
+[model]
+name = "/path/to/kimi-k2-dsa-prepared"   # the copy with the edited config.json above
+impl = "custom"
+
+[model.debug]
+random_init_indexer = true
+
+[data]
+type = "fake"   # any single step works; this run exists only to materialize+save the bootstrap checkpoint
+```
+
+```toml
+# stage_a.toml — indexer warm-up
+[model]
+name = "<bootstrap.toml's output checkpoint>"
+impl = "custom"
+use_sparse_attn = false
+freeze_all_except_indexer = true
+indexer_kl_coeff = 1.0
+
+[data]
+type = "raw_text"
+name = "<a long-context text corpus>"
+```
+
+```toml
+# stage_b.toml — sparse adaptation, resumes from stage_a's output
+[model]
+name = "<stage_a.toml's output checkpoint>"
+impl = "custom"
+use_sparse_attn = true
+indexer_kl_coeff = 1.0
+
+[data]
+type = "raw_text"
+name = "<same corpus, or your real pretraining mix>"
+```
+
+Recovery afterward is `algorithm.teacher` pointed at an independently-served `moonshotai/Kimi-K2-Instruct` (the original dense checkpoint) under the `opd` algorithm, training the converted checkpoint as the student.
+
+Kimi K2 is a 1T-parameter model — all four runs above need real multi-node compute, not a single-box smoke test.
 
 ## Multimodal Training
 
