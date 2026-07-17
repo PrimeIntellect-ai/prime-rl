@@ -616,6 +616,12 @@ def get_model(
     else:
         impl_to_use = config.impl
 
+    if config.attn in ("flash_attention_3", "flash_attention_4") and impl_to_use == "hf":
+        raise ValueError(
+            f"{config.attn} requires model.impl='custom' or 'auto' (resolved to 'custom'), "
+            f"but model.impl resolved to 'hf'. Set model.impl='custom' explicitly."
+        )
+
     with device:
         if impl_to_use == "custom" and custom_vlm_cls is not None:
             model_cls = custom_vlm_cls

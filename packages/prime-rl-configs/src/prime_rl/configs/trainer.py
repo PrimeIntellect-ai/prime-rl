@@ -275,7 +275,8 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def flash_attention_4_only_with_custom_impl(self):
-        if self.attn == "flash_attention_4" and self.impl not in ("custom", "auto"):
+        # "auto" may resolve to FA4 on Blackwell, so apply the same impl constraint.
+        if self.attn in ("flash_attention_4", "auto") and self.impl not in ("custom", "auto"):
             raise ValueError("Flash attention 4 is only supported with model.impl='custom' or 'auto'")
         return self
 
