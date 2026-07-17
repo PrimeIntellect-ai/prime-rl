@@ -18,7 +18,7 @@ from prime_rl.utils.config import BaseConfig
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
-AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2", "flash_attention_3", "flash_attention_4"]
+AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4"]
 EPCommBackend: TypeAlias = Literal["torch", "deepep"]
 
 
@@ -203,7 +203,7 @@ class ModelConfig(BaseModelConfig):
     @model_validator(mode="after")
     def cp_only_with_flash_attn(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4"]:
-            raise ValueError("CP is only supported with flash attention 2, flash attention 3, or flash attention 4")
+            raise ValueError("CP is only supported with flash attention 2, 3, or 4")
         if (
             self.cp > 1
             and self.attn in ("flash_attention_3", "flash_attention_4")

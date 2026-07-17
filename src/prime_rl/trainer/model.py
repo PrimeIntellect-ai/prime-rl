@@ -501,17 +501,14 @@ def get_model(
             )
 
     # GPT-OSS only supports FlashAttention via kernels-community/vllm-flash-attn3, which requires Hopper (SM 90).
-    # On other architectures (e.g. Blackwell), users must fall back to sdpa attention.
     HOPPER_MAJOR = 9
     if getattr(model_config, "model_type", "") == "gpt_oss":
-        if config.attn != "sdpa":
-            major, minor = torch.cuda.get_device_capability()
-            if major != HOPPER_MAJOR:
-                raise ValueError(
-                    f"GPT-OSS requires 'attn = \"sdpa\"' on non-Hopper GPUs (detected SM {major}{minor}). "
-                    f"The only flash attention kernel supported by GPT-OSS (kernels-community/vllm-flash-attn3) is Hopper-only. "
-                    f'Set [trainer.model] attn = "sdpa" in your config.'
-                )
+        major, minor = torch.cuda.get_device_capability()
+        if major != HOPPER_MAJOR:
+            raise ValueError(
+                f"GPT-OSS requires Hopper (SM 90) for flash attention, detected SM {major}{minor}. "
+                f"GPT-OSS is not supported on non-Hopper GPUs."
+            )
         # Enable hub kernels for GPT-OSS (disabled by default to avoid interfering with other models).
         import transformers.integrations.hub_kernels as _hub_kernels
 

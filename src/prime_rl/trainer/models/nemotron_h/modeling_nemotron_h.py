@@ -342,7 +342,7 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     supports_gradient_checkpointing = True
     _no_split_modules = ["NemotronHMambaLayer", "NemotronHMoELayer", "NemotronHAttentionLayer"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _can_compile_fullgraph = False
 
     def _init_weights(self, module):

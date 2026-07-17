@@ -417,59 +417,6 @@ class Qwen3_5MoeGatedAttentionBase(nn.Module):
         return self.o_proj(attn_output)
 
 
-class Qwen3_5MoeGatedSDPAAttention(Qwen3_5MoeGatedAttentionBase):
-    """Gated softmax attention using PyTorch's scaled_dot_product_attention."""
-
-    def attn_projections(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
-
-        query_states, gate = torch.chunk(
-            self.q_proj(hidden_states).view(*input_shape, -1, self.head_dim * 2), 2, dim=-1
-        )
-        gate = gate.reshape(*input_shape, -1)
-
-        query_states = self.q_norm(query_states.view(hidden_shape)).transpose(1, 2)
-        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-
-        cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-
-        return query_states, key_states, value_states, gate
-
-    def _attention_core(
-        self,
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-    ) -> torch.Tensor:
-        key_states = _repeat_kv(key_states, self.num_key_value_groups)
-        value_states = _repeat_kv(value_states, self.num_key_value_groups)
-        return F.scaled_dot_product_attention(
-            query_states,
-            key_states,
-            value_states,
-            is_causal=True,
-            scale=self.scaling,
-        )
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> tuple[torch.Tensor, None]:
-        query_states, key_states, value_states, gate = self.attn_projections(hidden_states, position_embeddings)
-        attn_output = self._attention_core(query_states, key_states, value_states)
-        return self.output_proj(attn_output, gate), None
-
-
 class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
     """Gated softmax attention using Flash Attention varlen functions."""
 
@@ -560,7 +507,6 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
 
 
 QWEN35MOE_ATTN_IMPL2CLASS = {
-    "sdpa": Qwen3_5MoeGatedSDPAAttention,
     "flash_attention_2": functools.partial(Qwen3_5MoeGatedFlashAttention, flash_attn_version=2),
     "flash_attention_3": functools.partial(Qwen3_5MoeGatedFlashAttention, flash_attn_version=3),
     "flash_attention_4": functools.partial(Qwen3_5MoeGatedFlashAttention, flash_attn_version=4),
@@ -568,8 +514,6 @@ QWEN35MOE_ATTN_IMPL2CLASS = {
 
 
 def normalize_qwen3_5_attn_implementation(attn_impl: str) -> str:
-    if attn_impl == "eager":
-        return "sdpa"
     if attn_impl == "kernels-community/vllm-flash-attn3":
         return "flash_attention_3"
     return attn_impl
@@ -798,7 +742,7 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
     _no_split_modules = ["Qwen3_5MoeDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _supports_flex_attn = False
     _supports_attention_backend = True
     _can_compile_fullgraph = False
@@ -809,7 +753,7 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
     def _check_and_adjust_attn_implementation(
         self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
     ) -> str:
-        attn_impl = normalize_qwen3_5_attn_implementation(attn_implementation or "sdpa")
+        attn_impl = normalize_qwen3_5_attn_implementation(attn_implementation or "flash_attention_3")
         if attn_impl not in QWEN35MOE_ATTN_IMPL2CLASS:
             supported = list(QWEN35MOE_ATTN_IMPL2CLASS.keys())
             raise ValueError(

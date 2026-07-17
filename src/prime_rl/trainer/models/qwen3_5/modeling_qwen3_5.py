@@ -21,7 +21,6 @@ from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeGatedAttentionConfig,
     Qwen3_5MoeGatedDeltaNet,
     Qwen3_5MoeGatedFlashAttention,
-    Qwen3_5MoeGatedSDPAAttention,
     Qwen3_5MoeRMSNorm,
     Qwen3_5MoeRotaryEmbedding,
     normalize_qwen3_5_attn_implementation,
@@ -29,16 +28,11 @@ from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import (
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 
-class Qwen3_5GatedSDPAAttention(Qwen3_5MoeGatedSDPAAttention):
-    pass
-
-
 class Qwen3_5GatedFlashAttention(Qwen3_5MoeGatedFlashAttention):
     pass
 
 
 QWEN35_ATTN_IMPL2CLASS = {
-    "sdpa": Qwen3_5GatedSDPAAttention,
     "flash_attention_2": functools.partial(Qwen3_5GatedFlashAttention, flash_attn_version=2),
     "flash_attention_3": functools.partial(Qwen3_5GatedFlashAttention, flash_attn_version=3),
     "flash_attention_4": functools.partial(Qwen3_5GatedFlashAttention, flash_attn_version=4),
@@ -130,7 +124,7 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
     _no_split_modules = ["Qwen3_5DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _supports_flex_attn = False
     _supports_attention_backend = True
     _can_compile_fullgraph = False
@@ -141,7 +135,7 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
     def _check_and_adjust_attn_implementation(
         self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
     ) -> str:
-        attn_impl = normalize_qwen3_5_attn_implementation(attn_implementation or "sdpa")
+        attn_impl = normalize_qwen3_5_attn_implementation(attn_implementation or "flash_attention_3")
         if attn_impl not in QWEN35_ATTN_IMPL2CLASS:
             supported = list(QWEN35_ATTN_IMPL2CLASS.keys())
             raise ValueError(

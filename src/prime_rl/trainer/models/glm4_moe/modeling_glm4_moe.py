@@ -121,7 +121,7 @@ class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
     _no_split_modules = ["Glm4MoeDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _supports_flex_attn = True
     _can_compile_fullgraph = False
     _supports_attention_backend = True
