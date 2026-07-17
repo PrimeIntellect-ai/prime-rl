@@ -1,0 +1,25 @@
+# Usage: uv run rl @ examples/reverse_text/rl.toml @ examples/reverse_text/dynamo_aggregated_rl.toml @ examples/reverse_text/slurm_rl.toml
+
+[weight_broadcast]
+type = "nccl"
+
+[trainer]
+
+[orchestrator]
+
+[deployment]
+type = "single_node"
+gpus_per_node = 2
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[inference.backend]
+type = "dynamo"
+
+[inference.parallel]
+tp = 1
+dp = 1
+
+[inference.deployment]
+type = "single_node"
+gpus_per_node = 1

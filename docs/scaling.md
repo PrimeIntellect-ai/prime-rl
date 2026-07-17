@@ -200,6 +200,26 @@ uv run rl @ base_rl.toml @ my_slurm.toml             # submits via sbatch
 uv run rl @ base_rl.toml @ my_slurm.toml --dry-run   # writes the sbatch script + resolved config, exits
 ```
 
+Single-node RL jobs may use the Dynamo inference backend. The generated job
+enters the same local Dynamo launcher used without SLURM, after the scheduler
+assigns the node and GPUs:
+
+```bash
+# One aggregated Dynamo worker and one trainer GPU.
+uv run rl @ examples/reverse_text/rl.toml \
+  @ examples/reverse_text/dynamo_aggregated_rl.toml \
+  @ examples/reverse_text/slurm_rl.toml
+
+# One prefill worker, one decode worker, and one trainer GPU.
+uv run rl @ examples/reverse_text/rl.toml \
+  @ examples/reverse_text/dynamo_disaggregated_rl.toml \
+  @ examples/reverse_text/slurm_rl.toml
+```
+
+Standalone Dynamo inference with `[slurm]` and multi-node Dynamo RL are not
+supported. Those deployment shapes require a DynamoGraphDeployment or an
+external launcher.
+
 ### `[deployment]` Block
 
 `[deployment]` is a discriminated union picked by `type` — `single_node` or `multi_node` for RL/SFT, with an extra disaggregated variant for inference. RL multi-node:

@@ -405,6 +405,71 @@ def test_single_node_dynamo_aggregated_derives_one_multi_gpu_worker():
     assert config.orchestrator.model.client.dynamo_gpus_per_worker == 2
 
 
+@pytest.mark.parametrize(
+    ("inference_deployment", "num_infer_gpus"),
+    [
+        ({"type": "single_node", "gpus_per_node": 1}, 1),
+        (
+            {
+                "type": "disaggregated",
+                "gpus_per_node": 1,
+                "num_prefill_replicas": 1,
+                "num_decode_replicas": 1,
+            },
+            2,
+        ),
+    ],
+)
+def test_single_node_dynamo_rl_slurm_uses_local_inference_launcher(
+    inference_deployment: dict[str, int | str], num_infer_gpus: int
+):
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {
+                "backend": {"type": "dynamo"},
+                "deployment": inference_deployment,
+                "enable_expert_parallel": False,
+            },
+            "deployment": {
+                "type": "single_node",
+                "gpus_per_node": num_infer_gpus + 1,
+                "num_train_gpus": 1,
+                "num_infer_gpus": num_infer_gpus,
+            },
+            "slurm": {},
+        }
+    )
+
+    assert config.slurm is not None
+    assert config.inference is not None
+    assert config.inference.slurm is None
+
+
+def test_multi_node_dynamo_rl_slurm_stays_rejected():
+    with pytest.raises(ValidationError, match="not Prime's SLURM template"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {},
+                "inference": {"backend": {"type": "dynamo"}},
+                "deployment": {
+                    "type": "multi_node",
+                    "gpus_per_node": 1,
+                    "num_train_nodes": 1,
+                    "num_infer_nodes": 1,
+                },
+                "slurm": {},
+            }
+        )
+
+
+def test_standalone_dynamo_inference_slurm_stays_rejected():
+    with pytest.raises(ValidationError, match="not Prime's SLURM template"):
+        InferenceConfig.model_validate({"backend": {"type": "dynamo"}, "slurm": {}})
+
+
 def test_dynamo_topology_metadata_cannot_conflict_with_inference_config():
     with pytest.raises(ValidationError, match="dynamo_worker_roles conflicts"):
         RLConfig.model_validate(
