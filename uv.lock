@@ -4929,6 +4929,7 @@ dependencies = [
     { name = "jaxtyping" },
     { name = "liger-kernel" },
     { name = "loguru" },
+    { name = "modelexpress" },
     { name = "mooncake-transfer-engine" },
     { name = "msgspec" },
     { name = "numpy" },
@@ -4999,9 +5000,6 @@ flash-attn-cute = [
 gpt-oss = [
     { name = "kernels" },
 ]
-modelexpress = [
-    { name = "modelexpress" },
-]
 quack = [
     { name = "quack-kernels" },
 ]
@@ -5038,7 +5036,7 @@ requires-dist = [
     { name = "kernels", marker = "extra == 'gpt-oss'" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "modelexpress", marker = "extra == 'modelexpress'", specifier = "==0.3.0" },
+    { name = "modelexpress", specifier = "==0.3.0" },
     { name = "mooncake-transfer-engine", specifier = ">=0.3.10.post2" },
     { name = "msgspec", specifier = ">=0.18" },
     { name = "nixl", marker = "extra == 'disagg'" },
@@ -5084,7 +5082,7 @@ requires-dist = [
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wandb-workspaces", specifier = ">=0.4.3" },
 ]
-provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "gpt-oss", "modelexpress", "quack", "all"]
+provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "gpt-oss", "quack", "all"]
 
 [package.metadata.requires-dev]
 dev = [

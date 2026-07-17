@@ -27,6 +27,8 @@ import time
 from typing import TYPE_CHECKING
 
 import tomli_w
+from modelexpress import p2p_pb2
+from modelexpress.client import MxClient
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -82,6 +84,7 @@ from prime_rl.utils.utils import (
     clean_exit,
     resolve_latest_ckpt_step,
 )
+from prime_rl.weight_transfer.mx import MxRendezvous
 
 monkey_patch_oai_iterable_types()
 monkey_patch_chat_completion_logprobs()
@@ -317,11 +320,6 @@ class Orchestrator:
                 config.weight_broadcast.inference_world_size,
                 config.weight_broadcast.session_id,
             )
-            from modelexpress import p2p_pb2
-            from modelexpress.client import MxClient
-
-            from prime_rl.weight_transfer.mx import MxRendezvous
-
             self.mx_rendezvous = MxRendezvous(
                 client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
                 role="orchestrator",
@@ -331,7 +329,7 @@ class Orchestrator:
                 worker_id="orchestrator",
             )
             self.mx_rendezvous.publish()
-            self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            await asyncio.to_thread(self.mx_rendezvous.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
         self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
@@ -361,15 +359,10 @@ class Orchestrator:
                 config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
             )
             if self.mx_rendezvous is not None:
-                from modelexpress import p2p_pb2
-
                 await asyncio.to_thread(self.mx_rendezvous.set_status, p2p_pb2.SOURCE_STATUS_READY)
             await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
             if self.mx_rendezvous is not None:
-                await asyncio.to_thread(
-                    self.mx_rendezvous.set_status,
-                    p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                )
+                await asyncio.to_thread(self.mx_rendezvous.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
             if self.lora_name is not None:
                 self.policy_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
@@ -890,12 +883,14 @@ class Orchestrator:
             gate.set()
 
     async def on_version_pending(self, step: int) -> None:
-        """No-op: the dispatch gate is re-evaluated in ``on_new_version`` once
-        the new policy version is live."""
+        if self.mx_rendezvous is not None:
+            await asyncio.to_thread(self.mx_rendezvous.set_status, p2p_pb2.SOURCE_STATUS_READY)
 
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""
+        if self.mx_rendezvous is not None:
+            await asyncio.to_thread(self.mx_rendezvous.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.update_dispatch_gate()
 
     async def stop(self) -> None:

@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING
+
+from modelexpress import p2p_pb2
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.types import Policy, VersionObserver
@@ -15,9 +16,7 @@ from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_step_path, wait_for_path
 from prime_rl.utils.utils import get_latest_ckpt_step
-
-if TYPE_CHECKING:
-    from prime_rl.weight_transfer.mx import MxRendezvous
+from prime_rl.weight_transfer.mx import MxRendezvous
 
 
 class WeightWatcher:
@@ -56,17 +55,7 @@ class WeightWatcher:
         self.task = asyncio.current_task()
         try:
             while not self.stopped.is_set():
-                if self.mx_rendezvous is not None:
-                    from modelexpress import p2p_pb2
-
-                    trainer_preparing = await asyncio.to_thread(
-                        self.mx_rendezvous.has_status,
-                        "trainer",
-                        p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                    )
-                    next_step = self.ckpt_step + 1 if trainer_preparing else self.ckpt_step
-                else:
-                    next_step = self.compute_next_ckpt_step()
+                next_step = self.ckpt_step + 1 if self.mx_rendezvous is not None else self.compute_next_ckpt_step()
                 if next_step > self.ckpt_step:
                     await self.apply_policy_update(next_step)
                 await asyncio.sleep(self.poll_interval)
@@ -93,24 +82,25 @@ class WeightWatcher:
                 # Another caller raced us — bail without re-applying
                 return
 
-            if self.mx_rendezvous is None:
+            weights_path = None
+            if self.mx_rendezvous is not None:
+                await self.wait_for_mx_status(p2p_pb2.SOURCE_STATUS_READY)
+            else:
                 broadcast_dir = get_broadcast_dir(self.config.output_dir)
                 weights_path = get_step_path(broadcast_dir, next_step)
                 stable_marker = weights_path / "STABLE"
-            else:
-                weights_path = None
-                stable_marker = None
-            if stable_marker is not None and not stable_marker.exists():
-                get_logger().info(
-                    f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
-                    "Training is progressing normally."
-                )
-                t0 = time.perf_counter()
-                await wait_for_path(stable_marker)
-                self.last_wait_for_ckpt_time = time.perf_counter() - t0
-                get_logger().info(
-                    f"Orchestrator resumed: checkpoint {next_step} ready (after {format_time(self.last_wait_for_ckpt_time)})"
-                )
+                if not stable_marker.exists():
+                    get_logger().info(
+                        f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
+                        "Training is progressing normally."
+                    )
+                    t0 = time.perf_counter()
+                    await wait_for_path(stable_marker)
+                    self.last_wait_for_ckpt_time = time.perf_counter() - t0
+                    get_logger().info(
+                        f"Orchestrator resumed: checkpoint {next_step} ready "
+                        f"(after {format_time(self.last_wait_for_ckpt_time)})"
+                    )
 
             # Drain off-policy rollouts BEFORE pausing the inference engines.
             # Aborting a rollout triggers vLLM's KV-connector cleanup (NIXL's
@@ -132,16 +122,7 @@ class WeightWatcher:
 
             get_logger().debug(f"Updating weights to step {next_step}")
             t1 = time.perf_counter()
-            if self.mx_rendezvous is not None:
-                from modelexpress import p2p_pb2
-
-                await asyncio.to_thread(self.mx_rendezvous.set_status, p2p_pb2.SOURCE_STATUS_READY)
             await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
-            if self.mx_rendezvous is not None:
-                await asyncio.to_thread(
-                    self.mx_rendezvous.set_status,
-                    p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                )
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
             get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
@@ -159,6 +140,21 @@ class WeightWatcher:
                     get_logger().warning(
                         f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
                     )
+
+            if self.mx_rendezvous is not None:
+                await self.wait_for_mx_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+
+    async def wait_for_mx_status(self, status: int) -> None:
+        while not self.stopped.is_set():
+            found = await asyncio.to_thread(
+                self.mx_rendezvous.has_status,
+                "trainer",
+                status,
+            )
+            if found:
+                return
+            await asyncio.sleep(self.poll_interval)
+        raise asyncio.CancelledError
 
     def gauges(self) -> dict[str, float]:
         return {

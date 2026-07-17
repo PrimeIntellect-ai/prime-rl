@@ -44,6 +44,7 @@ dependencies = [
     "orjson>=3.10",
     "pandas>=2.0",
     "msgspec>=0.18",
+    "modelexpress==0.3.0",
 ]
 
 [project.scripts]
@@ -75,9 +76,6 @@ disagg = [
 ]
 gpt-oss = [
     "kernels",
-]
-modelexpress = [
-    "modelexpress==0.3.0",
 ]
 quack = [
     "quack-kernels>=0.4.1",
