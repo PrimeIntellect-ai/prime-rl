@@ -297,8 +297,8 @@ class WandbMonitor(Monitor):
 
 OVERVIEW_NAME = "overview"
 
-# Per-rollout metrics (under "<scope>/all/") shown for BOTH train and eval. Only the reward metric
-# differs — train uses "reward/mean", eval uses "avg@k" — and each section builder prepends its own.
+# Operational per-rollout metrics shown for both train and eval live under ``all``. Train reward
+# instead uses the exact trainer-bound ``effective`` cohort; eval reward uses ``avg@k``.
 COMMON_METRICS = [
     "has_error/mean",
     "is_truncated/mean",
@@ -345,12 +345,15 @@ def section(name: str, metrics: Sequence[str] = (), regexes: Sequence[str] = ())
 
 
 def train_section(name: str, scope: str) -> ws.Section:
-    return section(name, metrics=[f"{scope}/all/reward/mean"] + [f"{scope}/all/{m}" for m in COMMON_METRICS])
+    return section(
+        name,
+        metrics=[f"{scope}/effective/reward/mean"] + [f"{scope}/all/{m}" for m in COMMON_METRICS],
+    )
 
 
 def eval_section(name: str, env_pattern: str) -> ws.Section:
     # Same metrics as train, but eval's reward is "avg@k" (dynamic k → regex). Everything is a regex so
-    # one section can also serve any env (env_pattern=".*"). Only the "all" subset, like train.
+    # one section can also serve any env (env_pattern=".*"). Eval panels remain on the "all" subset.
     return section(
         name,
         regexes=[f"eval/{env_pattern}/all/avg@.*"] + [f"eval/{env_pattern}/all/{m}" for m in COMMON_METRICS],
@@ -405,6 +408,19 @@ def view_env_signature(sections: Sequence[ws.Section]) -> tuple:
     return (tuple(train), tuple(evals))
 
 
+def has_effective_train_reward_panels(sections: Sequence[ws.Section]) -> bool:
+    """Whether every train section displays reward from the exact trainer-bound cohort."""
+    train_sections = [s for s in sections if s.name == "train" or s.name.startswith("train/")]
+    return bool(train_sections) and all(
+        any(
+            (metric if isinstance(metric, str) else getattr(metric, "name", "")).endswith("/effective/reward/mean")
+            for panel in train_section.panels
+            for metric in (getattr(panel, "y", None) or [])
+        )
+        for train_section in train_sections
+    )
+
+
 def next_overview_name(base: str, existing: Sequence[str]) -> str:
     if base not in existing:
         return base
@@ -420,8 +436,8 @@ def ensure_overview_view(
     train_envs: Sequence[str] = (),
     eval_envs: Sequence[str] = (),
 ) -> str | None:
-    """Ensure an overview saved view exists for this run's env set. Reuses an existing overview built
-    for the same envs; when the env set is new, creates a fresh versioned view (``overview`` →
+    """Ensure an overview saved view exists for this run's env set and current panel schema.
+    Reuses a compatible overview; otherwise creates a fresh versioned view (``overview`` →
     ``overview-v2`` → …). Returns the URL of a newly created view, else None."""
     target = env_signature(train_envs, eval_envs)
     overviews = [(dn, iname) for dn, iname in list_views(entity, project) if dn == name or dn.startswith(f"{name}-v")]
@@ -429,7 +445,9 @@ def ensure_overview_view(
         slug = internal_name.removeprefix("nw-").removesuffix("-v")
         try:
             existing = ws.Workspace.from_url(f"https://wandb.ai/{entity}/{project}?nw={slug}")
-            matches = view_env_signature(existing.sections) == target
+            matches = view_env_signature(existing.sections) == target and has_effective_train_reward_panels(
+                existing.sections
+            )
         except Exception as e:
             # A single unreadable view must not abort reuse detection / versioning for the rest.
             get_logger().warning(f"Could not inspect overview view {internal_name} - {e}")

@@ -27,7 +27,7 @@ Default cadence: **1 hour** (researcher can override). At each check-in:
 **Step**: {current_step} / {max_steps}
 **Health**: {Healthy | Degraded | Down}
 
-**Progress**: reward/mean, seq_len, truncation, eval scores, env-specific metrics.
+**Progress**: trainer-batch reward, seq_len, truncation, eval scores, env-specific metrics.
 **Stability**: entropy, mismatch_kl, grad_norm — flag spikes.
 **Performance**: trainer vs orchestrator step time, env lag, inference pressure.
 
@@ -93,7 +93,7 @@ All metrics print to the console log (and W&B when configured).
 
 | Metric | Description |
 |--------|-------------|
-| `reward/{all,env}/mean` | mean training reward |
+| `train/{agg,<env>}/effective/reward/mean` | mean reward over the exact post-filter trainer-bound cohort |
 | `seq_len/{all,env}/mean` | avg sequence length (tokens) |
 | `num_turns/{all,env}/mean` | avg turns per rollout (multi-turn only) |
 | `is_truncated/{all,env}/mean` | fraction truncated |
@@ -139,8 +139,9 @@ curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
 
 JSONL files of `vf.Trace` records (training tensors excluded). `all` gets every completed
 rollout the moment it arrives — errored, filtered, and never-batched ones included — so it's
-crash-durable; `effective` gets the clean subset that went into the step's train batch (eval:
-the non-errored epoch cohort; multiple eval envs share the step file). Each record carries
+crash-durable; train `effective` gets the exact post-filter cohort that went into the trainer
+batch (eval: the non-errored epoch cohort; multiple eval envs share the step file). Each record
+carries
 `kind`, `env_name`, `group_id`, `policy_version`, and `eval_step`, plus `runtime` (config +
 provisioned resource id, e.g. the sandbox id).
 

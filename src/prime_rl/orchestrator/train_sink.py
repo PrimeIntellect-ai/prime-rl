@@ -277,19 +277,19 @@ class TrainSink:
             apply_filters(self.post_filters, cohort)
 
         # Samples are pre-built by ``process_rollout``; ``process_group`` already stamped the
-        # advantage stream and loss routing on each sample. Filtered rollouts don't ship.
-        samples: list[TrainingSample] = [sample for r in cohort if not r.is_filtered for sample in r.samples]
+        # advantage stream and loss routing on each sample. Retain the exact rollout cohort
+        # represented by the payload so trainer-batch metrics use the same slice.
+        trainer_rollouts = TrainRollouts([r for r in cohort if not r.is_filtered and r.samples])
+        samples: list[TrainingSample] = [sample for r in trainer_rollouts for sample in r.samples]
 
         # ``rollouts`` is the observation window — every rollout of every group finalized since the
-        # last ship (errored + filtered + survivors) — while ``samples`` is the shipped cohort's
-        # trainable payload. ``rollouts.effective`` / ``rollouts.metrics`` derive the clean subset +
-        # metric views on demand. Reset the window only when the batch actually ships (non-empty
-        # samples) — an empty batch is dropped unlogged by the orchestrator, so keep accumulating its
-        # finalized groups (and any overflow) into the next shipped batch's window.
+        # last ship (errored + filtered + survivors). Reset it only when the batch actually ships;
+        # an empty batch is dropped unlogged by the orchestrator, so keep accumulating its finalized
+        # groups (and any overflow) into the next shipped batch's window.
         rollouts = self.pending_rollouts
         if samples:
             self.pending_rollouts = TrainRollouts()
-        return TrainBatch(rollouts=rollouts, samples=samples)
+        return TrainBatch(rollouts=rollouts, trainer_rollouts=trainer_rollouts, samples=samples)
 
     def reset_pre_filter_stats(self) -> None:
         self.pre_filter_seen = 0

@@ -111,7 +111,9 @@ Pulled from the console logs and mirrored to W&B.
 
 **Progress** (orchestrator):
 
-- `reward/{all,env}/mean` — main signal. Should trend upward over hundreds of steps.
+- `train/{agg,<env>}/effective/reward/mean` — mean reward over the exact post-filter cohort
+  shipped to the trainer. This is the main training signal and should trend upward over hundreds
+  of steps.
 - `seq_len/{all,env}/mean` and `is_truncated/{all,env}/mean` — rollout length and truncation rate.
 - `num_turns/{all,env}/mean` — for multi-turn envs.
 - `empty_rollouts/{all,env}`, `errored_rollouts/{all,env}` — non-zero is fine in small numbers; sustained > 5% is a smell.
@@ -315,7 +317,7 @@ uv run rl @ rl.toml --wandb \
   --no-trainer.wandb.log-extras.distributions
 ```
 
-prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, W&B mode **auto-creates an `overview` saved view** on the first run into a project — curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first.
+prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. For train metrics, `all` is the finalized-group observation window used for operational and error diagnostics, while `effective` is the exact post-filter cohort shipped to the trainer. To keep that navigable, W&B mode **auto-creates an `overview` saved view** on the first run into a project — curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments or an older overview schema, a new versioned view (`overview-v2`, …) is created instead of overwriting the first.
 
 ### Platform Monitoring
 
