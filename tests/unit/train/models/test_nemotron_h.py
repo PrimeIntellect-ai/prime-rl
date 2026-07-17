@@ -47,14 +47,14 @@ _BASE = dict(
 def get_model_pairs():
     """Create an HF model and a PrimeRL model with shared weights."""
     hf_config = HFNemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
-    hf_config._attn_implementation = "sdpa"
+    hf_config._attn_implementation = "flash_attention_2"
 
     prime_config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
         use_grouped_mm=False,
     )
-    prime_config._attn_implementation = "sdpa"
+    prime_config._attn_implementation = "flash_attention_2"
 
     with torch.device("cuda"), default_dtype(torch.float32):
         hf_model = HFNemotronHForCausalLM._from_config(hf_config)
@@ -110,10 +110,10 @@ def test_nemotron_h_reverse():
         layers_block_type=["mamba", "moe", "attention", "moe"],
         use_grouped_mm=False,
     )
-    prime_config._attn_implementation = "sdpa"
+    prime_config._attn_implementation = "flash_attention_2"
 
     hf_config = HFNemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
-    hf_config._attn_implementation = "sdpa"
+    hf_config._attn_implementation = "flash_attention_2"
 
     with torch.device("cuda"), default_dtype(torch.float32):
         prime_model = NemotronHForCausalLM._from_config(prime_config)

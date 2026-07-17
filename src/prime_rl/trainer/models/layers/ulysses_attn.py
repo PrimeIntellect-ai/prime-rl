@@ -173,7 +173,7 @@ def substitute_ulysses_attn(
     cp_size = dist.get_world_size(group=process_group)
 
     # Resolve flash kernel + version from attn_impl.
-    if attn_impl == "fa4":
+    if attn_impl == "flash_attention_4":
         from flash_attn.cute import flash_attn_varlen_func as flash_fn
 
         flash_attn_version = 4
