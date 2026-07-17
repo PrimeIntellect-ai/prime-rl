@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
@@ -397,49 +397,38 @@ class FileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
 
-class NCCLWeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl"] = "nccl"
-
+class InMemoryWeightBroadcastConfig(BaseConfig):
     host: str = "localhost"
-    """Host for the NCCL broadcast rendezvous."""
+    """Weight transfer host."""
+
+    port: int
+    """Weight transfer port."""
+
+    timeout: int = 1200
+    """Weight transfer timeout in seconds."""
+
+    inference_world_size: int = Field(1, ge=1)
+    """Total inference workers across all servers."""
+
+
+class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nccl"] = "nccl"
 
     port: int = 29501
     """Port for the NCCL broadcast rendezvous."""
 
-    timeout: int = 1200
-    """Timeout in seconds for the NCCL broadcast."""
-
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates."""
 
-    inference_world_size: int = Field(1, ge=1)
-    """Total inference GPUs across all servers. Used by ``init_nccl_broadcast`` to compute per-server rank offsets."""
 
-
-class NIXLWeightBroadcastConfig(BaseConfig):
+class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     type: Literal["nixl"] = "nixl"
-
-    host: str = "localhost"
-    """ModelExpress server host."""
 
     port: int = 8001
     """ModelExpress gRPC port."""
 
-    timeout: int = 1200
-    """Timeout for initialization and each synchronized pull."""
-
-    inference_world_size: int = Field(1, ge=1)
-    """Total vLLM workers across all inference servers."""
-
-    session_id: str = Field(min_length=1)
-    """Run-unique ModelExpress rendezvous namespace."""
-
-    @field_validator("session_id")
-    @classmethod
-    def validate_session_id(cls, session_id: str) -> str:
-        if session_id == "default":
-            raise ValueError("NIXL weight transfer requires a run-unique, non-default session_id")
-        return session_id
+    session_id: str = "default"
+    """ModelExpress session ID."""
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[

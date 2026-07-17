@@ -135,28 +135,13 @@ class WeightWatcher:
             if self.mx_rendezvous is not None:
                 from modelexpress import p2p_pb2
 
-                signal_paused = lambda: self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
-            else:
-                signal_paused = None
-            try:
-                await self.inference.update_weights(
-                    weights_path,
-                    lora_name=self.lora_name,
-                    step=next_step,
-                    on_engines_paused=signal_paused,
-                    update_timeout_s=(
-                        self.config.weight_broadcast.timeout + 60
-                        if self.config.weight_broadcast.type == "nixl"
-                        else None
-                    ),
-                    retry_update=self.config.weight_broadcast.type != "nixl",
+                await asyncio.to_thread(self.mx_rendezvous.set_status, p2p_pb2.SOURCE_STATUS_READY)
+            await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
+            if self.mx_rendezvous is not None:
+                await asyncio.to_thread(
+                    self.mx_rendezvous.set_status,
+                    p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 )
-            finally:
-                if self.mx_rendezvous is not None:
-                    await asyncio.to_thread(
-                        self.mx_rendezvous.set_status,
-                        p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                    )
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
             get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
