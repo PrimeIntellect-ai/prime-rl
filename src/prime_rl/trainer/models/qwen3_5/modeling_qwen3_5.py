@@ -135,7 +135,7 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
     def _check_and_adjust_attn_implementation(
         self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
     ) -> str:
-        attn_impl = normalize_qwen3_5_attn_implementation(attn_implementation or "flash_attention_3")
+        attn_impl = normalize_qwen3_5_attn_implementation(attn_implementation or "flash_attention_2")
         if attn_impl not in QWEN35_ATTN_IMPL2CLASS:
             supported = list(QWEN35_ATTN_IMPL2CLASS.keys())
             raise ValueError(

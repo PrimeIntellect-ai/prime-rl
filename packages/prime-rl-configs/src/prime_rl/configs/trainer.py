@@ -153,7 +153,7 @@ class ModelConfig(BaseModelConfig):
     seq_len: int = 2048
     """Sequence length the model is trained on."""
 
-    attn: AttnImplementation = "flash_attention_3"
+    attn: AttnImplementation = "flash_attention_2"
     """Attention implementation. With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
 
     compile: CompileConfig | None = CompileConfig()

@@ -34,7 +34,7 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         attention dispatch for custom models.
         """
         if attn_implementation is None:
-            attn_implementation = "flash_attention_3"
+            attn_implementation = "flash_attention_2"
         return attn_implementation
 
     def get_correct_experts_implementation(self, requested_experts: str | None) -> str:
