@@ -106,6 +106,12 @@ class DebugModelConfig(BaseConfig):
     random_init: bool = False
     """Randomly initialize the model instead of loading weights."""
 
+    random_init_indexer: bool = False
+    """Bootstrap a DSA conversion: strip `indexer.*` keys before loading a dense predecessor
+    checkpoint (which has none) and randomly initialize them afterward, instead of erroring
+    on the missing keys. One-time — turn off again once the checkpoint has real indexer
+    weights (i.e. after the first checkpoint save of the warm-up stage)."""
+
     force_balanced_routing: bool = False
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
 
@@ -217,6 +223,27 @@ class ModelConfig(BaseModelConfig):
 
     freeze_moe_router: bool = False
     """Freeze MoE router parameters during training."""
+
+    freeze_sparse_indexer: bool = True
+    """Freeze DSA sparse-attention indexer parameters during training (default: True, the
+    common case of loading an already-converted DSA checkpoint). Set False during DSA
+    conversion's indexer warm-up stage, together with the model's `train_indexer=True`
+    and `indexer_kl_coeff`, to train the indexer instead."""
+
+    indexer_kl_coeff: float | None = None
+    """Weight of the DSA indexer-vs-attention KL loss (see `compute_indexer_kl_loss`),
+    added to the training loss. `None` (default) disables it. Only meaningful when the
+    model config sets `train_indexer=True`; a no-op otherwise."""
+
+    use_sparse_attn: bool | None = None
+    """Override a DSA-capable model's `use_sparse_attn` HF config field (dense-causal
+    fallback vs. the real DSA top-k path — see the "DSA Conversion" doc section). `None`
+    (default) leaves whatever the checkpoint's own `config.json` says untouched."""
+
+    freeze_all_except_indexer: bool = False
+    """DSA conversion's indexer warm-up stage: freeze every parameter except the sparse
+    indexer's (overrides `freeze_sparse_indexer`/`freeze_moe_router`, which would otherwise
+    also freeze it). Off by default — this is a training-recipe stage, not a normal mode."""
 
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""

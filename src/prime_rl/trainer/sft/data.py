@@ -13,7 +13,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
+from prime_rl.configs.sft import DataConfig, HfInterleavedDataConfig, LossMaskConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -106,6 +106,93 @@ class FakeDataset(StatefulIterableDataset):
             self.num_samples["fake"] += 1
             self.num_tokens["fake"] += len(input_ids)
             yield fake_sample
+
+
+class RawTextDataset(StatefulIterableDataset):
+    """Continued-pretraining dataset: tokenizes a raw-text HF dataset column into
+    next-token-prediction samples with `loss_mask` all `True` (every token trains,
+    unlike `SFTDataset`'s role-based masking). Used for DSA conversion's indexer
+    warm-up and sparse-adaptation stages, which train on raw text rather than
+    chat-formatted rollouts."""
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        tokenizer: PreTrainedTokenizer,
+        text_column: str = "text",
+        shuffle: bool = True,
+        seed: int = 0,
+        non_dp_size: int = 1,
+        max_examples: int | None = None,
+        max_epochs: int | None = None,
+    ):
+        super().__init__()
+        self.logger = get_logger()
+        self.dataset = dataset
+        self.num_examples = len(self.dataset)
+        self.tokenizer = tokenizer
+        self.text_column = text_column
+        self.shuffle = shuffle
+        self.seed = seed
+        self.max_examples = max_examples
+        self.max_epochs = max_epochs
+
+        if self.max_examples is not None:
+            self.num_examples = min(self.num_examples, self.max_examples)
+            self.dataset = self.dataset.take(self.max_examples)
+
+        worker_info = get_worker_info()
+        worker_id, num_workers = 0, 1
+        if worker_info is not None:
+            worker_id = worker_info.id
+            num_workers = worker_info.num_workers
+        assert get_world().world_size % non_dp_size == 0, "world_size must be divisible by non_dp_size"
+        self.data_rank = get_world().rank // non_dp_size * num_workers + worker_id
+        self.data_world_size = get_world().world_size // non_dp_size * num_workers
+
+    def _process(self, example: dict) -> dict | None:
+        text = example.get(self.text_column)
+        if not text:
+            return None
+        ids = self.tokenizer(text, add_special_tokens=False)["input_ids"]
+        if len(ids) < 2:
+            return None
+        return {
+            "input_ids": ids[:-1],
+            "target_ids": ids[1:],
+            "position_ids": list(range(len(ids) - 1)),
+            "loss_mask": [True] * (len(ids) - 1),
+        }
+
+    def __iter__(self):
+        dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
+        while True:
+            self.step += 1
+
+            # Determine epoch from current step
+            epoch = (self.step - 1) // self.num_examples
+
+            # Break if max epochs is reached
+            if self.max_epochs is not None and epoch >= self.max_epochs:
+                break
+
+            # Update stored epoch if new epoch is reached, optionally shuffle
+            if epoch > self.epoch:
+                self.epoch = epoch
+                dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
+
+            # Skip samples that don't belong to this data rank
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
+
+            example = dataset[(self.step - 1) % self.num_examples]
+            processed_example = self._process(cast(dict, example))
+            if processed_example is None:
+                continue
+
+            self.num_samples["raw_text"] += 1
+            self.num_tokens["raw_text"] += len(processed_example["input_ids"])
+            yield processed_example
 
 
 def _drop_null_fields(value: Any, path: tuple[str, ...] = ()) -> Any:
@@ -518,8 +605,13 @@ def setup_and_interleave_datasets(
     return dataset
 
 
-def load_sft_dataset(config: SFTDataConfig) -> Dataset:
-    """Load and interleave the raw HF dataset. This is the expensive I/O step."""
+def load_hf_interleaved_dataset(config: HfInterleavedDataConfig) -> Dataset:
+    """Load and interleave the raw HF dataset. This is the expensive I/O step.
+
+    Shared by SFT and raw-text (continued-pretraining) data — both only need
+    ``name``/``subsets``/``splits``/``probabilities``/``stopping_strategy``, and differ
+    solely in how a resulting row gets turned into a training sample (see `SFTDataset`
+    vs `RawTextDataset`)."""
     logger = get_logger()
     if config.subsets is None and config.splits is None:
         return setup_and_interleave_datasets(
@@ -575,7 +667,7 @@ def setup_dataset(
         if renderer is None:
             raise ValueError("SFT data requires a renderer.")
         if raw_dataset is None:
-            raw_dataset = load_sft_dataset(config)
+            raw_dataset = load_hf_interleaved_dataset(config)
         return SFTDataset(
             raw_dataset,
             renderer,
@@ -583,6 +675,18 @@ def setup_dataset(
             seed=config.seed,
             seq_len=config.seq_len,
             loss_mask_config=config.loss_mask,
+            non_dp_size=non_dp_size,
+            max_epochs=max_epochs,
+        )
+    elif config.type == "raw_text":
+        if raw_dataset is None:
+            raw_dataset = load_hf_interleaved_dataset(config)
+        return RawTextDataset(
+            raw_dataset,
+            tokenizer,
+            text_column=config.text_column,
+            shuffle=config.shuffle,
+            seed=config.seed,
             non_dp_size=non_dp_size,
             max_epochs=max_epochs,
         )

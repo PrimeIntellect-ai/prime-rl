@@ -95,6 +95,14 @@ class GlmMoeDsaConfig(PretrainedConfig):
         index_topk_pattern (`str`, *optional*):
             Optional per-layer pattern where ``"F"`` computes fresh indices and
             ``"S"`` reuses the cached indices from the previous full layer.
+        use_sparse_attn (`bool`, defaults to `True`):
+            Whether to attend only over the indexer's top-k selection (DSA). Set to
+            `False` to run ordinary dense causal attention over the full sequence instead
+            — used to convert an existing dense-MLA checkpoint to DSA via continued
+            pretraining (see `docs/development.md`).
+        train_indexer (`bool`, defaults to `False`):
+            Compute a differentiable indexer-vs-attention KL loss term each forward pass
+            (see `compute_indexer_kl_loss`), for training the indexer during DSA conversion.
         scoring_func (`str`, defaults to `"sigmoid"`):
             Scoring function for MoE router. Must match the vLLM inference
             server's expectation (vLLM defaults to ``"softmax"`` when this
@@ -167,6 +175,8 @@ class GlmMoeDsaConfig(PretrainedConfig):
         index_topk_freq=1,
         index_topk_pattern=None,
         indexer_types=None,
+        use_sparse_attn=True,
+        train_indexer=False,
         scoring_func="sigmoid",
         topk_method="noaux_tc",
         use_grouped_mm=True,
@@ -224,6 +234,8 @@ class GlmMoeDsaConfig(PretrainedConfig):
         self.index_topk_freq = index_topk_freq
         self.index_topk_pattern = index_topk_pattern
         self.indexer_types = indexer_types
+        self.use_sparse_attn = use_sparse_attn
+        self.train_indexer = train_indexer
         self.scoring_func = scoring_func
         self.topk_method = topk_method
         self.use_grouped_mm = use_grouped_mm

@@ -44,12 +44,12 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
-from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.checkpointing import (
     get_supported_targets,
     set_selective_activation_checkpointing,
     supports_selective_activation_checkpointing,
 )
+from prime_rl.trainer.models.layers.dsa import Indexer, strip_indexer_from_state_dict
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRouter
@@ -386,12 +386,17 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
 def freeze_sparse_indexer(model: nn.Module) -> None:
     """Freeze DSA sparse-attention indexer parameters.
 
-    The indexer's `compute_sparse_indices` forward runs under `torch.no_grad()`, so its
-    params never receive a gradient and cannot be trained. Left with requires_grad=True
-    they stay stateless in the optimizer, which breaks strict checkpoint resume: DCP
-    materializes optimizer state for every requires_grad param at load time, but the
-    stateless params were never saved -> "Missing key in checkpoint state_dict". Freezing
-    them keeps the saved and loaded optimizer state symmetric.
+    Default (config.freeze_sparse_indexer=True): the indexer is a fixed, pretrained
+    component (the common case — loading an already-converted DSA checkpoint like GLM-5).
+    Left with requires_grad=True with nothing feeding it a gradient, it would stay
+    stateless in the optimizer, which breaks strict checkpoint resume: DCP materializes
+    optimizer state for every requires_grad param at load time, but a stateless param was
+    never saved -> "Missing key in checkpoint state_dict". Freezing keeps the saved and
+    loaded optimizer state symmetric.
+
+    Set config.freeze_sparse_indexer=False (and model.train_indexer=True) during DSA
+    conversion's indexer warm-up stage, where `SparseMlaAttention`'s differentiable
+    `Indexer.score()` path and `compute_indexer_kl_loss` do supply a gradient.
     """
     logger = get_logger()
     num_frozen = 0
@@ -404,6 +409,27 @@ def freeze_sparse_indexer(model: nn.Module) -> None:
 
     if num_frozen > 0:
         logger.info(f"Froze {num_frozen} sparse indexer parameters")
+
+
+def freeze_all_except_indexer(model: nn.Module) -> None:
+    """DSA conversion's indexer warm-up stage: freeze every parameter except the indexer's,
+    mirroring `freeze_all_except_lora_and_specified`'s shape (`trainer/lora.py`). The paper
+    recipe (arXiv:2512.02556, arXiv:2602.15763) trains only the indexer against a frozen
+    base model before turning sparsity on — this is the mechanism for that, an explicit
+    override of `freeze_sparse_indexer`/`freeze_moe_router` (which would otherwise freeze
+    the one thing this stage needs trainable)."""
+    logger = get_logger()
+    num_trainable = 0
+    for name, param in model.named_parameters():
+        if "indexer." in name:
+            param.requires_grad = True
+            num_trainable += 1
+        else:
+            param.requires_grad = False
+
+    if num_trainable == 0:
+        raise ValueError("No indexer parameters found to leave trainable. Is this a DSA-capable model?")
+    logger.info(f"Froze all parameters except {num_trainable} sparse indexer parameters")
 
 
 def apply_force_balanced_routing(model: nn.Module) -> None:
@@ -555,6 +581,12 @@ def get_model(
                 f"Auto-enabled IndexShare from indexer_types schedule "
                 f"({sum(t == 'full' for t in indexer_types)}/{len(indexer_types)} full layers)"
             )
+
+    if config.indexer_kl_coeff is not None:
+        model_config.train_indexer = True
+
+    if config.use_sparse_attn is not None:
+        model_config.use_sparse_attn = config.use_sparse_attn
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
@@ -884,6 +916,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     load_dcp_start_time = time.perf_counter()
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
+    if config.debug.random_init_indexer:
+        state_dict = strip_indexer_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
         del state_dict["lm_head.weight"]
     dcp_load(
@@ -897,11 +931,15 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
 
     _move_buffers_to_cuda(model, config)
 
+    indexer_modules = [m for m in model.modules() if isinstance(m, Indexer)] if config.debug.random_init_indexer else []
+    if config.debug.random_init_indexer and not indexer_modules:
+        raise ValueError("debug.random_init_indexer=True but no Indexer modules found. Is this a DSA-capable model?")
     lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
-    if lora_modules:
+
+    if lora_modules or indexer_modules:
         generator: torch.Generator | None = None
         if parallel_dims.dp_replicate_enabled:
-            # Synchronize LoRA initialization across dp_replicate ranks by broadcasting a seed
+            # Synchronize random init across dp_replicate ranks by broadcasting a seed
             dp_replicate_mesh = parallel_dims.world_mesh["dp_replicate"]
             seed_tensor = torch.empty(1, dtype=torch.long, device="cuda")
             if dp_replicate_mesh.get_local_rank() == 0:
@@ -910,6 +948,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
             generator = torch.Generator(device="cuda").manual_seed(seed_tensor.item())
         for module in lora_modules:
             module._init_lora_parameters(generator)
+        for module in indexer_modules:
+            module._init_indexer_parameters(generator)
     logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
 
 
@@ -1178,10 +1218,15 @@ def setup_model(
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
 
-    # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
-    # never trainable. Freeze it so optimizer state stays symmetric across checkpoint
-    # save/resume. No-op for models without a sparse indexer.
-    freeze_sparse_indexer(model)
+    # No-op for models without a sparse indexer. See freeze_sparse_indexer's docstring for
+    # when to disable this (DSA conversion's indexer warm-up stage).
+    if config.freeze_sparse_indexer:
+        freeze_sparse_indexer(model)
+
+    # Overrides freeze_moe_router/freeze_sparse_indexer above: DSA conversion's indexer
+    # warm-up stage needs everything BUT the indexer frozen.
+    if config.freeze_all_except_indexer:
+        freeze_all_except_indexer(model)
 
     if config.debug.force_balanced_routing:
         apply_force_balanced_routing(model)

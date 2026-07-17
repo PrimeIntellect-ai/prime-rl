@@ -73,10 +73,12 @@ class LossMaskConfig(BaseConfig):
     """Tool messages contribute to the loss."""
 
 
-class SFTDataConfig(BaseDataConfig):
-    type: Literal["sft"] = "sft"
+class HfInterleavedDataConfig(BaseDataConfig):
+    """Shared shape for datasets loaded (and optionally interleaved) straight from the HF
+    Hub — subsets/splits/probabilities/stopping strategy, plus epoch shuffling. Subclasses
+    add whatever's specific to how each row gets turned into a training sample."""
 
-    name: str = "PrimeIntellect/Reverse-Text-SFT"
+    name: str
     """HF dataset name or path."""
 
     subsets: list[str] | None = None
@@ -96,10 +98,6 @@ class SFTDataConfig(BaseDataConfig):
 
     seed: int = 0
     """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
-
-    # Configuring
-    loss_mask: LossMaskConfig = LossMaskConfig()
-    """Which message types contribute to the loss."""
 
     @model_validator(mode="after")
     def validate_subsets_and_splits(self):
@@ -122,6 +120,23 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
+class SFTDataConfig(HfInterleavedDataConfig):
+    type: Literal["sft"] = "sft"
+
+    name: str = "PrimeIntellect/Reverse-Text-SFT"
+    """HF dataset name or path."""
+
+    loss_mask: LossMaskConfig = LossMaskConfig()
+    """Which message types contribute to the loss."""
+
+
+class RawTextDataConfig(HfInterleavedDataConfig):
+    type: Literal["raw_text"] = "raw_text"
+
+    text_column: str = "text"
+    """Column holding the raw text to tokenize."""
+
+
 class SFTValConfig(BaseConfig):
     interval: int = Field(50, ge=1)
     """Run validation every N training steps."""
@@ -132,7 +147,7 @@ class SFTValConfig(BaseConfig):
     data: SFTDataConfig
 
 
-DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
+DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig | RawTextDataConfig, Field(discriminator="type")]
 
 
 class BaseDeploymentConfig(BaseConfig):
