@@ -75,6 +75,7 @@ def supports_custom_impl(model_config: PretrainedConfig) -> bool:
 # Used by get_model() to dispatch VLMs that have a custom text model implementation.
 # Points to the same unified class — the config drives text-only vs VLM behavior.
 _CUSTOM_VLM_MAPPING: dict[str, type] = {
+    "qwen3_5": Qwen3_5ForCausalLM,
     "qwen3_5_moe": Qwen3_5MoeForCausalLM,
 }
 
