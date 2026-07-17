@@ -836,7 +836,16 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
         model_keys = dict.fromkeys(model.state_dict().keys())
 
-        if model.is_hf_state_dict(snapshot_keys) and model.is_prime_state_dict(model_keys):
+        snapshot_is_hf = model.is_hf_state_dict(snapshot_keys)
+        snapshot_is_prime = model.is_prime_state_dict(snapshot_keys)
+
+        # Only convert when the snapshot format genuinely differs from the model
+        # format. Dense models (e.g. non-MoE Qwen3) have identical key names in
+        # both formats, so is_hf_state_dict and is_prime_state_dict both return
+        # True for the same state dict. Without the `not` guards the conversion
+        # branch would fire anyway, doing a no-op convert and trying to write
+        # the (unchanged) weights into the (potentially read-only) snapshot dir.
+        if snapshot_is_hf and model.is_prime_state_dict(model_keys) and not snapshot_is_prime:
             logger.warning(
                 "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
             )
@@ -850,7 +859,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
                 save_state_dict(snapshot_state_dict, snapshot_path)
                 del snapshot_state_dict
 
-        elif model.is_prime_state_dict(snapshot_keys) and model.is_hf_state_dict(model_keys):
+        elif snapshot_is_prime and model.is_hf_state_dict(model_keys) and not snapshot_is_hf:
             logger.warning(
                 "Found PrimeRL weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
             )
