@@ -78,7 +78,7 @@ DSA-capable families (`glm_moe_dsa`, `kimi_k2_dsa`) share one attention module (
 
 **2. Sparse adaptation.** `use_sparse_attn = true`, `indexer_kl_coeff = <coeff>` (still on); `freeze_all_except_indexer = false` (the default) so everything trains jointly with the ordinary LM loss; the indexer's KL target now comes from the actual sparse-selected keys instead of the full distribution.
 
-Both stages are continued-pretraining over raw text, not chat data — use `[data] type = "raw_text"` (`RawTextDataConfig`) instead of `type = "sft"`. Run each stage as a separate `uv run sft` invocation, chained via checkpoint resume (`ckpt.resume_step`/`ckpt.resume_path`).
+Either data format works, since neither the indexer-KL loss nor the dense-mode forward pass consults `loss_mask` — ordinary SFT masking doesn't interfere with training the indexer over every token. DeepSeek-V3.2 and GLM-5's own from-scratch conversions used continued-pretraining-style raw text (`[data] type = "raw_text"`, `RawTextDataConfig`); IndexCache's from-scratch conversion (arXiv:2603.12201, applied to GLM-4.7-Flash) used plain SFT data instead (`type = "sft"`) — 1,000 warm-up steps + 4,000 sparse-training steps at a 200K context length, no raw-text corpus needed. SFT data is the more practical default unless you're specifically trying to reproduce DeepSeek's/GLM-5's own recipe. Run each stage as a separate `uv run sft` invocation, chained via checkpoint resume (`ckpt.resume_step`/`ckpt.resume_path`).
 
 Once converted, recover any quality lost to sparsification with the existing `opd` algorithm: point `algorithm.teacher` at the *original* dense checkpoint (served independently — never wired into the DSA student's weight-broadcast group, since it lacks the `indexer.*` parameters) and train the converted checkpoint as the student.
 
@@ -100,7 +100,11 @@ type = "fake"   # any single step works; this run exists only to materialize+sav
 ```
 
 ```toml
-# stage_a.toml — indexer warm-up
+# stage_a.toml — indexer warm-up (SFT data, per IndexCache's real recipe — swap
+# [data] for type = "raw_text" + RawTextDataConfig fields to follow DeepSeek/GLM-5's
+# continued-pretraining recipe instead)
+max_steps = 1000   # IndexCache's own figure for this stage
+
 [model]
 name = "<bootstrap.toml's output checkpoint>"
 impl = "custom"
@@ -109,12 +113,15 @@ freeze_all_except_indexer = true
 indexer_kl_coeff = 1.0
 
 [data]
-type = "raw_text"
-name = "<a long-context text corpus>"
+type = "sft"
+name = "<a long-context SFT dataset>"
+seq_len = 200000   # IndexCache's own figure for this recipe; adjust to your budget
 ```
 
 ```toml
 # stage_b.toml — sparse adaptation, resumes from stage_a's output
+max_steps = 4000   # IndexCache's own figure for this stage
+
 [model]
 name = "<stage_a.toml's output checkpoint>"
 impl = "custom"
@@ -122,8 +129,9 @@ use_sparse_attn = true
 indexer_kl_coeff = 1.0
 
 [data]
-type = "raw_text"
-name = "<same corpus, or your real pretraining mix>"
+type = "sft"
+name = "<same dataset, or your real SFT mix>"
+seq_len = 200000
 ```
 
 Recovery afterward is `algorithm.teacher` pointed at an independently-served `moonshotai/Kimi-K2-Instruct` (the original dense checkpoint) under the `opd` algorithm, training the converted checkpoint as the student.
