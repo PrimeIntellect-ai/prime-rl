@@ -1,9 +1,9 @@
 """Role-scoped synchronization over ModelExpress.
 
-The protocol intentionally alternates ``INITIALIZING`` and ``READY``. The
-trainer only publishes ``READY`` after every inference worker has entered the
-current update (``INITIALIZING``), which prevents a stale READY from a prior
-generation from being mistaken for an acknowledgement.
+The trainer publishes ``READY`` after refreshing its transfer buffers.
+Inference workers enter ``INITIALIZING``, pull that published generation,
+and publish ``READY`` after the new weights are live. The trainer returns to
+``INITIALIZING`` after the receivers acknowledge the update.
 """
 
 from __future__ import annotations

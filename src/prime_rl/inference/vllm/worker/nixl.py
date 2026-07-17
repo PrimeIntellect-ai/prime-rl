@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 import torch.nn as nn
 from modelexpress import p2p_pb2
+from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
@@ -98,8 +99,6 @@ class NIXLWeightUpdateWorker(Worker):
         session_id: str = "default",
     ) -> None:
         del inference_world_size, quantize_in_weight_transfer
-        from modelexpress.client import MxClient
-
         global_rank = rank_offset + int(self.local_rank)
         server_url = f"{host}:{port}"
         set_ucx_env_defaults()

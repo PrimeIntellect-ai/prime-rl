@@ -11,6 +11,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 from modelexpress import p2p_pb2
+from modelexpress.client import MxClient
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
@@ -195,8 +196,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     )
             table = TrainerTable(agents=agents, tensors=list(tensors.values()))
             self._validate_table(table)
-            from modelexpress.client import MxClient
-
             self.rendezvous = MxRendezvous(
                 client=MxClient(server_url=f"{self.config.host}:{self.config.port}"),
                 role="trainer",
@@ -206,6 +205,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 worker_id="trainer-table",
             )
             self.rendezvous.publish(nixl_metadata=encode_table(table))
+            self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
             total_bytes = sum(shard.num_rows * shard.row_bytes for tensor in table.tensors for shard in tensor.shards)
             self.logger.info(
                 f"Published {len(table.tensors)} FP32-master/BF16-wire tensors from "
@@ -249,16 +249,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self._lazy_init(model)
         start = time.perf_counter()
 
-        if self.world.is_master:
-            self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-            self.rendezvous.wait_for(
-                "orchestrator",
-                count=1,
-                status=p2p_pb2.SOURCE_STATUS_READY,
-                timeout=self.config.timeout,
-            )
-        dist.barrier()
-
         if self.is_serving_rank:
             for shard in self._shards:
                 shard.refresh()
@@ -266,15 +256,19 @@ class NIXLWeightBroadcast(WeightBroadcast):
         dist.barrier()
 
         if self.world.is_master:
-            # The transition through INITIALIZING makes the following READY
-            # acknowledgements generation-safe despite MX exposing only status.
+            self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
+            self.rendezvous.wait_for(
+                "orchestrator",
+                count=1,
+                status=p2p_pb2.SOURCE_STATUS_READY,
+                timeout=self.config.timeout,
+            )
             self.rendezvous.wait_for(
                 "inference",
                 count=self.config.inference_world_size,
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 timeout=self.config.timeout,
             )
-            self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
             self.rendezvous.wait_for(
                 "inference",
                 count=self.config.inference_world_size,
@@ -287,6 +281,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 timeout=self.config.timeout,
             )
+            self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         dist.barrier()
         for run_index in ready:
             self.multi_run_manager.ready_to_update[run_index] = False
