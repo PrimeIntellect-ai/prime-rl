@@ -343,12 +343,16 @@ class DynamoInferencePool(StaticInferencePool):
                 raise RuntimeError(
                     "Dynamo LoRA update requires every worker to advertise system_url and update/load_lora"
                 )
-            await load_dynamo_lora_adapter(self._lora_update_clients, lora_name, weight_dir)
-            await wait_for_model(
-                self._frontend_model_clients,
-                lora_name,
-                timeout=self._wait_for_ready_timeout,
-            )
+            try:
+                await _pause_engines(self._admin_clients, step=step)
+                await load_dynamo_lora_adapter(self._lora_update_clients, lora_name, weight_dir)
+                await wait_for_model(
+                    self._frontend_model_clients,
+                    lora_name,
+                    timeout=self._wait_for_ready_timeout,
+                )
+            finally:
+                await _resume_engines(self._admin_clients)
             return
         await super().update_weights(weight_dir, lora_name=lora_name, step=step)
 
