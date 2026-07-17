@@ -29,6 +29,7 @@ from prime_rl.trainer.model import (
     get_load_balance_stats,
     is_tt_moe_model,
     setup_tokenizer,
+    resolve_auto_attn,
     setup_model,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -49,6 +50,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.sequence import get_cp_local_seq_lens
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
 
@@ -104,6 +106,9 @@ def train(config: SFTConfig):
         f"world_size * micro_batch_size ({micro_batches_per_step})"
     )
     grad_accum_steps = total_micro_batches // micro_batches_per_step
+
+    # Resolve attn='auto' before CP setup so ring/ulysses patches use the correct kernel
+    resolve_auto_attn(config.model)
 
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
@@ -228,11 +233,20 @@ def train(config: SFTConfig):
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
+        seq_lens = micro_batch["seq_lens"].to("cuda")
 
         if cp_enabled:
+            total_tokens = input_ids.shape[1]
             input_ids, position_ids = setup_cp_params(
-                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                input_ids,
+                position_ids,
+                cp_rank,
+                cp_size,
+                cp_group,
+                seq_lens=seq_lens,
+                cp_style=config.model.cp_style,
             )
+            seq_lens = get_cp_local_seq_lens(seq_lens, total_tokens, cp_rank, cp_size)
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
@@ -247,10 +261,17 @@ def train(config: SFTConfig):
                 # logprobs without materializing the [N, V] logits, and per-token
                 # cross-entropy is the negative target logprob.
                 temperature = torch.ones_like(target_ids, dtype=torch.float32)
-                out = forward(model, input_ids, position_ids, labels=target_ids, temperature=temperature)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    seq_lens=seq_lens,
+                    labels=target_ids,
+                    temperature=temperature,
+                )
                 loss_sum = -out["logprobs"][loss_mask].sum()
             else:
-                out = forward(model, input_ids, position_ids)
+                out = forward(model, input_ids, position_ids, seq_lens=seq_lens)
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = CrossEntropyLoss(reduction="none")(logits.view(-1, V), target_ids.view(-1)).view(B, L)
