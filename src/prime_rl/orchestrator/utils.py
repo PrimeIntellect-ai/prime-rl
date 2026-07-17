@@ -33,6 +33,9 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
 
     client_config = config.model.client
     model_name = config.model.name
+    expected_inference_world_size = getattr(config.weight_broadcast, "inference_world_size", None)
+    if getattr(client_config, "dynamo_base_url", None) is not None and expected_inference_world_size is None:
+        raise ValueError("Dynamo inference requires weight_broadcast.inference_world_size")
     renderer = create_renderer(tokenizer, config.renderer)
     get_logger().info(f"Initialized {type(renderer).__name__} for {model_name}")
     if config.any_policy_sourced:
@@ -46,7 +49,7 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
         eval_client_type="openai_chat_completions",
         renderer_config=config.renderer,
         pool_size=config.pool_size,
-        expected_inference_world_size=getattr(config.weight_broadcast, "inference_world_size", None),
+        expected_inference_world_size=expected_inference_world_size,
     )
     return renderer, inference_pool
 
