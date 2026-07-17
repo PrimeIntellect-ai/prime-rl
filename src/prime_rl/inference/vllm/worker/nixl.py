@@ -144,10 +144,12 @@ class NIXLWeightUpdateWorker(Worker):
             return self.weight_transfer_plan
 
         started = time.perf_counter()
+        allocated_bytes = torch.cuda.memory_allocated(self.device)
+        peak_allocated_bytes = torch.cuda.max_memory_allocated(self.device)
         trainer_ref = self.mx_rendezvous.wait_for_peers(timeout=self.weight_transfer_timeout)[0]
         table = decode_table(self.mx_rendezvous.fetch(trainer_ref).nixl_metadata)
         layers, persistent = self._bake(table)
-        plan = self._build_pull_plan(table, layers, persistent)
+        plan = self._build_pull_plan(table, layers, persistent, allocated_bytes, peak_allocated_bytes)
         self.buffer_rendezvous = []
         for buffer_index in range(table.buffer_count):
             rendezvous = MxRendezvous(
@@ -264,6 +266,8 @@ class NIXLWeightUpdateWorker(Worker):
         table: TrainerTable,
         layers: list[LayerWeightCopies],
         persistent: list[RecordedCopy],
+        allocated_bytes: int,
+        peak_allocated_bytes: int,
     ) -> WeightTransferPlan:
         tensors = {tensor.name: tensor for tensor in table.tensors}
         copies = [copy for layer in layers for copy in layer.copies] + persistent
@@ -305,13 +309,17 @@ class NIXLWeightUpdateWorker(Worker):
         )
         largest_group_elements = max(1, largest_group_elements)
         largest_group_bytes = largest_group_elements * torch.bfloat16.itemsize
+        peak_growth_bytes = max(0, peak_allocated_bytes - allocated_bytes)
+        has_observed_peak_growth = peak_growth_bytes > 0
         free_before_reclaim, _ = torch.cuda.mem_get_info(self.device)
-        torch.cuda.empty_cache()
+        max_receive_buffers = min(2, table.buffer_count) if has_observed_peak_growth else 1
+        if has_observed_peak_growth or free_before_reclaim < largest_group_bytes:
+            torch.cuda.empty_cache()
         receive_buffer_count, free_bytes, device_total_bytes, headroom_bytes = cuda_buffer_capacity(
             largest_group_bytes,
-            min(2, table.buffer_count),
+            max_receive_buffers,
             self.device,
-            extra_headroom_bytes=largest_group_bytes,
+            extra_headroom_bytes=largest_group_bytes + peak_growth_bytes,
         )
         receive_arena_elements = receive_buffer_count * largest_group_elements
         with classic_cuda_alloc():
@@ -420,12 +428,21 @@ class NIXLWeightUpdateWorker(Worker):
 
         logger.info(
             "NIXL receive ring selected %d buffers from one-time first-transfer sizing: "
-            "%.2f GiB CUDA free before and %.2f GiB after cache reclaim "
+            "rank=%d, peak_mode=%s, trainer_buffers=%d, local_cap=%d, "
+            "%.2f GiB CUDA free before and %.2f GiB after cache reclaim; "
+            "active=%.2f GiB, peak=%.2f GiB, peak_growth=%.2f GiB "
             "(%.2f GiB total, %.2f GiB target headroom): %.2f GiB per buffer, "
             "%.2f GiB arena, %.2f GiB post-allocation free for %d groups",
             receive_buffer_count,
+            self.mx_rendezvous.rank,
+            "measured" if has_observed_peak_growth else "unmeasured",
+            table.buffer_count,
+            max_receive_buffers,
             free_before_reclaim / 1024**3,
             free_bytes / 1024**3,
+            allocated_bytes / 1024**3,
+            peak_allocated_bytes / 1024**3,
+            peak_growth_bytes / 1024**3,
             device_total_bytes / 1024**3,
             headroom_bytes / 1024**3,
             largest_group_bytes / 1024**3,
