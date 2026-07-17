@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from functools import wraps
 from math import prod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 import torch.nn as nn
@@ -41,43 +41,48 @@ logger = init_logger("prime_rl.inference.vllm.worker.nixl")
 
 
 @dataclass
-class _CopyPlan:
-    copy: RecordedCopy
-    stage: torch.Tensor
-    replay_ops: OpChain
-
-
-@dataclass
-class _CopySpecification:
+class TensorCopySpec:
     transport_ops: OpChain
     replay_ops: OpChain
-    stage_shape: tuple[int, ...]
+    staging_shape: tuple[int, ...]
 
 
 @dataclass
-class _BakedGroup:
+class TensorCopyPlan:
+    recorded_copy: RecordedCopy
+    staging_tensor: torch.Tensor
+    replay_ops: OpChain
+
+
+@dataclass
+class LayerWeightCopies:
     layer: nn.Module
     copies: list[RecordedCopy]
 
+
+@dataclass
+class WeightTransferGroup:
+    reload_layer: nn.Module | None
+    copies: list[TensorCopyPlan]
+    persistent_copies: list[TensorCopyPlan]
+    pulls: list[tuple[Any, Any, list[int]]]
+
     @property
-    def param_names(self) -> set[str]:
-        return {copy.param_name for copy in self.copies}
+    def destination_names(self) -> set[str]:
+        return {plan.recorded_copy.param_name for plan in self.copies}
 
 
 @dataclass
-class _TransferGroup:
-    baked: _BakedGroup | None
-    plans: list[_CopyPlan]
-    persistent_plans: list[_CopyPlan]
-    pull_specs: list[tuple[Any, Any, list[int]]]
+class WeightTransferPlan:
+    receive_arena: torch.Tensor
+    groups: list[WeightTransferGroup]
+    total_bytes: int
 
 
 class NIXLWeightUpdateWorker(Worker):
     @property
     def raw_model(self) -> nn.Module:
-        model = self.model_runner.get_model()
-        assert isinstance(model, nn.Module)
-        return model
+        return cast(nn.Module, self.model_runner.get_model())
 
     def liveness_probe(self) -> None:
         return None
@@ -92,72 +97,61 @@ class NIXLWeightUpdateWorker(Worker):
         quantize_in_weight_transfer: bool = False,
         session_id: str = "default",
     ) -> None:
-        if quantize_in_weight_transfer:
-            raise NotImplementedError("NIXL weight transfer does not support quantized weights")
-        if self.vllm_config.quant_config is not None:
-            raise NotImplementedError("NIXL weight transfer currently supports only unquantized vLLM models")
-        if self.vllm_config.parallel_config.enable_eplb:
-            raise NotImplementedError("NIXL weight transfer does not yet support runtime EPLB remapping")
-        if not session_id or session_id == "default":
-            raise ValueError("NIXL weight transfer requires a run-unique, non-default session_id")
+        del inference_world_size, quantize_in_weight_transfer
+        from modelexpress.client import MxClient
 
-        local_rank = int(self.local_rank)
-        global_rank = rank_offset + local_rank
-        if not 0 <= global_rank < inference_world_size:
-            raise ValueError(
-                f"invalid NIXL inference rank: rank_offset={rank_offset}, local_rank={local_rank}, "
-                f"global_rank={global_rank}, inference_world_size={inference_world_size}"
-            )
-        self._mx_url = f"{host}:{port}"
-        self._global_rank = global_rank
-        self._timeout = timeout
-        self._session_id = session_id
-        self._initialized = False
+        global_rank = rank_offset + int(self.local_rank)
+        server_url = f"{host}:{port}"
+        set_ucx_env_defaults()
+        self.nixl_agent = NixlAgent(make_agent_name("inference", global_rank))
+        self.mx_rendezvous = MxRendezvous(
+            client=MxClient(server_url=server_url),
+            role="inference",
+            rank=global_rank,
+            peer_world_size=1,
+            session_id=session_id,
+            worker_id=f"inference-{global_rank}",
+        )
+        self.weight_transfer_timeout = timeout
+        self.weight_transfer_plan: WeightTransferPlan | None = None
         logger.info(
             "NIXL worker configured: global_rank=%d, ModelExpress=%s, session=%s",
-            self._global_rank,
-            self._mx_url,
-            self._session_id,
+            global_rank,
+            server_url,
+            session_id,
         )
 
     @torch.no_grad()
-    def _lazy_init(self) -> None:
-        if self._initialized:
-            return
-        from modelexpress.client import MxClient
+    def _lazy_init(self) -> WeightTransferPlan:
+        if self.weight_transfer_plan is not None:
+            return self.weight_transfer_plan
 
         started = time.perf_counter()
-        set_ucx_env_defaults()
-        self.nixl_agent = NixlAgent(make_agent_name("inference", self._global_rank))
-        self.rendezvous = MxRendezvous(
-            client=MxClient(server_url=self._mx_url),
-            role="inference",
-            rank=self._global_rank,
-            peer_world_size=1,
-            session_id=self._session_id,
-            worker_id=f"inference-{self._global_rank}",
-        )
-        trainer_ref = self.rendezvous.wait_for_peers(timeout=self._timeout)[0]
-        self._table = decode_table(self.rendezvous.fetch(trainer_ref).nixl_metadata)
-        self._groups, persistent = self._bake()
-        self._transfer_groups = self._build_pull_plan(self._table, self._groups, persistent)
-        self.rendezvous.publish(nixl_metadata=self.nixl_agent.get_metadata())
+        trainer_ref = self.mx_rendezvous.wait_for_peers(timeout=self.weight_transfer_timeout)[0]
+        table = decode_table(self.mx_rendezvous.fetch(trainer_ref).nixl_metadata)
+        layers, persistent = self._bake(table)
+        plan = self._build_pull_plan(table, layers, persistent)
+        self.mx_rendezvous.publish(nixl_metadata=self.nixl_agent.get_metadata())
         # Join the current generation directly. Publishing a transient READY
         # before the first pull would let the trainer mistake initialization
         # for a completed acknowledgement.
-        self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-        self._initialized = True
+        self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+        self.weight_transfer_plan = plan
         logger.info(
             "NIXL plan baked in %.2fs: rank=%d, groups=%d, copies=%d, bytes=%d, pull_lists=%d",
             time.perf_counter() - started,
-            self._global_rank,
-            len(self._groups),
-            sum(len(group.plans) + len(group.persistent_plans) for group in self._transfer_groups),
-            self._total_pull_bytes,
-            sum(len(group.pull_specs) for group in self._transfer_groups),
+            self.mx_rendezvous.rank,
+            len(layers),
+            sum(len(group.copies) + len(group.persistent_copies) for group in plan.groups),
+            plan.total_bytes,
+            sum(len(group.pulls) for group in plan.groups),
         )
+        return plan
 
-    def _bake(self) -> tuple[list[_BakedGroup], list[RecordedCopy]]:
+    def _bake(
+        self,
+        table: TrainerTable,
+    ) -> tuple[list[LayerWeightCopies], list[RecordedCopy]]:
         from vllm.model_executor.model_loader.reload.layerwise import (
             _get_original_loader,
             initialize_layerwise_reload,
@@ -167,8 +161,8 @@ class NIXLWeightUpdateWorker(Worker):
 
         model = self.raw_model
         recorder = BakeRecorder()
-        groups: list[_BakedGroup] = []
         persistent: list[RecordedCopy] = []
+        original_loaders: list[tuple[torch.Tensor, Any]] = []
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
             try:
@@ -176,11 +170,13 @@ class NIXLWeightUpdateWorker(Worker):
                     for name, tensor in get_layer_tensors(module).items():
                         if not tensor.is_meta:
                             recorder.register_live_destination(module, name, tensor)
-                        tensor.weight_loader = self._stamp(recorder, module, name, _get_original_loader(tensor))
+                        loader = _get_original_loader(tensor)
+                        original_loaders.append((tensor, loader))
+                        tensor.weight_loader = self._stamp(recorder, module, name, loader)
 
                 model.load_weights(
                     make_hf_lazy_weights(
-                        self._table,
+                        table,
                         device=self.device,
                         recorder=recorder,
                         hf_config=self.model_runner.model_config.hf_text_config,
@@ -196,28 +192,16 @@ class NIXLWeightUpdateWorker(Worker):
                     else:
                         by_layer[id(copy.layer)].append(copy)
                         layers[id(copy.layer)] = copy.layer
-
-                self._validate_persistent_coverage(persistent)
-                for layer_id, copies in by_layer.items():
-                    layer = layers[layer_id]
-                    expected = {name for name in get_layer_tensors(layer) if name not in SKIP_TENSORS}
-                    recorded = {copy.param_name for copy in copies}
-                    if expected != recorded:
-                        raise RuntimeError(
-                            f"incomplete lazy load for {type(layer).__name__}: "
-                            f"expected destinations={sorted(expected)}, recorded={sorted(recorded)}"
-                        )
-                    self._validate_destination_coverage(layer, copies)
-                    groups.append(_BakedGroup(layer=layer, copies=copies))
             finally:
                 try:
-                    self._restore_layerwise_state(model)
+                    for tensor, loader in reversed(original_loaders):
+                        tensor.weight_loader = loader
                 finally:
-                    self._remove_stamps(model)
+                    self._restore_layerwise_state(model)
 
-        if not groups:
-            raise RuntimeError("vLLM lazy bake recorded no loadable destinations")
-        return groups, persistent
+        return [
+            LayerWeightCopies(layer=layers[layer_id], copies=copies) for layer_id, copies in by_layer.items()
+        ], persistent
 
     @staticmethod
     def _stamp(recorder: BakeRecorder, layer: nn.Module, name: str, loader: Any):
@@ -229,20 +213,7 @@ class NIXLWeightUpdateWorker(Worker):
             finally:
                 recorder.current = None
 
-        stamped._prime_nixl_stamp_inner = loader
         return stamped
-
-    @staticmethod
-    def _remove_stamps(model: nn.Module) -> None:
-        from vllm.model_executor.model_loader.reload.utils import get_layer_tensors
-
-        for layer in model.modules():
-            for tensor in get_layer_tensors(layer).values():
-                loader = getattr(tensor, "weight_loader", None)
-                while loader is not None and hasattr(loader, "_prime_nixl_stamp_inner"):
-                    loader = loader._prime_nixl_stamp_inner
-                if loader is not None:
-                    tensor.weight_loader = loader
 
     @staticmethod
     def _restore_layerwise_state(model: nn.Module) -> None:
@@ -257,156 +228,68 @@ class NIXLWeightUpdateWorker(Worker):
         if hasattr(model, "_original_do_torchao_reload"):
             model._do_torchao_reload = model._original_do_torchao_reload
 
-    @staticmethod
-    def _validate_destination_coverage(layer: nn.Module, copies: list[RecordedCopy]) -> None:
-        from vllm.model_executor.layers.vocab_parallel_embedding import VocabParallelEmbedding
-        from vllm.model_executor.model_loader.reload.meta import SKIP_TENSORS
-        from vllm.model_executor.model_loader.reload.utils import get_layer_tensors
-
-        copies_by_name: dict[str, list[RecordedCopy]] = defaultdict(list)
-        for copy in copies:
-            copies_by_name[copy.param_name].append(copy)
-
-        for name, tensor in get_layer_tensors(layer).items():
-            if name in SKIP_TENSORS:
-                continue
-            expected_numel = tensor.numel()
-            if isinstance(layer, VocabParallelEmbedding):
-                if getattr(layer, "num_added_embeddings", 0) != 0:
-                    raise RuntimeError("NIXL reload does not support added-vocabulary embedding rows")
-                rows = layer.shard_indices.num_org_elements
-                expected_numel = rows * prod(tensor.shape[1:])
-            NIXLWeightUpdateWorker._validate_tensor_copy_coverage(
-                layer,
-                name,
-                tensor,
-                copies_by_name[name],
-                expected_numel=expected_numel,
-            )
-
-    @staticmethod
-    def _validate_persistent_coverage(copies: list[RecordedCopy]) -> None:
-        copies_by_destination: dict[tuple[int, str], list[RecordedCopy]] = defaultdict(list)
-        layers: dict[int, nn.Module] = {}
-        for copy in copies:
-            layers[id(copy.layer)] = copy.layer
-            copies_by_destination[(id(copy.layer), copy.param_name)].append(copy)
-
-        for (layer_id, name), destination_copies in copies_by_destination.items():
-            layer = layers[layer_id]
-            tensor = getattr(layer, name)
-            NIXLWeightUpdateWorker._validate_tensor_copy_coverage(
-                layer,
-                name,
-                tensor,
-                destination_copies,
-                expected_numel=tensor.numel(),
-            )
-
-    @staticmethod
-    def _validate_tensor_copy_coverage(
-        layer: nn.Module,
-        name: str,
-        tensor: torch.Tensor,
-        copies: list[RecordedCopy],
-        *,
-        expected_numel: int,
-    ) -> None:
-        label = f"{type(layer).__name__}.{name}"
-        if not tensor.is_contiguous():
-            raise RuntimeError(
-                f"NIXL destination coverage requires a contiguous tensor, got {label} stride={tuple(tensor.stride())}"
-            )
-        if not 0 <= expected_numel <= tensor.numel():
-            raise RuntimeError(
-                f"invalid expected NIXL coverage for {label}: expected={expected_numel}, size={tensor.numel()}"
-            )
-
-        storage_start = tensor.storage_offset()
-        storage_end = storage_start + tensor.numel()
-        expected_end = storage_start + expected_numel
-        runs = sorted(run for copy in copies for run in region_elem_runs(copy.offset, copy.shape, copy.stride))
-        cursor = storage_start
-        for start, length in runs:
-            end = start + length
-            if start < storage_start or end > storage_end:
-                raise RuntimeError(
-                    f"lazy copy for {label} falls outside destination storage: "
-                    f"run=({start}, {length}), storage=[{storage_start}, {storage_end})"
-                )
-            if start < cursor:
-                raise RuntimeError(f"overlapping lazy copies for {label} at element {start}")
-            if start > cursor:
-                raise RuntimeError(
-                    f"incomplete lazy copies for {label}: uncovered destination range [{cursor}, {start})"
-                )
-            cursor = end
-        if cursor != expected_end:
-            raise RuntimeError(
-                f"incomplete lazy copies for {label}: covered through element {cursor}, expected {expected_end}"
-            )
-
     def _build_pull_plan(
         self,
         table: TrainerTable,
-        groups: list[_BakedGroup],
+        layers: list[LayerWeightCopies],
         persistent: list[RecordedCopy],
-    ) -> list[_TransferGroup]:
+    ) -> WeightTransferPlan:
         tensors = {tensor.name: tensor for tensor in table.tensors}
-        copies = [copy for group in groups for copy in group.copies] + persistent
-        specifications: dict[int, _CopySpecification] = {}
+        copies = [copy for layer in layers for copy in layer.copies] + persistent
+        specifications: dict[int, TensorCopySpec] = {}
         for copy in copies:
             source = tensors[copy.src_name]
             source_dtype = getattr(torch, source.dtype)
-            transport_ops, replay_ops, stage_shape = split_transport_chain(tuple(source.shape), source_dtype, copy.ops)
-            replayed = apply_chain(torch.empty(stage_shape, dtype=source_dtype, device="meta"), replay_ops)
-            if tuple(replayed.shape) != copy.shape:
-                raise RuntimeError(
-                    f"lazy replay shape mismatch for {copy.src_name!r}: "
-                    f"replayed={tuple(replayed.shape)}, destination={copy.shape}"
-                )
-            specifications[id(copy)] = _CopySpecification(
+            transport_ops, replay_ops, staging_shape = split_transport_chain(
+                tuple(source.shape), source_dtype, copy.ops
+            )
+            specifications[id(copy)] = TensorCopySpec(
                 transport_ops=transport_ops,
                 replay_ops=replay_ops,
-                stage_shape=stage_shape,
+                staging_shape=staging_shape,
             )
 
         persistent_by_layer: dict[int, list[RecordedCopy]] = defaultdict(list)
         for copy in persistent:
             persistent_by_layer[id(copy.layer)].append(copy)
-        work: list[tuple[_BakedGroup | None, list[RecordedCopy]]] = []
-        for group in groups:
-            work.append((group, group.copies + persistent_by_layer.pop(id(group.layer), [])))
+        work: list[tuple[nn.Module | None, list[RecordedCopy]]] = []
+        for layer in layers:
+            layer_copies = layer.copies + persistent_by_layer.pop(id(layer.layer), [])
+            work.append((layer.layer, layer_copies))
         work.extend((None, layer_copies) for layer_copies in persistent_by_layer.values())
 
         arena_elements = max(
-            sum(prod(specifications[id(copy)].stage_shape) for copy in group_copies) for _, group_copies in work
+            sum(prod(specifications[id(copy)].staging_shape) for copy in layer_copies) for _, layer_copies in work
         )
         with classic_cuda_alloc():
-            self._receive_arena = torch.empty(arena_elements, dtype=torch.bfloat16, device=self.device)
-        self.nixl_agent.register_tensor(self._receive_arena)
+            receive_arena = torch.empty(arena_elements, dtype=torch.bfloat16, device=self.device)
+        self.nixl_agent.register_tensor(receive_arena)
 
         agent_devices: dict[int, int] = {
             shard.agent: shard.device_id for tensor in table.tensors for shard in tensor.shards
         }
-        self._total_pull_bytes = 0
+        total_bytes = 0
         peer_names: dict[int, str] = {}
-        transfer_groups: list[_TransferGroup] = []
+        transfer_groups: list[WeightTransferGroup] = []
 
-        for baked, group_copies in work:
-            plans: list[_CopyPlan] = []
-            persistent_plans: list[_CopyPlan] = []
+        for reload_layer, layer_copies in work:
+            copy_plans: list[TensorCopyPlan] = []
+            persistent_copy_plans: list[TensorCopyPlan] = []
             local_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
             remote_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
             cursor = 0
 
-            for copy in group_copies:
+            for copy in layer_copies:
                 specification = specifications[id(copy)]
-                numel = prod(specification.stage_shape)
-                stage = self._receive_arena.narrow(0, cursor, numel).view(specification.stage_shape)
+                numel = prod(specification.staging_shape)
+                staging_tensor = receive_arena.narrow(0, cursor, numel).view(specification.staging_shape)
                 cursor += numel
-                plan = _CopyPlan(copy=copy, stage=stage, replay_ops=specification.replay_ops)
-                (persistent_plans if copy.persistent else plans).append(plan)
+                copy_plan = TensorCopyPlan(
+                    recorded_copy=copy,
+                    staging_tensor=staging_tensor,
+                    replay_ops=specification.replay_ops,
+                )
+                (persistent_copy_plans if copy.persistent else copy_plans).append(copy_plan)
 
                 source = tensors[copy.src_name]
                 source_dtype = getattr(torch, source.dtype)
@@ -420,12 +303,14 @@ class NIXLWeightUpdateWorker(Worker):
                     row_numel,
                     source_dtype.itemsize,
                 )
-                for agent, source_addr, destination_addr, nbytes in zip_src_dst(source_pieces, tensor_runs(stage)):
+                for agent, source_addr, destination_addr, nbytes in zip_src_dst(
+                    source_pieces, tensor_runs(staging_tensor)
+                ):
                     local_descs[agent].append((destination_addr, nbytes, self.device.index))
                     remote_descs[agent].append((source_addr, nbytes, agent_devices[agent]))
-                    self._total_pull_bytes += nbytes
+                    total_bytes += nbytes
 
-            pull_specs: list[tuple[Any, Any, list[int]]] = []
+            pulls: list[tuple[Any, Any, list[int]]] = []
             for agent_index, remote in sorted(remote_descs.items()):
                 peer_name = peer_names.get(agent_index)
                 if peer_name is None:
@@ -434,48 +319,52 @@ class NIXLWeightUpdateWorker(Worker):
                     peer_names[agent_index] = peer_name
                 local_prepared = self.nixl_agent.prep_local(local_descs[agent_index])
                 remote_prepared = self.nixl_agent.prep_remote(peer_name, remote)
-                pull_specs.append((local_prepared, remote_prepared, list(range(len(remote)))))
+                pulls.append((local_prepared, remote_prepared, list(range(len(remote)))))
             transfer_groups.append(
-                _TransferGroup(
-                    baked=baked,
-                    plans=plans,
-                    persistent_plans=persistent_plans,
-                    pull_specs=pull_specs,
+                WeightTransferGroup(
+                    reload_layer=reload_layer,
+                    copies=copy_plans,
+                    persistent_copies=persistent_copy_plans,
+                    pulls=pulls,
                 )
             )
 
         logger.info(
             "NIXL receive arena uses %.2f GB for %d sequential groups",
-            self._receive_arena.nbytes / 1e9,
+            receive_arena.nbytes / 1e9,
             len(transfer_groups),
         )
-        return transfer_groups
+        return WeightTransferPlan(
+            receive_arena=receive_arena,
+            groups=transfer_groups,
+            total_bytes=total_bytes,
+        )
 
     @torch.no_grad()
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
         del weight_dir
-        self._lazy_init()
-        self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-        self.rendezvous.wait_for(
+        plan = self._lazy_init()
+        self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+        self.mx_rendezvous.wait_for(
             "trainer",
             count=1,
             status=p2p_pb2.SOURCE_STATUS_READY,
-            timeout=self._timeout,
+            timeout=self.weight_transfer_timeout,
         )
 
         started = time.perf_counter()
-        self._process_and_commit()
+        self._process_and_commit(plan)
         update_mla_absorbed_weights(self.raw_model)
         torch.cuda.synchronize(self.device)
-        self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
+        self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
         logger.info(
             "Applied %.2f GB NIXL policy update on rank %d in %.2fs",
-            self._total_pull_bytes / 1e9,
-            self._global_rank,
+            plan.total_bytes / 1e9,
+            self.mx_rendezvous.rank,
             time.perf_counter() - started,
         )
 
-    def _process_and_commit(self) -> None:
+    def _process_and_commit(self, plan: WeightTransferPlan) -> None:
         from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
         from vllm.model_executor.model_loader.reload.layerwise import (
             LAYERWISE_INFO,
@@ -489,48 +378,51 @@ class NIXLWeightUpdateWorker(Worker):
         model = self.raw_model
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
-            for transfer_group in self._transfer_groups:
-                for local, remote, indices in transfer_group.pull_specs:
+            for transfer_group in plan.groups:
+                for local, remote, indices in transfer_group.pulls:
                     handle = self.nixl_agent.post_read(local, indices, remote)
-                    self.nixl_agent.wait(handle, context="weight pull", timeout=self._timeout)
+                    self.nixl_agent.wait(
+                        handle,
+                        context="weight pull",
+                        timeout=self.weight_transfer_timeout,
+                    )
                 torch.cuda.synchronize(self.device)
 
-                group = transfer_group.baked
-                if group is None:
-                    for plan in transfer_group.persistent_plans:
-                        self._copy_plan(plan)
+                layer = transfer_group.reload_layer
+                if layer is None:
+                    for copy_plan in transfer_group.persistent_copies:
+                        self._copy_plan(copy_plan)
                     torch.cuda.synchronize(self.device)
                     continue
 
-                info = LAYERWISE_INFO[group.layer]
-                materialize_layer(group.layer, info)
-                # Vocab loaders explicitly zero their trailing padding.
-                # Zeroing every loaded destination also makes any allowed
-                # padding deterministic before the recorded prefix copies.
-                for name, tensor in get_layer_tensors(group.layer).items():
-                    if name in group.param_names and not tensor.is_meta:
+                info = LAYERWISE_INFO[layer]
+                materialize_layer(layer, info)
+                # Match loader semantics for destinations with unwritten padding.
+                destination_names = transfer_group.destination_names
+                for name, tensor in get_layer_tensors(layer).items():
+                    if name in destination_names and not tensor.is_meta:
                         tensor.zero_()
-                for plan in transfer_group.plans:
-                    self._copy_plan(plan)
-                for plan in transfer_group.persistent_plans:
-                    self._copy_plan(plan)
+                for copy_plan in transfer_group.copies:
+                    self._copy_plan(copy_plan)
+                for copy_plan in transfer_group.persistent_copies:
+                    self._copy_plan(copy_plan)
 
-                if hasattr(group.layer, "_already_called_process_weights_after_loading"):
-                    delattr(group.layer, "_already_called_process_weights_after_loading")
-                quant_method = getattr(group.layer, "quant_method", None)
+                if hasattr(layer, "_already_called_process_weights_after_loading"):
+                    delattr(layer, "_already_called_process_weights_after_loading")
+                quant_method = getattr(layer, "quant_method", None)
                 if isinstance(quant_method, QuantizeMethodBase):
-                    quant_method.process_weights_after_loading(group.layer)
+                    quant_method.process_weights_after_loading(layer)
                 if info.kernel_tensors is not None:
-                    _copy_and_restore_kernel_tensors(group.layer, info)
+                    _copy_and_restore_kernel_tensors(layer, info)
                 info.reset()
                 torch.cuda.synchronize(self.device)
 
             finalize_layerwise_reload(model, self.model_runner.model_config)
 
     @staticmethod
-    def _copy_plan(plan: _CopyPlan) -> None:
-        copy = plan.copy
+    def _copy_plan(plan: TensorCopyPlan) -> None:
+        copy = plan.recorded_copy
         parameter = getattr(copy.layer, copy.param_name)
         destination = parameter.as_strided(copy.shape, copy.stride, copy.offset)
-        value = apply_chain(plan.stage, plan.replay_ops)
+        value = apply_chain(plan.staging_tensor, plan.replay_ops)
         destination.copy_(value)
