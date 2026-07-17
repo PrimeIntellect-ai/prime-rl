@@ -208,11 +208,12 @@ def test_full_model_fused_vs_vanilla():
             labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
             position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
             temperature = torch.full((batch_size, seq_len), temp_value, dtype=torch.float32, device="cuda")
+            seq_lens = torch.tensor([seq_len])
 
         # Vanilla forward (returns logits, compute logprobs/entropy using RL train functions)
         optimizer_vanilla.zero_grad()
         out_vanilla = cast_float_and_contiguous(
-            model_vanilla(labels, position_ids, labels=labels, temperature=temperature)
+            model_vanilla(labels, position_ids, labels=labels, temperature=temperature, seq_lens=seq_lens)
         )
         if out_vanilla.get("logprobs") is None:
             assert out_vanilla.get("logits") is not None
@@ -225,7 +226,9 @@ def test_full_model_fused_vs_vanilla():
 
         # Fused forward (returns logprobs and entropy directly)
         optimizer_fused.zero_grad()
-        out_fused = cast_float_and_contiguous(model_fused(labels, position_ids, labels=labels, temperature=temperature))
+        out_fused = cast_float_and_contiguous(
+            model_fused(labels, position_ids, labels=labels, temperature=temperature, seq_lens=seq_lens)
+        )
         if out_fused.get("logprobs") is None:
             assert out_fused.get("logits") is not None
             logits = out_fused["logits"] / temp_value

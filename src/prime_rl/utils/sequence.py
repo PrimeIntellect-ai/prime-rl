@@ -50,3 +50,24 @@ def get_cu_seqlens_from_seq_lens(seq_lens: torch.Tensor, total_tokens: int | Non
     cu_seqlens[0] = 0
     cu_seqlens[1:] = seq_lens.cumsum(dim=0, dtype=torch.int32)
     return cu_seqlens, int(seq_lens.max().item())
+
+
+def get_cp_local_seq_lens(
+    seq_lens: torch.Tensor,
+    total_tokens: int,
+    cp_rank: int,
+    cp_world_size: int,
+) -> torch.Tensor:
+    """Intersect global sequence boundaries with one contiguous CP shard."""
+    if total_tokens % cp_world_size != 0:
+        raise ValueError(f"Sequence length {total_tokens} must be divisible by CP size {cp_world_size}")
+    if not 0 <= cp_rank < cp_world_size:
+        raise ValueError(f"CP rank {cp_rank} must be in [0, {cp_world_size})")
+
+    shard_size = total_tokens // cp_world_size
+    shard_start = seq_lens.new_tensor(cp_rank * shard_size)
+    shard_end = shard_start + shard_size
+    seq_ends = seq_lens.cumsum(dim=0)
+    seq_starts = torch.cat([seq_lens.new_zeros(1), seq_ends[:-1]])
+    overlaps = torch.minimum(seq_ends, shard_end) - torch.maximum(seq_starts, shard_start)
+    return overlaps[overlaps > 0]

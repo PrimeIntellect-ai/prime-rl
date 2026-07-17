@@ -1235,6 +1235,8 @@ def forward(
     model: nn.Module,
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
+    *,
+    seq_lens: Int[Tensor, "segments"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
@@ -1269,6 +1271,9 @@ def forward(
             kwargs["position_ids"] = position_ids
     else:
         kwargs["position_ids"] = position_ids
+
+    if isinstance(model, PreTrainedModelPrimeRL):
+        kwargs["seq_lens"] = seq_lens
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
