@@ -100,10 +100,13 @@ class MxRendezvous:
         status: int | None = None,
         timeout: float = 1200,
         poll_interval: float = 0.05,
+        cancelled: Callable[[], bool] | None = None,
     ) -> list[p2p_pb2.SourceInstanceRef]:
         deadline = time.monotonic() + timeout
         expected_ranks = set(range(count))
         while True:
+            if cancelled is not None and cancelled():
+                raise RuntimeError(f"cancelled waiting for {count} {role} worker(s) in session {self.session_id!r}")
             refs = self.list(role, status)
             by_rank = {ref.worker_rank: ref for ref in refs}
             if expected_ranks.issubset(by_rank):

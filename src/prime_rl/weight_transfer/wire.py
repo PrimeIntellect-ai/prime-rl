@@ -43,6 +43,7 @@ class TrainerTensor(msgspec.Struct):
 class TrainerTable(msgspec.Struct):
     agents: list[TrainerAgent]
     groups: list[str]
+    buffer_count: int
     tensors: list[TrainerTensor]
 
 

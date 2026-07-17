@@ -22,7 +22,7 @@ from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
-from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc
+from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc, cuda_buffer_capacity
 from prime_rl.weight_transfer.mx import MxRendezvous
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.wire import (
@@ -37,6 +37,8 @@ _WIRE_DTYPE = torch.bfloat16
 _MASTER_DTYPE = torch.float32
 _LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
 _LAYER_SESSION_SUFFIX = ":layers"
+_BUFFER_POLL_INTERVAL = 0.01
+_MAX_SOURCE_BUFFER_COUNT = 8
 
 
 @dataclass
@@ -90,6 +92,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.shards: list[TrainerShardSource] = []
         self.shards_by_group: dict[int, list[TrainerShardSource]] = {}
         self.arena: torch.Tensor | None = None
+        self.buffer_count = 1
 
     @property
     def is_serving_rank(self) -> bool:
@@ -154,24 +157,64 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 owned.append(TrainerShardSource(name, full_shape, group, row_start, local))
         return owned
 
-    def _allocate_arena(self) -> None:
+    def _allocate_arena(self) -> tuple[int, int, int, int, int, int, int]:
         group_elements = [0] * len(self.groups)
         for shard in self.shards:
             group_elements[shard.group] += shard.source.numel()
-        arena_elements = max(group_elements, default=0)
-        if arena_elements == 0:
-            return
-        torch.cuda.empty_cache()
-        with classic_cuda_alloc():
-            self.arena = torch.empty(arena_elements, dtype=_WIRE_DTYPE, device=self.shards[0].source.device)
-        offsets = [0] * len(self.groups)
-        for shard in self.shards:
-            offsets[shard.group] = shard.bind(self.arena, offsets[shard.group])
-        self.nixl_agent.register_tensor(self.arena)
+        largest_group_elements = max(group_elements, default=0)
+        largest_group_bytes = largest_group_elements * _WIRE_DTYPE.itemsize
+
+        free_bytes = total_bytes = headroom_bytes = 0
+        memory_buffer_count = len(self.groups)
+        local_buffer_count = min(len(self.groups), _MAX_SOURCE_BUFFER_COUNT)
+        if self.is_serving_rank and largest_group_bytes:
+            device = self.shards[0].source.device
+            memory_buffer_count, free_bytes, total_bytes, headroom_bytes = cuda_buffer_capacity(
+                largest_group_bytes,
+                len(self.groups),
+                device,
+            )
+            local_buffer_count = min(memory_buffer_count, _MAX_SOURCE_BUFFER_COUNT)
+
+        buffer_count = torch.tensor(
+            local_buffer_count,
+            dtype=torch.int64,
+            device=torch.device("cuda", torch.cuda.current_device()),
+        )
+        dist.all_reduce(buffer_count, op=dist.ReduceOp.MIN)
+        self.buffer_count = int(buffer_count.item())
+
+        post_free_bytes = free_bytes
+        if self.is_serving_rank and largest_group_elements:
+            arena_elements = self.buffer_count * largest_group_elements
+            arena_bytes = arena_elements * _WIRE_DTYPE.itemsize
+            if free_bytes < arena_bytes:
+                torch.cuda.empty_cache()
+            with classic_cuda_alloc():
+                self.arena = torch.empty(
+                    arena_elements,
+                    dtype=_WIRE_DTYPE,
+                    device=self.shards[0].source.device,
+                )
+            offsets = [(group % self.buffer_count) * largest_group_elements for group in range(len(self.groups))]
+            for shard in self.shards:
+                offsets[shard.group] = shard.bind(self.arena, offsets[shard.group])
+            self.nixl_agent.register_tensor(self.arena)
+            post_free_bytes, _ = torch.cuda.mem_get_info(self.shards[0].source.device)
+
         grouped: dict[int, list[TrainerShardSource]] = defaultdict(list)
         for shard in self.shards:
             grouped[shard.group].append(shard)
         self.shards_by_group = dict(grouped)
+        return (
+            free_bytes,
+            total_bytes,
+            headroom_bytes,
+            post_free_bytes,
+            memory_buffer_count,
+            sum(group_elements) * _WIRE_DTYPE.itemsize,
+            largest_group_bytes,
+        )
 
     def _lazy_init(self, model: nn.Module) -> None:
         if self.initialized:
@@ -180,7 +223,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.groups, layer_groups = self._transfer_groups(state_dict)
         if self.is_serving_rank:
             self.shards = self._owned_shards(state_dict, layer_groups)
-            self._allocate_arena()
+        buffer_stats = self._allocate_arena()
 
         payload = None
         if self.is_serving_rank:
@@ -189,6 +232,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 self.nixl_agent.name,
                 self.nixl_agent.get_metadata(),
                 self.arena.nbytes if self.arena is not None else 0,
+                buffer_stats,
                 [
                     (
                         shard.name,
@@ -210,9 +254,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
         if self.world.is_master:
             assert gathered is not None
             parts = sorted((part for part in gathered if part is not None), key=lambda part: part[0])
-            agents = [TrainerAgent(name=name, metadata=metadata) for _, name, metadata, _, _ in parts]
+            agents = [TrainerAgent(name=name, metadata=metadata) for _, name, metadata, _, _, _ in parts]
             tensors: dict[str, TrainerTensor] = {}
-            for agent_index, (_, _, _, _, rows) in enumerate(parts):
+            for agent_index, (_, _, _, _, _, rows) in enumerate(parts):
                 for name, shape, group, row_start, num_rows, addr, row_bytes, device_id in rows:
                     tensor = tensors.setdefault(
                         name,
@@ -242,21 +286,30 @@ class NIXLWeightBroadcast(WeightBroadcast):
                             device_id=device_id,
                         )
                     )
-            table = TrainerTable(agents=agents, groups=self.groups, tensors=list(tensors.values()))
+            table = TrainerTable(
+                agents=agents,
+                groups=self.groups,
+                buffer_count=self.buffer_count,
+                tensors=list(tensors.values()),
+            )
             self._validate_table(table)
             server_url = f"{self.config.host}:{self.config.port}"
-            self.layer_rendezvous = MxRendezvous(
-                client=MxClient(server_url=server_url),
-                role="trainer",
-                rank=0,
-                peer_world_size=self.config.inference_world_size,
-                session_id=f"{self.config.session_id}{_LAYER_SESSION_SUFFIX}",
-                worker_id="trainer-layers",
-            )
-            self.layer_rendezvous.publish()
-            self.layer_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            client = MxClient(server_url=server_url)
+            self.buffer_rendezvous = []
+            for buffer_index in range(self.buffer_count):
+                rendezvous = MxRendezvous(
+                    client=client,
+                    role="trainer",
+                    rank=0,
+                    peer_world_size=self.config.inference_world_size,
+                    session_id=f"{self.config.session_id}{_LAYER_SESSION_SUFFIX}:{buffer_index}",
+                    worker_id=f"trainer-buffer-{buffer_index}",
+                )
+                rendezvous.publish()
+                rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                self.buffer_rendezvous.append(rendezvous)
             self.rendezvous = MxRendezvous(
-                client=MxClient(server_url=server_url),
+                client=client,
                 role="trainer",
                 rank=0,
                 peer_world_size=self.config.inference_world_size,
@@ -267,10 +320,29 @@ class NIXLWeightBroadcast(WeightBroadcast):
             self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
             total_bytes = sum(shard.num_rows * shard.row_bytes for tensor in table.tensors for shard in tensor.shards)
             max_arena_bytes = max((part[3] for part in parts), default=0)
+            free_values = [part[4][0] for part in parts]
+            total_values = [part[4][1] for part in parts]
+            headroom_values = [part[4][2] for part in parts]
+            post_free_values = [part[4][3] for part in parts]
+            memory_buffer_values = [part[4][4] for part in parts]
+            group_total = sum(part[4][5] for part in parts)
+            buffer_min = min((part[4][6] for part in parts if part[4][6]), default=0)
+            group_max = max((part[4][6] for part in parts), default=0)
+            gib = 1024**3
+            self.logger.info(
+                f"NIXL staging ring selected {self.buffer_count} buffers from "
+                f"{min(free_values) / gib:.2f}-{max(free_values) / gib:.2f} GiB CUDA free per rank "
+                f"({min(total_values) / gib:.2f} GiB total, {max(headroom_values) / gib:.2f} GiB target headroom); "
+                f"memory permits {min(memory_buffer_values)}-{max(memory_buffer_values)} buffers per rank, "
+                f"each buffer {buffer_min / gib:.2f}-{group_max / gib:.2f} GiB across ranks, "
+                f"arenas up to {max_arena_bytes / gib:.2f} GiB, "
+                f"post-allocation free {min(post_free_values) / gib:.2f}-{max(post_free_values) / gib:.2f} GiB, "
+                f"{group_total / max(1, len(parts) * len(table.groups)) / 1e6:.1f} MB average logical group payload"
+            )
             self.logger.info(
                 f"Published {len(table.tensors)} FP32-master/BF16-wire tensors in {len(table.groups)} groups "
                 f"from {len(table.agents)} trainer agents ({total_bytes / 1e9:.2f} GB per update, "
-                f"{max_arena_bytes / 1e9:.2f} GB largest local arena)"
+                f"{max_arena_bytes / 1e9:.2f} GB largest local arena, {self.buffer_count} staging buffers)"
             )
         self.initialized = True
 
@@ -328,30 +400,59 @@ class NIXLWeightBroadcast(WeightBroadcast):
             )
 
         for group, group_name in enumerate(self.groups):
+            group_start = time.perf_counter()
+            buffer_index = group % self.buffer_count
+            if group >= self.buffer_count:
+                if self.world.is_master:
+                    rendezvous = self.buffer_rendezvous[buffer_index]
+                    rendezvous.wait_for(
+                        "inference",
+                        count=self.config.inference_world_size,
+                        status=p2p_pb2.SOURCE_STATUS_READY,
+                        timeout=self.config.timeout,
+                        poll_interval=_BUFFER_POLL_INTERVAL,
+                    )
+                    rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                    rendezvous.wait_for(
+                        "inference",
+                        count=self.config.inference_world_size,
+                        status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
+                        timeout=self.config.timeout,
+                        poll_interval=_BUFFER_POLL_INTERVAL,
+                    )
+                dist.barrier()
+
             if self.is_serving_rank:
                 for shard in self.shards_by_group.get(group, ()):
                     shard.refresh()
                 torch.cuda.synchronize()
             dist.barrier()
             if self.world.is_master:
-                group_start = time.perf_counter()
-                self.layer_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
-                self.layer_rendezvous.wait_for(
+                self.buffer_rendezvous[buffer_index].set_status(p2p_pb2.SOURCE_STATUS_READY)
+                self.logger.debug(
+                    f"NIXL+MX policy v{step} group {group_name} staged in buffer {buffer_index} in "
+                    f"{time.perf_counter() - group_start:.2f}s"
+                )
+
+        first_pending_group = max(0, len(self.groups) - self.buffer_count)
+        for group in range(first_pending_group, len(self.groups)):
+            buffer_index = group % self.buffer_count
+            if self.world.is_master:
+                rendezvous = self.buffer_rendezvous[buffer_index]
+                rendezvous.wait_for(
                     "inference",
                     count=self.config.inference_world_size,
                     status=p2p_pb2.SOURCE_STATUS_READY,
                     timeout=self.config.timeout,
+                    poll_interval=_BUFFER_POLL_INTERVAL,
                 )
-                self.layer_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-                self.layer_rendezvous.wait_for(
+                rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                rendezvous.wait_for(
                     "inference",
                     count=self.config.inference_world_size,
                     status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                     timeout=self.config.timeout,
-                )
-                self.logger.debug(
-                    f"NIXL+MX policy v{step} group {group_name} synchronized in "
-                    f"{time.perf_counter() - group_start:.2f}s"
+                    poll_interval=_BUFFER_POLL_INTERVAL,
                 )
             dist.barrier()
 

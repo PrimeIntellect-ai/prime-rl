@@ -43,6 +43,26 @@ void prime_rl_classic_free(void* pointer, ptrdiff_t size, int device, void* stre
 
 _pool: torch.cuda.MemPool | None = None
 _allocator: torch.cuda.memory.CUDAPluggableAllocator | None = None
+_MIN_STAGING_HEADROOM_BYTES = 4 * 1024**3
+_STAGING_HEADROOM_FRACTION = 0.02
+
+
+def cuda_buffer_capacity(
+    buffer_bytes: int,
+    max_buffers: int,
+    device: torch.device,
+    extra_headroom_bytes: int = 0,
+) -> tuple[int, int, int, int]:
+    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+    headroom_bytes = (
+        max(
+            _MIN_STAGING_HEADROOM_BYTES,
+            int(total_bytes * _STAGING_HEADROOM_FRACTION),
+        )
+        + extra_headroom_bytes
+    )
+    buffer_count = max(1, min(max_buffers, (free_bytes - headroom_bytes) // buffer_bytes))
+    return buffer_count, free_bytes, total_bytes, headroom_bytes
 
 
 def _get_pool() -> torch.cuda.MemPool:
