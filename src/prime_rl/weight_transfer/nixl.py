@@ -11,6 +11,7 @@ from typing import Any, Callable, Sequence
 from torch import Tensor
 
 MemDesc = tuple[int, int, int]
+NIXL_POLL_INTERVAL = 0.00005
 
 
 @dataclass
@@ -95,7 +96,7 @@ class NixlAgent:
                     raise RuntimeError(f"NIXL transfer failed with state={read.state}, context={context!r}")
                 if deadline is not None and time.monotonic() >= deadline:
                     raise TimeoutError(f"NIXL transfer timed out after {timeout}s, context={context!r}")
-                time.sleep(0.0005)
+                time.sleep(NIXL_POLL_INTERVAL)
         except Exception:
             self._retire_read(read)
             raise
