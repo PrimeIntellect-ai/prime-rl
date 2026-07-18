@@ -399,3 +399,41 @@ def test_null_messages_falls_back_to_prompt_and_completion():
     )
 
     assert next(iter(mixed_row_dataset)) == next(iter(expected_dataset))
+
+
+def test_deserialize_tool_calls_accepts_trace_shapes():
+    """Verifiers traces store tool calls as flat JSON strings; both they and
+    the OAI dict shape must deserialize to the OAI form."""
+    from prime_rl.utils.chat_template import deserialize_tool_calls
+
+    flat_string = '{"id": "t1", "name": "ipython", "arguments": "{\\"code\\": \\"print(1)\\"}"}'
+    oai_dict = {"id": "t2", "type": "function", "function": {"name": "ipython", "arguments": '{"code": "print(2)"}'}}
+    [message] = deserialize_tool_calls([{"role": "assistant", "content": "", "tool_calls": [flat_string, oai_dict]}])
+
+    first, second = message["tool_calls"]
+    assert first["id"] == "t1"
+    assert first["function"] == {"name": "ipython", "arguments": {"code": "print(1)"}}
+    assert second["function"] == {"name": "ipython", "arguments": {"code": "print(2)"}}
+
+
+class _RaisingRenderer(_DummyRenderer):
+    def render(self, messages, **kwargs):
+        if "bad" in messages[-1]["content"]:
+            raise ValueError("unrenderable sample")
+        return super().render(messages, **kwargs)
+
+
+def test_skip_invalid_samples_knob():
+    """A raising sample crashes by default and is skipped (with the good
+    samples still yielded) when skip_invalid_samples is on."""
+    dataset = Dataset.from_list(
+        [{"messages": [{"role": "assistant", "content": content}]} for content in ("a0", "bad", "a1")]
+    )
+
+    crashing = SFTDataset(dataset, _RaisingRenderer(), shuffle=False, max_epochs=1)
+    with pytest.raises(ValueError, match="unrenderable sample"):
+        list(crashing)
+
+    skipping = SFTDataset(dataset, _RaisingRenderer(), shuffle=False, max_epochs=1, skip_invalid_samples=True)
+    samples = list(skipping)
+    assert len(samples) == 2
