@@ -83,6 +83,18 @@ class NixlAgent:
                 raise TimeoutError(f"NIXL transfer timed out after {timeout}s, context={context!r}")
             time.sleep(0.0005)
 
+    def check_read(self, handle: Any, context: str = "") -> bool:
+        state = self._agent.check_xfer_state(handle)
+        if state in ("DONE", "SUCCESS"):
+            self._agent.release_xfer_handle(handle)
+            return True
+        if state in ("ERR", "ERROR", "FAIL"):
+            raise RuntimeError(f"NIXL transfer failed with state={state}, context={context!r}")
+        return False
+
+    def release_read(self, handle: Any) -> None:
+        self._agent.release_xfer_handle(handle)
+
 
 def make_agent_name(role: str, global_rank: int) -> str:
     return f"{role}-{socket.gethostname()}-r{global_rank}"

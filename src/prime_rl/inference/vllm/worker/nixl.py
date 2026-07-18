@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import wraps
 from math import prod
@@ -43,6 +43,7 @@ else:
 logger = init_logger("vllm.inference.vllm.worker_nixl")
 _BUFFER_POLL_INTERVAL = 0.01
 _MAX_INFLIGHT_READS = 1
+_PIPELINE_WIDTH = 2
 
 
 @dataclass
@@ -99,6 +100,15 @@ class PulledWeightTransferGroup:
     post_seconds: float
     handle_wait_seconds: float
     acknowledgement_seconds: float
+
+
+@dataclass
+class ActiveWeightPull:
+    group_index: int
+    source_ready: Future[None]
+    next_peer: int = 0
+    handle: Any | None = None
+    transfer_started_at: float = 0.0
 
 
 class NIXLWeightUpdateWorker(Worker):
@@ -612,6 +622,264 @@ class NIXLWeightUpdateWorker(Worker):
                 if info.kernel_tensors is not None:
                     _copy_and_restore_kernel_tensors(layer, info)
                 info.reset()
+
+        pipeline_width = min(_PIPELINE_WIDTH, plan.receive_buffer_count, len(self.buffer_rendezvous))
+        if pipeline_width > 1:
+            source_buffer_count = len(self.buffer_rendezvous)
+            receive_available = [Event() for _ in range(plan.receive_buffer_count)]
+            for available in receive_available:
+                available.set()
+            source_available = [True] * source_buffer_count
+            results: list[Future[tuple[WeightTransferGroup, float]]] = [Future() for _ in plan.groups]
+            profile: defaultdict[str, float] = defaultdict(float)
+
+            def wait_for_buffer(group_index: int, status: int) -> None:
+                self.buffer_rendezvous[group_index % source_buffer_count].wait_for(
+                    "trainer",
+                    count=1,
+                    status=status,
+                    timeout=self.weight_transfer_timeout,
+                    poll_interval=_BUFFER_POLL_INTERVAL,
+                    cancelled=cancelled.is_set,
+                )
+
+            def observe_slot(available: bool, kind: str, now: float) -> None:
+                blocked_at = profile[f"{kind}_blocked_at"]
+                if available and blocked_at:
+                    profile[f"{kind}_slot_wait"] += now - blocked_at
+                    profile[f"{kind}_blocked_at"] = 0.0
+                elif not available and not blocked_at:
+                    profile[f"{kind}_blocked_at"] = now
+
+            def run_pipeline(mx_executor: ThreadPoolExecutor) -> None:
+                active: dict[int, ActiveWeightPull] = {}
+                credits: dict[int, tuple[Future[None], float]] = {}
+                next_group = 0
+                completed_groups = 0
+
+                def change_active_handles(delta: int) -> None:
+                    profile["active_handles"] += delta
+                    profile["active_max"] = max(profile["active_max"], profile["active_handles"])
+                    if not 0 <= profile["active_handles"] <= pipeline_width:
+                        profile["invariant_violations"] += 1
+                        raise RuntimeError(
+                            f"NIXL active READ count {profile['active_handles']} exceeds pipeline width {pipeline_width}"
+                        )
+
+                def post_peer(state: ActiveWeightPull) -> None:
+                    if state.handle is not None:
+                        profile["invariant_violations"] += 1
+                        raise RuntimeError(f"NIXL group {state.group_index} already has an outstanding READ")
+                    local, remote, indices = plan.groups[state.group_index].pulls[state.next_peer]
+                    state.handle = self.nixl_agent.post_read(local, indices, remote)
+                    change_active_handles(1)
+
+                def complete_group(state: ActiveWeightPull) -> None:
+                    nonlocal completed_groups
+                    completed_at = time.perf_counter()
+                    transfer_seconds = completed_at - state.transfer_started_at
+                    source_slot = state.group_index % source_buffer_count
+                    self.buffer_rendezvous[source_slot].set_status(p2p_pb2.SOURCE_STATUS_READY)
+                    ready_at = time.perf_counter()
+                    credits[source_slot] = (
+                        mx_executor.submit(
+                            wait_for_buffer,
+                            state.group_index,
+                            p2p_pb2.SOURCE_STATUS_INITIALIZING,
+                        ),
+                        ready_at,
+                    )
+                    profile["rdma_started"] = min(
+                        profile.get("rdma_started", state.transfer_started_at),
+                        state.transfer_started_at,
+                    )
+                    profile["rdma_sum"] += transfer_seconds
+                    profile["rdma_completed"] = max(profile["rdma_completed"], completed_at)
+                    results[state.group_index].set_result((plan.groups[state.group_index], completed_at))
+                    del active[state.group_index]
+                    completed_groups += 1
+
+                try:
+                    while completed_groups < len(plan.groups) or credits:
+                        if cancelled.is_set():
+                            raise RuntimeError("NIXL K=2 pull pipeline cancelled")
+                        progressed = False
+
+                        for source_slot, (credit, ready_at) in tuple(credits.items()):
+                            if not credit.done():
+                                continue
+                            credit.result()
+                            self.buffer_rendezvous[source_slot].set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                            cycle_seconds = time.perf_counter() - ready_at
+                            profile["source_cycle_sum"] += cycle_seconds
+                            profile["source_cycle_max"] = max(profile["source_cycle_max"], cycle_seconds)
+                            source_available[source_slot] = True
+                            del credits[source_slot]
+                            progressed = True
+
+                        while next_group < len(plan.groups) and len(active) < pipeline_width:
+                            receive_slot = next_group % plan.receive_buffer_count
+                            source_slot = next_group % source_buffer_count
+                            now = time.perf_counter()
+                            receive_ready = receive_available[receive_slot].is_set()
+                            source_ready = source_available[source_slot]
+                            observe_slot(receive_ready, "receive", now)
+                            observe_slot(source_ready, "source", now)
+                            if not receive_ready or not source_ready:
+                                break
+
+                            receive_available[receive_slot].clear()
+                            source_available[source_slot] = False
+                            active[next_group] = ActiveWeightPull(
+                                group_index=next_group,
+                                source_ready=mx_executor.submit(
+                                    wait_for_buffer,
+                                    next_group,
+                                    p2p_pb2.SOURCE_STATUS_READY,
+                                ),
+                            )
+                            next_group += 1
+                            progressed = True
+
+                        for group_index, state in tuple(sorted(active.items())):
+                            if state.transfer_started_at == 0.0:
+                                if not state.source_ready.done():
+                                    continue
+                                state.source_ready.result()
+                                state.transfer_started_at = time.perf_counter()
+                                if plan.groups[group_index].pulls:
+                                    post_peer(state)
+                                else:
+                                    complete_group(state)
+                                progressed = True
+                                continue
+
+                            if state.handle is None:
+                                continue
+                            if not self.nixl_agent.check_read(
+                                state.handle,
+                                context=f"weight pull for {plan.groups[group_index].name}",
+                            ):
+                                if time.perf_counter() - state.transfer_started_at >= self.weight_transfer_timeout:
+                                    raise TimeoutError(
+                                        f"NIXL transfer timed out after {self.weight_transfer_timeout}s, "
+                                        f"context='weight pull for {plan.groups[group_index].name}'"
+                                    )
+                                continue
+
+                            state.handle = None
+                            change_active_handles(-1)
+                            state.next_peer += 1
+                            if state.next_peer < len(plan.groups[group_index].pulls):
+                                post_peer(state)
+                            else:
+                                complete_group(state)
+                            progressed = True
+
+                        profile["active_sum"] += profile["active_handles"]
+                        profile["active_samples"] += 1
+                        if not progressed:
+                            time.sleep(0.0005)
+                except BaseException as error:
+                    cancelled.set()
+                    try:
+                        for state in active.values():
+                            if state.handle is not None:
+                                self.nixl_agent.release_read(state.handle)
+                                state.handle = None
+                                change_active_handles(-1)
+                    finally:
+                        for result in results:
+                            if not result.done():
+                                result.set_exception(error)
+                    raise
+
+            with torch.device(self.device), set_current_vllm_config(self.vllm_config):
+                initialize_started = time.perf_counter()
+                initialize_layerwise_reload(model)
+                initialize_seconds = time.perf_counter() - initialize_started
+                pipeline_started = time.perf_counter()
+                pipeline_executor = ThreadPoolExecutor(
+                    max_workers=source_buffer_count + pipeline_width + 1,
+                    thread_name_prefix="nixl-pipeline",
+                )
+                owner = pipeline_executor.submit(run_pipeline, pipeline_executor)
+                completed = False
+                try:
+                    for group_index, result in enumerate(results):
+                        wait_started = time.perf_counter()
+                        transfer_group, completed_at = result.result()
+                        wait_seconds = time.perf_counter() - wait_started
+                        if group_index == 0:
+                            profile["initial_wait"] = wait_seconds
+                        else:
+                            profile["exposed_wait"] += wait_seconds
+
+                        torch.cuda.synchronize(self.device)
+                        replay_started = time.perf_counter()
+                        completion_wait = replay_started - completed_at
+                        profile["completion_wait_sum"] += completion_wait
+                        profile["completion_wait_max"] = max(profile["completion_wait_max"], completion_wait)
+                        replay_group(transfer_group)
+                        torch.cuda.synchronize(self.device)
+                        profile["replay_sum"] += time.perf_counter() - replay_started
+                        receive_available[group_index % plan.receive_buffer_count].set()
+
+                    final_drain_started = time.perf_counter()
+                    owner.result()
+                    profile["final_drain"] = time.perf_counter() - final_drain_started
+                    completed = True
+                finally:
+                    if not completed:
+                        cancelled.set()
+                    pipeline_executor.shutdown(wait=True, cancel_futures=True)
+                pipeline_seconds = time.perf_counter() - pipeline_started
+
+                if (
+                    profile["active_handles"]
+                    or not all(source_available)
+                    or not all(available.is_set() for available in receive_available)
+                ):
+                    profile["invariant_violations"] += 1
+                    raise RuntimeError("NIXL K=2 pipeline finished with an occupied source, receive, or READ slot")
+
+                finalize_started = time.perf_counter()
+                finalize_layerwise_reload(model, self.model_runner.model_config)
+                finalize_seconds = time.perf_counter() - finalize_started
+                rdma_wall_seconds = profile["rdma_completed"] - profile["rdma_started"]
+                logger.info(
+                    "NIXL K=2 profile rank=%d: groups=%d, "
+                    "wall=(initialize=%.2fs, pipeline=%.2fs, finalize=%.2fs), "
+                    "rdma=(sum=%.2fs, wall=%.2fs, %.1f Gb/s, "
+                    "active_avg=%.2f, active_max=%d), "
+                    "credits=(source_slot=%.2fs, receive_slot=%.2fs, "
+                    "cycle_sum=%.2fs, cycle_max=%.2fs), "
+                    "replay=(sum=%.2fs, completion_wait_avg=%.2fs, completion_wait_max=%.2fs), "
+                    "drain=(initial=%.2fs, exposed=%.2fs, final=%.2fs), "
+                    "invariant_violations=%d",
+                    self.mx_rendezvous.rank,
+                    len(plan.groups),
+                    initialize_seconds,
+                    pipeline_seconds,
+                    finalize_seconds,
+                    profile["rdma_sum"],
+                    rdma_wall_seconds,
+                    plan.total_bytes * 8 / max(rdma_wall_seconds, 1e-9) / 1e9,
+                    profile["active_sum"] / max(profile["active_samples"], 1),
+                    int(profile["active_max"]),
+                    profile["source_slot_wait"],
+                    profile["receive_slot_wait"],
+                    profile["source_cycle_sum"],
+                    profile["source_cycle_max"],
+                    profile["replay_sum"],
+                    profile["completion_wait_sum"] / max(len(plan.groups), 1),
+                    profile["completion_wait_max"],
+                    profile["initial_wait"],
+                    profile["exposed_wait"],
+                    profile["final_drain"],
+                    int(profile["invariant_violations"]),
+                )
+            return
 
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
             initialize_layerwise_reload(model)
