@@ -33,7 +33,7 @@ from prime_rl.weight_transfer.lazy import BakeRecorder, RecordedCopy
 from prime_rl.weight_transfer.mx import MxRendezvous
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.sharding import route_region, zip_src_dst
-from prime_rl.weight_transfer.wire import TrainerTable, decode_table
+from prime_rl.weight_transfer.wire import TrainerTable
 
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
@@ -147,11 +147,11 @@ class NIXLWeightUpdateWorker(Worker):
         allocated_bytes = torch.cuda.memory_allocated(self.device)
         peak_allocated_bytes = torch.cuda.max_memory_allocated(self.device)
         trainer_ref = self.mx_rendezvous.wait_for_peers(timeout=self.weight_transfer_timeout)[0]
-        table = decode_table(self.mx_rendezvous.fetch(trainer_ref).nixl_metadata)
+        table = TrainerTable.decode(self.mx_rendezvous.fetch(trainer_ref).nixl_metadata)
         layers, persistent = self._bake(table)
         plan = self._build_pull_plan(table, layers, persistent, allocated_bytes, peak_allocated_bytes)
         self.buffer_rendezvous = []
-        for buffer_index in range(table.buffer_count):
+        for buffer_index in range(table.source_ring_size):
             rendezvous = MxRendezvous(
                 client=self.mx_rendezvous.client,
                 role="inference",
@@ -174,7 +174,7 @@ class NIXLWeightUpdateWorker(Worker):
             time.perf_counter() - started,
             self.mx_rendezvous.rank,
             len(plan.groups),
-            table.buffer_count,
+            table.source_ring_size,
             sum(len(layer.copies) + len(layer.persistent_copies) for group in plan.groups for layer in group.layers),
             plan.total_bytes,
             sum(len(group.pulls) for group in plan.groups),
@@ -269,14 +269,19 @@ class NIXLWeightUpdateWorker(Worker):
         allocated_bytes: int,
         peak_allocated_bytes: int,
     ) -> WeightTransferPlan:
-        tensors = {tensor.name: tensor for tensor in table.tensors}
+        tensors = {tensor.name: tensor for group in table.groups for tensor in group.tensors}
+        tensor_groups = {
+            tensor.name: group_index
+            for group_index, group in enumerate(table.groups)
+            for tensor in group.tensors
+        }
         copies = [copy for layer in layers for copy in layer.copies] + persistent
         specifications: dict[int, TensorCopySpec] = {}
         copies_by_group: dict[int, list[RecordedCopy]] = defaultdict(list)
         group_elements: dict[torch.dtype, list[int]] = defaultdict(lambda: [0] * len(table.groups))
         for copy in copies:
             source = tensors[copy.src_name]
-            source_dtype = getattr(torch, source.dtype)
+            source_dtype = getattr(torch, source.wire_dtype)
             transport_ops, replay_ops, staging_shape = split_transport_chain(
                 tuple(source.shape), source_dtype, copy.ops
             )
@@ -285,8 +290,9 @@ class NIXLWeightUpdateWorker(Worker):
                 replay_ops=replay_ops,
                 staging_shape=staging_shape,
             )
-            copies_by_group[source.group].append(copy)
-            group_elements[source_dtype][source.group] += prod(staging_shape)
+            source_group = tensor_groups[source.name]
+            copies_by_group[source_group].append(copy)
+            group_elements[source_dtype][source_group] += prod(staging_shape)
 
         reload_layer_ids = {id(layer.layer) for layer in layers}
         reload_layer_groups: dict[int, int] = {}
@@ -294,12 +300,12 @@ class NIXLWeightUpdateWorker(Worker):
             layer_id = id(copy.layer)
             if layer_id not in reload_layer_ids:
                 continue
-            source_group = tensors[copy.src_name].group
+            source_group = tensor_groups[copy.src_name]
             previous_group = reload_layer_groups.setdefault(layer_id, source_group)
             if previous_group != source_group:
                 raise RuntimeError(
                     f"vLLM reload layer {type(copy.layer).__name__} reads trainer groups "
-                    f"{table.groups[previous_group]!r} and {table.groups[source_group]!r}"
+                    f"{table.groups[previous_group].name!r} and {table.groups[source_group].name!r}"
                 )
 
         largest_group_elements = {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
@@ -310,7 +316,7 @@ class NIXLWeightUpdateWorker(Worker):
         peak_growth_bytes = max(0, peak_allocated_bytes - allocated_bytes)
         has_observed_peak_growth = peak_growth_bytes > 0
         free_before_reclaim, _ = torch.cuda.mem_get_info(self.device)
-        max_receive_buffers = min(2, table.buffer_count) if has_observed_peak_growth else 1
+        max_receive_buffers = min(2, table.source_ring_size) if has_observed_peak_growth else 1
         if has_observed_peak_growth or free_before_reclaim < largest_group_bytes:
             torch.cuda.empty_cache()
         receive_buffer_count, free_bytes, device_total_bytes, headroom_bytes = cuda_buffer_capacity(
@@ -334,14 +340,12 @@ class NIXLWeightUpdateWorker(Worker):
         receive_arena_bytes = sum(arena.nbytes for arena in receive_arenas.values())
         post_free_bytes, _ = torch.cuda.mem_get_info(self.device)
 
-        agent_devices: dict[int, int] = {
-            shard.agent: shard.device_id for tensor in table.tensors for shard in tensor.shards
-        }
+        agent_devices = {agent_index: agent.device_id for agent_index, agent in enumerate(table.agents)}
         total_bytes = 0
         peer_names: dict[int, str] = {}
         transfer_groups: list[WeightTransferGroup] = []
 
-        for group_index, group_name in enumerate(table.groups):
+        for group_index, group in enumerate(table.groups):
             copy_plans_by_layer: dict[int, list[TensorCopyPlan]] = defaultdict(list)
             persistent_plans_by_layer: dict[int, list[TensorCopyPlan]] = defaultdict(list)
             local_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
@@ -354,7 +358,7 @@ class NIXLWeightUpdateWorker(Worker):
             for copy in copies_by_group[group_index]:
                 specification = specifications[id(copy)]
                 source = tensors[copy.src_name]
-                source_dtype = getattr(torch, source.dtype)
+                source_dtype = getattr(torch, source.wire_dtype)
                 numel = prod(specification.staging_shape)
                 cursor = cursors[source_dtype]
                 staging_tensor = receive_arenas[source_dtype].narrow(0, cursor, numel).view(specification.staging_shape)
@@ -370,11 +374,10 @@ class NIXLWeightUpdateWorker(Worker):
                 offset, shape, stride = resolve_chain_region(
                     tuple(source.shape), source_dtype, specification.transport_ops
                 )
-                row_numel = prod(source.shape[1:]) if len(source.shape) > 1 else 1
                 source_pieces = route_region(
                     region_elem_runs(offset, shape, stride),
                     source.shards,
-                    row_numel,
+                    prod(source.shape),
                     source_dtype.itemsize,
                 )
                 for agent, source_addr, destination_addr, nbytes in zip_src_dst(
@@ -427,7 +430,7 @@ class NIXLWeightUpdateWorker(Worker):
                 pulls.append((local_prepared, remote_prepared, list(range(len(remote)))))
             transfer_groups.append(
                 WeightTransferGroup(
-                    name=group_name,
+                    name=group.name,
                     layers=layer_plans,
                     pulls=pulls,
                 )
@@ -443,7 +446,7 @@ class NIXLWeightUpdateWorker(Worker):
             receive_buffer_count,
             self.mx_rendezvous.rank,
             "measured" if has_observed_peak_growth else "unmeasured",
-            table.buffer_count,
+            table.source_ring_size,
             max_receive_buffers,
             free_before_reclaim / 1024**3,
             free_bytes / 1024**3,

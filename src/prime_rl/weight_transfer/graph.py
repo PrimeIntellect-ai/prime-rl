@@ -25,11 +25,12 @@ def make_hf_lazy_weights(
         tensor.name: LazyWeight(
             tensor.name,
             torch.Size(tensor.shape),
-            getattr(torch, tensor.dtype),
+            getattr(torch, tensor.wire_dtype),
             device,
             recorder,
         )
-        for tensor in table.tensors
+        for group in table.groups
+        for tensor in group.tensors
     }
 
     model_type = getattr(hf_config, "model_type", None)

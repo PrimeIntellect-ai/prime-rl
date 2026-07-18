@@ -10,46 +10,51 @@ class TrainerAgent(msgspec.Struct, frozen=True):
 
     name: str
     metadata: bytes
+    device_id: int
 
 
 class TrainerShard(msgspec.Struct, frozen=True):
-    """A contiguous dim-0 range of one logical trainer tensor."""
+    """One contiguous flat range of a logical trainer tensor.
+
+    ``offset`` is measured in logical tensor elements. The range ends at the
+    next shard's offset, or at the tensor's total number of elements for the
+    final shard. ``addr`` is the remote address of the first element.
+    """
 
     agent: int
-    row_start: int
-    num_rows: int
+    offset: int
     addr: int
-    row_bytes: int
-    device_id: int
 
 
 class TrainerTensor(msgspec.Struct):
     """One trainer-format tensor served as typed wire shards.
 
-    ``master_dtype`` documents the optimizer-owned source precision. ``dtype``
-    is BF16 by default and may be FP32 for model-declared precision-sensitive
-    tensors. Shard addresses are valid for this tensor's transfer group and
-    may overlap with addresses used by other groups.
+    ``wire_dtype`` is BF16 by default and may be FP32 for model-declared
+    precision-sensitive tensors. Shard addresses may overlap with addresses
+    used by tensors in other transfer groups.
     """
 
     name: str
-    master_dtype: str
-    dtype: str
+    wire_dtype: str
     shape: tuple[int, ...]
-    group: int
     shards: list[TrainerShard]
+
+
+class TrainerGroup(msgspec.Struct):
+    """One independently staged and acknowledged transfer unit."""
+
+    name: str
+    tensors: list[TrainerTensor]
 
 
 class TrainerTable(msgspec.Struct):
     agents: list[TrainerAgent]
-    groups: list[str]
-    buffer_count: int
-    tensors: list[TrainerTensor]
+    source_ring_size: int
+    groups: list[TrainerGroup]
 
+    def encode(self) -> bytes:
+        return msgspec.msgpack.encode(self)
 
-def encode_table(table: TrainerTable) -> bytes:
-    return msgspec.msgpack.encode(table)
-
-
-def decode_table(data: bytes) -> TrainerTable:
-    return msgspec.msgpack.decode(data, type=TrainerTable)
+    @classmethod
+    def decode(cls, data: bytes) -> TrainerTable:
+        return msgspec.msgpack.decode(data, type=cls)

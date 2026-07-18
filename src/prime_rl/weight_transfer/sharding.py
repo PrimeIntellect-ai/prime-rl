@@ -8,24 +8,32 @@ from prime_rl.weight_transfer.wire import TrainerShard
 def route_region(
     region_runs: list[tuple[int, int]],
     shards: list[TrainerShard],
-    row_numel: int,
+    tensor_numel: int,
     itemsize: int,
 ) -> list[tuple[int, int, int]]:
     """Map full-tensor element runs to ``(agent, address, bytes)`` pieces."""
-    ordered = sorted(shards, key=lambda shard: shard.row_start)
-    bounds = [(shard.row_start * row_numel, (shard.row_start + shard.num_rows) * row_numel, shard) for shard in ordered]
+    ordered = sorted(shards, key=lambda shard: shard.offset)
+    bounds: list[tuple[int, int, TrainerShard]] = []
+    for index, shard in enumerate(ordered):
+        end = ordered[index + 1].offset if index + 1 < len(ordered) else tensor_numel
+        if shard.offset < 0 or end <= shard.offset or end > tensor_numel:
+            raise ValueError(
+                f"invalid trainer shard range [{shard.offset}, {end}) for tensor with {tensor_numel} elements"
+            )
+        bounds.append((shard.offset, end, shard))
+
     pieces: list[tuple[int, int, int]] = []
     for elem_offset, num_elems in region_runs:
         pos = elem_offset
         remaining = num_elems
         while remaining:
-            owner = next((shard for lo, hi, shard in bounds if lo <= pos < hi), None)
+            owner = next(((start, end, shard) for start, end, shard in bounds if start <= pos < end), None)
             if owner is None:
-                raise RuntimeError(f"no trainer shard owns element {pos} (row {pos // row_numel})")
-            owner_end = (owner.row_start + owner.num_rows) * row_numel
+                raise RuntimeError(f"no trainer shard owns element {pos}")
+            owner_start, owner_end, shard = owner
             take = min(remaining, owner_end - pos)
-            local_elem = pos - owner.row_start * row_numel
-            pieces.append((owner.agent, owner.addr + local_elem * itemsize, take * itemsize))
+            local_elem = pos - owner_start
+            pieces.append((shard.agent, shard.addr + local_elem * itemsize, take * itemsize))
             pos += take
             remaining -= take
     return pieces
