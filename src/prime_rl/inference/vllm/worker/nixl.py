@@ -29,7 +29,7 @@ from prime_rl.weight_transfer.chains import (
 )
 from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc, cuda_buffer_capacity
 from prime_rl.weight_transfer.graph import make_hf_lazy_weights
-from prime_rl.weight_transfer.lazy import BakeRecorder, RecordedCopy
+from prime_rl.weight_transfer.lazy import BakeRecorder, Destination, RecordedCopy
 from prime_rl.weight_transfer.mx import MxRendezvous
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.sharding import route_region, zip_src_dst
@@ -72,7 +72,7 @@ class LayerWeightTransferPlan:
 
     @property
     def destination_names(self) -> set[str]:
-        return {plan.recorded_copy.param_name for plan in self.copies}
+        return {plan.recorded_copy.destination_name for plan in self.copies}
 
 
 @dataclass
@@ -201,11 +201,12 @@ class NIXLWeightUpdateWorker(Worker):
             try:
                 for module in model.modules():
                     for name, tensor in get_layer_tensors(module).items():
+                        destination = Destination(module, name, tensor)
                         if not tensor.is_meta:
-                            recorder.register_live_destination(module, name, tensor)
+                            recorder.register_destination_storage(destination)
                         loader = _get_original_loader(tensor)
                         original_loaders.append((tensor, loader))
-                        tensor.weight_loader = self._stamp(recorder, module, name, loader)
+                        tensor.weight_loader = self._stamp(recorder, destination, loader)
 
                 model.load_weights(
                     make_hf_lazy_weights(
@@ -219,12 +220,12 @@ class NIXLWeightUpdateWorker(Worker):
                 by_layer: dict[int, list[RecordedCopy]] = defaultdict(list)
                 layers: dict[int, nn.Module] = {}
                 for copy in recorder.copies:
-                    if copy.persistent or copy.param_name in SKIP_TENSORS:
-                        copy.persistent = True
+                    if copy.is_persistent or copy.destination_name in SKIP_TENSORS:
+                        copy.is_persistent = True
                         persistent.append(copy)
                     else:
-                        by_layer[id(copy.layer)].append(copy)
-                        layers[id(copy.layer)] = copy.layer
+                        by_layer[id(copy.destination_module)].append(copy)
+                        layers[id(copy.destination_module)] = copy.destination_module
             finally:
                 try:
                     for tensor, loader in reversed(original_loaders):
@@ -237,14 +238,14 @@ class NIXLWeightUpdateWorker(Worker):
         ], persistent
 
     @staticmethod
-    def _stamp(recorder: BakeRecorder, layer: nn.Module, name: str, loader: Any):
+    def _stamp(recorder: BakeRecorder, destination: Destination, loader: Any):
         @wraps(loader)
         def stamped(*args, **kwargs):
-            recorder.current = (layer, name)
+            recorder.active_destination = destination
             try:
                 return loader(*args, **kwargs)
             finally:
-                recorder.current = None
+                recorder.active_destination = None
 
         return stamped
 
@@ -280,7 +281,7 @@ class NIXLWeightUpdateWorker(Worker):
         copies_by_group: dict[int, list[RecordedCopy]] = defaultdict(list)
         group_elements: dict[torch.dtype, list[int]] = defaultdict(lambda: [0] * len(table.groups))
         for copy in copies:
-            source = tensors[copy.src_name]
+            source = tensors[copy.source_name]
             source_dtype = getattr(torch, source.wire_dtype)
             transport_ops, replay_ops, staging_shape = split_transport_chain(
                 tuple(source.shape), source_dtype, copy.ops
@@ -297,14 +298,14 @@ class NIXLWeightUpdateWorker(Worker):
         reload_layer_ids = {id(layer.layer) for layer in layers}
         reload_layer_groups: dict[int, int] = {}
         for copy in copies:
-            layer_id = id(copy.layer)
+            layer_id = id(copy.destination_module)
             if layer_id not in reload_layer_ids:
                 continue
-            source_group = tensor_groups[copy.src_name]
+            source_group = tensor_groups[copy.source_name]
             previous_group = reload_layer_groups.setdefault(layer_id, source_group)
             if previous_group != source_group:
                 raise RuntimeError(
-                    f"vLLM reload layer {type(copy.layer).__name__} reads trainer groups "
+                    f"vLLM reload layer {type(copy.destination_module).__name__} reads trainer groups "
                     f"{table.groups[previous_group].name!r} and {table.groups[source_group].name!r}"
                 )
 
@@ -357,7 +358,7 @@ class NIXLWeightUpdateWorker(Worker):
 
             for copy in copies_by_group[group_index]:
                 specification = specifications[id(copy)]
-                source = tensors[copy.src_name]
+                source = tensors[copy.source_name]
                 source_dtype = getattr(torch, source.wire_dtype)
                 numel = prod(specification.staging_shape)
                 cursor = cursors[source_dtype]
@@ -368,8 +369,8 @@ class NIXLWeightUpdateWorker(Worker):
                     staging_tensor=staging_tensor,
                     replay_ops=specification.replay_ops,
                 )
-                plans = persistent_plans_by_layer if copy.persistent else copy_plans_by_layer
-                plans[id(copy.layer)].append(copy_plan)
+                plans = persistent_plans_by_layer if copy.is_persistent else copy_plans_by_layer
+                plans[id(copy.destination_module)].append(copy_plan)
 
                 offset, shape, stride = resolve_chain_region(
                     tuple(source.shape), source_dtype, specification.transport_ops
@@ -636,7 +637,11 @@ class NIXLWeightUpdateWorker(Worker):
     @staticmethod
     def _copy_plan(plan: TensorCopyPlan) -> None:
         copy = plan.recorded_copy
-        parameter = getattr(copy.layer, copy.param_name)
-        destination = parameter.as_strided(copy.shape, copy.stride, copy.offset)
+        parameter = getattr(copy.destination_module, copy.destination_name)
+        destination = parameter.as_strided(
+            copy.destination_shape,
+            copy.destination_stride,
+            copy.destination_offset,
+        )
         value = apply_chain(plan.staging_tensor, plan.replay_ops)
         destination.copy_(value)
