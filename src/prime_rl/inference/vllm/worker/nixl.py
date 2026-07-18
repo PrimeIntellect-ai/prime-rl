@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import wraps
 from math import prod
@@ -98,6 +98,10 @@ class PulledWeightTransferGroup:
     transfer_seconds: float
     post_seconds: float
     handle_wait_seconds: float
+    ready_publish_seconds: float
+    slot_stall_seconds: float
+    slot_recycle_seconds: float
+    recycled_credit_seconds: float
     acknowledgement_seconds: float
 
 
@@ -501,6 +505,19 @@ class NIXLWeightUpdateWorker(Worker):
 
         model = self.raw_model
         cancelled = Event()
+        source_buffer_count = len(self.buffer_rendezvous)
+        slot_recycles: list[tuple[int, Future[tuple[float, float]]] | None] = [None] * source_buffer_count
+
+        def await_slot_recycle(group_index: int) -> tuple[float, float, float]:
+            slot = group_index % source_buffer_count
+            pending = slot_recycles[slot]
+            if pending is None:
+                return 0.0, 0.0, 0.0
+            started = time.perf_counter()
+            recycle_seconds, credit_seconds = pending[1].result()
+            stall_seconds = time.perf_counter() - started
+            slot_recycles[slot] = None
+            return stall_seconds, recycle_seconds, credit_seconds
 
         def pull_group(group_index: int) -> PulledWeightTransferGroup:
             transfer_group = plan.groups[group_index]
@@ -560,6 +577,10 @@ class NIXLWeightUpdateWorker(Worker):
                 transfer_seconds=transfer_seconds,
                 post_seconds=post_seconds,
                 handle_wait_seconds=handle_wait_seconds,
+                ready_publish_seconds=0.0,
+                slot_stall_seconds=0.0,
+                slot_recycle_seconds=0.0,
+                recycled_credit_seconds=0.0,
                 acknowledgement_seconds=0.0,
             )
 
@@ -578,10 +599,40 @@ class NIXLWeightUpdateWorker(Worker):
             rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
             return time.perf_counter() - acknowledgement_started
 
-        def prefetch_group(group_index: int) -> PulledWeightTransferGroup:
+        def recycle_slot(group_index: int, ready_at: float) -> tuple[float, float]:
+            rendezvous = self.buffer_rendezvous[group_index % source_buffer_count]
+            started = time.perf_counter()
+            rendezvous.wait_for(
+                "trainer",
+                count=1,
+                status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
+                timeout=self.weight_transfer_timeout,
+                poll_interval=_BUFFER_POLL_INTERVAL,
+                cancelled=cancelled.is_set,
+            )
+            rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            finished = time.perf_counter()
+            return finished - started, finished - ready_at
+
+        def prefetch_group(
+            group_index: int,
+            recycle_executor: ThreadPoolExecutor,
+        ) -> PulledWeightTransferGroup:
             torch.cuda.set_device(self.device)
+            slot_stall_seconds, slot_recycle_seconds, recycled_credit_seconds = await_slot_recycle(group_index)
             pulled = pull_group(group_index)
-            pulled.acknowledgement_seconds = acknowledge_group(group_index)
+            pulled.slot_stall_seconds = slot_stall_seconds
+            pulled.slot_recycle_seconds = slot_recycle_seconds
+            pulled.recycled_credit_seconds = recycled_credit_seconds
+            ready_started = time.perf_counter()
+            rendezvous = self.buffer_rendezvous[group_index % source_buffer_count]
+            rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
+            ready_at = time.perf_counter()
+            pulled.ready_publish_seconds = ready_at - ready_started
+            slot_recycles[group_index % source_buffer_count] = (
+                group_index,
+                recycle_executor.submit(recycle_slot, group_index, ready_at),
+            )
             return pulled
 
         def replay_group(transfer_group: WeightTransferGroup) -> None:
@@ -614,34 +665,65 @@ class NIXLWeightUpdateWorker(Worker):
                 info.reset()
 
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
+            initialize_started = time.perf_counter()
             initialize_layerwise_reload(model)
+            initialize_seconds = time.perf_counter() - initialize_started
             pipelined = plan.receive_buffer_count > 1
             executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nixl-prefetch") if pipelined else None
+            recycle_executor = (
+                ThreadPoolExecutor(max_workers=1, thread_name_prefix="nixl-credit") if pipelined else None
+            )
             source_wait_seconds = 0.0
             transfer_seconds = 0.0
             post_seconds = 0.0
             handle_wait_seconds = 0.0
+            ready_publish_seconds = 0.0
+            slot_stall_seconds = 0.0
+            slot_recycle_seconds = 0.0
+            recycled_credit_seconds: list[float] = []
+            initial_pull_wait_seconds = 0.0
+            exposed_prefetch_wait_seconds = 0.0
+            final_drain_seconds = 0.0
             acknowledgement_seconds = 0.0
             replay_seconds = 0.0
             slowest_transfer_seconds = 0.0
             slowest_transfer_group = plan.groups[0].name
+            pipeline_started = time.perf_counter()
             try:
-                pull = executor.submit(prefetch_group, 0) if executor is not None else None
+                pull = (
+                    executor.submit(prefetch_group, 0, recycle_executor)
+                    if executor is not None and recycle_executor is not None
+                    else None
+                )
                 for group_index in range(len(plan.groups)):
-                    pulled = pull.result() if pull is not None else pull_group(group_index)
+                    if pull is not None:
+                        pull_wait_started = time.perf_counter()
+                        pulled = pull.result()
+                        pull_wait_seconds = time.perf_counter() - pull_wait_started
+                        if group_index == 0:
+                            initial_pull_wait_seconds = pull_wait_seconds
+                        else:
+                            exposed_prefetch_wait_seconds += pull_wait_seconds
+                    else:
+                        pulled = pull_group(group_index)
                     transfer_group = pulled.group
                     source_wait_seconds += pulled.source_wait_seconds
                     transfer_seconds += pulled.transfer_seconds
                     post_seconds += pulled.post_seconds
                     handle_wait_seconds += pulled.handle_wait_seconds
+                    ready_publish_seconds += pulled.ready_publish_seconds
+                    slot_stall_seconds += pulled.slot_stall_seconds
+                    slot_recycle_seconds += pulled.slot_recycle_seconds
+                    if pulled.recycled_credit_seconds:
+                        recycled_credit_seconds.append(pulled.recycled_credit_seconds)
                     acknowledgement_seconds += pulled.acknowledgement_seconds
                     if pulled.transfer_seconds > slowest_transfer_seconds:
                         slowest_transfer_seconds = pulled.transfer_seconds
                         slowest_transfer_group = transfer_group.name
 
                     torch.cuda.synchronize(self.device)
-                    if executor is not None and group_index + 1 < len(plan.groups):
-                        pull = executor.submit(prefetch_group, group_index + 1)
+                    if executor is not None and recycle_executor is not None and group_index + 1 < len(plan.groups):
+                        pull = executor.submit(prefetch_group, group_index + 1, recycle_executor)
 
                     replay_started = time.perf_counter()
                     replay_group(transfer_group)
@@ -650,19 +732,37 @@ class NIXLWeightUpdateWorker(Worker):
 
                     if not pipelined:
                         acknowledgement_seconds += acknowledge_group(group_index)
+
+                if pipelined:
+                    final_drain_started = time.perf_counter()
+                    pending_groups = sorted(pending[0] for pending in slot_recycles if pending is not None)
+                    for group_index in pending_groups:
+                        _, recycle_seconds, credit_seconds = await_slot_recycle(group_index)
+                        slot_recycle_seconds += recycle_seconds
+                        if credit_seconds:
+                            recycled_credit_seconds.append(credit_seconds)
+                    final_drain_seconds = time.perf_counter() - final_drain_started
             finally:
                 cancelled.set()
                 if executor is not None:
                     executor.shutdown(wait=True, cancel_futures=True)
+                if recycle_executor is not None:
+                    recycle_executor.shutdown(wait=True, cancel_futures=True)
+            pipeline_seconds = time.perf_counter() - pipeline_started
 
             finalize_started = time.perf_counter()
             finalize_layerwise_reload(model, self.model_runner.model_config)
             finalize_seconds = time.perf_counter() - finalize_started
             if pipelined:
+                average_credit_seconds = sum(recycled_credit_seconds) / max(len(recycled_credit_seconds), 1)
+                maximum_credit_seconds = max(recycled_credit_seconds, default=0.0)
                 logger.info(
                     "NIXL update profile rank=%d: groups=%d, source_wait=%.2fs, "
                     "rdma=%.2fs (post=%.2fs, wait=%.2fs, window=%d, %.1f Gb/s, "
-                    "slowest=%s/%.2fs), source_ack=%.2fs, replay=%.2fs, finalize=%.2fs",
+                    "slowest=%s/%.2fs), sync=(ready_publish=%.2fs, credit_avg=%.2fs, "
+                    "credit_max=%.2fs, recycle_worker_sum=%.2fs, slot_wait_sum=%.2fs, "
+                    "final_drain=%.2fs), initial_pull_wait=%.2fs, exposed_prefetch_wait=%.2fs, "
+                    "replay=%.2fs, initialize=%.2fs, pipeline=%.2fs, finalize=%.2fs",
                     self.mx_rendezvous.rank,
                     len(plan.groups),
                     source_wait_seconds,
@@ -673,8 +773,17 @@ class NIXLWeightUpdateWorker(Worker):
                     plan.total_bytes * 8 / max(transfer_seconds, 1e-9) / 1e9,
                     slowest_transfer_group,
                     slowest_transfer_seconds,
-                    acknowledgement_seconds,
+                    ready_publish_seconds,
+                    average_credit_seconds,
+                    maximum_credit_seconds,
+                    slot_recycle_seconds,
+                    slot_stall_seconds,
+                    final_drain_seconds,
+                    initial_pull_wait_seconds,
+                    exposed_prefetch_wait_seconds,
                     replay_seconds,
+                    initialize_seconds,
+                    pipeline_seconds,
                     finalize_seconds,
                 )
             else:
