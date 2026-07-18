@@ -7,7 +7,7 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import wraps
-from math import prod
+from math import gcd, prod
 from threading import Event
 from typing import TYPE_CHECKING, Any, cast
 
@@ -33,7 +33,7 @@ from prime_rl.weight_transfer.lazy import BakeRecorder, RecordedCopy
 from prime_rl.weight_transfer.mx import MxRendezvous
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.sharding import route_region, zip_src_dst
-from prime_rl.weight_transfer.wire import TrainerTable, decode_table
+from prime_rl.weight_transfer.wire import TrainerShard, TrainerTable, decode_table
 
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
@@ -43,6 +43,13 @@ else:
 logger = init_logger("vllm.inference.vllm.worker_nixl")
 _BUFFER_POLL_INTERVAL = 0.01
 _MAX_INFLIGHT_READS = 1
+
+
+def replica_stride(replica_count: int, inference_world_size: int) -> int:
+    stride = min(inference_world_size, replica_count)
+    while gcd(stride, replica_count) != 1:
+        stride += 1
+    return stride
 
 
 @dataclass
@@ -81,6 +88,7 @@ class WeightTransferGroup:
     name: str
     layers: list[LayerWeightTransferPlan]
     pulls: list[tuple[Any, Any, list[int]]]
+    gathered_source: str | None
 
 
 @dataclass
@@ -89,6 +97,8 @@ class WeightTransferPlan:
     receive_buffer_count: int
     groups: list[WeightTransferGroup]
     total_bytes: int
+    direct_bytes: int
+    gathered_bytes: int
 
 
 @dataclass
@@ -174,14 +184,18 @@ class NIXLWeightUpdateWorker(Worker):
         self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.weight_transfer_plan = plan
         logger.info(
-            "NIXL plan baked in %.2fs: rank=%d, groups=%d, source_buffers=%d, copies=%d, bytes=%d, pull_lists=%d",
+            "NIXL plan baked in %.2fs: rank=%d, groups=%d, source_buffers=%d, copies=%d, "
+            "bytes=%d (direct=%d, gathered=%d), pull_lists=%d, gathered_groups=%d",
             time.perf_counter() - started,
             self.mx_rendezvous.rank,
             len(plan.groups),
             table.buffer_count,
             sum(len(layer.copies) + len(layer.persistent_copies) for group in plan.groups for layer in group.layers),
             plan.total_bytes,
+            plan.direct_bytes,
+            plan.gathered_bytes,
             sum(len(group.pulls) for group in plan.groups),
+            sum(group.gathered_source is not None for group in plan.groups),
         )
         return plan
 
@@ -338,7 +352,12 @@ class NIXLWeightUpdateWorker(Worker):
         agent_devices: dict[int, int] = {
             shard.agent: shard.device_id for tensor in table.tensors for shard in tensor.shards
         }
-        total_bytes = 0
+        gathered_groups = {group.group: group for group in table.gathered_groups}
+        agent_devices.update(
+            (replica.agent, replica.device_id) for group in table.gathered_groups for replica in group.replicas
+        )
+        direct_bytes = 0
+        gathered_bytes = 0
         peer_names: dict[int, str] = {}
         transfer_groups: list[WeightTransferGroup] = []
 
@@ -347,6 +366,14 @@ class NIXLWeightUpdateWorker(Worker):
             persistent_plans_by_layer: dict[int, list[TensorCopyPlan]] = defaultdict(list)
             local_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
             remote_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
+            gathered_group = gathered_groups.get(group_index)
+            gathered_replica = None
+            gathered_source = None
+            if gathered_group is not None:
+                source_stride = replica_stride(len(gathered_group.replicas), self.inference_world_size)
+                replica_index = (self.mx_rendezvous.rank + group_index * source_stride) % len(gathered_group.replicas)
+                gathered_replica = gathered_group.replicas[replica_index]
+                gathered_source = table.agents[gathered_replica.agent].name
             cursor = (group_index % receive_buffer_count) * largest_group_elements
 
             for copy in copies_by_group[group_index]:
@@ -364,22 +391,44 @@ class NIXLWeightUpdateWorker(Worker):
 
                 source = tensors[copy.src_name]
                 source_dtype = getattr(torch, source.dtype)
-                offset, shape, stride = resolve_chain_region(
+                offset, shape, transport_stride = resolve_chain_region(
                     tuple(source.shape), source_dtype, specification.transport_ops
                 )
                 row_numel = prod(source.shape[1:]) if len(source.shape) > 1 else 1
-                source_pieces = route_region(
-                    region_elem_runs(offset, shape, stride),
-                    source.shards,
-                    row_numel,
-                    source_dtype.itemsize,
-                )
-                for agent, source_addr, destination_addr, nbytes in zip_src_dst(
-                    source_pieces, tensor_runs(staging_tensor)
-                ):
-                    local_descs[agent].append((destination_addr, nbytes, self.device.index))
-                    remote_descs[agent].append((source_addr, nbytes, agent_devices[agent]))
-                    total_bytes += nbytes
+                region_runs = region_elem_runs(offset, shape, transport_stride)
+                destination_runs = tensor_runs(staging_tensor)
+                if source.gathered_shards:
+                    assert gathered_replica is not None
+                    physical_shards = [
+                        TrainerShard(
+                            agent=gathered_replica.agent,
+                            row_start=shard.row_start,
+                            num_rows=shard.num_rows,
+                            addr=gathered_replica.addr + shard.offset_bytes,
+                            row_bytes=shard.row_bytes,
+                            device_id=gathered_replica.device_id,
+                        )
+                        for shard in source.gathered_shards
+                    ]
+                    units = zip_src_dst(
+                        route_region(region_runs, physical_shards, row_numel, source_dtype.itemsize),
+                        destination_runs,
+                    )
+                    for agent, source_addr, destination_addr, nbytes in units:
+                        local_descs[agent].append((destination_addr, nbytes, self.device.index))
+                        remote_descs[agent].append((source_addr, nbytes, agent_devices[agent]))
+                        gathered_bytes += nbytes
+                else:
+                    source_pieces = route_region(
+                        region_runs,
+                        source.shards,
+                        row_numel,
+                        source_dtype.itemsize,
+                    )
+                    for agent, source_addr, destination_addr, nbytes in zip_src_dst(source_pieces, destination_runs):
+                        local_descs[agent].append((destination_addr, nbytes, self.device.index))
+                        remote_descs[agent].append((source_addr, nbytes, agent_devices[agent]))
+                        direct_bytes += nbytes
 
             layer_plans: list[LayerWeightTransferPlan] = []
             for layer in layers:
@@ -425,11 +474,19 @@ class NIXLWeightUpdateWorker(Worker):
             if receive_buffer_count > 1 and pulls:
                 offset = (group_index + self.mx_rendezvous.rank * len(pulls) // self.inference_world_size) % len(pulls)
                 pulls = pulls[offset:] + pulls[:offset]
+            if gathered_source is not None:
+                logger.debug(
+                    "NIXL gathered source rank=%d group=%s source=%s",
+                    self.mx_rendezvous.rank,
+                    group_name,
+                    gathered_source,
+                )
             transfer_groups.append(
                 WeightTransferGroup(
                     name=group_name,
                     layers=layer_plans,
                     pulls=pulls,
+                    gathered_source=gathered_source,
                 )
             )
 
@@ -461,7 +518,9 @@ class NIXLWeightUpdateWorker(Worker):
             receive_arena=receive_arena,
             receive_buffer_count=receive_buffer_count,
             groups=transfer_groups,
-            total_bytes=total_bytes,
+            total_bytes=direct_bytes + gathered_bytes,
+            direct_bytes=direct_bytes,
+            gathered_bytes=gathered_bytes,
         )
 
     @torch.no_grad()
