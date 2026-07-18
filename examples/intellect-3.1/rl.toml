@@ -51,7 +51,7 @@ oversampling_factor = 2
 name = "swe"
 ratio = 0.3
 taskset = { id = "r2e-gym-v1" }
-harness = { id = "default", runtime = { type = "prime", labels = ["intellect-3.1", "swe"] } }
+harness = { id = "bash", runtime = { type = "prime", labels = ["intellect-3.1", "swe"] } }
 
 [[orchestrator.train.env]]
 name = "deepdive"
@@ -87,7 +87,7 @@ interval = 25
 [[orchestrator.eval.env]]
 name = "swe-bench-verified"
 taskset = { id = "swebench-verified-v1" }
-harness = { id = "default", runtime = { type = "prime", labels = ["intellect-3.1", "swe-bench-verified"] } }
+harness = { id = "bash", runtime = { type = "prime", labels = ["intellect-3.1", "swe-bench-verified"] } }
 
 [[orchestrator.eval.env]]
 name = "aime2025"
