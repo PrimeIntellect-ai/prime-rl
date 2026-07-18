@@ -34,7 +34,7 @@ Field values come from three sources — Pydantic defaults, TOML files (passed w
 The `@` token introduces a TOML file. Multiple `@` arguments compose left-to-right, deep-merged — unset fields in an overlay keep the base value:
 
 ```bash
-uv run rl @ examples/reverse_text/rl.toml                      # one file
+uv run rl @ examples/basic/reverse_text/rl.toml                      # one file
 uv run rl @ base.toml @ overlay.toml                           # left to right
 uv run rl --trainer @ trainer.toml --orchestrator @ orch.toml  # per-section
 uv run rl @ base.toml --trainer @ trainer.toml                 # mixed
@@ -218,18 +218,19 @@ The shipped end-to-end examples in [`examples/`](https://github.com/PrimeIntelle
 
 **Advanced** (32–2048 GPUs, SLURM):
 
-- [**Qwen 3 30B – A3B Math**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/qwen30b_math) — `Qwen3-30B-A3B` on hard math.
-- [**Qwen 3 30B – A3B SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/qwen30b_swe) — `Qwen3-30B-A3B` on hard SWE.
-- [**INTELLECT-3.1**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/intellect-3.1) — reproduces our INTELLECT-3.1 training run.
-- [**MiniMax-M2.5 SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/minimax_m2.5_swe) — `MiniMax-M2.5` on agentic SWE.
-- [**High-throughput GLM-5**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/glm5_pd_disag) — `GLM-5` with P/D disaggregation and FP8 inference.
+- [**Qwen3-30B-A3B**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/qwen3-30b-a3b) — `Qwen3-30B-A3B` on math, SWE, and tool use.
+- [**GLM-4.5-Air**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-4.5-air) — `GLM-4.5-Air` on search, SWE, and terminal.
+- [**Nemotron-3-Super**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/nemotron-3-super) — `Nemotron-3-Super-120B` hybrid-Mamba MoE on SWE at 131k context.
+- [**MiniMax-M2.5 SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/minimax-m2.5) — `MiniMax-M2.5` on agentic SWE.
+- [**INTELLECT-3.1**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/intellect-3.1) — reproduces our INTELLECT-3.1 training run.
+- [**High-throughput GLM-5**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.2) — large-scale `GLM-5`/`GLM-5.2` inference with P/D disaggregation and FP8.
 
 ### Worked Example: Compose, Override, Dry-Run
 
 Start from a shipped base config, override two fields on the CLI, and dry-run:
 
 ```bash
-uv run rl @ examples/reverse_text/rl.toml \
+uv run rl @ examples/basic/reverse_text/rl.toml \
   --wandb.name my-experiment \
   --trainer.optim.lr 5e-6 \
   --output-dir /tmp/reverse-dry \

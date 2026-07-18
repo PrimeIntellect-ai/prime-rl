@@ -45,7 +45,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 The minimal RL run trains an SFT-warmed `Qwen3-0.6B` on the `reverse-text` task — the env is bundled with the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) submodule, so nothing else needs to be installed:
 
 ```bash
-uv run rl @ examples/reverse_text/rl.toml
+uv run rl @ examples/basic/reverse_text/rl.toml
 ```
 
 ### Useful Knobs
@@ -166,7 +166,7 @@ See [Algorithms § Multi-Turn Trajectories](algorithms.md#multi-turn-trajectorie
 The minimal SFT run trains `Qwen3-0.6B` on the `reverse-text` SFT dataset:
 
 ```bash
-uv run sft @ examples/reverse_text/sft.toml --wandb
+uv run sft @ examples/basic/reverse_text/sft.toml --wandb
 ```
 
 Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and Torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
@@ -336,7 +336,7 @@ Requires `PRIME_API_KEY` (set via `prime login` or env var) and an allowlisted t
 
 ## Rules of Thumb
 
-- **Start small.** Run `examples/reverse_text/rl.toml` end-to-end on 2 GPUs before scaling. If the smoke run finishes cleanly, your install is good.
+- **Start small.** Run `examples/basic/reverse_text/rl.toml` end-to-end on 2 GPUs before scaling. If the smoke run finishes cleanly, your install is good.
 - **Batch size ≥ 64.** Smaller batches give noisy gradient estimates and the trainer's overhead-per-step dominates throughput. 64 is the practical floor; 128–512 is the range for quick ablations; production RL often runs at 1024+.
 - **Group size ≥ 8.** Bigger groups (`orchestrator.group_size`) make it more likely that a task produces a mix of high- and low-reward rollouts, which is what gives the trainer a usable signal — if all rollouts in a group succeed or all fail, the within-group advantage collapses to zero and the trainer learns nothing from that task. Bigger groups also tighten advantage normalization. 8 is the floor; 16–32 is common.
 - **Pin `output_dir` per run.** Sharing a directory across runs will mix rollouts and break resumes. `--output-dir outputs/<unique-name>` is the simplest discipline.

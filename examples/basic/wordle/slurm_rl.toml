@@ -1,0 +1,5 @@
+# Usage: uv run rl @ examples/basic/wordle/rl.toml @ examples/basic/wordle/slurm_rl.toml
+output_dir = "outputs/wordle-rl"
+
+[slurm]
+job_name = "wordle-rl"

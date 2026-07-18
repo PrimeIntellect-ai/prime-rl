@@ -26,9 +26,9 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 Launches inference server, orchestrator, and trainer as subprocesses.
 
 ```bash
-uv run rl @ examples/reverse_text/rl.toml
-uv run rl @ examples/reverse_text/rl.toml @ examples/reverse_text/slurm_rl.toml   # SLURM
-uv run rl @ examples/reverse_text/rl.toml --dry-run                                # write scripts, don't run
+uv run rl @ examples/basic/reverse_text/rl.toml
+uv run rl @ examples/basic/reverse_text/rl.toml @ examples/basic/reverse_text/slurm_rl.toml   # SLURM
+uv run rl @ examples/basic/reverse_text/rl.toml --dry-run                                # write scripts, don't run
 ```
 
 - Config: `RLConfig` (`packages/prime-rl-configs/src/prime_rl/configs/rl.py`)
@@ -47,9 +47,9 @@ uv run rl @ examples/reverse_text/rl.toml --dry-run                             
 Launches torchrun internally — never call torchrun directly.
 
 ```bash
-uv run sft @ examples/reverse_text/sft.toml
-uv run sft @ examples/reverse_text/sft.toml --slurm
-uv run sft @ examples/reverse_text/sft.toml --dry-run
+uv run sft @ examples/basic/reverse_text/sft.toml
+uv run sft @ examples/basic/reverse_text/sft.toml --slurm
+uv run sft @ examples/basic/reverse_text/sft.toml --dry-run
 ```
 
 - Config: `SFTConfig` (`packages/prime-rl-configs/src/prime_rl/configs/sft.py`)
@@ -61,7 +61,7 @@ uv run sft @ examples/reverse_text/sft.toml --dry-run
 OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly.
 
 ```bash
-uv run inference @ configs/debug/infer.toml
+uv run inference --model.name Qwen/Qwen3-0.6B
 uv run inference --model.name Qwen/Qwen3-0.6B --model.enforce-eager
 ```
 

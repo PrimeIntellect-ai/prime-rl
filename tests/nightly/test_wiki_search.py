@@ -27,7 +27,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "examples/wiki_search/rl.toml",
+        "examples/basic/wiki_search/rl.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",

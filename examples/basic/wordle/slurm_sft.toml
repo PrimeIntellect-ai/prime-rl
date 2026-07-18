@@ -1,0 +1,5 @@
+# Usage: uv run sft @ examples/basic/wordle/sft.toml @ examples/basic/wordle/slurm_sft.toml
+output_dir = "outputs/wordle-sft"
+
+[slurm]
+job_name = "wordle-sft"

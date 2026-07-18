@@ -1,0 +1,51 @@
+# Wiki-search on 2 GPUs (1 trainer + 1 inference) — a multi-turn tool-calling task (the model
+# searches a wiki corpus via MCP tools), trained with LoRA on Qwen3-4B. Dev-sized mirror of
+# examples/basic/wiki_search.
+
+max_steps = 200
+seq_len = 4096
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "wiki-search"
+name = "wiki-search"
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+[trainer.model.lora]
+rank = 8
+dropout = 0.0
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
+
+[orchestrator]
+batch_size = 128
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+
+[[orchestrator.train.env]]
+name = "wiki-search"
+taskset = { id = "wiki-search-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
+
+[ckpt] # Checkpoint at the end of training
+
+[inference.model]
+tool_call_parser = "hermes"

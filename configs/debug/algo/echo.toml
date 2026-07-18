@@ -1,0 +1,51 @@
+# ECHO on the multi-turn alphabet-sort V1 taskset: GRPO on
+# action tokens + weighted CE on the env's observation tokens.
+#   uv run rl @ configs/debug/algo/echo.toml
+
+max_steps = 20
+seq_len = 4096
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "algorithms-debug"
+name = "debug-echo"
+
+[orchestrator]
+batch_size = 32
+group_size = 4
+
+# alphabet-sort's feedback arrives as user messages, so train the user role
+# instead of echo's tool default.
+[orchestrator.algo]
+type = "echo"
+
+[orchestrator.algo.roles.user]
+alpha = 0.1
+
+[[orchestrator.train.env]]
+name = "alphabet-sort"
+taskset = { id = "alphabet-sort-v1", min_turns = 3, max_turns = 5, task = { power_per_turn = false } }
+harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+
+# ECHO learns from observation tokens even when the GRPO advantage collapses
+# to zero — keep zero-advantage rollouts in the batch.
+[[orchestrator.post_batch_filters]]
+type = "zero_advantage"
+enforce = false
+
+# Qwen3 finetune with the standard PI template patch; always re-emits prior
+# <think> blocks, matched by renderer thinking_retention.
+[orchestrator.renderer]
+name = "qwen3"
+thinking_retention = "all"
+
+[trainer.optim]
+lr = 1e-6
+
+[inference]
+gpu_memory_utilization = 0.5
