@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
 from itertools import cycle
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -56,11 +55,6 @@ class InferencePool(Protocol):
         """Get admin clients."""
         ...
 
-    @property
-    def admin_world_sizes(self) -> list[int] | None:
-        """Per-admin-client inference world sizes, when discovered."""
-        ...
-
     def update_model_name(self, model_name: str) -> None:
         """Update the model name."""
         ...
@@ -80,6 +74,18 @@ class InferencePool(Protocol):
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         """Wait for inference pool to be ready."""
+        ...
+
+    async def init_nccl_broadcast(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int | None,
+        quantize_in_weight_transfer: bool,
+    ) -> None:
+        """Initialize the inference workers' NCCL receivers."""
         ...
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
@@ -139,6 +145,8 @@ class StaticInferencePool:
         eval_client_type: str = "openai_chat_completions",
         renderer_config: RendererConfig | None = None,
         pool_size: int | None = None,
+        *,
+        admin_clients: list[AsyncClient] | None = None,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
         self._train_clients = setup_clients(
@@ -149,7 +157,7 @@ class StaticInferencePool:
             pool_size=pool_size,
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
-        self._admin_clients = setup_admin_clients(client_config)
+        self._admin_clients = setup_admin_clients(client_config) if admin_clients is None else admin_clients
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
@@ -163,10 +171,6 @@ class StaticInferencePool:
     @property
     def admin_clients(self) -> list[AsyncClient]:
         return self._admin_clients
-
-    @property
-    def admin_world_sizes(self) -> list[int] | None:
-        return None
 
     def update_model_name(self, model_name: str) -> None:
         self.model_name = model_name
@@ -189,6 +193,24 @@ class StaticInferencePool:
         )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
+    async def init_nccl_broadcast(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int | None,
+        quantize_in_weight_transfer: bool,
+    ) -> None:
+        await init_nccl_broadcast(
+            self._admin_clients,
+            host=host,
+            port=port,
+            timeout=timeout,
+            inference_world_size=inference_world_size,
+            quantize_in_weight_transfer=quantize_in_weight_transfer,
+        )
+
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
 
@@ -199,171 +221,6 @@ class StaticInferencePool:
 
     async def stop(self) -> None:
         await self._scorer.aclose()
-
-
-@dataclass(frozen=True)
-class DiscoveredDynamoWorker:
-    component: str
-    instance_id: int
-    admin_base_url: str
-    world_size: int
-    system_url: str | None
-    routes: tuple[str, ...]
-
-
-class DynamoDiscoveryPending(ValueError):
-    """A well-formed discovery snapshot that is not ready yet."""
-
-
-def _is_retryable_dynamo_error(exception: BaseException) -> bool:
-    if isinstance(exception, httpx.HTTPStatusError):
-        return exception.response.status_code == 429 or exception.response.status_code >= 500
-    return isinstance(exception, (DynamoDiscoveryPending, httpx.TransportError))
-
-
-def _parse_dynamo_worker(raw_worker: object, model_name: str) -> DiscoveredDynamoWorker:
-    if not isinstance(raw_worker, dict):
-        raise ValueError("Dynamo RL discovery returned a malformed worker")
-    if raw_worker.get("error"):
-        raise DynamoDiscoveryPending(f"Dynamo RL worker probe is not ready: {raw_worker['error']}")
-    if raw_worker.get("model") != model_name:
-        raise ValueError(f"Dynamo RL worker model {raw_worker.get('model')!r} does not match {model_name!r}")
-
-    component = raw_worker.get("component")
-    instance_id = raw_worker.get("instance_id")
-    admin_base_url = raw_worker.get("admin_base_url")
-    system_url = raw_worker.get("system_url")
-    world_size = raw_worker.get("world_size")
-    routes = raw_worker.get("routes", [])
-    if not isinstance(component, str) or not component:
-        raise ValueError("Dynamo RL worker is missing component identity")
-    if not isinstance(instance_id, int) or isinstance(instance_id, bool) or instance_id < 0:
-        raise ValueError("Dynamo RL worker has an invalid instance_id")
-    if not isinstance(admin_base_url, str) or not admin_base_url:
-        raise ValueError("Dynamo RL worker is missing admin_base_url")
-    if system_url is not None and (not isinstance(system_url, str) or not system_url):
-        raise ValueError("Dynamo RL worker has an invalid system_url")
-    if not isinstance(world_size, int) or isinstance(world_size, bool) or world_size <= 0:
-        raise ValueError("Dynamo RL worker has an invalid world_size")
-    if not isinstance(routes, list) or any(not isinstance(route, str) or not route for route in routes):
-        raise ValueError("Dynamo RL worker has an invalid routes list")
-    return DiscoveredDynamoWorker(
-        component=component,
-        instance_id=instance_id,
-        admin_base_url=admin_base_url.rstrip("/"),
-        world_size=world_size,
-        system_url=system_url.rstrip("/") if system_url is not None else None,
-        routes=tuple(sorted(set(routes))),
-    )
-
-
-def _validate_dynamo_snapshot(workers: tuple[DiscoveredDynamoWorker, ...]) -> None:
-    if not workers:
-        raise DynamoDiscoveryPending("Dynamo RL discovery returned no workers yet")
-    identities = [(worker.component, worker.instance_id) for worker in workers]
-    admin_urls = [worker.admin_base_url for worker in workers]
-    system_urls = [worker.system_url for worker in workers if worker.system_url is not None]
-    if len(set(identities)) != len(identities):
-        raise ValueError("Dynamo RL discovery returned duplicate worker identities")
-    if len(set(admin_urls)) != len(admin_urls):
-        raise ValueError("Dynamo RL discovery returned duplicate admin endpoints")
-    if len(set(system_urls)) != len(system_urls):
-        raise ValueError("Dynamo RL discovery returned duplicate system endpoints")
-    lora_route_presence = ["update/load_lora" in worker.routes for worker in workers]
-    if any(lora_route_presence) and not all(lora_route_presence):
-        raise ValueError("Dynamo RL discovery returned a partial update/load_lora capability snapshot")
-    if all(lora_route_presence) and any(worker.system_url is None for worker in workers):
-        raise ValueError("Dynamo RL discovery returned update/load_lora without a system_url")
-
-
-def _parse_dynamo_workers(payload: object, model_name: str) -> tuple[DiscoveredDynamoWorker, ...]:
-    if not isinstance(payload, dict) or not isinstance(payload.get("workers"), list):
-        raise ValueError("Dynamo RL discovery response must contain a workers list")
-    workers = tuple(_parse_dynamo_worker(worker, model_name) for worker in payload["workers"])
-    _validate_dynamo_snapshot(workers)
-    return tuple(sorted(workers, key=lambda worker: (worker.component, worker.instance_id)))
-
-
-class DynamoInferencePool(StaticInferencePool):
-    """Static request pool whose direct vLLM admin clients come from Dynamo discovery."""
-
-    def __init__(self, client_config: ClientConfig, workers: tuple[DiscoveredDynamoWorker, ...], **kwargs):
-        discovered_config = client_config.model_copy(
-            update={"admin_base_url": [worker.admin_base_url for worker in workers]}
-        )
-        super().__init__(discovered_config, **kwargs)
-        self._admin_world_sizes = [worker.world_size for worker in workers]
-        self._lora_update_clients = []
-        if workers and all("update/load_lora" in worker.routes for worker in workers):
-            system_urls = [worker.system_url for worker in workers if worker.system_url is not None]
-            self._lora_update_clients = setup_discovered_control_clients(system_urls)
-        frontend_config = client_config.model_copy(update={"admin_base_url": None})
-        self._frontend_model_clients = setup_admin_clients(frontend_config)
-
-    @property
-    def admin_world_sizes(self) -> list[int]:
-        return list(self._admin_world_sizes)
-
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        if lora_name is not None and weight_dir is not None:
-            if not self._lora_update_clients:
-                raise RuntimeError(
-                    "Dynamo LoRA update requires every worker to advertise system_url and update/load_lora"
-                )
-            try:
-                await _pause_engines(self._admin_clients, step=step)
-                await load_dynamo_lora_adapter(self._lora_update_clients, lora_name, weight_dir)
-                await wait_for_model(
-                    self._frontend_model_clients,
-                    lora_name,
-                    timeout=self._wait_for_ready_timeout,
-                )
-            finally:
-                await _resume_engines(self._admin_clients)
-            return
-        await super().update_weights(weight_dir, lora_name=lora_name, step=step)
-
-    async def stop(self) -> None:
-        await super().stop()
-        await asyncio.gather(
-            *(client.aclose() for client in [*self._lora_update_clients, *self._frontend_model_clients])
-        )
-
-    @classmethod
-    async def from_config(
-        cls,
-        client_config: ClientConfig,
-        model_name: str,
-        expected_inference_world_size: int | None = None,
-        **kwargs,
-    ) -> DynamoInferencePool:
-        if client_config.dynamo_discovery_url is None:
-            raise ValueError("Dynamo inference pool requires dynamo_discovery_url")
-        discovery_url = client_config.dynamo_discovery_url.rstrip("/").removesuffix("/v1")
-        async with AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-            workers = None
-            async for attempt in AsyncRetrying(
-                stop=stop_after_delay(client_config.wait_for_ready_timeout),
-                wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
-                retry=retry_if_exception(_is_retryable_dynamo_error),
-                reraise=True,
-            ):
-                with attempt:
-                    response = await client.get(f"{discovery_url}/v1/rl/workers")
-                    response.raise_for_status()
-                    workers = _parse_dynamo_workers(response.json(), model_name)
-                    discovered_world_size = sum(worker.world_size for worker in workers)
-                    if (
-                        expected_inference_world_size is not None
-                        and discovered_world_size != expected_inference_world_size
-                    ):
-                        raise DynamoDiscoveryPending(
-                            "Dynamo RL discovery returned "
-                            f"inference_world_size={discovered_world_size}; "
-                            f"waiting for expected inference_world_size={expected_inference_world_size}"
-                        )
-        assert workers is not None
-        return cls(client_config, workers, model_name=model_name, **kwargs)
 
 
 async def setup_inference_pool(
@@ -388,7 +245,9 @@ async def setup_inference_pool(
             pool_size=pool_size,
         )
 
-    if client_config.dynamo_discovery_url is not None and client_config.admin_base_url is None:
+    if client_config.is_dynamo:
+        from prime_rl.utils.dynamo import DynamoInferencePool
+
         return await DynamoInferencePool.from_config(
             client_config,
             model_name=model_name,
@@ -473,18 +332,6 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
         )
 
     return [_setup_admin_client(base_url) for base_url in urls]
-
-
-def setup_discovered_control_clients(urls: list[str]) -> list[AsyncClient]:
-    """Create credential-free clients for worker-advertised control URLs."""
-    return [
-        AsyncClient(
-            base_url=url.rstrip("/"),
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
-            timeout=httpx.Timeout(None),
-        )
-        for url in urls
-    ]
 
 
 async def maybe_check_has_model(
@@ -606,6 +453,8 @@ async def update_weights(
     weight_dir: Path | None,
     lora_name: str | None = None,
     step: int = 0,
+    *,
+    use_native_collective_rpc: bool = False,
 ) -> None:
     """Update weights on static inference servers.
 
@@ -635,16 +484,25 @@ async def update_weights(
                 nccl_ready_file.touch()
                 logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
+            if use_native_collective_rpc:
+                update_path = "/collective_rpc"
+                update_payload = {
+                    "method": "update_weights_from_path",
+                    "args": [weight_dir_posix],
+                }
+            else:
+                update_path = "/update_weights"
+                update_payload = {"weight_dir": weight_dir_posix}
             await asyncio.gather(
-                *[
+                *(
                     _admin_post(
                         admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
+                        update_path,
+                        json=update_payload,
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                     )
                     for admin_client in admin_clients
-                ]
+                )
             )
         finally:
             await _resume_engines(admin_clients)
@@ -706,52 +564,6 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
 
 
-async def load_dynamo_lora_adapter(update_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
-    """Load and advertise a LoRA through each discovered Dynamo worker."""
-    timeout = httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0)
-    payload = {
-        "lora_name": lora_name,
-        "source": {"uri": lora_path.resolve().as_uri()},
-        "load_inplace": True,
-    }
-
-    @retry(
-        retry=retry_if_exception(_is_retryable_lora_error),
-        stop=stop_after_delay(LORA_LOAD_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
-    async def _load(update_client: AsyncClient) -> None:
-        response = await update_client.post(
-            "/v1/loras",
-            json=payload,
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        result = response.json()
-        if isinstance(result, dict) and result.get("status") == "error":
-            raise RuntimeError(result.get("message") or "Dynamo LoRA update failed")
-
-    await asyncio.gather(*[_load(update_client) for update_client in update_clients])
-
-
-async def wait_for_model(clients: list[AsyncClient], model_name: str, timeout: int) -> None:
-    """Wait until every Dynamo request-plane endpoint advertises a model."""
-    async for attempt in AsyncRetrying(
-        stop=stop_after_delay(timeout),
-        wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
-        retry=retry_if_exception(_is_retryable_dynamo_error),
-        reraise=True,
-    ):
-        with attempt:
-            responses = await asyncio.gather(*(client.get("/v1/models") for client in clients))
-            for response in responses:
-                response.raise_for_status()
-                models = response.json().get("data", [])
-                if not any(model.get("id") == model_name for model in models):
-                    raise DynamoDiscoveryPending(f"Dynamo frontend has not published model {model_name!r}")
-
-
 async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) -> None:
     """Make a HTTP post request to the vLLM server to unload a LoRA adapter."""
     logger = get_logger()
@@ -771,8 +583,10 @@ async def init_nccl_broadcast(
     port: int,
     timeout: int,
     inference_world_size: int | None = None,
-    engine_world_sizes: list[int] | None = None,
     quantize_in_weight_transfer: bool = False,
+    *,
+    engine_world_sizes: list[int] | None = None,
+    use_native_collective_rpc: bool = False,
 ) -> None:
     """Initialize NCCL broadcast on all inference servers.
 
@@ -806,36 +620,28 @@ async def init_nccl_broadcast(
     )
 
     async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
-        args = [
-            host,
-            port,
-            rank_offset,
-            inference_world_size,
-            timeout,
-            quantize_in_weight_transfer,
-        ]
-        try:
-            response = await admin_client.post(
-                "/init_broadcaster",
-                json={
-                    "host": args[0],
-                    "port": args[1],
-                    "rank_offset": args[2],
-                    "inference_world_size": args[3],
-                    "timeout": args[4],
-                    "quantize_in_weight_transfer": args[5],
-                },
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code != 404:
-                raise
-            logger.info("The route /init_broadcaster does not exist; using vLLM's native collective RPC")
+        init_kwargs = {
+            "host": host,
+            "port": port,
+            "rank_offset": rank_offset,
+            "inference_world_size": inference_world_size,
+            "timeout": timeout,
+            "quantize_in_weight_transfer": quantize_in_weight_transfer,
+        }
+        if use_native_collective_rpc:
             response = await admin_client.post(
                 "/collective_rpc",
-                json={"method": "init_broadcaster", "args": args},
+                json={"method": "init_broadcaster", "kwargs": init_kwargs},
             )
+        else:
+            response = await admin_client.post("/init_broadcaster", json=init_kwargs)
+        try:
             response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            if not use_native_collective_rpc and error.response.status_code == 404:
+                logger.warning("The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization.")
+                return
+            raise
 
     await asyncio.gather(
         *[

@@ -121,6 +121,7 @@ def test_setup_policy_inference_pool_requires_explicit_world_size_for_dynamo(wei
                 client=SimpleNamespace(
                     base_url=["http://frontend:8000/v1"],
                     dynamo_discovery_url="http://frontend:8001",
+                    is_dynamo=True,
                 ),
                 name="policy-model",
             ),

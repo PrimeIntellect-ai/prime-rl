@@ -114,6 +114,9 @@ class SharedWeightBroadcastConfig(BaseConfig):
     type: Literal["nccl", "filesystem"] = "nccl"
     """Weight broadcast transport."""
 
+    host: str = "localhost"
+    """Host advertised to inference workers for NCCL rendezvous."""
+
     port: int = 29501
     """Port for NCCL weight broadcast."""
 
@@ -122,6 +125,9 @@ class SharedWeightBroadcastConfig(BaseConfig):
 
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
+
+    inference_world_size: int | None = Field(None, ge=1)
+    """Expected inference ranks when inference is managed externally."""
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -347,6 +353,12 @@ class RLConfig(BaseConfig):
                 self.weight_broadcast = SharedWeightBroadcastConfig(type="filesystem")
             else:
                 self.weight_broadcast = SharedWeightBroadcastConfig()
+        if (
+            self.inference is None
+            and self.orchestrator.model.client.is_dynamo
+            and self.weight_broadcast.inference_world_size is None
+        ):
+            raise ValueError("Dynamo inference requires weight_broadcast.inference_world_size")
         if self.weight_broadcast.type == "nccl" and self.trainer.model.lora is not None:
             # LoRA adapters are transferred via the filesystem (loaded from disk by the inference
             # servers); NCCL broadcast only writes a STABLE marker, so LoRA over NCCL cannot transfer
@@ -356,24 +368,33 @@ class RLConfig(BaseConfig):
                 "Set weight_broadcast.type = 'filesystem'."
             )
         if self.weight_broadcast.type == "nccl":
-            inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
+            inference_world_size = (
+                self.inference.parallel.dp * self.inference.parallel.tp
+                if self.inference
+                else self.weight_broadcast.inference_world_size
+            )
+            nccl_world_size = {} if inference_world_size is None else {"inference_world_size": inference_world_size}
             self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
                 type=self.weight_broadcast.type,
-                inference_world_size=inference_world_size,
+                host=self.weight_broadcast.host,
                 port=self.weight_broadcast.port,
                 timeout=self.weight_broadcast.timeout,
                 quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
+                **nccl_world_size,
             )
             self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
                 type=self.weight_broadcast.type,
+                host=self.weight_broadcast.host,
                 port=self.weight_broadcast.port,
                 timeout=self.weight_broadcast.timeout,
-                inference_world_size=inference_world_size,
                 quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
+                **nccl_world_size,
             )
         elif self.weight_broadcast.type == "filesystem":
             self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
-            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
+            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
+                inference_world_size=self.weight_broadcast.inference_world_size
+            )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
