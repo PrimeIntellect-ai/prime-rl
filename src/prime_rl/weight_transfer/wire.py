@@ -24,12 +24,12 @@ class TrainerShard(msgspec.Struct, frozen=True):
 
 
 class TrainerTensor(msgspec.Struct):
-    """One trainer-format tensor served as BF16 shards.
+    """One trainer-format tensor served as typed wire shards.
 
     ``master_dtype`` documents the optimizer-owned source precision. ``dtype``
-    is the wire precision and is deliberately independent of it. Shard
-    addresses are valid for this tensor's transfer group and may overlap with
-    addresses used by other groups.
+    is BF16 by default and may be FP32 for model-declared precision-sensitive
+    tensors. Shard addresses are valid for this tensor's transfer group and
+    may overlap with addresses used by other groups.
     """
 
     name: str

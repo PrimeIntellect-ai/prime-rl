@@ -15,7 +15,7 @@ def make_hf_lazy_weights(
     recorder: BakeRecorder,
     hf_config,
 ) -> list[tuple[str, LazyWeight]]:
-    """Create HF-named graph values rooted in trainer-native BF16 tensors.
+    """Create HF-named graph values rooted in trainer wire tensors.
 
     The returned values retain their trainer root name and accumulated view
     chain. Passing them to ``vLLM.model.load_weights`` composes the second half

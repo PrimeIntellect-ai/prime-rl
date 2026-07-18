@@ -11,6 +11,13 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     after loading with meta device.
     """
 
+    weight_transfer_keep_in_fp32: tuple[str, ...] = ()
+
+    @classmethod
+    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        """Whether a trainer state-dict tensor must retain FP32 on the wire."""
+        return any(name == suffix or name.endswith(f".{suffix}") for suffix in cls.weight_transfer_keep_in_fp32)
+
     @classmethod
     def from_config(cls, config, **kwargs):
         """Public from_config that mirrors the Auto class API."""

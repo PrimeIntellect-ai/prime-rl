@@ -84,7 +84,7 @@ class WeightTransferGroup:
 
 @dataclass
 class WeightTransferPlan:
-    receive_arena: torch.Tensor
+    receive_arenas: dict[torch.dtype, torch.Tensor]
     receive_buffer_count: int
     groups: list[WeightTransferGroup]
     total_bytes: int
@@ -273,6 +273,7 @@ class NIXLWeightUpdateWorker(Worker):
         copies = [copy for layer in layers for copy in layer.copies] + persistent
         specifications: dict[int, TensorCopySpec] = {}
         copies_by_group: dict[int, list[RecordedCopy]] = defaultdict(list)
+        group_elements: dict[torch.dtype, list[int]] = defaultdict(lambda: [0] * len(table.groups))
         for copy in copies:
             source = tensors[copy.src_name]
             source_dtype = getattr(torch, source.dtype)
@@ -285,6 +286,7 @@ class NIXLWeightUpdateWorker(Worker):
                 staging_shape=staging_shape,
             )
             copies_by_group[source.group].append(copy)
+            group_elements[source_dtype][source.group] += prod(staging_shape)
 
         reload_layer_ids = {id(layer.layer) for layer in layers}
         reload_layer_groups: dict[int, int] = {}
@@ -300,15 +302,11 @@ class NIXLWeightUpdateWorker(Worker):
                     f"{table.groups[previous_group]!r} and {table.groups[source_group]!r}"
                 )
 
-        largest_group_elements = max(
-            (
-                sum(prod(specifications[id(copy)].staging_shape) for copy in copies_by_group[group_index])
-                for group_index in range(len(table.groups))
-            ),
-            default=0,
+        largest_group_elements = {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
+        largest_group_bytes = max(
+            1,
+            sum(elements * dtype.itemsize for dtype, elements in largest_group_elements.items()),
         )
-        largest_group_elements = max(1, largest_group_elements)
-        largest_group_bytes = largest_group_elements * torch.bfloat16.itemsize
         peak_growth_bytes = max(0, peak_allocated_bytes - allocated_bytes)
         has_observed_peak_growth = peak_growth_bytes > 0
         free_before_reclaim, _ = torch.cuda.mem_get_info(self.device)
@@ -321,14 +319,19 @@ class NIXLWeightUpdateWorker(Worker):
             self.device,
             extra_headroom_bytes=largest_group_bytes + peak_growth_bytes,
         )
-        receive_arena_elements = receive_buffer_count * largest_group_elements
         with classic_cuda_alloc():
-            receive_arena = torch.empty(
-                receive_arena_elements,
-                dtype=torch.bfloat16,
-                device=self.device,
-            )
-        self.nixl_agent.register_tensor(receive_arena)
+            receive_arenas = {
+                dtype: torch.empty(
+                    receive_buffer_count * elements,
+                    dtype=dtype,
+                    device=self.device,
+                )
+                for dtype, elements in largest_group_elements.items()
+                if elements
+            }
+        for arena in receive_arenas.values():
+            self.nixl_agent.register_tensor(arena)
+        receive_arena_bytes = sum(arena.nbytes for arena in receive_arenas.values())
         post_free_bytes, _ = torch.cuda.mem_get_info(self.device)
 
         agent_devices: dict[int, int] = {
@@ -343,13 +346,19 @@ class NIXLWeightUpdateWorker(Worker):
             persistent_plans_by_layer: dict[int, list[TensorCopyPlan]] = defaultdict(list)
             local_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
             remote_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
-            cursor = (group_index % receive_buffer_count) * largest_group_elements
+            cursors = {
+                dtype: (group_index % receive_buffer_count) * elements
+                for dtype, elements in largest_group_elements.items()
+            }
 
             for copy in copies_by_group[group_index]:
                 specification = specifications[id(copy)]
+                source = tensors[copy.src_name]
+                source_dtype = getattr(torch, source.dtype)
                 numel = prod(specification.staging_shape)
-                staging_tensor = receive_arena.narrow(0, cursor, numel).view(specification.staging_shape)
-                cursor += numel
+                cursor = cursors[source_dtype]
+                staging_tensor = receive_arenas[source_dtype].narrow(0, cursor, numel).view(specification.staging_shape)
+                cursors[source_dtype] += numel
                 copy_plan = TensorCopyPlan(
                     recorded_copy=copy,
                     staging_tensor=staging_tensor,
@@ -358,8 +367,6 @@ class NIXLWeightUpdateWorker(Worker):
                 plans = persistent_plans_by_layer if copy.persistent else copy_plans_by_layer
                 plans[id(copy.layer)].append(copy_plan)
 
-                source = tensors[copy.src_name]
-                source_dtype = getattr(torch, source.dtype)
                 offset, shape, stride = resolve_chain_region(
                     tuple(source.shape), source_dtype, specification.transport_ops
                 )
@@ -446,12 +453,12 @@ class NIXLWeightUpdateWorker(Worker):
             device_total_bytes / 1024**3,
             headroom_bytes / 1024**3,
             largest_group_bytes / 1024**3,
-            receive_arena.nbytes / 1024**3,
+            receive_arena_bytes / 1024**3,
             post_free_bytes / 1024**3,
             len(transfer_groups),
         )
         return WeightTransferPlan(
-            receive_arena=receive_arena,
+            receive_arenas=receive_arenas,
             receive_buffer_count=receive_buffer_count,
             groups=transfer_groups,
             total_bytes=total_bytes,
