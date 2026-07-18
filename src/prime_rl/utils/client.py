@@ -337,9 +337,9 @@ class DynamoInferencePool(StaticInferencePool):
         expected_inference_world_size: int | None = None,
         **kwargs,
     ) -> DynamoInferencePool:
-        if client_config.dynamo_base_url is None:
-            raise ValueError("Dynamo inference pool requires dynamo_base_url")
-        discovery_url = client_config.dynamo_base_url.rstrip("/").removesuffix("/v1")
+        if client_config.dynamo_discovery_url is None:
+            raise ValueError("Dynamo inference pool requires dynamo_discovery_url")
+        discovery_url = client_config.dynamo_discovery_url.rstrip("/").removesuffix("/v1")
         async with AsyncClient(timeout=httpx.Timeout(30.0)) as client:
             workers = None
             async for attempt in AsyncRetrying(
@@ -388,7 +388,7 @@ async def setup_inference_pool(
             pool_size=pool_size,
         )
 
-    if client_config.dynamo_base_url is not None and client_config.admin_base_url is None:
+    if client_config.dynamo_discovery_url is not None and client_config.admin_base_url is None:
         return await DynamoInferencePool.from_config(
             client_config,
             model_name=model_name,

@@ -147,7 +147,7 @@ class ClientConfig(BaseConfig):
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in disaggregated P/D deployments where the router must not handle admin traffic."""
 
-    dynamo_base_url: str | None = None
+    dynamo_discovery_url: str | None = None
     """Dynamo discovery URL. When set, Prime discovers vLLM admin endpoints and per-engine world sizes from ``/v1/rl/workers`` instead of requiring ``admin_base_url`` entries."""
 
     elastic: ElasticConfig | None = None

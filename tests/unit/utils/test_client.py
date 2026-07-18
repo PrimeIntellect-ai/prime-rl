@@ -211,7 +211,10 @@ def test_dynamo_inference_pool_discovers_admin_clients_from_one_snapshot():
     with patch("prime_rl.utils.client.AsyncClient", client_factory):
         pool = asyncio.run(
             DynamoInferencePool.from_config(
-                ClientConfig(base_url=["http://frontend:8000/v1"], dynamo_base_url="http://frontend:8001"),
+                ClientConfig(
+                    base_url=["http://frontend:8000/v1"],
+                    dynamo_discovery_url="http://frontend:8001",
+                ),
                 model_name="Qwen/Qwen3-0.6B",
                 expected_inference_world_size=8,
             )
