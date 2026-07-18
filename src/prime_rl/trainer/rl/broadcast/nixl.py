@@ -244,14 +244,22 @@ class NIXLWeightBroadcast(WeightBroadcast):
     def _lazy_init(self, model: nn.Module) -> None:
         if self.initialized:
             return
+
+        init_started = time.perf_counter()
+        source_plan_started = time.perf_counter()
         allocated_bytes = torch.cuda.memory_allocated() if self.is_serving_rank else 0
         peak_allocated_bytes = torch.cuda.max_memory_allocated() if self.is_serving_rank else 0
         state_dict = model.state_dict()
         self.groups, layer_groups = self._transfer_groups(state_dict)
         if self.is_serving_rank:
             self.shards = self._owned_shards(state_dict, layer_groups)
-        buffer_stats = self._allocate_arena(allocated_bytes, peak_allocated_bytes)
+        source_plan_seconds = time.perf_counter() - source_plan_started
 
+        arena_started = time.perf_counter()
+        buffer_stats = self._allocate_arena(allocated_bytes, peak_allocated_bytes)
+        arena_seconds = time.perf_counter() - arena_started
+
+        metadata_gather_started = time.perf_counter()
         payload = None
         if self.is_serving_rank:
             payload = (
@@ -277,8 +285,10 @@ class NIXLWeightBroadcast(WeightBroadcast):
             )
         gathered: list | None = [None] * self.world.world_size if self.world.is_master else None
         dist.gather_object(payload, gathered, dst=0)
+        metadata_gather_seconds = time.perf_counter() - metadata_gather_started
 
         if self.world.is_master:
+            table_started = time.perf_counter()
             assert gathered is not None
             parts = sorted((part for part in gathered if part is not None), key=lambda part: part[0])
             agents = [TrainerAgent(name=name, metadata=metadata) for _, name, metadata, _, _, _ in parts]
@@ -320,6 +330,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 tensors=list(tensors.values()),
             )
             self._validate_table(table)
+            table_seconds = time.perf_counter() - table_started
+
+            mx_publish_started = time.perf_counter()
             server_url = f"{self.config.host}:{self.config.port}"
             client = MxClient(server_url=server_url)
             self.buffer_rendezvous = []
@@ -345,6 +358,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             )
             self.rendezvous.publish(nixl_metadata=encode_table(table))
             self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            mx_publish_seconds = time.perf_counter() - mx_publish_started
             total_bytes = sum(shard.num_rows * shard.row_bytes for tensor in table.tensors for shard in tensor.shards)
             max_arena_bytes = max((part[3] for part in parts), default=0)
             stats = [part[4] for part in parts]
@@ -386,6 +400,18 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 f"from {len(table.agents)} trainer agents ({total_bytes / 1e9:.2f} GB per update, "
                 f"{max_arena_bytes / 1e9:.2f} GB largest local arena, {self.buffer_count} staging buffers)"
             )
+            init_seconds = time.perf_counter() - init_started
+            measured_seconds = (
+                source_plan_seconds + arena_seconds + metadata_gather_seconds + table_seconds + mx_publish_seconds
+            )
+            self.logger.info(
+                "Weight update initialization profile role=trainer rank=0: "
+                f"source_plan_rank0={source_plan_seconds:.3f}s, arena_rank0={arena_seconds:.3f}s, "
+                f"metadata_gather_wall={metadata_gather_seconds:.3f}s, table_rank0={table_seconds:.3f}s, "
+                f"mx_publish_rank0={mx_publish_seconds:.3f}s, "
+                f"unattributed_rank0={max(0.0, init_seconds - measured_seconds):.3f}s, "
+                f"total_rank0={init_seconds:.3f}s"
+            )
         self.initialized = True
 
     @staticmethod
@@ -423,23 +449,57 @@ class NIXLWeightBroadcast(WeightBroadcast):
         if not ready:
             self.logger.warning(f"No run requested NIXL weights at step {step}; skipping")
             return
+
+        call_started = time.perf_counter()
+        lazy_init_started = time.perf_counter()
         self._lazy_init(model)
-        start = time.perf_counter()
+        lazy_init_seconds = time.perf_counter() - lazy_init_started
+        sync_started = time.perf_counter()
+
+        policy_ready_publish_seconds = 0.0
+        orchestrator_ready_wait_seconds = 0.0
+        inference_initializing_wait_seconds = 0.0
+        recycle_ready_wait_seconds = 0.0
+        recycle_reset_publish_seconds = 0.0
+        recycle_initializing_wait_seconds = 0.0
+        recycle_barrier_seconds = 0.0
+        stage_copy_seconds = 0.0
+        stage_barrier_seconds = 0.0
+        buffer_ready_publish_seconds = 0.0
+        tail_ready_wait_seconds = 0.0
+        tail_reset_publish_seconds = 0.0
+        tail_initializing_wait_seconds = 0.0
+        tail_barrier_seconds = 0.0
+        inference_complete_wait_seconds = 0.0
+        orchestrator_complete_wait_seconds = 0.0
+        policy_reset_publish_seconds = 0.0
+        slowest_group_seconds = 0.0
+        slowest_group_name = self.groups[0]
+        slowest_stage_seconds = 0.0
+        slowest_stage_name = self.groups[0]
 
         if self.world.is_master:
+            phase_started = time.perf_counter()
             self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
+            policy_ready_publish_seconds = time.perf_counter() - phase_started
+
+            phase_started = time.perf_counter()
             self.rendezvous.wait_for(
                 "orchestrator",
                 count=1,
                 status=p2p_pb2.SOURCE_STATUS_READY,
                 timeout=self.config.timeout,
             )
+            orchestrator_ready_wait_seconds = time.perf_counter() - phase_started
+
+            phase_started = time.perf_counter()
             self.rendezvous.wait_for(
                 "inference",
                 count=self.config.inference_world_size,
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 timeout=self.config.timeout,
             )
+            inference_initializing_wait_seconds = time.perf_counter() - phase_started
 
         for group, group_name in enumerate(self.groups):
             group_start = time.perf_counter()
@@ -447,6 +507,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             if group >= self.buffer_count:
                 if self.world.is_master:
                     rendezvous = self.buffer_rendezvous[buffer_index]
+                    phase_started = time.perf_counter()
                     rendezvous.wait_for(
                         "inference",
                         count=self.config.inference_world_size,
@@ -454,7 +515,13 @@ class NIXLWeightBroadcast(WeightBroadcast):
                         timeout=self.config.timeout,
                         poll_interval=_BUFFER_POLL_INTERVAL,
                     )
+                    recycle_ready_wait_seconds += time.perf_counter() - phase_started
+
+                    phase_started = time.perf_counter()
                     rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                    recycle_reset_publish_seconds += time.perf_counter() - phase_started
+
+                    phase_started = time.perf_counter()
                     rendezvous.wait_for(
                         "inference",
                         count=self.config.inference_world_size,
@@ -462,18 +529,36 @@ class NIXLWeightBroadcast(WeightBroadcast):
                         timeout=self.config.timeout,
                         poll_interval=_BUFFER_POLL_INTERVAL,
                     )
+                    recycle_initializing_wait_seconds += time.perf_counter() - phase_started
+                phase_started = time.perf_counter()
                 dist.barrier()
+                recycle_barrier_seconds += time.perf_counter() - phase_started
 
+            stage_wall_started = time.perf_counter()
+            phase_started = time.perf_counter()
             if self.is_serving_rank:
                 for shard in self.shards_by_group.get(group, ()):
                     shard.refresh()
                 torch.cuda.synchronize()
+            stage_copy_seconds += time.perf_counter() - phase_started
+
+            phase_started = time.perf_counter()
             dist.barrier()
+            stage_barrier_seconds += time.perf_counter() - phase_started
+            group_stage_seconds = time.perf_counter() - stage_wall_started
+            if group_stage_seconds > slowest_stage_seconds:
+                slowest_stage_seconds = group_stage_seconds
+                slowest_stage_name = group_name
             if self.world.is_master:
+                phase_started = time.perf_counter()
                 self.buffer_rendezvous[buffer_index].set_status(p2p_pb2.SOURCE_STATUS_READY)
+                buffer_ready_publish_seconds += time.perf_counter() - phase_started
+                group_seconds = time.perf_counter() - group_start
+                if group_seconds > slowest_group_seconds:
+                    slowest_group_seconds = group_seconds
+                    slowest_group_name = group_name
                 self.logger.debug(
-                    f"NIXL+MX policy v{step} group {group_name} staged in buffer {buffer_index} in "
-                    f"{time.perf_counter() - group_start:.2f}s"
+                    f"NIXL+MX policy v{step} group {group_name} staged in buffer {buffer_index} in {group_seconds:.2f}s"
                 )
 
         first_pending_group = max(0, len(self.groups) - self.buffer_count)
@@ -481,6 +566,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             buffer_index = group % self.buffer_count
             if self.world.is_master:
                 rendezvous = self.buffer_rendezvous[buffer_index]
+                phase_started = time.perf_counter()
                 rendezvous.wait_for(
                     "inference",
                     count=self.config.inference_world_size,
@@ -488,7 +574,13 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     timeout=self.config.timeout,
                     poll_interval=_BUFFER_POLL_INTERVAL,
                 )
+                tail_ready_wait_seconds += time.perf_counter() - phase_started
+
+                phase_started = time.perf_counter()
                 rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                tail_reset_publish_seconds += time.perf_counter() - phase_started
+
+                phase_started = time.perf_counter()
                 rendezvous.wait_for(
                     "inference",
                     count=self.config.inference_world_size,
@@ -496,23 +588,69 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     timeout=self.config.timeout,
                     poll_interval=_BUFFER_POLL_INTERVAL,
                 )
+                tail_initializing_wait_seconds += time.perf_counter() - phase_started
+            phase_started = time.perf_counter()
             dist.barrier()
+            tail_barrier_seconds += time.perf_counter() - phase_started
 
         if self.world.is_master:
+            phase_started = time.perf_counter()
             self.rendezvous.wait_for(
                 "inference",
                 count=self.config.inference_world_size,
                 status=p2p_pb2.SOURCE_STATUS_READY,
                 timeout=self.config.timeout,
             )
+            inference_complete_wait_seconds = time.perf_counter() - phase_started
+
+            phase_started = time.perf_counter()
             self.rendezvous.wait_for(
                 "orchestrator",
                 count=1,
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 timeout=self.config.timeout,
             )
+            orchestrator_complete_wait_seconds = time.perf_counter() - phase_started
+
+            phase_started = time.perf_counter()
             self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            policy_reset_publish_seconds = time.perf_counter() - phase_started
+
+        final_barrier_started = time.perf_counter()
         dist.barrier()
+        final_barrier_seconds = time.perf_counter() - final_barrier_started
+
+        bookkeeping_started = time.perf_counter()
         for run_index in ready:
             self.multi_run_manager.ready_to_update[run_index] = False
-        self.logger.info(f"NIXL+MX policy v{step} synchronized in {time.perf_counter() - start:.2f}s")
+        bookkeeping_seconds = time.perf_counter() - bookkeeping_started
+
+        if self.world.is_master:
+            sync_seconds = time.perf_counter() - sync_started
+            self.logger.info(
+                f"Weight update profile v{step} role=trainer rank=0: "
+                f"totals(call={time.perf_counter() - call_started:.3f}s, "
+                f"lazy_init={lazy_init_seconds:.3f}s, sync={sync_seconds:.3f}s); "
+                f"sync_additive_phases: policy_ready_publish={policy_ready_publish_seconds:.3f}s, "
+                f"orchestrator_ready_wait={orchestrator_ready_wait_seconds:.3f}s, "
+                f"inference_initializing_wait={inference_initializing_wait_seconds:.3f}s, "
+                f"recycle_ready_wait={recycle_ready_wait_seconds:.3f}s, "
+                f"recycle_reset_publish={recycle_reset_publish_seconds:.3f}s, "
+                f"recycle_initializing_wait={recycle_initializing_wait_seconds:.3f}s, "
+                f"recycle_barrier_rank0={recycle_barrier_seconds:.3f}s, "
+                f"stage_copy_rank0={stage_copy_seconds:.3f}s, "
+                f"stage_barrier_rank0={stage_barrier_seconds:.3f}s, "
+                f"buffer_ready_publish={buffer_ready_publish_seconds:.3f}s, "
+                f"tail_ready_wait={tail_ready_wait_seconds:.3f}s, "
+                f"tail_reset_publish={tail_reset_publish_seconds:.3f}s, "
+                f"tail_initializing_wait={tail_initializing_wait_seconds:.3f}s, "
+                f"tail_barrier_rank0={tail_barrier_seconds:.3f}s, "
+                f"inference_complete_wait={inference_complete_wait_seconds:.3f}s, "
+                f"orchestrator_complete_wait={orchestrator_complete_wait_seconds:.3f}s, "
+                f"policy_reset_publish={policy_reset_publish_seconds:.3f}s, "
+                f"final_barrier_rank0={final_barrier_seconds:.3f}s, "
+                f"bookkeeping_rank0={bookkeeping_seconds:.3f}s; diagnostic_subsets: "
+                f"slowest_group_wall={slowest_group_name}/{slowest_group_seconds:.3f}s, "
+                f"slowest_stage_wall_rank0={slowest_stage_name}/{slowest_stage_seconds:.3f}s, "
+                f"groups={len(self.groups)}, buffers={self.buffer_count}"
+            )

@@ -82,22 +82,31 @@ class WeightWatcher:
                 # Another caller raced us — bail without re-applying
                 return
 
+            update_started = time.perf_counter()
+            source_ready_wait = 0.0
+            source_finalize_wait = 0.0
+            pending_observer_timings: list[tuple[str, float]] = []
+            new_version_observer_timings: list[tuple[str, float]] = []
+            logger = get_logger()
             weights_path = None
             if self.mx_rendezvous is not None:
+                wait_started = time.perf_counter()
                 await self.wait_for_mx_status(p2p_pb2.SOURCE_STATUS_READY)
+                source_ready_wait = time.perf_counter() - wait_started
             else:
                 broadcast_dir = get_broadcast_dir(self.config.output_dir)
                 weights_path = get_step_path(broadcast_dir, next_step)
                 stable_marker = weights_path / "STABLE"
                 if not stable_marker.exists():
-                    get_logger().info(
+                    logger.info(
                         f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
                         "Training is progressing normally."
                     )
                     t0 = time.perf_counter()
                     await wait_for_path(stable_marker)
                     self.last_wait_for_ckpt_time = time.perf_counter() - t0
-                    get_logger().info(
+                    source_ready_wait = self.last_wait_for_ckpt_time
+                    logger.info(
                         f"Orchestrator resumed: checkpoint {next_step} ready "
                         f"(after {format_time(self.last_wait_for_ckpt_time)})"
                     )
@@ -113,36 +122,59 @@ class WeightWatcher:
             # aborts settle under normal stepping. ``on_new_version`` (below)
             # still runs post-update for observers that need the live version.
             for observer in self.observers:
+                observer_started = time.perf_counter()
                 try:
                     await observer.on_version_pending(next_step)
                 except Exception as exc:
-                    get_logger().warning(
+                    logger.warning(
                         f"Observer {type(observer).__name__}.on_version_pending({next_step}) raised: {exc!r}"
                     )
+                finally:
+                    pending_observer_timings.append((type(observer).__name__, time.perf_counter() - observer_started))
 
-            get_logger().debug(f"Updating weights to step {next_step}")
+            logger.debug(f"Updating weights to step {next_step}")
             t1 = time.perf_counter()
             await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
-            get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
+            logger.debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
 
+            commit_started = time.perf_counter()
             self.ckpt_step = next_step
             self.policy.version = next_step
             if self.lora_name is not None:
                 self.inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
+            commit_seconds = time.perf_counter() - commit_started
 
             for observer in self.observers:
+                observer_started = time.perf_counter()
                 try:
                     await observer.on_new_version(next_step)
                 except Exception as exc:
-                    get_logger().warning(
-                        f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
+                    logger.warning(f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}")
+                finally:
+                    new_version_observer_timings.append(
+                        (type(observer).__name__, time.perf_counter() - observer_started)
                     )
 
             if self.mx_rendezvous is not None:
+                wait_started = time.perf_counter()
                 await self.wait_for_mx_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                source_finalize_wait = time.perf_counter() - wait_started
+
+            pending_observers = ",".join(f"{name}={elapsed:.3f}s" for name, elapsed in pending_observer_timings)
+            new_version_observers = ",".join(f"{name}={elapsed:.3f}s" for name, elapsed in new_version_observer_timings)
+            logger.info(
+                f"Weight update profile v{next_step} role=orchestrator: "
+                f"source_ready_wait={source_ready_wait:.3f}s, "
+                f"observers_pending={sum(elapsed for _, elapsed in pending_observer_timings):.3f}s "
+                f"[{pending_observers}], inference_update={self.last_update_weights_time:.3f}s, "
+                f"state_commit={commit_seconds:.3f}s, "
+                f"observers_new_version={sum(elapsed for _, elapsed in new_version_observer_timings):.3f}s "
+                f"[{new_version_observers}], source_finalize_wait={source_finalize_wait:.3f}s, "
+                f"total={time.perf_counter() - update_started:.3f}s"
+            )
 
     async def wait_for_mx_status(self, status: int) -> None:
         while not self.stopped.is_set():

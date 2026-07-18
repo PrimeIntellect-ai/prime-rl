@@ -99,6 +99,9 @@ class PulledWeightTransferGroup:
     post_seconds: float
     handle_wait_seconds: float
     acknowledgement_seconds: float
+    acknowledgement_ready_publish_seconds: float
+    acknowledgement_trainer_reset_wait_seconds: float
+    acknowledgement_initializing_publish_seconds: float
 
 
 class NIXLWeightUpdateWorker(Worker):
@@ -143,17 +146,30 @@ class NIXLWeightUpdateWorker(Worker):
         )
 
     @torch.no_grad()
-    def _lazy_init(self) -> WeightTransferPlan:
+    def _lazy_init(self, step: int) -> WeightTransferPlan:
         if self.weight_transfer_plan is not None:
             return self.weight_transfer_plan
 
         started = time.perf_counter()
         allocated_bytes = torch.cuda.memory_allocated(self.device)
         peak_allocated_bytes = torch.cuda.max_memory_allocated(self.device)
+        wait_started = time.perf_counter()
         trainer_ref = self.mx_rendezvous.wait_for_peers(timeout=self.weight_transfer_timeout)[0]
+        trainer_metadata_wait_seconds = time.perf_counter() - wait_started
+
+        metadata_started = time.perf_counter()
         table = decode_table(self.mx_rendezvous.fetch(trainer_ref).nixl_metadata)
+        metadata_seconds = time.perf_counter() - metadata_started
+
+        bake_started = time.perf_counter()
         layers, persistent = self._bake(table)
+        bake_seconds = time.perf_counter() - bake_started
+
+        pull_plan_started = time.perf_counter()
         plan = self._build_pull_plan(table, layers, persistent, allocated_bytes, peak_allocated_bytes)
+        pull_plan_seconds = time.perf_counter() - pull_plan_started
+
+        buffer_publish_started = time.perf_counter()
         self.buffer_rendezvous = []
         for buffer_index in range(table.buffer_count):
             rendezvous = MxRendezvous(
@@ -167,16 +183,30 @@ class NIXLWeightUpdateWorker(Worker):
             rendezvous.publish()
             rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
             self.buffer_rendezvous.append(rendezvous)
+        buffer_publish_seconds = time.perf_counter() - buffer_publish_started
+
         # Join the current generation directly. Publishing a transient READY
         # before the first pull would let the trainer mistake initialization
         # for a completed acknowledgement.
+        policy_publish_started = time.perf_counter()
         self.mx_rendezvous.publish(nixl_metadata=self.nixl_agent.get_metadata())
         self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+        policy_publish_seconds = time.perf_counter() - policy_publish_started
         self.weight_transfer_plan = plan
         logger.info(
-            "NIXL plan baked in %.2fs: rank=%d, groups=%d, source_buffers=%d, copies=%d, bytes=%d, pull_lists=%d",
-            time.perf_counter() - started,
+            "Weight update initialization profile v%d role=inference rank=%d: "
+            "trainer_metadata_wait=%.3fs, metadata_fetch=%.3fs, conversion_bake=%.3fs, "
+            "pull_plan=%.3fs, buffer_publish=%.3fs, policy_publish=%.3fs, total=%.3fs, "
+            "groups=%d, source_buffers=%d, copies=%d, bytes=%d, pull_lists=%d",
+            step,
             self.mx_rendezvous.rank,
+            trainer_metadata_wait_seconds,
+            metadata_seconds,
+            bake_seconds,
+            pull_plan_seconds,
+            buffer_publish_seconds,
+            policy_publish_seconds,
+            time.perf_counter() - started,
             len(plan.groups),
             table.buffer_count,
             sum(len(layer.copies) + len(layer.persistent_copies) for group in plan.groups for layer in group.layers),
@@ -465,30 +495,57 @@ class NIXLWeightUpdateWorker(Worker):
         )
 
     @torch.no_grad()
-    def update_weights_from_path(self, weight_dir: str | None = None) -> None:
+    def update_weights_from_path(self, weight_dir: str | None = None, step: int = 0) -> None:
         del weight_dir
-        plan = self._lazy_init()
+        update_started = time.perf_counter()
+
+        init_started = time.perf_counter()
+        plan = self._lazy_init(step)
+        init_seconds = time.perf_counter() - init_started
+
+        announce_started = time.perf_counter()
         self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+        announce_seconds = time.perf_counter() - announce_started
+
+        trainer_wait_started = time.perf_counter()
         self.mx_rendezvous.wait_for(
             "trainer",
             count=1,
             status=p2p_pb2.SOURCE_STATUS_READY,
             timeout=self.weight_transfer_timeout,
         )
+        trainer_wait_seconds = time.perf_counter() - trainer_wait_started
 
-        started = time.perf_counter()
-        self._process_and_commit(plan)
+        process_started = time.perf_counter()
+        transfer_profile = self._process_and_commit(plan, step)
+        process_seconds = time.perf_counter() - process_started
+
+        postprocess_started = time.perf_counter()
         update_mla_absorbed_weights(self.raw_model)
         torch.cuda.synchronize(self.device)
-        self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
-        logger.info(
-            "Applied %.2f GB NIXL policy update on rank %d in %.2fs",
-            plan.total_bytes / 1e9,
-            self.mx_rendezvous.rank,
-            time.perf_counter() - started,
-        )
+        postprocess_seconds = time.perf_counter() - postprocess_started
 
-    def _process_and_commit(self, plan: WeightTransferPlan) -> None:
+        ready_publish_started = time.perf_counter()
+        self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
+        ready_publish_seconds = time.perf_counter() - ready_publish_started
+        logger.info(
+            "Weight update profile v%d role=inference rank=%d: lazy_init=%.3fs, announce=%.3fs, "
+            "trainer_ready_wait=%.3fs, process=%.3fs, postprocess_and_pending_cuda=%.3fs, "
+            "ready_publish=%.3fs, total=%.3fs, bytes=%.2fGB",
+            step,
+            self.mx_rendezvous.rank,
+            init_seconds,
+            announce_seconds,
+            trainer_wait_seconds,
+            process_seconds,
+            postprocess_seconds,
+            ready_publish_seconds,
+            time.perf_counter() - update_started,
+            plan.total_bytes / 1e9,
+        )
+        logger.info(transfer_profile)
+
+    def _process_and_commit(self, plan: WeightTransferPlan, step: int) -> str:
         from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
         from vllm.model_executor.model_loader.reload.layerwise import (
             LAYERWISE_INFO,
@@ -521,13 +578,18 @@ class NIXLWeightUpdateWorker(Worker):
             handle_wait_seconds = 0.0
             if plan.receive_buffer_count == 1:
                 for local, remote, indices in transfer_group.pulls:
+                    post_started = time.perf_counter()
                     handle = self.nixl_agent.post_read(local, indices, remote)
+                    post_seconds += time.perf_counter() - post_started
+
+                    wait_started = time.perf_counter()
                     self.nixl_agent.wait(
                         handle,
                         context=f"weight pull for {transfer_group.name}",
                         timeout=self.weight_transfer_timeout,
                         cancelled=cancelled.is_set,
                     )
+                    handle_wait_seconds += time.perf_counter() - wait_started
             else:
                 handles: deque[Any] = deque()
                 for local, remote, indices in transfer_group.pulls:
@@ -561,12 +623,20 @@ class NIXLWeightUpdateWorker(Worker):
                 post_seconds=post_seconds,
                 handle_wait_seconds=handle_wait_seconds,
                 acknowledgement_seconds=0.0,
+                acknowledgement_ready_publish_seconds=0.0,
+                acknowledgement_trainer_reset_wait_seconds=0.0,
+                acknowledgement_initializing_publish_seconds=0.0,
             )
 
-        def acknowledge_group(group_index: int) -> float:
+        def acknowledge_group(group_index: int) -> tuple[float, float, float, float]:
             rendezvous = self.buffer_rendezvous[group_index % len(self.buffer_rendezvous)]
             acknowledgement_started = time.perf_counter()
+
+            ready_publish_started = time.perf_counter()
             rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
+            ready_publish_seconds = time.perf_counter() - ready_publish_started
+
+            trainer_reset_wait_started = time.perf_counter()
             rendezvous.wait_for(
                 "trainer",
                 count=1,
@@ -575,13 +645,27 @@ class NIXLWeightUpdateWorker(Worker):
                 poll_interval=_BUFFER_POLL_INTERVAL,
                 cancelled=cancelled.is_set,
             )
+            trainer_reset_wait_seconds = time.perf_counter() - trainer_reset_wait_started
+
+            initializing_publish_started = time.perf_counter()
             rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-            return time.perf_counter() - acknowledgement_started
+            initializing_publish_seconds = time.perf_counter() - initializing_publish_started
+            return (
+                time.perf_counter() - acknowledgement_started,
+                ready_publish_seconds,
+                trainer_reset_wait_seconds,
+                initializing_publish_seconds,
+            )
 
         def prefetch_group(group_index: int) -> PulledWeightTransferGroup:
             torch.cuda.set_device(self.device)
             pulled = pull_group(group_index)
-            pulled.acknowledgement_seconds = acknowledge_group(group_index)
+            (
+                pulled.acknowledgement_seconds,
+                pulled.acknowledgement_ready_publish_seconds,
+                pulled.acknowledgement_trainer_reset_wait_seconds,
+                pulled.acknowledgement_initializing_publish_seconds,
+            ) = acknowledge_group(group_index)
             return pulled
 
         def replay_group(transfer_group: WeightTransferGroup) -> None:
@@ -613,82 +697,141 @@ class NIXLWeightUpdateWorker(Worker):
                     _copy_and_restore_kernel_tensors(layer, info)
                 info.reset()
 
+        process_started = time.perf_counter()
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
+            initialize_started = time.perf_counter()
             initialize_layerwise_reload(model)
+            initialize_seconds = time.perf_counter() - initialize_started
+
             pipelined = plan.receive_buffer_count > 1
+            pipeline_started = time.perf_counter()
             executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nixl-prefetch") if pipelined else None
             source_wait_seconds = 0.0
             transfer_seconds = 0.0
             post_seconds = 0.0
             handle_wait_seconds = 0.0
             acknowledgement_seconds = 0.0
+            acknowledgement_ready_publish_seconds = 0.0
+            acknowledgement_trainer_reset_wait_seconds = 0.0
+            acknowledgement_initializing_publish_seconds = 0.0
+            pull_blocked_seconds = 0.0
+            pre_replay_sync_seconds = 0.0
             replay_seconds = 0.0
+            executor_shutdown_seconds = 0.0
             slowest_transfer_seconds = 0.0
             slowest_transfer_group = plan.groups[0].name
+            slowest_source_wait_seconds = 0.0
+            slowest_source_wait_group = plan.groups[0].name
+            slowest_acknowledgement_seconds = 0.0
+            slowest_acknowledgement_group = plan.groups[0].name
+            slowest_replay_seconds = 0.0
+            slowest_replay_group = plan.groups[0].name
             try:
                 pull = executor.submit(prefetch_group, 0) if executor is not None else None
                 for group_index in range(len(plan.groups)):
+                    pull_blocked_started = time.perf_counter()
                     pulled = pull.result() if pull is not None else pull_group(group_index)
+                    pull_blocked_seconds += time.perf_counter() - pull_blocked_started
                     transfer_group = pulled.group
                     source_wait_seconds += pulled.source_wait_seconds
                     transfer_seconds += pulled.transfer_seconds
                     post_seconds += pulled.post_seconds
                     handle_wait_seconds += pulled.handle_wait_seconds
                     acknowledgement_seconds += pulled.acknowledgement_seconds
+                    acknowledgement_ready_publish_seconds += pulled.acknowledgement_ready_publish_seconds
+                    acknowledgement_trainer_reset_wait_seconds += pulled.acknowledgement_trainer_reset_wait_seconds
+                    acknowledgement_initializing_publish_seconds += pulled.acknowledgement_initializing_publish_seconds
                     if pulled.transfer_seconds > slowest_transfer_seconds:
                         slowest_transfer_seconds = pulled.transfer_seconds
                         slowest_transfer_group = transfer_group.name
+                    if pulled.source_wait_seconds > slowest_source_wait_seconds:
+                        slowest_source_wait_seconds = pulled.source_wait_seconds
+                        slowest_source_wait_group = transfer_group.name
+                    if pulled.acknowledgement_seconds > slowest_acknowledgement_seconds:
+                        slowest_acknowledgement_seconds = pulled.acknowledgement_seconds
+                        slowest_acknowledgement_group = transfer_group.name
 
+                    sync_started = time.perf_counter()
                     torch.cuda.synchronize(self.device)
+                    pre_replay_sync_seconds += time.perf_counter() - sync_started
                     if executor is not None and group_index + 1 < len(plan.groups):
                         pull = executor.submit(prefetch_group, group_index + 1)
 
                     replay_started = time.perf_counter()
                     replay_group(transfer_group)
                     torch.cuda.synchronize(self.device)
-                    replay_seconds += time.perf_counter() - replay_started
+                    group_replay_seconds = time.perf_counter() - replay_started
+                    replay_seconds += group_replay_seconds
+                    if group_replay_seconds > slowest_replay_seconds:
+                        slowest_replay_seconds = group_replay_seconds
+                        slowest_replay_group = transfer_group.name
 
                     if not pipelined:
-                        acknowledgement_seconds += acknowledge_group(group_index)
+                        (
+                            group_acknowledgement_seconds,
+                            group_ready_publish_seconds,
+                            group_trainer_reset_wait_seconds,
+                            group_initializing_publish_seconds,
+                        ) = acknowledge_group(group_index)
+                        acknowledgement_seconds += group_acknowledgement_seconds
+                        acknowledgement_ready_publish_seconds += group_ready_publish_seconds
+                        acknowledgement_trainer_reset_wait_seconds += group_trainer_reset_wait_seconds
+                        acknowledgement_initializing_publish_seconds += group_initializing_publish_seconds
+                        if group_acknowledgement_seconds > slowest_acknowledgement_seconds:
+                            slowest_acknowledgement_seconds = group_acknowledgement_seconds
+                            slowest_acknowledgement_group = transfer_group.name
             finally:
                 cancelled.set()
                 if executor is not None:
+                    shutdown_started = time.perf_counter()
                     executor.shutdown(wait=True, cancel_futures=True)
+                    executor_shutdown_seconds = time.perf_counter() - shutdown_started
+            pipeline_seconds = time.perf_counter() - pipeline_started
 
             finalize_started = time.perf_counter()
             finalize_layerwise_reload(model, self.model_runner.model_config)
             finalize_seconds = time.perf_counter() - finalize_started
-            if pipelined:
-                logger.info(
-                    "NIXL update profile rank=%d: groups=%d, source_wait=%.2fs, "
-                    "rdma=%.2fs (post=%.2fs, wait=%.2fs, window=%d, %.1f Gb/s, "
-                    "slowest=%s/%.2fs), source_ack=%.2fs, replay=%.2fs, finalize=%.2fs",
-                    self.mx_rendezvous.rank,
-                    len(plan.groups),
-                    source_wait_seconds,
-                    transfer_seconds,
-                    post_seconds,
-                    handle_wait_seconds,
-                    _MAX_INFLIGHT_READS,
-                    plan.total_bytes * 8 / max(transfer_seconds, 1e-9) / 1e9,
-                    slowest_transfer_group,
-                    slowest_transfer_seconds,
-                    acknowledgement_seconds,
-                    replay_seconds,
-                    finalize_seconds,
-                )
-            else:
-                logger.info(
-                    "NIXL update profile rank=%d: groups=%d, source_wait=%.2fs, "
-                    "sequential_rdma=%.2fs, source_ack=%.2fs, replay=%.2fs, finalize=%.2fs",
-                    self.mx_rendezvous.rank,
-                    len(plan.groups),
-                    source_wait_seconds,
-                    transfer_seconds,
-                    acknowledgement_seconds,
-                    replay_seconds,
-                    finalize_seconds,
-                )
+            return (
+                "Weight update transfer profile v%d role=inference rank=%d: mode=%s, "
+                "initialize=%.3fs, pipeline_wall=%.3fs (pull_blocked_wall=%.3fs, "
+                "pre_replay_sync=%.3fs, replay_sum=%.3fs, executor_shutdown=%.3fs), "
+                "finalize_submit=%.3fs, total=%.3fs; overlapped_work_sums: source_wait=%.3fs "
+                "(slowest=%s/%.3fs), rdma=%.3fs (post=%.3fs, wait=%.3fs, window=%d, %.1f Gb/s, "
+                "slowest=%s/%.3fs), source_ack=%.3fs (ready_publish=%.3fs, "
+                "trainer_reset_wait=%.3fs, initializing_publish=%.3fs, slowest=%s/%.3fs), "
+                "replay_slowest=%s/%.3fs, groups=%d"
+            ) % (
+                step,
+                self.mx_rendezvous.rank,
+                "pipelined" if pipelined else "sequential",
+                initialize_seconds,
+                pipeline_seconds,
+                pull_blocked_seconds,
+                pre_replay_sync_seconds,
+                replay_seconds,
+                executor_shutdown_seconds,
+                finalize_seconds,
+                time.perf_counter() - process_started,
+                source_wait_seconds,
+                slowest_source_wait_group,
+                slowest_source_wait_seconds,
+                transfer_seconds,
+                post_seconds,
+                handle_wait_seconds,
+                _MAX_INFLIGHT_READS if pipelined else 1,
+                plan.total_bytes * 8 / max(transfer_seconds, 1e-9) / 1e9,
+                slowest_transfer_group,
+                slowest_transfer_seconds,
+                acknowledgement_seconds,
+                acknowledgement_ready_publish_seconds,
+                acknowledgement_trainer_reset_wait_seconds,
+                acknowledgement_initializing_publish_seconds,
+                slowest_acknowledgement_group,
+                slowest_acknowledgement_seconds,
+                slowest_replay_group,
+                slowest_replay_seconds,
+                len(plan.groups),
+            )
 
     @staticmethod
     def _copy_plan(plan: TensorCopyPlan) -> None:

@@ -1,4 +1,5 @@
 import asyncio
+import time
 from argparse import Namespace
 from typing import Any
 
@@ -74,22 +75,57 @@ WORKER_EXTENSION_CLS = {
 
 @router.post("/pause")
 async def pause(request: Request):
+    step = int(request.query_params.get("step", 0))
+    started = time.perf_counter()
     logger.debug("Received /pause request (mode=keep, clear_cache=False)")
     await engine_client(request).pause_generation(mode="keep", clear_cache=False)
+    logger.info(
+        "Weight update profile v%d role=inference-server phase=pause: total=%.3fs",
+        step,
+        time.perf_counter() - started,
+    )
     return {"status": "paused"}
 
 
 @router.post("/resume")
 async def resume(request: Request):
+    step = int(request.query_params.get("step", 0))
+    started = time.perf_counter()
     await engine_client(request).resume_generation()
+    logger.info(
+        "Weight update profile v%d role=inference-server phase=resume: total=%.3fs",
+        step,
+        time.perf_counter() - started,
+    )
     return {"status": "resumed"}
 
 
 @router.post("/update_weights")
 async def update_weights(request: Request):
+    started = time.perf_counter()
     data = await request.json()
-    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    return {"status": "ok"}
+    step = int(data.get("step", 0))
+    parse_seconds = time.perf_counter() - started
+    collective_started = time.perf_counter()
+    succeeded = False
+    try:
+        await engine_client(request).collective_rpc(
+            "update_weights_from_path",
+            args=(data.get("weight_dir"), step),
+        )
+        succeeded = True
+    finally:
+        collective_seconds = time.perf_counter() - collective_started
+        logger.info(
+            "Weight update profile v%d role=inference-server phase=update: "
+            "request_parse=%.3fs, collective_rpc=%.3fs, handler_total=%.3fs, outcome=%s",
+            step,
+            parse_seconds,
+            collective_seconds,
+            time.perf_counter() - started,
+            "ok" if succeeded else "error",
+        )
+    return {"status": "ok", "step": step, "elapsed": time.perf_counter() - started}
 
 
 @router.post("/load_lora_adapter")

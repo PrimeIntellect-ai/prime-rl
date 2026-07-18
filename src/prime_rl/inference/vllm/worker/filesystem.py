@@ -25,8 +25,9 @@ class FileSystemWeightUpdateWorker(Worker):
         """No-op RPC used by the API server liveness endpoint."""
         return None
 
-    def update_weights_from_path(self, weight_path: str) -> None:
+    def update_weights_from_path(self, weight_path: str, step: int = 0) -> None:
         """Update weights from a specified path in shared filesystem containing a HF-compatible checkpoint."""
+        del step
         # Get vLLM model runner and model
         # When enforce_eager=True, model isn't wrapped by torch.compile so no .runnable attr
         model_runner = self.model_runner

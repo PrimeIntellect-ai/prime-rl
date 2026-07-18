@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import Mapping
 from itertools import cycle
 from pathlib import Path
@@ -379,19 +380,26 @@ async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None
     logger = get_logger()
     logger.info(f"Updating policy in-flight to v{step}")
     await asyncio.gather(
-        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
+        *[
+            _admin_post(
+                client,
+                "/pause",
+                params={"mode": "keep", "clear_cache": "false", "step": step},
+            )
+            for client in admin_clients
+        ]
     )
     logger.debug("All inference engines paused")
 
 
-async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
+async def _resume_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
     """Resume all inference engines after weight update.
 
     Resuming is idempotent (it just clears the paused flag), so retrying transient
     failures is safe; a dropped /resume would leave engines paused indefinitely.
     """
     logger = get_logger()
-    await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
+    await asyncio.gather(*[_admin_post(client, "/resume", params={"step": step}) for client in admin_clients])
     logger.debug("All inference engines resumed")
 
 
@@ -419,29 +427,53 @@ async def update_weights(
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
         # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
+        update_started = time.perf_counter()
+        pause_started = time.perf_counter()
         await _pause_engines(admin_clients, step=step)
+        pause_seconds = time.perf_counter() - pause_started
 
+        ready_marker_seconds = 0.0
+        update_succeeded = False
+        request_started = time.perf_counter()
         try:
             # Create ready marker before servers enter receive path (used by NCCL broadcast)
             if weight_dir is not None:
+                ready_marker_started = time.perf_counter()
                 nccl_ready_file = weight_dir / NCCL_READY_MARKER
                 nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
                 nccl_ready_file.touch()
+                ready_marker_seconds = time.perf_counter() - ready_marker_started
                 logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
+            request_started = time.perf_counter()
             await asyncio.gather(
                 *[
                     _admin_post(
                         admin_client,
                         "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
+                        json={"weight_dir": weight_dir_posix, "step": step},
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                     )
                     for admin_client in admin_clients
                 ]
             )
+            update_succeeded = True
         finally:
-            await _resume_engines(admin_clients)
+            update_request_seconds = time.perf_counter() - request_started
+            resume_started = time.perf_counter()
+            resume_succeeded = False
+            try:
+                await _resume_engines(admin_clients, step=step)
+                resume_succeeded = True
+            finally:
+                resume_seconds = time.perf_counter() - resume_started
+                logger.info(
+                    f"Weight update profile v{step} role=orchestrator-admin: "
+                    f"pause={pause_seconds:.3f}s, ready_marker={ready_marker_seconds:.3f}s, "
+                    f"update_request={update_request_seconds:.3f}s, resume={resume_seconds:.3f}s, "
+                    f"total={time.perf_counter() - update_started:.3f}s, servers={len(admin_clients)}, "
+                    f"outcome={'ok' if update_succeeded and resume_succeeded else 'error'}"
+                )
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
