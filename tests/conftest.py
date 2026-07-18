@@ -78,7 +78,10 @@ def output_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[Path, None
     output_dir = Path(os.environ.get("PYTEST_OUTPUT_DIR", tmp_path_factory.mktemp("outputs")))
     output_dir.mkdir(parents=True, exist_ok=True)
     yield output_dir
-    shutil.rmtree(output_dir, ignore_errors=True)
+    # In CI the workspace is discarded after the job; keep the outputs so the
+    # failure-artifact upload step can collect the run logs.
+    if os.environ.get("USERNAME_CI") != "CI_RUNNER":
+        shutil.rmtree(output_dir, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
