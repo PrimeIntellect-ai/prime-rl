@@ -101,6 +101,17 @@ class TimingMetrics(StatGroup):
         return Stat([r.timing.generation.duration for r in self.rollouts])
 
     @property
+    def generation_model(self) -> Stat:
+        """The share of the generation phase spent inside model calls (inference)."""
+        return Stat([r.timing.generation.model.duration for r in self.rollouts])
+
+    @property
+    def generation_harness(self) -> Stat:
+        """The share of the generation phase spent outside model calls (harness, tools,
+        user simulation)."""
+        return Stat([r.timing.generation.harness.duration for r in self.rollouts])
+
+    @property
     def finalize(self) -> Stat:
         return Stat([r.timing.finalize.duration for r in self.rollouts])
 
@@ -113,7 +124,12 @@ class TimingMetrics(StatGroup):
         return Stat([sum(getattr(r.timing, p).duration for p in self.PHASES) for r in self.rollouts])
 
     def stats(self) -> dict[str, Stat]:
-        return {**{phase: getattr(self, phase) for phase in self.PHASES}, "total": self.total}
+        return {
+            **{phase: getattr(self, phase) for phase in self.PHASES},
+            "generation/model": self.generation_model,
+            "generation/harness": self.generation_harness,
+            "total": self.total,
+        }
 
 
 class CustomMetrics(StatGroup):
