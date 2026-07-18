@@ -301,7 +301,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
             ]
             tensors: dict[str, TrainerTensor] = {}
             tensor_groups: dict[str, int] = {}
-            shard_sizes: dict[str, list[int]] = defaultdict(list)
             for agent_index, (_, _, _, _, _, _, rows) in enumerate(parts):
                 for name, wire_dtype, shape, group, offset, numel, addr in rows:
                     tensor = tensors.setdefault(
@@ -324,27 +323,13 @@ class NIXLWeightBroadcast(WeightBroadcast):
                         TrainerShard(
                             agent=agent_index,
                             offset=offset,
+                            numel=numel,
                             addr=addr,
                         )
                     )
-                    shard_sizes[name].append(numel)
 
-            for name, tensor in tensors.items():
-                ordered = sorted(zip(tensor.shards, shard_sizes[name]), key=lambda item: item[0].offset)
-                cursor = 0
-                for shard, numel in ordered:
-                    if shard.offset != cursor:
-                        raise RuntimeError(
-                            f"{name}: trainer shards do not tile flat elements at {cursor}; "
-                            f"next starts at {shard.offset}"
-                        )
-                    cursor += numel
-                expected_numel = prod(tensor.shape)
-                if cursor != expected_numel:
-                    raise RuntimeError(
-                        f"{name}: trainer shards cover [0, {cursor}), expected [0, {expected_numel})"
-                    )
-                tensor.shards[:] = [shard for shard, _ in ordered]
+            for tensor in tensors.values():
+                tensor.shards.sort(key=lambda shard: shard.offset)
 
             groups = [
                 TrainerGroup(
@@ -456,18 +441,22 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     raise RuntimeError(f"{tensor.name}: tensor has no trainer shards")
 
                 total_numel = prod(tensor.shape)
-                previous_offset = -1
-                for index, shard in enumerate(tensor.shards):
+                cursor = 0
+                for shard in tensor.shards:
                     if not 0 <= shard.agent < len(table.agents):
                         raise RuntimeError(f"{tensor.name}: invalid trainer agent index {shard.agent}")
-                    if index == 0 and shard.offset != 0:
-                        raise RuntimeError(f"{tensor.name}: first trainer shard starts at {shard.offset}, expected 0")
-                    if shard.offset <= previous_offset or shard.offset >= total_numel:
+                    if shard.numel <= 0:
+                        raise RuntimeError(f"{tensor.name}: invalid trainer shard size {shard.numel}")
+                    if shard.offset != cursor:
                         raise RuntimeError(
-                            f"{tensor.name}: invalid ordered shard offset {shard.offset} "
-                            f"after {previous_offset} for {total_numel} elements"
+                            f"{tensor.name}: trainer shards do not tile flat elements at {cursor}; "
+                            f"next range is [{shard.offset}, {shard.offset + shard.numel})"
                         )
-                    previous_offset = shard.offset
+                    cursor += shard.numel
+                if cursor != total_numel:
+                    raise RuntimeError(
+                        f"{tensor.name}: trainer shards cover [0, {cursor}), expected [0, {total_numel})"
+                    )
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:

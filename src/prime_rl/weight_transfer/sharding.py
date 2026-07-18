@@ -1,4 +1,4 @@
-"""Route logical tensor regions onto dim-0 trainer shards."""
+"""Route logical tensor regions onto trainer shards."""
 
 from __future__ import annotations
 
@@ -8,18 +8,15 @@ from prime_rl.weight_transfer.wire import TrainerShard
 def route_region(
     region_runs: list[tuple[int, int]],
     shards: list[TrainerShard],
-    tensor_numel: int,
     itemsize: int,
 ) -> list[tuple[int, int, int]]:
     """Map full-tensor element runs to ``(agent, address, bytes)`` pieces."""
     ordered = sorted(shards, key=lambda shard: shard.offset)
     bounds: list[tuple[int, int, TrainerShard]] = []
-    for index, shard in enumerate(ordered):
-        end = ordered[index + 1].offset if index + 1 < len(ordered) else tensor_numel
-        if shard.offset < 0 or end <= shard.offset or end > tensor_numel:
-            raise ValueError(
-                f"invalid trainer shard range [{shard.offset}, {end}) for tensor with {tensor_numel} elements"
-            )
+    for shard in ordered:
+        end = shard.offset + shard.numel
+        if shard.offset < 0 or shard.numel <= 0:
+            raise ValueError(f"invalid trainer shard range [{shard.offset}, {end})")
         bounds.append((shard.offset, end, shard))
 
     pieces: list[tuple[int, int, int]] = []

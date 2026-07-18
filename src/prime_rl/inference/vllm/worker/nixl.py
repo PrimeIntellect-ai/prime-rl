@@ -377,7 +377,6 @@ class NIXLWeightUpdateWorker(Worker):
                 source_pieces = route_region(
                     region_elem_runs(offset, shape, stride),
                     source.shards,
-                    prod(source.shape),
                     source_dtype.itemsize,
                 )
                 for agent, source_addr, destination_addr, nbytes in zip_src_dst(

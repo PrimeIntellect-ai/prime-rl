@@ -16,13 +16,13 @@ class TrainerAgent(msgspec.Struct, frozen=True):
 class TrainerShard(msgspec.Struct, frozen=True):
     """One contiguous flat range of a logical trainer tensor.
 
-    ``offset`` is measured in logical tensor elements. The range ends at the
-    next shard's offset, or at the tensor's total number of elements for the
-    final shard. ``addr`` is the remote address of the first element.
+    ``offset`` and ``numel`` describe the logical element range. ``addr`` is
+    the remote address of its first wire-dtype element.
     """
 
     agent: int
     offset: int
+    numel: int
     addr: int
 
 
