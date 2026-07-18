@@ -38,18 +38,29 @@ AutoConfig.register("qwen3_5_moe_text", Qwen3_5MoeConfig, exist_ok=True)
 # GptOssConfig is just HF's class - already registered by transformers, no override needed.
 
 _CUSTOM_CAUSAL_LM_MAPPING = _LazyAutoMapping(CONFIG_MAPPING_NAMES, OrderedDict())
-_CUSTOM_CAUSAL_LM_MAPPING.register(LlamaConfig, LlamaForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3Config, Qwen3ForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(AfmoeConfig, AfmoeForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(Glm4MoeConfig, Glm4MoeForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(GlmMoeDsaConfig, GlmMoeDsaForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(LagunaConfig, LagunaForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(MiniMaxM2Config, MiniMaxM2ForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(NemotronHConfig, NemotronHForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3MoeConfig, Qwen3MoeForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3_5TextConfig, Qwen3_5ForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(Qwen3_5MoeConfig, Qwen3_5MoeForCausalLM, exist_ok=True)
-_CUSTOM_CAUSAL_LM_MAPPING.register(GptOssConfig, GptOssForCausalLM, exist_ok=True)
+_CUSTOM_CAUSAL_LM_MODELS: tuple[
+    tuple[type[PretrainedConfig], type[PreTrainedModelPrimeRL]],
+    ...,
+] = (
+    (LlamaConfig, LlamaForCausalLM),
+    (Qwen3Config, Qwen3ForCausalLM),
+    (AfmoeConfig, AfmoeForCausalLM),
+    (Glm4MoeConfig, Glm4MoeForCausalLM),
+    (GlmMoeDsaConfig, GlmMoeDsaForCausalLM),
+    (LagunaConfig, LagunaForCausalLM),
+    (MiniMaxM2Config, MiniMaxM2ForCausalLM),
+    (NemotronHConfig, NemotronHForCausalLM),
+    (Qwen3MoeConfig, Qwen3MoeForCausalLM),
+    (Qwen3_5TextConfig, Qwen3_5ForCausalLM),
+    (Qwen3_5MoeConfig, Qwen3_5MoeForCausalLM),
+    (GptOssConfig, GptOssForCausalLM),
+)
+for config_cls, model_cls in _CUSTOM_CAUSAL_LM_MODELS:
+    _CUSTOM_CAUSAL_LM_MAPPING.register(config_cls, model_cls, exist_ok=True)
+
+_CUSTOM_CAUSAL_LM_BY_MODEL_TYPE = {
+    config_cls.model_type: model_cls for config_cls, model_cls in _CUSTOM_CAUSAL_LM_MODELS
+}
 
 
 class AutoModelForCausalLMPrimeRL(_BaseAutoModelClass):
@@ -57,6 +68,11 @@ class AutoModelForCausalLMPrimeRL(_BaseAutoModelClass):
 
 
 AutoModelForCausalLMPrimeRL = auto_class_update(AutoModelForCausalLMPrimeRL, head_doc="causal language modeling")
+
+
+def get_custom_causal_lm_cls(model_config: PretrainedConfig) -> type[PreTrainedModelPrimeRL]:
+    """Resolve the PrimeRL model class from a possibly non-PrimeRL config instance."""
+    return _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE[model_config.model_type]
 
 
 def supports_custom_impl(model_config: PretrainedConfig) -> bool:
@@ -87,6 +103,7 @@ def get_custom_vlm_cls(model_config: PretrainedConfig) -> type | None:
 __all__ = [
     "AutoModelForCausalLMPrimeRL",
     "PreTrainedModelPrimeRL",
+    "get_custom_causal_lm_cls",
     "supports_custom_impl",
     "get_custom_vlm_cls",
     "PrimeLmOutput",

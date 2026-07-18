@@ -39,11 +39,6 @@ def _layer_conversion_chain(layer_idx: int) -> list[ConvOp]:
     return ops
 
 
-def conversion_chain(config) -> list[ConvOp]:
-    """Build the complete, present-guarded conversion chain for ``config``."""
-    return [op for layer_idx in range(config.num_hidden_layers) for op in _layer_conversion_chain(layer_idx)]
-
-
 def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
     """Convert one layer from HF to PrimeRL format in place."""
     apply_hf_to_tt(state_dict, _layer_conversion_chain(layer_idx))

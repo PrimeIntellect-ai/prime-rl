@@ -33,21 +33,11 @@ def make_hf_lazy_weights(
         for tensor in group.tensors
     }
 
-    model_type = getattr(hf_config, "model_type", None)
-    if model_type == "qwen3_moe":
-        from prime_rl.trainer.models.conversion_ops import apply_tt_to_hf
-        from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import conversion_chain
+    # TODO(matej): Figure out how to avoid depending on trainer code here.
+    from prime_rl.trainer.models import get_custom_causal_lm_cls
 
-        apply_tt_to_hf(state, conversion_chain(hf_config))
-    elif model_type == "glm_moe_dsa":
-        from prime_rl.trainer.models.conversion_ops import apply_tt_to_hf
-        from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import conversion_chain
-
-        apply_tt_to_hf(state, conversion_chain(hf_config))
-    else:
-        raise NotImplementedError(
-            f"NIXL composed weight transfer does not yet declare a trainer-to-HF graph for {model_type!r}"
-        )
+    model_cls = get_custom_causal_lm_cls(hf_config)
+    model_cls.convert_to_hf(state)
 
     # AutoWeightsLoader groups adjacent names by module prefix. Stable sorting
     # matches normal checkpoint iterators and keeps every expert group intact.
