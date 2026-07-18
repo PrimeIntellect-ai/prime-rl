@@ -29,6 +29,8 @@ def mk(
     filter_results: dict | None = None,
     setup: float = 0.0,
     generation: float = 0.0,
+    generation_model: float = 0.0,
+    generation_harness: float = 0.0,
     finalize: float = 0.0,
     scoring: float = 0.0,
 ):
@@ -54,7 +56,11 @@ def mk(
         filter_results=filter_results or {},
         timing=SimpleNamespace(
             setup=SimpleNamespace(duration=setup),
-            generation=SimpleNamespace(duration=generation),
+            generation=SimpleNamespace(
+                duration=generation,
+                model=SimpleNamespace(duration=generation_model),
+                harness=SimpleNamespace(duration=generation_harness),
+            ),
             finalize=SimpleNamespace(duration=finalize),
             scoring=SimpleNamespace(duration=scoring),
         ),
@@ -145,11 +151,16 @@ def test_nested_metrics_and_rewards():
 
 
 def test_nested_timing():
-    m = TrainRollouts([mk(setup=1.0, generation=2.0, finalize=0.5, scoring=0.5)]).metrics
+    m = TrainRollouts(
+        [mk(setup=1.0, generation=2.0, generation_model=1.5, generation_harness=0.5, finalize=0.5, scoring=0.5)]
+    ).metrics
     assert m.timing.setup.mean() == 1.0 and m.timing.total.mean() == 4.0  # total sums all four phases
+    assert m.timing.generation_model.mean() == 1.5 and m.timing.generation_harness.mean() == 0.5
     out = m.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/timing/setup/mean"] == 1.0
     assert out["train/agg/all/timing/total/mean"] == 4.0
+    assert out["train/agg/all/timing/generation/model/mean"] == 1.5
+    assert out["train/agg/all/timing/generation/harness/mean"] == 0.5
 
 
 def test_train_only_metrics_absent_from_eval():
