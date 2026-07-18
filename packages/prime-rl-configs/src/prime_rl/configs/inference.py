@@ -551,9 +551,7 @@ class InferenceConfig(BaseConfig):
             self.api_server_count = 1  # LoRA requires only one API server
         return self
 
-    def build_kv_transfer_config(
-        self, role: Literal["prefill", "decode"] | None = None
-    ) -> dict[str, Any] | None:
+    def build_kv_transfer_config(self, role: Literal["prefill", "decode"] | None = None) -> dict[str, Any] | None:
         """Build the single vLLM ``kv_transfer_config`` from the transfer + offload connectors.
 
         Disaggregated P/D always uses NIXL for prefill→decode transfer. KV cache offload (if
