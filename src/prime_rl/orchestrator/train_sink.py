@@ -178,12 +178,13 @@ class TrainSink:
             )
         return dropped
 
-    def remaining_rollout_demand(self, in_transit: int) -> int:
-        """How many more train rollouts the batch being collected still needs,
-        counting everything already committed to it: buffered survivors,
-        partial-group arrivals, and ``in_transit`` rollouts (in flight or
-        completed but not yet routed into the sink). The dispatcher stops
-        scheduling when this reaches zero. The rollout-mode target is
+    def remaining_rollout_demand(self, in_transit: int, lookahead_batches: int) -> int:
+        """How many more train rollouts the batch being collected (plus
+        ``lookahead_batches`` beyond it) still needs, counting everything
+        already committed: buffered survivors, partial-group arrivals, and
+        ``in_transit`` rollouts (in flight or completed but not yet routed
+        into the sink). The dispatcher stops scheduling when this reaches
+        zero. The rollout-mode base target is
         ``max(batch_size, max_inflight_rollouts)``: with over-provisioning
         configured (``oversampling_factor`` > 1 or an explicit
         ``max_inflight_rollouts`` above the batch), extra rollouts race the
@@ -197,11 +198,11 @@ class TrainSink:
         committed = self.buffered_count() + in_transit
         if self.batch_size is not None:
             assert self.config.max_inflight_rollouts is not None
-            target = max(self.batch_size, self.config.max_inflight_rollouts)
+            target = max(self.batch_size, self.config.max_inflight_rollouts) + lookahead_batches * self.batch_size
             needed = target - len(self.pending_batch)
         else:
             assert self.token_batch_size is not None
-            remaining_tokens = self.token_batch_size - self.pending_tokens
+            remaining_tokens = (1 + lookahead_batches) * self.token_batch_size - self.pending_tokens
             if remaining_tokens <= 0:
                 needed = 0
             elif self._payload_count == 0:

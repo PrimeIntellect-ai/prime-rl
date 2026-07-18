@@ -889,13 +889,20 @@ class Orchestrator:
     def train_needed(self) -> bool:
         """Whether the dispatcher may start another train rollout — injected as
         its scheduling predicate, re-evaluated per scheduled group. True while
-        the batch being collected isn't covered yet by buffered, partial-group,
-        and in-transit rollouts — so dispatch stops the moment the batch is
-        covered and resumes when demand reappears (next batch, staleness drops,
-        errored arrivals). False while rollouts started now would already
-        exceed ``max_off_policy_steps`` in this batch."""
-        if (self.progress.step - 1) - self.policy.version > self.config.max_off_policy_steps:
+        the batch being collected — plus up to ``TARGET_LAG`` batches of
+        lookahead, staleness budget permitting — isn't covered yet by buffered,
+        partial-group, and in-transit rollouts. The lookahead keeps dispatch
+        continuous in steady state (each arrival frees demand for the next
+        start) instead of synchronizing it into one wave per batch, which
+        idles inference whenever rollouts spend time outside the engine
+        (multi-turn env round-trips) and stampedes the env server. False while
+        rollouts started now would already exceed ``max_off_policy_steps``."""
+        lag = (self.progress.step - 1) - self.policy.version
+        if lag > self.config.max_off_policy_steps:
             return False
+        # A rollout started now that lands l batches ahead trains lag+l versions
+        # behind; only look ahead as far as the staleness budget allows.
+        lookahead = min(TARGET_LAG, self.config.max_off_policy_steps - lag)
         # ``out_q`` backlog counts as coverage: while a ship holds for the
         # trainer, the main loop isn't routing arrivals into the sink, and
         # without this the dispatcher would over-provision through every hold
@@ -903,7 +910,7 @@ class Orchestrator:
         # Eval rollouts in the backlog undercount train demand briefly —
         # conservative, and it self-corrects as the queue drains.
         in_transit = self.dispatcher.inflight_train_count + self.dispatcher.out_q.qsize()
-        return self.train_sink.remaining_rollout_demand(in_transit) > 0
+        return self.train_sink.remaining_rollout_demand(in_transit, lookahead) > 0
 
     async def on_version_pending(self, step: int) -> None:
         """``VersionObserver`` hook, fired *before* the engines pause for the
