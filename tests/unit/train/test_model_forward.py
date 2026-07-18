@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -53,6 +54,25 @@ def test_frozen_vision_encoder_is_excluded_from_lora(monkeypatch):
     ]
     assert lora_parameters
     assert all(parameter.requires_grad for parameter in lora_parameters)
+    base_parameters = [
+        parameter for name, parameter in model.language_model.gate_proj.named_parameters() if "lora_" not in name
+    ]
+    assert base_parameters
+    assert all(not parameter.requires_grad for parameter in base_parameters)
+
+
+def test_frozen_vision_encoder_rejects_lora_targets_only_in_vision(monkeypatch):
+    runs = SimpleNamespace(max_runs=1, register_module=lambda *args: None)
+    monkeypatch.setattr("prime_rl.trainer.lora.get_multi_run_manager", lambda: runs)
+    model = _ToyVLM()
+    config = ModelConfig(
+        vlm=VLMConfig(vision_encoder_attr="visual", language_model_attr="language_model"),
+        lora=LoRAConfig(target_modules=["visual"]),
+        moe_router_dtype="bfloat16",
+    )
+
+    with pytest.raises(ValueError, match="No LoRA target modules found"):
+        configure_trainable_parameters(model, config, SimpleNamespace(ep_enabled=False))
 
 
 def test_forward_passes_renderer_mm_token_type_ids_through():

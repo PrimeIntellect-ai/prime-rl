@@ -35,7 +35,12 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.trainer.distributed import DeepEPExpertParallel, MXFP8AllToAllExpertParallel
-from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
+from prime_rl.trainer.lora import (
+    apply_lora_to_model,
+    freeze_all_except_lora_and_specified,
+    log_lora_parameter_counts,
+    strip_lora_from_state_dict,
+)
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PreTrainedModelPrimeRL,
@@ -1137,9 +1142,10 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig, parall
 
     if parallel_dims.ep_enabled:
         apply_ep(model, config, parallel_dims)
-        if config.lora is not None:
-            # EP replaces parameters with DTensors that default to trainable.
-            freeze_all_except_lora_and_specified(model, config.lora)
+
+    if config.lora is not None:
+        # Enforce the final policy after transforms that may replace parameters.
+        freeze_all_except_lora_and_specified(model, config.lora)
 
     # Explicit freezes take precedence over LoRA modules_to_save and EP replacements.
     if config.freeze_moe_router:
@@ -1150,6 +1156,8 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig, parall
             model,
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
+    if config.lora is not None:
+        log_lora_parameter_counts(model)
 
 
 def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:

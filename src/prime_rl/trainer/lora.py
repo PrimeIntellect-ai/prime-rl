@@ -136,6 +136,27 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
             param.requires_grad = False
 
 
+def log_lora_parameter_counts(model: nn.Module) -> None:
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    lora_adapter_params = 0
+    lora_adapted_params = 0
+    for module in model.modules():
+        if isinstance(module, MultiLoRAModule):
+            adapter_params, adapted_params = module.get_lora_param_counts()
+            lora_adapter_params += adapter_params
+            lora_adapted_params += adapted_params
+
+    fully_trainable = trainable_params - lora_adapter_params
+    adapted_or_trainable = lora_adapted_params + fully_trainable
+
+    logger = get_logger()
+    logger.info(f"LoRA enabled: {lora_adapter_params:,} adapter params adapting {lora_adapted_params:,} base params")
+    logger.info(f"LoRA: {fully_trainable:,} fully trainable parameters")
+    logger.info(f"LoRA: {adapted_or_trainable:,} adapted or fully trainable out of {total_params:,} parameters")
+
+
 def apply_lora_to_model(
     model: nn.Module,
     config: LoRAConfig,
@@ -143,10 +164,10 @@ def apply_lora_to_model(
     excluded_modules: tuple[nn.Module, ...] = (),
 ) -> None:
     """
-    Apply LoRA to target modules in the model and freeze non-LoRA parameters.
+    Apply LoRA to target modules in the model.
 
-    WARNING: This function modifies requires_grad on parameters. If using FSDP2,
-    this MUST be called BEFORE setup_fsdp() to avoid dtensor/sharding issues.
+    WARNING: This function replaces target modules. If using FSDP2, this MUST be
+    called BEFORE setup_fsdp() to avoid dtensor/sharding issues.
 
     Args:
         model: The model to apply LoRA to
@@ -175,8 +196,9 @@ def apply_lora_to_model(
     )
 
     if not target_modules:
-        logger.warning("No target modules found for LoRA. Check your target_modules patterns.")
-        return
+        raise ValueError(
+            f"No LoRA target modules found for patterns {config.target_modules} after applying module exclusions."
+        )
 
     for module_name in target_modules:
         base_module = _get_module_by_name(model, module_name)
@@ -226,26 +248,6 @@ def apply_lora_to_model(
 
         lora_module.register_with_runs(get_multi_run_manager(), module_name)
         _set_module_by_name(model, module_name, lora_module)
-
-    freeze_all_except_lora_and_specified(model, config)
-
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    lora_adapter_params = 0
-    lora_adapted_params = 0
-    for name, module in model.named_modules():
-        if isinstance(module, MultiLoRAModule):
-            adapter_params, adapted_params = module.get_lora_param_counts()
-            lora_adapter_params += adapter_params
-            lora_adapted_params += adapted_params
-
-    fully_trainable = trainable_params - lora_adapter_params
-    adapted_or_trainable = lora_adapted_params + fully_trainable
-
-    logger.info(f"LoRA enabled: {lora_adapter_params:,} adapter params adapting {lora_adapted_params:,} base params")
-    logger.info(f"LoRA: {fully_trainable:,} fully trainable parameters")
-    logger.info(f"LoRA: {adapted_or_trainable:,} adapted or fully trainable out of {total_params:,} parameters")
 
 
 def has_lora_layers(model: nn.Module) -> bool:
