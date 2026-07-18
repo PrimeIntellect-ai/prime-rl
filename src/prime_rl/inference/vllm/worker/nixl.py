@@ -31,7 +31,7 @@ from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc, cuda_buffer_c
 from prime_rl.weight_transfer.graph import make_hf_lazy_weights
 from prime_rl.weight_transfer.lazy import BakeRecorder, RecordedCopy
 from prime_rl.weight_transfer.mx import MxRendezvous
-from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
+from prime_rl.weight_transfer.nixl import NixlAgent, NixlRead, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.sharding import route_region, zip_src_dst
 from prime_rl.weight_transfer.wire import TrainerTable, decode_table
 
@@ -80,7 +80,7 @@ class LayerWeightTransferPlan:
 class WeightTransferGroup:
     name: str
     layers: list[LayerWeightTransferPlan]
-    pulls: list[tuple[Any, Any, list[int]]]
+    pulls: list[NixlRead]
 
 
 @dataclass
@@ -412,7 +412,7 @@ class NIXLWeightUpdateWorker(Worker):
                     )
                 )
 
-            pulls: list[tuple[Any, Any, list[int]]] = []
+            pulls: list[NixlRead] = []
             for agent_index, remote in sorted(remote_descs.items()):
                 peer_name = peer_names.get(agent_index)
                 if peer_name is None:
@@ -421,7 +421,13 @@ class NIXLWeightUpdateWorker(Worker):
                     peer_names[agent_index] = peer_name
                 local_prepared = self.nixl_agent.prep_local(local_descs[agent_index])
                 remote_prepared = self.nixl_agent.prep_remote(peer_name, remote)
-                pulls.append((local_prepared, remote_prepared, list(range(len(remote)))))
+                pulls.append(
+                    self.nixl_agent.prepare_read(
+                        local_prepared,
+                        list(range(len(remote))),
+                        remote_prepared,
+                    )
+                )
             if receive_buffer_count > 1 and pulls:
                 offset = (group_index + self.mx_rendezvous.rank * len(pulls) // self.inference_world_size) % len(pulls)
                 pulls = pulls[offset:] + pulls[:offset]
@@ -520,19 +526,20 @@ class NIXLWeightUpdateWorker(Worker):
             post_seconds = 0.0
             handle_wait_seconds = 0.0
             if plan.receive_buffer_count == 1:
-                for local, remote, indices in transfer_group.pulls:
-                    handle = self.nixl_agent.post_read(local, indices, remote)
+                for read in transfer_group.pulls:
+                    self.nixl_agent.post_read(read)
                     self.nixl_agent.wait(
-                        handle,
+                        read,
                         context=f"weight pull for {transfer_group.name}",
                         timeout=self.weight_transfer_timeout,
                         cancelled=cancelled.is_set,
                     )
             else:
-                handles: deque[Any] = deque()
-                for local, remote, indices in transfer_group.pulls:
+                handles: deque[NixlRead] = deque()
+                for read in transfer_group.pulls:
                     post_started = time.perf_counter()
-                    handles.append(self.nixl_agent.post_read(local, indices, remote))
+                    self.nixl_agent.post_read(read)
+                    handles.append(read)
                     post_seconds += time.perf_counter() - post_started
                     if len(handles) == _MAX_INFLIGHT_READS:
                         wait_started = time.perf_counter()
