@@ -38,7 +38,7 @@ prime-rl is a framework for large-scale reinforcement learning. It is designed t
 5. Multi-node deployment with Slurm.
 6. Multimodal support for VLMs such as Qwen3-VL.
 7. Hackable, modular, and extensible by design.
-8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](examples/advanced/glm-5.2/README.md).
+8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](examples/advanced/glm-5.2/).
 
 
 ## Models support
@@ -211,12 +211,12 @@ Follow this guide to learn the basics of prime-rl. You can train your own models
 Follow this guide to train large models on hard reasoning and agentic tasks.
 These guides are designed to be run from a Slurm cluster.
 
-1. [**Qwen3-30B-A3B**](examples/advanced/qwen3-30b-a3b/README.md): Train `Qwen3-30B-A3B` on math, SWE, and agentic tool use.
-2. [**GLM-4.5-Air**](examples/advanced/glm-4.5-air/README.md): Train `GLM-4.5-Air` on search, SWE, and terminal tasks.
-3. [**Nemotron-3-Super**](examples/advanced/nemotron-3-super/README.md): Train the `Nemotron-3-Super-120B` hybrid-Mamba MoE on SWE at 131k context.
-4. [**MiniMax-M2.5 SWE**](examples/advanced/minimax-m2.5/README.md): Train `MiniMax-M2.5` on agentic SWE tasks.
-5. [**INTELLECT-3.1**](examples/advanced/intellect-3.1/README.md): Reproduce our `INTELLECT-3.1` training run.
-6. [**High-throughput GLM-5**](examples/advanced/glm-5.2/README.md): Large-scale `GLM-5`/`GLM-5.2` inference with P/D disaggregation, the `llm-d` router, and FP8.
+1. [**Qwen3-30B-A3B**](examples/advanced/qwen3-30b-a3b/): Train `Qwen3-30B-A3B` on math, SWE, and agentic tool use.
+2. [**GLM-4.5-Air**](examples/advanced/glm-4.5-air/): Train `GLM-4.5-Air` on search, SWE, and terminal tasks.
+3. [**Nemotron-3-Super**](examples/advanced/nemotron-3-super/): Train the `Nemotron-3-Super-120B` hybrid-Mamba MoE on SWE at 131k context.
+4. [**MiniMax-M2.5 SWE**](examples/advanced/minimax-m2.5/): Train `MiniMax-M2.5` on agentic SWE tasks.
+5. [**INTELLECT-3.1**](examples/advanced/intellect-3.1/): Reproduce our `INTELLECT-3.1` training run.
+6. [**High-throughput GLM-5**](examples/advanced/glm-5.2/): Large-scale `GLM-5`/`GLM-5.2` inference with P/D disaggregation, the `llm-d` router, and FP8.
 
 ## Docs
 
