@@ -15,7 +15,9 @@ from tests.utils import (
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
-TIMEOUT = 900  # 15 minutes
+# Cycle time is bound by 2-turn rollout latency and trainer pace, both of which
+# vary ~2x across the heterogeneous vm runner pool (observed 33s-70s cycles).
+TIMEOUT = 1200  # 20 minutes
 
 
 @pytest.fixture(scope="module")

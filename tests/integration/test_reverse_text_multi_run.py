@@ -18,7 +18,7 @@ pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 # Resumed orchestrators pace to the shared trainer (a batch only ships once the
 # trainer has produced the required policy version), so with three runs
 # round-robining one trainer their wall time is coupled to its scheduling.
-TIMEOUT = 600  # 10 minutes
+TIMEOUT = 900  # 15 minutes
 ORCHESTRATOR_NAMES = ["alpha", "beta", "gamma"]
 
 
