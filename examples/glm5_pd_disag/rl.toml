@@ -74,7 +74,7 @@ interval = 20
 [[orchestrator.eval.env]]
 name = "swe-bench-verified"
 taskset = { id = "swebench-verified-v1" }
-harness = { id = "default", runtime = { type = "prime", labels = ["glm5-pd-disag", "swe-bench-verified"] } }
+harness = { id = "bash", runtime = { type = "prime", labels = ["glm5-pd-disag", "swe-bench-verified"] } }
 
 [[orchestrator.post_batch_filters]]
 type = "gibberish"
