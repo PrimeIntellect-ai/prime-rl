@@ -5,11 +5,18 @@ from __future__ import annotations
 import os
 import socket
 import time
+from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from torch import Tensor
 
 MemDesc = tuple[int, int, int]
+
+
+@dataclass
+class NixlRead:
+    handle: Any
+    state: str | None = None
 
 
 class NixlAgent:
@@ -45,7 +52,7 @@ class NixlAgent:
             agent_name=peer_name, xfer_list=list(descs), mem_type="cuda", backends=self.backends
         )
 
-    def post_read(self, local: Any, indices: Sequence[int], remote: Any) -> Any:
+    def prepare_read(self, local: Any, indices: Sequence[int], remote: Any) -> NixlRead:
         handle = self._agent.make_prepped_xfer(
             operation="READ",
             local_xfer_side=local,
@@ -54,34 +61,51 @@ class NixlAgent:
             remote_indices=list(indices),
             backends=self.backends,
         )
-        state = self._agent.transfer(handle)
-        if state in ("ERR", "ERROR", "FAIL"):
-            raise RuntimeError(f"NIXL READ post failed with state {state}")
-        return handle
+        return NixlRead(handle)
+
+    def post_read(self, read: NixlRead) -> None:
+        if read.state == "INVALID":
+            raise RuntimeError("NIXL READ cannot be reposted after a transfer failure")
+        try:
+            read.state = self._agent.transfer(read.handle)
+            if read.state in ("ERR", "ERROR", "FAIL"):
+                state = read.state
+                raise RuntimeError(f"NIXL READ post failed with state {state}")
+        except Exception:
+            self._retire_read(read)
+            raise
 
     def wait(
         self,
-        handle: Any,
+        read: NixlRead,
         context: str = "",
         timeout: float | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> None:
         deadline = None if timeout is None else time.monotonic() + timeout
-        while True:
-            if cancelled is not None and cancelled():
-                self._agent.release_xfer_handle(handle)
-                raise RuntimeError(f"NIXL transfer cancelled, context={context!r}")
-            state = self._agent.check_xfer_state(handle)
-            if state in ("DONE", "SUCCESS"):
-                self._agent.release_xfer_handle(handle)
-                return
-            if state in ("ERR", "ERROR", "FAIL"):
-                self._agent.release_xfer_handle(handle)
-                raise RuntimeError(f"NIXL transfer failed with state={state}, context={context!r}")
-            if deadline is not None and time.monotonic() >= deadline:
-                self._agent.release_xfer_handle(handle)
-                raise TimeoutError(f"NIXL transfer timed out after {timeout}s, context={context!r}")
-            time.sleep(0.0005)
+        try:
+            while True:
+                if cancelled is not None and cancelled():
+                    raise RuntimeError(f"NIXL transfer cancelled, context={context!r}")
+                if read.state not in ("DONE", "SUCCESS"):
+                    read.state = self._agent.check_xfer_state(read.handle)
+                if read.state in ("DONE", "SUCCESS"):
+                    return
+                if read.state in ("ERR", "ERROR", "FAIL"):
+                    raise RuntimeError(f"NIXL transfer failed with state={read.state}, context={context!r}")
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError(f"NIXL transfer timed out after {timeout}s, context={context!r}")
+                time.sleep(0.0005)
+        except Exception:
+            self._retire_read(read)
+            raise
+
+    def _retire_read(self, read: NixlRead) -> None:
+        read.state = "INVALID"
+        try:
+            self._agent.release_xfer_handle(read.handle)
+        except Exception:
+            pass
 
 
 def make_agent_name(role: str, global_rank: int) -> str:
