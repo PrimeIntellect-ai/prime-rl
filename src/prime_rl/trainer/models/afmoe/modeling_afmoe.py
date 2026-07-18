@@ -6,10 +6,6 @@ import torch
 from torch import nn
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
-from transformers.masking_utils import (
-    create_causal_mask,
-    create_sliding_window_causal_mask,
-)
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import (
     MoeModelOutputWithPast,
@@ -32,7 +28,7 @@ from prime_rl.trainer.models.layers.rotary_emb import (
     RotaryEmbeddingConfig,
     apply_rotary_pos_emb,
 )
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 from .configuration_afmoe import AfmoeConfig
 from .converting_afmoe import (
@@ -388,6 +384,8 @@ class AfmoeModel(AfmoePreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
     ) -> MoeModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
@@ -402,29 +400,11 @@ class AfmoeModel(AfmoePreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        use_flash = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "flash_attention_4")
-
-        if use_flash:
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-            causal_mask_mapping = None
-        else:
-            cu_seqlens = None
-            max_seqlen = None
-            cache_position = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device)
-            if not isinstance(causal_mask_mapping := attention_mask, dict):
-                mask_kwargs = {
-                    "config": self.config,
-                    "inputs_embeds": inputs_embeds,
-                    "attention_mask": attention_mask,
-                    "cache_position": cache_position,
-                    "past_key_values": None,
-                    "position_ids": position_ids,
-                }
-                causal_mask_mapping = {
-                    "full_attention": create_causal_mask(**mask_kwargs),
-                    "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
-                }
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        causal_mask_mapping = None
 
         hidden_states = inputs_embeds
 
@@ -497,6 +477,8 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         token_type_ids: Optional[torch.Tensor] = None,  # will be ignored
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -517,6 +499,7 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
+            seq_lens=seq_lens,
         )
 
         hidden_states = outputs.last_hidden_state

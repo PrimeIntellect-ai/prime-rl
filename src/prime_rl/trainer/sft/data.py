@@ -18,14 +18,13 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
 
-STACKING_DATASET_BUCKET_TIMEOUT = 10
-
 
 class Sample(TypedDict):
     input_ids: list[int]
     position_ids: list[int]
     loss_mask: list[bool]
     target_ids: list[int]
+    seq_lens: list[int]
 
 
 class Batch(TypedDict):
@@ -33,6 +32,7 @@ class Batch(TypedDict):
     position_ids: Int[Tensor, "batch seq"]
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
+    seq_lens: Int[Tensor, "packed"]
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -102,6 +102,7 @@ class FakeDataset(StatefulIterableDataset):
                 "target_ids": input_ids[1:],
                 "position_ids": position_ids,
                 "loss_mask": loss_mask,
+                "seq_lens": [seq_len],
             }
             self.num_samples["fake"] += 1
             self.num_tokens["fake"] += len(input_ids)
@@ -278,6 +279,7 @@ class SFTDataset(StatefulIterableDataset):
             "target_ids": target_ids,
             "loss_mask": loss_mask,
             "position_ids": list(range(len(input_ids))),
+            "seq_lens": [len(input_ids)],
         }
 
     def __iter__(self):
@@ -331,159 +333,86 @@ class CatDataset(StatefulIterableDataset):
         self.logger = get_logger()
         self.dataset = dataset
         self.seq_len = seq_len
+        self.pending_sample: Sample | None = None
 
     def state_dict(self) -> dict:
-        return {"dataset": self.dataset.state_dict()}
+        state = {"dataset": self.dataset.state_dict()}
+        if self.pending_sample is not None:
+            state["pending_sample"] = self.pending_sample
+        return state
 
     def load_state_dict(self, state_dict: dict):
         self.dataset.load_state_dict(state_dict["dataset"])
+        self.pending_sample = state_dict.get("pending_sample")
 
     def __iter__(self):
-        packed_samples, seq_len = defaultdict(list), 0
-        for sample in self.dataset:
-            # Add sample to packed samples
-            for key, value in sample.items():
-                assert isinstance(value, list), f"Value for key {key} must be a list"
-                packed_samples[key].extend(value)
+        packed_samples = defaultdict(list)
+        seq_len = 0
 
-            # Update sequence length
-            seq_len += len(sample["input_ids"])
+        pending_sample = self.pending_sample
+        self.pending_sample = None
 
-            # If batch is full, truncate and yield it
-            if seq_len >= self.seq_len:
-                for key, value in packed_samples.items():
-                    assert isinstance(value, list), f"Value for key {key} must be a list"
-                    packed_samples[key] = value[: self.seq_len]
-                yield packed_samples
-                packed_samples, seq_len = defaultdict(list), 0
+        def samples():
+            if pending_sample is not None:
+                yield pending_sample
+            yield from self.dataset
 
-
-class StackDataset(StatefulIterableDataset):
-    """A dataset that stacks samples into batch with a fixed area"""
-
-    def __init__(self, dataset: StatefulIterableDataset, max_area: int):
-        self.logger = get_logger()
-        self.dataset = dataset
-        self.max_area = max_area
-        assert self.max_area % 256 == 0
-        self.bucket_sizes = []
-        while max_area % 256 == 0:
-            self.bucket_sizes.insert(0, max_area)
-            max_area //= 2
-        self.logger.debug(f"Initialized {len(self.bucket_sizes)} buckets (bucket_sizes={self.bucket_sizes})")
-        # Checkpoint state
-        self.step = 0
-        self.buckets = [[] for _ in range(len(self.bucket_sizes))]
-        self.bucket_timers: list[int | None] = [None] * len(self.buckets)
-
-    def state_dict(self) -> dict:
-        return {
-            "dataset": self.dataset.state_dict(),
-            "step": self.step,
-            "buckets": self.buckets,
-            "bucket_timers": self.bucket_timers,
-        }
-
-    def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict["dataset"])
-        self.step = state_dict["step"]
-        self.buckets = state_dict["buckets"]
-        self.bucket_timers = state_dict["bucket_timers"]
-
-    def __iter__(self):
-        for sample in self.dataset:
-            # Truncate sample if it's longer than max area
-            len_sample = len(sample["input_ids"])
-            if len_sample > self.max_area:
-                for key, value in sample.items():
-                    assert isinstance(value, list)
-                    sample[key] = sample[key][: self.max_area]
-                len_sample = self.max_area
-
-            # Add sample to bucket
-            def find_bucket_idx(len_sample: int) -> int:
-                bucket_idx = 0
-                while bucket_idx < len(self.bucket_sizes) - 1 and len_sample > self.bucket_sizes[bucket_idx]:
-                    bucket_idx += 1
-                return bucket_idx
-
-            bucket_idx = find_bucket_idx(len_sample)
-            self.buckets[bucket_idx].append(sample)
-
-            # Check if bucket has timed out
-            bucket_timer = self.bucket_timers[bucket_idx]
-            if bucket_timer is not None:
-                hit_timeout = bucket_timer + STACKING_DATASET_BUCKET_TIMEOUT < self.step
-            else:
-                hit_timeout = False
-
-            # Check if bucket is full
-            is_full = self.bucket_sizes[bucket_idx] * len(self.buckets[bucket_idx]) >= self.max_area
-
-            if is_full or hit_timeout:
-                if hit_timeout:
-                    while bucket_idx < len(self.buckets) - 1:
-                        if (
-                            self.bucket_sizes[bucket_idx + 1]
-                            * (len(self.buckets[bucket_idx]) + len(self.buckets[bucket_idx + 1]))
-                            < self.max_area
-                        ):
-                            self.buckets[bucket_idx + 1].extend(self.buckets[bucket_idx])
-                            self.buckets[bucket_idx] = []
-                            self.bucket_timers[bucket_idx] = None
-                            bucket_idx += 1
-                        else:
-                            break
-
-                    while self.bucket_sizes[bucket_idx] * len(self.buckets[bucket_idx]) < self.max_area:
-                        dummy_sample = {}
-                        for key, value in sample.items():
-                            dummy_sample[key] = [0]
-                        self.buckets[bucket_idx].append(dummy_sample)
-
+        for sample in samples():
+            sample_len = len(sample["input_ids"])
+            would_overflow = seq_len + sample_len > self.seq_len
+            if seq_len > 0 and would_overflow:
+                self.pending_sample = sample
+                yield self._finalize_pack(packed_samples, self.seq_len)
+                self.pending_sample = None
                 packed_samples = defaultdict(list)
-                num_samples, num_tokens, num_trainable_tokens, num_pad_tokens = 0, 0, 0, 0
-                for bucket_item in self.buckets[bucket_idx]:
-                    num_samples += 1
-                    for key, value in bucket_item.items():
-                        pad_tokens = [0] * (self.bucket_sizes[bucket_idx] - len(value))
-                        if key == "loss_mask":
-                            num_tokens += len(value)
-                            num_trainable_tokens += sum(value)
-                            num_pad_tokens += len(pad_tokens)
-                        packed_samples[key].append(value + pad_tokens)
-                reason = "bucket is full" if is_full else "because bucket timed out"
-                reason += " and " if is_full and hit_timeout else ""
-                reason += "bucket timed out" if hit_timeout else ""
-                self.logger.debug(
-                    f"Yield bucket {bucket_idx} because {reason} with {num_samples=}, {num_tokens=}, {num_trainable_tokens=}, {num_pad_tokens=}"
-                )
-                yield packed_samples
-                self.step += 1
-                self.buckets[bucket_idx] = []
-                self.bucket_timers[bucket_idx] = None
-            else:
-                if self.bucket_timers[bucket_idx] is None:
-                    self.bucket_timers[bucket_idx] = self.step
+                seq_len = 0
 
+            for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
+                value = sample[key]
+                assert isinstance(value, list)
+                packed_samples[key].extend(value)
+            packed_samples["seq_lens"].append(sample_len)
+            seq_len += sample_len
 
-def stack_collate(samples: list[Sample]) -> Batch:
-    return {
-        "input_ids": torch.tensor(samples[0]["input_ids"], dtype=torch.long, device="cuda"),
-        "position_ids": torch.tensor(samples[0]["position_ids"], dtype=torch.long, device="cuda"),
-        "loss_mask": torch.tensor(samples[0]["loss_mask"], dtype=torch.bool, device="cuda"),
-        "target_ids": torch.tensor(samples[0]["target_ids"], dtype=torch.long, device="cuda"),
-    }
+            if seq_len >= self.seq_len:
+                yield self._finalize_pack(packed_samples, self.seq_len)
+                packed_samples = defaultdict(list)
+                seq_len = 0
+
+        if seq_len > 0:
+            yield self._finalize_pack(packed_samples, self.seq_len)
+
+    def _finalize_pack(self, packed: dict[str, Any], seq_len: int) -> dict:
+        result: dict[str, Any] = {
+            k: packed[k][:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
+        }
+        result["seq_lens"] = []
+        remaining = len(result["input_ids"])
+        for sample_len in packed["seq_lens"]:
+            if remaining <= 0:
+                break
+            kept = min(sample_len, remaining)
+            if kept > 0:
+                result["seq_lens"].append(kept)
+            remaining -= kept
+        pad_len = seq_len - len(result["input_ids"])
+        if pad_len > 0:
+            result["input_ids"].extend([0] * pad_len)
+            result["position_ids"].extend(range(pad_len))
+            result["loss_mask"].extend([False] * pad_len)
+            result["target_ids"].extend([0] * pad_len)
+            result["seq_lens"][-1] += pad_len
+        return result
 
 
 def cat_collate(samples: list[Sample]) -> Batch:
+    (sample,) = samples
     return {
-        "input_ids": torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long().to("cuda"),
-        "position_ids": torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0)
-        .long()
-        .to("cuda"),
-        "loss_mask": torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to("cuda"),
-        "target_ids": torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to("cuda"),
+        "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+        "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+        "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda").unsqueeze(0),
+        "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+        "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long, device="cuda"),
     }
 
 
@@ -591,11 +520,5 @@ def setup_dataset(
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
-    if config.pack_function == "stack":
-        stacking_dataset = StackDataset(dataset, config.seq_len * config.micro_batch_size)
-        return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)
-    elif config.pack_function == "cat":
-        packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
-        return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
-    else:
-        raise ValueError(f"Invalid pack function: {config.pack_function}")
+    packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
+    return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)

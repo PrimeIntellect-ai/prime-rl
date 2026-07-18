@@ -146,7 +146,7 @@ jobs:
         id: artifact
         run: echo "name=benchmark-${{ matrix.runner }}-$(echo '${{ matrix.model }}' | sed 's/\//--/')-${{ matrix.type }}-${{ matrix.lora_rank || 'full' }}-${{ matrix.num_gpus }}gpu-${{ matrix.ac }}-${{ matrix.attention }}-${{ matrix.seq_len }}-cp${{ matrix.cp }}-ep${{ matrix.ep }}" >> "$GITHUB_OUTPUT"
       - name: Upload benchmark result
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: always()
         with:
           name: ${{ steps.artifact.outputs.name }}
@@ -163,16 +163,16 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout repository # We can't use the image because then no git
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install dependencies
         run: uv sync
       - name: Download all benchmark artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           path: /tmp/benchmark_artifacts
           pattern: benchmark-*

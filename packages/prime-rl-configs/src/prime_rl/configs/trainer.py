@@ -18,7 +18,7 @@ from prime_rl.utils.config import BaseConfig
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
-AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4"]
+AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
 EPCommBackend: TypeAlias = Literal["torch", "deepep"]
 
 
@@ -153,8 +153,8 @@ class ModelConfig(BaseModelConfig):
     seq_len: int = 2048
     """Sequence length the model is trained on."""
 
-    attn: AttnImplementation = "flash_attention_3"
-    """Attention implementation. With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
+    attn: AttnImplementation = "auto"
+    """Attention implementation. ``auto`` selects FA3 on Hopper (SM90) and FA4 on Blackwell (SM100+). With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
 
     compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""
@@ -237,11 +237,11 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def cp_only_with_flash_attn(self):
-        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4"]:
+        if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
         if (
             self.cp > 1
-            and self.attn in ("flash_attention_3", "flash_attention_4")
+            and self.attn in ("flash_attention_3", "flash_attention_4", "auto")
             and self.impl not in ("custom", "auto")
         ):
             # Both ring and ulysses route FA3/FA4 through our custom FlashAttention class:
@@ -275,7 +275,8 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def flash_attention_4_only_with_custom_impl(self):
-        if self.attn == "flash_attention_4" and self.impl not in ("custom", "auto"):
+        # "auto" may resolve to FA4 on Blackwell, so apply the same impl constraint.
+        if self.attn in ("flash_attention_4", "auto") and self.impl not in ("custom", "auto"):
             raise ValueError("Flash attention 4 is only supported with model.impl='custom' or 'auto'")
         return self
 
