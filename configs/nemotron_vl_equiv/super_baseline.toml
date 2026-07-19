@@ -1,0 +1,65 @@
+# Equivalence test, baseline arm: text-only LoRA SFT on plain Nemotron-3 Super 120B
+# via the nemotron_h custom path. Compare against graft.toml (identical settings,
+# NemotronVL composite checkpoint) — loss curves should overlay; step-1 loss should
+# match exactly (LoRA B=0 at init means the first forward is the frozen base model
+# in both arms).
+output_dir = "outputs/sft-equiv-super-baseline"
+max_steps = 20
+
+# HF datasets/tmp caches must live on node-local /tmp: the shared home FS has no
+# flock support (datasets' FileLock dies with "[Errno 37] No locks available").
+# User-namespaced paths per the team convention; created on ALL nodes below.
+[env_vars]
+HF_HOME = "/tmp/hubert-hf"
+TMPDIR = "/tmp/hubert-tmp"
+TRITON_CACHE_DIR = "/tmp/hubert-triton-cache"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[slurm]
+job_name = "sft-equiv-super"
+partition = "all"
+# Nemotron-H needs the mamba-ssm Triton kernels (bf16-softplus torch fallback has
+# ~0.4 KL divergence); the shared-FS venv makes one head-node sync sufficient.
+# The srun fans the node-local dir creation out to every node.
+pre_run_command = "srun --ntasks-per-node=1 bash -c 'mkdir -p /tmp/hubert-hf /tmp/hubert-tmp /tmp/hubert-triton-cache' ; uv sync --all-extras --all-packages --group mamba-ssm"
+
+[deployment]
+type = "multi_node"
+num_nodes = 2
+
+[wandb]
+project = "nemotron-vl"
+name = "sft-equiv-super-baseline"
+
+[model]
+name = "models/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
+impl = "custom"
+attn = "flash_attention_3"
+# NemotronH is hybrid-Mamba: ring CP unsupported, ulysses required; mamba caps cp at 8.
+cp = 8
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+
+[model.lora]
+rank = 16
+# Attention-only: LoRA on NemotronH grouped experts trips the multi-LoRA offsets
+# assert (tokens*top_k rows vs token count); experts adapters are unnecessary here.
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+[model.ac]
+freq = 1
+
+[renderer]
+name = "nemotron-3"
+
+[data]
+type = "sft"
+name = "PrimeIntellect/INTELLECT-3-SFT-10K"
+subsets = ["default"]
+splits = ["math"]
+batch_size = 8
+micro_batch_size = 1
+seq_len = 16384
+
+[optim]
+lr = 1e-5

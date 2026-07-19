@@ -141,7 +141,13 @@ class MultiLoRALinear(MultiLoRAModule):
         new_shape = ori_shape[:-1] + (self.out_features,)
         x = x.view(-1, x.shape[-1])
         offsets = self._lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
-        assert offsets[-1] == x.shape[0], f"offsets: {offsets}, x.shape: {x.shape}"
+        if offsets[-1] != x.shape[0]:
+            # Row count doesn't match the per-run token layout: this Linear sits inside a
+            # routed MoE path (e.g. NemotronH's fc1/fc2_latent_proj), where rows are
+            # top-k-expanded and expert-sorted, so runs cannot be separated by offsets.
+            # Apply the dominant adapter to all rows — exact for single-adapter training,
+            # and the same approximation MultiLoRAGroupedExperts uses for routed tokens.
+            return self._forward_dominant_adapter(x, new_shape)
 
         base_out = self.base_layer(x)
         lora_x = self.lora_dropout(x)
@@ -156,6 +162,14 @@ class MultiLoRALinear(MultiLoRAModule):
         # Apply per-token scaling
         per_token_scaling = torch.repeat_interleave(self._scaling_factors, self._lora_num_tokens).unsqueeze(-1)
         return (base_out + per_token_scaling * lora_out).view(new_shape)
+
+    def _forward_dominant_adapter(self, x: torch.Tensor, new_shape: torch.Size) -> torch.Tensor:
+        adapter_idx = self._lora_num_tokens.argmax().item()
+        base_out = self.base_layer(x)
+        lora_x = self.lora_dropout(x)
+        a_out = torch.matmul(lora_x, self.lora_A[adapter_idx].transpose(-2, -1))
+        lora_out = torch.matmul(a_out, self.lora_B[adapter_idx].transpose(-2, -1))
+        return (base_out + self._scaling_factors[adapter_idx] * lora_out).view(new_shape)
 
     def __repr__(self) -> str:
         return (

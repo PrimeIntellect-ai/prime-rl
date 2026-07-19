@@ -407,6 +407,11 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         self.lm_head = nn.Linear(text_config.hidden_size, text_config.vocab_size, bias=False)
         self.post_init()
 
+    @property
+    def defers_vlm_cp_to_model(self) -> bool:
+        """Image batches under CP must reach the model unsharded; it shards after the scatter."""
+        return self._is_vlm
+
     def get_input_embeddings(self):
         if self._is_vlm:
             return self.model.get_input_embeddings()

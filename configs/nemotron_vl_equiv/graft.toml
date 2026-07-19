@@ -1,0 +1,60 @@
+# Equivalence test, graft arm: identical to super_baseline.toml but loading the
+# Nemotron-VL composite checkpoint through the nemotron_vl custom class. Text-only
+# batches exercise the dummy-vision forward (adds image_embeds.sum() * 0.0), so
+# losses must match the baseline. No [model.vlm]: the vision tower and projector
+# are frozen by LoRA's freeze-all-except-adapters, and text-only SFT needs no
+# processor.
+output_dir = "outputs/sft-equiv-graft"
+max_steps = 20
+
+# Node-local caches: shared home FS has no flock support (see super_baseline.toml).
+[env_vars]
+HF_HOME = "/tmp/hubert-hf"
+TMPDIR = "/tmp/hubert-tmp"
+TRITON_CACHE_DIR = "/tmp/hubert-triton-cache"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[slurm]
+job_name = "sft-equiv-graft"
+partition = "all"
+pre_run_command = "srun --ntasks-per-node=1 bash -c 'mkdir -p /tmp/hubert-hf /tmp/hubert-tmp /tmp/hubert-triton-cache' ; uv sync --all-extras --all-packages --group mamba-ssm"
+
+[deployment]
+type = "multi_node"
+num_nodes = 2
+
+[wandb]
+project = "nemotron-vl"
+name = "sft-equiv-graft"
+
+[model]
+name = "models/Nemotron-3-Super-VL-graft"
+impl = "custom"
+attn = "flash_attention_3"
+cp = 8
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+
+[model.lora]
+rank = 16
+# Attention-only: LoRA on NemotronH grouped experts trips the multi-LoRA offsets
+# assert (tokens*top_k rows vs token count); experts adapters are unnecessary here.
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+[model.ac]
+freq = 1
+
+[renderer]
+name = "nemotron-3"
+
+[data]
+type = "sft"
+name = "PrimeIntellect/INTELLECT-3-SFT-10K"
+subsets = ["default"]
+splits = ["math"]
+batch_size = 8
+micro_batch_size = 1
+seq_len = 16384
+
+[optim]
+lr = 1e-5

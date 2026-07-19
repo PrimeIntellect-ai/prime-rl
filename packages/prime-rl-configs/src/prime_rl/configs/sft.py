@@ -183,6 +183,14 @@ class SFTConfig(BaseConfig):
 
     optim: OptimizerConfig = AdamWConfig()
 
+    loss_weighting: Literal["token", "square"] = "token"
+    """Per-token loss weighting. ``token`` is the plain global token mean (every supervised
+    token weighs 1). ``square`` is InternVL-style square-averaging: each supervised token of
+    document i weighs 1/sqrt(len_i) where len_i is the document's supervised-token count, so
+    a document contributes ~sqrt(len_i) — the compromise between token-sum (biased toward
+    long responses) and per-document mean (biased toward short ones). Both normalize
+    against the global weight sum per optimizer step."""
+
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
     ckpt: CheckpointConfig | None = None
@@ -307,6 +315,10 @@ class SFTConfig(BaseConfig):
             raise ValueError(
                 "freeze_vision_encoder=false is incompatible with LoRA. "
                 "LoRA freezes all non-adapter parameters including the vision encoder."
+            )
+        if self.model.vlm is not None and self.model.vlm.freeze_language_model and self.model.lora is not None:
+            raise ValueError(
+                "freeze_language_model=true is incompatible with LoRA: the adapters target the language model."
             )
         return self
 

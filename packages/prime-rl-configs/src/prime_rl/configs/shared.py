@@ -96,6 +96,11 @@ class VLMConfig(BaseConfig):
     freeze_vision_encoder: bool = True
     """Freeze the vision encoder and exclude its subtree from LoRA targeting."""
 
+    freeze_language_model: bool = False
+    """Freeze the language model (including embeddings and lm_head). With
+    freeze_vision_encoder this leaves only the connector/projector trainable —
+    the vision-grafting recipe. Incompatible with LoRA."""
+
 
 class BaseModelConfig(BaseConfig):
     name: str = "Qwen/Qwen3-0.6B"

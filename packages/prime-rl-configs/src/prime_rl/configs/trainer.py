@@ -630,6 +630,10 @@ class TrainerConfig(BaseConfig):
                 "freeze_vision_encoder=false is incompatible with LoRA. "
                 "LoRA freezes all non-adapter parameters including the vision encoder."
             )
+        if self.model.vlm is not None and self.model.vlm.freeze_language_model and self.model.lora is not None:
+            raise ValueError(
+                "freeze_language_model=true is incompatible with LoRA: the adapters target the language model."
+            )
         return self
 
     @model_validator(mode="after")

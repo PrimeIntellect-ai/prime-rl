@@ -36,6 +36,7 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
+from prime_rl.trainer.sft.loss import compute_document_loss_weights
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -235,7 +236,13 @@ def train(config: SFTConfig):
     cp_size = parallel_dims.cp
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+        """Forward pass returning (loss_sum, weight_sum) over unmasked tokens.
+
+        ``loss_sum`` is a raw (weighted) sum — normalization against the global weight
+        sum happens once per optimizer step, keeping gradients invariant to how the
+        global batch is split into microbatches. For "token" weighting the weight sum
+        is exactly the supervised-token count.
+        """
         input_ids = micro_batch["input_ids"].to("cuda")
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
@@ -244,13 +251,22 @@ def train(config: SFTConfig):
         mm_kwargs = micro_batch.get("mm_kwargs")
         mm_type_ids = micro_batch.get("mm_token_type_ids")
 
+        # Square-averaging weights need the full (pre-CP-shard) mask and the packed row's
+        # per-document boundaries; len_i is the document's supervised-token count, so image
+        # tokens and masked prompt tokens don't inflate a document's weight.
+        loss_weights = None
+        if config.loss_weighting == "square":
+            loss_weights = compute_document_loss_weights(loss_mask, seq_lens)
+
         seq_lens_are_pre_shard = False
 
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to seq_len; shard_for_cp raises on violations.
             defer_vlm_cp_to_model = (
-                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
+                mm_kwargs is not None
+                and config.model.cp_style == "ulysses"
+                and getattr(model, "defers_vlm_cp_to_model", False)
             )
             if not defer_vlm_cp_to_model:
                 input_ids, position_ids = setup_cp_params(
@@ -265,11 +281,16 @@ def train(config: SFTConfig):
             seq_lens_are_pre_shard = True
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+            if loss_weights is not None:
+                loss_weights = shard_for_cp(loss_weights, cp_rank=cp_rank, cp_world_size=cp_size)
 
         if config.model.lora is not None:
             set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
-        token_count = loss_mask.sum(dtype=torch.int64)
+        if loss_weights is not None:
+            weight_sum = loss_weights[loss_mask].sum()
+        else:
+            weight_sum = loss_mask.sum(dtype=torch.int64).float()
 
         with maybe_activation_offloading(config.model.ac_offloading):
             if isinstance(config.model.fused_lm_head_token_chunk_size, int):
@@ -288,7 +309,8 @@ def train(config: SFTConfig):
                     mm_token_type_ids=mm_type_ids,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                 )
-                loss_sum = -out["logprobs"][loss_mask].sum()
+                logprobs = out["logprobs"] if loss_weights is None else out["logprobs"] * loss_weights
+                loss_sum = -logprobs[loss_mask].sum()
             else:
                 out = forward(
                     model,
@@ -302,18 +324,20 @@ def train(config: SFTConfig):
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = CrossEntropyLoss(reduction="none")(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+                if loss_weights is not None:
+                    token_loss = token_loss * loss_weights
                 loss_sum = token_loss[loss_mask].sum()
                 del logits
 
         del out
-        return loss_sum, token_count
+        return loss_sum, weight_sum
 
     maybe_record_function = nullcontext
 
     def run_eval_loop(data_iter):
-        """Validation forward loop. Returns token-weighted global mean loss."""
+        """Validation forward loop. Returns the weight-normalized global mean loss."""
         total_loss_sum = torch.tensor(0.0, device="cuda")
-        total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+        total_weight_sum = torch.tensor(0.0, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
 
         # Variable-length packing yields different per-rank batch counts. Under FSDP
@@ -329,18 +353,18 @@ def train(config: SFTConfig):
                 dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
                 if has_data.item() == 0:
                     break
-                loss_sum, token_count = compute_loss(micro_batch)
+                loss_sum, weight_sum = compute_loss(micro_batch)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()
-                    total_token_count += token_count
+                    total_weight_sum += weight_sum
                 else:
                     nan_count += 1
 
         dist.all_reduce(total_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        dist.all_reduce(total_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        dist.all_reduce(total_weight_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
-        mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
+        mean_loss = (total_loss_sum / total_weight_sum).item() if total_weight_sum.item() > 0 else float("nan")
         return mean_loss, nan_count.item()
 
     def run_validation(step: int) -> None:
@@ -389,7 +413,7 @@ def train(config: SFTConfig):
         forward_backward_start_time = time.perf_counter()
 
         step_loss_sum = torch.tensor(0.0, device="cuda")
-        step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+        step_local_weight_sum = torch.tensor(0.0, device="cuda")
         nan_loss_count = torch.tensor(0, device="cuda")
         is_moe_model = is_tt_moe_model(model)
         moe_stats = (
@@ -409,9 +433,9 @@ def train(config: SFTConfig):
                 )
 
             with maybe_record_function("forward"):
-                local_loss_sum, local_token_count = compute_loss(micro_batch)
+                local_loss_sum, local_weight_sum = compute_loss(micro_batch)
 
-            step_local_token_count += local_token_count
+            step_local_weight_sum += local_weight_sum
 
             if torch.isnan(local_loss_sum.detach()):
                 nan_loss_count += 1
@@ -437,15 +461,18 @@ def train(config: SFTConfig):
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
-        # All-reduce token counts and rescale gradients to get a global token-weighted mean.
+        # All-reduce the loss-weight sums and rescale gradients to get a global weighted
+        # mean (weights are 1 per supervised token for "token" weighting, so this reduces
+        # to the token mean). The normalizer must be GLOBAL — a per-microbatch normalizer
+        # would make a document's effective weight depend on its microbatch composition.
         # FSDP already divided grads by fsdp_gradient_divide_factor, so we undo that and
-        # divide by the true global token count instead.
-        global_step_token_count = step_local_token_count.clone()
-        dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        global_token_count_val = global_step_token_count.item()
+        # divide by the true global weight sum instead.
+        global_step_weight_sum = step_local_weight_sum.clone()
+        dist.all_reduce(global_step_weight_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        global_weight_sum_val = global_step_weight_sum.item()
 
-        if global_token_count_val > 0:
-            grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+        if global_weight_sum_val > 0:
+            grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_weight_sum_val
             for param in model.parameters():
                 if param.grad is not None:
                     param.grad.mul_(grad_scale)
@@ -461,8 +488,8 @@ def train(config: SFTConfig):
         # Compute the global mean loss for logging.
         dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
-        if global_token_count_val > 0:
-            batch_loss = (step_loss_sum / global_token_count_val).item()
+        if global_weight_sum_val > 0:
+            batch_loss = (step_loss_sum / global_weight_sum_val).item()
         else:
             batch_loss = 0.0
         nan_loss_count = nan_loss_count.item()

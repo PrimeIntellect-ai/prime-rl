@@ -387,6 +387,22 @@ def freeze_vision_encoder(model: nn.Module, override_attr: str | None = None) ->
     logger.info(f"Froze {num_frozen} parameters in vision encoder")
 
 
+def freeze_language_model(model: nn.Module, override_attr: str | None = None) -> None:
+    """Freeze the language model subtree plus the LM head (projector-only VLM training)."""
+    logger = get_logger()
+    language_model = get_language_model(model, override=override_attr)
+    num_frozen = 0
+    for param in language_model.parameters():
+        param.requires_grad = False
+        num_frozen += 1
+    lm_head = getattr(model, "lm_head", None)
+    if lm_head is not None:
+        for param in lm_head.parameters():
+            param.requires_grad = False
+            num_frozen += 1
+    logger.info(f"Froze {num_frozen} parameter tensors in language model and lm_head")
+
+
 def freeze_moe_router(model: nn.Module) -> None:
     """Freeze MoE router parameters to maintain stable routing during training."""
     logger = get_logger()
@@ -600,6 +616,12 @@ def get_model(
     # weights with torchao (see apply_quantization), so it leaves this flag False and
     # the experts keep calling torch._grouped_mm — which the wrapper tensor intercepts.
     model_config.fp8 = isinstance(config.quantization, FP8Config) and config.quantization.enable_grouped_gemm
+    # Composite VLM configs build the language model from text_config, and the modeling
+    # code reads these MoE flags off that sub-config — mirror them there.
+    _text_config = model_config.get_text_config()
+    if _text_config is not model_config:
+        _text_config.use_grouped_mm = model_config.use_grouped_mm
+        _text_config.fp8 = model_config.fp8
 
     if config.index_cache is not None:
         model_config.use_index_cache = True
@@ -655,8 +677,8 @@ def get_model(
     # HF Hub, which hard-crashes under HF_HUB_OFFLINE=1. prime-rl swaps in its own mamba_ssm Triton
     # SSD kernels via _patch_mamba2_use_triton_ssd, so the hub kernels are redundant; disable them
     # to keep model init offline-safe.
-    if getattr(model_config, "model_type", "") == "nemotron_h":
-        model_config.use_mamba_kernels = False
+    if getattr(model_config.get_text_config(), "model_type", "") == "nemotron_h":
+        model_config.get_text_config().use_mamba_kernels = False
 
     if config.debug.num_layers is not None:
         # VLM configs nest num_hidden_layers under text_config
@@ -1219,6 +1241,8 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig, parall
             model,
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
+    if config.vlm is not None and config.vlm.freeze_language_model:
+        freeze_language_model(model, override_attr=config.vlm.language_model_attr)
     if config.lora is not None:
         log_lora_parameter_counts(model)
 

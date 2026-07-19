@@ -204,3 +204,8 @@ debug_I2_zero_band
 outputs/
 
 third_party/
+datasets/
+
+# Local model checkpoints (source weights + assembled graft); scripts in models/ stay tracked
+models/NVIDIA-*/
+models/Nemotron-*/

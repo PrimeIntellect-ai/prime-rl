@@ -5,7 +5,6 @@ from typing import Any, Literal, TypedDict, cast
 
 import numpy as np
 import torch
-from datasets import Dataset, interleave_datasets, load_dataset
 from jaxtyping import Bool, Int
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample
 from torch import Tensor
@@ -14,6 +13,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from datasets import Dataset, interleave_datasets, load_dataset
 from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
