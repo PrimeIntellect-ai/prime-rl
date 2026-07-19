@@ -32,15 +32,12 @@ freq = 1
 
 [orchestrator]
 batch_size = 512
-rollouts_per_example = 16
+group_size = 16
 max_off_policy_steps = 32
 
 [[orchestrator.train.env]]
-taskset = { id = "general-agent-v1", task = { tools = { colocated = true } } }
+taskset = { id = "general-agent-v1", task = { tools = { colocated = true } }, min_tier = 1 }
 harness = { id = "null", runtime = { type = "modal" } }
-
-[orchestrator.train.env.args]
-min_tier = 1
 
 [inference]
 gpu_memory_utilization = 0.85

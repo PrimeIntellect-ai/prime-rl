@@ -1,4 +1,4 @@
-# alphabet_sort (2 GPU)
+# alphabet-sort (2 GPU)
 
 Multi-turn task driven by a colocated user simulator, LoRA on `Qwen3-4B`. Dev mirror of
 [`examples/basic/alphabet-sort`](../../../examples/basic/alphabet-sort).

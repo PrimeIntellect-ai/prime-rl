@@ -106,7 +106,6 @@ Warm up the random-weight mini model with SFT on reverse-text so KL divergence b
 uv run sft \
   --model.name ./mini-glm-moe \
   --data.name PrimeIntellect/Reverse-Text-SFT \
-  --data.type null \
   --max_steps 200 \
   --optim.lr 1e-4 \
   --ckpt.weights
