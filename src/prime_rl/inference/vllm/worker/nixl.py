@@ -184,7 +184,11 @@ class NIXLWeightUpdateWorker(Worker):
                             recorder.register_destination_storage(destination)
                         loader = _get_original_loader(tensor)
                         original_loaders.append((tensor, loader))
-                        tensor.weight_loader = self._stamp(recorder, destination, loader)
+                        tensor.weight_loader = self.wrap_weight_loader_for_recording(
+                            recorder,
+                            destination,
+                            loader,
+                        )
 
                 model.load_weights(
                     make_hf_lazy_weights(
@@ -212,16 +216,20 @@ class NIXLWeightUpdateWorker(Worker):
         return regular + persistent
 
     @staticmethod
-    def _stamp(recorder: WeightLoadRecorder, destination: Destination, loader: Any):
+    def wrap_weight_loader_for_recording(
+        recorder: WeightLoadRecorder,
+        destination: Destination,
+        loader: Any,
+    ):
         @wraps(loader)
-        def stamped(*args, **kwargs):
+        def recording_loader(*args, **kwargs):
             recorder.active_destination = destination
             try:
                 return loader(*args, **kwargs)
             finally:
                 recorder.active_destination = None
 
-        return stamped
+        return recording_loader
 
     @staticmethod
     def _restore_layerwise_state(model: nn.Module) -> None:
