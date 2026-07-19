@@ -15,7 +15,7 @@ import tomli_w
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.entrypoints.inference import vllm_overrides_fragment
+from prime_rl.entrypoints.inference import role_kv_overrides_for, vllm_overrides_fragment
 from prime_rl.utils.config import cli, to_toml_dict
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
@@ -364,12 +364,20 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
 
     offload = config.inference.kv_cache_offload if config.inference is not None else None
     is_mooncake = offload is not None and offload.type == "mooncake"
+    offload_roles = list(offload.roles) if offload is not None else []
+    is_disaggregated_inference = config.inference is not None and config.inference.deployment.type == "disaggregated"
     mooncake_vars = dict(
         kv_offload=offload is not None,
         kv_offload_mooncake=is_mooncake,
         kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if is_mooncake else 0,
         kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
         kv_offload_device_name=offload.device_name if is_mooncake else "",
+        kv_offload_roles=" ".join(offload_roles),
+        kv_offload_head_index=(
+            config.inference.deployment.num_prefill_nodes
+            if (is_mooncake and is_disaggregated_inference and "prefill" not in offload_roles)
+            else 0
+        ),
     )
 
     # Per-component env vars: launcher defaults (shared + multi-node-specific) with the
@@ -396,6 +404,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         )
     elif config.inference is not None and config.inference.deployment.type == "disaggregated":
         infer_deploy = config.inference.deployment
+        role_kv_overrides = role_kv_overrides_for(config.inference)
 
         script = template.render(
             **config.slurm.template_vars,
@@ -425,8 +434,12 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             trainer_env_vars=trainer_env_vars,
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
-            prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
-            decode_vllm_extra_json=vllm_overrides_fragment(infer_deploy.decode_vllm_overrides),
+            prefill_vllm_extra_json=vllm_overrides_fragment(
+                {**role_kv_overrides("prefill"), **infer_deploy.prefill_vllm_overrides}
+            ),
+            decode_vllm_extra_json=vllm_overrides_fragment(
+                {**role_kv_overrides("decode"), **infer_deploy.decode_vllm_overrides}
+            ),
             dp_per_node=config.deployment.gpus_per_node // config.inference.parallel.tp,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",

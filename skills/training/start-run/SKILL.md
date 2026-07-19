@@ -79,17 +79,29 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
-## Summary
+### Multi-node SLURM bring-up gotchas
 
-| Command | Purpose | Typical use |
-|---------|---------|-------------|
-| `rl` | Full RL pipeline | Production RL training |
-| `sft` | Supervised fine-tuning | SFT and hard-distill |
-| `inference` | vLLM server | Standalone serving / debugging |
-
-## Key paths
-
-- `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference` (+ `trainer`, `orchestrator` for direct launches)
-- `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
-- `configs/debug/` — minimal debug configs
-- `examples/` — full example configs (e.g. `reverse_text/`)
+- **Cache paths must be user-scoped.** On shared clusters `/tmp/.cache/*` may be
+  owned by another user; set `TRITON_CACHE_DIR` / `VLLM_CACHE_ROOT` /
+  `DG_JIT_CACHE_DIR` under a per-user path (e.g. `/tmp/<user>-cache/...`) in
+  `[env_vars]`. Triton JIT failures from EACCES are fatal mid-run.
+- **Node starts must be near-simultaneous for DP groups.** vLLM's DP
+  coordinator handshake has a hard 5-minute deadline
+  (`HANDSHAKE_TIMEOUT_MINS`, not env-tunable): if setup staggers nodes by more
+  than ~5 min, the early nodes' engines die waiting for the last node's
+  front-end. The sbatch template syncs the venv once at the batch level and
+  launches all nodes with a single srun for this reason.
+- **Don't let ranks re-sync uv concurrently.** Per-rank `uv run` without
+  `--no-sync` re-resolves the project; on a shared checkout the ranks race on
+  `~/.cache/uv` ("Text file busy" → exit 2 kills the job) and add ~30-60 s of
+  stagger per rank. The launch helper uses `uv run --no-sync`.
+- **Per-role vLLM overrides accept nested dicts.** `decode_vllm_overrides` /
+  `prefill_vllm_overrides` are JSON-serialized into the per-rank engine args
+  and applied after the base config (last key wins), so e.g.
+  `decode_vllm_overrides = { gpu_memory_utilization = 0.9, attention_config = { hisparse_config = { host_pool_gib = 256 } } }`
+  works as-is.
+- **HiSparse + llm-d routing**: `non_cached_tokens` works at any positive
+  value (128 = prod default; short-suffix turns then run decode-local via the
+  row-split mixed-batch path, validated under an hour of adversarial traffic).
+  Never set it to 0 — that disables P/D splitting entirely (EPP pd-decider
+  semantics).

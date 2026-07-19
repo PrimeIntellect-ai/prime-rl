@@ -103,6 +103,14 @@ class BaseKVCacheOffloadConfig(BaseConfig):
     disk: DiskOffloadTier | None = None
     """Optional disk tier, layered behind the CPU tier (GPU → DRAM → disk)."""
 
+    roles: list[Literal["prefill", "decode"]] = ["prefill", "decode"]
+    """Which disaggregated instance roles attach the offload connector (and, for
+    ``mooncake``, run the per-node store client). Scoping to ``["prefill"]`` keeps
+    cross-node prefix reuse for prefill while freeing decode-node RAM (e.g. for
+    HiSparse host pools). Narrowing only takes effect for disaggregated
+    deployments (no hard validation: per-rank launches re-parse the config
+    without the deployment section)."""
+
     @model_validator(mode="after")
     def valid_tiers(self):
         # Both backends support only two shapes: cpu-only or cpu+disk. Native disk
@@ -110,6 +118,8 @@ class BaseKVCacheOffloadConfig(BaseConfig):
         # staging tier. Disk-only is rejected for both.
         if self.cpu is None:
             raise ValueError("inference.kv_cache_offload requires a cpu tier (disk-only offload is not supported).")
+        if not self.roles:
+            raise ValueError("inference.kv_cache_offload.roles must not be empty (omit it to apply to all roles).")
         return self
 
 
@@ -541,11 +551,12 @@ class InferenceConfig(BaseConfig):
             self.api_server_count = 1  # LoRA requires only one API server
         return self
 
-    def build_kv_transfer_config(self) -> dict[str, Any] | None:
+    def build_kv_transfer_config(self, role: Literal["prefill", "decode"] | None = None) -> dict[str, Any] | None:
         """Build the single vLLM ``kv_transfer_config`` from the transfer + offload connectors.
 
         Disaggregated P/D always uses NIXL for prefill→decode transfer. KV cache offload (if
-        configured) contributes its own connector. When both are present they are composed via
+        configured) contributes its own connector for the roles it is scoped to (``role=None``
+        means unscoped: include it). When both are present they are composed via
         ``MultiConnector``. Returns None when neither applies.
         """
         connectors: list[dict[str, Any]] = []
@@ -557,7 +568,7 @@ class InferenceConfig(BaseConfig):
                     "kv_connector_extra_config": {"num_threads": 1},
                 }
             )
-        if self.kv_cache_offload is not None:
+        if self.kv_cache_offload is not None and (role is None or role in self.kv_cache_offload.roles):
             connectors.append(self.kv_cache_offload.to_connector_dict())
 
         if not connectors:

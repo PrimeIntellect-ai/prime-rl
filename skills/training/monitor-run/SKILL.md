@@ -49,6 +49,24 @@ tmux send-keys -t "$SESSION:Launcher" 'your command here' Enter
 
 After a restart, verify all processes are back up and progress resumed before the next check-in.
 
+### Cancelling a HiSparse inference job
+
+HiSparse decode ranks hold multi-hundred-GiB pinned host pools per rank. A
+plain `scancel` gives them only SLURM's KillWait before SIGKILL; if the unpin
+doesn't finish, the node drains with "Kill task failed" and needs an admin
+resume. Use the two-step cancel:
+
+```bash
+scancel --batch --signal=TERM <jobid>   # batch shell forwards TERM; ranks drain + unpin in-process
+# wait for the job to exit on its own (decode logs print
+# "HiSparse: unpinned N GiB of host pool in-process in S s"); give it up to ~10 min
+scancel <jobid>                          # only if it is still there
+```
+
+Cancel during boot or idle is safe either way. A job whose decode engines are
+already dead/wedged (CUDA fault, DeepEP interlock) cannot run its teardown —
+expect possible drains there regardless; cancel it anyway and note the nodes.
+
 ---
 
 ## Reference

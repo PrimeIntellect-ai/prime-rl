@@ -41,6 +41,15 @@ fi
 cd "$UCX_SRC"
 git checkout v1.19.x
 
+# Neutralize the single-mode cross-thread ownership assert (ucp_worker.h):
+# nixl's shared UCX worker is legitimately touched from vLLM's NIXL handshake
+# listener thread while the progress thread runs; with the assert compiled in,
+# a handshake racing a transfer aborts the worker process (observed killing a
+# whole decode DP group mid-run). Assert-free release semantics are what this
+# stack effectively runs on everywhere else.
+sed -i 's|ucs_assert(ucs_async_check_owner_thread(&(_worker)->async)); \\|(void)(_worker); \\|' \
+    src/ucp/core/ucp_worker.h
+
 if [ ! -f "$UCX_INSTALL/lib/libucs.so" ]; then
     ./autogen.sh
     ./configure \
@@ -52,6 +61,8 @@ if [ ! -f "$UCX_INSTALL/lib/libucs.so" ]; then
         --enable-cma \
         --enable-devel-headers \
         --enable-mt \
+        --disable-assertions \
+        --disable-params-check \
         --with-verbs \
         --with-rdmacm \
         --with-cuda="$CUDA_PATH" \

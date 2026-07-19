@@ -52,7 +52,10 @@ LLMD_EOF
         --grpc-port 9002 --grpc-health-port 9013 --metrics-port 9090 \
         --secure-serving=false --metrics-endpoint-auth=false --tracing=false \
         >> "$log" 2>&1 &
-    envoy -c "$LLMD_DIR/envoy.yaml" >> "$log" 2>&1 &
+    # Dynamic base-id: with the default base-id 0, envoy SIGABRTs at startup if
+    # /dev/shm/envoy_shared_memory_0 was left behind by another user on a shared
+    # node (0600 + sticky /dev/shm makes it unremovable by us).
+    envoy -c "$LLMD_DIR/envoy.yaml" --use-dynamic-base-id >> "$log" 2>&1 &
 {%- else %}
     local tag="vllm-router"; [ "$mode" = pd ] && tag="vllm-router (PD)"
     echo "Starting $tag on $LOCAL_IP:$port${replica:+ for replica $replica}" | tee "$log"
