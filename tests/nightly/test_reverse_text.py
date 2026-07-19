@@ -27,7 +27,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "examples/basic/reverse_text/rl.toml",
+        "examples/basic/reverse-text/rl.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",

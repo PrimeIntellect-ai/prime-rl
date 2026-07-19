@@ -1,5 +1,5 @@
 # Alphabet-sort on 2 GPUs (1 trainer + 1 inference) — a multi-turn task driven by a colocated
-# user simulator, trained with LoRA on Qwen3-4B. Dev-sized mirror of examples/basic/alphabet_sort.
+# user simulator, trained with LoRA on Qwen3-4B. Dev-sized mirror of examples/basic/alphabet-sort.
 
 max_steps = 200
 seq_len = 2048

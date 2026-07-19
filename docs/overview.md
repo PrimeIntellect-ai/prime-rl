@@ -29,10 +29,10 @@ You need at least one NVIDIA GPU (RTX 3090/4090/5090, A100, H100, H200, or B200)
 Train an SFT-warmed `Qwen3-0.6B` on the `reverse-text` task — the env is bundled with the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) submodule so no separate install is needed. This config ships in the repo and runs on two GPUs (one for inference, one for the trainer):
 
 ```bash
-uv run rl @ examples/basic/reverse_text/rl.toml
+uv run rl @ examples/basic/reverse-text/rl.toml
 ```
 
-The `rl` entrypoint reads `examples/basic/reverse_text/rl.toml`, splits it into per-process sub-configs, picks GPU 0 for inference and GPU 1 for the trainer, launches all three processes, and tees their stdout into `outputs/logs/{trainer,orchestrator,inference}.log`. Within a minute the trainer should log `step 1` and a reward sample; after 20 steps the run completes and final HF-compatible weights land at `outputs/weights/step_20`.
+The `rl` entrypoint reads `examples/basic/reverse-text/rl.toml`, splits it into per-process sub-configs, picks GPU 0 for inference and GPU 1 for the trainer, launches all three processes, and tees their stdout into `outputs/logs/{trainer,orchestrator,inference}.log`. Within a minute the trainer should log `step 1` and a reward sample; after 20 steps the run completes and final HF-compatible weights land at `outputs/weights/step_20`.
 
 ## Documentation
 

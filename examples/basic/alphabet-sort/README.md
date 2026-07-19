@@ -90,7 +90,7 @@ We train with LoRA (rank 32, alpha 64) for 100 steps.
 *Check out the logs on [W&B](https://wandb.ai/primeintellect/alphabet-sort-4b-lora/workspace?nw=nwuserandrewpi).*
 ```bash
 # In the `Trainer` pane
-uv run rl @ examples/basic/alphabet_sort/rl.toml \
+uv run rl @ examples/basic/alphabet-sort/rl.toml \
   --wandb.project ... \
   --wandb.name ...
 ```

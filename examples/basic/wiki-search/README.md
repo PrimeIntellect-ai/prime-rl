@@ -90,7 +90,7 @@ Train with the unified config file:
 
 ```bash
 # In the `Trainer` pane
-uv run rl @ examples/basic/wiki_search/rl.toml \
+uv run rl @ examples/basic/wiki-search/rl.toml \
   --wandb.project your-project-name \
   --wandb.name your-run-name
 ```

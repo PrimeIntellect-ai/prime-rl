@@ -115,7 +115,7 @@ uv run sft \
 Then run the full RL stack on reverse-text:
 
 ```bash
-uv run rl @ configs/ci/integration/reverse_text_moe/start.toml \
+uv run rl @ configs/ci/integration/reverse-text-moe/start.toml \
   --model.name samsja/mini-glm-moe \
   --trainer.model.impl custom \
   --inference.gpu-memory-utilization 0.7 \

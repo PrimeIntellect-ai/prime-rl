@@ -1,4 +1,4 @@
-# SFT warmup for reverse-text on 2 GPUs. Dev-sized mirror of examples/basic/reverse_text/sft.toml.
+# SFT warmup for reverse-text on 2 GPUs. Dev-sized mirror of examples/basic/reverse-text/sft.toml.
 
 max_steps = 100
 

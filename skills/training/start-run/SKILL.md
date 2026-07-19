@@ -26,9 +26,9 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 Launches inference server, orchestrator, and trainer as subprocesses.
 
 ```bash
-uv run rl @ examples/basic/reverse_text/rl.toml
-uv run rl @ examples/basic/reverse_text/rl.toml @ examples/basic/reverse_text/slurm_rl.toml   # SLURM
-uv run rl @ examples/basic/reverse_text/rl.toml --dry-run                                # write scripts, don't run
+uv run rl @ examples/basic/reverse-text/rl.toml
+uv run rl @ examples/basic/reverse-text/rl.toml @ examples/basic/reverse-text/slurm_rl.toml   # SLURM
+uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                                # write scripts, don't run
 ```
 
 - Config: `RLConfig` (`packages/prime-rl-configs/src/prime_rl/configs/rl.py`)
@@ -47,9 +47,9 @@ uv run rl @ examples/basic/reverse_text/rl.toml --dry-run                       
 Launches torchrun internally — never call torchrun directly.
 
 ```bash
-uv run sft @ examples/basic/reverse_text/sft.toml
-uv run sft @ examples/basic/reverse_text/sft.toml --slurm
-uv run sft @ examples/basic/reverse_text/sft.toml --dry-run
+uv run sft @ examples/basic/reverse-text/sft.toml
+uv run sft @ examples/basic/reverse-text/sft.toml --slurm
+uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 ```
 
 - Config: `SFTConfig` (`packages/prime-rl-configs/src/prime_rl/configs/sft.py`)
@@ -92,4 +92,4 @@ curl http://localhost:8000/v1/chat/completions \
 - `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference` (+ `trainer`, `orchestrator` for direct launches)
 - `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
 - `configs/debug/` — minimal debug configs
-- `examples/` — full example configs (e.g. `reverse_text/`)
+- `examples/` — full example configs (e.g. `reverse-text/`)

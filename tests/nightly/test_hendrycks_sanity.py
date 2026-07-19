@@ -33,7 +33,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "examples/basic/hendrycks_sanity/rl.toml",
+        "examples/basic/hendrycks-sanity/rl.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",

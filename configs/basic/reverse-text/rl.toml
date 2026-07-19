@@ -1,5 +1,5 @@
 # Reverse-text on 2 GPUs (1 trainer + 1 inference) — the smallest end-to-end RL loop
-# (single-turn, 0.6B). Dev-sized mirror of examples/basic/reverse_text.
+# (single-turn, 0.6B). Dev-sized mirror of examples/basic/reverse-text.
 
 max_steps = 20
 seq_len = 2048

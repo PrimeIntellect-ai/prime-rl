@@ -34,7 +34,7 @@ Field values come from three sources — Pydantic defaults, TOML files (passed w
 The `@` token introduces a TOML file. Multiple `@` arguments compose left-to-right, deep-merged — unset fields in an overlay keep the base value:
 
 ```bash
-uv run rl @ examples/basic/reverse_text/rl.toml                      # one file
+uv run rl @ examples/basic/reverse-text/rl.toml                      # one file
 uv run rl @ base.toml @ overlay.toml                           # left to right
 uv run rl --trainer @ trainer.toml --orchestrator @ orch.toml  # per-section
 uv run rl @ base.toml --trainer @ trainer.toml                 # mixed
@@ -230,7 +230,7 @@ The shipped end-to-end examples in [`examples/`](https://github.com/PrimeIntelle
 Start from a shipped base config, override two fields on the CLI, and dry-run:
 
 ```bash
-uv run rl @ examples/basic/reverse_text/rl.toml \
+uv run rl @ examples/basic/reverse-text/rl.toml \
   --wandb.name my-experiment \
   --trainer.optim.lr 5e-6 \
   --output-dir /tmp/reverse-dry \

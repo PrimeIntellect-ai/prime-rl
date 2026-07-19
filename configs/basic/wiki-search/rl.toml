@@ -1,6 +1,6 @@
 # Wiki-search on 2 GPUs (1 trainer + 1 inference) — a multi-turn tool-calling task (the model
 # searches a wiki corpus via MCP tools), trained with LoRA on Qwen3-4B. Dev-sized mirror of
-# examples/basic/wiki_search.
+# examples/basic/wiki-search.
 
 max_steps = 200
 seq_len = 4096

@@ -1,5 +1,5 @@
 # Hendrycks-math sanity on 2 GPUs (1 trainer + 1 inference) — a single-turn math env meant to
-# run long (reward climbs slowly). Dev-sized mirror of examples/basic/hendrycks_sanity.
+# run long (reward climbs slowly). Dev-sized mirror of examples/basic/hendrycks-sanity.
 
 max_steps = 5000
 
