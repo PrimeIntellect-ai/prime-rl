@@ -98,7 +98,7 @@ jobs:
           # The slim wheel intentionally excludes taskset packages, so validate a real
           # SFT config here. RL recipes are covered by the full config suite.
           for cfg_cls, args in [
-              (SFTConfig, ["@", "examples/basic/reverse-text/slurm_sft.toml"]),
+              (SFTConfig, ["@", "configs/ci/slim_sft.toml"]),
           ]:
               cfg = cli(cfg_cls, args=args)
               assert cfg.slurm is not None, f"expected [slurm] in {args}"

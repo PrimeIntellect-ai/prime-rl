@@ -15,11 +15,3 @@ uv run rl @ examples/basic/hendrycks-sanity/rl.toml \
   --wandb.project your-project \
   --wandb.name your-run
 ```
-
-Or schedule the same training via SLURM
-
-```bash
-uv run rl @ examples/basic/hendrycks-sanity/rl.toml @ examples/basic/hendrycks-sanity/slurm_rl.toml \
-  --wandb.project your-project \
-  --wandb.name your-run
-```

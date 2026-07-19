@@ -25,11 +25,11 @@ Before training, we want to get a baseline score and test how well `Qwen3-1.7B` 
 uv run inference --model.name Qwen/Qwen3-1.7B
 ```
 
-Then, use the `vf-eval` entrypoint to evaluate the model in the `wordle` environment. We evaluate on the 20 evaluation examples which are distinct words not appearing in the training set of the environment. We constrain the response length to 1024 tokens as this should be more than enough to play a full game.
+Then, use the `eval` entrypoint to evaluate the model in the `wordle` environment. We evaluate on the 20 evaluation examples which are distinct words not appearing in the training set of the environment. We constrain the response length to 1024 tokens as this should be more than enough to play a full game.
 
 ```bash
 # Run this in the `Trainer` pane
-uv run vf-eval wordle-v1 -m Qwen/Qwen3-1.7B -b http://localhost:8000/v1 -n 20 -t 1024
+uv run eval wordle-v1 --harness.id null -m Qwen/Qwen3-1.7B --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
 ```
 
 We got an **average reward of ~0.2** across the 20x3 rollouts. From the summary, we can see that the most of the reward is coming from format and partial rewards. In fact, the model does not guess the correct word within any game, leading to a win rate of **0%**. Looking at some samples, it is evident repeatedly submitting guesses in the wrong format and is not able to revise its strategy from the environment feedback. Let's do some SFT warmup to get the model to learn the format of the environment.
@@ -71,7 +71,7 @@ We have uploaded the final model as [`PrimeIntellect/Qwen3-1.7B-Wordle-SFT`](htt
 
 ## RL
 
-Finally, we will do multi-turn RL against the `wordle` environment using the model `PrimeIntellect/Qwen3-1.7B-Wordle-SFT` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-SFT)), we obtained from the SFT warmup. We will do sizable RL training, with 100 training steps, each generating training batches of 64x16 rollouts, for a total batch size of 1024, at a context length of 4096.
+Finally, we will do multi-turn RL against the `wordle` environment using the model `PrimeIntellect/Qwen3-1.7B-Wordle-SFT` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-SFT)), we obtained from the SFT warmup. We will do sizable RL training, with 100 training steps, each generating training batches of 32x16 rollouts, for a total batch size of 512, at a context length of 4096.
 
 *Check out the logs of the RL run on [W&B](https://wandb.ai/primeintellect/examples?nw=2isof8knxo5).*
 
@@ -103,7 +103,7 @@ uv run inference --model.name PrimeIntellect/Qwen3-1.7B-Wordle-RL
 
 ```bash
 # Run this in the `Trainer` pane
-uv run vf-eval wordle-v1 -m PrimeIntellect/Qwen3-1.7B-Wordle-RL -b http://localhost:8000/v1 -n 20 --max-tokens 1024
+uv run eval wordle-v1 --harness.id null -m PrimeIntellect/Qwen3-1.7B-Wordle-RL --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
 ```
 
 Way better! Our model now wins **~60%** and gets an average reward of **~1.5**.

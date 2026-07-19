@@ -1,5 +1,0 @@
-# Usage: uv run sft @ examples/basic/reverse-text/sft.toml @ examples/basic/reverse-text/slurm_sft.toml
-output_dir = "outputs/reverse-text-sft"
-
-[slurm]
-job_name = "reverse-text-sft"

@@ -27,7 +27,6 @@ Launches inference server, orchestrator, and trainer as subprocesses.
 
 ```bash
 uv run rl @ examples/basic/reverse-text/rl.toml
-uv run rl @ examples/basic/reverse-text/rl.toml @ examples/basic/reverse-text/slurm_rl.toml   # SLURM
 uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                                # write scripts, don't run
 ```
 

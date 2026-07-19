@@ -38,12 +38,14 @@ uv run inference --enable-lora --model.name Qwen/Qwen3-4B-Instruct-2507
 Evaluate the base model:
 ```bash
 # In the `Trainer` pane
-uv run vf-eval alphabet-sort-v1 \
+uv run eval alphabet-sort-v1 --harness.id null \
   -m Qwen/Qwen3-4B-Instruct-2507 \
-  -b http://localhost:8000/v1 \
+  --client.base-url http://localhost:8000/v1 \
   -n 20 \
-  --max-tokens 768 \
-  --env-args '{"min_turns": 3, "max_turns": 3, "min_names_per_turn": 1, "max_names_per_turn": 4, "task": {"similarity_power": 8, "power_per_turn": false}}'
+  -r 3 \
+  --sampling.max-tokens 768 \
+  --args '{"min_turns": 3, "max_turns": 3, "min_names_per_turn": 1, "max_names_per_turn": 4, "task": {"similarity_power": 8, "power_per_turn": false}}' \
+  --no-push
 ```
 
 We got an **average reward of ~0.26** across 20×3 rollouts. The model achieves **0% perfect attempts** (no rollouts score 1.0) and **0% perfect examples** (no examples have all 3 rollouts at 1.0). The model shows high variance and struggles on most examples, with the high similarity power (8) heavily penalizing even small errors, and the scores aren't different for most attempts.
@@ -113,12 +115,14 @@ uv run inference --enable-lora --model.name PrimeIntellect/Qwen3-4B-Instruct-Alp
 
 ```bash
 # In the `Trainer` pane
-uv run vf-eval alphabet-sort-v1 \
+uv run eval alphabet-sort-v1 --harness.id null \
   -m PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL \
-  -b http://localhost:8000/v1 \
+  --client.base-url http://localhost:8000/v1 \
   -n 20 \
-  --max-tokens 768 \
-  --env-args '{"min_turns": 3, "max_turns": 3, "min_names_per_turn": 1, "max_names_per_turn": 4, "task": {"similarity_power": 8, "power_per_turn": false}}'
+  -r 3 \
+  --sampling.max-tokens 768 \
+  --args '{"min_turns": 3, "max_turns": 3, "min_names_per_turn": 1, "max_names_per_turn": 4, "task": {"similarity_power": 8, "power_per_turn": false}}' \
+  --no-push
 ```
 
 Way better! Our model now gets an **average reward of ~0.81** with **73% perfect attempts** (44/60 rollouts score 1.0) and **65% perfect examples** (13/20 examples have all 3 rollouts at 1.0).

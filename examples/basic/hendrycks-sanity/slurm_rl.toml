@@ -1,5 +1,0 @@
-# Usage: uv run rl @ examples/basic/hendrycks-sanity/rl.toml @ examples/basic/hendrycks-sanity/slurm_rl.toml
-output_dir = "outputs/hendrycks-sanity"
-
-[slurm]
-job_name = "hendrycks-sanity"

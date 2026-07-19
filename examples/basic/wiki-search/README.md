@@ -77,11 +77,13 @@ Evaluate the base model:
 
 ```bash
 # In the `Trainer` pane
-uv run vf-eval wiki-search-v1 \
+uv run eval wiki-search-v1 --harness.id null \
   -m Qwen/Qwen3-4B-Instruct-2507 \
-  -b http://localhost:8000/v1 \
+  --client.base-url http://localhost:8000/v1 \
   -n 20 \
-  --max-tokens 512
+  -r 3 \
+  --sampling.max-tokens 512 \
+  --no-push
 ```
 
 ## RL Training
@@ -117,11 +119,13 @@ uv run inference --enable-lora --model.name <user>/Qwen3-4B-Instruct-WikiSearch-
 
 ```bash
 # In the `Trainer` pane
-uv run vf-eval wiki-search-v1 \
+uv run eval wiki-search-v1 --harness.id null \
   -m <user>/Qwen3-4B-Instruct-WikiSearch-RL \
-  -b http://localhost:8000/v1 \
+  --client.base-url http://localhost:8000/v1 \
   -n 20 \
-  --max-tokens 512
+  -r 3 \
+  --sampling.max-tokens 512 \
+  --no-push
 ```
 
 ## Taskset Configuration

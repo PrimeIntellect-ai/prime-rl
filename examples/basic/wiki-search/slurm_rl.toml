@@ -1,5 +1,0 @@
-# Usage: uv run rl @ examples/basic/wiki-search/rl.toml @ examples/basic/wiki-search/slurm_rl.toml
-output_dir = "outputs/wiki-search"
-
-[slurm]
-job_name = "wiki-search"
