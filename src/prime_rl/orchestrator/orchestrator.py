@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from prime_rl.utils.monitor.base import Monitor
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.nixl_weight_transfer.model_express import ModelExpressSession
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -85,7 +86,6 @@ from prime_rl.utils.utils import (
     clean_exit,
     resolve_latest_ckpt_step,
 )
-from prime_rl.weight_transfer.model_express import ModelExpressSession
 
 monkey_patch_oai_iterable_types()
 monkey_patch_chat_completion_logprobs()

@@ -19,11 +19,11 @@ from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
-from prime_rl.weight_transfer.cuda_malloc_memory import (
+from prime_rl.nixl_weight_transfer.cuda_malloc_memory import (
     size_cuda_buffers,
     use_cuda_malloc_pool,
 )
-from prime_rl.weight_transfer.graph import (
+from prime_rl.nixl_weight_transfer.graph import (
     Destination,
     OperationChain,
     RecordedCopy,
@@ -33,10 +33,10 @@ from prime_rl.weight_transfer.graph import (
     make_hf_lazy_weights,
     plan_tensor_replay,
 )
-from prime_rl.weight_transfer.model_express import ModelExpressSession
-from prime_rl.weight_transfer.nixl import MemDesc, NixlAgent, make_agent_name, set_ucx_env_defaults
-from prime_rl.weight_transfer.tensor_routing import route_sharded_tensor
-from prime_rl.weight_transfer.trainer_tensor_table import TrainerTensorTable
+from prime_rl.nixl_weight_transfer.model_express import ModelExpressSession
+from prime_rl.nixl_weight_transfer.nixl import MemDesc, NixlAgent, make_agent_name, set_ucx_env_defaults
+from prime_rl.nixl_weight_transfer.tensor_routing import route_sharded_tensor
+from prime_rl.nixl_weight_transfer.trainer_tensor_table import TrainerTensorTable
 
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker

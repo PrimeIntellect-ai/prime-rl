@@ -10,13 +10,13 @@ import time
 from modelexpress import p2p_pb2
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.nixl_weight_transfer.model_express import ModelExpressSession
 from prime_rl.orchestrator.types import Policy, VersionObserver
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_step_path, wait_for_path
 from prime_rl.utils.utils import get_latest_ckpt_step
-from prime_rl.weight_transfer.model_express import ModelExpressSession
 
 
 class WeightWatcher:
