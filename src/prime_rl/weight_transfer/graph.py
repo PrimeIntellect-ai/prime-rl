@@ -23,7 +23,7 @@ OperationChain = tuple[TensorOperation, ...]
 
 
 @dataclass(frozen=True)
-class TensorTransferPlan:
+class TensorReplayPlan:
     """Source view to pull directly and operations to replay locally."""
 
     source_offset: int
@@ -89,9 +89,9 @@ def is_view_of(value: torch.Tensor, root: torch.Tensor) -> bool:
     return False
 
 
-def plan_tensor_transfer(
+def plan_tensor_replay(
     shape: tuple[int, ...], dtype: torch.dtype, ops: OperationChain
-) -> TensorTransferPlan:
+) -> TensorReplayPlan:
     """Resolve a directly transferable source view and local replay suffix.
 
     The prefix must remain a same-dtype view of the trainer root and can
@@ -111,7 +111,7 @@ def plan_tensor_transfer(
             break
         prefix_len = candidate_len
         source_view = candidate
-    return TensorTransferPlan(
+    return TensorReplayPlan(
         source_offset=source_view.storage_offset(),
         source_shape=tuple(source_view.shape),
         source_stride=tuple(source_view.stride()),

@@ -24,15 +24,15 @@ from prime_rl.weight_transfer.graph import (
     Destination,
     OperationChain,
     RecordedCopy,
-    TensorTransferPlan,
+    TensorReplayPlan,
     WeightLoadRecorder,
     apply_chain,
     make_hf_lazy_weights,
-    plan_tensor_transfer,
+    plan_tensor_replay,
 )
 from prime_rl.weight_transfer.mx import MxRendezvous
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
-from prime_rl.weight_transfer.sharding import route_region, zip_src_dst
+from prime_rl.weight_transfer.tensor_routing import route_sharded_tensor
 from prime_rl.weight_transfer.trainer_tensor_table import TrainerTensorTable
 
 if TYPE_CHECKING:
@@ -271,17 +271,17 @@ class NIXLWeightUpdateWorker(Worker):
             for tensor in group.tensors
         }
         copies = [copy for layer in layers for copy in layer.copies] + persistent
-        specifications: dict[int, TensorTransferPlan] = {}
+        specifications: dict[int, TensorReplayPlan] = {}
         copies_by_group: dict[int, list[RecordedCopy]] = defaultdict(list)
         group_elements: dict[torch.dtype, list[int]] = defaultdict(lambda: [0] * len(table.groups))
         for copy in copies:
             source = tensors[copy.source_name]
             source_dtype = getattr(torch, source.wire_dtype)
-            transfer_plan = plan_tensor_transfer(tuple(source.shape), source_dtype, copy.ops)
-            specifications[id(copy)] = transfer_plan
+            replay_plan = plan_tensor_replay(tuple(source.shape), source_dtype, copy.ops)
+            specifications[id(copy)] = replay_plan
             source_group = tensor_groups[source.name]
             copies_by_group[source_group].append(copy)
-            group_elements[source_dtype][source_group] += prod(transfer_plan.source_shape)
+            group_elements[source_dtype][source_group] += prod(replay_plan.source_shape)
 
         reload_layer_ids = {id(layer.layer) for layer in layers}
         reload_layer_groups: dict[int, int] = {}
@@ -362,20 +362,14 @@ class NIXLWeightUpdateWorker(Worker):
                 plans = persistent_plans_by_layer if copy.is_persistent else copy_plans_by_layer
                 plans[id(copy.destination_module)].append(copy_plan)
 
-                source_pieces = route_region(
-                    specification.source_offset,
-                    specification.source_shape,
-                    specification.source_stride,
-                    source.shards,
-                    source_dtype.itemsize,
-                )
-                for agent, source_addr, destination_addr, nbytes in zip_src_dst(
-                    source_pieces,
-                    [(staging_tensor.data_ptr(), staging_tensor.nbytes)],
-                ):
-                    local_descs[agent].append((destination_addr, nbytes, self.device.index))
-                    remote_descs[agent].append((source_addr, nbytes, agent_devices[agent]))
-                    total_bytes += nbytes
+                for route in route_sharded_tensor(specification, source, staging_tensor):
+                    local_descs[route.agent].append(
+                        (route.destination_addr, route.nbytes, self.device.index)
+                    )
+                    remote_descs[route.agent].append(
+                        (route.source_addr, route.nbytes, agent_devices[route.agent])
+                    )
+                    total_bytes += route.nbytes
 
             layer_plans: list[LayerWeightTransferPlan] = []
             for layer in layers:
