@@ -196,7 +196,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 max_buffers,
                 device,
                 extra_headroom_bytes=peak_growth_bytes,
-            ).buffer_count
+            )
 
         staging_buffer_count = torch.tensor(
             local_buffer_count,

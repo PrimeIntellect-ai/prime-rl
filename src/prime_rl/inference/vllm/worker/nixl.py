@@ -55,12 +55,6 @@ class TensorCopyPlan:
 
 
 @dataclass
-class LayerWeightCopies:
-    layer: nn.Module
-    copies: list[RecordedCopy]
-
-
-@dataclass
 class LayerWeightTransferPlan:
     reload_layer: nn.Module | None
     copies: list[TensorCopyPlan]
@@ -83,15 +77,6 @@ class WeightTransferPlan:
     receive_arenas: dict[torch.dtype, torch.Tensor]
     receive_buffer_count: int
     groups: list[WeightTransferGroup]
-    total_bytes: int
-
-
-@dataclass
-class PulledWeightTransferGroup:
-    group: WeightTransferGroup
-    source_wait_seconds: float
-    transfer_seconds: float
-    acknowledgement_seconds: float
 
 
 class NIXLWeightUpdateWorker(Worker):
@@ -134,11 +119,10 @@ class NIXLWeightUpdateWorker(Worker):
         )
 
     @torch.no_grad()
-    def _lazy_init(self) -> WeightTransferPlan:
+    def initialize_transfer(self) -> WeightTransferPlan:
         if self.weight_transfer_plan is not None:
             return self.weight_transfer_plan
 
-        started = time.perf_counter()
         allocated_bytes = torch.cuda.memory_allocated(self.device)
         peak_allocated_bytes = torch.cuda.max_memory_allocated(self.device)
         trainer_ref = self.model_express.wait_for(
@@ -148,8 +132,8 @@ class NIXLWeightUpdateWorker(Worker):
             timeout=self.weight_transfer_timeout,
         )[0]
         table = TrainerTensorTable.decode(self.model_express.fetch(trainer_ref).nixl_metadata)
-        layers, persistent = self.trace_weight_loads(table)
-        plan = self._build_pull_plan(table, layers, persistent, allocated_bytes, peak_allocated_bytes)
+        copies = self.trace_weight_loads(table)
+        plan = self.build_transfer_plan(table, copies, allocated_bytes, peak_allocated_bytes)
         self.buffer_sessions = []
         for buffer_index in range(table.staging_buffer_count):
             session = ModelExpressSession(
@@ -169,21 +153,16 @@ class NIXLWeightUpdateWorker(Worker):
         self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.weight_transfer_plan = plan
         logger.info(
-            "NIXL plan built in %.2fs: rank=%d, groups=%d, staging_buffers=%d, copies=%d, bytes=%d, pull_lists=%d",
-            time.perf_counter() - started,
+            "Initialized NIXL transfer plan on rank %d with %d groups",
             self.model_express.rank,
             len(plan.groups),
-            table.staging_buffer_count,
-            sum(len(layer.copies) + len(layer.persistent_copies) for group in plan.groups for layer in group.layers),
-            plan.total_bytes,
-            sum(len(group.pulls) for group in plan.groups),
         )
         return plan
 
     def trace_weight_loads(
         self,
         table: TrainerTensorTable,
-    ) -> tuple[list[LayerWeightCopies], list[RecordedCopy]]:
+    ) -> list[RecordedCopy]:
         """Trace vLLM weight loading into source-to-destination copies."""
         from vllm.model_executor.model_loader.reload.layerwise import (
             _get_original_loader,
@@ -194,6 +173,7 @@ class NIXLWeightUpdateWorker(Worker):
 
         model = self.raw_model
         recorder = WeightLoadRecorder()
+        regular_by_layer: dict[int, list[RecordedCopy]] = defaultdict(list)
         persistent: list[RecordedCopy] = []
         original_loaders: list[tuple[torch.Tensor, Any]] = []
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
@@ -217,15 +197,12 @@ class NIXLWeightUpdateWorker(Worker):
                     )
                 )
 
-                by_layer: dict[int, list[RecordedCopy]] = defaultdict(list)
-                layers: dict[int, nn.Module] = {}
                 for copy in recorder.copies:
                     if copy.is_persistent or copy.destination_name in SKIP_TENSORS:
                         copy.is_persistent = True
                         persistent.append(copy)
                     else:
-                        by_layer[id(copy.destination_module)].append(copy)
-                        layers[id(copy.destination_module)] = copy.destination_module
+                        regular_by_layer[id(copy.destination_module)].append(copy)
             finally:
                 try:
                     for tensor, loader in reversed(original_loaders):
@@ -233,9 +210,8 @@ class NIXLWeightUpdateWorker(Worker):
                 finally:
                     self._restore_layerwise_state(model)
 
-        return [
-            LayerWeightCopies(layer=layers[layer_id], copies=copies) for layer_id, copies in by_layer.items()
-        ], persistent
+        regular = [copy for copies in regular_by_layer.values() for copy in copies]
+        return regular + persistent
 
     @staticmethod
     def _stamp(recorder: WeightLoadRecorder, destination: Destination, loader: Any):
@@ -262,11 +238,10 @@ class NIXLWeightUpdateWorker(Worker):
         if hasattr(model, "_original_do_torchao_reload"):
             model._do_torchao_reload = model._original_do_torchao_reload
 
-    def _build_pull_plan(
+    def build_transfer_plan(
         self,
         table: TrainerTensorTable,
-        layers: list[LayerWeightCopies],
-        persistent: list[RecordedCopy],
+        copies: list[RecordedCopy],
         allocated_bytes: int,
         peak_allocated_bytes: int,
     ) -> WeightTransferPlan:
@@ -276,7 +251,6 @@ class NIXLWeightUpdateWorker(Worker):
             for group_index, group in enumerate(table.groups)
             for tensor in group.tensors
         }
-        copies = [copy for layer in layers for copy in layer.copies] + persistent
         specifications: dict[int, TensorReplayPlan] = {}
         copies_by_group: dict[int, list[RecordedCopy]] = defaultdict(list)
         group_elements: dict[torch.dtype, list[int]] = defaultdict(lambda: [0] * len(table.groups))
@@ -289,11 +263,15 @@ class NIXLWeightUpdateWorker(Worker):
             copies_by_group[source_group].append(copy)
             group_elements[source_dtype][source_group] += prod(replay_plan.source_shape)
 
-        reload_layer_ids = {id(layer.layer) for layer in layers}
+        reload_layers: dict[int, nn.Module] = {}
+        for copy in copies:
+            if not copy.is_persistent:
+                reload_layers.setdefault(id(copy.destination_module), copy.destination_module)
+
         reload_layer_groups: dict[int, int] = {}
         for copy in copies:
             layer_id = id(copy.destination_module)
-            if layer_id not in reload_layer_ids:
+            if layer_id not in reload_layers:
                 continue
             source_group = tensor_groups[copy.source_name]
             previous_group = reload_layer_groups.setdefault(layer_id, source_group)
@@ -309,21 +287,16 @@ class NIXLWeightUpdateWorker(Worker):
             sum(elements * dtype.itemsize for dtype, elements in largest_group_elements.items()),
         )
         peak_growth_bytes = max(0, peak_allocated_bytes - allocated_bytes)
-        has_observed_peak_growth = peak_growth_bytes > 0
-        free_before_reclaim, _ = torch.cuda.mem_get_info(self.device)
-        max_receive_buffers = min(2, table.staging_buffer_count) if has_observed_peak_growth else 1
-        if has_observed_peak_growth or free_before_reclaim < largest_group_bytes:
+        free_bytes, _ = torch.cuda.mem_get_info(self.device)
+        max_receive_buffers = min(2, table.staging_buffer_count) if peak_growth_bytes else 1
+        if peak_growth_bytes or free_bytes < largest_group_bytes:
             torch.cuda.empty_cache()
-        sizing = size_cuda_buffers(
+        receive_buffer_count = size_cuda_buffers(
             largest_group_bytes,
             max_receive_buffers,
             self.device,
             extra_headroom_bytes=largest_group_bytes + peak_growth_bytes,
         )
-        receive_buffer_count = sizing.buffer_count
-        free_bytes = sizing.free_bytes
-        device_total_bytes = sizing.total_bytes
-        headroom_bytes = sizing.headroom_bytes
         with use_cuda_malloc_pool():
             receive_arenas = {
                 dtype: torch.empty(
@@ -336,11 +309,8 @@ class NIXLWeightUpdateWorker(Worker):
             }
         for arena in receive_arenas.values():
             self.nixl_agent.register_tensor(arena)
-        receive_arena_bytes = sum(arena.nbytes for arena in receive_arenas.values())
-        post_free_bytes, _ = torch.cuda.mem_get_info(self.device)
 
         agent_devices = {agent_index: agent.device_id for agent_index, agent in enumerate(table.agents)}
-        total_bytes = 0
         peer_names: dict[int, str] = {}
         transfer_groups: list[WeightTransferGroup] = []
 
@@ -379,17 +349,15 @@ class NIXLWeightUpdateWorker(Worker):
                     remote_descs[route.agent].append(
                         (route.source_addr, route.nbytes, agent_devices[route.agent])
                     )
-                    total_bytes += route.nbytes
 
             layer_plans: list[LayerWeightTransferPlan] = []
-            for layer in layers:
-                layer_id = id(layer.layer)
+            for layer_id, layer in reload_layers.items():
                 regular = copy_plans_by_layer.pop(layer_id, [])
                 live = persistent_plans_by_layer.pop(layer_id, [])
                 if regular:
                     layer_plans.append(
                         LayerWeightTransferPlan(
-                            reload_layer=layer.layer,
+                            reload_layer=layer,
                             copies=regular,
                             persistent_copies=live,
                         )
@@ -430,41 +398,16 @@ class NIXLWeightUpdateWorker(Worker):
                 )
             )
 
-        logger.info(
-            "NIXL receive ring selected %d buffers from one-time first-transfer sizing: "
-            "rank=%d, peak_mode=%s, trainer_buffers=%d, local_cap=%d, "
-            "%.2f GiB CUDA free before and %.2f GiB after cache reclaim; "
-            "active=%.2f GiB, peak=%.2f GiB, peak_growth=%.2f GiB "
-            "(%.2f GiB total, %.2f GiB target headroom): %.2f GiB per buffer, "
-            "%.2f GiB arena, %.2f GiB post-allocation free for %d groups",
-            receive_buffer_count,
-            self.model_express.rank,
-            "measured" if has_observed_peak_growth else "unmeasured",
-            table.staging_buffer_count,
-            max_receive_buffers,
-            free_before_reclaim / 1024**3,
-            free_bytes / 1024**3,
-            allocated_bytes / 1024**3,
-            peak_allocated_bytes / 1024**3,
-            peak_growth_bytes / 1024**3,
-            device_total_bytes / 1024**3,
-            headroom_bytes / 1024**3,
-            largest_group_bytes / 1024**3,
-            receive_arena_bytes / 1024**3,
-            post_free_bytes / 1024**3,
-            len(transfer_groups),
-        )
         return WeightTransferPlan(
             receive_arenas=receive_arenas,
             receive_buffer_count=receive_buffer_count,
             groups=transfer_groups,
-            total_bytes=total_bytes,
         )
 
     @torch.no_grad()
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
         del weight_dir
-        plan = self._lazy_init()
+        plan = self.initialize_transfer()
         self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.model_express.wait_for(
             "trainer",
@@ -479,8 +422,7 @@ class NIXLWeightUpdateWorker(Worker):
         torch.cuda.synchronize(self.device)
         self.model_express.set_status(p2p_pb2.SOURCE_STATUS_READY)
         logger.info(
-            "Applied %.2f GB NIXL policy update on rank %d in %.2fs",
-            plan.total_bytes / 1e9,
+            "Applied NIXL policy update on rank %d in %.2fs",
             self.model_express.rank,
             time.perf_counter() - started,
         )
@@ -499,10 +441,9 @@ class NIXLWeightUpdateWorker(Worker):
         model = self.raw_model
         cancelled = Event()
 
-        def pull_group(group_index: int) -> PulledWeightTransferGroup:
+        def pull_group(group_index: int) -> WeightTransferGroup:
             transfer_group = plan.groups[group_index]
             session = self.buffer_sessions[group_index % len(self.buffer_sessions)]
-            source_wait_started = time.perf_counter()
             session.wait_for(
                 "trainer",
                 count=1,
@@ -511,9 +452,7 @@ class NIXLWeightUpdateWorker(Worker):
                 poll_interval=_BUFFER_POLL_INTERVAL,
                 cancelled=cancelled.is_set,
             )
-            source_wait_seconds = time.perf_counter() - source_wait_started
 
-            transfer_started = time.perf_counter()
             for local, remote, indices in transfer_group.pulls:
                 handle = self.nixl_agent.post_read(local, indices, remote)
                 self.nixl_agent.wait(
@@ -522,18 +461,10 @@ class NIXLWeightUpdateWorker(Worker):
                     timeout=self.weight_transfer_timeout,
                     cancelled=cancelled.is_set,
                 )
-            transfer_seconds = time.perf_counter() - transfer_started
+            return transfer_group
 
-            return PulledWeightTransferGroup(
-                group=transfer_group,
-                source_wait_seconds=source_wait_seconds,
-                transfer_seconds=transfer_seconds,
-                acknowledgement_seconds=0.0,
-            )
-
-        def acknowledge_group(group_index: int) -> float:
+        def acknowledge_group(group_index: int) -> None:
             session = self.buffer_sessions[group_index % len(self.buffer_sessions)]
-            acknowledgement_started = time.perf_counter()
             session.set_status(p2p_pb2.SOURCE_STATUS_READY)
             session.wait_for(
                 "trainer",
@@ -544,13 +475,12 @@ class NIXLWeightUpdateWorker(Worker):
                 cancelled=cancelled.is_set,
             )
             session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-            return time.perf_counter() - acknowledgement_started
 
-        def prefetch_group(group_index: int) -> PulledWeightTransferGroup:
+        def prefetch_group(group_index: int) -> WeightTransferGroup:
             torch.cuda.set_device(self.device)
-            pulled = pull_group(group_index)
-            pulled.acknowledgement_seconds = acknowledge_group(group_index)
-            return pulled
+            transfer_group = pull_group(group_index)
+            acknowledge_group(group_index)
+            return transfer_group
 
         def replay_group(transfer_group: WeightTransferGroup) -> None:
             for layer_plan in transfer_group.layers:
@@ -585,48 +515,26 @@ class NIXLWeightUpdateWorker(Worker):
             initialize_layerwise_reload(model)
             pipelined = plan.receive_buffer_count > 1
             executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nixl-prefetch") if pipelined else None
-            source_wait_seconds = 0.0
-            transfer_seconds = 0.0
-            acknowledgement_seconds = 0.0
-            replay_seconds = 0.0
             try:
                 pull = executor.submit(prefetch_group, 0) if executor is not None else None
                 for group_index in range(len(plan.groups)):
-                    pulled = pull.result() if pull is not None else pull_group(group_index)
-                    transfer_group = pulled.group
-                    source_wait_seconds += pulled.source_wait_seconds
-                    transfer_seconds += pulled.transfer_seconds
-                    acknowledgement_seconds += pulled.acknowledgement_seconds
+                    transfer_group = pull.result() if pull is not None else pull_group(group_index)
 
                     torch.cuda.synchronize(self.device)
                     if executor is not None and group_index + 1 < len(plan.groups):
                         pull = executor.submit(prefetch_group, group_index + 1)
 
-                    replay_started = time.perf_counter()
                     replay_group(transfer_group)
                     torch.cuda.synchronize(self.device)
-                    replay_seconds += time.perf_counter() - replay_started
 
                     if not pipelined:
-                        acknowledgement_seconds += acknowledge_group(group_index)
+                        acknowledge_group(group_index)
             finally:
                 cancelled.set()
                 if executor is not None:
                     executor.shutdown(wait=True, cancel_futures=True)
 
-            finalize_started = time.perf_counter()
             finalize_layerwise_reload(model, self.model_runner.model_config)
-            logger.info(
-                "NIXL update profile rank=%d: groups=%d, source_wait=%.2fs, "
-                "sequential_rdma=%.2fs, source_ack=%.2fs, replay=%.2fs, finalize=%.2fs",
-                self.model_express.rank,
-                len(plan.groups),
-                source_wait_seconds,
-                transfer_seconds,
-                acknowledgement_seconds,
-                replay_seconds,
-                time.perf_counter() - finalize_started,
-            )
 
     @staticmethod
     def _copy_plan(plan: TensorCopyPlan) -> None:

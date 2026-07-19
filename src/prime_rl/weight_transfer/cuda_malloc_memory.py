@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ctypes
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
@@ -20,29 +19,15 @@ _pool: torch.cuda.MemPool | None = None
 _allocator: torch.cuda.memory.CUDAPluggableAllocator | None = None
 
 
-@dataclass(frozen=True)
-class CudaBufferSizing:
-    buffer_count: int
-    free_bytes: int
-    total_bytes: int
-    headroom_bytes: int
-
-
 def size_cuda_buffers(
     buffer_bytes: int,
     max_buffers: int,
     device: torch.device,
     extra_headroom_bytes: int,
-) -> CudaBufferSizing:
+) -> int:
     free_bytes, total_bytes = torch.cuda.mem_get_info(device)
     headroom_bytes = max(4 * 1024**3, int(total_bytes * 0.02)) + extra_headroom_bytes
-    buffer_count = max(1, min(max_buffers, (free_bytes - headroom_bytes) // buffer_bytes))
-    return CudaBufferSizing(
-        buffer_count=buffer_count,
-        free_bytes=free_bytes,
-        total_bytes=total_bytes,
-        headroom_bytes=headroom_bytes,
-    )
+    return max(1, min(max_buffers, (free_bytes - headroom_bytes) // buffer_bytes))
 
 
 def _get_pool() -> torch.cuda.MemPool:
