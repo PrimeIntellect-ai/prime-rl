@@ -7,7 +7,9 @@ from typing import Any, Callable
 
 import torch
 
-from prime_rl.weight_transfer.chains import SUPPORTED_OPS, OpChain, OpSpec, UnsupportedOpError
+from prime_rl.weight_transfer.chains import SUPPORTED_OPS, OpChain, OpSpec, UnsupportedOpError, apply_chain
+
+_SUPPORTED_DTYPES = (torch.bfloat16, torch.float32)
 
 
 @dataclass
@@ -67,20 +69,25 @@ class LazyWeight(torch.Tensor):
     def __new__(
         cls,
         source_name: str,
-        shape: torch.Size,
-        dtype: torch.dtype,
+        source_shape: torch.Size,
+        source_dtype: torch.dtype,
         device: torch.device,
         recorder: BakeRecorder,
         ops: OpChain = (),
     ) -> "LazyWeight":
+        meta = apply_chain(torch.empty(source_shape, dtype=source_dtype, device="meta"), ops)
         value = torch.Tensor._make_wrapper_subclass(
             cls,
-            shape,
-            dtype=dtype,
+            meta.shape,
+            strides=meta.stride(),
+            storage_offset=meta.storage_offset(),
+            dtype=meta.dtype,
             device=device,
             requires_grad=False,
         )
         value._source_name = source_name
+        value._source_shape = torch.Size(source_shape)
+        value._source_dtype = source_dtype
         value._ops = tuple(ops)
         value._recorder = recorder
         return value
@@ -92,55 +99,60 @@ class LazyWeight(torch.Tensor):
         )
 
     def _meta(self) -> torch.Tensor:
-        return torch.empty(self.shape, dtype=self.dtype, device="meta")
+        source = torch.empty(self._source_shape, dtype=self._source_dtype, device="meta")
+        return apply_chain(source, self._ops)
 
-    def _child(self, shape: torch.Size, dtype: torch.dtype, *ops: OpSpec) -> "LazyWeight":
+    def _child(self, *ops: OpSpec) -> "LazyWeight":
         return LazyWeight(
             self._source_name,
-            shape,
-            dtype,
+            self._source_shape,
+            self._source_dtype,
             self.device,
             self._recorder,
             self._ops + ops,
         )
 
+    def _record_copy(self, destination: torch.Tensor) -> torch.Tensor:
+        if isinstance(destination, LazyWeight):
+            raise UnsupportedOpError("copy_ between lazy graph tensors is not supported")
+        if tuple(destination.shape) != tuple(self.shape):
+            raise UnsupportedOpError(
+                f"copy_ shape mismatch for {self._source_name}: "
+                f"{tuple(self.shape)} -> {tuple(destination.shape)}"
+            )
+        if self.dtype not in _SUPPORTED_DTYPES or destination.dtype not in _SUPPORTED_DTYPES:
+            raise UnsupportedOpError(
+                f"NIXL lazy copies only support BF16/FP32 values, got "
+                f"source={self.dtype}, destination={destination.dtype} for {self._source_name!r}"
+            )
+
+        resolved_destination = self._recorder.resolve_destination(destination)
+        if resolved_destination is not None:
+            owner, destination_offset = resolved_destination
+            self._recorder.copies.append(
+                RecordedCopy(
+                    source_name=self._source_name,
+                    ops=self._ops,
+                    destination_module=owner.module,
+                    destination_name=owner.name,
+                    destination_offset=destination_offset,
+                    destination_shape=tuple(destination.shape),
+                    destination_stride=tuple(destination.stride()),
+                    is_persistent=not destination.is_meta,
+                )
+            )
+        # Loaders use copy_ for its side effect; the bake must never mutate
+        # live kernel storage or attempt a meta-to-device copy.
+        return destination
+
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
         if func is torch.Tensor.copy_:
-            dst = args[0]
-            src = args[1] if len(args) > 1 else kwargs.get("src")
-            if isinstance(src, cls):
-                if isinstance(dst, cls):
-                    raise UnsupportedOpError("copy_ between lazy graph tensors is not supported")
-                if tuple(dst.shape) != tuple(src.shape):
-                    raise UnsupportedOpError(
-                        f"copy_ shape mismatch for {src._source_name}: {tuple(src.shape)} -> {tuple(dst.shape)}"
-                    )
-                supported_dtypes = (torch.bfloat16, torch.float32)
-                if src.dtype not in supported_dtypes or dst.dtype not in supported_dtypes:
-                    raise UnsupportedOpError(
-                        f"NIXL lazy copies only support BF16/FP32 values, got "
-                        f"source={src.dtype}, destination={dst.dtype} for {src._source_name!r}"
-                    )
-                resolved_destination = src._recorder.resolve_destination(dst)
-                if resolved_destination is not None:
-                    destination, destination_offset = resolved_destination
-                    src._recorder.copies.append(
-                        RecordedCopy(
-                            source_name=src._source_name,
-                            ops=src._ops,
-                            destination_module=destination.module,
-                            destination_name=destination.name,
-                            destination_offset=destination_offset,
-                            destination_shape=tuple(dst.shape),
-                            destination_stride=tuple(dst.stride()),
-                            is_persistent=not dst.is_meta,
-                        )
-                    )
-                # Loaders use copy_ for its side effect; the bake must never
-                # mutate live kernel storage or attempt a meta-to-device copy.
-                return dst
+            destination = args[0]
+            source = args[1] if len(args) > 1 else kwargs.get("src")
+            if isinstance(source, cls):
+                return source._record_copy(destination)
 
         op_name = SUPPORTED_OPS.get(func)
         if op_name is not None and args and isinstance(args[0], cls):
@@ -163,16 +175,18 @@ class LazyWeight(torch.Tensor):
             result = func(meta, *args, **kwargs)
         op: OpSpec = (op_name, args, dict(kwargs))
         if isinstance(result, torch.Tensor):
-            if result.dtype not in (torch.bfloat16, torch.float32):
+            if result.dtype not in _SUPPORTED_DTYPES:
                 raise UnsupportedOpError(
                     f"NIXL lazy replay only supports BF16/FP32 values, got {result.dtype} "
                     f"after {op_name!r} on {source._source_name!r}"
                 )
-            return source._child(result.shape, result.dtype, op)
-        if isinstance(result, (tuple, list)) and all(isinstance(item, torch.Tensor) for item in result):
+            return source._child(op)
+        if isinstance(result, (tuple, list)) and all(
+            isinstance(item, torch.Tensor) and item.dtype in _SUPPORTED_DTYPES for item in result
+        ):
             return tuple(
-                source._child(item.shape, item.dtype, op, ("tuple_getitem", (index,), {}))
-                for index, item in enumerate(result)
+                source._child(op, ("tuple_getitem", (index,), {}))
+                for index, _ in enumerate(result)
             )
         raise UnsupportedOpError(f"operation {op_name!r} returned unsupported {type(result).__name__}")
 
