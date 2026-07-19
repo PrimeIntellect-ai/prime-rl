@@ -365,6 +365,14 @@ class Orchestrator:
             await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
             if self.model_express is not None:
                 await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                # Complete the startup rendezvous before the watcher begins its next cycle.
+                await asyncio.to_thread(
+                    self.model_express.wait_for,
+                    "trainer",
+                    count=1,
+                    status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
+                    timeout=config.weight_broadcast.timeout,
+                )
             if self.lora_name is not None:
                 self.policy_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name

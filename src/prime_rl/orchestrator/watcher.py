@@ -55,11 +55,7 @@ class WeightWatcher:
         self.task = asyncio.current_task()
         try:
             while not self.stopped.is_set():
-                next_step = (
-                    self.ckpt_step + 1
-                    if self.model_express is not None
-                    else self.compute_next_ckpt_step()
-                )
+                next_step = self.compute_next_ckpt_step()
                 if next_step > self.ckpt_step:
                     await self.apply_policy_update(next_step)
                 await asyncio.sleep(self.poll_interval)
@@ -73,9 +69,12 @@ class WeightWatcher:
             self.task = None
 
     def compute_next_ckpt_step(self) -> int:
-        """Next checkpoint to adopt — at least ``policy.version`` (we stay
-        one step ahead of the trainer) plus anything fresher already
-        published in ``broadcasts/``."""
+        """Return the next policy version exposed by the configured transport."""
+        if self.model_express is not None:
+            # ModelExpress status changes are unversioned, so its rendezvous advances
+            # exactly one policy version per READY/INITIALIZING cycle.
+            return self.ckpt_step + 1
+
         broadcast_dir = get_broadcast_dir(self.config.output_dir)
         latest_ckpt_step = get_latest_ckpt_step(broadcast_dir) or 0
         return max(self.policy.version, latest_ckpt_step)
@@ -88,7 +87,9 @@ class WeightWatcher:
 
             weights_path = None
             if self.model_express is not None:
+                wait_started = time.perf_counter()
                 await self.wait_for_model_express_status(p2p_pb2.SOURCE_STATUS_READY)
+                self.last_wait_for_ckpt_time = time.perf_counter() - wait_started
             else:
                 broadcast_dir = get_broadcast_dir(self.config.output_dir)
                 weights_path = get_step_path(broadcast_dir, next_step)
