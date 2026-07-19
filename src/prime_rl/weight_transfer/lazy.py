@@ -42,7 +42,7 @@ class Destination:
 
 
 @dataclass
-class BakeRecorder:
+class WeightLoadRecorder:
     copies: list[RecordedCopy] = field(default_factory=list)
     active_destination: Destination | None = None
     destination_storage_ranges: list[Destination] = field(default_factory=list)
@@ -72,7 +72,7 @@ class LazyWeight(torch.Tensor):
         source_shape: torch.Size,
         source_dtype: torch.dtype,
         device: torch.device,
-        recorder: BakeRecorder,
+        recorder: WeightLoadRecorder,
         ops: OpChain = (),
     ) -> "LazyWeight":
         meta = apply_chain(torch.empty(source_shape, dtype=source_dtype, device="meta"), ops)
@@ -141,7 +141,7 @@ class LazyWeight(torch.Tensor):
                     is_persistent=not destination.is_meta,
                 )
             )
-        # Loaders use copy_ for its side effect; the bake must never mutate
+        # Loaders use copy_ for its side effect; the trace must never mutate
         # live kernel storage or attempt a meta-to-device copy.
         return destination
 

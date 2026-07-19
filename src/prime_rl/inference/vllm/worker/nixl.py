@@ -29,7 +29,7 @@ from prime_rl.weight_transfer.chains import (
 )
 from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc, cuda_buffer_capacity
 from prime_rl.weight_transfer.graph import make_hf_lazy_weights
-from prime_rl.weight_transfer.lazy import BakeRecorder, Destination, RecordedCopy
+from prime_rl.weight_transfer.lazy import Destination, RecordedCopy, WeightLoadRecorder
 from prime_rl.weight_transfer.mx import MxRendezvous
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.sharding import route_region, zip_src_dst
@@ -148,7 +148,7 @@ class NIXLWeightUpdateWorker(Worker):
         peak_allocated_bytes = torch.cuda.max_memory_allocated(self.device)
         trainer_ref = self.mx_rendezvous.wait_for_peers(timeout=self.weight_transfer_timeout)[0]
         table = TrainerTable.decode(self.mx_rendezvous.fetch(trainer_ref).nixl_metadata)
-        layers, persistent = self._bake(table)
+        layers, persistent = self.trace_weight_loads(table)
         plan = self._build_pull_plan(table, layers, persistent, allocated_bytes, peak_allocated_bytes)
         self.buffer_rendezvous = []
         for buffer_index in range(table.source_ring_size):
@@ -170,7 +170,7 @@ class NIXLWeightUpdateWorker(Worker):
         self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.weight_transfer_plan = plan
         logger.info(
-            "NIXL plan baked in %.2fs: rank=%d, groups=%d, source_buffers=%d, copies=%d, bytes=%d, pull_lists=%d",
+            "NIXL plan built in %.2fs: rank=%d, groups=%d, source_buffers=%d, copies=%d, bytes=%d, pull_lists=%d",
             time.perf_counter() - started,
             self.mx_rendezvous.rank,
             len(plan.groups),
@@ -181,10 +181,11 @@ class NIXLWeightUpdateWorker(Worker):
         )
         return plan
 
-    def _bake(
+    def trace_weight_loads(
         self,
         table: TrainerTable,
     ) -> tuple[list[LayerWeightCopies], list[RecordedCopy]]:
+        """Trace vLLM weight loading into source-to-destination copies."""
         from vllm.model_executor.model_loader.reload.layerwise import (
             _get_original_loader,
             initialize_layerwise_reload,
@@ -193,7 +194,7 @@ class NIXLWeightUpdateWorker(Worker):
         from vllm.model_executor.model_loader.reload.utils import get_layer_tensors
 
         model = self.raw_model
-        recorder = BakeRecorder()
+        recorder = WeightLoadRecorder()
         persistent: list[RecordedCopy] = []
         original_loaders: list[tuple[torch.Tensor, Any]] = []
         with torch.device(self.device), set_current_vllm_config(self.vllm_config):
@@ -238,7 +239,7 @@ class NIXLWeightUpdateWorker(Worker):
         ], persistent
 
     @staticmethod
-    def _stamp(recorder: BakeRecorder, destination: Destination, loader: Any):
+    def _stamp(recorder: WeightLoadRecorder, destination: Destination, loader: Any):
         @wraps(loader)
         def stamped(*args, **kwargs):
             recorder.active_destination = destination

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from prime_rl.weight_transfer.lazy import BakeRecorder, LazyWeight
+from prime_rl.weight_transfer.lazy import LazyWeight, WeightLoadRecorder
 from prime_rl.weight_transfer.wire import TrainerTable
 
 
@@ -12,7 +12,7 @@ def make_hf_lazy_weights(
     table: TrainerTable,
     *,
     device: torch.device,
-    recorder: BakeRecorder,
+    recorder: WeightLoadRecorder,
     hf_config,
 ) -> list[tuple[str, LazyWeight]]:
     """Create HF-named graph values rooted in trainer wire tensors.
