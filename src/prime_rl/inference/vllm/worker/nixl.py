@@ -34,7 +34,7 @@ from prime_rl.weight_transfer.graph import (
     plan_tensor_replay,
 )
 from prime_rl.weight_transfer.model_express import ModelExpressSession
-from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
+from prime_rl.weight_transfer.nixl import MemDesc, NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.tensor_routing import route_sharded_tensor
 from prime_rl.weight_transfer.trainer_tensor_table import TrainerTensorTable
 
@@ -245,23 +245,139 @@ class NIXLWeightUpdateWorker(Worker):
         allocated_bytes: int,
         peak_allocated_bytes: int,
     ) -> WeightTransferPlan:
+        replay_plans = self.plan_tensor_replays(table, copies)
+        receive_buffer_elements = self.calculate_receive_buffer_elements(
+            table,
+            copies,
+            replay_plans,
+        )
+        receive_buffer_count = self.choose_receive_buffer_count(
+            receive_buffer_elements,
+            table.staging_buffer_count,
+            allocated_bytes,
+            peak_allocated_bytes,
+        )
+        receive_arenas = self.allocate_receive_arenas(
+            receive_buffer_elements,
+            receive_buffer_count,
+        )
+        groups = self.build_transfer_groups(
+            table,
+            copies,
+            replay_plans,
+            receive_buffer_elements,
+            receive_arenas,
+            receive_buffer_count,
+        )
+        return WeightTransferPlan(
+            receive_arenas=receive_arenas,
+            receive_buffer_count=receive_buffer_count,
+            groups=groups,
+        )
+
+    def plan_tensor_replays(
+        self,
+        table: TrainerTensorTable,
+        copies: list[RecordedCopy],
+    ) -> dict[int, TensorReplayPlan]:
+        tensors = {tensor.name: tensor for group in table.groups for tensor in group.tensors}
+        replay_plans: dict[int, TensorReplayPlan] = {}
+        for copy in copies:
+            source = tensors[copy.source_name]
+            replay_plans[id(copy)] = plan_tensor_replay(
+                tuple(source.shape),
+                getattr(torch, source.wire_dtype),
+                copy.ops,
+            )
+        return replay_plans
+
+    def calculate_receive_buffer_elements(
+        self,
+        table: TrainerTensorTable,
+        copies: list[RecordedCopy],
+        replay_plans: dict[int, TensorReplayPlan],
+    ) -> dict[torch.dtype, int]:
         tensors = {tensor.name: tensor for group in table.groups for tensor in group.tensors}
         tensor_groups = {
             tensor.name: group_index
             for group_index, group in enumerate(table.groups)
             for tensor in group.tensors
         }
-        specifications: dict[int, TensorReplayPlan] = {}
-        copies_by_group: dict[int, list[RecordedCopy]] = defaultdict(list)
         group_elements: dict[torch.dtype, list[int]] = defaultdict(lambda: [0] * len(table.groups))
         for copy in copies:
             source = tensors[copy.source_name]
             source_dtype = getattr(torch, source.wire_dtype)
-            replay_plan = plan_tensor_replay(tuple(source.shape), source_dtype, copy.ops)
-            specifications[id(copy)] = replay_plan
-            source_group = tensor_groups[source.name]
-            copies_by_group[source_group].append(copy)
-            group_elements[source_dtype][source_group] += prod(replay_plan.source_shape)
+            group_elements[source_dtype][tensor_groups[source.name]] += prod(
+                replay_plans[id(copy)].source_shape
+            )
+        return {
+            dtype: max(elements, default=0)
+            for dtype, elements in group_elements.items()
+        }
+
+    def choose_receive_buffer_count(
+        self,
+        receive_buffer_elements: dict[torch.dtype, int],
+        staging_buffer_count: int,
+        allocated_bytes: int,
+        peak_allocated_bytes: int,
+    ) -> int:
+        receive_buffer_bytes = max(
+            1,
+            sum(
+                elements * dtype.itemsize
+                for dtype, elements in receive_buffer_elements.items()
+            ),
+        )
+        peak_growth_bytes = max(0, peak_allocated_bytes - allocated_bytes)
+        free_bytes, _ = torch.cuda.mem_get_info(self.device)
+        max_receive_buffers = min(2, staging_buffer_count) if peak_growth_bytes else 1
+        if peak_growth_bytes or free_bytes < receive_buffer_bytes:
+            torch.cuda.empty_cache()
+        return size_cuda_buffers(
+            receive_buffer_bytes,
+            max_receive_buffers,
+            self.device,
+            extra_headroom_bytes=receive_buffer_bytes + peak_growth_bytes,
+        )
+
+    def allocate_receive_arenas(
+        self,
+        receive_buffer_elements: dict[torch.dtype, int],
+        receive_buffer_count: int,
+    ) -> dict[torch.dtype, torch.Tensor]:
+        with use_cuda_malloc_pool():
+            receive_arenas = {
+                dtype: torch.empty(
+                    receive_buffer_count * elements,
+                    dtype=dtype,
+                    device=self.device,
+                )
+                for dtype, elements in receive_buffer_elements.items()
+                if elements
+            }
+        for arena in receive_arenas.values():
+            self.nixl_agent.register_tensor(arena)
+        return receive_arenas
+
+    def build_transfer_groups(
+        self,
+        table: TrainerTensorTable,
+        copies: list[RecordedCopy],
+        replay_plans: dict[int, TensorReplayPlan],
+        receive_buffer_elements: dict[torch.dtype, int],
+        receive_arenas: dict[torch.dtype, torch.Tensor],
+        receive_buffer_count: int,
+    ) -> list[WeightTransferGroup]:
+        tensors = {tensor.name: tensor for group in table.groups for tensor in group.tensors}
+        tensor_groups = {
+            tensor.name: group_index
+            for group_index, group in enumerate(table.groups)
+            for tensor in group.tensors
+        }
+        copies_by_group: dict[int, list[RecordedCopy]] = defaultdict(list)
+        for copy in copies:
+            copies_by_group[tensor_groups[copy.source_name]].append(copy)
 
         reload_layers: dict[int, nn.Module] = {}
         for copy in copies:
@@ -281,35 +397,6 @@ class NIXLWeightUpdateWorker(Worker):
                     f"{table.groups[previous_group].name!r} and {table.groups[source_group].name!r}"
                 )
 
-        largest_group_elements = {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
-        largest_group_bytes = max(
-            1,
-            sum(elements * dtype.itemsize for dtype, elements in largest_group_elements.items()),
-        )
-        peak_growth_bytes = max(0, peak_allocated_bytes - allocated_bytes)
-        free_bytes, _ = torch.cuda.mem_get_info(self.device)
-        max_receive_buffers = min(2, table.staging_buffer_count) if peak_growth_bytes else 1
-        if peak_growth_bytes or free_bytes < largest_group_bytes:
-            torch.cuda.empty_cache()
-        receive_buffer_count = size_cuda_buffers(
-            largest_group_bytes,
-            max_receive_buffers,
-            self.device,
-            extra_headroom_bytes=largest_group_bytes + peak_growth_bytes,
-        )
-        with use_cuda_malloc_pool():
-            receive_arenas = {
-                dtype: torch.empty(
-                    receive_buffer_count * elements,
-                    dtype=dtype,
-                    device=self.device,
-                )
-                for dtype, elements in largest_group_elements.items()
-                if elements
-            }
-        for arena in receive_arenas.values():
-            self.nixl_agent.register_tensor(arena)
-
         agent_devices = {agent_index: agent.device_id for agent_index, agent in enumerate(table.agents)}
         peer_names: dict[int, str] = {}
         transfer_groups: list[WeightTransferGroup] = []
@@ -317,32 +404,32 @@ class NIXLWeightUpdateWorker(Worker):
         for group_index, group in enumerate(table.groups):
             copy_plans_by_layer: dict[int, list[TensorCopyPlan]] = defaultdict(list)
             persistent_plans_by_layer: dict[int, list[TensorCopyPlan]] = defaultdict(list)
-            local_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
-            remote_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
+            local_descs: dict[int, list[MemDesc]] = defaultdict(list)
+            remote_descs: dict[int, list[MemDesc]] = defaultdict(list)
             cursors = {
                 dtype: (group_index % receive_buffer_count) * elements
-                for dtype, elements in largest_group_elements.items()
+                for dtype, elements in receive_buffer_elements.items()
             }
 
             for copy in copies_by_group[group_index]:
-                specification = specifications[id(copy)]
+                replay_plan = replay_plans[id(copy)]
                 source = tensors[copy.source_name]
                 source_dtype = getattr(torch, source.wire_dtype)
-                numel = prod(specification.source_shape)
+                numel = prod(replay_plan.source_shape)
                 cursor = cursors[source_dtype]
                 staging_tensor = receive_arenas[source_dtype].narrow(0, cursor, numel).view(
-                    specification.source_shape
+                    replay_plan.source_shape
                 )
                 cursors[source_dtype] += numel
                 copy_plan = TensorCopyPlan(
                     recorded_copy=copy,
                     staging_tensor=staging_tensor,
-                    replay_ops=specification.replay_ops,
+                    replay_ops=replay_plan.replay_ops,
                 )
                 plans = persistent_plans_by_layer if copy.is_persistent else copy_plans_by_layer
                 plans[id(copy.destination_module)].append(copy_plan)
 
-                for route in route_sharded_tensor(specification, source, staging_tensor):
+                for route in route_sharded_tensor(replay_plan, source, staging_tensor):
                     local_descs[route.agent].append(
                         (route.destination_addr, route.nbytes, self.device.index)
                     )
@@ -350,59 +437,85 @@ class NIXLWeightUpdateWorker(Worker):
                         (route.source_addr, route.nbytes, agent_devices[route.agent])
                     )
 
-            layer_plans: list[LayerWeightTransferPlan] = []
-            for layer_id, layer in reload_layers.items():
-                regular = copy_plans_by_layer.pop(layer_id, [])
-                live = persistent_plans_by_layer.pop(layer_id, [])
-                if regular:
-                    layer_plans.append(
-                        LayerWeightTransferPlan(
-                            reload_layer=layer,
-                            copies=regular,
-                            persistent_copies=live,
-                        )
+            transfer_groups.append(
+                WeightTransferGroup(
+                    name=group.name,
+                    layers=self.build_layer_transfer_plans(
+                        reload_layers,
+                        copy_plans_by_layer,
+                        persistent_plans_by_layer,
+                    ),
+                    pulls=self.prepare_group_pulls(
+                        table,
+                        local_descs,
+                        remote_descs,
+                        peer_names,
+                    ),
+                )
+            )
+        return transfer_groups
+
+    def build_layer_transfer_plans(
+        self,
+        reload_layers: dict[int, nn.Module],
+        copy_plans_by_layer: dict[int, list[TensorCopyPlan]],
+        persistent_plans_by_layer: dict[int, list[TensorCopyPlan]],
+    ) -> list[LayerWeightTransferPlan]:
+        layer_plans: list[LayerWeightTransferPlan] = []
+        for layer_id, layer in reload_layers.items():
+            copies = copy_plans_by_layer.get(layer_id, [])
+            persistent_copies = persistent_plans_by_layer.get(layer_id, [])
+            if copies:
+                layer_plans.append(
+                    LayerWeightTransferPlan(
+                        reload_layer=layer,
+                        copies=copies,
+                        persistent_copies=persistent_copies,
                     )
-                elif live:
-                    layer_plans.append(
-                        LayerWeightTransferPlan(
-                            reload_layer=None,
-                            copies=[],
-                            persistent_copies=live,
-                        )
-                    )
-            remaining_persistent = [plan for plans in persistent_plans_by_layer.values() for plan in plans]
-            if remaining_persistent:
+                )
+            elif persistent_copies:
                 layer_plans.append(
                     LayerWeightTransferPlan(
                         reload_layer=None,
                         copies=[],
-                        persistent_copies=remaining_persistent,
+                        persistent_copies=persistent_copies,
                     )
                 )
 
-            pulls: list[tuple[Any, Any, list[int]]] = []
-            for agent_index, remote in sorted(remote_descs.items()):
-                peer_name = peer_names.get(agent_index)
-                if peer_name is None:
-                    peer_name = self.nixl_agent.add_remote_agent(table.agents[agent_index].metadata)
-                    self.nixl_agent.make_connection(peer_name)
-                    peer_names[agent_index] = peer_name
-                local_prepared = self.nixl_agent.prepare_xfer_dlist(local_descs[agent_index])
-                remote_prepared = self.nixl_agent.prepare_xfer_dlist(remote, agent_name=peer_name)
-                pulls.append((local_prepared, remote_prepared, list(range(len(remote)))))
-            transfer_groups.append(
-                WeightTransferGroup(
-                    name=group.name,
-                    layers=layer_plans,
-                    pulls=pulls,
+        remaining_persistent = [
+            plan
+            for layer_id, plans in persistent_plans_by_layer.items()
+            if layer_id not in reload_layers
+            for plan in plans
+        ]
+        if remaining_persistent:
+            layer_plans.append(
+                LayerWeightTransferPlan(
+                    reload_layer=None,
+                    copies=[],
+                    persistent_copies=remaining_persistent,
                 )
             )
+        return layer_plans
 
-        return WeightTransferPlan(
-            receive_arenas=receive_arenas,
-            receive_buffer_count=receive_buffer_count,
-            groups=transfer_groups,
-        )
+    def prepare_group_pulls(
+        self,
+        table: TrainerTensorTable,
+        local_descs: dict[int, list[MemDesc]],
+        remote_descs: dict[int, list[MemDesc]],
+        peer_names: dict[int, str],
+    ) -> list[tuple[Any, Any, list[int]]]:
+        pulls: list[tuple[Any, Any, list[int]]] = []
+        for agent_index, remote in sorted(remote_descs.items()):
+            peer_name = peer_names.get(agent_index)
+            if peer_name is None:
+                peer_name = self.nixl_agent.add_remote_agent(table.agents[agent_index].metadata)
+                self.nixl_agent.make_connection(peer_name)
+                peer_names[agent_index] = peer_name
+            local_prepared = self.nixl_agent.prepare_xfer_dlist(local_descs[agent_index])
+            remote_prepared = self.nixl_agent.prepare_xfer_dlist(remote, agent_name=peer_name)
+            pulls.append((local_prepared, remote_prepared, list(range(len(remote)))))
+        return pulls
 
     @torch.no_grad()
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
