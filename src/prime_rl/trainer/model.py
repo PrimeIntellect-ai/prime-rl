@@ -371,8 +371,11 @@ DTYPE_MAP = {
 
 # We increase the torch.compile recompile limit and cache size as we found this
 # necessary for training INTELLECT-3 with Muon.
-torch._dynamo.config.recompile_limit = 16  # default: 8
-torch._dynamo.config.cache_size_limit = 64  # default: 8
+torch._dynamo.config.recompile_limit = 256  # default: 8
+torch._dynamo.config.cache_size_limit = 256  # default: 8
+# VLM runs recompile more than text: dynamic-resolution image shapes plus eval/train
+# grad-mode flips (eval_on_start) each add guard sets; hitting the limit pins the
+# shared AC-wrapped layer frame to eager for the rest of the run.
 
 
 def freeze_vision_encoder(model: nn.Module, override_attr: str | None = None) -> None:
@@ -1245,6 +1248,26 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig, parall
         freeze_language_model(model, override_attr=config.vlm.language_model_attr)
     if config.lora is not None:
         log_lora_parameter_counts(model)
+
+    # Projector-only training (both VLM freezes): the trainable set — which is exactly
+    # what setup_optimizer hands to the optimizer — must be the connector and nothing
+    # else. A trainable tensor inside the frozen subtrees (e.g. MoE router gates via a
+    # divergent code path) would silently break the recipe and the text-regression
+    # guarantee, so fail loudly instead.
+    if config.vlm is not None and config.vlm.freeze_vision_encoder and config.vlm.freeze_language_model:
+        vision_prefix = config.vlm.vision_encoder_attr + "."
+        lm_prefix = config.vlm.language_model_attr + "."
+        trainable = [(name, param.numel()) for name, param in model.named_parameters() if param.requires_grad]
+        offending = [n for n, _ in trainable if n.startswith((vision_prefix, lm_prefix)) or n.startswith("lm_head.")]
+        if offending or not trainable:
+            raise ValueError(
+                "Projector-only policy violated: "
+                + (f"frozen-subtree params still trainable: {offending[:8]}" if offending else "no trainable params")
+            )
+        total = sum(numel for _, numel in trainable)
+        get_logger().info(
+            f"Projector-only trainables: {len(trainable)} tensors, {total / 1e6:.1f}M params: {[n for n, _ in trainable]}"
+        )
 
 
 def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:

@@ -163,10 +163,6 @@ def train(config: SFTConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
     processor = setup_processor(config.tokenizer)
-    if config.model.vlm is not None and processor is None:
-        raise ValueError(
-            f"[model.vlm] is set but no multimodal processor could be loaded for {config.tokenizer.name!r}"
-        )
 
     # Fake data never renders messages, so a model without a hand-coded renderer
     # can still be used to benchmark step time / memory. Validation data is
@@ -177,6 +173,14 @@ def train(config: SFTConfig):
         if processor is not None and hasattr(renderer, "_processor"):
             renderer._processor = processor
         logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
+
+    # A VLM needs an AutoProcessor only when its renderer delegates image
+    # preprocessing to one (`_processor` slot, e.g. Qwen3-VL). Renderers with
+    # self-contained preprocessing (e.g. nemotron-vl) don't ship a processor.
+    if config.model.vlm is not None and processor is None and (renderer is None or hasattr(renderer, "_processor")):
+        raise ValueError(
+            f"[model.vlm] is set but no multimodal processor could be loaded for {config.tokenizer.name!r}"
+        )
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")

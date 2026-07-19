@@ -178,10 +178,43 @@ class RadioVisionModel(nn.Module):
     def dtype(self) -> torch.dtype:
         return self.radio_model.model.patch_generator.embedder.weight.dtype
 
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        """(num_tiles, 3, H, W) -> (num_tiles, H/patch * W/patch, hidden_size)."""
-        tokens = self.radio_model(pixel_values)
-        return tokens[:, self.config.num_cls_tokens :]
+    def forward(self, pixel_values: torch.Tensor, image_grids: torch.Tensor | None = None) -> torch.Tensor:
+        """4D tiles OR patchified variable-size tiles.
+
+        - (num_tiles, 3, H, W) -> (num_tiles, H/patch * W/patch, hidden_size)
+        - (sum_i rows_i*cols_i, 3*p*p) + image_grids (num_tiles, 2) ->
+          (sum_i rows_i*cols_i, hidden_size), tiles concatenated in order.
+
+        Both paths MUST run through this forward: FSDP wraps this module as a
+        single unit, so its parameters are only unsharded inside `__call__`.
+        """
+        if pixel_values.ndim == 4:
+            tokens = self.radio_model(pixel_values)
+            return tokens[:, self.config.num_cls_tokens :]
+
+        if image_grids is None:
+            raise ValueError("image_grids are required with patchified (2D) pixel_values")
+        features = []
+        start = 0
+        for rows, cols in image_grids.long().tolist():
+            n = rows * cols
+            features.append(self._forward_patches_single(pixel_values[start : start + n], rows, cols))
+            start += n
+        return torch.cat(features, dim=0)
+
+    def _forward_patches_single(self, patches: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
+        """Pre-patchified single tile: (rows*cols, 3*p*p) -> (rows*cols, hidden_size).
+
+        Identical math to the 4D path on the equivalent (1, 3, rows*p, cols*p) tile —
+        that path's first op is the same Im2Patches rearrange the renderer applied.
+        """
+        pg = self.radio_model.model.patch_generator
+        x = pg.embedder(patches.unsqueeze(0))
+        x = x + pg._get_pos_embed(rows, cols)
+        x = pg.cls_token(x)
+        for block in self.radio_model.model.blocks:
+            x = block(x)
+        return x[0, self.config.num_cls_tokens :]
 
 
 __all__ = ["RadioVisionModel"]

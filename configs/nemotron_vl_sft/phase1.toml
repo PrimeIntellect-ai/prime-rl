@@ -1,0 +1,120 @@
+# Phase-1 projector-only SFT: Nemotron-3-Super-VL graft on the stage-0 alignment blend.
+#
+# Recipe (GLM-vision-graft style): frozen RADIO tower + frozen Super LM; only mlp1
+# (~189M params) trains. Data: datasets/nemotron_vl_sft (152,004 train samples,
+# 334M tokens/epoch measured with the real Omni tiling).
+# bs=128 packed 16k rows = 2.10M tokens/step -> 2 epochs ~ 334 steps + slack -> max_steps 340
+# (~940 samples/step, ~15x GLM batch; LR 3e-4 conservative under sqrt scaling).
+# 10 checkpoints: every 34 steps, aligned with validation.
+
+output_dir = "outputs/nemotron-vl-phase1"
+max_steps = 340
+loss_weighting = "square"
+
+[env_vars]
+HF_HOME = "/tmp/hubert-hf"
+TMPDIR = "/tmp/hubert-tmp"
+TRITON_CACHE_DIR = "/tmp/hubert-triton-cache"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[slurm]
+job_name = "nemotron-vl-phase1"
+partition = "all"
+pre_run_command = "srun --ntasks-per-node=1 bash -c 'mkdir -p /tmp/hubert-hf /tmp/hubert-tmp /tmp/hubert-triton-cache' ; uv sync --all-extras --all-packages --group mamba-ssm"
+
+[deployment]
+type = "multi_node"
+num_nodes = 2
+
+[wandb]
+project = "nemotron-vl"
+name = "phase1-projector-sft"
+
+[model]
+name = "models/Nemotron-3-Super-VL-graft"
+impl = "custom"
+attn = "flash_attention_3"
+cp = 2
+cp_style = "ulysses"
+# LM is frozen: EP would only add expert all-to-alls with zero gradient benefit,
+# and the equivalence gate ran with ep=1 (auto-resolution used to miss composite MoE).
+ep = 1
+fused_lm_head_token_chunk_size = 1024
+# Required by the VLM config validator (matches vLLM inference numerics).
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+freeze_vision_encoder = true
+freeze_language_model = true
+
+[model.ac]
+freq = 1
+
+[renderer]
+name = "nemotron-vl"
+enable_thinking = false
+
+[data]
+type = "sft"
+name = "datasets/nemotron_vl_sft"
+subsets = [
+    "openimages_captions",
+    "cc3m_captions_ocr",
+    "openimages_grounding",
+    "scenetext_qa",
+    "longdoc_multiimage",
+    "descriptive_long",
+    "chart_doc_qa",
+]
+# Proportional to train-split sizes (152,004 total). Without probabilities,
+# interleave_datasets alternates round-robin, oversampling small subsets ~5x.
+probabilities = [0.347412, 0.163410, 0.130727, 0.130727, 0.098043, 0.064321, 0.065360]
+batch_size = 128
+micro_batch_size = 1
+seq_len = 16384
+
+[val]
+interval = 34
+eval_on_start = true
+
+[val.data]
+type = "sft"
+name = "datasets/nemotron_vl_sft"
+subsets = [
+    "openimages_captions",
+    "cc3m_captions_ocr",
+    "openimages_grounding",
+    "scenetext_qa",
+    "longdoc_multiimage",
+    "descriptive_long",
+    "chart_doc_qa",
+]
+splits = [
+    "validation",
+    "validation",
+    "validation",
+    "validation",
+    "validation",
+    "validation",
+    "validation",
+]
+probabilities = [0.347412, 0.163410, 0.130727, 0.130727, 0.098043, 0.064321, 0.065360]
+batch_size = 16
+micro_batch_size = 1
+seq_len = 16384
+
+[optim]
+lr = 3e-4
+weight_decay = 0.01
+
+[scheduler]
+type = "linear"
+warmup_steps = 17
+decay_steps = 0
+
+[ckpt]
+interval = 34
+keep_last = 2

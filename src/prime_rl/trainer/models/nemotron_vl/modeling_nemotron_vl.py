@@ -165,6 +165,29 @@ class NemotronVLModel(nn.Module):
         vit_embeds = vit_embeds.reshape(num_tiles, -1, vit_embeds.shape[-1])
         return self.mlp1(vit_embeds)
 
+    def extract_feature_patched(self, pixel_values: Tensor, image_grids: Tensor) -> Tensor:
+        """Patchified variable-size tiles -> flat (total_image_tokens, d_lm).
+
+        `pixel_values` is (sum_i rows_i*cols_i, 3*p*p) — per-tile Im2Patches rows
+        concatenated in placeholder order (the renderer's packing-safe layout);
+        `image_grids` is (num_tiles, 2) of (rows, cols). Same math per tile as
+        `extract_feature`, so output order matches the `<image>` runs row-major.
+        """
+        pixel_values = pixel_values.to(self.visual.dtype)
+        expected = int(image_grids.long().prod(dim=-1).sum().item())
+        if pixel_values.shape[0] != expected:
+            raise ValueError(f"pixel_values rows ({pixel_values.shape[0]}) != sum of image_grids areas ({expected})")
+        # One call through the (FSDP-wrapped) tower for all tiles, then per-tile shuffle.
+        vit_tokens = self.visual(pixel_values, image_grids)
+        features = []
+        start = 0
+        for rows, cols in image_grids.long().tolist():
+            n = rows * cols
+            tile = self.pixel_shuffle(vit_tokens[start : start + n].reshape(1, rows, cols, -1))
+            features.append(tile.reshape(-1, tile.shape[-1]))
+            start += n
+        return self.mlp1(torch.cat(features, dim=0))
+
     def _dummy_pixel_values(self, device: torch.device) -> Tensor:
         # Smallest tile the pipeline supports: 2x2 patches -> 1 image token after pixel shuffle.
         side = 2 * self.config.vision_config.patch_size
@@ -176,10 +199,15 @@ class NemotronVLModel(nn.Module):
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         pixel_values: Tensor | None = None,
+        image_grids: torch.LongTensor | None = None,
+        # Renderer-supplied modality markers; unused (no MRoPE) but arrives directly
+        # here because the injected chunked LM head bypasses NemotronVLForCausalLM.forward.
+        mm_token_type_ids: torch.LongTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        **kwargs,
     ) -> BaseModelOutputWithPast:
         if inputs_embeds is None:
             if input_ids is None:
@@ -190,8 +218,14 @@ class NemotronVLModel(nn.Module):
             if input_ids is None:
                 raise ValueError("input_ids are required to scatter image features")
 
-            image_embeds = self.extract_feature(pixel_values)
-            image_embeds = image_embeds.reshape(-1, image_embeds.shape[-1])
+            if pixel_values.ndim == 2:
+                # Renderer's packing-safe layout: patchified tiles + per-tile grids.
+                if image_grids is None:
+                    raise ValueError("image_grids are required with patchified (2D) pixel_values")
+                image_embeds = self.extract_feature_patched(pixel_values, image_grids)
+            else:
+                image_embeds = self.extract_feature(pixel_values)
+                image_embeds = image_embeds.reshape(-1, image_embeds.shape[-1])
             image_embeds = image_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
 
             image_mask = input_ids == self.config.img_context_token_id
@@ -273,6 +307,7 @@ class NemotronVLForCausalLM(NemotronVLPreTrainedModel, GenerationMixin):
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         pixel_values: Optional[Tensor] = None,
+        image_grids: Optional[torch.LongTensor] = None,
         mm_token_type_ids: Optional[torch.LongTensor] = None,  # renderer-supplied, unused (no MRoPE)
         *,
         seq_lens: torch.LongTensor,
@@ -290,6 +325,7 @@ class NemotronVLForCausalLM(NemotronVLPreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             pixel_values=pixel_values,
+            image_grids=image_grids,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,

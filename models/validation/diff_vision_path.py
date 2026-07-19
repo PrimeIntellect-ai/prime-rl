@@ -189,6 +189,7 @@ def run_ours(dump_path: Path) -> None:
     )
     shim.pixel_shuffle = MethodType(NemotronVLModel.pixel_shuffle, shim)
     extract = MethodType(NemotronVLModel.extract_feature, shim)
+    extract_patched = MethodType(NemotronVLModel.extract_feature_patched, shim)
 
     dump = torch.load(dump_path, weights_only=False)
     print(f"comparing against reference dump (torch {dump['torch_version']}; ours {torch.__version__})")
@@ -213,6 +214,20 @@ def run_ours(dump_path: Path) -> None:
         _, cos, line = stats(ref["e2e_bf16"], our_e2e)
         print(f"  e2e   bf16: {line}")
         failed |= cos < 0.999
+
+        # Patchified path (renderer's packing-safe layout) must match the 4D path
+        # bit-for-bit: same Im2Patches rearrange, same per-tile math.
+        p = graft_cfg["vision_config"]["patch_size"]
+        rows, cols = pv.shape[-2] // p, pv.shape[-1] // p
+        patches = pv.reshape(1, 3, rows, p, cols, p).permute(0, 2, 4, 1, 3, 5).reshape(rows * cols, 3 * p * p)
+        grids = torch.tensor([[rows, cols]], dtype=torch.int64)
+        our_patched = extract_patched(patches, grids)
+        flat_4d = our_e2e.reshape(-1, our_e2e.shape[-1])
+        patched_exact = torch.equal(our_patched, flat_4d)
+        print(
+            f"  patchified == 4D: exact={patched_exact} max|d|={(our_patched.float() - flat_4d.float()).abs().max():.3e}"
+        )
+        failed |= not patched_exact
 
     print("\nFAIL: divergence above tolerance (tower fp32 rel > 1e-4 or e2e min_cos < 0.999)" if failed else "\nPASS")
 

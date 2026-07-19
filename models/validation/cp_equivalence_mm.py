@@ -27,6 +27,7 @@ import torch.distributed as dist
 
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_vl import NemotronVLConfig, NemotronVLForCausalLM
+from prime_rl.trainer.sft.loss import compute_document_loss_weights
 from prime_rl.utils.cp import setup_model_cp, shard_for_cp
 
 SEQ_LEN = 512
@@ -131,6 +132,10 @@ def main() -> None:
     batch = {k: v.cuda() for k, v in build_batch().items()}
     pixel_values = batch["pixel_values"].to(torch.bfloat16)
 
+    # Square-averaging weights, computed on the FULL pre-shard mask + doc boundaries
+    # exactly like sft/train.py, then sharded alongside the loss mask.
+    loss_weights = compute_document_loss_weights(batch["loss_mask"], batch["seq_lens"])
+
     if args.cp_size == 1:
         target_ids, loss_mask = batch["target_ids"], batch["loss_mask"]
     else:
@@ -142,6 +147,7 @@ def main() -> None:
         setup_model_cp(model, dist.group.WORLD, rank, world)
         target_ids = shard_for_cp(batch["target_ids"], cp_rank=rank, cp_world_size=world)
         loss_mask = shard_for_cp(batch["loss_mask"], cp_rank=rank, cp_world_size=world)
+        loss_weights = shard_for_cp(loss_weights, cp_rank=rank, cp_world_size=world)
 
     out = model(
         input_ids=batch["input_ids"],
@@ -152,7 +158,7 @@ def main() -> None:
         seq_lens=batch["seq_lens"],
         seq_lens_are_pre_shard=args.cp_size > 1,
     )
-    loss_sum = -out["logprobs"][loss_mask].sum()
+    loss_sum = -(out["logprobs"] * loss_weights)[loss_mask].sum()
     loss_sum.backward()
 
     grads = {}

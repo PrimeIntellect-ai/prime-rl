@@ -275,7 +275,9 @@ def _is_moe_model(config: ModelConfig) -> bool:
     from transformers import AutoConfig
 
     model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
-    return hasattr(model_config, "num_experts") or hasattr(model_config, "n_routed_experts")
+    # Composite (VLM) configs keep the MoE fields on the nested text config.
+    text_config = model_config.get_text_config()
+    return any(hasattr(c, "num_experts") or hasattr(c, "n_routed_experts") for c in (model_config, text_config))
 
 
 def resolve_ep(config: ModelConfig) -> None:
