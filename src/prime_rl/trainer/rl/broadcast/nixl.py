@@ -37,13 +37,9 @@ from prime_rl.weight_transfer.trainer_tensor_table import (
     TrainerTensorTable,
 )
 
-_DEFAULT_WIRE_DTYPE = torch.bfloat16
-_MASTER_DTYPE = torch.float32
-_WIRE_DTYPES = (torch.bfloat16, torch.float32)
-_LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
-_LAYER_SESSION_SUFFIX = ":layers"
-_BUFFER_POLL_INTERVAL = 0.01
-_MAX_STAGING_BUFFER_COUNT = 8
+LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
+BUFFER_POLL_INTERVAL = 0.01
+MAX_STAGING_BUFFER_COUNT = 8
 
 
 @dataclass
@@ -111,7 +107,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             {
                 int(match.group(1))
                 for name, value in state_dict.items()
-                if value.is_floating_point() and (match := _LAYER_RE.search(name)) is not None
+                if value.is_floating_point() and (match := LAYER_RE.search(name)) is not None
             }
         )
         return ["non_layer", *(f"layer.{layer}" for layer in layer_numbers)], {
@@ -120,7 +116,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
 
     @staticmethod
     def _group_for(name: str, layer_groups: dict[int, int]) -> int:
-        match = _LAYER_RE.search(name)
+        match = LAYER_RE.search(name)
         return 0 if match is None else layer_groups[int(match.group(1))]
 
     def _owned_shards(
@@ -135,7 +131,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 continue
             full_shape = tuple(value.shape)
             group = self._group_for(name, layer_groups)
-            wire_dtype = _MASTER_DTYPE if keep_in_fp32(name) else _DEFAULT_WIRE_DTYPE
+            wire_dtype = torch.float32 if keep_in_fp32(name) else torch.bfloat16
             if not isinstance(value, DTensor):
                 if self.world.is_master:
                     owned.append(
@@ -192,7 +188,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
         return owned
 
     def _allocate_arena(self, allocated_bytes: int, peak_allocated_bytes: int) -> TrainerArenaStats:
-        group_elements = {dtype: [0] * len(self.transfer_group_names) for dtype in _WIRE_DTYPES}
+        group_elements = {
+            dtype: [0] * len(self.transfer_group_names) for dtype in (torch.bfloat16, torch.float32)
+        }
         for shard in self.staged_shards:
             group_elements[shard.wire_dtype][shard.group_index] += shard.source_tensor.numel()
         largest_group_elements = {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
@@ -201,13 +199,13 @@ class NIXLWeightBroadcast(WeightBroadcast):
         free_before_reclaim = free_after_reclaim = total_bytes = headroom_bytes = 0
         recurring_peak_growth = max(0, peak_allocated_bytes - allocated_bytes)
         has_observed_peak_growth = recurring_peak_growth > 0
-        memory_buffer_count = min(len(self.transfer_group_names), _MAX_STAGING_BUFFER_COUNT)
-        local_buffer_count = min(len(self.transfer_group_names), _MAX_STAGING_BUFFER_COUNT)
+        memory_buffer_count = min(len(self.transfer_group_names), MAX_STAGING_BUFFER_COUNT)
+        local_buffer_count = min(len(self.transfer_group_names), MAX_STAGING_BUFFER_COUNT)
         if self.is_serving_rank and largest_group_bytes:
             device = self.staged_shards[0].source_tensor.device
             free_before_reclaim, total_bytes = torch.cuda.mem_get_info(device)
             max_buffers = (
-                min(len(self.transfer_group_names), _MAX_STAGING_BUFFER_COUNT) if has_observed_peak_growth else 1
+                min(len(self.transfer_group_names), MAX_STAGING_BUFFER_COUNT) if has_observed_peak_growth else 1
             )
             if has_observed_peak_growth or free_before_reclaim < largest_group_bytes:
                 torch.cuda.empty_cache()
@@ -379,7 +377,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     client=client,
                     role="trainer",
                     rank=0,
-                    session_id=f"{self.config.session_id}{_LAYER_SESSION_SUFFIX}:{buffer_index}",
+                    session_id=f"{self.config.session_id}:layers:{buffer_index}",
                     worker_id=f"trainer-buffer-{buffer_index}",
                 )
                 session.publish()
@@ -428,7 +426,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 f"inside {min(headroom_values) / gib:.2f}-{max(headroom_values) / gib:.2f} GiB total headroom "
                 f"on {min(total_values) / gib:.2f} GiB GPUs; effective local ring candidates "
                 f"{min(memory_buffer_values)}-{max(memory_buffer_values)} "
-                f"(policy cap {_MAX_STAGING_BUFFER_COUNT}), "
+                f"(policy cap {MAX_STAGING_BUFFER_COUNT}), "
                 f"each buffer {buffer_min / gib:.2f}-{group_max / gib:.2f} GiB across ranks, "
                 f"arenas up to {max_arena_bytes / gib:.2f} GiB, "
                 f"post-allocation free {min(post_free_values) / gib:.2f}-{max(post_free_values) / gib:.2f} GiB, "
@@ -515,7 +513,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                         count=self.config.inference_world_size,
                         status=p2p_pb2.SOURCE_STATUS_READY,
                         timeout=self.config.timeout,
-                        poll_interval=_BUFFER_POLL_INTERVAL,
+                        poll_interval=BUFFER_POLL_INTERVAL,
                     )
                     session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
                     session.wait_for(
@@ -523,7 +521,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                         count=self.config.inference_world_size,
                         status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                         timeout=self.config.timeout,
-                        poll_interval=_BUFFER_POLL_INTERVAL,
+                        poll_interval=BUFFER_POLL_INTERVAL,
                     )
                 dist.barrier()
 
@@ -549,7 +547,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     count=self.config.inference_world_size,
                     status=p2p_pb2.SOURCE_STATUS_READY,
                     timeout=self.config.timeout,
-                    poll_interval=_BUFFER_POLL_INTERVAL,
+                    poll_interval=BUFFER_POLL_INTERVAL,
                 )
                 session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
                 session.wait_for(
@@ -557,7 +555,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     count=self.config.inference_world_size,
                     status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                     timeout=self.config.timeout,
-                    poll_interval=_BUFFER_POLL_INTERVAL,
+                    poll_interval=BUFFER_POLL_INTERVAL,
                 )
             dist.barrier()
 
