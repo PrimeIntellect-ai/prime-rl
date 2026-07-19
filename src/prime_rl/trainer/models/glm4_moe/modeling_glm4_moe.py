@@ -223,20 +223,11 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
-        flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
-        if seq_lens.numel() > 1 and not flash_attn_enabled:
-            # SDPA/eager attention has no varlen support and would attend across
-            # packed document boundaries.
-            raise ValueError("Packed Glm4Moe batches require flash attention")
-        if flash_attn_enabled:
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-                seq_lens.to(device=inputs_embeds.device),
-                total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
-            )
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        else:
-            max_seqlen = None
-            cu_seqlens = None
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device),
+            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
