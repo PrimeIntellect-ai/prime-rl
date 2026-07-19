@@ -7,7 +7,13 @@ from typing import Any, Callable
 
 import torch
 
-from prime_rl.weight_transfer.chains import SUPPORTED_OPS, OpChain, OpSpec, UnsupportedOpError, apply_chain
+from prime_rl.weight_transfer.chains import (
+    SUPPORTED_OPS,
+    OperationChain,
+    TensorOperation,
+    UnsupportedOpError,
+    apply_chain,
+)
 
 _SUPPORTED_DTYPES = (torch.bfloat16, torch.float32)
 
@@ -15,7 +21,7 @@ _SUPPORTED_DTYPES = (torch.bfloat16, torch.float32)
 @dataclass
 class RecordedCopy:
     source_name: str
-    ops: OpChain
+    ops: OperationChain
     destination_module: Any
     destination_name: str
     destination_offset: int
@@ -73,7 +79,7 @@ class LazyWeight(torch.Tensor):
         source_dtype: torch.dtype,
         device: torch.device,
         recorder: WeightLoadRecorder,
-        ops: OpChain = (),
+        ops: OperationChain = (),
     ) -> "LazyWeight":
         meta = apply_chain(torch.empty(source_shape, dtype=source_dtype, device="meta"), ops)
         value = torch.Tensor._make_wrapper_subclass(
@@ -102,7 +108,7 @@ class LazyWeight(torch.Tensor):
         source = torch.empty(self._source_shape, dtype=self._source_dtype, device="meta")
         return apply_chain(source, self._ops)
 
-    def _child(self, *ops: OpSpec) -> "LazyWeight":
+    def _child(self, *ops: TensorOperation) -> "LazyWeight":
         return LazyWeight(
             self._source_name,
             self._source_shape,
@@ -173,19 +179,22 @@ class LazyWeight(torch.Tensor):
         meta = source._meta()
         with torch._C.DisableTorchFunctionSubclass():
             result = func(meta, *args, **kwargs)
-        op: OpSpec = (op_name, args, dict(kwargs))
+        operation = TensorOperation(name=op_name, args=args, kwargs=dict(kwargs))
         if isinstance(result, torch.Tensor):
             if result.dtype not in _SUPPORTED_DTYPES:
                 raise UnsupportedOpError(
                     f"NIXL lazy replay only supports BF16/FP32 values, got {result.dtype} "
                     f"after {op_name!r} on {source._source_name!r}"
                 )
-            return source._child(op)
+            return source._child(operation)
         if isinstance(result, (tuple, list)) and all(
             isinstance(item, torch.Tensor) and item.dtype in _SUPPORTED_DTYPES for item in result
         ):
             return tuple(
-                source._child(op, ("tuple_getitem", (index,), {}))
+                source._child(
+                    operation,
+                    TensorOperation(name="tuple_getitem", args=(index,)),
+                )
                 for index, _ in enumerate(result)
             )
         raise UnsupportedOpError(f"operation {op_name!r} returned unsupported {type(result).__name__}")

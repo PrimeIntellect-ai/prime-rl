@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
 
-OpSpec = tuple[str, tuple[Any, ...], dict[str, Any]]
-OpChain = tuple[OpSpec, ...]
+
+@dataclass(frozen=True)
+class TensorOperation:
+    """One replayable tensor method invocation."""
+
+    name: str
+    args: tuple[Any, ...] = ()
+    kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+OperationChain = tuple[TensorOperation, ...]
 
 SUPPORTED_OPS: dict[Any, str] = {
     torch.Tensor.narrow: "narrow",
@@ -29,7 +39,6 @@ SUPPORTED_OPS: dict[Any, str] = {
     torch.Tensor.float: "float",
     torch.Tensor.bfloat16: "bfloat16",
 }
-SUPPORTED_OP_NAMES = frozenset(SUPPORTED_OPS.values()) | {"tuple_getitem"}
 MAX_RUNS_PER_COPY = 1 << 16
 
 
@@ -37,20 +46,19 @@ class UnsupportedOpError(NotImplementedError):
     pass
 
 
-def apply_chain(value: Any, ops: OpChain) -> torch.Tensor:
+def apply_chain(value: Any, ops: OperationChain) -> torch.Tensor:
     """Replay a recorded chain, including deferred dtype conversions."""
+    # Invariant: LazyWeight records only operations from SUPPORTED_OPS and
+    # follows tuple-returning methods with tuple_getitem, so every chain ends
+    # in a tensor.
     result = value
-    for name, args, kwargs in ops:
-        if name not in SUPPORTED_OP_NAMES:
-            raise UnsupportedOpError(f"unsupported recorded tensor operation {name!r}")
-        if name == "tuple_getitem":
-            result = result[args[0]]
-        elif name == "__getitem__":
-            result = result[args[0]]
+    for operation in ops:
+        if operation.name == "tuple_getitem":
+            result = result[operation.args[0]]
+        elif operation.name == "__getitem__":
+            result = result[operation.args[0]]
         else:
-            result = getattr(result, name)(*args, **kwargs)
-    if not isinstance(result, torch.Tensor):
-        raise UnsupportedOpError(f"operation chain returned {type(result).__name__}, not a Tensor")
+            result = getattr(result, operation.name)(*operation.args, **operation.kwargs)
     return result
 
 
@@ -68,8 +76,8 @@ def _shares_root_storage(root: torch.Tensor, result: torch.Tensor) -> bool:
 
 
 def split_transport_chain(
-    shape: tuple[int, ...], dtype: torch.dtype, ops: OpChain
-) -> tuple[OpChain, OpChain, tuple[int, ...]]:
+    shape: tuple[int, ...], dtype: torch.dtype, ops: OperationChain
+) -> tuple[OperationChain, OperationChain, tuple[int, ...]]:
     """Split a graph into a source-view prefix and local replay suffix.
 
     The prefix must remain a same-dtype view of the trainer root and can
@@ -93,7 +101,7 @@ def split_transport_chain(
 
 
 def resolve_chain_region(
-    shape: tuple[int, ...], dtype: torch.dtype, ops: OpChain
+    shape: tuple[int, ...], dtype: torch.dtype, ops: OperationChain
 ) -> tuple[int, tuple[int, ...], tuple[int, ...]]:
     root = torch.empty(shape, dtype=dtype, device="meta")
     result = apply_chain(root, ops)

@@ -20,7 +20,7 @@ from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
 from prime_rl.weight_transfer.chains import (
-    OpChain,
+    OperationChain,
     apply_chain,
     region_elem_runs,
     resolve_chain_region,
@@ -46,8 +46,8 @@ _BUFFER_POLL_INTERVAL = 0.01
 
 @dataclass
 class TensorCopySpec:
-    transport_ops: OpChain
-    replay_ops: OpChain
+    transport_ops: OperationChain
+    replay_ops: OperationChain
     staging_shape: tuple[int, ...]
 
 
@@ -55,7 +55,7 @@ class TensorCopySpec:
 class TensorCopyPlan:
     recorded_copy: RecordedCopy
     staging_tensor: torch.Tensor
-    replay_ops: OpChain
+    replay_ops: OperationChain
 
 
 @dataclass
