@@ -98,7 +98,7 @@ class NIXLWeightUpdateWorker(Worker):
         session_id: str = "default",
     ) -> None:
         del inference_world_size, quantize_in_weight_transfer
-        global_rank = rank_offset + int(self.local_rank)
+        global_rank = rank_offset + self.device.index
         server_url = f"{host}:{port}"
         set_ucx_env_defaults()
         self.nixl_agent = NixlAgent(make_agent_name("inference", global_rank))
