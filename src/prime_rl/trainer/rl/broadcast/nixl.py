@@ -65,33 +65,9 @@ class StagedTensorShard:
 
 
 @dataclass(frozen=True)
-class TrainerArenaStats:
-    has_observed_peak_growth: bool
-    free_before_reclaim: int
-    free_after_reclaim: int
-    total: int
-    allocated: int
-    peak_allocated: int
-    recurring_peak_growth: int
-    headroom: int
-    post_allocation_free: int
-    memory_buffer_count: int
-    group_total: int
-    largest_group: int
-
-
-@dataclass(frozen=True)
 class TransferGroupIndex:
     group_names: list[str]
     layer_to_group: dict[int, int]
-
-
-@dataclass(frozen=True)
-class TrainerRankMetadata:
-    rank: int
-    table_fragment: bytes
-    staging_bytes: int
-    arena_stats: TrainerArenaStats
 
 
 class NIXLWeightBroadcast(WeightBroadcast):
@@ -205,41 +181,22 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 )
         return local_shards
 
-    def _allocate_arena(self) -> TrainerArenaStats:
-        allocated_bytes = torch.cuda.memory_allocated() if self.is_serving_rank else 0
-        peak_allocated_bytes = torch.cuda.max_memory_allocated() if self.is_serving_rank else 0
-        group_elements = {
-            dtype: [0] * len(self.transfer_group_names) for dtype in (torch.bfloat16, torch.float32)
-        }
-        for shard in self.staged_shards:
-            group_elements[shard.wire_dtype][shard.group_index] += shard.source_tensor.numel()
-        largest_group_elements = {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
-        largest_group_bytes = sum(elements * dtype.itemsize for dtype, elements in largest_group_elements.items())
-
-        free_before_reclaim = free_after_reclaim = total_bytes = headroom_bytes = 0
-        recurring_peak_growth = max(0, peak_allocated_bytes - allocated_bytes)
-        has_observed_peak_growth = recurring_peak_growth > 0
-        memory_buffer_count = min(len(self.transfer_group_names), MAX_STAGING_BUFFER_COUNT)
+    def choose_staging_buffer_count(self, largest_group_bytes: int) -> int:
         local_buffer_count = min(len(self.transfer_group_names), MAX_STAGING_BUFFER_COUNT)
         if self.is_serving_rank and largest_group_bytes:
             device = self.staged_shards[0].source_tensor.device
-            free_before_reclaim, total_bytes = torch.cuda.mem_get_info(device)
-            max_buffers = (
-                min(len(self.transfer_group_names), MAX_STAGING_BUFFER_COUNT) if has_observed_peak_growth else 1
-            )
-            if has_observed_peak_growth or free_before_reclaim < largest_group_bytes:
+            allocated_bytes = torch.cuda.memory_allocated()
+            peak_growth_bytes = max(0, torch.cuda.max_memory_allocated() - allocated_bytes)
+            free_bytes, _ = torch.cuda.mem_get_info(device)
+            max_buffers = local_buffer_count if peak_growth_bytes else 1
+            if peak_growth_bytes or free_bytes < largest_group_bytes:
                 torch.cuda.empty_cache()
-            sizing = size_cuda_buffers(
+            local_buffer_count = size_cuda_buffers(
                 largest_group_bytes,
                 max_buffers,
                 device,
-                extra_headroom_bytes=recurring_peak_growth,
-            )
-            memory_buffer_count = sizing.buffer_count
-            free_after_reclaim = sizing.free_bytes
-            total_bytes = sizing.total_bytes
-            headroom_bytes = sizing.headroom_bytes
-            local_buffer_count = memory_buffer_count
+                extra_headroom_bytes=peak_growth_bytes,
+            ).buffer_count
 
         staging_buffer_count = torch.tensor(
             local_buffer_count,
@@ -247,57 +204,57 @@ class NIXLWeightBroadcast(WeightBroadcast):
             device=torch.device("cuda", torch.cuda.current_device()),
         )
         dist.all_reduce(staging_buffer_count, op=dist.ReduceOp.MIN)
-        self.staging_buffer_count = int(staging_buffer_count.item())
+        return int(staging_buffer_count.item())
 
-        post_free_bytes = free_after_reclaim
-        if self.is_serving_rank and largest_group_bytes:
-            device = self.staged_shards[0].source_tensor.device
-            with use_cuda_malloc_pool():
-                self.staging_arenas = {
-                    dtype: torch.empty(
-                        self.staging_buffer_count * elements,
-                        dtype=dtype,
-                        device=device,
-                    )
-                    for dtype, elements in largest_group_elements.items()
-                    if elements
-                }
-            offsets = {
-                dtype: [
-                    (group % self.staging_buffer_count) * largest_group_elements[dtype]
-                    for group in range(len(self.transfer_group_names))
-                ]
-                for dtype in self.staging_arenas
-            }
-            for shard in self.staged_shards:
-                dtype_offsets = offsets[shard.wire_dtype]
-                shard.assign_staging_tensor(
-                    self.staging_arenas[shard.wire_dtype],
-                    dtype_offsets[shard.group_index],
+    def allocate_staging_arenas(self, largest_group_elements: dict[torch.dtype, int]) -> None:
+        if not self.is_serving_rank or not any(largest_group_elements.values()):
+            return
+
+        device = self.staged_shards[0].source_tensor.device
+        with use_cuda_malloc_pool():
+            self.staging_arenas = {
+                dtype: torch.empty(
+                    self.staging_buffer_count * elements,
+                    dtype=dtype,
+                    device=device,
                 )
-                dtype_offsets[shard.group_index] += shard.source_tensor.numel()
-            for arena in self.staging_arenas.values():
-                self.nixl_agent.register_tensor(arena)
-            post_free_bytes, _ = torch.cuda.mem_get_info(device)
+                for dtype, elements in largest_group_elements.items()
+                if elements
+            }
+
+        offsets = {
+            dtype: [
+                (group % self.staging_buffer_count) * largest_group_elements[dtype]
+                for group in range(len(self.transfer_group_names))
+            ]
+            for dtype in self.staging_arenas
+        }
+        for shard in self.staged_shards:
+            group_offsets = offsets[shard.wire_dtype]
+            shard.assign_staging_tensor(
+                self.staging_arenas[shard.wire_dtype],
+                group_offsets[shard.group_index],
+            )
+            group_offsets[shard.group_index] += shard.source_tensor.numel()
+
+        for arena in self.staging_arenas.values():
+            self.nixl_agent.register_tensor(arena)
+
+    def prepare_staging_buffers(self) -> None:
+        group_elements = {
+            dtype: [0] * len(self.transfer_group_names) for dtype in (torch.bfloat16, torch.float32)
+        }
+        for shard in self.staged_shards:
+            group_elements[shard.wire_dtype][shard.group_index] += shard.source_tensor.numel()
+        largest_group_elements = {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
+        largest_group_bytes = sum(elements * dtype.itemsize for dtype, elements in largest_group_elements.items())
+        self.staging_buffer_count = self.choose_staging_buffer_count(largest_group_bytes)
+        self.allocate_staging_arenas(largest_group_elements)
 
         grouped: dict[int, list[StagedTensorShard]] = defaultdict(list)
         for shard in self.staged_shards:
             grouped[shard.group_index].append(shard)
         self.staged_shards_by_group = dict(grouped)
-        return TrainerArenaStats(
-            has_observed_peak_growth=has_observed_peak_growth,
-            free_before_reclaim=free_before_reclaim,
-            free_after_reclaim=free_after_reclaim,
-            total=total_bytes,
-            allocated=allocated_bytes,
-            peak_allocated=peak_allocated_bytes,
-            recurring_peak_growth=recurring_peak_growth,
-            headroom=headroom_bytes,
-            post_allocation_free=post_free_bytes,
-            memory_buffer_count=memory_buffer_count,
-            group_total=sum(sum(elements) * dtype.itemsize for dtype, elements in group_elements.items()),
-            largest_group=largest_group_bytes,
-        )
 
     def build_local_trainer_table_fragment(self) -> TrainerTensorTable:
         tensors_by_group: list[dict[str, TrainerTensor]] = [
@@ -338,38 +295,27 @@ class NIXLWeightBroadcast(WeightBroadcast):
             ],
         )
 
-    def gather_trainer_rank_metadata(
-        self, arena_stats: TrainerArenaStats
-    ) -> list[TrainerRankMetadata] | None:
-        rank_metadata = None
-        if self.is_serving_rank:
-            rank_metadata = TrainerRankMetadata(
-                rank=self.world.rank,
-                table_fragment=self.build_local_trainer_table_fragment().encode(),
-                staging_bytes=sum(arena.nbytes for arena in self.staging_arenas.values()),
-                arena_stats=arena_stats,
-            )
-
-        gathered: list[TrainerRankMetadata | None] | None = (
+    def gather_trainer_table_fragments(self) -> list[bytes] | None:
+        table_fragment = (
+            self.build_local_trainer_table_fragment().encode() if self.is_serving_rank else None
+        )
+        gathered: list[bytes | None] | None = (
             [None] * self.world.world_size if self.world.is_master else None
         )
-        dist.gather_object(rank_metadata, gathered, dst=0)
+        dist.gather_object(table_fragment, gathered, dst=0)
         if gathered is None:
             return None
-        return sorted(
-            (metadata for metadata in gathered if metadata is not None),
-            key=lambda metadata: metadata.rank,
-        )
+        return [fragment for fragment in gathered if fragment is not None]
 
     def merge_trainer_table_fragments(
-        self, trainer_ranks: list[TrainerRankMetadata]
+        self, table_fragments: list[bytes]
     ) -> TrainerTensorTable:
         agents: list[TrainerAgent] = []
         tensors_by_group: list[dict[str, TrainerTensor]] = [
             {} for _ in self.transfer_group_names
         ]
-        for agent_index, metadata in enumerate(trainer_ranks):
-            fragment = TrainerTensorTable.decode(metadata.table_fragment)
+        for agent_index, encoded_fragment in enumerate(table_fragments):
+            fragment = TrainerTensorTable.decode(encoded_fragment)
             agents.append(fragment.agents[0])
             for group_index, group in enumerate(fragment.groups):
                 tensors = tensors_by_group[group_index]
@@ -419,11 +365,11 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 transfer_groups,
                 model.keep_in_fp32_for_weight_transfer,
             )
-        arena_stats = self._allocate_arena()
-        trainer_ranks = self.gather_trainer_rank_metadata(arena_stats)
+        self.prepare_staging_buffers()
+        table_fragments = self.gather_trainer_table_fragments()
 
-        if trainer_ranks is not None:
-            table = self.merge_trainer_table_fragments(trainer_ranks)
+        if table_fragments is not None:
+            table = self.merge_trainer_table_fragments(table_fragments)
             server_url = f"{self.config.host}:{self.config.port}"
             client = MxClient(server_url=server_url)
             self.buffer_sessions = []
@@ -447,55 +393,32 @@ class NIXLWeightBroadcast(WeightBroadcast):
             )
             self.model_express.publish(nixl_metadata=table.encode())
             self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-            total_bytes = sum(
-                prod(tensor.shape) * getattr(torch, tensor.wire_dtype).itemsize
-                for group in table.groups
-                for tensor in group.tensors
-            )
-            max_arena_bytes = max((metadata.staging_bytes for metadata in trainer_ranks), default=0)
-            stats = [metadata.arena_stats for metadata in trainer_ranks]
-            sizing_modes = {"measured" if item.has_observed_peak_growth else "unmeasured" for item in stats}
-            free_before_values = [item.free_before_reclaim for item in stats]
-            free_after_values = [item.free_after_reclaim for item in stats]
-            reclaimed_values = [after - before for before, after in zip(free_before_values, free_after_values)]
-            total_values = [item.total for item in stats]
-            allocated_values = [item.allocated for item in stats]
-            peak_allocated_values = [item.peak_allocated for item in stats]
-            peak_growth_values = [item.recurring_peak_growth for item in stats]
-            headroom_values = [item.headroom for item in stats]
-            post_free_values = [item.post_allocation_free for item in stats]
-            memory_buffer_values = [item.memory_buffer_count for item in stats]
-            group_total = sum(item.group_total for item in stats)
-            buffer_min = min((item.largest_group for item in stats if item.largest_group), default=0)
-            group_max = max((item.largest_group for item in stats), default=0)
-            gib = 1024**3
-            self.logger.info(
-                f"NIXL staging ring selected {self.staging_buffer_count} buffers from one-time first-transfer sizing "
-                f"({','.join(sorted(sizing_modes))} peak mode); CUDA free before cache reclaim "
-                f"{min(free_before_values) / gib:.2f}-{max(free_before_values) / gib:.2f} GiB per rank, "
-                f"after reclaim {min(free_after_values) / gib:.2f}-{max(free_after_values) / gib:.2f} GiB "
-                f"({min(reclaimed_values) / gib:.2f}-{max(reclaimed_values) / gib:.2f} GiB reclaimed); "
-                f"active allocation {min(allocated_values) / gib:.2f}-{max(allocated_values) / gib:.2f} GiB, "
-                f"observed peak {min(peak_allocated_values) / gib:.2f}-{max(peak_allocated_values) / gib:.2f} GiB, "
-                f"preserving {min(peak_growth_values) / gib:.2f}-{max(peak_growth_values) / gib:.2f} GiB peak growth "
-                f"inside {min(headroom_values) / gib:.2f}-{max(headroom_values) / gib:.2f} GiB total headroom "
-                f"on {min(total_values) / gib:.2f} GiB GPUs; effective local ring candidates "
-                f"{min(memory_buffer_values)}-{max(memory_buffer_values)} "
-                f"(policy cap {MAX_STAGING_BUFFER_COUNT}), "
-                f"each buffer {buffer_min / gib:.2f}-{group_max / gib:.2f} GiB across ranks, "
-                f"arenas up to {max_arena_bytes / gib:.2f} GiB, "
-                f"post-allocation free {min(post_free_values) / gib:.2f}-{max(post_free_values) / gib:.2f} GiB, "
-                f"{group_total / max(1, len(trainer_ranks) * len(table.groups)) / 1e6:.1f} MB "
-                f"average logical group payload"
-            )
             tensor_count = sum(len(group.tensors) for group in table.groups)
             self.logger.info(
-                f"Published {tensor_count} FP32-master tensors with BF16-default/FP32-exception wire "
-                f"precision in {len(table.groups)} groups "
-                f"from {len(table.agents)} trainer agents ({total_bytes / 1e9:.2f} GB per update, "
-                f"{max_arena_bytes / 1e9:.2f} GB largest local arena, {self.staging_buffer_count} staging buffers)"
+                f"Published {tensor_count} trainer tensors in {len(table.groups)} groups "
+                f"from {len(table.agents)} agents with {self.staging_buffer_count} staging buffers"
             )
         self.initialized = True
+
+    def finish_staging_buffer_transfer(self, buffer_index: int) -> None:
+        if self.world.is_master:
+            session = self.buffer_sessions[buffer_index]
+            session.wait_for(
+                "inference",
+                count=self.config.inference_world_size,
+                status=p2p_pb2.SOURCE_STATUS_READY,
+                timeout=self.config.timeout,
+                poll_interval=BUFFER_POLL_INTERVAL,
+            )
+            session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            session.wait_for(
+                "inference",
+                count=self.config.inference_world_size,
+                status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
+                timeout=self.config.timeout,
+                poll_interval=BUFFER_POLL_INTERVAL,
+            )
+        dist.barrier()
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
@@ -522,24 +445,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             group_start = time.perf_counter()
             buffer_index = group % self.staging_buffer_count
             if group >= self.staging_buffer_count:
-                if self.world.is_master:
-                    session = self.buffer_sessions[buffer_index]
-                    session.wait_for(
-                        "inference",
-                        count=self.config.inference_world_size,
-                        status=p2p_pb2.SOURCE_STATUS_READY,
-                        timeout=self.config.timeout,
-                        poll_interval=BUFFER_POLL_INTERVAL,
-                    )
-                    session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-                    session.wait_for(
-                        "inference",
-                        count=self.config.inference_world_size,
-                        status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                        timeout=self.config.timeout,
-                        poll_interval=BUFFER_POLL_INTERVAL,
-                    )
-                dist.barrier()
+                self.finish_staging_buffer_transfer(buffer_index)
 
             if self.is_serving_rank:
                 for shard in self.staged_shards_by_group.get(group, ()):
@@ -556,24 +462,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         first_pending_group = max(0, len(self.transfer_group_names) - self.staging_buffer_count)
         for group in range(first_pending_group, len(self.transfer_group_names)):
             buffer_index = group % self.staging_buffer_count
-            if self.world.is_master:
-                session = self.buffer_sessions[buffer_index]
-                session.wait_for(
-                    "inference",
-                    count=self.config.inference_world_size,
-                    status=p2p_pb2.SOURCE_STATUS_READY,
-                    timeout=self.config.timeout,
-                    poll_interval=BUFFER_POLL_INTERVAL,
-                )
-                session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-                session.wait_for(
-                    "inference",
-                    count=self.config.inference_world_size,
-                    status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                    timeout=self.config.timeout,
-                    poll_interval=BUFFER_POLL_INTERVAL,
-                )
-            dist.barrier()
+            self.finish_staging_buffer_transfer(buffer_index)
 
         if self.world.is_master:
             self.model_express.wait_for(
