@@ -14,7 +14,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 from modelexpress import p2p_pb2
-from modelexpress.client import MxClient as ModelExpressClient
+from modelexpress.client import MxClient
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
@@ -370,7 +370,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             )
             self._validate_table(table)
             server_url = f"{self.config.host}:{self.config.port}"
-            client = ModelExpressClient(server_url=server_url)
+            client = MxClient(server_url=server_url)
             self.buffer_sessions = []
             for buffer_index in range(self.staging_buffer_count):
                 session = ModelExpressSession(

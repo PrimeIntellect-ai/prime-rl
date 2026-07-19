@@ -14,14 +14,14 @@ from typing import Any, Literal
 
 import grpc
 from modelexpress import p2p_pb2
-from modelexpress.client import MxClient as ModelExpressClient
+from modelexpress.client import MxClient
 
 Role = Literal["trainer", "inference", "orchestrator"]
 
 
 @dataclass
 class ModelExpressSession:
-    client: ModelExpressClient
+    client: MxClient
     role: Role
     rank: int
     session_id: str

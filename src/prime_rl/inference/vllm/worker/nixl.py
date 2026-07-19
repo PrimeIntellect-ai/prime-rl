@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 import torch.nn as nn
 from modelexpress import p2p_pb2
-from modelexpress.client import MxClient as ModelExpressClient
+from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
@@ -118,7 +118,7 @@ class NIXLWeightUpdateWorker(Worker):
         set_ucx_env_defaults()
         self.nixl_agent = NixlAgent(make_agent_name("inference", global_rank))
         self.model_express = ModelExpressSession(
-            client=ModelExpressClient(server_url=server_url),
+            client=MxClient(server_url=server_url),
             role="inference",
             rank=global_rank,
             session_id=session_id,

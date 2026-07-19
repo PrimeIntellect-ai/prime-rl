@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 import tomli_w
 import verifiers.v1 as vf
 from modelexpress import p2p_pb2
-from modelexpress.client import MxClient as ModelExpressClient
+from modelexpress.client import MxClient
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -322,7 +322,7 @@ class Orchestrator:
                 config.weight_broadcast.session_id,
             )
             self.model_express = ModelExpressSession(
-                client=ModelExpressClient(
+                client=MxClient(
                     server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"
                 ),
                 role="orchestrator",
