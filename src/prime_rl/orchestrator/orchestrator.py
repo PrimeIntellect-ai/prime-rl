@@ -352,12 +352,15 @@ class Orchestrator:
         # an in-memory transport, which rendezvouses with the trainer's startup broadcast.
         if self.resume_step is not None or config.weight_broadcast.type in ("nccl", "nixl"):
             sync_version = self.resume_step if self.resume_step is not None else 0
-            check_exists = config.weight_broadcast.type == "filesystem"
-            # Without a ckpt block, fall back to a default timeout instead of not waiting at all.
-            wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
-            weights_path = get_weight_dir(
-                config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
-            )
+            if config.weight_broadcast.type == "nixl":
+                weights_path = None
+            else:
+                check_exists = config.weight_broadcast.type == "filesystem"
+                # Without a ckpt block, fall back to a default timeout instead of not waiting at all.
+                wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
+                weights_path = get_weight_dir(
+                    config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
+                )
             if self.model_express is not None:
                 await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
             await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
