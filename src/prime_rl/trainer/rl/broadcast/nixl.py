@@ -100,9 +100,7 @@ class StagedShardMetadata:
 @dataclass(frozen=True)
 class TrainerRankMetadata:
     rank: int
-    agent_name: str
-    agent_metadata: bytes
-    device_id: int
+    agent: TrainerAgent
     staging_bytes: int
     arena_stats: TrainerArenaStats
     shards: list[StagedShardMetadata]
@@ -320,9 +318,11 @@ class NIXLWeightBroadcast(WeightBroadcast):
         if self.is_serving_rank:
             rank_metadata = TrainerRankMetadata(
                 rank=self.world.rank,
-                agent_name=self.nixl_agent.name,
-                agent_metadata=self.nixl_agent.get_metadata(),
-                device_id=torch.cuda.current_device(),
+                agent=TrainerAgent(
+                    name=self.nixl_agent.name,
+                    metadata=self.nixl_agent.get_metadata(),
+                    device_id=torch.cuda.current_device(),
+                ),
                 staging_bytes=sum(arena.nbytes for arena in self.staging_arenas.values()),
                 arena_stats=arena_stats,
                 shards=[
@@ -353,14 +353,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
     def build_trainer_tensor_table(
         self, trainer_ranks: list[TrainerRankMetadata]
     ) -> TrainerTensorTable:
-        agents = [
-            TrainerAgent(
-                name=metadata.agent_name,
-                metadata=metadata.agent_metadata,
-                device_id=metadata.device_id,
-            )
-            for metadata in trainer_ranks
-        ]
         tensors: dict[str, TrainerTensor] = {}
         tensor_groups: dict[str, int] = {}
         for agent_index, metadata in enumerate(trainer_ranks):
@@ -388,7 +380,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             tensor.shards.sort(key=lambda shard: shard.offset)
 
         return TrainerTensorTable(
-            agents=agents,
+            agents=[metadata.agent for metadata in trainer_ranks],
             staging_buffer_count=self.staging_buffer_count,
             groups=[
                 TrainerGroup(
