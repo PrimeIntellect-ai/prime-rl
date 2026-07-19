@@ -530,7 +530,7 @@ class NIXLWeightUpdateWorker(Worker):
         )
 
         started = time.perf_counter()
-        self._process_and_commit(plan)
+        self.apply_transfer_plan(plan)
         update_mla_absorbed_weights(self.raw_model)
         torch.cuda.synchronize(self.device)
         self.model_express.set_status(p2p_pb2.SOURCE_STATUS_READY)
@@ -540,7 +540,7 @@ class NIXLWeightUpdateWorker(Worker):
             time.perf_counter() - started,
         )
 
-    def _process_and_commit(self, plan: WeightTransferPlan) -> None:
+    def apply_transfer_plan(self, plan: WeightTransferPlan) -> None:
         from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
         from vllm.model_executor.model_loader.reload.layerwise import (
             LAYERWISE_INFO,
@@ -600,7 +600,7 @@ class NIXLWeightUpdateWorker(Worker):
                 layer = layer_plan.reload_layer
                 if layer is None:
                     for copy_plan in layer_plan.persistent_copies:
-                        self._copy_plan(copy_plan)
+                        self.replay_tensor_copy(copy_plan)
                     continue
 
                 info = LAYERWISE_INFO[layer]
@@ -611,9 +611,9 @@ class NIXLWeightUpdateWorker(Worker):
                     if name in destination_names and not tensor.is_meta:
                         tensor.zero_()
                 for copy_plan in layer_plan.copies:
-                    self._copy_plan(copy_plan)
+                    self.replay_tensor_copy(copy_plan)
                 for copy_plan in layer_plan.persistent_copies:
-                    self._copy_plan(copy_plan)
+                    self.replay_tensor_copy(copy_plan)
 
                 if hasattr(layer, "_already_called_process_weights_after_loading"):
                     delattr(layer, "_already_called_process_weights_after_loading")
@@ -650,7 +650,7 @@ class NIXLWeightUpdateWorker(Worker):
             finalize_layerwise_reload(model, self.model_runner.model_config)
 
     @staticmethod
-    def _copy_plan(plan: TensorCopyPlan) -> None:
+    def replay_tensor_copy(plan: TensorCopyPlan) -> None:
         copy = plan.recorded_copy
         parameter = getattr(copy.destination_module, copy.destination_name)
         destination = parameter.as_strided(
