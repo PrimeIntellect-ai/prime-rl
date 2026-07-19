@@ -23,7 +23,10 @@ from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
-from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc, cuda_buffer_capacity
+from prime_rl.weight_transfer.cuda_malloc_memory import (
+    size_cuda_buffers,
+    use_cuda_malloc_pool,
+)
 from prime_rl.weight_transfer.model_express import ModelExpressSession
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.trainer_tensor_table import (
@@ -192,12 +195,16 @@ class NIXLWeightBroadcast(WeightBroadcast):
             max_buffers = min(len(self.groups), _MAX_SOURCE_BUFFER_COUNT) if has_observed_peak_growth else 1
             if has_observed_peak_growth or free_before_reclaim < largest_group_bytes:
                 torch.cuda.empty_cache()
-            memory_buffer_count, free_after_reclaim, total_bytes, headroom_bytes = cuda_buffer_capacity(
+            sizing = size_cuda_buffers(
                 largest_group_bytes,
                 max_buffers,
                 device,
                 extra_headroom_bytes=recurring_peak_growth,
             )
+            memory_buffer_count = sizing.buffer_count
+            free_after_reclaim = sizing.free_bytes
+            total_bytes = sizing.total_bytes
+            headroom_bytes = sizing.headroom_bytes
             local_buffer_count = memory_buffer_count
 
         source_ring_size = torch.tensor(
@@ -211,7 +218,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         post_free_bytes = free_after_reclaim
         if self.is_serving_rank and largest_group_bytes:
             device = self.shards[0].source.device
-            with classic_cuda_alloc():
+            with use_cuda_malloc_pool():
                 self.arenas = {
                     dtype: torch.empty(
                         self.source_ring_size * elements,

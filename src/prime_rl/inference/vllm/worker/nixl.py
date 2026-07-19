@@ -19,7 +19,10 @@ from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
-from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc, cuda_buffer_capacity
+from prime_rl.weight_transfer.cuda_malloc_memory import (
+    size_cuda_buffers,
+    use_cuda_malloc_pool,
+)
 from prime_rl.weight_transfer.graph import (
     Destination,
     OperationChain,
@@ -311,13 +314,17 @@ class NIXLWeightUpdateWorker(Worker):
         max_receive_buffers = min(2, table.source_ring_size) if has_observed_peak_growth else 1
         if has_observed_peak_growth or free_before_reclaim < largest_group_bytes:
             torch.cuda.empty_cache()
-        receive_buffer_count, free_bytes, device_total_bytes, headroom_bytes = cuda_buffer_capacity(
+        sizing = size_cuda_buffers(
             largest_group_bytes,
             max_receive_buffers,
             self.device,
             extra_headroom_bytes=largest_group_bytes + peak_growth_bytes,
         )
-        with classic_cuda_alloc():
+        receive_buffer_count = sizing.buffer_count
+        free_bytes = sizing.free_bytes
+        device_total_bytes = sizing.total_bytes
+        headroom_bytes = sizing.headroom_bytes
+        with use_cuda_malloc_pool():
             receive_arenas = {
                 dtype: torch.empty(
                     receive_buffer_count * elements,
