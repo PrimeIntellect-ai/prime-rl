@@ -85,11 +85,10 @@ class WeightWatcher:
                 # Another caller raced us — bail without re-applying
                 return
 
+            t0 = time.perf_counter()
             weights_path = None
             if self.model_express is not None:
-                wait_started = time.perf_counter()
                 await self.wait_for_model_express_status(p2p_pb2.SOURCE_STATUS_READY)
-                self.last_wait_for_ckpt_time = time.perf_counter() - wait_started
             else:
                 broadcast_dir = get_broadcast_dir(self.config.output_dir)
                 weights_path = get_step_path(broadcast_dir, next_step)
@@ -99,13 +98,8 @@ class WeightWatcher:
                         f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
                         "Training is progressing normally."
                     )
-                    t0 = time.perf_counter()
                     await wait_for_path(stable_marker)
-                    self.last_wait_for_ckpt_time = time.perf_counter() - t0
-                    get_logger().info(
-                        f"Orchestrator resumed: checkpoint {next_step} ready "
-                        f"(after {format_time(self.last_wait_for_ckpt_time)})"
-                    )
+            self.last_wait_for_ckpt_time = time.perf_counter() - t0
 
             # Drain off-policy rollouts BEFORE pausing the inference engines.
             # Aborting a rollout triggers vLLM's KV-connector cleanup (NIXL's
