@@ -236,8 +236,18 @@ class MultiRunManager:
                 config_dict = tomli.load(f)
 
             from prime_rl.configs.orchestrator import OrchestratorConfig
+            from verifiers.v1.loaders import skip_plugin_install
 
-            config = OrchestratorConfig(**config_dict)
+            # The trainer only reads training-relevant fields (model, lora, seq_len, buffers,
+            # env names) and never runs the env, so skip resolving/installing taskset/harness
+            # plugins from the Environments Hub while parsing. Otherwise a private v1 hub env
+            # (`taskset.id = owner/name@version`) 404s here — the trainer has no Hub creds — and
+            # the run is silently skipped. The env server still installs the plugin at runtime.
+            token = skip_plugin_install.set(True)
+            try:
+                config = OrchestratorConfig(**config_dict)
+            finally:
+                skip_plugin_install.reset(token)
         except Exception as e:
             if error_path.parent.exists():
                 with open(error_path, "w") as f:
