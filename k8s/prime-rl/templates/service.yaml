@@ -1,0 +1,141 @@
+{{- if .Values.orchestrator.enabled }}
+{{- if .Values.orchestrator.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-orchestrator
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl.labels" . | nindent 4 }}
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: orchestrator
+spec:
+  type: {{ .Values.orchestrator.service.type }}
+  selector:
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: orchestrator
+  ports:
+  - port: {{ .Values.orchestrator.service.port }}
+    targetPort: api
+    protocol: TCP
+    name: api
+  - port: {{ .Values.orchestrator.service.ncclPort }}
+    targetPort: nccl
+    protocol: TCP
+    name: nccl
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-orchestrator-headless
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl.labels" . | nindent 4 }}
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: orchestrator
+spec:
+  clusterIP: None  # Headless service for StatefulSet
+  selector:
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: orchestrator
+  ports:
+  - port: {{ .Values.orchestrator.service.port }}
+    name: api
+  - port: {{ .Values.orchestrator.service.ncclPort }}
+    name: nccl
+{{- end }}
+---
+{{- if .Values.inference.enabled }}
+{{- if .Values.inference.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-inference
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl.labels" . | nindent 4 }}
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: inference
+spec:
+  type: {{ .Values.inference.service.type }}
+  selector:
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: inference
+  ports:
+  - port: {{ .Values.inference.service.port }}
+    targetPort: api
+    protocol: TCP
+    name: api
+{{- end }}
+{{- end }}
+---
+{{- if .Values.trainer.enabled }}
+{{- if .Values.trainer.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-trainer
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl.labels" . | nindent 4 }}
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: trainer
+spec:
+  type: {{ .Values.trainer.service.type }}
+  selector:
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: trainer
+  ports:
+  - port: {{ .Values.trainer.service.port }}
+    targetPort: api
+    protocol: TCP
+    name: api
+  - port: {{ .Values.trainer.service.ncclPort }}
+    targetPort: nccl
+    protocol: TCP
+    name: nccl
+{{- end }}
+{{- end }}
+---
+{{- if .Values.inference.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-inference-headless
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl.labels" . | nindent 4 }}
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: inference
+spec:
+  clusterIP: None  # Headless service for StatefulSet
+  selector:
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: inference
+  ports:
+  - port: {{ .Values.inference.service.port }}
+    name: api
+{{- end }}
+---
+{{- if .Values.trainer.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-trainer-headless
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "prime-rl.labels" . | nindent 4 }}
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: trainer
+spec:
+  clusterIP: None  # Headless service for StatefulSet
+  selector:
+    {{- include "prime-rl.componentLabels" . | nindent 4 }}
+    role: trainer
+  ports:
+  - port: {{ .Values.trainer.service.port }}
+    name: api
+  - port: {{ .Values.trainer.service.ncclPort }}
+    name: nccl
+{{- end }}

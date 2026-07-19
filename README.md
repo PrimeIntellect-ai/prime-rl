@@ -35,7 +35,7 @@ prime-rl is a framework for large-scale reinforcement learning. It is designed t
 2. Performant: built to train 1T+ MoE models on 1000+ GPUs with [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) for training and [vLLM](https://github.com/vllm-project/vllm) for inference, with FP8 inference, PD disaggregation, EP and CP parallelism, and more.
 3. Native integration with [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environments through the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), including built-in support for SWE and agentic environments.
 4. End-to-end post-training: SFT, RL training, and evals.
-5. Multi-node deployment with Slurm.
+5. Multi-node deployment with Slurm and Kubernetes support.
 6. Multimodal support for VLMs such as Qwen3-VL.
 7. Hackable, modular, and extensible by design.
 8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](examples/advanced/glm-5.2/).
@@ -209,7 +209,7 @@ Follow this guide to learn the basics of prime-rl. You can train your own models
 ### Advanced Training: 32 - 2048 GPUs:
 
 Follow this guide to train large models on hard reasoning and agentic tasks.
-These guides are designed to be run from a Slurm cluster.
+These guides are designed to be run from a Slurm cluster but can also be adapted to k8s deployments.
 
 1. [**Qwen3-30B-A3B**](examples/advanced/qwen3-30b-a3b/): Train `Qwen3-30B-A3B` on math, SWE, and agentic tool use.
 2. [**GLM-4.5-Air**](examples/advanced/glm-4.5-air/): Train `GLM-4.5-Air` on search, SWE, and terminal tasks.

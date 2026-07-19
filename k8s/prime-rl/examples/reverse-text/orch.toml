@@ -1,0 +1,25 @@
+max_steps = 20
+seq_len = 2048
+batch_size = 128
+group_size = 16
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "reverse-text"
+name = "reverse-text"
+
+[train.sampling]
+max_completion_tokens = 128
+
+[[train.env]]
+name = "reverse-text"
+taskset = { id = "reverse-text-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[renderer]
+name = "default"
+
+[ckpt] # Checkpoint at the end of training
