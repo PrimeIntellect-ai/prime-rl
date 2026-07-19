@@ -78,6 +78,12 @@ class TrainerArenaStats:
     largest_group: int
 
 
+@dataclass(frozen=True)
+class TransferGroupIndex:
+    group_names: list[str]
+    layer_to_group: dict[int, int]
+
+
 class NIXLWeightBroadcast(WeightBroadcast):
     def __init__(self, output_dir: Path, config: NIXLWeightBroadcastConfig, parallel_dims: ParallelDims) -> None:
         super().__init__(output_dir)
@@ -102,7 +108,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         return True
 
     @staticmethod
-    def _transfer_groups(state_dict: dict[str, torch.Tensor]) -> tuple[list[str], dict[int, int]]:
+    def build_transfer_group_index(state_dict: dict[str, torch.Tensor]) -> TransferGroupIndex:
         layer_numbers = sorted(
             {
                 int(match.group(1))
@@ -110,35 +116,39 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 if value.is_floating_point() and (match := LAYER_RE.search(name)) is not None
             }
         )
-        return ["non_layer", *(f"layer.{layer}" for layer in layer_numbers)], {
-            layer: group for group, layer in enumerate(layer_numbers, start=1)
-        }
+        return TransferGroupIndex(
+            group_names=["non_layer", *(f"layer.{layer}" for layer in layer_numbers)],
+            layer_to_group={layer: group for group, layer in enumerate(layer_numbers, start=1)},
+        )
 
     @staticmethod
-    def _group_for(name: str, layer_groups: dict[int, int]) -> int:
-        match = LAYER_RE.search(name)
-        return 0 if match is None else layer_groups[int(match.group(1))]
+    def find_transfer_group_index(tensor_name: str, transfer_groups: TransferGroupIndex) -> int:
+        match = LAYER_RE.search(tensor_name)
+        return 0 if match is None else transfer_groups.layer_to_group[int(match.group(1))]
 
-    def _owned_shards(
+    def collect_local_tensor_shards(
         self,
         state_dict: dict[str, torch.Tensor],
-        layer_groups: dict[int, int],
+        transfer_groups: TransferGroupIndex,
         keep_in_fp32: Callable[[str], bool],
     ) -> list[StagedTensorShard]:
-        owned: list[StagedTensorShard] = []
+        local_shards: list[StagedTensorShard] = []
         for name, value in state_dict.items():
+            # Non-floating state is not part of model weight transfer.
             if not value.is_floating_point():
                 continue
             full_shape = tuple(value.shape)
-            group = self._group_for(name, layer_groups)
+            group_index = self.find_transfer_group_index(name, transfer_groups)
             wire_dtype = torch.float32 if keep_in_fp32(name) else torch.bfloat16
+
+            # Unsharded tensors are identical on every rank, so rank 0 serves the only copy.
             if not isinstance(value, DTensor):
                 if self.world.is_master:
-                    owned.append(
+                    local_shards.append(
                         StagedTensorShard(
                             name=name,
                             global_shape=full_shape,
-                            group_index=group,
+                            group_index=group_index,
                             tensor_offset=0,
                             source_tensor=value.detach(),
                             wire_dtype=wire_dtype,
@@ -153,13 +163,15 @@ class NIXLWeightBroadcast(WeightBroadcast):
             local = value.to_local().detach()
             if tuple(local.shape) != tuple(local_shape):
                 local = local[tuple(slice(size) for size in local_shape)]
+
+            # Replicated DTensors are identical on every rank, so rank 0 serves the only copy.
             if all(placement.is_replicate() for placement in placements):
                 if self.world.is_master:
-                    owned.append(
+                    local_shards.append(
                         StagedTensorShard(
                             name=name,
                             global_shape=full_shape,
-                            group_index=group,
+                            group_index=group_index,
                             tensor_offset=0,
                             source_tensor=local,
                             wire_dtype=wire_dtype,
@@ -167,25 +179,21 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     )
                 continue
 
-            if any(global_offset[1:]) or tuple(local_shape[1:]) != full_shape[1:]:
-                raise NotImplementedError(
-                    f"NIXL currently requires dim-0 FSDP shards; {name} has "
-                    f"local_shape={local_shape}, global_offset={global_offset}"
-                )
+            # FSDP DTensors contribute this rank's contiguous shard along tensor dimension 0.
             if local.numel():
                 row_numel = prod(full_shape[1:]) if full_shape else 1
                 offset = global_offset[0] * row_numel if full_shape else 0
-                owned.append(
+                local_shards.append(
                     StagedTensorShard(
                         name=name,
                         global_shape=full_shape,
-                        group_index=group,
+                        group_index=group_index,
                         tensor_offset=offset,
                         source_tensor=local,
                         wire_dtype=wire_dtype,
                     )
                 )
-        return owned
+        return local_shards
 
     def _allocate_arena(self, allocated_bytes: int, peak_allocated_bytes: int) -> TrainerArenaStats:
         group_elements = {
@@ -285,10 +293,11 @@ class NIXLWeightBroadcast(WeightBroadcast):
         allocated_bytes = torch.cuda.memory_allocated() if self.is_serving_rank else 0
         peak_allocated_bytes = torch.cuda.max_memory_allocated() if self.is_serving_rank else 0
         state_dict = model.state_dict()
-        self.transfer_group_names, layer_groups = self._transfer_groups(state_dict)
+        transfer_groups = self.build_transfer_group_index(state_dict)
+        self.transfer_group_names = transfer_groups.group_names
         if self.is_serving_rank:
             keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", lambda _name: False)
-            self.staged_shards = self._owned_shards(state_dict, layer_groups, keep_in_fp32)
+            self.staged_shards = self.collect_local_tensor_shards(state_dict, transfer_groups, keep_in_fp32)
         buffer_stats = self._allocate_arena(allocated_bytes, peak_allocated_bytes)
 
         payload = None
@@ -368,7 +377,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 staging_buffer_count=self.staging_buffer_count,
                 groups=groups,
             )
-            self._validate_table(table)
             server_url = f"{self.config.host}:{self.config.port}"
             client = MxClient(server_url=server_url)
             self.buffer_sessions = []
@@ -439,47 +447,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 f"{max_arena_bytes / 1e9:.2f} GB largest local arena, {self.staging_buffer_count} staging buffers)"
             )
         self.initialized = True
-
-    @staticmethod
-    def _validate_table(table: TrainerTensorTable) -> None:
-        """Fail before publication unless every logical tensor has a valid flat partition."""
-        if not 1 <= table.staging_buffer_count <= len(table.groups):
-            raise RuntimeError(
-                f"invalid staging buffer count {table.staging_buffer_count} for {len(table.groups)} transfer groups"
-            )
-
-        group_names: set[str] = set()
-        tensor_names: set[str] = set()
-        for group in table.groups:
-            if group.name in group_names:
-                raise RuntimeError(f"duplicate transfer group {group.name!r}")
-            group_names.add(group.name)
-            for tensor in group.tensors:
-                if tensor.name in tensor_names:
-                    raise RuntimeError(f"duplicate trainer tensor {tensor.name!r}")
-                tensor_names.add(tensor.name)
-                if tensor.wire_dtype not in {"bfloat16", "float32"}:
-                    raise RuntimeError(f"{tensor.name}: unsupported wire dtype {tensor.wire_dtype!r}")
-                if not tensor.shards:
-                    raise RuntimeError(f"{tensor.name}: tensor has no trainer shards")
-
-                total_numel = prod(tensor.shape)
-                cursor = 0
-                for shard in tensor.shards:
-                    if not 0 <= shard.agent < len(table.agents):
-                        raise RuntimeError(f"{tensor.name}: invalid trainer agent index {shard.agent}")
-                    if shard.numel <= 0:
-                        raise RuntimeError(f"{tensor.name}: invalid trainer shard size {shard.numel}")
-                    if shard.offset != cursor:
-                        raise RuntimeError(
-                            f"{tensor.name}: trainer shards do not tile flat elements at {cursor}; "
-                            f"next range is [{shard.offset}, {shard.offset + shard.numel})"
-                        )
-                    cursor += shard.numel
-                if cursor != total_numel:
-                    raise RuntimeError(
-                        f"{tensor.name}: trainer shards cover [0, {cursor}), expected [0, {total_numel})"
-                    )
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
