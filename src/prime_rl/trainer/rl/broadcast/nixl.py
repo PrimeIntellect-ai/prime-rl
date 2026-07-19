@@ -87,23 +87,11 @@ class TransferGroupIndex:
 
 
 @dataclass(frozen=True)
-class StagedShardMetadata:
-    name: str
-    wire_dtype: str
-    shape: tuple[int, ...]
-    group_index: int
-    tensor_offset: int
-    numel: int
-    address: int
-
-
-@dataclass(frozen=True)
 class TrainerRankMetadata:
     rank: int
-    agent: TrainerAgent
+    table_fragment: bytes
     staging_bytes: int
     arena_stats: TrainerArenaStats
-    shards: list[StagedShardMetadata]
 
 
 class NIXLWeightBroadcast(WeightBroadcast):
@@ -311,6 +299,45 @@ class NIXLWeightBroadcast(WeightBroadcast):
             largest_group=largest_group_bytes,
         )
 
+    def build_local_trainer_table_fragment(self) -> TrainerTensorTable:
+        tensors_by_group: list[dict[str, TrainerTensor]] = [
+            {} for _ in self.transfer_group_names
+        ]
+        for shard in self.staged_shards:
+            tensors = tensors_by_group[shard.group_index]
+            tensor = tensors.setdefault(
+                shard.name,
+                TrainerTensor(
+                    name=shard.name,
+                    wire_dtype=str(shard.wire_dtype).removeprefix("torch."),
+                    shape=shard.global_shape,
+                    shards=[],
+                ),
+            )
+            tensor.shards.append(
+                TrainerShard(
+                    agent=0,
+                    offset=shard.tensor_offset,
+                    numel=shard.source_tensor.numel(),
+                    addr=cast(torch.Tensor, shard.staging_tensor).data_ptr(),
+                )
+            )
+
+        return TrainerTensorTable(
+            agents=[
+                TrainerAgent(
+                    name=self.nixl_agent.name,
+                    metadata=self.nixl_agent.get_metadata(),
+                    device_id=torch.cuda.current_device(),
+                )
+            ],
+            staging_buffer_count=self.staging_buffer_count,
+            groups=[
+                TrainerGroup(name=group_name, tensors=list(tensors.values()))
+                for group_name, tensors in zip(self.transfer_group_names, tensors_by_group)
+            ],
+        )
+
     def gather_trainer_rank_metadata(
         self, arena_stats: TrainerArenaStats
     ) -> list[TrainerRankMetadata] | None:
@@ -318,25 +345,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
         if self.is_serving_rank:
             rank_metadata = TrainerRankMetadata(
                 rank=self.world.rank,
-                agent=TrainerAgent(
-                    name=self.nixl_agent.name,
-                    metadata=self.nixl_agent.get_metadata(),
-                    device_id=torch.cuda.current_device(),
-                ),
+                table_fragment=self.build_local_trainer_table_fragment().encode(),
                 staging_bytes=sum(arena.nbytes for arena in self.staging_arenas.values()),
                 arena_stats=arena_stats,
-                shards=[
-                    StagedShardMetadata(
-                        name=shard.name,
-                        wire_dtype=str(shard.wire_dtype).removeprefix("torch."),
-                        shape=shard.global_shape,
-                        group_index=shard.group_index,
-                        tensor_offset=shard.tensor_offset,
-                        numel=shard.source_tensor.numel(),
-                        address=cast(torch.Tensor, shard.staging_tensor).data_ptr(),
-                    )
-                    for shard in self.staged_shards
-                ],
             )
 
         gathered: list[TrainerRankMetadata | None] | None = (
@@ -350,44 +361,48 @@ class NIXLWeightBroadcast(WeightBroadcast):
             key=lambda metadata: metadata.rank,
         )
 
-    def build_trainer_tensor_table(
+    def merge_trainer_table_fragments(
         self, trainer_ranks: list[TrainerRankMetadata]
     ) -> TrainerTensorTable:
-        tensors: dict[str, TrainerTensor] = {}
-        tensor_groups: dict[str, int] = {}
+        agents: list[TrainerAgent] = []
+        tensors_by_group: list[dict[str, TrainerTensor]] = [
+            {} for _ in self.transfer_group_names
+        ]
         for agent_index, metadata in enumerate(trainer_ranks):
-            for shard in metadata.shards:
-                tensor = tensors.setdefault(
-                    shard.name,
-                    TrainerTensor(
-                        name=shard.name,
-                        wire_dtype=shard.wire_dtype,
-                        shape=shard.shape,
-                        shards=[],
-                    ),
-                )
-                tensor_groups.setdefault(shard.name, shard.group_index)
-                tensor.shards.append(
-                    TrainerShard(
-                        agent=agent_index,
-                        offset=shard.tensor_offset,
-                        numel=shard.numel,
-                        addr=shard.address,
+            fragment = TrainerTensorTable.decode(metadata.table_fragment)
+            agents.append(fragment.agents[0])
+            for group_index, group in enumerate(fragment.groups):
+                tensors = tensors_by_group[group_index]
+                for fragment_tensor in group.tensors:
+                    tensor = tensors.setdefault(
+                        fragment_tensor.name,
+                        TrainerTensor(
+                            name=fragment_tensor.name,
+                            wire_dtype=fragment_tensor.wire_dtype,
+                            shape=fragment_tensor.shape,
+                            shards=[],
+                        ),
                     )
-                )
+                    tensor.shards.extend(
+                        TrainerShard(
+                            agent=agent_index,
+                            offset=shard.offset,
+                            numel=shard.numel,
+                            addr=shard.addr,
+                        )
+                        for shard in fragment_tensor.shards
+                    )
 
-        for tensor in tensors.values():
-            tensor.shards.sort(key=lambda shard: shard.offset)
+        for tensors in tensors_by_group:
+            for tensor in tensors.values():
+                tensor.shards.sort(key=lambda shard: shard.offset)
 
         return TrainerTensorTable(
-            agents=[metadata.agent for metadata in trainer_ranks],
+            agents=agents,
             staging_buffer_count=self.staging_buffer_count,
             groups=[
-                TrainerGroup(
-                    name=group_name,
-                    tensors=[tensor for name, tensor in tensors.items() if tensor_groups[name] == group_index],
-                )
-                for group_index, group_name in enumerate(self.transfer_group_names)
+                TrainerGroup(name=group_name, tensors=list(tensors.values()))
+                for group_name, tensors in zip(self.transfer_group_names, tensors_by_group)
             ],
         )
 
@@ -408,7 +423,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         trainer_ranks = self.gather_trainer_rank_metadata(arena_stats)
 
         if trainer_ranks is not None:
-            table = self.build_trainer_tensor_table(trainer_ranks)
+            table = self.merge_trainer_table_fragments(trainer_ranks)
             server_url = f"{self.config.host}:{self.config.port}"
             client = MxClient(server_url=server_url)
             self.buffer_sessions = []
