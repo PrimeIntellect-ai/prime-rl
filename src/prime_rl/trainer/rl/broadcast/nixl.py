@@ -55,9 +55,7 @@ class StagedTensorShard:
     staging_tensor: torch.Tensor | None = None
 
     def assign_staging_tensor(self, arena: torch.Tensor, arena_offset: int) -> None:
-        self.staging_tensor = arena.narrow(0, arena_offset, self.source_tensor.numel()).view(
-            self.source_tensor.shape
-        )
+        self.staging_tensor = arena.narrow(0, arena_offset, self.source_tensor.numel()).view(self.source_tensor.shape)
 
     def copy_to_staging(self) -> None:
         assert self.staging_tensor is not None
@@ -241,9 +239,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             self.nixl_agent.register_tensor(arena)
 
     def prepare_staging_buffers(self) -> None:
-        group_elements = {
-            dtype: [0] * len(self.transfer_group_names) for dtype in (torch.bfloat16, torch.float32)
-        }
+        group_elements = {dtype: [0] * len(self.transfer_group_names) for dtype in (torch.bfloat16, torch.float32)}
         for shard in self.staged_shards:
             group_elements[shard.wire_dtype][shard.group_index] += shard.source_tensor.numel()
         largest_group_elements = {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
@@ -257,9 +253,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.staged_shards_by_group = dict(grouped)
 
     def build_local_trainer_table_fragment(self) -> TrainerTensorTable:
-        tensors_by_group: list[dict[str, TrainerTensor]] = [
-            {} for _ in self.transfer_group_names
-        ]
+        tensors_by_group: list[dict[str, TrainerTensor]] = [{} for _ in self.transfer_group_names]
         for shard in self.staged_shards:
             tensors = tensors_by_group[shard.group_index]
             tensor = tensors.setdefault(
@@ -296,24 +290,16 @@ class NIXLWeightBroadcast(WeightBroadcast):
         )
 
     def gather_trainer_table_fragments(self) -> list[bytes] | None:
-        table_fragment = (
-            self.build_local_trainer_table_fragment().encode() if self.is_serving_rank else None
-        )
-        gathered: list[bytes | None] | None = (
-            [None] * self.world.world_size if self.world.is_master else None
-        )
+        table_fragment = self.build_local_trainer_table_fragment().encode() if self.is_serving_rank else None
+        gathered: list[bytes | None] | None = [None] * self.world.world_size if self.world.is_master else None
         dist.gather_object(table_fragment, gathered, dst=0)
         if gathered is None:
             return None
         return [fragment for fragment in gathered if fragment is not None]
 
-    def merge_trainer_table_fragments(
-        self, table_fragments: list[bytes]
-    ) -> TrainerTensorTable:
+    def merge_trainer_table_fragments(self, table_fragments: list[bytes]) -> TrainerTensorTable:
         agents: list[TrainerAgent] = []
-        tensors_by_group: list[dict[str, TrainerTensor]] = [
-            {} for _ in self.transfer_group_names
-        ]
+        tensors_by_group: list[dict[str, TrainerTensor]] = [{} for _ in self.transfer_group_names]
         for agent_index, encoded_fragment in enumerate(table_fragments):
             fragment = TrainerTensorTable.decode(encoded_fragment)
             agents.append(fragment.agents[0])
@@ -481,6 +467,4 @@ class NIXLWeightBroadcast(WeightBroadcast):
         dist.barrier()
         for run_index in ready_runs:
             self.multi_run_manager.ready_to_update[run_index] = False
-        self.logger.info(
-            f"NIXL+ModelExpress policy v{step} synchronized in {time.perf_counter() - start:.2f}s"
-        )
+        self.logger.info(f"NIXL+ModelExpress policy v{step} synchronized in {time.perf_counter() - start:.2f}s")

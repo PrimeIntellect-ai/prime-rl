@@ -30,11 +30,7 @@ def route_sharded_tensor(
     if numel == 0:
         return []
 
-    dims = [
-        (size, step)
-        for size, step in zip(plan.source_shape, plan.source_stride)
-        if size != 1
-    ]
+    dims = [(size, step) for size, step in zip(plan.source_shape, plan.source_stride) if size != 1]
     if any(step < 0 for _, step in dims):
         raise NotImplementedError("negative strides are not supported")
 
@@ -56,11 +52,7 @@ def route_sharded_tensor(
         remaining = element_count
         while remaining:
             shard = next(
-                (
-                    shard
-                    for shard in source.shards
-                    if shard.offset <= position < shard.offset + shard.numel
-                ),
+                (shard for shard in source.shards if shard.offset <= position < shard.offset + shard.numel),
                 None,
             )
             if shard is None:

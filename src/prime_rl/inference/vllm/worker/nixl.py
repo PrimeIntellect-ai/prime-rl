@@ -301,21 +301,14 @@ class NIXLWeightUpdateWorker(Worker):
     ) -> dict[torch.dtype, int]:
         tensors = {tensor.name: tensor for group in table.groups for tensor in group.tensors}
         tensor_groups = {
-            tensor.name: group_index
-            for group_index, group in enumerate(table.groups)
-            for tensor in group.tensors
+            tensor.name: group_index for group_index, group in enumerate(table.groups) for tensor in group.tensors
         }
         group_elements: dict[torch.dtype, list[int]] = defaultdict(lambda: [0] * len(table.groups))
         for copy in copies:
             source = tensors[copy.source_name]
             source_dtype = getattr(torch, source.wire_dtype)
-            group_elements[source_dtype][tensor_groups[source.name]] += prod(
-                replay_plans[id(copy)].source_shape
-            )
-        return {
-            dtype: max(elements, default=0)
-            for dtype, elements in group_elements.items()
-        }
+            group_elements[source_dtype][tensor_groups[source.name]] += prod(replay_plans[id(copy)].source_shape)
+        return {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
 
     def choose_receive_buffer_count(
         self,
@@ -324,10 +317,7 @@ class NIXLWeightUpdateWorker(Worker):
     ) -> int:
         receive_buffer_bytes = max(
             1,
-            sum(
-                elements * dtype.itemsize
-                for dtype, elements in receive_buffer_elements.items()
-            ),
+            sum(elements * dtype.itemsize for dtype, elements in receive_buffer_elements.items()),
         )
         allocated_bytes = torch.cuda.memory_allocated(self.device)
         peak_growth_bytes = max(
@@ -375,9 +365,7 @@ class NIXLWeightUpdateWorker(Worker):
     ) -> list[WeightTransferGroup]:
         tensors = {tensor.name: tensor for group in table.groups for tensor in group.tensors}
         tensor_groups = {
-            tensor.name: group_index
-            for group_index, group in enumerate(table.groups)
-            for tensor in group.tensors
+            tensor.name: group_index for group_index, group in enumerate(table.groups) for tensor in group.tensors
         }
         copies_by_group: dict[int, list[RecordedCopy]] = defaultdict(list)
         for copy in copies:
@@ -421,9 +409,7 @@ class NIXLWeightUpdateWorker(Worker):
                 source_dtype = getattr(torch, source.wire_dtype)
                 numel = prod(replay_plan.source_shape)
                 cursor = cursors[source_dtype]
-                staging_tensor = receive_arenas[source_dtype].narrow(0, cursor, numel).view(
-                    replay_plan.source_shape
-                )
+                staging_tensor = receive_arenas[source_dtype].narrow(0, cursor, numel).view(replay_plan.source_shape)
                 cursors[source_dtype] += numel
                 copy_plan = TensorCopyPlan(
                     recorded_copy=copy,
@@ -434,12 +420,8 @@ class NIXLWeightUpdateWorker(Worker):
                 plans[id(copy.destination_module)].append(copy_plan)
 
                 for route in route_sharded_tensor(replay_plan, source, staging_tensor):
-                    local_descs[route.agent].append(
-                        (route.destination_addr, route.nbytes, self.device.index)
-                    )
-                    remote_descs[route.agent].append(
-                        (route.source_addr, route.nbytes, agent_devices[route.agent])
-                    )
+                    local_descs[route.agent].append((route.destination_addr, route.nbytes, self.device.index))
+                    remote_descs[route.agent].append((route.source_addr, route.nbytes, agent_devices[route.agent]))
 
             transfer_groups.append(
                 WeightTransferGroup(

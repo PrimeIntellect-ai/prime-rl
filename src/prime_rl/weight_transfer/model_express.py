@@ -49,10 +49,14 @@ class ModelExpressSession:
             try:
                 return call()
             except grpc.RpcError as exc:
-                if exc.code() not in (
-                    grpc.StatusCode.UNAVAILABLE,
-                    grpc.StatusCode.DEADLINE_EXCEEDED,
-                ) or time.monotonic() >= deadline:
+                if (
+                    exc.code()
+                    not in (
+                        grpc.StatusCode.UNAVAILABLE,
+                        grpc.StatusCode.DEADLINE_EXCEEDED,
+                    )
+                    or time.monotonic() >= deadline
+                ):
                     raise
                 time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
 
@@ -67,17 +71,11 @@ class ModelExpressSession:
         return self._source_id
 
     def set_status(self, status: int) -> None:
-        if not self._rpc(
-            lambda: self.client.update_status(self.source_id, self.worker_id, self.rank, status)
-        ):
+        if not self._rpc(lambda: self.client.update_status(self.source_id, self.worker_id, self.rank, status)):
             raise RuntimeError(f"failed to set ModelExpress status {status} for {self.role} rank {self.rank}")
 
-    def list_sources(
-        self, role: Role, status: int | None
-    ) -> list[p2p_pb2.SourceInstanceRef]:
-        response = self._rpc(
-            lambda: self.client.list_sources(self.identity(role), status_filter=status)
-        )
+    def list_sources(self, role: Role, status: int | None) -> list[p2p_pb2.SourceInstanceRef]:
+        response = self._rpc(lambda: self.client.list_sources(self.identity(role), status_filter=status))
         return list(response.instances)
 
     def exists_role_with_status(self, role: Role, status: int) -> bool:
@@ -97,9 +95,7 @@ class ModelExpressSession:
         expected_ranks = set(range(count))
         while True:
             if cancelled is not None and cancelled():
-                raise RuntimeError(
-                    f"cancelled waiting for {count} {role} worker(s) in session {self.session_id!r}"
-                )
+                raise RuntimeError(f"cancelled waiting for {count} {role} worker(s) in session {self.session_id!r}")
             refs = self.list_sources(role, status)
             by_rank = {ref.worker_rank: ref for ref in refs}
             if expected_ranks.issubset(by_rank):

@@ -89,9 +89,7 @@ def is_view_of(value: torch.Tensor, root: torch.Tensor) -> bool:
     return False
 
 
-def plan_tensor_replay(
-    shape: tuple[int, ...], dtype: torch.dtype, ops: OperationChain
-) -> TensorReplayPlan:
+def plan_tensor_replay(shape: tuple[int, ...], dtype: torch.dtype, ops: OperationChain) -> TensorReplayPlan:
     """Resolve a directly transferable source view and local replay suffix.
 
     The prefix must remain a same-dtype view of the trainer root and can
@@ -224,8 +222,7 @@ class LazyWeight(torch.Tensor):
             raise UnsupportedOpError("copy_ between lazy graph tensors is not supported")
         if tuple(destination.shape) != tuple(self.shape):
             raise UnsupportedOpError(
-                f"copy_ shape mismatch for {self._source_name}: "
-                f"{tuple(self.shape)} -> {tuple(destination.shape)}"
+                f"copy_ shape mismatch for {self._source_name}: {tuple(self.shape)} -> {tuple(destination.shape)}"
             )
         if self.dtype not in _SUPPORTED_DTYPES or destination.dtype not in _SUPPORTED_DTYPES:
             raise UnsupportedOpError(

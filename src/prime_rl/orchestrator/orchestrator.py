@@ -322,9 +322,7 @@ class Orchestrator:
                 config.weight_broadcast.session_id,
             )
             self.model_express = ModelExpressSession(
-                client=MxClient(
-                    server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"
-                ),
+                client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
                 role="orchestrator",
                 rank=0,
                 session_id=config.weight_broadcast.session_id,

@@ -67,9 +67,7 @@ void cuda_free(void* pointer, ptrdiff_t size, int device, void* stream) {
         extra_cflags=["-O2"],
         with_cuda=True,
     )
-    _allocator = torch.cuda.memory.CUDAPluggableAllocator(
-        str(Path(module.__file__)), "cuda_malloc", "cuda_free"
-    )
+    _allocator = torch.cuda.memory.CUDAPluggableAllocator(str(Path(module.__file__)), "cuda_malloc", "cuda_free")
     _pool = torch.cuda.MemPool(_allocator.allocator())
     return _pool
 
