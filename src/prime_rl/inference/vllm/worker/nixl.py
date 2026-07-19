@@ -19,15 +19,17 @@ from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
-from prime_rl.weight_transfer.chains import (
+from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc, cuda_buffer_capacity
+from prime_rl.weight_transfer.graph import (
+    Destination,
     OperationChain,
+    RecordedCopy,
     TensorTransferPlan,
+    WeightLoadRecorder,
     apply_chain,
+    make_hf_lazy_weights,
     plan_tensor_transfer,
 )
-from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc, cuda_buffer_capacity
-from prime_rl.weight_transfer.graph import make_hf_lazy_weights
-from prime_rl.weight_transfer.lazy import Destination, RecordedCopy, WeightLoadRecorder
 from prime_rl.weight_transfer.mx import MxRendezvous
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.sharding import route_region, zip_src_dst

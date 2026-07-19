@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from prime_rl.weight_transfer.chains import UnsupportedOpError
 from prime_rl.weight_transfer.wire import TrainerShard
 
 _MAX_RUNS_PER_COPY = 1 << 16
@@ -24,7 +23,7 @@ def route_region(
 
     dims = [(size, step) for size, step in zip(shape, stride) if size != 1]
     if any(step < 0 for _, step in dims):
-        raise UnsupportedOpError("negative strides are not supported")
+        raise NotImplementedError("negative strides are not supported")
 
     run_elements = 1
     split_at = len(dims)
@@ -37,7 +36,7 @@ def route_region(
     for size, _ in outer_dims:
         run_count *= size
     if run_count > _MAX_RUNS_PER_COPY:
-        raise UnsupportedOpError(
+        raise NotImplementedError(
             f"region shape={shape}, stride={stride} requires {run_count} RDMA runs "
             f"(maximum {_MAX_RUNS_PER_COPY})"
         )
