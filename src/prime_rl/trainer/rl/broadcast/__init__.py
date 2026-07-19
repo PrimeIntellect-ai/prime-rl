@@ -13,16 +13,14 @@ from prime_rl.trainer.rl.broadcast.nixl import NIXLWeightBroadcast
 def setup_weight_broadcast(
     output_dir: Path,
     config: WeightBroadcastConfig,
+    parallel_dims: ParallelDims,
     lora_config: LoRAConfig | None = None,
-    parallel_dims: ParallelDims | None = None,
 ) -> WeightBroadcast:
     if config.type == "nccl":
         return NCCLWeightBroadcast(output_dir, config, torch.cuda.current_device())
     elif config.type == "filesystem":
         return FileSystemWeightBroadcast(output_dir, config, lora_config)
     elif config.type == "nixl":
-        if parallel_dims is None:
-            raise ValueError("parallel_dims is required for NIXL weight transfer")
         return NIXLWeightBroadcast(output_dir, config, parallel_dims)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")

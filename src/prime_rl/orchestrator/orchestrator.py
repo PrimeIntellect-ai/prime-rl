@@ -349,12 +349,10 @@ class Orchestrator:
             get_logger().info("Training from scratch")
 
         # Sync inference to the incoming policy before the first step when resuming or when using
-        # NCCL, which rendezvouses with the trainer's first-step broadcast (train.py). A fresh
-        # filesystem or NIXL run needs no sync (the base model IS policy v0) and must not wait for a
-        # startup broadcast: runs registered after the trainer's first step never receive one.
-        if self.resume_step is not None or config.weight_broadcast.type == "nccl":
+        # an in-memory transport, which rendezvouses with the trainer's startup broadcast.
+        if self.resume_step is not None or config.weight_broadcast.type in ("nccl", "nixl"):
             sync_version = self.resume_step if self.resume_step is not None else 0
-            check_exists = config.weight_broadcast.type != "nccl"
+            check_exists = config.weight_broadcast.type == "filesystem"
             # Without a ckpt block, fall back to a default timeout instead of not waiting at all.
             wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
             weights_path = get_weight_dir(
@@ -877,18 +875,16 @@ class Orchestrator:
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
         count is ``progress.step - 1``."""
         lead = (self.progress.step - 1) - self.policy.version
-        # The trainer skips the final NCCL weight broadcast (inference group is
-        # torn down), so policy.version never reaches the last step. Without this
-        # the gate deadlocks waiting for a version that will never be published.
-        # The last batch uses the penultimate policy anyway, so let it through.
-        building_final_batch_nccl = (
-            self.config.weight_broadcast.type == "nccl"
+        # The trainer skips the final in-memory weight broadcasts, so policy.version never
+        # reaches the last step. Let the final batch through instead of waiting for it.
+        building_final_batch_without_update = (
+            self.config.weight_broadcast.type in ("nccl", "nixl")
             and self.config.max_steps is not None
             and self.progress.step >= self.config.max_steps - 1
         )
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG and not building_final_batch_nccl:
+        if lead > TARGET_LAG and not building_final_batch_without_update:
             if was_set:
                 get_logger().info(
                     "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."

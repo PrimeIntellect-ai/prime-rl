@@ -188,7 +188,10 @@ def train(config: TrainerConfig):
     else:
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
         weight_broadcast = setup_weight_broadcast(
-            config.output_dir, config.weight_broadcast, config.model.lora, parallel_dims
+            config.output_dir,
+            config.weight_broadcast,
+            parallel_dims,
+            config.model.lora,
         )
 
     if parallel_dims.cp_enabled:
@@ -269,16 +272,12 @@ def train(config: TrainerConfig):
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
 
-        # NCCL broadcasts the incoming policy (v{progress.step-1}) before waiting for its
-        # rollouts. NIXL only needs this rendezvous after resume; a fresh inference pool already
-        # has policy v0 and joins the first update after the first training step.
+        # In-memory transfers broadcast the incoming policy (v{progress.step-1}) before waiting
+        # for its rollouts so the trainer and inference pool join the same update lifecycle.
         if (
             progress.step == start_step
             and weight_broadcast is not None
-            and (
-                config.weight_broadcast.type == "nccl"
-                or (config.weight_broadcast.type == "nixl" and checkpoint_step is not None)
-            )
+            and config.weight_broadcast.type in ("nccl", "nixl")
         ):
             logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
             multi_run_manager.wait_for_run(0)
@@ -587,19 +586,17 @@ def train(config: TrainerConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
-        # sample its next step from it. NCCL retains its two-step shutdown window; NIXL updates
-        # through the final sampling policy and skips only the model produced after the last batch.
-        # Filesystem broadcast still writes every version for resume.
+        # sample its next step from it. In-memory transports retain their two-step shutdown
+        # window; filesystem broadcast still writes every version for resume.
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
-            nccl_broadcast_unused = (
-                config.weight_broadcast.type == "nccl"
+            broadcast_unused = (
+                config.weight_broadcast.type in ("nccl", "nixl")
                 and config.max_steps is not None
                 and progress.step >= config.max_steps - 1
             )
-            nixl_broadcast_unused = config.weight_broadcast.type == "nixl" and is_last_step
-            if not (nccl_broadcast_unused or nixl_broadcast_unused):
+            if not broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time

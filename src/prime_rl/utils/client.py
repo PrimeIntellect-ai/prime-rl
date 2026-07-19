@@ -577,10 +577,6 @@ async def init_nixl_broadcast(
     session_id: str,
 ) -> None:
     """Configure every vLLM worker for NIXL + ModelExpress pulls."""
-    if inference_world_size % len(admin_clients) != 0:
-        raise ValueError(
-            f"inference_world_size={inference_world_size} is not divisible by {len(admin_clients)} admin servers"
-        )
     workers_per_server = inference_world_size // len(admin_clients)
 
     async def initialize(admin_client: AsyncClient, rank_offset: int) -> None:
