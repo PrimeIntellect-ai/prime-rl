@@ -89,10 +89,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.parallel_dims = parallel_dims
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
-        if parallel_dims.pp_enabled:
-            raise NotImplementedError("NIXL weight transfer does not support pipeline parallelism")
-        if config.session_id == "default":
-            raise ValueError("NIXL weight transfer requires a run-unique, non-default session_id")
         if self.is_serving_rank:
             set_ucx_env_defaults()
             self.nixl_agent = NixlAgent(make_agent_name("trainer", self.world.rank))
@@ -487,10 +483,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
-        ready = list(self.multi_run_manager.ready_to_update_idxs)
-        if not ready:
-            self.logger.warning(f"No run requested NIXL weights at step {step}; skipping")
-            return
+        ready_runs = list(self.multi_run_manager.ready_to_update_idxs)
         self._lazy_init(model)
         start = time.perf_counter()
 
@@ -581,7 +574,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             )
             self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         dist.barrier()
-        for run_index in ready:
+        for run_index in ready_runs:
             self.multi_run_manager.ready_to_update[run_index] = False
         self.logger.info(
             f"NIXL+ModelExpress policy v{step} synchronized in {time.perf_counter() - start:.2f}s"
