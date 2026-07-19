@@ -117,4 +117,5 @@ decay_steps = 0
 
 [ckpt]
 interval = 34
-keep_last = 2
+# keep_last prunes HF weight snapshots too, not just DCP resume state — leave
+# unset so eval checkpoints survive (lesson from run d9o2mz13: 8 of 10 lost).
