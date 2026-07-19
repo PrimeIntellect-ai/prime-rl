@@ -47,32 +47,23 @@ _MAX_SOURCE_BUFFER_COUNT = 8
 
 
 @dataclass
-class TrainerShardSource:
+class StagedTensorShard:
     name: str
-    full_shape: tuple[int, ...]
-    group: int
-    offset: int
-    source: torch.Tensor
+    global_shape: tuple[int, ...]
+    group_index: int
+    tensor_offset: int
+    source_tensor: torch.Tensor
     wire_dtype: torch.dtype
-    buffer: torch.Tensor | None = None
+    staging_tensor: torch.Tensor | None = None
 
-    def __post_init__(self) -> None:
-        if self.source.dtype != _MASTER_DTYPE:
-            raise TypeError(f"NIXL source {self.name!r} must be an FP32 master shard, got {self.source.dtype}")
-        if self.wire_dtype not in _WIRE_DTYPES:
-            raise TypeError(f"NIXL source {self.name!r} has unsupported wire dtype {self.wire_dtype}")
-        if not self.source.is_contiguous():
-            raise ValueError(f"NIXL source {self.name!r} must be contiguous")
+    def assign_staging_tensor(self, arena: torch.Tensor, arena_offset: int) -> None:
+        self.staging_tensor = arena.narrow(0, arena_offset, self.source_tensor.numel()).view(
+            self.source_tensor.shape
+        )
 
-    def bind(self, arena: torch.Tensor, offset: int) -> int:
-        if arena.dtype != self.wire_dtype:
-            raise TypeError(f"NIXL source {self.name!r} requires a {self.wire_dtype} arena, got {arena.dtype}")
-        self.buffer = arena.narrow(0, offset, self.source.numel()).view(self.source.shape)
-        return offset + self.source.numel()
-
-    def refresh(self) -> None:
-        assert self.buffer is not None
-        self.buffer.copy_(self.source)
+    def copy_to_staging(self) -> None:
+        assert self.staging_tensor is not None
+        self.staging_tensor.copy_(self.source_tensor)
 
 
 @dataclass(frozen=True)
@@ -107,8 +98,8 @@ class NIXLWeightBroadcast(WeightBroadcast):
             self.nixl_agent = NixlAgent(make_agent_name("trainer", self.world.rank))
         self.initialized = False
         self.groups: list[str] = []
-        self.shards: list[TrainerShardSource] = []
-        self.shards_by_group: dict[int, list[TrainerShardSource]] = {}
+        self.shards: list[StagedTensorShard] = []
+        self.shards_by_group: dict[int, list[StagedTensorShard]] = {}
         self.arenas: dict[torch.dtype, torch.Tensor] = {}
         self.source_ring_size = 1
 
@@ -141,8 +132,8 @@ class NIXLWeightBroadcast(WeightBroadcast):
         state_dict: dict[str, torch.Tensor],
         layer_groups: dict[int, int],
         keep_in_fp32: Callable[[str], bool],
-    ) -> list[TrainerShardSource]:
-        owned: list[TrainerShardSource] = []
+    ) -> list[StagedTensorShard]:
+        owned: list[StagedTensorShard] = []
         for name, value in state_dict.items():
             if not value.is_floating_point():
                 continue
@@ -151,7 +142,16 @@ class NIXLWeightBroadcast(WeightBroadcast):
             wire_dtype = _MASTER_DTYPE if keep_in_fp32(name) else _DEFAULT_WIRE_DTYPE
             if not isinstance(value, DTensor):
                 if self.world.is_master:
-                    owned.append(TrainerShardSource(name, full_shape, group, 0, value.detach(), wire_dtype))
+                    owned.append(
+                        StagedTensorShard(
+                            name=name,
+                            global_shape=full_shape,
+                            group_index=group,
+                            tensor_offset=0,
+                            source_tensor=value.detach(),
+                            wire_dtype=wire_dtype,
+                        )
+                    )
                 continue
 
             placements = value.placements
@@ -163,7 +163,16 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 local = local[tuple(slice(size) for size in local_shape)]
             if all(placement.is_replicate() for placement in placements):
                 if self.world.is_master:
-                    owned.append(TrainerShardSource(name, full_shape, group, 0, local, wire_dtype))
+                    owned.append(
+                        StagedTensorShard(
+                            name=name,
+                            global_shape=full_shape,
+                            group_index=group,
+                            tensor_offset=0,
+                            source_tensor=local,
+                            wire_dtype=wire_dtype,
+                        )
+                    )
                 continue
 
             if any(global_offset[1:]) or tuple(local_shape[1:]) != full_shape[1:]:
@@ -174,13 +183,22 @@ class NIXLWeightBroadcast(WeightBroadcast):
             if local.numel():
                 row_numel = prod(full_shape[1:]) if full_shape else 1
                 offset = global_offset[0] * row_numel if full_shape else 0
-                owned.append(TrainerShardSource(name, full_shape, group, offset, local, wire_dtype))
+                owned.append(
+                    StagedTensorShard(
+                        name=name,
+                        global_shape=full_shape,
+                        group_index=group,
+                        tensor_offset=offset,
+                        source_tensor=local,
+                        wire_dtype=wire_dtype,
+                    )
+                )
         return owned
 
     def _allocate_arena(self, allocated_bytes: int, peak_allocated_bytes: int) -> TrainerArenaStats:
         group_elements = {dtype: [0] * len(self.groups) for dtype in _WIRE_DTYPES}
         for shard in self.shards:
-            group_elements[shard.wire_dtype][shard.group] += shard.source.numel()
+            group_elements[shard.wire_dtype][shard.group_index] += shard.source_tensor.numel()
         largest_group_elements = {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
         largest_group_bytes = sum(elements * dtype.itemsize for dtype, elements in largest_group_elements.items())
 
@@ -190,7 +208,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         memory_buffer_count = min(len(self.groups), _MAX_SOURCE_BUFFER_COUNT)
         local_buffer_count = min(len(self.groups), _MAX_SOURCE_BUFFER_COUNT)
         if self.is_serving_rank and largest_group_bytes:
-            device = self.shards[0].source.device
+            device = self.shards[0].source_tensor.device
             free_before_reclaim, total_bytes = torch.cuda.mem_get_info(device)
             max_buffers = min(len(self.groups), _MAX_SOURCE_BUFFER_COUNT) if has_observed_peak_growth else 1
             if has_observed_peak_growth or free_before_reclaim < largest_group_bytes:
@@ -217,7 +235,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
 
         post_free_bytes = free_after_reclaim
         if self.is_serving_rank and largest_group_bytes:
-            device = self.shards[0].source.device
+            device = self.shards[0].source_tensor.device
             with use_cuda_malloc_pool():
                 self.arenas = {
                     dtype: torch.empty(
@@ -237,14 +255,18 @@ class NIXLWeightBroadcast(WeightBroadcast):
             }
             for shard in self.shards:
                 dtype_offsets = offsets[shard.wire_dtype]
-                dtype_offsets[shard.group] = shard.bind(self.arenas[shard.wire_dtype], dtype_offsets[shard.group])
+                shard.assign_staging_tensor(
+                    self.arenas[shard.wire_dtype],
+                    dtype_offsets[shard.group_index],
+                )
+                dtype_offsets[shard.group_index] += shard.source_tensor.numel()
             for arena in self.arenas.values():
                 self.nixl_agent.register_tensor(arena)
             post_free_bytes, _ = torch.cuda.mem_get_info(device)
 
-        grouped: dict[int, list[TrainerShardSource]] = defaultdict(list)
+        grouped: dict[int, list[StagedTensorShard]] = defaultdict(list)
         for shard in self.shards:
-            grouped[shard.group].append(shard)
+            grouped[shard.group_index].append(shard)
         self.shards_by_group = dict(grouped)
         return TrainerArenaStats(
             has_observed_peak_growth=has_observed_peak_growth,
@@ -286,14 +308,14 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     (
                         shard.name,
                         str(shard.wire_dtype).removeprefix("torch."),
-                        shard.full_shape,
-                        shard.group,
-                        shard.offset,
-                        shard.source.numel(),
-                        shard.buffer.data_ptr(),
+                        shard.global_shape,
+                        shard.group_index,
+                        shard.tensor_offset,
+                        shard.source_tensor.numel(),
+                        shard.staging_tensor.data_ptr(),
                     )
                     for shard in self.shards
-                    if shard.buffer is not None
+                    if shard.staging_tensor is not None
                 ],
             )
         gathered: list | None = [None] * self.world.world_size if self.world.is_master else None
@@ -512,7 +534,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
 
             if self.is_serving_rank:
                 for shard in self.shards_by_group.get(group, ()):
-                    shard.refresh()
+                    shard.copy_to_staging()
                 torch.cuda.synchronize()
             dist.barrier()
             if self.world.is_master:
