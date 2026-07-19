@@ -123,8 +123,6 @@ class NIXLWeightUpdateWorker(Worker):
         if self.weight_transfer_plan is not None:
             return self.weight_transfer_plan
 
-        allocated_bytes = torch.cuda.memory_allocated(self.device)
-        peak_allocated_bytes = torch.cuda.max_memory_allocated(self.device)
         trainer_ref = self.model_express.wait_for(
             "trainer",
             count=1,
@@ -133,7 +131,7 @@ class NIXLWeightUpdateWorker(Worker):
         )[0]
         table = TrainerTensorTable.decode(self.model_express.fetch(trainer_ref).nixl_metadata)
         copies = self.trace_weight_loads(table)
-        plan = self.build_transfer_plan(table, copies, allocated_bytes, peak_allocated_bytes)
+        plan = self.build_transfer_plan(table, copies)
         self.buffer_sessions = []
         for buffer_index in range(table.staging_buffer_count):
             session = ModelExpressSession(
@@ -242,8 +240,6 @@ class NIXLWeightUpdateWorker(Worker):
         self,
         table: TrainerTensorTable,
         copies: list[RecordedCopy],
-        allocated_bytes: int,
-        peak_allocated_bytes: int,
     ) -> WeightTransferPlan:
         replay_plans = self.plan_tensor_replays(table, copies)
         receive_buffer_elements = self.calculate_receive_buffer_elements(
@@ -254,8 +250,6 @@ class NIXLWeightUpdateWorker(Worker):
         receive_buffer_count = self.choose_receive_buffer_count(
             receive_buffer_elements,
             table.staging_buffer_count,
-            allocated_bytes,
-            peak_allocated_bytes,
         )
         receive_arenas = self.allocate_receive_arenas(
             receive_buffer_elements,
@@ -319,8 +313,6 @@ class NIXLWeightUpdateWorker(Worker):
         self,
         receive_buffer_elements: dict[torch.dtype, int],
         staging_buffer_count: int,
-        allocated_bytes: int,
-        peak_allocated_bytes: int,
     ) -> int:
         receive_buffer_bytes = max(
             1,
@@ -329,7 +321,11 @@ class NIXLWeightUpdateWorker(Worker):
                 for dtype, elements in receive_buffer_elements.items()
             ),
         )
-        peak_growth_bytes = max(0, peak_allocated_bytes - allocated_bytes)
+        allocated_bytes = torch.cuda.memory_allocated(self.device)
+        peak_growth_bytes = max(
+            0,
+            torch.cuda.max_memory_allocated(self.device) - allocated_bytes,
+        )
         free_bytes, _ = torch.cuda.mem_get_info(self.device)
         max_receive_buffers = min(2, staging_buffer_count) if peak_growth_bytes else 1
         if peak_growth_bytes or free_bytes < receive_buffer_bytes:
