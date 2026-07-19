@@ -8,6 +8,8 @@ no key conversion - HF and prime formats are identical for this model.
 
 from torch import Tensor
 
+from prime_rl.trainer.models.conversion_ops import ConvOp
+
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
     return any("mlp.experts.gate_up_proj" in name for name in state_dict.keys())
@@ -20,9 +22,6 @@ def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
     return False
 
 
-def convert_to_hf(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-    return state_dict
-
-
-def convert_to_prime(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-    return state_dict
+def conversion_chain(config) -> list[ConvOp]:
+    # HF and prime layouts coincide for GPT-OSS, so the conversion is the identity.
+    return []

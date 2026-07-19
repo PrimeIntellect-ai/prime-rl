@@ -32,12 +32,7 @@ from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
-from .converting_qwen3_5_moe import (
-    convert_hf_layer_to_tt,
-    convert_hf_to_tt_moe,
-    convert_tt_layer_to_hf,
-    convert_tt_to_hf_moe,
-)
+from .converting_qwen3_5_moe import conversion_chain
 from .mrope import build_qwen3_5_mrope_position_ids
 
 logger = logging.get_logger(__name__)
@@ -594,6 +589,10 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
         "hidden_states": Qwen3_5MoeDecoderLayer,
     }
 
+    @classmethod
+    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        return name.endswith(("linear_attn.A_log", "linear_attn.norm.weight"))
+
     def _check_and_adjust_attn_implementation(
         self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
     ) -> str:
@@ -619,24 +618,8 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
         return any("mlp.experts.w1" in name for name in state_dict.keys())
 
     @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        convert_tt_to_hf_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        convert_hf_to_tt_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        convert_tt_layer_to_hf(state_dict, layer_idx)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        convert_hf_layer_to_tt(state_dict, layer_idx)
-        return state_dict
+    def conversion_chain(cls, config):
+        return conversion_chain(config)
 
 
 class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
@@ -825,24 +808,6 @@ class Qwen3_5MoeVLMModel(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-def _has_vlm_keys(state_dict: dict[str, Tensor]) -> bool:
-    return any(k.startswith("model.language_model.") for k in state_dict)
-
-
-def _remap_lm_keys(state_dict: dict[str, Tensor], to_flat: bool = True) -> None:
-    """Remap language model keys between VLM and flat format for weight conversion.
-
-    to_flat=True:  model.language_model.* -> model.*
-    to_flat=False: model.*               -> model.language_model.*
-
-    Vision keys (model.visual.*) are never touched.
-    """
-    src = "model.language_model." if to_flat else "model."
-    dst = "model." if to_flat else "model.language_model."
-    for k in [k for k in list(state_dict.keys()) if k.startswith(src) and not k.startswith("model.visual.")]:
-        state_dict[dst + k[len(src) :]] = state_dict.pop(k)
-
-
 class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
     """Unified Qwen3.5 MoE model for both text-only and VLM configs.
 
@@ -904,46 +869,6 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return any("mlp.experts.w1" in name for name in state_dict)
-
-    @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        vlm = _has_vlm_keys(state_dict)
-        if vlm:
-            _remap_lm_keys(state_dict, to_flat=True)
-        convert_tt_to_hf_moe(state_dict)
-        if vlm:
-            _remap_lm_keys(state_dict, to_flat=False)
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        vlm = _has_vlm_keys(state_dict)
-        if vlm:
-            _remap_lm_keys(state_dict, to_flat=True)
-        convert_hf_to_tt_moe(state_dict)
-        if vlm:
-            _remap_lm_keys(state_dict, to_flat=False)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        vlm = _has_vlm_keys(state_dict)
-        if vlm:
-            _remap_lm_keys(state_dict, to_flat=True)
-        convert_tt_layer_to_hf(state_dict, layer_idx)
-        if vlm:
-            _remap_lm_keys(state_dict, to_flat=False)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        vlm = _has_vlm_keys(state_dict)
-        if vlm:
-            _remap_lm_keys(state_dict, to_flat=True)
-        convert_hf_layer_to_tt(state_dict, layer_idx)
-        if vlm:
-            _remap_lm_keys(state_dict, to_flat=False)
-        return state_dict
 
     # ------------------------------------------------------------------
     # Forward

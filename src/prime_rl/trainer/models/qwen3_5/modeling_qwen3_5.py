@@ -132,6 +132,10 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
         "hidden_states": Qwen3_5DecoderLayer,
     }
 
+    @classmethod
+    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        return name.endswith(("linear_attn.A_log", "linear_attn.norm.weight"))
+
     def _check_and_adjust_attn_implementation(
         self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
     ) -> str:

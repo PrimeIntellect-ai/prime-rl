@@ -1,62 +1,24 @@
-"""HF<->PrimeRL weight conversion for GLM-MoE-DSA."""
+"""HF<->PrimeRL weight conversion for GLM-MoE-DSA.
+
+The MoE layout is identical to GLM4-MoE. Attention and sparse-indexer
+parameters retain their names in both formats.
+"""
 
 from __future__ import annotations
 
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.conversion_utils import get_max_layer_num
-from prime_rl.trainer.models.conversion_ops import (
-    GATE_DOWN_UP,
-    ConvOp,
-    Drop,
-    Rename,
-    SqueezeLeading,
-    apply_hf_to_tt,
-    apply_tt_to_hf,
-    routed_experts_op,
-)
+from prime_rl.trainer.models.conversion_ops import ConvOp
 from prime_rl.trainer.models.fp8 import quantize_to_vllm_kernel_format
+from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import glm_moe_layer_ops
 
 
-def _layer_conversion_chain(layer_idx: int) -> list[ConvOp]:
-    prefix = f"model.layers.{layer_idx}"
-    mlp = f"{prefix}.mlp"
-    ops: list[ConvOp] = [
-        Rename(f"{mlp}.gate.weight", f"{mlp}.router.gate.weight"),
-        Rename(f"{mlp}.gate.e_score_correction_bias", f"{mlp}.expert_bias"),
-        routed_experts_op(prefix, hf_experts="mlp.experts", tt_experts="mlp.experts", fused=True),
-    ]
-    for prime_name, hf_name in GATE_DOWN_UP:
-        hf_key = f"{mlp}.shared_experts.{hf_name}.weight"
-        ops.extend(
-            [
-                SqueezeLeading(hf_key),
-                Rename(hf_key, f"{mlp}.shared_expert.{prime_name}"),
-            ]
-        )
-    ops.append(Drop(f"{mlp}.tokens_per_expert"))
+def conversion_chain(config) -> list[ConvOp]:
+    ops: list[ConvOp] = []
+    for layer_idx in range(config.num_hidden_layers):
+        ops.extend(glm_moe_layer_ops(layer_idx))
     return ops
-
-
-def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
-    """Convert one layer from HF to PrimeRL format in place."""
-    apply_hf_to_tt(state_dict, _layer_conversion_chain(layer_idx))
-
-
-def convert_hf_to_tt_moe(state_dict: dict[str, Tensor]):
-    for layer_idx in range(get_max_layer_num(state_dict)):
-        convert_hf_layer_to_tt(state_dict, layer_idx)
-
-
-def convert_tt_layer_to_hf(state_dict: dict[str, Tensor], layer_index: int):
-    """Convert one layer from PrimeRL to HF format in place."""
-    apply_tt_to_hf(state_dict, _layer_conversion_chain(layer_index))
-
-
-def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
-    for layer_idx in range(get_max_layer_num(state_dict)):
-        convert_tt_layer_to_hf(state_dict, layer_idx)
 
 
 def convert_tt_layer_to_vllm_kernel(
