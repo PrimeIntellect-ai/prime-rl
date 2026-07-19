@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from math import prod
 from pathlib import Path
+from typing import cast
 
 import torch
 import torch.distributed as dist
@@ -19,6 +20,7 @@ from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
 from prime_rl.configs.trainer import NIXLWeightBroadcastConfig
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
@@ -82,6 +84,28 @@ class TrainerArenaStats:
 class TransferGroupIndex:
     group_names: list[str]
     layer_to_group: dict[int, int]
+
+
+@dataclass(frozen=True)
+class StagedShardMetadata:
+    name: str
+    wire_dtype: str
+    shape: tuple[int, ...]
+    group_index: int
+    tensor_offset: int
+    numel: int
+    address: int
+
+
+@dataclass(frozen=True)
+class TrainerRankMetadata:
+    rank: int
+    agent_name: str
+    agent_metadata: bytes
+    device_id: int
+    staging_bytes: int
+    arena_stats: TrainerArenaStats
+    shards: list[StagedShardMetadata]
 
 
 class NIXLWeightBroadcast(WeightBroadcast):
@@ -195,7 +219,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 )
         return local_shards
 
-    def _allocate_arena(self, allocated_bytes: int, peak_allocated_bytes: int) -> TrainerArenaStats:
+    def _allocate_arena(self) -> TrainerArenaStats:
+        allocated_bytes = torch.cuda.memory_allocated() if self.is_serving_rank else 0
+        peak_allocated_bytes = torch.cuda.max_memory_allocated() if self.is_serving_rank else 0
         group_elements = {
             dtype: [0] * len(self.transfer_group_names) for dtype in (torch.bfloat16, torch.float32)
         }
@@ -287,96 +313,110 @@ class NIXLWeightBroadcast(WeightBroadcast):
             largest_group=largest_group_bytes,
         )
 
-    def _lazy_init(self, model: nn.Module) -> None:
-        if self.initialized:
-            return
-        allocated_bytes = torch.cuda.memory_allocated() if self.is_serving_rank else 0
-        peak_allocated_bytes = torch.cuda.max_memory_allocated() if self.is_serving_rank else 0
-        state_dict = model.state_dict()
-        transfer_groups = self.build_transfer_group_index(state_dict)
-        self.transfer_group_names = transfer_groups.group_names
+    def gather_trainer_rank_metadata(
+        self, arena_stats: TrainerArenaStats
+    ) -> list[TrainerRankMetadata] | None:
+        rank_metadata = None
         if self.is_serving_rank:
-            keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", lambda _name: False)
-            self.staged_shards = self.collect_local_tensor_shards(state_dict, transfer_groups, keep_in_fp32)
-        buffer_stats = self._allocate_arena(allocated_bytes, peak_allocated_bytes)
-
-        payload = None
-        if self.is_serving_rank:
-            payload = (
-                self.world.rank,
-                self.nixl_agent.name,
-                self.nixl_agent.get_metadata(),
-                torch.cuda.current_device(),
-                sum(arena.nbytes for arena in self.staging_arenas.values()),
-                buffer_stats,
-                [
-                    (
-                        shard.name,
-                        str(shard.wire_dtype).removeprefix("torch."),
-                        shard.global_shape,
-                        shard.group_index,
-                        shard.tensor_offset,
-                        shard.source_tensor.numel(),
-                        shard.staging_tensor.data_ptr(),
+            rank_metadata = TrainerRankMetadata(
+                rank=self.world.rank,
+                agent_name=self.nixl_agent.name,
+                agent_metadata=self.nixl_agent.get_metadata(),
+                device_id=torch.cuda.current_device(),
+                staging_bytes=sum(arena.nbytes for arena in self.staging_arenas.values()),
+                arena_stats=arena_stats,
+                shards=[
+                    StagedShardMetadata(
+                        name=shard.name,
+                        wire_dtype=str(shard.wire_dtype).removeprefix("torch."),
+                        shape=shard.global_shape,
+                        group_index=shard.group_index,
+                        tensor_offset=shard.tensor_offset,
+                        numel=shard.source_tensor.numel(),
+                        address=cast(torch.Tensor, shard.staging_tensor).data_ptr(),
                     )
                     for shard in self.staged_shards
-                    if shard.staging_tensor is not None
                 ],
             )
-        gathered: list | None = [None] * self.world.world_size if self.world.is_master else None
-        dist.gather_object(payload, gathered, dst=0)
 
-        if self.world.is_master:
-            assert gathered is not None
-            parts = sorted((part for part in gathered if part is not None), key=lambda part: part[0])
-            agents = [
-                TrainerAgent(name=name, metadata=metadata, device_id=device_id)
-                for _, name, metadata, device_id, _, _, _ in parts
-            ]
-            tensors: dict[str, TrainerTensor] = {}
-            tensor_groups: dict[str, int] = {}
-            for agent_index, (_, _, _, _, _, _, rows) in enumerate(parts):
-                for name, wire_dtype, shape, group, offset, numel, addr in rows:
-                    tensor = tensors.setdefault(
-                        name,
-                        TrainerTensor(
-                            name=name,
-                            wire_dtype=wire_dtype,
-                            shape=tuple(shape),
-                            shards=[],
-                        ),
+        gathered: list[TrainerRankMetadata | None] | None = (
+            [None] * self.world.world_size if self.world.is_master else None
+        )
+        dist.gather_object(rank_metadata, gathered, dst=0)
+        if gathered is None:
+            return None
+        return sorted(
+            (metadata for metadata in gathered if metadata is not None),
+            key=lambda metadata: metadata.rank,
+        )
+
+    def build_trainer_tensor_table(
+        self, trainer_ranks: list[TrainerRankMetadata]
+    ) -> TrainerTensorTable:
+        agents = [
+            TrainerAgent(
+                name=metadata.agent_name,
+                metadata=metadata.agent_metadata,
+                device_id=metadata.device_id,
+            )
+            for metadata in trainer_ranks
+        ]
+        tensors: dict[str, TrainerTensor] = {}
+        tensor_groups: dict[str, int] = {}
+        for agent_index, metadata in enumerate(trainer_ranks):
+            for shard in metadata.shards:
+                tensor = tensors.setdefault(
+                    shard.name,
+                    TrainerTensor(
+                        name=shard.name,
+                        wire_dtype=shard.wire_dtype,
+                        shape=shard.shape,
+                        shards=[],
+                    ),
+                )
+                tensor_groups.setdefault(shard.name, shard.group_index)
+                tensor.shards.append(
+                    TrainerShard(
+                        agent=agent_index,
+                        offset=shard.tensor_offset,
+                        numel=shard.numel,
+                        addr=shard.address,
                     )
-                    previous_group = tensor_groups.setdefault(name, group)
-                    if (
-                        tensor.shape != tuple(shape)
-                        or tensor.wire_dtype != wire_dtype
-                        or previous_group != group
-                    ):
-                        raise RuntimeError(f"inconsistent trainer metadata for tensor {name!r}")
-                    tensor.shards.append(
-                        TrainerShard(
-                            agent=agent_index,
-                            offset=offset,
-                            numel=numel,
-                            addr=addr,
-                        )
-                    )
+                )
 
-            for tensor in tensors.values():
-                tensor.shards.sort(key=lambda shard: shard.offset)
+        for tensor in tensors.values():
+            tensor.shards.sort(key=lambda shard: shard.offset)
 
-            groups = [
+        return TrainerTensorTable(
+            agents=agents,
+            staging_buffer_count=self.staging_buffer_count,
+            groups=[
                 TrainerGroup(
                     name=group_name,
                     tensors=[tensor for name, tensor in tensors.items() if tensor_groups[name] == group_index],
                 )
                 for group_index, group_name in enumerate(self.transfer_group_names)
-            ]
-            table = TrainerTensorTable(
-                agents=agents,
-                staging_buffer_count=self.staging_buffer_count,
-                groups=groups,
+            ],
+        )
+
+    def initialize_transfer(self, model: nn.Module) -> None:
+        if self.initialized:
+            return
+        model = cast(PreTrainedModelPrimeRL, model)
+        state_dict = model.state_dict()
+        transfer_groups = self.build_transfer_group_index(state_dict)
+        self.transfer_group_names = transfer_groups.group_names
+        if self.is_serving_rank:
+            self.staged_shards = self.collect_local_tensor_shards(
+                state_dict,
+                transfer_groups,
+                model.keep_in_fp32_for_weight_transfer,
             )
+        arena_stats = self._allocate_arena()
+        trainer_ranks = self.gather_trainer_rank_metadata(arena_stats)
+
+        if trainer_ranks is not None:
+            table = self.build_trainer_tensor_table(trainer_ranks)
             server_url = f"{self.config.host}:{self.config.port}"
             client = MxClient(server_url=server_url)
             self.buffer_sessions = []
@@ -405,8 +445,8 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 for group in table.groups
                 for tensor in group.tensors
             )
-            max_arena_bytes = max((part[4] for part in parts), default=0)
-            stats = [part[5] for part in parts]
+            max_arena_bytes = max((metadata.staging_bytes for metadata in trainer_ranks), default=0)
+            stats = [metadata.arena_stats for metadata in trainer_ranks]
             sizing_modes = {"measured" if item.has_observed_peak_growth else "unmeasured" for item in stats}
             free_before_values = [item.free_before_reclaim for item in stats]
             free_after_values = [item.free_after_reclaim for item in stats]
@@ -438,10 +478,12 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 f"each buffer {buffer_min / gib:.2f}-{group_max / gib:.2f} GiB across ranks, "
                 f"arenas up to {max_arena_bytes / gib:.2f} GiB, "
                 f"post-allocation free {min(post_free_values) / gib:.2f}-{max(post_free_values) / gib:.2f} GiB, "
-                f"{group_total / max(1, len(parts) * len(table.groups)) / 1e6:.1f} MB average logical group payload"
+                f"{group_total / max(1, len(trainer_ranks) * len(table.groups)) / 1e6:.1f} MB "
+                f"average logical group payload"
             )
+            tensor_count = sum(len(group.tensors) for group in table.groups)
             self.logger.info(
-                f"Published {len(tensors)} FP32-master tensors with BF16-default/FP32-exception wire "
+                f"Published {tensor_count} FP32-master tensors with BF16-default/FP32-exception wire "
                 f"precision in {len(table.groups)} groups "
                 f"from {len(table.agents)} trainer agents ({total_bytes / 1e9:.2f} GB per update, "
                 f"{max_arena_bytes / 1e9:.2f} GB largest local arena, {self.staging_buffer_count} staging buffers)"
@@ -451,7 +493,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         ready_runs = list(self.multi_run_manager.ready_to_update_idxs)
-        self._lazy_init(model)
+        self.initialize_transfer(model)
         start = time.perf_counter()
 
         if self.world.is_master:

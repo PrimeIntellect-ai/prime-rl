@@ -123,7 +123,6 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
 class Qwen3MoePreTrainedModel(PreTrainedModelPrimeRL):
     config: Qwen3MoeConfig
     base_model_prefix = "model"
-    weight_transfer_keep_in_fp32 = ()
     supports_gradient_checkpointing = True
     _no_split_modules = ["Qwen3MoeDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]

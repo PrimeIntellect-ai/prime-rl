@@ -122,7 +122,6 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
 class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     config: GlmMoeDsaConfig
     base_model_prefix = "model"
-    weight_transfer_keep_in_fp32 = ("mlp.expert_bias",)
     supports_gradient_checkpointing = True
     _no_split_modules = ["GlmMoeDsaDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
@@ -137,6 +136,10 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
 
     def _init_weights(self, module):
         super()._init_weights(module)
+
+    @classmethod
+    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        return name == "mlp.expert_bias" or name.endswith(".mlp.expert_bias")
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
