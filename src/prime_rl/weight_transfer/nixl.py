@@ -13,18 +13,17 @@ MemDesc = tuple[int, int, int]
 
 
 class NixlAgent:
-    def __init__(self, name: str, backends: Sequence[str] = ("UCX",)) -> None:
+    def __init__(self, name: str) -> None:
         try:
             from nixl_cu13._api import nixl_agent, nixl_agent_config  # type: ignore[import-not-found]
         except ImportError:
             from nixl._api import nixl_agent, nixl_agent_config  # type: ignore[import-not-found]
 
         self.name = name
-        self.backends = list(backends)
-        self._agent = nixl_agent(name, nixl_agent_config(backends=self.backends))
+        self._agent = nixl_agent(name, nixl_agent_config(backends=["UCX"]))
 
     def register_tensor(self, tensor: Tensor) -> None:
-        self._agent.register_memory(tensor, backends=self.backends)
+        self._agent.register_memory(tensor, backends=["UCX"])
 
     def get_metadata(self) -> bytes:
         return self._agent.get_agent_metadata()
@@ -35,14 +34,12 @@ class NixlAgent:
     def make_connection(self, peer_name: str) -> None:
         self._agent.make_connection(peer_name)
 
-    def prep_local(self, descs: Sequence[MemDesc]) -> Any:
+    def prepare_xfer_dlist(self, descs: Sequence[MemDesc], agent_name: str | None = None) -> Any:
         return self._agent.prep_xfer_dlist(
-            agent_name="", xfer_list=list(descs), mem_type="cuda", backends=self.backends
-        )
-
-    def prep_remote(self, peer_name: str, descs: Sequence[MemDesc]) -> Any:
-        return self._agent.prep_xfer_dlist(
-            agent_name=peer_name, xfer_list=list(descs), mem_type="cuda", backends=self.backends
+            agent_name=agent_name or "",
+            xfer_list=list(descs),
+            mem_type="cuda",
+            backends=["UCX"],
         )
 
     def post_read(self, local: Any, indices: Sequence[int], remote: Any) -> Any:
@@ -52,7 +49,7 @@ class NixlAgent:
             local_indices=list(indices),
             remote_xfer_side=remote,
             remote_indices=list(indices),
-            backends=self.backends,
+            backends=["UCX"],
         )
         state = self._agent.transfer(handle)
         if state in ("ERR", "ERROR", "FAIL"):

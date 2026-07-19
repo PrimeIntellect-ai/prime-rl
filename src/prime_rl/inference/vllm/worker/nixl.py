@@ -409,8 +409,8 @@ class NIXLWeightUpdateWorker(Worker):
                     peer_name = self.nixl_agent.add_remote_agent(table.agents[agent_index].metadata)
                     self.nixl_agent.make_connection(peer_name)
                     peer_names[agent_index] = peer_name
-                local_prepared = self.nixl_agent.prep_local(local_descs[agent_index])
-                remote_prepared = self.nixl_agent.prep_remote(peer_name, remote)
+                local_prepared = self.nixl_agent.prepare_xfer_dlist(local_descs[agent_index])
+                remote_prepared = self.nixl_agent.prepare_xfer_dlist(remote, agent_name=peer_name)
                 pulls.append((local_prepared, remote_prepared, list(range(len(remote)))))
             transfer_groups.append(
                 WeightTransferGroup(
