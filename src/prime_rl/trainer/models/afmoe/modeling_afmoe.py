@@ -401,36 +401,12 @@ class AfmoeModel(AfmoePreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        use_flash = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
-        if seq_lens.numel() > 1 and not use_flash:
-            # SDPA/eager attention has no varlen support and would attend across
-            # packed document boundaries.
-            raise ValueError("Packed Afmoe batches require flash attention")
-
-        if use_flash:
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-                seq_lens.to(device=inputs_embeds.device),
-                total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
-            )
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-            causal_mask_mapping = None
-        else:
-            cu_seqlens = None
-            max_seqlen = None
-            cache_position = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device)
-            if not isinstance(causal_mask_mapping := attention_mask, dict):
-                mask_kwargs = {
-                    "config": self.config,
-                    "inputs_embeds": inputs_embeds,
-                    "attention_mask": attention_mask,
-                    "cache_position": cache_position,
-                    "past_key_values": None,
-                    "position_ids": position_ids,
-                }
-                causal_mask_mapping = {
-                    "full_attention": create_causal_mask(**mask_kwargs),
-                    "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
-                }
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device),
+            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        causal_mask_mapping = None
 
         hidden_states = inputs_embeds
 
