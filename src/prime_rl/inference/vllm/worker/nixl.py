@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 import torch.nn as nn
 from modelexpress import p2p_pb2
-from modelexpress.client import MxClient
+from modelexpress.client import MxClient as ModelExpressClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
@@ -30,7 +30,7 @@ from prime_rl.weight_transfer.graph import (
     make_hf_lazy_weights,
     plan_tensor_replay,
 )
-from prime_rl.weight_transfer.mx import MxRendezvous
+from prime_rl.weight_transfer.model_express import ModelExpressSession
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.tensor_routing import route_sharded_tensor
 from prime_rl.weight_transfer.trainer_tensor_table import TrainerTensorTable
@@ -114,11 +114,10 @@ class NIXLWeightUpdateWorker(Worker):
         server_url = f"{host}:{port}"
         set_ucx_env_defaults()
         self.nixl_agent = NixlAgent(make_agent_name("inference", global_rank))
-        self.mx_rendezvous = MxRendezvous(
-            client=MxClient(server_url=server_url),
+        self.model_express = ModelExpressSession(
+            client=ModelExpressClient(server_url=server_url),
             role="inference",
             rank=global_rank,
-            peer_world_size=1,
             session_id=session_id,
             worker_id=f"inference-{global_rank}",
         )
@@ -139,33 +138,37 @@ class NIXLWeightUpdateWorker(Worker):
         started = time.perf_counter()
         allocated_bytes = torch.cuda.memory_allocated(self.device)
         peak_allocated_bytes = torch.cuda.max_memory_allocated(self.device)
-        trainer_ref = self.mx_rendezvous.wait_for_peers(timeout=self.weight_transfer_timeout)[0]
-        table = TrainerTensorTable.decode(self.mx_rendezvous.fetch(trainer_ref).nixl_metadata)
+        trainer_ref = self.model_express.wait_for(
+            "trainer",
+            count=1,
+            status=None,
+            timeout=self.weight_transfer_timeout,
+        )[0]
+        table = TrainerTensorTable.decode(self.model_express.fetch(trainer_ref).nixl_metadata)
         layers, persistent = self.trace_weight_loads(table)
         plan = self._build_pull_plan(table, layers, persistent, allocated_bytes, peak_allocated_bytes)
-        self.buffer_rendezvous = []
+        self.buffer_sessions = []
         for buffer_index in range(table.source_ring_size):
-            rendezvous = MxRendezvous(
-                client=self.mx_rendezvous.client,
+            session = ModelExpressSession(
+                client=self.model_express.client,
                 role="inference",
-                rank=self.mx_rendezvous.rank,
-                peer_world_size=1,
-                session_id=f"{self.mx_rendezvous.session_id}:layers:{buffer_index}",
-                worker_id=f"inference-buffer-{self.mx_rendezvous.rank}-{buffer_index}",
+                rank=self.model_express.rank,
+                session_id=f"{self.model_express.session_id}:layers:{buffer_index}",
+                worker_id=f"inference-buffer-{self.model_express.rank}-{buffer_index}",
             )
-            rendezvous.publish()
-            rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-            self.buffer_rendezvous.append(rendezvous)
+            session.publish()
+            session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            self.buffer_sessions.append(session)
         # Join the current generation directly. Publishing a transient READY
         # before the first pull would let the trainer mistake initialization
         # for a completed acknowledgement.
-        self.mx_rendezvous.publish(nixl_metadata=self.nixl_agent.get_metadata())
-        self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+        self.model_express.publish(nixl_metadata=self.nixl_agent.get_metadata())
+        self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.weight_transfer_plan = plan
         logger.info(
             "NIXL plan built in %.2fs: rank=%d, groups=%d, source_buffers=%d, copies=%d, bytes=%d, pull_lists=%d",
             time.perf_counter() - started,
-            self.mx_rendezvous.rank,
+            self.model_express.rank,
             len(plan.groups),
             table.source_ring_size,
             sum(len(layer.copies) + len(layer.persistent_copies) for group in plan.groups for layer in group.layers),
@@ -428,7 +431,7 @@ class NIXLWeightUpdateWorker(Worker):
             "(%.2f GiB total, %.2f GiB target headroom): %.2f GiB per buffer, "
             "%.2f GiB arena, %.2f GiB post-allocation free for %d groups",
             receive_buffer_count,
-            self.mx_rendezvous.rank,
+            self.model_express.rank,
             "measured" if has_observed_peak_growth else "unmeasured",
             table.source_ring_size,
             max_receive_buffers,
@@ -455,8 +458,8 @@ class NIXLWeightUpdateWorker(Worker):
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
         del weight_dir
         plan = self._lazy_init()
-        self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-        self.mx_rendezvous.wait_for(
+        self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+        self.model_express.wait_for(
             "trainer",
             count=1,
             status=p2p_pb2.SOURCE_STATUS_READY,
@@ -467,11 +470,11 @@ class NIXLWeightUpdateWorker(Worker):
         self._process_and_commit(plan)
         update_mla_absorbed_weights(self.raw_model)
         torch.cuda.synchronize(self.device)
-        self.mx_rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
+        self.model_express.set_status(p2p_pb2.SOURCE_STATUS_READY)
         logger.info(
             "Applied %.2f GB NIXL policy update on rank %d in %.2fs",
             plan.total_bytes / 1e9,
-            self.mx_rendezvous.rank,
+            self.model_express.rank,
             time.perf_counter() - started,
         )
 
@@ -491,9 +494,9 @@ class NIXLWeightUpdateWorker(Worker):
 
         def pull_group(group_index: int) -> PulledWeightTransferGroup:
             transfer_group = plan.groups[group_index]
-            rendezvous = self.buffer_rendezvous[group_index % len(self.buffer_rendezvous)]
+            session = self.buffer_sessions[group_index % len(self.buffer_sessions)]
             source_wait_started = time.perf_counter()
-            rendezvous.wait_for(
+            session.wait_for(
                 "trainer",
                 count=1,
                 status=p2p_pb2.SOURCE_STATUS_READY,
@@ -522,10 +525,10 @@ class NIXLWeightUpdateWorker(Worker):
             )
 
         def acknowledge_group(group_index: int) -> float:
-            rendezvous = self.buffer_rendezvous[group_index % len(self.buffer_rendezvous)]
+            session = self.buffer_sessions[group_index % len(self.buffer_sessions)]
             acknowledgement_started = time.perf_counter()
-            rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
-            rendezvous.wait_for(
+            session.set_status(p2p_pb2.SOURCE_STATUS_READY)
+            session.wait_for(
                 "trainer",
                 count=1,
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
@@ -533,7 +536,7 @@ class NIXLWeightUpdateWorker(Worker):
                 poll_interval=_BUFFER_POLL_INTERVAL,
                 cancelled=cancelled.is_set,
             )
-            rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
             return time.perf_counter() - acknowledgement_started
 
         def prefetch_group(group_index: int) -> PulledWeightTransferGroup:
@@ -609,7 +612,7 @@ class NIXLWeightUpdateWorker(Worker):
             logger.info(
                 "NIXL update profile rank=%d: groups=%d, source_wait=%.2fs, "
                 "sequential_rdma=%.2fs, source_ack=%.2fs, replay=%.2fs, finalize=%.2fs",
-                self.mx_rendezvous.rank,
+                self.model_express.rank,
                 len(plan.groups),
                 source_wait_seconds,
                 transfer_seconds,

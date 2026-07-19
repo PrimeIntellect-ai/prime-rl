@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 import tomli_w
 import verifiers.v1 as vf
 from modelexpress import p2p_pb2
-from modelexpress.client import MxClient
+from modelexpress.client import MxClient as ModelExpressClient
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -85,7 +85,7 @@ from prime_rl.utils.utils import (
     clean_exit,
     resolve_latest_ckpt_step,
 )
-from prime_rl.weight_transfer.mx import MxRendezvous
+from prime_rl.weight_transfer.model_express import ModelExpressSession
 
 monkey_patch_oai_iterable_types()
 monkey_patch_chat_completion_logprobs()
@@ -192,7 +192,7 @@ class Orchestrator:
         self.lora_name = None
         self.resume_step = None
         self.lag_task = None
-        self.mx_rendezvous = None
+        self.model_express = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -321,16 +321,17 @@ class Orchestrator:
                 config.weight_broadcast.inference_world_size,
                 config.weight_broadcast.session_id,
             )
-            self.mx_rendezvous = MxRendezvous(
-                client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
+            self.model_express = ModelExpressSession(
+                client=ModelExpressClient(
+                    server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"
+                ),
                 role="orchestrator",
                 rank=0,
-                peer_world_size=1,
                 session_id=config.weight_broadcast.session_id,
                 worker_id="orchestrator",
             )
-            self.mx_rendezvous.publish()
-            await asyncio.to_thread(self.mx_rendezvous.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            self.model_express.publish()
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
         self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
@@ -359,11 +360,11 @@ class Orchestrator:
             weights_path = get_weight_dir(
                 config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
             )
-            if self.mx_rendezvous is not None:
-                await asyncio.to_thread(self.mx_rendezvous.set_status, p2p_pb2.SOURCE_STATUS_READY)
+            if self.model_express is not None:
+                await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
             await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
-            if self.mx_rendezvous is not None:
-                await asyncio.to_thread(self.mx_rendezvous.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            if self.model_express is not None:
+                await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
             if self.lora_name is not None:
                 self.policy_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
@@ -412,7 +413,7 @@ class Orchestrator:
             observers=[self.dispatcher, self],
             lora_name=self.lora_name,
             ckpt_step=self.policy.version,
-            mx_rendezvous=self.mx_rendezvous,
+            model_express=self.model_express,
         )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
@@ -895,14 +896,14 @@ class Orchestrator:
             gate.set()
 
     async def on_version_pending(self, step: int) -> None:
-        if self.mx_rendezvous is not None:
-            await asyncio.to_thread(self.mx_rendezvous.set_status, p2p_pb2.SOURCE_STATUS_READY)
+        if self.model_express is not None:
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
 
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""
-        if self.mx_rendezvous is not None:
-            await asyncio.to_thread(self.mx_rendezvous.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
+        if self.model_express is not None:
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.update_dispatch_gate()
 
     async def stop(self) -> None:

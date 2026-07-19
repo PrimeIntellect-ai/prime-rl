@@ -14,7 +14,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 from modelexpress import p2p_pb2
-from modelexpress.client import MxClient
+from modelexpress.client import MxClient as ModelExpressClient
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
@@ -24,7 +24,7 @@ from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
 from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc, cuda_buffer_capacity
-from prime_rl.weight_transfer.mx import MxRendezvous
+from prime_rl.weight_transfer.model_express import ModelExpressSession
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.trainer_tensor_table import (
     TrainerAgent,
@@ -345,30 +345,28 @@ class NIXLWeightBroadcast(WeightBroadcast):
             )
             self._validate_table(table)
             server_url = f"{self.config.host}:{self.config.port}"
-            client = MxClient(server_url=server_url)
-            self.buffer_rendezvous = []
+            client = ModelExpressClient(server_url=server_url)
+            self.buffer_sessions = []
             for buffer_index in range(self.source_ring_size):
-                rendezvous = MxRendezvous(
+                session = ModelExpressSession(
                     client=client,
                     role="trainer",
                     rank=0,
-                    peer_world_size=self.config.inference_world_size,
                     session_id=f"{self.config.session_id}{_LAYER_SESSION_SUFFIX}:{buffer_index}",
                     worker_id=f"trainer-buffer-{buffer_index}",
                 )
-                rendezvous.publish()
-                rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-                self.buffer_rendezvous.append(rendezvous)
-            self.rendezvous = MxRendezvous(
+                session.publish()
+                session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                self.buffer_sessions.append(session)
+            self.model_express = ModelExpressSession(
                 client=client,
                 role="trainer",
                 rank=0,
-                peer_world_size=self.config.inference_world_size,
                 session_id=self.config.session_id,
                 worker_id="trainer-table",
             )
-            self.rendezvous.publish(nixl_metadata=table.encode())
-            self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            self.model_express.publish(nixl_metadata=table.encode())
+            self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
             total_bytes = sum(
                 prod(tensor.shape) * getattr(torch, tensor.wire_dtype).itemsize
                 for group in table.groups
@@ -468,14 +466,14 @@ class NIXLWeightBroadcast(WeightBroadcast):
         start = time.perf_counter()
 
         if self.world.is_master:
-            self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_READY)
-            self.rendezvous.wait_for(
+            self.model_express.set_status(p2p_pb2.SOURCE_STATUS_READY)
+            self.model_express.wait_for(
                 "orchestrator",
                 count=1,
                 status=p2p_pb2.SOURCE_STATUS_READY,
                 timeout=self.config.timeout,
             )
-            self.rendezvous.wait_for(
+            self.model_express.wait_for(
                 "inference",
                 count=self.config.inference_world_size,
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
@@ -487,16 +485,16 @@ class NIXLWeightBroadcast(WeightBroadcast):
             buffer_index = group % self.source_ring_size
             if group >= self.source_ring_size:
                 if self.world.is_master:
-                    rendezvous = self.buffer_rendezvous[buffer_index]
-                    rendezvous.wait_for(
+                    session = self.buffer_sessions[buffer_index]
+                    session.wait_for(
                         "inference",
                         count=self.config.inference_world_size,
                         status=p2p_pb2.SOURCE_STATUS_READY,
                         timeout=self.config.timeout,
                         poll_interval=_BUFFER_POLL_INTERVAL,
                     )
-                    rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-                    rendezvous.wait_for(
+                    session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                    session.wait_for(
                         "inference",
                         count=self.config.inference_world_size,
                         status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
@@ -511,9 +509,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 torch.cuda.synchronize()
             dist.barrier()
             if self.world.is_master:
-                self.buffer_rendezvous[buffer_index].set_status(p2p_pb2.SOURCE_STATUS_READY)
+                self.buffer_sessions[buffer_index].set_status(p2p_pb2.SOURCE_STATUS_READY)
                 self.logger.debug(
-                    f"NIXL+MX policy v{step} group {group_name} staged in buffer {buffer_index} in "
+                    f"NIXL+ModelExpress policy v{step} group {group_name} staged in buffer {buffer_index} in "
                     f"{time.perf_counter() - group_start:.2f}s"
                 )
 
@@ -521,16 +519,16 @@ class NIXLWeightBroadcast(WeightBroadcast):
         for group in range(first_pending_group, len(self.groups)):
             buffer_index = group % self.source_ring_size
             if self.world.is_master:
-                rendezvous = self.buffer_rendezvous[buffer_index]
-                rendezvous.wait_for(
+                session = self.buffer_sessions[buffer_index]
+                session.wait_for(
                     "inference",
                     count=self.config.inference_world_size,
                     status=p2p_pb2.SOURCE_STATUS_READY,
                     timeout=self.config.timeout,
                     poll_interval=_BUFFER_POLL_INTERVAL,
                 )
-                rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-                rendezvous.wait_for(
+                session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                session.wait_for(
                     "inference",
                     count=self.config.inference_world_size,
                     status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
@@ -540,20 +538,22 @@ class NIXLWeightBroadcast(WeightBroadcast):
             dist.barrier()
 
         if self.world.is_master:
-            self.rendezvous.wait_for(
+            self.model_express.wait_for(
                 "inference",
                 count=self.config.inference_world_size,
                 status=p2p_pb2.SOURCE_STATUS_READY,
                 timeout=self.config.timeout,
             )
-            self.rendezvous.wait_for(
+            self.model_express.wait_for(
                 "orchestrator",
                 count=1,
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 timeout=self.config.timeout,
             )
-            self.rendezvous.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         dist.barrier()
         for run_index in ready:
             self.multi_run_manager.ready_to_update[run_index] = False
-        self.logger.info(f"NIXL+MX policy v{step} synchronized in {time.perf_counter() - start:.2f}s")
+        self.logger.info(
+            f"NIXL+ModelExpress policy v{step} synchronized in {time.perf_counter() - start:.2f}s"
+        )

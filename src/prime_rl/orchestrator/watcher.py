@@ -16,7 +16,7 @@ from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_step_path, wait_for_path
 from prime_rl.utils.utils import get_latest_ckpt_step
-from prime_rl.weight_transfer.mx import MxRendezvous
+from prime_rl.weight_transfer.model_express import ModelExpressSession
 
 
 class WeightWatcher:
@@ -32,7 +32,7 @@ class WeightWatcher:
         lora_name: str | None,
         ckpt_step: int = 0,
         poll_interval: float = 1.0,
-        mx_rendezvous: MxRendezvous | None = None,
+        model_express: ModelExpressSession | None = None,
     ) -> None:
         self.config = config
         self.policy = policy
@@ -41,7 +41,7 @@ class WeightWatcher:
         self.lora_name = lora_name
         self.ckpt_step = ckpt_step
         self.poll_interval = poll_interval
-        self.mx_rendezvous = mx_rendezvous
+        self.model_express = model_express
 
         self.last_update_weights_time: float = 0.0
         self.last_wait_for_ckpt_time: float = 0.0
@@ -55,7 +55,11 @@ class WeightWatcher:
         self.task = asyncio.current_task()
         try:
             while not self.stopped.is_set():
-                next_step = self.ckpt_step + 1 if self.mx_rendezvous is not None else self.compute_next_ckpt_step()
+                next_step = (
+                    self.ckpt_step + 1
+                    if self.model_express is not None
+                    else self.compute_next_ckpt_step()
+                )
                 if next_step > self.ckpt_step:
                     await self.apply_policy_update(next_step)
                 await asyncio.sleep(self.poll_interval)
@@ -83,8 +87,8 @@ class WeightWatcher:
                 return
 
             weights_path = None
-            if self.mx_rendezvous is not None:
-                await self.wait_for_mx_status(p2p_pb2.SOURCE_STATUS_READY)
+            if self.model_express is not None:
+                await self.wait_for_model_express_status(p2p_pb2.SOURCE_STATUS_READY)
             else:
                 broadcast_dir = get_broadcast_dir(self.config.output_dir)
                 weights_path = get_step_path(broadcast_dir, next_step)
@@ -141,13 +145,13 @@ class WeightWatcher:
                         f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
                     )
 
-            if self.mx_rendezvous is not None:
-                await self.wait_for_mx_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            if self.model_express is not None:
+                await self.wait_for_model_express_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
-    async def wait_for_mx_status(self, status: int) -> None:
+    async def wait_for_model_express_status(self, status: int) -> None:
         while not self.stopped.is_set():
             found = await asyncio.to_thread(
-                self.mx_rendezvous.has_status,
+                self.model_express.exists_role_with_status,
                 "trainer",
                 status,
             )
