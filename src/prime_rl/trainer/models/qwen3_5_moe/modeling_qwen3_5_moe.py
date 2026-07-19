@@ -133,21 +133,17 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
 
     def _build_cp_context(
         self,
-        local_seq_len: int,
         device: torch.device,
         cu_seqlens: torch.LongTensor | None = None,
         cu_seqlens_are_pre_shard: bool = False,
     ) -> "FLACPContext | None":
-        """Build fla CP context from the local (sharded) sequence length."""
+        """Build the FLA CP context from full pre-shard sequence boundaries."""
         cp_group = getattr(self, "cp_group", None)
         if cp_group is None:
             return None
-        # Provenance flag rather than reading cu_seqlens back (per-layer CPU-GPU sync).
-        if cu_seqlens is not None and cu_seqlens_are_pre_shard:
-            global_cu_seqlens = cu_seqlens.to(device=device, dtype=torch.int32)
-        else:
-            global_seq_len = local_seq_len * self.cp_world_size
-            global_cu_seqlens = torch.tensor([0, global_seq_len], dtype=torch.int32, device=device)
+        if cu_seqlens is None or not cu_seqlens_are_pre_shard:
+            raise ValueError("Qwen3.5 context parallelism requires full pre-shard sequence boundaries")
+        global_cu_seqlens = cu_seqlens.to(device=device, dtype=torch.int32)
         return build_cp_context(
             cu_seqlens=global_cu_seqlens,
             group=cp_group,
@@ -167,7 +163,7 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
-        cp_context = self._build_cp_context(seq_len, hidden_states.device, cu_seqlens, cu_seqlens_are_pre_shard)
+        cp_context = self._build_cp_context(hidden_states.device, cu_seqlens, cu_seqlens_are_pre_shard)
 
         # Causal conv1d — must reset at sequence boundaries for packed batches,
         # otherwise the kernel-1 left pad leaks state across sequences.

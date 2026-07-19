@@ -684,10 +684,10 @@ def get_model(
             f"but model.impl resolved to 'hf'. Set model.impl='custom' explicitly."
         )
 
-    if config.cp > 1 and impl_to_use != "custom":
+    if config.cp > 1 and config.impl == "auto" and impl_to_use != "custom":
         raise ValueError(
-            "Context parallelism requires model.impl='custom' "
-            "(or model.impl='auto' selecting a custom PrimeRL implementation)."
+            "Context parallelism with model.impl='auto' requires a supported custom PrimeRL implementation, "
+            "but this architecture resolved to model.impl='hf'."
         )
 
     if config.vlm is not None and not (is_vlm_arch and impl_to_use == "custom" and custom_vlm_cls):
