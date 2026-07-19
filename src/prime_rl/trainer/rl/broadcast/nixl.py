@@ -43,7 +43,7 @@ _WIRE_DTYPES = (torch.bfloat16, torch.float32)
 _LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
 _LAYER_SESSION_SUFFIX = ":layers"
 _BUFFER_POLL_INTERVAL = 0.01
-_MAX_SOURCE_BUFFER_COUNT = 8
+_MAX_STAGING_BUFFER_COUNT = 8
 
 
 @dataclass
@@ -93,11 +93,11 @@ class NIXLWeightBroadcast(WeightBroadcast):
             set_ucx_env_defaults()
             self.nixl_agent = NixlAgent(make_agent_name("trainer", self.world.rank))
         self.initialized = False
-        self.groups: list[str] = []
-        self.shards: list[StagedTensorShard] = []
-        self.shards_by_group: dict[int, list[StagedTensorShard]] = {}
-        self.arenas: dict[torch.dtype, torch.Tensor] = {}
-        self.source_ring_size = 1
+        self.transfer_group_names: list[str] = []
+        self.staged_shards: list[StagedTensorShard] = []
+        self.staged_shards_by_group: dict[int, list[StagedTensorShard]] = {}
+        self.staging_arenas: dict[torch.dtype, torch.Tensor] = {}
+        self.staging_buffer_count: int
 
     @property
     def is_serving_rank(self) -> bool:
@@ -192,8 +192,8 @@ class NIXLWeightBroadcast(WeightBroadcast):
         return owned
 
     def _allocate_arena(self, allocated_bytes: int, peak_allocated_bytes: int) -> TrainerArenaStats:
-        group_elements = {dtype: [0] * len(self.groups) for dtype in _WIRE_DTYPES}
-        for shard in self.shards:
+        group_elements = {dtype: [0] * len(self.transfer_group_names) for dtype in _WIRE_DTYPES}
+        for shard in self.staged_shards:
             group_elements[shard.wire_dtype][shard.group_index] += shard.source_tensor.numel()
         largest_group_elements = {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
         largest_group_bytes = sum(elements * dtype.itemsize for dtype, elements in largest_group_elements.items())
@@ -201,12 +201,14 @@ class NIXLWeightBroadcast(WeightBroadcast):
         free_before_reclaim = free_after_reclaim = total_bytes = headroom_bytes = 0
         recurring_peak_growth = max(0, peak_allocated_bytes - allocated_bytes)
         has_observed_peak_growth = recurring_peak_growth > 0
-        memory_buffer_count = min(len(self.groups), _MAX_SOURCE_BUFFER_COUNT)
-        local_buffer_count = min(len(self.groups), _MAX_SOURCE_BUFFER_COUNT)
+        memory_buffer_count = min(len(self.transfer_group_names), _MAX_STAGING_BUFFER_COUNT)
+        local_buffer_count = min(len(self.transfer_group_names), _MAX_STAGING_BUFFER_COUNT)
         if self.is_serving_rank and largest_group_bytes:
-            device = self.shards[0].source_tensor.device
+            device = self.staged_shards[0].source_tensor.device
             free_before_reclaim, total_bytes = torch.cuda.mem_get_info(device)
-            max_buffers = min(len(self.groups), _MAX_SOURCE_BUFFER_COUNT) if has_observed_peak_growth else 1
+            max_buffers = (
+                min(len(self.transfer_group_names), _MAX_STAGING_BUFFER_COUNT) if has_observed_peak_growth else 1
+            )
             if has_observed_peak_growth or free_before_reclaim < largest_group_bytes:
                 torch.cuda.empty_cache()
             sizing = size_cuda_buffers(
@@ -221,21 +223,21 @@ class NIXLWeightBroadcast(WeightBroadcast):
             headroom_bytes = sizing.headroom_bytes
             local_buffer_count = memory_buffer_count
 
-        source_ring_size = torch.tensor(
+        staging_buffer_count = torch.tensor(
             local_buffer_count,
             dtype=torch.int64,
             device=torch.device("cuda", torch.cuda.current_device()),
         )
-        dist.all_reduce(source_ring_size, op=dist.ReduceOp.MIN)
-        self.source_ring_size = int(source_ring_size.item())
+        dist.all_reduce(staging_buffer_count, op=dist.ReduceOp.MIN)
+        self.staging_buffer_count = int(staging_buffer_count.item())
 
         post_free_bytes = free_after_reclaim
         if self.is_serving_rank and largest_group_bytes:
-            device = self.shards[0].source_tensor.device
+            device = self.staged_shards[0].source_tensor.device
             with use_cuda_malloc_pool():
-                self.arenas = {
+                self.staging_arenas = {
                     dtype: torch.empty(
-                        self.source_ring_size * elements,
+                        self.staging_buffer_count * elements,
                         dtype=dtype,
                         device=device,
                     )
@@ -244,26 +246,26 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 }
             offsets = {
                 dtype: [
-                    (group % self.source_ring_size) * largest_group_elements[dtype]
-                    for group in range(len(self.groups))
+                    (group % self.staging_buffer_count) * largest_group_elements[dtype]
+                    for group in range(len(self.transfer_group_names))
                 ]
-                for dtype in self.arenas
+                for dtype in self.staging_arenas
             }
-            for shard in self.shards:
+            for shard in self.staged_shards:
                 dtype_offsets = offsets[shard.wire_dtype]
                 shard.assign_staging_tensor(
-                    self.arenas[shard.wire_dtype],
+                    self.staging_arenas[shard.wire_dtype],
                     dtype_offsets[shard.group_index],
                 )
                 dtype_offsets[shard.group_index] += shard.source_tensor.numel()
-            for arena in self.arenas.values():
+            for arena in self.staging_arenas.values():
                 self.nixl_agent.register_tensor(arena)
             post_free_bytes, _ = torch.cuda.mem_get_info(device)
 
         grouped: dict[int, list[StagedTensorShard]] = defaultdict(list)
-        for shard in self.shards:
+        for shard in self.staged_shards:
             grouped[shard.group_index].append(shard)
-        self.shards_by_group = dict(grouped)
+        self.staged_shards_by_group = dict(grouped)
         return TrainerArenaStats(
             has_observed_peak_growth=has_observed_peak_growth,
             free_before_reclaim=free_before_reclaim,
@@ -285,10 +287,10 @@ class NIXLWeightBroadcast(WeightBroadcast):
         allocated_bytes = torch.cuda.memory_allocated() if self.is_serving_rank else 0
         peak_allocated_bytes = torch.cuda.max_memory_allocated() if self.is_serving_rank else 0
         state_dict = model.state_dict()
-        self.groups, layer_groups = self._transfer_groups(state_dict)
+        self.transfer_group_names, layer_groups = self._transfer_groups(state_dict)
         if self.is_serving_rank:
             keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", lambda _name: False)
-            self.shards = self._owned_shards(state_dict, layer_groups, keep_in_fp32)
+            self.staged_shards = self._owned_shards(state_dict, layer_groups, keep_in_fp32)
         buffer_stats = self._allocate_arena(allocated_bytes, peak_allocated_bytes)
 
         payload = None
@@ -298,7 +300,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 self.nixl_agent.name,
                 self.nixl_agent.get_metadata(),
                 torch.cuda.current_device(),
-                sum(arena.nbytes for arena in self.arenas.values()),
+                sum(arena.nbytes for arena in self.staging_arenas.values()),
                 buffer_stats,
                 [
                     (
@@ -310,7 +312,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                         shard.source_tensor.numel(),
                         shard.staging_tensor.data_ptr(),
                     )
-                    for shard in self.shards
+                    for shard in self.staged_shards
                     if shard.staging_tensor is not None
                 ],
             )
@@ -361,18 +363,18 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     name=group_name,
                     tensors=[tensor for name, tensor in tensors.items() if tensor_groups[name] == group_index],
                 )
-                for group_index, group_name in enumerate(self.groups)
+                for group_index, group_name in enumerate(self.transfer_group_names)
             ]
             table = TrainerTensorTable(
                 agents=agents,
-                source_ring_size=self.source_ring_size,
+                staging_buffer_count=self.staging_buffer_count,
                 groups=groups,
             )
             self._validate_table(table)
             server_url = f"{self.config.host}:{self.config.port}"
             client = ModelExpressClient(server_url=server_url)
             self.buffer_sessions = []
-            for buffer_index in range(self.source_ring_size):
+            for buffer_index in range(self.staging_buffer_count):
                 session = ModelExpressSession(
                     client=client,
                     role="trainer",
@@ -415,7 +417,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             group_max = max((item.largest_group for item in stats), default=0)
             gib = 1024**3
             self.logger.info(
-                f"NIXL staging ring selected {self.source_ring_size} buffers from one-time first-transfer sizing "
+                f"NIXL staging ring selected {self.staging_buffer_count} buffers from one-time first-transfer sizing "
                 f"({','.join(sorted(sizing_modes))} peak mode); CUDA free before cache reclaim "
                 f"{min(free_before_values) / gib:.2f}-{max(free_before_values) / gib:.2f} GiB per rank, "
                 f"after reclaim {min(free_after_values) / gib:.2f}-{max(free_after_values) / gib:.2f} GiB "
@@ -426,7 +428,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 f"inside {min(headroom_values) / gib:.2f}-{max(headroom_values) / gib:.2f} GiB total headroom "
                 f"on {min(total_values) / gib:.2f} GiB GPUs; effective local ring candidates "
                 f"{min(memory_buffer_values)}-{max(memory_buffer_values)} "
-                f"(policy cap {_MAX_SOURCE_BUFFER_COUNT}), "
+                f"(policy cap {_MAX_STAGING_BUFFER_COUNT}), "
                 f"each buffer {buffer_min / gib:.2f}-{group_max / gib:.2f} GiB across ranks, "
                 f"arenas up to {max_arena_bytes / gib:.2f} GiB, "
                 f"post-allocation free {min(post_free_values) / gib:.2f}-{max(post_free_values) / gib:.2f} GiB, "
@@ -436,16 +438,16 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 f"Published {len(tensors)} FP32-master tensors with BF16-default/FP32-exception wire "
                 f"precision in {len(table.groups)} groups "
                 f"from {len(table.agents)} trainer agents ({total_bytes / 1e9:.2f} GB per update, "
-                f"{max_arena_bytes / 1e9:.2f} GB largest local arena, {self.source_ring_size} staging buffers)"
+                f"{max_arena_bytes / 1e9:.2f} GB largest local arena, {self.staging_buffer_count} staging buffers)"
             )
         self.initialized = True
 
     @staticmethod
     def _validate_table(table: TrainerTensorTable) -> None:
         """Fail before publication unless every logical tensor has a valid flat partition."""
-        if not 1 <= table.source_ring_size <= len(table.groups):
+        if not 1 <= table.staging_buffer_count <= len(table.groups):
             raise RuntimeError(
-                f"invalid source ring size {table.source_ring_size} for {len(table.groups)} transfer groups"
+                f"invalid staging buffer count {table.staging_buffer_count} for {len(table.groups)} transfer groups"
             )
 
         group_names: set[str] = set()
@@ -502,10 +504,10 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 timeout=self.config.timeout,
             )
 
-        for group, group_name in enumerate(self.groups):
+        for group, group_name in enumerate(self.transfer_group_names):
             group_start = time.perf_counter()
-            buffer_index = group % self.source_ring_size
-            if group >= self.source_ring_size:
+            buffer_index = group % self.staging_buffer_count
+            if group >= self.staging_buffer_count:
                 if self.world.is_master:
                     session = self.buffer_sessions[buffer_index]
                     session.wait_for(
@@ -526,7 +528,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 dist.barrier()
 
             if self.is_serving_rank:
-                for shard in self.shards_by_group.get(group, ()):
+                for shard in self.staged_shards_by_group.get(group, ()):
                     shard.copy_to_staging()
                 torch.cuda.synchronize()
             dist.barrier()
@@ -537,9 +539,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
                     f"{time.perf_counter() - group_start:.2f}s"
                 )
 
-        first_pending_group = max(0, len(self.groups) - self.source_ring_size)
-        for group in range(first_pending_group, len(self.groups)):
-            buffer_index = group % self.source_ring_size
+        first_pending_group = max(0, len(self.transfer_group_names) - self.staging_buffer_count)
+        for group in range(first_pending_group, len(self.transfer_group_names)):
+            buffer_index = group % self.staging_buffer_count
             if self.world.is_master:
                 session = self.buffer_sessions[buffer_index]
                 session.wait_for(

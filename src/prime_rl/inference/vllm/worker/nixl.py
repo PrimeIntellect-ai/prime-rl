@@ -151,7 +151,7 @@ class NIXLWeightUpdateWorker(Worker):
         layers, persistent = self.trace_weight_loads(table)
         plan = self._build_pull_plan(table, layers, persistent, allocated_bytes, peak_allocated_bytes)
         self.buffer_sessions = []
-        for buffer_index in range(table.source_ring_size):
+        for buffer_index in range(table.staging_buffer_count):
             session = ModelExpressSession(
                 client=self.model_express.client,
                 role="inference",
@@ -169,11 +169,11 @@ class NIXLWeightUpdateWorker(Worker):
         self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.weight_transfer_plan = plan
         logger.info(
-            "NIXL plan built in %.2fs: rank=%d, groups=%d, source_buffers=%d, copies=%d, bytes=%d, pull_lists=%d",
+            "NIXL plan built in %.2fs: rank=%d, groups=%d, staging_buffers=%d, copies=%d, bytes=%d, pull_lists=%d",
             time.perf_counter() - started,
             self.model_express.rank,
             len(plan.groups),
-            table.source_ring_size,
+            table.staging_buffer_count,
             sum(len(layer.copies) + len(layer.persistent_copies) for group in plan.groups for layer in group.layers),
             plan.total_bytes,
             sum(len(group.pulls) for group in plan.groups),
@@ -311,7 +311,7 @@ class NIXLWeightUpdateWorker(Worker):
         peak_growth_bytes = max(0, peak_allocated_bytes - allocated_bytes)
         has_observed_peak_growth = peak_growth_bytes > 0
         free_before_reclaim, _ = torch.cuda.mem_get_info(self.device)
-        max_receive_buffers = min(2, table.source_ring_size) if has_observed_peak_growth else 1
+        max_receive_buffers = min(2, table.staging_buffer_count) if has_observed_peak_growth else 1
         if has_observed_peak_growth or free_before_reclaim < largest_group_bytes:
             torch.cuda.empty_cache()
         sizing = size_cuda_buffers(
@@ -440,7 +440,7 @@ class NIXLWeightUpdateWorker(Worker):
             receive_buffer_count,
             self.model_express.rank,
             "measured" if has_observed_peak_growth else "unmeasured",
-            table.source_ring_size,
+            table.staging_buffer_count,
             max_receive_buffers,
             free_before_reclaim / 1024**3,
             free_bytes / 1024**3,

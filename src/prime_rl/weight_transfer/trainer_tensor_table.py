@@ -49,7 +49,7 @@ class TrainerGroup(msgspec.Struct):
 
 class TrainerTensorTable(msgspec.Struct):
     agents: list[TrainerAgent]
-    source_ring_size: int
+    staging_buffer_count: int
     groups: list[TrainerGroup]
 
     def encode(self) -> bytes:
