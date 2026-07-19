@@ -265,12 +265,10 @@ def _patch_model_forward(model: nn.Module) -> None:
         if position_ids is None and not is_multimodal:
             reference_tensor = input_ids if input_ids is not None else inputs_embeds
             position_ids = torch.arange(1, reference_tensor.shape[1] + 1, device=reference_tensor.device).unsqueeze(0)
-        outputs = self.model(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            inputs_embeds=inputs_embeds,
-            **kwargs,
-        )
+        model_kwargs = {"input_ids": input_ids, "position_ids": position_ids, **kwargs}
+        if inputs_embeds is not None:
+            model_kwargs["inputs_embeds"] = inputs_embeds
+        outputs = self.model(**model_kwargs)
         hidden_states = outputs.last_hidden_state
 
         # Slice hidden states for logits_to_keep

@@ -188,6 +188,12 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
 
         self.post_init()
 
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.embed_tokens = value
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -234,10 +240,10 @@ class Qwen3_5VLMModel(nn.Module):
         self.language_model = Qwen3_5Model(config.text_config)
 
     def get_input_embeddings(self):
-        return self.language_model.embed_tokens
+        return self.language_model.get_input_embeddings()
 
     def set_input_embeddings(self, value):
-        self.language_model.embed_tokens = value
+        self.language_model.set_input_embeddings(value)
 
     def _dummy_vision_inputs(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         vcfg = self.config.vision_config
@@ -250,32 +256,19 @@ class Qwen3_5VLMModel(nn.Module):
 
     def prepare_inputs_embeds_and_position_ids(
         self,
-        input_ids: torch.LongTensor | None = None,
+        input_ids: torch.LongTensor,
         position_ids: torch.LongTensor | None = None,
-        inputs_embeds: torch.FloatTensor | None = None,
         pixel_values: torch.Tensor | None = None,
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
     ) -> tuple[torch.FloatTensor, torch.LongTensor]:
-        if inputs_embeds is None:
-            if input_ids is None:
-                raise ValueError("input_ids are required when inputs_embeds are not provided")
-            inputs_embeds = self.language_model.embed_tokens(input_ids)
-
-        if image_grid_thw is not None and position_ids is not None and position_ids.ndim != 3:
-            raise ValueError(
-                f"Qwen3.5 multimodal forward requires 3D MRoPE position_ids; got shape={tuple(position_ids.shape)}"
-            )
+        inputs_embeds = self.language_model.embed_tokens(input_ids)
 
         has_images = pixel_values is not None
         vision_grid_thw = image_grid_thw
         if has_images:
-            if input_ids is None:
-                raise ValueError("input_ids are required when scattering Qwen3.5 image features")
-            if image_grid_thw is None:
-                raise ValueError("image_grid_thw is required when pixel_values are provided")
             pixel_values = pixel_values.type(self.visual.dtype)
         else:
             pixel_values, vision_grid_thw = self._dummy_vision_inputs(inputs_embeds.device)
@@ -285,17 +278,6 @@ class Qwen3_5VLMModel(nn.Module):
 
         if has_images:
             image_mask = input_ids == self.config.image_token_id
-            image_token_count = int(image_mask.sum().item())
-            image_feature_count = int(image_embeds.shape[0])
-            if image_token_count != image_feature_count:
-                raise ValueError(
-                    "Qwen VLM image token/feature mismatch before scatter: "
-                    f"image_token_id={self.config.image_token_id}, "
-                    f"image_tokens={image_token_count}, image_features={image_feature_count}, "
-                    f"input_ids_shape={tuple(input_ids.shape)}, "
-                    f"pixel_values_shape={tuple(pixel_values.shape)}, "
-                    f"image_grid_thw_shape={tuple(image_grid_thw.shape) if image_grid_thw is not None else None}"
-                )
             image_mask = image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
         else:
@@ -303,12 +285,6 @@ class Qwen3_5VLMModel(nn.Module):
 
         if position_ids is None:
             if image_grid_thw is not None:
-                if input_ids is None:
-                    raise ValueError("input_ids are required to compute Qwen3.5 multimodal MRoPE positions")
-                if mm_token_type_ids is None:
-                    raise ValueError(
-                        "Qwen3.5 multimodal forward requires mm_token_type_ids to compute MRoPE positions correctly"
-                    )
                 position_ids = build_qwen3_5_mrope_position_ids(
                     input_ids=input_ids,
                     mm_token_type_ids=mm_token_type_ids,
@@ -323,20 +299,17 @@ class Qwen3_5VLMModel(nn.Module):
 
     def forward(
         self,
-        input_ids: torch.LongTensor | None = None,
+        input_ids: torch.LongTensor,
         position_ids: torch.LongTensor | None = None,
-        inputs_embeds: torch.FloatTensor | None = None,
         pixel_values: torch.Tensor | None = None,
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
-        **kwargs,
     ) -> BaseModelOutputWithPast:
         inputs_embeds, position_ids = self.prepare_inputs_embeds_and_position_ids(
             input_ids=input_ids,
             position_ids=position_ids,
-            inputs_embeds=inputs_embeds,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
             mm_token_type_ids=mm_token_type_ids,
@@ -375,15 +348,10 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         self.post_init()
 
     def get_input_embeddings(self):
-        if self._is_vlm:
-            return self.model.get_input_embeddings()
-        return self.model.embed_tokens
+        return self.model.get_input_embeddings()
 
     def set_input_embeddings(self, value):
-        if self._is_vlm:
-            self.model.set_input_embeddings(value)
-        else:
-            self.model.embed_tokens = value
+        self.model.set_input_embeddings(value)
 
     def set_decoder(self, decoder):
         self.model = decoder
@@ -412,18 +380,10 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         assert use_cache is None, "use_cache is not supported for custom qwen3_5 for now"
         assert past_key_values is None, "past_key_values is not supported for custom qwen3_5 for now"
 
-        has_vlm_image_inputs = self._is_vlm and image_grid_thw is not None
-        if position_ids is None and not has_vlm_image_inputs:
-            if inputs_embeds is not None:
-                position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
-            elif input_ids is not None:
-                position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
-
         if self._is_vlm:
             outputs = self.model(
                 input_ids=input_ids,
                 position_ids=position_ids,
-                inputs_embeds=inputs_embeds,
                 pixel_values=pixel_values,
                 image_grid_thw=image_grid_thw,
                 mm_token_type_ids=mm_token_type_ids,

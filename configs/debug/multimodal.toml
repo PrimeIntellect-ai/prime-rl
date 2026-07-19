@@ -7,6 +7,7 @@ seq_len = 4096
 
 [model]
 name = "Qwen/Qwen3.5-0.8B"
+impl = "custom"
 
 [model.vlm]
 vision_encoder_attr = "model.visual"

@@ -8,6 +8,7 @@ save_adapter_separately = true
 name = "Qwen/Qwen3.5-0.8B"
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
+impl = "custom"
 
 [renderer]
 name = "auto"

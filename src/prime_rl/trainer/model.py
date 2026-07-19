@@ -627,9 +627,9 @@ def get_model(
             f"but model.impl resolved to 'hf'. Set model.impl='custom' explicitly."
         )
 
-    if config.vlm is not None and not (is_vlm_arch and impl_to_use == "custom" and custom_vlm_cls):
+    if config.vlm is not None and not (is_vlm_arch and custom_vlm_cls):
         raise ValueError(
-            "VLM training requires a custom PrimeRL VLM implementation; "
+            "VLM training requires a registered custom PrimeRL VLM implementation; "
             f"{getattr(model_config, 'model_type', config.name)!r} has none."
         )
 

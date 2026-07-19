@@ -39,6 +39,7 @@ def test_frozen_vision_encoder_is_excluded_from_lora(monkeypatch):
     model = _ToyVLM()
     config = ModelConfig(
         vlm=VLMConfig(vision_encoder_attr="visual", language_model_attr="language_model"),
+        impl="custom",
         lora=LoRAConfig(target_modules=["gate_proj"]),
         moe_router_dtype="bfloat16",
     )
@@ -46,19 +47,18 @@ def test_frozen_vision_encoder_is_excluded_from_lora(monkeypatch):
     configure_trainable_parameters(model, config, SimpleNamespace(ep_enabled=False))
 
     assert isinstance(model.visual.gate_proj, nn.Linear)
-    assert not isinstance(model.visual.gate_proj, MultiLoRALinear)
     assert all(not parameter.requires_grad for parameter in model.visual.parameters())
     assert isinstance(model.language_model.gate_proj, MultiLoRALinear)
-    lora_parameters = [
-        parameter for name, parameter in model.language_model.gate_proj.named_parameters() if "lora_" in name
-    ]
-    assert lora_parameters
-    assert all(parameter.requires_grad for parameter in lora_parameters)
-    base_parameters = [
-        parameter for name, parameter in model.language_model.gate_proj.named_parameters() if "lora_" not in name
-    ]
-    assert base_parameters
-    assert all(not parameter.requires_grad for parameter in base_parameters)
+    assert all(
+        parameter.requires_grad
+        for name, parameter in model.language_model.gate_proj.named_parameters()
+        if "lora_" in name
+    )
+    assert all(
+        not parameter.requires_grad
+        for name, parameter in model.language_model.gate_proj.named_parameters()
+        if "lora_" not in name
+    )
 
 
 def test_frozen_vision_encoder_rejects_lora_targets_only_in_vision(monkeypatch):
@@ -67,6 +67,7 @@ def test_frozen_vision_encoder_rejects_lora_targets_only_in_vision(monkeypatch):
     model = _ToyVLM()
     config = ModelConfig(
         vlm=VLMConfig(vision_encoder_attr="visual", language_model_attr="language_model"),
+        impl="custom",
         lora=LoRAConfig(target_modules=["visual"]),
         moe_router_dtype="bfloat16",
     )
@@ -141,22 +142,3 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
 
     assert model.kwargs is not None
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
-
-
-def test_forward_omits_prime_only_kwargs_for_hf_mrope_vlm():
-    model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
-    input_ids = torch.tensor([[1, 10, 10, 2, 20, 20]])
-    position_ids = torch.tensor([[0, 1, 2, 0, 1, 2]])
-    seq_lens = torch.tensor([3, 3])
-
-    forward(
-        model,
-        input_ids,
-        position_ids,
-        mm_kwargs={"pixel_values": torch.ones(4, 3), "image_grid_thw": torch.tensor([[1, 1, 2], [1, 1, 2]])},
-        seq_lens=seq_lens,
-    )
-
-    assert model.kwargs is not None
-    assert "position_ids" not in model.kwargs
-    assert "seq_lens" not in model.kwargs

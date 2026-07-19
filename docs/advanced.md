@@ -72,12 +72,8 @@ The built-in VLM registry covers:
 
 | Family | `model_type` | Vision attr | LM attr |
 |---|---|---|---|
-| Qwen3-VL | `qwen3_vl` | `model.visual` | `model.language_model` |
-| Qwen3-VL MoE | `qwen3_vl_moe` | `model.visual` | `model.language_model` |
 | Qwen3.5 | `qwen3_5` | `model.visual` | `model.language_model` |
 | Qwen3.5-MoE | `qwen3_5_moe` | `model.visual` | `model.language_model` |
-
-For a model not in the table, look up the attribute paths on the loaded HF model with `model.named_children()` and set them under `[model.vlm]` directly.
 
 ### Enabling VLM Mode
 
@@ -85,7 +81,8 @@ Add `[model.vlm]` and bfloat16 dtypes:
 
 ```toml
 [model]
-name = "Qwen/Qwen3-VL-4B-Instruct"
+name = "Qwen/Qwen3.5-4B"
+impl = "custom"
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
 
@@ -97,7 +94,7 @@ language_model_attr = "model.language_model"
 
 The weight-broadcast key prefix is derived as `{language_model_attr}.layers.` automatically.
 
-To add a new model family permanently, append an entry to `VLM_REGISTRY` in `src/prime_rl/utils/vlm.py`.
+VLM training requires a registered custom PrimeRL implementation.
 
 ### Limitations
 
