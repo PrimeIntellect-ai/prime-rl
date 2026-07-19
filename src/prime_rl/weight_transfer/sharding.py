@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from prime_rl.weight_transfer.wire import TrainerShard
+from prime_rl.weight_transfer.trainer_tensor_table import TrainerShard
 
 _MAX_RUNS_PER_COPY = 1 << 16
 

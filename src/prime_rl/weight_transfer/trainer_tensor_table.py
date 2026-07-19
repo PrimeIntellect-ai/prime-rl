@@ -1,4 +1,4 @@
-"""Metadata published by the trainer for one-sided NIXL weight pulls."""
+"""Trainer tensor metadata published for one-sided NIXL weight pulls."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ class TrainerGroup(msgspec.Struct):
     tensors: list[TrainerTensor]
 
 
-class TrainerTable(msgspec.Struct):
+class TrainerTensorTable(msgspec.Struct):
     agents: list[TrainerAgent]
     source_ring_size: int
     groups: list[TrainerGroup]
@@ -56,5 +56,5 @@ class TrainerTable(msgspec.Struct):
         return msgspec.msgpack.encode(self)
 
     @classmethod
-    def decode(cls, data: bytes) -> TrainerTable:
+    def decode(cls, data: bytes) -> TrainerTensorTable:
         return msgspec.msgpack.decode(data, type=cls)

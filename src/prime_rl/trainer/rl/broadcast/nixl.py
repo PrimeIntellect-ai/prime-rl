@@ -26,12 +26,12 @@ from prime_rl.trainer.utils import get_world
 from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc, cuda_buffer_capacity
 from prime_rl.weight_transfer.mx import MxRendezvous
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
-from prime_rl.weight_transfer.wire import (
+from prime_rl.weight_transfer.trainer_tensor_table import (
     TrainerAgent,
     TrainerGroup,
     TrainerShard,
-    TrainerTable,
     TrainerTensor,
+    TrainerTensorTable,
 )
 
 _DEFAULT_WIRE_DTYPE = torch.bfloat16
@@ -338,7 +338,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 )
                 for group_index, group_name in enumerate(self.groups)
             ]
-            table = TrainerTable(
+            table = TrainerTensorTable(
                 agents=agents,
                 source_ring_size=self.source_ring_size,
                 groups=groups,
@@ -418,7 +418,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.initialized = True
 
     @staticmethod
-    def _validate_table(table: TrainerTable) -> None:
+    def _validate_table(table: TrainerTensorTable) -> None:
         """Fail before publication unless every logical tensor has a valid flat partition."""
         if not 1 <= table.source_ring_size <= len(table.groups):
             raise RuntimeError(

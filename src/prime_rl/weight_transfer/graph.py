@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import torch
 
-from prime_rl.weight_transfer.wire import TrainerTable
+from prime_rl.weight_transfer.trainer_tensor_table import TrainerTensorTable
 
 
 @dataclass(frozen=True)
@@ -312,7 +312,7 @@ class LazyWeight(torch.Tensor):
 
 
 def make_hf_lazy_weights(
-    table: TrainerTable,
+    table: TrainerTensorTable,
     *,
     device: torch.device,
     recorder: WeightLoadRecorder,

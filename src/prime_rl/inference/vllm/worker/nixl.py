@@ -33,7 +33,7 @@ from prime_rl.weight_transfer.graph import (
 from prime_rl.weight_transfer.mx import MxRendezvous
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.weight_transfer.sharding import route_region, zip_src_dst
-from prime_rl.weight_transfer.wire import TrainerTable
+from prime_rl.weight_transfer.trainer_tensor_table import TrainerTensorTable
 
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
@@ -140,7 +140,7 @@ class NIXLWeightUpdateWorker(Worker):
         allocated_bytes = torch.cuda.memory_allocated(self.device)
         peak_allocated_bytes = torch.cuda.max_memory_allocated(self.device)
         trainer_ref = self.mx_rendezvous.wait_for_peers(timeout=self.weight_transfer_timeout)[0]
-        table = TrainerTable.decode(self.mx_rendezvous.fetch(trainer_ref).nixl_metadata)
+        table = TrainerTensorTable.decode(self.mx_rendezvous.fetch(trainer_ref).nixl_metadata)
         layers, persistent = self.trace_weight_loads(table)
         plan = self._build_pull_plan(table, layers, persistent, allocated_bytes, peak_allocated_bytes)
         self.buffer_rendezvous = []
@@ -176,7 +176,7 @@ class NIXLWeightUpdateWorker(Worker):
 
     def trace_weight_loads(
         self,
-        table: TrainerTable,
+        table: TrainerTensorTable,
     ) -> tuple[list[LayerWeightCopies], list[RecordedCopy]]:
         """Trace vLLM weight loading into source-to-destination copies."""
         from vllm.model_executor.model_loader.reload.layerwise import (
@@ -258,7 +258,7 @@ class NIXLWeightUpdateWorker(Worker):
 
     def _build_pull_plan(
         self,
-        table: TrainerTable,
+        table: TrainerTensorTable,
         layers: list[LayerWeightCopies],
         persistent: list[RecordedCopy],
         allocated_bytes: int,
