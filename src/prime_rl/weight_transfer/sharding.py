@@ -2,15 +2,58 @@
 
 from __future__ import annotations
 
+from prime_rl.weight_transfer.chains import UnsupportedOpError
 from prime_rl.weight_transfer.wire import TrainerShard
+
+_MAX_RUNS_PER_COPY = 1 << 16
 
 
 def route_region(
-    region_runs: list[tuple[int, int]],
+    offset: int,
+    shape: tuple[int, ...],
+    stride: tuple[int, ...],
     shards: list[TrainerShard],
     itemsize: int,
 ) -> list[tuple[int, int, int]]:
-    """Map full-tensor element runs to ``(agent, address, bytes)`` pieces."""
+    """Map a strided source view to ``(agent, address, bytes)`` pieces."""
+    numel = 1
+    for size in shape:
+        numel *= size
+    if numel == 0:
+        return []
+
+    dims = [(size, step) for size, step in zip(shape, stride) if size != 1]
+    if any(step < 0 for _, step in dims):
+        raise UnsupportedOpError("negative strides are not supported")
+
+    run_elements = 1
+    split_at = len(dims)
+    while split_at and dims[split_at - 1][1] == run_elements:
+        run_elements *= dims[split_at - 1][0]
+        split_at -= 1
+    outer_dims = dims[:split_at]
+
+    run_count = 1
+    for size, _ in outer_dims:
+        run_count *= size
+    if run_count > _MAX_RUNS_PER_COPY:
+        raise UnsupportedOpError(
+            f"region shape={shape}, stride={stride} requires {run_count} RDMA runs "
+            f"(maximum {_MAX_RUNS_PER_COPY})"
+        )
+
+    region_runs: list[tuple[int, int]] = []
+
+    def add_runs(dim: int, run_offset: int) -> None:
+        if dim == len(outer_dims):
+            region_runs.append((run_offset, run_elements))
+            return
+        size, step = outer_dims[dim]
+        for index in range(size):
+            add_runs(dim + 1, run_offset + index * step)
+
+    add_runs(0, offset)
+
     ordered = sorted(shards, key=lambda shard: shard.offset)
     bounds: list[tuple[int, int, TrainerShard]] = []
     for shard in ordered:

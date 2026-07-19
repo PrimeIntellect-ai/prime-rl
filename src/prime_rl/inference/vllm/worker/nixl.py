@@ -21,11 +21,9 @@ from vllm.logger import init_logger
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
 from prime_rl.weight_transfer.chains import (
     OperationChain,
+    TensorTransferPlan,
     apply_chain,
-    region_elem_runs,
-    resolve_chain_region,
-    split_transport_chain,
-    tensor_runs,
+    plan_tensor_transfer,
 )
 from prime_rl.weight_transfer.cuda_pool import classic_cuda_alloc, cuda_buffer_capacity
 from prime_rl.weight_transfer.graph import make_hf_lazy_weights
@@ -42,13 +40,6 @@ else:
 
 logger = init_logger("vllm.inference.vllm.worker_nixl")
 _BUFFER_POLL_INTERVAL = 0.01
-
-
-@dataclass
-class TensorCopySpec:
-    transport_ops: OperationChain
-    replay_ops: OperationChain
-    staging_shape: tuple[int, ...]
 
 
 @dataclass
@@ -278,23 +269,17 @@ class NIXLWeightUpdateWorker(Worker):
             for tensor in group.tensors
         }
         copies = [copy for layer in layers for copy in layer.copies] + persistent
-        specifications: dict[int, TensorCopySpec] = {}
+        specifications: dict[int, TensorTransferPlan] = {}
         copies_by_group: dict[int, list[RecordedCopy]] = defaultdict(list)
         group_elements: dict[torch.dtype, list[int]] = defaultdict(lambda: [0] * len(table.groups))
         for copy in copies:
             source = tensors[copy.source_name]
             source_dtype = getattr(torch, source.wire_dtype)
-            transport_ops, replay_ops, staging_shape = split_transport_chain(
-                tuple(source.shape), source_dtype, copy.ops
-            )
-            specifications[id(copy)] = TensorCopySpec(
-                transport_ops=transport_ops,
-                replay_ops=replay_ops,
-                staging_shape=staging_shape,
-            )
+            transfer_plan = plan_tensor_transfer(tuple(source.shape), source_dtype, copy.ops)
+            specifications[id(copy)] = transfer_plan
             source_group = tensor_groups[source.name]
             copies_by_group[source_group].append(copy)
-            group_elements[source_dtype][source_group] += prod(staging_shape)
+            group_elements[source_dtype][source_group] += prod(transfer_plan.source_shape)
 
         reload_layer_ids = {id(layer.layer) for layer in layers}
         reload_layer_groups: dict[int, int] = {}
@@ -361,9 +346,11 @@ class NIXLWeightUpdateWorker(Worker):
                 specification = specifications[id(copy)]
                 source = tensors[copy.source_name]
                 source_dtype = getattr(torch, source.wire_dtype)
-                numel = prod(specification.staging_shape)
+                numel = prod(specification.source_shape)
                 cursor = cursors[source_dtype]
-                staging_tensor = receive_arenas[source_dtype].narrow(0, cursor, numel).view(specification.staging_shape)
+                staging_tensor = receive_arenas[source_dtype].narrow(0, cursor, numel).view(
+                    specification.source_shape
+                )
                 cursors[source_dtype] += numel
                 copy_plan = TensorCopyPlan(
                     recorded_copy=copy,
@@ -373,16 +360,16 @@ class NIXLWeightUpdateWorker(Worker):
                 plans = persistent_plans_by_layer if copy.is_persistent else copy_plans_by_layer
                 plans[id(copy.destination_module)].append(copy_plan)
 
-                offset, shape, stride = resolve_chain_region(
-                    tuple(source.shape), source_dtype, specification.transport_ops
-                )
                 source_pieces = route_region(
-                    region_elem_runs(offset, shape, stride),
+                    specification.source_offset,
+                    specification.source_shape,
+                    specification.source_stride,
                     source.shards,
                     source_dtype.itemsize,
                 )
                 for agent, source_addr, destination_addr, nbytes in zip_src_dst(
-                    source_pieces, tensor_runs(staging_tensor)
+                    source_pieces,
+                    [(staging_tensor.data_ptr(), staging_tensor.nbytes)],
                 ):
                     local_descs[agent].append((destination_addr, nbytes, self.device.index))
                     remote_descs[agent].append((source_addr, nbytes, agent_devices[agent]))
