@@ -5049,7 +5049,7 @@ wheels = [
 
 [[package]]
 name = "prime"
-version = "0.6.10"
+version = "0.6.19"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "build" },
@@ -5069,23 +5069,23 @@ dependencies = [
     { name = "typer" },
     { name = "verifiers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/62/3361ae244cfb65009a1a089c4101c02e953fe3b126b2337c44ac50aac51e/prime-0.6.10.tar.gz", hash = "sha256:eee8341905e5daed4f751a2bf0f03e5d52f420450e5f45c4d5aa1856b806faea", size = 629514, upload-time = "2026-05-27T20:53:45.841Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/01/d355265be49ec5bd5ce602791e572e266c315ba9087c1a9e77911781a99d/prime-0.6.19.tar.gz", hash = "sha256:cbf33d5050e3795373842b9b89be0ee2b11a9ae9bbdcda080272eb0d982276c2", size = 711104, upload-time = "2026-07-17T17:41:09.283Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/fd/3a467e1ea7578812874c14601b4109ac9cbdbd175e58454a3c10528ba891/prime-0.6.10-py3-none-any.whl", hash = "sha256:6be1a9c6f623a12d2a788a35718c0c09585f79c468d472017684f2e0d2557a1c", size = 419642, upload-time = "2026-05-27T20:53:43.941Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/ad/67705b41b441513cc09de0a6134b8584d436efba8bc8b4ddeb4a3bbca768/prime-0.6.19-py3-none-any.whl", hash = "sha256:c2a4ee9252cd1a54fa6bcec2958a09ad4374077c68d461071d1ca699a9f4dda2", size = 473362, upload-time = "2026-07-17T17:41:07.35Z" },
 ]
 
 [[package]]
 name = "prime-evals"
-version = "0.2.2"
+version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1b/fa/e98e5bf9b6d25d5cdd74edb3c3a1360ca3a2fc19219d60d9af58f12b68f4/prime_evals-0.2.2.tar.gz", hash = "sha256:e61a1ab436ad5177f57eb93dad3f1de8ab0d6c809b76a7adb227eab50d58aebe", size = 13750, upload-time = "2026-05-14T23:07:51.845Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1b/e6/8c84619b09ecfb9484ba9b14bf57de3e9417a08e0b3695bd054b181efca8/prime_evals-0.2.3.tar.gz", hash = "sha256:4b22f9057a8765c85f2e91c795d78e48015ae6d30439f24aea9e8396b2c3f016", size = 14417, upload-time = "2026-06-05T00:39:56.145Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/79/54/f3da8112d6ccb12c9662a5ab3de6b1495ca28ea2f889e15fe01ca538d636/prime_evals-0.2.2-py3-none-any.whl", hash = "sha256:f8f058d81819c1815203217a0c1c05defb3f8fe7f4eeb3befd2881251459f343", size = 13414, upload-time = "2026-05-14T23:07:50.351Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/f8/41c4a4bc7a03ece28b1c4f39d45a5c362ebaa0895a161db83c591f10e6b6/prime_evals-0.2.3-py3-none-any.whl", hash = "sha256:e5217f36d360baedf2c10dd49abe7be504932bf8249a35c9f7abad12d0c0299a", size = 13575, upload-time = "2026-06-05T00:39:54.901Z" },
 ]
 
 [[package]]
@@ -5251,7 +5251,7 @@ requires-dist = [
     { name = "orjson", specifier = ">=3.10" },
     { name = "orjson", specifier = ">=3.11.0" },
     { name = "pandas", specifier = ">=2.0" },
-    { name = "prime", specifier = ">=0.6.4" },
+    { name = "prime", specifier = ">=0.6.19" },
     { name = "prime-pydantic-config", editable = "deps/pydantic-config" },
     { name = "prime-rl", extras = ["disagg"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn"], marker = "extra == 'all'" },
@@ -5326,7 +5326,7 @@ requires-dist = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.31"
+version = "0.2.32"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5336,23 +5336,23 @@ dependencies = [
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/53/9f/23eecd614cac1920a8e729d9344762dea568e1f6e60308f84b256eca6a58/prime_sandboxes-0.2.31.tar.gz", hash = "sha256:7bc753474240b96b15e2503d503364376a8c596e30ea1830c24fb57d7e50d7ff", size = 74693, upload-time = "2026-07-16T15:52:28.701Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/62/fd/f57ad87b273ae1696ca620deaac2c56e28a54905d2d2791a5b9a387f443c/prime_sandboxes-0.2.32.tar.gz", hash = "sha256:ea3d6230cdfb5af2e4542814996257bad60fc9913f15f776a65ca1ef05f4f504", size = 77656, upload-time = "2026-07-17T17:41:02.296Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2b/83/1797ad3e5b236d4323e0add4ecb91e4155521f5dbbffe9043326b7fb1a3c/prime_sandboxes-0.2.31-py3-none-any.whl", hash = "sha256:86e5385f3c6d422cf57f8076c0915b00d3758d35ce8c1125f5254c7d37cbbcc2", size = 39516, upload-time = "2026-07-16T15:52:27.47Z" },
+    { url = "https://files.pythonhosted.org/packages/75/a3/c345509abf8f7707c0c3e9d6badba2e057781d1c05a88a46733ab67521e5/prime_sandboxes-0.2.32-py3-none-any.whl", hash = "sha256:4fe730622e51c489f8f86e7ad959fd8320db6d7a9fe22442ae3c680687da4c22", size = 40897, upload-time = "2026-07-17T17:41:00.935Z" },
 ]
 
 [[package]]
 name = "prime-tunnel"
-version = "0.1.8"
+version = "0.1.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9c/e7/557c7623bd8c9a7a9127d880dce2a3d8612d3a7df02bdde6f01c958a20b8/prime_tunnel-0.1.8.tar.gz", hash = "sha256:07803d5d5c6ec83c260bbef0ecd340f4f6acab0f6a254d5d34a4c6ddfc777c0b", size = 14576, upload-time = "2026-06-02T06:39:36.56Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bf/26/7324b5b9ec117c21fc9320214bf04ecbe9144ee87ef48c7d6d6c3e3d3f7f/prime_tunnel-0.1.10.tar.gz", hash = "sha256:8bf575af659bcc107a98b0b5ec1ba3e958ea72ead535ced03c443134a1ad07ea", size = 15305, upload-time = "2026-06-17T00:01:02.392Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f2/5f/181fe0ca1ca8507c0a373e55363b411bdeab9ad904c68edec7d7b1bdea74/prime_tunnel-0.1.8-py3-none-any.whl", hash = "sha256:fab081f566e0887ce50c7b5872169e9f356fc3263d5f0493cfabb3150eb73b0a", size = 15843, upload-time = "2026-06-02T06:39:34.043Z" },
+    { url = "https://files.pythonhosted.org/packages/a9/b9/d767b4f6c7ce72b54aaba834b97f97c3c494f1865a37f8b5b9acfb1b2a68/prime_tunnel-0.1.10-py3-none-any.whl", hash = "sha256:6a1cb49a14cfc9622db5cae90665ebe7e7e8cd5d84e963e8c3572bce85288400", size = 16319, upload-time = "2026-06-17T00:01:01.095Z" },
 ]
 
 [[package]]
