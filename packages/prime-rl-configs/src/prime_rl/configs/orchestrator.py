@@ -50,8 +50,9 @@ class ModelConfig(BaseModelConfig):
 
 
 class TrainSamplingConfig(BaseConfig):
-    temperature: float = Field(1.0, ge=0, le=2.0)
-    """Sampling temperature."""
+    temperature: float = Field(1.0, gt=0, le=2.0)
+    """Sampling temperature. Strictly positive: it is reused to rescale trainer
+    logits (``logits / temperature``), so 0 yields non-finite log-probabilities."""
 
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
