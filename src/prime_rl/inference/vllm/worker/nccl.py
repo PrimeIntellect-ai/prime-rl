@@ -48,15 +48,16 @@ def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str,
         concatenated = torch.empty(total_elements, dtype=dtype, device=communicator.device)
         communicator.broadcast(concatenated, src=0)
 
-        # Split concatenated tensor back into individual tensors
+        # Split concatenated tensor back into individual tensors. A view is
+        # enough: consumers (`load_weights_kernel` and vLLM's `load_weights`)
+        # copy each tensor into its destination parameter before pulling the
+        # next, and `concatenated` stays alive for the whole dtype group, so we
+        # avoid a redundant device-to-device copy of every parameter.
         offset = 0
         for key, shape, numel in tensor_info_list:
-            tensor = concatenated[offset : offset + numel].view(shape).clone()
+            tensor = concatenated[offset : offset + numel].view(shape)
             offset += numel
-            try:
-                yield key, tensor
-            finally:
-                del tensor
+            yield key, tensor
 
         del concatenated
 
