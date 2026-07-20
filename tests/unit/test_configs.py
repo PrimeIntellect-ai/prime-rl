@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.orchestrator import EvalEnvConfig, OrchestratorConfig, TrainEnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
@@ -200,6 +200,30 @@ def test_env_algo_overrides_top_level():
     dumped = config.model_dump(exclude_none=True)
     reloaded = OrchestratorConfig.model_validate(dumped)
     assert reloaded.train.envs[0].algo is not None and reloaded.train.envs[0].algo.type == "grpo"
+
+
+def test_orchestrator_env_shorthand_conflicts_with_explicit_train_envs():
+    """Setting both the deprecated [[orchestrator.env]] shorthand and [[orchestrator.train.envs]]
+    is ambiguous — the shorthand must not be silently discarded."""
+    with pytest.raises(ValidationError, match=r"orchestrator\.env.*orchestrator\.train\.envs"):
+        OrchestratorConfig.model_validate({"env": [{"id": "a"}], "train": {"envs": [{"id": "b"}]}})
+
+
+def test_orchestrator_env_shorthand_alone_still_translates():
+    with pytest.warns(FutureWarning, match=r"orchestrator\.env"):
+        config = OrchestratorConfig.model_validate({"env": [{"id": "reverse-text"}]})
+    assert [env.env_id for env in config.train.envs] == ["reverse-text"]
+
+
+def test_env_entry_flat_run_limit_keys_point_home():
+    """A run limit set flat on an env entry gets a pointer to its home, not a bare
+    extra_forbidden."""
+    with pytest.raises(ValidationError, match=r"env\.max_turns"):
+        TrainEnvConfig.model_validate({"id": "dummy", "max_turns": 5})
+    with pytest.raises(ValidationError, match=r"env\.timeout"):
+        TrainEnvConfig.model_validate({"id": "dummy", "timeout": {"rollout": 60}})
+    with pytest.raises(ValidationError, match=r"pool\.multiplex"):
+        EvalEnvConfig.model_validate({"id": "dummy", "multiplex": 64})
 
 
 def test_trainer_enable_token_export_cli_flag():

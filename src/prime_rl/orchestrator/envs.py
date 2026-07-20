@@ -8,11 +8,12 @@ orchestrator never *runs* an environment: it asks the server for ``info``
 rollout-level ``errors`` list, and the run's traces, each a real ``vf.Trace[WireTaskData]``
 (never a loose dict) whose task keeps the env's task-specific fields as extras. A
 single-agent episode carries exactly one trace, which becomes the ``Rollout``;
-multi-trace (multi-agent) episodes aren't trainable yet and are refused. The
-orchestrator never imports the env package: the env's *type* and *runtime* both live
-only in the server, and the orchestrator drives it purely by task index. (Nothing here
-reads typed env task fields — only ``task.idx`` and a full ``task.model_dump``, both of
-which ``WireTaskData`` preserves.)
+multi-trace (multi-agent) episodes aren't trainable yet and are refused — at train
+start when the env class is resolvable orchestrator-side, per episode otherwise. The
+env's *runtime* lives only in the server, and the orchestrator drives it purely by
+task index; the start-time class resolution is best-effort and exists only for that
+refusal. (Nothing here reads typed env task fields — only ``task.idx`` and a full
+``task.model_dump``, both of which ``WireTaskData`` preserves.)
 """
 
 from __future__ import annotations
@@ -224,6 +225,38 @@ class TrainEnv(Env):
         self.sampler = sampler
         self.algorithm = algorithm
         self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
+
+    async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
+        self._refuse_multi_agent()
+        await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
+
+    def _refuse_multi_agent(self) -> None:
+        """Best-effort start-time refusal of multi-agent envs: refused per episode instead,
+        a training run would burn a full env-rollout per refusal and — the dispatcher turning
+        each RuntimeError into an error-marker rollout — never fill a batch. Only possible
+        when the env package is importable orchestrator-side; otherwise the server owns
+        resolution and the per-episode refusal in ``run_rollout`` still guards."""
+        taskset = self.config.env.taskset
+        try:
+            env_cls = vf.environment_class(taskset.id if taskset is not None else "", self.config.env.id)
+        except ModuleNotFoundError:
+            return
+        if not issubclass(env_cls, vf.SingleAgentEnv):
+            raise RuntimeError(
+                f"env '{self.name}' resolves to {env_cls.__name__}; multi-agent envs are not trainable yet — "
+                "evaluate it with verifiers directly (uv run eval) for now"
+            )
+
+    async def run_rollout(
+        self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
+    ) -> Rollout:
+        rollout = await super().run_rollout(client, task_idx, model_name, cache_salt)
+        if not rollout.trainable:
+            raise RuntimeError(
+                f"env '{self.name}' returned an untrainable trace (role={rollout.role!r}); "
+                "a frozen sole seat is not trainable"
+            )
+        return rollout
 
 
 class EvalEnv(Env):

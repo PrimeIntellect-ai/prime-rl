@@ -150,6 +150,19 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
+# Run limits that used to sit flat on an env entry and now live on its `env` block
+# (`multiplex` sizes the worker pool and lives on `pool`).
+_MOVED_ENV_ENTRY_KEYS = {
+    "timeout": "env.timeout",
+    "max_turns": "env.max_turns",
+    "max_input_tokens": "env.max_input_tokens",
+    "max_output_tokens": "env.max_output_tokens",
+    "max_total_tokens": "env.max_total_tokens",
+    "max_concurrent": "env.max_concurrent",
+    "multiplex": "pool.multiplex",
+}
+
+
 class EnvConfig(vf.EnvServerConfig):
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
@@ -159,6 +172,22 @@ class EnvConfig(vf.EnvServerConfig):
 
     ratio: float = Field(1.0, gt=0)
     """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_moved_entry_keys(cls, data):
+        """Point a flat run-limit key home instead of letting pydantic's bare
+        ``extra_forbidden`` answer."""
+        if isinstance(data, dict):
+            for key, target in _MOVED_ENV_ENTRY_KEYS.items():
+                if key in data:
+                    owner = target.split(".", 1)[0]
+                    raise ValueError(
+                        f"'{key}' moved under '{owner}.': set '{target}' on this env entry "
+                        f"(TOML: '{target}' inside its [[orchestrator.train.envs]] / [[orchestrator.eval.envs]] "
+                        f"block; CLI: --…envs.{target})"
+                    )
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -537,13 +566,18 @@ class OrchestratorConfig(BaseConfig):
             train = data.setdefault("train", {})
             if isinstance(train, dict):
                 if "env" in data:
+                    if "envs" in train:
+                        raise ValueError(
+                            "both '[[orchestrator.env]]' (deprecated) and '[[orchestrator.train.envs]]' are set — "
+                            "ambiguous; drop '[[orchestrator.env]]' and keep '[[orchestrator.train.envs]]'"
+                        )
                     warnings.warn(
                         "'[[orchestrator.env]]' is deprecated, use '[[orchestrator.train.envs]]' instead. "
                         "Auto-translating for now, but this will be removed in a future release.",
                         FutureWarning,
                         stacklevel=2,
                     )
-                    train.setdefault("envs", data.pop("env"))
+                    train["envs"] = data.pop("env")
                 if "sampling" in data:
                     warnings.warn(
                         "'[orchestrator.sampling]' is deprecated, use '[orchestrator.train.sampling]' instead. "
