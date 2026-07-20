@@ -93,9 +93,9 @@ num_turns_weight = 0.1
 
 [[orchestrator.train.env]]
 name = "tmax"
-harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
+env.agent.harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
 
-[orchestrator.train.env.taskset]
+[orchestrator.train.env.env.taskset]
 id = "tmax-v1"
 
 # # Metric-only monitors (weight 0): rlm harness-mechanics + swe code-usage rubrics, judged by GLM-5.2.
@@ -120,10 +120,10 @@ interval = 20
 
 [[orchestrator.eval.env]]
 name = "swebench-verified"
-harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
-timeout = { rollout = 3600 }
+env.agent.harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
+env.timeout = { rollout = 3600 }
 
-[orchestrator.eval.env.taskset]
+[orchestrator.eval.env.env.taskset]
 id = "swebench-verified-v1"
 use_prime_registry = true
 
@@ -144,10 +144,10 @@ use_prime_registry = true
 [[orchestrator.eval.env]]
 name = "terminal-bench-2"
 group_size = 4 # avg@4
-harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
-timeout = { rollout = 3600 }
+env.agent.harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
+env.timeout = { rollout = 3600 }
 
-[orchestrator.eval.env.taskset]
+[orchestrator.eval.env.env.taskset]
 id = "terminal-bench-2-v1"
 
 # [[orchestrator.eval.env.taskset.judges]]

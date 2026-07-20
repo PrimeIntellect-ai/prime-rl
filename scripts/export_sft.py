@@ -26,7 +26,7 @@ import json
 from pathlib import Path
 
 from datasets import Dataset
-from verifiers.v1 import Trace, WireTrace
+from verifiers.v1 import Trace, WireEpisode
 from verifiers.v1.dialects.chat import message_to_wire
 
 
@@ -71,10 +71,12 @@ def main() -> None:
         for line in f:
             if not line.strip():
                 continue
-            total += 1
-            trace = WireTrace.model_validate(json.loads(line))
-            if keep(trace, args.min_reward, args.drop_truncated):
-                rows.extend(sft_rows(trace))
+            # One line per episode (the env-rollout atom); its traces carry the chats.
+            episode = WireEpisode.model_validate(json.loads(line))
+            total += len(episode.traces)
+            for trace in episode.traces:
+                if keep(trace, args.min_reward, args.drop_truncated):
+                    rows.extend(sft_rows(trace))
     print(f"export-sft: {total} trace(s) -> {len(rows)} row(s)")
     if not rows:
         raise SystemExit("export-sft: no rows to export after selection")

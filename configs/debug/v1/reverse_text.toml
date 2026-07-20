@@ -24,10 +24,10 @@ name = "qwen3"
 max_completion_tokens = 128
 
 [[orchestrator.train.env]]
-taskset = { id = "reverse-text-v1" }
+env.taskset = { id = "reverse-text-v1" }
 # reverse-text is a pure-text single-turn env: disable the bash tool (the model answers
 # directly) and use the subprocess runtime (no docker).
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 # No eval block, mirroring examples/reverse_text/rl.toml — this is a train-only
 # smoke. Add an [orchestrator.eval] block (with an interval) to exercise eval.

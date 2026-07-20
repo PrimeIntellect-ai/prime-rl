@@ -149,25 +149,25 @@ Training environments are an array of tables — set one per env, optionally wit
 ```toml
 [[orchestrator.train.env]]
 name = "gsm8k"
-taskset = { id = "gsm8k-v1", split = "train" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "gsm8k-v1", split = "train" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 ratio = 3  # 75% of batches
 
 [[orchestrator.train.env]]
 name = "reverse-text"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 ratio = 1  # default — 25% of batches
 
 [[orchestrator.eval.env]]
 name = "gsm8k-eval"
-taskset = { id = "gsm8k-v1", split = "test" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "gsm8k-v1", split = "test" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 ```
 
 `ratio` defaults to `1` (equal weight per env); values are relative weights normalized to probabilities across envs.
 
-Fields in `taskset` configure the V1 taskset. `harness` selects how its tasks are run.
+The nested `env` table is the verifiers environment itself — the same `[env]` block the `vf` CLI takes: `env.taskset` configures the V1 taskset, per-seat settings live on the role (`env.agent.harness` selects how a plain taskset's tasks are run; a multi-agent env names its own roles, e.g. `env.judge.model`), and run limits (`env.timeout`, `env.max_turns`, `env.max_output_tokens`, `env.max_concurrent`) sit beside them. Keys outside `env` are prime-rl's own (`name`, `ratio`, `sampling`, `group_size`, `algo`, …).
 
 The same taskset can appear multiple times across train and eval (or with different settings) — useful for evaluating on a held-out split or comparing two configurations side by side. When it is reused, set a distinct `name` on each entry; `name` defaults to the taskset id and must be unique across all envs in the same group.
 

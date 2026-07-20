@@ -279,6 +279,6 @@ enable_router_replay = true # this will also auto-set the inference.enable_retur
 enable_return_routed_experts = true
 ```
 
-This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend increasing `orchestrator.*.env.num_workers` to allow for more parallelization on the verifiers side.
+This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend sizing up the env's worker `pool` (e.g. `pool = { type = "static", num_workers = 8 }`) to allow for more parallelization on the verifiers side.
 
 Currently this feature is also not supported with CPU KV cache offload, which can have negative impact on the inference throughput.

@@ -19,13 +19,13 @@ name = "qwen3"
 
 [[orchestrator.train.env]]
 name = "reverse-text-train-1"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 [[orchestrator.train.env]]
 name = "reverse-text-train-2"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 # -- multi eval envs --
 
@@ -36,13 +36,13 @@ group_size = 4
 
 [[orchestrator.eval.env]]
 name = "reverse-text-eval-1"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 [[orchestrator.eval.env]]
 name = "reverse-text-eval-2"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 interval = 5
 
 [trainer.optim]

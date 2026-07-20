@@ -4,13 +4,15 @@ Each ``Env`` owns a v1 ``EnvServer`` (spawned as a child process, or an
 external one given by ``config.address``) and an ``EnvClient`` to drive it. The
 orchestrator never *runs* an environment: it asks the server for ``info``
 (``num_tasks`` + whether group scoring is needed), then runs rollouts purely by
-**task index**. The server returns a ``Trace`` (a plain ``model_dump`` — derived values are
-properties, not serialized) which we validate into a ``Trace[WireTaskData]`` — a real ``vf.Trace``
-(never a loose dict) whose task keeps the env's
-task-specific fields as extras (``WireTaskData`` allows them). The orchestrator never imports the
-env package: the env's *type* and *runtime* both live only in the server, and the orchestrator
-drives it purely by task index. (Nothing here reads typed env task fields — only ``task.idx``
-and a full ``task.model_dump``, both of which ``WireTaskData`` preserves.)
+**task index**. The server returns an ``Episode`` — the env-rollout atom: the task, a
+rollout-level ``errors`` list, and the run's traces, each a real ``vf.Trace[WireTaskData]``
+(never a loose dict) whose task keeps the env's task-specific fields as extras. A
+single-agent episode carries exactly one trace, which becomes the ``Rollout``;
+multi-trace (multi-agent) episodes aren't trainable yet and are refused. The
+orchestrator never imports the env package: the env's *type* and *runtime* both live
+only in the server, and the orchestrator drives it purely by task index. (Nothing here
+reads typed env task fields — only ``task.idx`` and a full ``task.model_dump``, both of
+which ``WireTaskData`` preserves.)
 """
 
 from __future__ import annotations
@@ -135,7 +137,7 @@ class Env:
                 extra_env_kwargs=self.config.extra_env_kwargs,
             )
             if self.config.is_legacy
-            else dict(legacy=False, config=self.config)
+            else dict(legacy=False, config=self.config.env)
         )
         process = ctx.Process(
             target=_run_env_server,
@@ -171,19 +173,33 @@ class Env:
     async def run_rollout(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
     ) -> Rollout:
-        """Run a single rollout for ``task_idx``; return a typed Trace."""
-        wire = await self.env_client.run_rollout(
+        """Run one env-rollout for ``task_idx``; return its trace as a typed Rollout."""
+        episode = await self.env_client.run_rollout(
             task_idx=task_idx,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return ROLLOUT_TYPE.model_construct(**dict(wire))
+        if len(episode.traces) > 1:
+            raise RuntimeError(
+                f"env '{self.name}' returned a multi-trace episode ({len(episode.traces)} traces); "
+                "multi-agent episodes are not trainable yet"
+            )
+        if not episode.traces:
+            # The env-rollout failed before any trace completed (hook error, all
+            # retries exhausted) — an error marker carrying the real task.
+            return ROLLOUT_TYPE(task=episode.task, errors=list(episode.errors), stop_condition="error")
+        rollout = ROLLOUT_TYPE.model_construct(**dict(episode.traces[0]))
+        # Episode-level errors (the env's rollout()/score() hooks) fail the run the
+        # same as the trace's own; appended so ``rollout.error`` surfaces them.
+        rollout.errors.extend(episode.errors)
+        return rollout
 
     async def run_group(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
     ) -> list[Rollout]:
-        """Run a group of rollouts for ``task_idx`` (group-scoring envs); return typed Traces."""
+        """Run a group of rollouts for ``task_idx`` — the legacy (v0) group-scoring
+        route; a v1 server refuses it. Returns typed Traces."""
         wires = await self.env_client.run_group(
             task_idx=task_idx,
             n=group_size,

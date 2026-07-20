@@ -173,23 +173,13 @@ class EnvConfig(vf.EnvServerConfig):
         return data
 
     @property
-    def is_legacy(self) -> bool:
-        """A v0/legacy env (run via the bridge): an ``id`` is set and no v1 ``taskset`` is."""
-        return not self.taskset.id
-
-    @property
-    def env_id(self) -> str:
-        """The env identifier — the v1 taskset id (v1) or the legacy env id (v0)."""
-        return self.taskset.id or self.id or ""
-
-    @property
     def resolved_name(self) -> str:
         return self.name or self.env_id
 
     @model_validator(mode="after")
     def validate_env(self):
-        if not self.taskset.id and not self.id:
-            raise ValueError('no env configured — set taskset = { id = "<id>" } (v1) or id = "<id>" (v0/legacy)')
+        if not self.env_id:
+            raise ValueError('no env configured — set env.taskset = { id = "<id>" } (v1) or id = "<id>" (v0/legacy)')
         if self.resolved_name == "agg":
             raise ValueError(
                 'Environment name "agg" is reserved for cross-env metric aggregation. Use a different name or id.'
@@ -203,10 +193,10 @@ class EnvConfig(vf.EnvServerConfig):
         the multi-turn completion-token budget. (``max_seq_len`` is added per train run in
         ``OrchestratorConfig.resolve_env_config``, which knows ``seq_len``.)"""
         if self.is_legacy:
-            if self.timeout.rollout is not None:
-                self.extra_env_kwargs["timeout_seconds"] = self.timeout.rollout
-            if self.max_output_tokens is not None:
-                self.extra_env_kwargs["max_total_completion_tokens"] = self.max_output_tokens
+            if self.env.timeout.rollout is not None:
+                self.extra_env_kwargs["timeout_seconds"] = self.env.timeout.rollout
+            if self.env.max_output_tokens is not None:
+                self.extra_env_kwargs["max_total_completion_tokens"] = self.env.max_output_tokens
         return self
 
 
