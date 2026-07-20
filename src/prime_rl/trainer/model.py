@@ -647,6 +647,15 @@ def get_model(
                 case "custom":
                     model_cls = AutoModelForCausalLMPrimeRL
 
+        checkpoint_tied_word_embeddings = bool(getattr(model_config, "tie_word_embeddings", False))
+        is_custom_model = model_cls is custom_vlm_cls or model_cls is AutoModelForCausalLMPrimeRL
+        if is_custom_model and checkpoint_tied_word_embeddings:
+            model_config.tie_word_embeddings = False
+            text_config = getattr(model_config, "text_config", None)
+            if text_config is not None:
+                text_config.tie_word_embeddings = False
+            logger.info("Materializing separate input and output embeddings for the custom model implementation")
+
         load_model_start_time = time.perf_counter()
         # HF VLM models require torch_dtype; custom PrimeRL models and text Auto models use dtype
         use_torch_dtype = is_vlm_arch and model_cls is not custom_vlm_cls
@@ -662,6 +671,15 @@ def get_model(
                 trust_remote_code=config.trust_remote_code,
                 **dtype_kwarg,
             )
+        if is_custom_model and checkpoint_tied_word_embeddings:
+            input_embedding_weight = model.get_input_embeddings().weight
+            if device == torch.device("meta"):
+                model._tied_checkpoint_embedding_key = next(
+                    name for name, parameter in model.named_parameters() if parameter is input_embedding_weight
+                )
+            else:
+                with torch.no_grad():
+                    model.lm_head.weight.copy_(input_embedding_weight)
         logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
 
     assert model.lm_head.weight.dtype == dtype, (
@@ -914,12 +932,22 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     load_dcp_start_time = time.perf_counter()
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
-    if model.config.tie_word_embeddings:
-        del state_dict["lm_head.weight"]
+    tied_checkpoint_embedding_key = getattr(model, "_tied_checkpoint_embedding_key", None)
+    untied_lm_head_state_dict = None
+    if tied_checkpoint_embedding_key is not None:
+        # Tied checkpoints omit the LM head, so load the embedding tensor into both untied parameters.
+        untied_lm_head_state_dict = {tied_checkpoint_embedding_key: state_dict.pop("lm_head.weight")}
+    elif model.config.tie_word_embeddings:
+        state_dict.pop("lm_head.weight")
     dcp_load(
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
     )
+    if untied_lm_head_state_dict is not None:
+        dcp_load(
+            untied_lm_head_state_dict,
+            storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
+        )
     # Restore weight tying broken by to_empty() for HF models
     if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
         model.tie_weights()

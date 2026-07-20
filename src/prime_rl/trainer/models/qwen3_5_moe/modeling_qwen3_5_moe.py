@@ -851,7 +851,7 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
     vision encoder + custom text model. Otherwise creates a text-only model.
     """
 
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    _tied_weights_keys = {}
     _checkpoint_conversion_mapping = {}
     _tp_plan = {"lm_head": "colwise_rep"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
@@ -863,7 +863,6 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         if self._is_vlm:
             self.model = Qwen3_5MoeVLMModel(config)
             text_config = config.text_config
-            self._tied_weights_keys = {"lm_head.weight": "model.language_model.embed_tokens.weight"}
         else:
             self.model = Qwen3_5MoeModel(config)
             text_config = config

@@ -326,7 +326,7 @@ class Qwen3_5VLMModel(nn.Module):
 class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
     """Unified dense Qwen3.5 model for both text-only and VLM configs."""
 
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    _tied_weights_keys = {}
     _checkpoint_conversion_mapping = {}
     _tp_plan = {"lm_head": "colwise_gather_output"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
@@ -338,7 +338,6 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         if self._is_vlm:
             self.model = Qwen3_5VLMModel(config)
             text_config = config.text_config
-            self._tied_weights_keys = {"lm_head.weight": "model.language_model.embed_tokens.weight"}
         else:
             self.model = Qwen3_5Model(config)
             text_config = config
