@@ -312,32 +312,31 @@ class SFTDataset(StatefulIterableDataset):
                 "Set [model.vlm] to train on multimodal samples."
             )
 
-        was_mm_truncated = False
-        if mm is not None:
-            budget = self.seq_len + 1
-            if len(input_ids) > budget:
-                was_mm_truncated = True
-                cut = _find_image_safe_cut(budget, mm)
-                self.logger.debug(
-                    f"Truncating example {example.get('__index', '')} from "
-                    f"{len(input_ids)} → {cut} tokens (budget={budget})"
-                )
-                input_ids = input_ids[:cut]
-                loss_mask = loss_mask[:cut]
-                if mm_token_type_ids is not None:
-                    mm_token_type_ids = mm_token_type_ids[:cut]
-                if mm.mm_items:
-                    mm = _truncate_mm_data(mm, cut)
-
-        if was_mm_truncated and not set(self.renderer.get_stop_token_ids()) & set(input_ids):
-            return None
-
         # Causal shift: model predicts next token from current.
-        target_ids = input_ids.copy()[1:]
+        target_ids = input_ids[1:]
         loss_mask = loss_mask[1:]
         input_ids = input_ids[:-1]
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:-1]
+
+        was_mm_truncated = False
+        if mm is not None and len(input_ids) > self.seq_len:
+            was_mm_truncated = True
+            cut = _find_image_safe_cut(self.seq_len, mm)
+            self.logger.debug(
+                f"Truncating example {example.get('__index', '')} from "
+                f"{len(input_ids)} → {cut} tokens (budget={self.seq_len})"
+            )
+            input_ids = input_ids[:cut]
+            target_ids = target_ids[:cut]
+            loss_mask = loss_mask[:cut]
+            if mm_token_type_ids is not None:
+                mm_token_type_ids = mm_token_type_ids[:cut]
+            if mm.mm_items:
+                mm = _truncate_mm_data(mm, cut)
+
+        if was_mm_truncated and not set(self.renderer.get_stop_token_ids()) & set(target_ids):
+            return None
 
         if sum(loss_mask[: self.seq_len]) == 0:
             self.logger.warning(
