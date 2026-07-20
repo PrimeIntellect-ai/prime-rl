@@ -2,6 +2,11 @@
 
 This four-step scale recipe runs a two-GPU Prime trainer against an external 1-prefill/1-decode Dynamo deployment serving `Qwen/Qwen3-30B-A3B-Thinking-2507`. Prime launches no inference process; Dynamo owns the frontend, sidecars, and vLLM engines.
 
+The two-GPU trainer uses BF16 optimization and reduction plus CPU optimizer
+offload. Leaving Prime's FP32 optimization default in place exceeds two GB200s
+when Adam allocates its first-step state; larger production recipes use the
+existing eight-GPU training shape instead.
+
 The same model is used by the existing public examples `qwen30b_math`, `qwen30b_swe`, `multinode/rl.toml`, and `multinode/sft.toml`. Those examples remain the source of truth for larger training and non-Dynamo deployment settings; this recipe adds only the external-Dynamo client shape.
 
 ## Prerequisites

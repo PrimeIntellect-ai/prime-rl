@@ -20,6 +20,8 @@ impl = "custom"
 attn = "sdpa"
 ep = 2
 optim_cpu_offload = true
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
 
 [trainer.model.ac]
 freq = 1

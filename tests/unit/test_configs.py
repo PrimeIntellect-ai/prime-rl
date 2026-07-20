@@ -265,6 +265,16 @@ def test_external_dynamo_nccl_does_not_require_a_local_inference_gpu():
     assert config.trainer.weight_broadcast.inference_world_size == 1
 
 
+def test_two_gpu_dynamo_qwen30b_example_uses_bfloat16_training():
+    path = Path("examples/dynamo/qwen3_30b_Thinking/rl.toml")
+    with path.open("rb") as stream:
+        config = tomllib.load(stream)
+
+    assert config["deployment"]["num_train_gpus"] == 2
+    assert config["trainer"]["model"]["optimization_dtype"] == "bfloat16"
+    assert config["trainer"]["model"]["reduce_dtype"] == "bfloat16"
+
+
 def test_external_dynamo_world_size_survives_filesystem_config_resolution():
     config = RLConfig.model_validate(
         {
