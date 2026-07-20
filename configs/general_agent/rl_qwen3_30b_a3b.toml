@@ -35,11 +35,11 @@ batch_size = 512
 rollouts_per_example = 16
 max_off_policy_steps = 32
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 env.taskset = { id = "general-agent-v1", task = { tools = { colocated = true } } }
 env.agent.harness = { id = "null", runtime = { type = "modal" } }
 
-[orchestrator.train.env.args]
+[orchestrator.train.envs.args]
 min_tier = 1
 
 [inference]

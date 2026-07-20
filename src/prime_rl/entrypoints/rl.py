@@ -201,7 +201,7 @@ def rl_local(config: RLConfig):
             )
 
         frozen_endpoints: list[str] = []
-        for env in config.orchestrator.train.env:
+        for env in config.orchestrator.train.envs:
             algo = env.algo
             assert algo is not None, "TrainEnvConfig.algo must be resolved before launch (inherit_env_algorithms)"
             for ref in (algo.sampling.source, getattr(algo, "teacher", None)):
@@ -479,8 +479,10 @@ def rl_slurm(config: RLConfig):
         write_config(config, config_dir, exclude={"slurm", "dry_run", "clean_output_dir"})
         logger.info(f"Wrote config to {config_dir / RL_TOML}")
 
-        train_env_names = [env.resolved_name for env in config.orchestrator.train.env]
-        eval_env_names = [env.resolved_name for env in config.orchestrator.eval.env] if config.orchestrator.eval else []
+        train_env_names = [env.resolved_name for env in config.orchestrator.train.envs]
+        eval_env_names = (
+            [env.resolved_name for env in config.orchestrator.eval.envs] if config.orchestrator.eval else []
+        )
 
         log_message = format_log_message(
             log_dir=log_dir,
@@ -494,8 +496,10 @@ def rl_slurm(config: RLConfig):
         write_subconfigs(config, config_dir)
         logger.info(f"Wrote subconfigs to {config_dir}")
 
-        train_env_names = [env.resolved_name for env in config.orchestrator.train.env]
-        eval_env_names = [env.resolved_name for env in config.orchestrator.eval.env] if config.orchestrator.eval else []
+        train_env_names = [env.resolved_name for env in config.orchestrator.train.envs]
+        eval_env_names = (
+            [env.resolved_name for env in config.orchestrator.eval.envs] if config.orchestrator.eval else []
+        )
 
         has_infer = config.deployment.infer_nodes_per_replica > 0
         log_message = format_log_message(

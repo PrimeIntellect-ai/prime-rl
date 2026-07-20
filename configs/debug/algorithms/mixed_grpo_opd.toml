@@ -31,20 +31,20 @@ name = "qwen3"
 [orchestrator.train.sampling]
 max_completion_tokens = 128
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "reverse-text-grpo"
 env.taskset = { id = "reverse-text-v1" }
 env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "reverse-text-opd"
 env.taskset = { id = "reverse-text-v1" }
 env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
-[orchestrator.train.env.algo]
+[orchestrator.train.envs.algo]
 type = "opd"
 
-[orchestrator.train.env.algo.teacher]
+[orchestrator.train.envs.algo.teacher]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = ["http://localhost:8001/v1"]
 
@@ -55,7 +55,7 @@ num_examples = 128
 [orchestrator.eval.sampling]
 max_completion_tokens = 128
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.envs]]
 name = "reverse-text"
 env.taskset = { id = "reverse-text-v1" }
 env.agent.harness = { id = "null", runtime = { type = "subprocess" } }

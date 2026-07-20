@@ -15,7 +15,7 @@ rollouts_per_example = 4
 [orchestrator.train.sampling]
 max_completion_tokens = 4096
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 env.taskset = { id = "general-agent-v1", task = { tools = { colocated = true } } }
 env.agent.harness = { id = "null", runtime = { type = "modal" } }
 

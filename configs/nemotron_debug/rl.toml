@@ -49,7 +49,7 @@ group_size = 16
 [orchestrator.train.sampling]
 max_completion_tokens = 4096
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "hendrycks-math"
 env.taskset = { id = "math-env-v1", dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", task = { math_verify_timeout = 60 } }
 env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
@@ -60,7 +60,7 @@ interval = 10
 [orchestrator.eval.sampling]
 max_completion_tokens = 4096
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.envs]]
 name = "math500"
 env.taskset = { id = "math500-v1" }
 num_examples = 30

@@ -77,7 +77,7 @@ enable_thinking = true
 [orchestrator.train.sampling]
 temperature = 1.0
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "scaleswe"
 # v1 scaleswe SWE taskset; rlm harness in a prime sandbox using the row's injected Docker image.
 env.taskset = { id = "scaleswe-v1" }
@@ -90,7 +90,7 @@ env.agent.harness = { id = "rlm", runtime = { type = "prime", labels = ["scalesw
 [orchestrator.eval]
 interval = 20
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.envs]]
 name = "swebench-verified"
 env.taskset = { id = "swebench-verified-v1", use_prime_registry = true }
 env.agent.harness = { id = "rlm", runtime = { type = "prime", labels = ["scaleswe-qwen36-35b-a3b-rlm"] } }

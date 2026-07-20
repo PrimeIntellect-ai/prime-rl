@@ -71,7 +71,7 @@ name = "zai-org/GLM-5-FP8"
 [orchestrator.eval]
 interval = 20
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.envs]]
 name = "swe-bench-verified"
 env.taskset = { id = "swebench-verified-v1" }
 env.agent.harness = { id = "bash", runtime = { type = "prime", labels = ["glm5-pd-disag", "swe-bench-verified"] } }

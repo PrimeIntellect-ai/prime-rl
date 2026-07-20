@@ -34,7 +34,7 @@ group_size = 8
 [orchestrator.train.sampling]
 max_completion_tokens = 768
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "alphabet-sort"
 env.taskset = { id = "alphabet-sort-v1", min_turns = 3, max_turns = 5, task = { power_per_turn = false } }
 env.agent.harness = { id = "null", runtime = { type = "subprocess" } }

@@ -59,7 +59,7 @@ enable_thinking = true
 [orchestrator.train.sampling]
 temperature = 1.0
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "rlm-swe-r2e"
 env.taskset = { id = "r2e-gym-v1" }
 env.agent.harness = { id = "rlm", runtime = { type = "prime", labels = ["rlm-swe-qwen35-4b"] } }

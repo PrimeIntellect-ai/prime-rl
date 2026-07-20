@@ -20,7 +20,7 @@ group_size = 16
 [orchestrator.train.sampling]
 max_completion_tokens = 64
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "color-codeword"
 env.taskset = { id = "color-codeword-v1", images_per_turn = 1 }
 env.agent.harness = { id = "null", runtime = { type = "subprocess" } }

@@ -98,7 +98,7 @@ num_turns_weight = 0.1
 name = "glm-4.5"
 thinking_retention = "all"
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "scaleswe"
 env.taskset = { id = "scaleswe-v1", use_prime_registry = true }
 env.agent.harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] } }
@@ -110,7 +110,7 @@ env.agent.harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime
 [orchestrator.eval]
 interval = 20
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.envs]]
 name = "swebench-verified"
 env.taskset = { id = "swebench-verified-v1", use_prime_registry = true }
 env.agent.harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] } }

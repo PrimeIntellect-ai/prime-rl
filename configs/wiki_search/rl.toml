@@ -33,7 +33,7 @@ oversampling_factor = 2.0
 [orchestrator.train.sampling]
 max_completion_tokens = 512
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "wiki-search"
 env.taskset = { id = "wiki-search-v1" }
 env.agent.harness = { id = "null", runtime = { type = "subprocess" } }

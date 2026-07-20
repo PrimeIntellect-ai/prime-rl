@@ -15,7 +15,7 @@ group_size = 16
 [orchestrator.train.sampling]
 max_completion_tokens = 2048
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "gsm8k"
 env.taskset = { id = "gsm8k-v1", split = "train" }
 env.agent.harness = { id = "null", runtime = { type = "subprocess" } }

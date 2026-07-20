@@ -96,7 +96,7 @@ temperature = 1.0
 extra_body = {chat_template_kwargs = {clear_thinking = false}}
 
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "r2e"
 env.taskset = { id = "r2e-gym-v1" }
 env.agent.harness = { id = "rlm", runtime = { type = "prime", labels = ["glm5-llmd"] } }

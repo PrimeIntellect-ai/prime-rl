@@ -116,10 +116,10 @@ Both components resolve per environment. Each env inherits `[orchestrator.algo]`
 [orchestrator.algo]
 type = "grpo"
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 id = "math-env"     # inherits grpo
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 id = "terminal-env"
 algo = { type = "echo" }   # this env runs its own algorithm
 ```

@@ -202,7 +202,7 @@ class PrimeMonitor(Monitor):
                 payload["batch_size"] = run_config.batch_size
             payload["rollouts_per_example"] = run_config.group_size
             payload["seq_len"] = run_config.seq_len
-            payload["environments"] = [{"id": env.id} for env in run_config.train.env]
+            payload["environments"] = [{"id": env.id} for env in run_config.train.envs]
             payload["run_config"] = run_config.model_dump(exclude_none=True, mode="json")
             if run_config.wandb:
                 payload["wandb_project"] = run_config.wandb.project

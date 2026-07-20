@@ -48,7 +48,7 @@ max_off_policy_steps = 8
 [orchestrator.train.sampling]
 max_completion_tokens = 32768
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "math"
 env.taskset = { id = "i3_math_v1" }
 env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
@@ -56,7 +56,7 @@ env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 [orchestrator.eval]
 interval = 25
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.envs]]
 name = "aime2025"
 env.taskset = { id = "aime25-v1" }
 env.agent.harness = { id = "null", runtime = { type = "subprocess" } }

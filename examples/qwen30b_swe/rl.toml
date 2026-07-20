@@ -46,7 +46,7 @@ batch_size = 512
 oversampling_factor = 2
 max_off_policy_steps = 16
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "swe"
 env.taskset = { id = "r2e-gym-v1" }
 env.agent.harness = { id = "bash", runtime = { type = "prime", labels = ["qwen30b-swe", "swe"] } }
@@ -54,7 +54,7 @@ env.agent.harness = { id = "bash", runtime = { type = "prime", labels = ["qwen30
 [orchestrator.eval]
 interval = 25
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.envs]]
 name = "swe-bench-verified"
 env.taskset = { id = "swebench-verified-v1" }
 env.agent.harness = { id = "bash", runtime = { type = "prime", labels = ["qwen30b-swe", "swe-bench-verified"] } }

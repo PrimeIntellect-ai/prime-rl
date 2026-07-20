@@ -91,22 +91,22 @@ num_turns_weight = 0.1
 
 # --- Train: tmax (per-task Docker image in a prime sandbox, rlm ipython) ---
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "tmax"
 env.agent.harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
 
-[orchestrator.train.env.env.taskset]
+[orchestrator.train.envs.env.taskset]
 id = "tmax-v1"
 
 # # Metric-only monitors (weight 0): rlm harness-mechanics + swe code-usage rubrics, judged by GLM-5.2.
-# [[orchestrator.train.env.taskset.judges]]
+# [[orchestrator.train.envs.env.taskset.judges]]
 # id = "rubric"
 # name = "rlm"
 # path = "deps/research-environments/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
-# [[orchestrator.train.env.taskset.judges]]
+# [[orchestrator.train.envs.env.taskset.judges]]
 # id = "rubric"
 # name = "swe"
 # path = "deps/research-environments/rubrics/swe.toml"
@@ -118,46 +118,46 @@ id = "tmax-v1"
 [orchestrator.eval]
 interval = 20
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.envs]]
 name = "swebench-verified"
 env.agent.harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
 env.timeout = { rollout = 3600 }
 
-[orchestrator.eval.env.env.taskset]
+[orchestrator.eval.envs.env.taskset]
 id = "swebench-verified-v1"
 use_prime_registry = true
 
-# [[orchestrator.eval.env.taskset.judges]]
+# [[orchestrator.eval.envs.env.taskset.judges]]
 # id = "rubric"
 # name = "rlm"
 # path = "deps/research-environments/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
-# [[orchestrator.eval.env.taskset.judges]]
+# [[orchestrator.eval.envs.env.taskset.judges]]
 # id = "rubric"
 # name = "swe"
 # path = "deps/research-environments/rubrics/swe.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.envs]]
 name = "terminal-bench-2"
 group_size = 4 # avg@4
 env.agent.harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] } }
 env.timeout = { rollout = 3600 }
 
-[orchestrator.eval.env.env.taskset]
+[orchestrator.eval.envs.env.taskset]
 id = "terminal-bench-2-v1"
 
-# [[orchestrator.eval.env.taskset.judges]]
+# [[orchestrator.eval.envs.env.taskset.judges]]
 # id = "rubric"
 # name = "rlm"
 # path = "deps/research-environments/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
-# [[orchestrator.eval.env.taskset.judges]]
+# [[orchestrator.eval.envs.env.taskset.judges]]
 # id = "rubric"
 # name = "swe"
 # path = "deps/research-environments/rubrics/swe.toml"

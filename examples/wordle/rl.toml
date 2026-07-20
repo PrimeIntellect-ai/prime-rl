@@ -18,7 +18,7 @@ name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 batch_size = 1024
 group_size = 16
 
-[[orchestrator.train.env]]
+[[orchestrator.train.envs]]
 name = "wordle"
 env.taskset = { id = "wordle-v1" }
 env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
