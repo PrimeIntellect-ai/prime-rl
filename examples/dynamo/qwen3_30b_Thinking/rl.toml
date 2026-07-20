@@ -1,0 +1,53 @@
+max_steps = 4
+seq_len = 2048
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[deployment]
+type = "single_node"
+num_train_gpus = 2
+num_infer_gpus = 0
+
+[weight_broadcast]
+type = "nccl"
+host = "127.0.0.1"
+timeout = 1800
+inference_world_size = 2
+
+[trainer.model]
+impl = "custom"
+attn = "sdpa"
+ep = 2
+optim_cpu_offload = true
+
+[trainer.model.ac]
+freq = 1
+
+[orchestrator]
+batch_size = 2
+group_size = 2
+max_inflight_rollouts = 2
+max_off_policy_steps = 0
+
+[orchestrator.model.client]
+base_url = ["http://127.0.0.1:8000/v1"]
+dynamo_discovery_url = "http://127.0.0.1:8001"
+wait_for_ready_timeout = 3600
+
+[orchestrator.model.client.extra_headers_from_state]
+X-Session-ID = "trajectory_id"
+X-Dynamo-Session-ID = "trajectory_id"
+
+[orchestrator.renderer]
+name = "qwen3"
+enable_thinking = true
+
+[orchestrator.train.sampling]
+temperature = 1.0
+max_completion_tokens = 2048
+
+[[orchestrator.train.env]]
+name = "math"
+taskset = { id = "math-env-v1", dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", task = { math_verify_timeout = 60 } }
+harness = { id = "null", runtime = { type = "subprocess" } }

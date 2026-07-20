@@ -234,6 +234,37 @@ def test_external_dynamo_world_size_survives_rl_config_resolution():
     assert config.orchestrator.weight_broadcast.host == "trainer.service"
 
 
+def test_external_dynamo_nccl_does_not_require_a_local_inference_gpu():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "model": {
+                    "client": {
+                        "base_url": ["http://frontend:8000/v1"],
+                        "dynamo_discovery_url": "http://frontend:8001",
+                    }
+                }
+            },
+            "inference": None,
+            "deployment": {
+                "type": "single_node",
+                "num_train_gpus": 1,
+                "num_infer_gpus": 0,
+            },
+            "weight_broadcast": {
+                "type": "nccl",
+                "host": "trainer.service",
+                "inference_world_size": 1,
+            },
+        }
+    )
+
+    assert config.deployment.num_train_gpus == 1
+    assert config.deployment.num_infer_gpus == 0
+    assert config.trainer.weight_broadcast.inference_world_size == 1
+
+
 def test_external_dynamo_world_size_survives_filesystem_config_resolution():
     config = RLConfig.model_validate(
         {

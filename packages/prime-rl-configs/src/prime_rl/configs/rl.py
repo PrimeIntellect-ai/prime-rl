@@ -293,9 +293,12 @@ class RLConfig(BaseConfig):
     def validate_enough_devices_for_nccl(self):
         if self.deployment.type == "single_node":
             if self.trainer.weight_broadcast.type == "nccl":
-                if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
+                local_world_size = self.deployment.num_train_gpus + self.deployment.num_infer_gpus
+                has_external_inference = self.trainer.weight_broadcast.inference_world_size is not None
+                if local_world_size < 2 and not has_external_inference:
                     raise ValueError(
-                        "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
+                        "NCCL weight broadcast requires at least 2 local GPUs or an explicit external "
+                        "inference_world_size."
                     )
         return self
 

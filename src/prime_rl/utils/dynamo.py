@@ -22,6 +22,7 @@ from prime_rl.utils.client import (
 )
 
 DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION = 1
+DYNAMO_READINESS_REQUEST_TIMEOUT_S = 30.0
 
 
 @dataclass(frozen=True)
@@ -173,20 +174,29 @@ async def _load_lora_adapter(update_clients: list[AsyncClient], lora_name: str, 
     await asyncio.gather(*(_load(update_client) for update_client in update_clients))
 
 
-async def _wait_for_model(clients: list[AsyncClient], model_name: str, timeout: int) -> None:
-    async for attempt in AsyncRetrying(
-        stop=stop_after_delay(timeout),
-        wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
-        retry=retry_if_exception(_is_retryable_dynamo_error),
-        reraise=True,
-    ):
-        with attempt:
-            responses = await asyncio.gather(*(client.get("/v1/models") for client in clients))
-            for response in responses:
-                response.raise_for_status()
-                models = response.json().get("data", [])
-                if not any(model.get("id") == model_name for model in models):
-                    raise DynamoDiscoveryPending(f"Dynamo frontend has not published model {model_name!r}")
+async def _wait_for_model(clients: list[AsyncClient], model_name: str, timeout: float) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    async with asyncio.timeout(timeout):
+        async for attempt in AsyncRetrying(
+            stop=stop_after_delay(timeout),
+            wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
+            retry=retry_if_exception(_is_retryable_dynamo_error),
+            reraise=True,
+        ):
+            with attempt:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise TimeoutError
+                request_timeout = httpx.Timeout(min(DYNAMO_READINESS_REQUEST_TIMEOUT_S, remaining))
+                responses = await asyncio.gather(
+                    *(client.get("/v1/models", timeout=request_timeout) for client in clients)
+                )
+                for response in responses:
+                    response.raise_for_status()
+                    models = response.json().get("data", [])
+                    if not any(model.get("id") == model_name for model in models):
+                        raise DynamoDiscoveryPending(f"Dynamo frontend has not published model {model_name!r}")
 
 
 class DynamoInferencePool(StaticInferencePool):
@@ -206,6 +216,28 @@ class DynamoInferencePool(StaticInferencePool):
             self._lora_update_clients = _setup_control_clients(system_urls)
         frontend_config = client_config.model_copy(update={"admin_base_url": None})
         self._frontend_model_clients = setup_admin_clients(frontend_config)
+        self._readiness_deadline: float | None = None
+
+    async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
+        effective_timeout = self._wait_for_ready_timeout if timeout is None else timeout
+        loop = asyncio.get_running_loop()
+        deadline = (
+            self._readiness_deadline
+            if timeout is None and self._readiness_deadline is not None
+            else loop.time() + effective_timeout
+        )
+        remaining = max(0.0, deadline - loop.time())
+        try:
+            async with asyncio.timeout(remaining):
+                await super().wait_for_ready(model_name, timeout=remaining)
+                if not self._skip_model_check:
+                    await _wait_for_model(
+                        self._frontend_model_clients,
+                        model_name,
+                        timeout=max(0.0, deadline - loop.time()),
+                    )
+        finally:
+            self._readiness_deadline = None
 
     async def init_nccl_broadcast(
         self,
@@ -254,7 +286,14 @@ class DynamoInferencePool(StaticInferencePool):
     async def stop(self) -> None:
         await super().stop()
         await asyncio.gather(
-            *(client.aclose() for client in [*self._lora_update_clients, *self._frontend_model_clients])
+            *(
+                client.aclose()
+                for client in [
+                    *self._admin_clients,
+                    *self._lora_update_clients,
+                    *self._frontend_model_clients,
+                ]
+            )
         )
 
     @classmethod
@@ -268,27 +307,38 @@ class DynamoInferencePool(StaticInferencePool):
         if client_config.dynamo_discovery_url is None:
             raise ValueError("Dynamo inference pool requires dynamo_discovery_url")
         discovery_url = client_config.dynamo_discovery_url.rstrip("/").removesuffix("/v1")
-        async with AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-            workers = None
-            async for attempt in AsyncRetrying(
-                stop=stop_after_delay(client_config.wait_for_ready_timeout),
-                wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
-                retry=retry_if_exception(_is_retryable_dynamo_error),
-                reraise=True,
-            ):
-                with attempt:
-                    response = await client.get(f"{discovery_url}/v1/rl/workers")
-                    response.raise_for_status()
-                    workers = _parse_dynamo_workers(response.json(), model_name)
-                    discovered_world_size = sum(worker.world_size for worker in workers)
-                    if (
-                        expected_inference_world_size is not None
-                        and discovered_world_size != expected_inference_world_size
-                    ):
-                        raise DynamoDiscoveryPending(
-                            "Dynamo RL discovery returned "
-                            f"inference_world_size={discovered_world_size}; "
-                            f"waiting for expected inference_world_size={expected_inference_world_size}"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + client_config.wait_for_ready_timeout
+        async with asyncio.timeout(client_config.wait_for_ready_timeout):
+            async with AsyncClient(timeout=httpx.Timeout(None)) as client:
+                workers = None
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_delay(client_config.wait_for_ready_timeout),
+                    wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
+                    retry=retry_if_exception(_is_retryable_dynamo_error),
+                    reraise=True,
+                ):
+                    with attempt:
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            raise TimeoutError
+                        response = await client.get(
+                            f"{discovery_url}/v1/rl/workers",
+                            timeout=httpx.Timeout(min(DYNAMO_READINESS_REQUEST_TIMEOUT_S, remaining)),
                         )
+                        response.raise_for_status()
+                        workers = _parse_dynamo_workers(response.json(), model_name)
+                        discovered_world_size = sum(worker.world_size for worker in workers)
+                        if (
+                            expected_inference_world_size is not None
+                            and discovered_world_size != expected_inference_world_size
+                        ):
+                            raise DynamoDiscoveryPending(
+                                "Dynamo RL discovery returned "
+                                f"inference_world_size={discovered_world_size}; "
+                                f"waiting for expected inference_world_size={expected_inference_world_size}"
+                            )
         assert workers is not None
-        return cls(client_config, workers, model_name=model_name, **kwargs)
+        pool = cls(client_config, workers, model_name=model_name, **kwargs)
+        pool._readiness_deadline = deadline
+        return pool

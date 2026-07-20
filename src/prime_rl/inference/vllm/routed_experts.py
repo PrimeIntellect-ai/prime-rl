@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -25,6 +26,14 @@ def serialize_routed_experts(routed_experts: Any, start: int = 0) -> dict[str, A
         "shape": list(compact.shape),
         "start": start,
     }
+
+
+def compact_vllm_routed_experts(encoded: str | None, start: int = 0) -> dict[str, Any] | None:
+    """Convert vLLM's base64 ``.npy`` payload to Prime's compact payload."""
+    if encoded is None:
+        return None
+    array = np.load(io.BytesIO(pybase64.b64decode(encoded)), allow_pickle=False)
+    return serialize_routed_experts(array, start=start)
 
 
 class RoutedExpertsCapture:

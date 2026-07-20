@@ -41,7 +41,11 @@ def pool_with_clients(*, admin, system=None, frontend=None):
     pool._admin_clients = [admin]
     pool._lora_update_clients = [] if system is None else [system]
     pool._frontend_model_clients = [] if frontend is None else [frontend]
+    pool._skip_model_check = False
     pool._wait_for_ready_timeout = 1
+    pool._readiness_deadline = None
+    pool._scorer = MagicMock()
+    pool._scorer.aclose = AsyncMock()
     return pool
 
 
@@ -178,6 +182,7 @@ def test_discovery_retries_until_expected_world_size_is_complete():
                 ClientConfig(
                     base_url=["http://frontend:8000/v1"],
                     dynamo_discovery_url="http://frontend:8001",
+                    wait_for_ready_timeout=1,
                 ),
                 model_name=MODEL,
                 expected_inference_world_size=4,
@@ -185,6 +190,7 @@ def test_discovery_retries_until_expected_world_size_is_complete():
         )
 
     assert discovery_client.get.await_count == 3
+    assert all(0 < call.kwargs["timeout"].connect <= 1 for call in discovery_client.get.await_args_list)
     assert [item.component for item in pool.workers] == ["backend", "prefill"]
 
 
@@ -202,6 +208,38 @@ def test_discovered_control_clients_do_not_receive_frontend_credentials(monkeypa
     assert "x-frontend-secret" not in pool.admin_clients[0].headers
 
     asyncio.run(pool.stop())
+
+
+def test_wait_for_ready_retries_frontend_model_publication():
+    admin = AsyncMock()
+    frontend = AsyncMock()
+    admin.get.side_effect = lambda path: response({"data": [{"id": MODEL}]})
+    frontend.get.side_effect = [
+        response({"data": []}),
+        response({"data": [{"id": MODEL}]}),
+    ]
+    pool = pool_with_clients(admin=admin, frontend=frontend)
+
+    asyncio.run(pool.wait_for_ready(MODEL))
+
+    assert [call.args[0] for call in admin.get.await_args_list] == ["/health", "/v1/models"]
+    assert [call.args[0] for call in frontend.get.await_args_list] == ["/v1/models", "/v1/models"]
+    assert all(0 < call.kwargs["timeout"].connect <= 1 for call in frontend.get.await_args_list)
+
+
+def test_wait_for_ready_clears_expired_discovery_deadline_before_retry():
+    admin = AsyncMock()
+    frontend = AsyncMock()
+    admin.get.side_effect = lambda path: response({"data": [{"id": MODEL}]})
+    frontend.get.return_value = response({"data": [{"id": MODEL}]})
+    pool = pool_with_clients(admin=admin, frontend=frontend)
+    pool._readiness_deadline = 0.0
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(pool.wait_for_ready(MODEL))
+
+    assert pool._readiness_deadline is None
+    asyncio.run(pool.wait_for_ready(MODEL))
 
 
 def test_lora_update_uses_system_route_and_resumes_after_publication():
@@ -225,7 +263,9 @@ def test_lora_update_uses_system_route_and_resumes_after_publication():
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
     assert [call.args[0] for call in admin.post.await_args_list] == ["/pause", "/resume"]
-    frontend.get.assert_awaited_once_with("/v1/models")
+    frontend.get.assert_awaited_once()
+    assert frontend.get.await_args.args == ("/v1/models",)
+    assert 0 < frontend.get.await_args.kwargs["timeout"].connect <= 1
 
 
 def test_lora_update_resumes_after_failure():
@@ -257,3 +297,17 @@ def test_full_weight_update_uses_native_collective_rpc(tmp_path):
         "method": "update_weights_from_path",
         "args": [str(tmp_path)],
     }
+
+
+def test_stop_closes_every_client_owned_by_dynamo_pool():
+    admin = AsyncMock()
+    system = AsyncMock()
+    frontend = AsyncMock()
+    pool = pool_with_clients(admin=admin, system=system, frontend=frontend)
+
+    asyncio.run(pool.stop())
+
+    pool._scorer.aclose.assert_awaited_once()
+    admin.aclose.assert_awaited_once()
+    system.aclose.assert_awaited_once()
+    frontend.aclose.assert_awaited_once()
