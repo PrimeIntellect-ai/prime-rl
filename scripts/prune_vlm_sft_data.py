@@ -7,9 +7,10 @@ train/validation parquet in place, keeping only rows whose image paths all
 exist, and prints per-subset counts.
 
 Run from the repo root:
-    uv run python scripts/prune_vlm_sft_data.py
+    uv run python scripts/prune_vlm_sft_data.py [--data-dir datasets/nemotron_vl_sft_phase2/data]
 """
 
+import argparse
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -19,13 +20,17 @@ DATA_DIR = REPO_ROOT / "datasets" / "nemotron_vl_sft" / "data"
 
 
 def main():
+    global DATA_DIR
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-dir", type=Path, default=DATA_DIR)
+    DATA_DIR = parser.parse_args().data_dir
     total_kept = total_dropped = 0
     for parquet_path in sorted(DATA_DIR.glob("*/*.parquet")):
         table = pq.read_table(parquet_path)
         rows = table.to_pylist()
         kept = []
         for row in rows:
-            paths = [p["image"] for m in row["messages"] for p in m["content"] if p["type"] == "image"]
+            paths = [p["image"] for m in row["messages"] for p in (m["content"] or []) if p.get("type") == "image"]
             if all((REPO_ROOT / p).exists() for p in paths):
                 kept.append(row)
         dropped = len(rows) - len(kept)

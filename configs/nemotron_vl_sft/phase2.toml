@@ -1,0 +1,130 @@
+# Phase-2 SFT: LoRA r=128/a=128 on all LM modules + fully-trainable projector
+# (vision encoder frozen and excluded), on browser-use + vision blend,
+# initialized from the phase-1 projector-aligned checkpoint.
+# lr 1e-4, cosine to 0 with ~3% warmup, wd 0.01 (adapters+mlp1), clip 1.0 (default).
+#
+# Data: datasets/nemotron_vl_sft_phase2 — browser-agent traces (~0.71B tokens, 32.5%
+# of mix) + vision slices (~1.47B): longdoc ccpdf, grounding, OCR/docs, charts,
+# reasoning (<think> traces KEPT), natural QA. Probabilities are row-proportional,
+# which reproduces the per-slice token budgets in expectation.
+# 1 epoch ~= 2.18B tokens; bs=32 x 65536 = 2.10M tokens/step -> max_steps 1090.
+
+output_dir = "outputs/nemotron-vl-phase2"
+max_steps = 1090
+loss_weighting = "square"
+
+[env_vars]
+HF_HOME = "/tmp/hubert-hf"
+TMPDIR = "/tmp/hubert-tmp"
+TRITON_CACHE_DIR = "/tmp/hubert-triton-cache"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[slurm]
+job_name = "nemotron-vl-phase2"
+partition = "all"
+pre_run_command = "srun --ntasks-per-node=1 bash -c 'mkdir -p /tmp/hubert-hf /tmp/hubert-tmp /tmp/hubert-triton-cache' ; uv sync --all-extras --all-packages --group mamba-ssm"
+
+[deployment]
+type = "multi_node"
+num_nodes = 2
+
+[wandb]
+project = "nemotron-vl"
+name = "phase2-lm-projector-sft"
+
+[model]
+name = "outputs/nemotron-vl-phase1/weights/step_340"
+impl = "custom"
+attn = "flash_attention_3"
+cp = 8
+cp_style = "ulysses"
+ep = 1
+fused_lm_head_token_chunk_size = 1024
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[model.lora]
+rank = 128
+alpha = 128
+# All linear stacks except the vision tower (excluded via freeze_vision_encoder):
+# attention, mamba in/out, shared expert, routed experts (grouped; single-adapter
+# path is exact), latent projections. The projector trains FULLY (modules_to_save)
+# — it is small, freshly phase-1-aligned, and its RMSNorm is not LoRA-able.
+target_modules = [
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    "in_proj", "out_proj",
+    "gate_proj", "up_proj", "down_proj",
+    "experts", "fc1_latent_proj", "fc2_latent_proj",
+]
+modules_to_save = ["mlp1"]
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+freeze_vision_encoder = true
+freeze_language_model = false
+
+[model.ac]
+freq = 1
+
+[renderer]
+name = "nemotron-vl"
+
+[data]
+type = "sft"
+name = "datasets/nemotron_vl_sft_phase2"
+subsets = [
+    "browser_use_sft_dataset",
+    "longdoc_p2",
+    "grounding_p2",
+    "ocr_docs_p2",
+    "charts_p2",
+    "reasoning_p2",
+    "natural_qa_p2",
+]
+# Row-proportional (train-split row counts / total) — filled in by prep verification.
+probabilities = [0.056197, 0.033633, 0.155429, 0.303711, 0.090573, 0.145556, 0.214901]
+batch_size = 32
+micro_batch_size = 1
+seq_len = 65536
+
+[val]
+interval = 109
+eval_on_start = true
+
+[val.data]
+type = "sft"
+name = "datasets/nemotron_vl_sft_phase2"
+subsets = [
+    "browser_use_sft_dataset",
+    "longdoc_p2",
+    "grounding_p2",
+    "ocr_docs_p2",
+    "charts_p2",
+    "reasoning_p2",
+    "natural_qa_p2",
+]
+splits = [
+    "validation",
+    "validation",
+    "validation",
+    "validation",
+    "validation",
+    "validation",
+    "validation",
+]
+probabilities = [0.056197, 0.033633, 0.155429, 0.303711, 0.090573, 0.145556, 0.214901]
+batch_size = 16
+micro_batch_size = 1
+seq_len = 65536
+
+[optim]
+lr = 1e-4
+weight_decay = 0.01
+
+[scheduler]
+type = "cosine"
+warmup_steps = 33
+
+[ckpt]
+interval = 109

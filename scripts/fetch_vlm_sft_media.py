@@ -35,7 +35,7 @@ from pathlib import Path
 import requests
 
 REPO_ROOT = Path(__file__).parent.parent
-MANIFEST = REPO_ROOT / "datasets" / "nemotron_vl_sft" / "media_manifest.json"
+MANIFEST = REPO_ROOT / "datasets" / "nemotron_vl_sft" / "media_manifest.json"  # overridable via --manifest
 MEDIA_SRC = REPO_ROOT / "datasets" / "media_src"
 
 OPENIMAGES_URL = "https://open-images-dataset.s3.amazonaws.com/train/{name}"
@@ -46,9 +46,12 @@ CCPDF_ZIP_URL = (
 )
 
 
+_manifest_path = MANIFEST
+
+
 def load_kind(kind: str) -> dict[Path, dict]:
     """target path (absolute) -> manifest entry, for one source kind, minus existing files."""
-    with open(MANIFEST) as f:
+    with open(_manifest_path) as f:
         manifest = json.load(f)
     todo, done = {}, 0
     for target, entry in manifest.items():
@@ -105,12 +108,15 @@ def cmd_openimages(args) -> None:
 
 
 def cmd_chartqa(args) -> None:
-    src_dir = MEDIA_SRC / "chartqa_repo" / "ChartQA Dataset" / "train" / "png"
+    dataset_root = MEDIA_SRC / "chartqa_repo" / "ChartQA Dataset"
     todo = load_kind("chartqa")
     missing = 0
-    for target in todo:
-        src = src_dir / target.name
-        if not src.exists():
+    for target, entry in todo.items():
+        # raw_path keeps its split subdir (train/png/x, val/png/x, test/png/x);
+        # fall back to the train dir for legacy flat targets.
+        candidates = [dataset_root / entry["raw_path"], dataset_root / "train" / "png" / target.name]
+        src = next((c for c in candidates if c.exists()), None)
+        if src is None:
             missing += 1
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -284,11 +290,140 @@ def cmd_ccpdf(args) -> None:
         print(f"  ERROR {e}")
 
 
+def _extract_by_suffix(archive_names, todo: dict, read_member) -> None:
+    """Match archive members to targets by path suffix and write them out.
+
+    todo: abs target -> manifest entry (raw_path is the suffix to look for).
+    """
+    by_suffix = {}
+    for abs_target, entry in todo.items():
+        by_suffix[entry["raw_path"]] = abs_target
+    written = 0
+    for name in archive_names:
+        for suffix, abs_target in list(by_suffix.items()):
+            if name == suffix or name.endswith("/" + suffix):
+                atomic_write(abs_target, read_member(name))
+                by_suffix.pop(suffix)
+                written += 1
+                if written % 5000 == 0:
+                    print(f"  {written} extracted", flush=True)
+    print(f"  extracted {written}; unmatched {len(by_suffix)}")
+    if by_suffix:
+        print("  e.g. missing:", list(by_suffix)[:5])
+
+
+def cmd_flickr30k(args) -> None:
+    """nlphuji/flickr30k ships a single flickr30k-images.zip."""
+    from huggingface_hub import hf_hub_download
+
+    todo = load_kind("flickr30k")
+    if not todo:
+        return
+    zip_path = hf_hub_download("nlphuji/flickr30k", "flickr30k-images.zip", repo_type="dataset")
+    with zipfile.ZipFile(zip_path) as zf:
+        _extract_by_suffix(zf.namelist(), todo, lambda n: zf.read(n))
+
+
+def cmd_coco(args) -> None:
+    """COCO 2017 images (a-okvqa references them by numeric id)."""
+    todo = load_kind("coco")
+    if not todo:
+        return
+    for split in ("train2017", "val2017"):
+        if not todo:
+            break
+        zip_path = MEDIA_SRC / f"{split}.zip"
+        if not zip_path.exists():
+            print(f"  downloading {split}.zip ...", flush=True)
+            zip_path.parent.mkdir(parents=True, exist_ok=True)
+            with requests.get(f"http://images.cocodataset.org/zips/{split}.zip", stream=True, timeout=120) as r:
+                r.raise_for_status()
+                tmp = zip_path.with_suffix(".tmp")
+                with open(tmp, "wb") as f:
+                    shutil.copyfileobj(r.raw, f, length=1 << 22)
+                tmp.rename(zip_path)
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+            still = {}
+            for abs_target, entry in todo.items():
+                member = f"{split}/{entry['raw_path']}"
+                if member in names:
+                    atomic_write(abs_target, zf.read(member))
+                else:
+                    still[abs_target] = entry
+            print(f"  {split}: {len(todo) - len(still)} extracted, {len(still)} remaining")
+            todo = still
+    if todo:
+        print(f"  !! {len(todo)} coco files not found in train2017/val2017")
+
+
+def cmd_mulberry(args) -> None:
+    """HuanjinYao/Mulberry-SFT ships one mulberry_images.tar with the nested source tree."""
+    from huggingface_hub import hf_hub_download
+
+    todo = load_kind("mulberry")
+    if not todo:
+        return
+    tar_path = hf_hub_download("HuanjinYao/Mulberry-SFT", "mulberry_images.tar", repo_type="dataset")
+    with tarfile.open(tar_path) as tf:
+        names = tf.getnames()
+        _extract_by_suffix(names, todo, lambda n: tf.extractfile(n).read())
+
+
+def _cmd_nvidia_shards(kind: str, subset: str) -> None:
+    """Media hosted on the Nemotron-Image-Training-v3 repo as webdataset tar shards."""
+    from huggingface_hub import HfApi, hf_hub_download
+
+    todo = load_kind(kind)
+    if not todo:
+        return
+    files = HfApi().list_repo_files("nvidia/Nemotron-Image-Training-v3", repo_type="dataset")
+    shards = [f for f in files if f.startswith(f"{subset}/media/shard_") and f.endswith(".tar")]
+    for shard in shards:
+        if not todo:
+            break
+        tar_path = hf_hub_download("nvidia/Nemotron-Image-Training-v3", shard, repo_type="dataset")
+        with tarfile.open(tar_path) as tf:
+            names = tf.getnames()
+            before = len(todo)
+            _extract_by_suffix(names, todo, lambda n: tf.extractfile(n).read())
+            done_targets = [t for t in todo if t.exists()]
+            for t in done_targets:
+                todo.pop(t, None)
+            print(f"  {shard}: {before - len(todo)} matched, {len(todo)} remaining")
+
+
+def cmd_clevr(args) -> None:
+    _cmd_nvidia_shards("clevr", "clevr_1")
+
+
+def cmd_plotqa(args) -> None:
+    _cmd_nvidia_shards("plotqa", "plotqa_1")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("kind", choices=["openimages", "cc3m", "gqa", "chartqa", "docvqa", "ccpdf"])
+    parser.add_argument(
+        "kind",
+        choices=[
+            "openimages",
+            "cc3m",
+            "gqa",
+            "chartqa",
+            "docvqa",
+            "ccpdf",
+            "flickr30k",
+            "coco",
+            "mulberry",
+            "clevr",
+            "plotqa",
+        ],
+    )
     parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument("--manifest", type=Path, default=MANIFEST)
     args = parser.parse_args()
+    global _manifest_path
+    _manifest_path = args.manifest
     globals()[f"cmd_{args.kind}"](args)
 
 
