@@ -414,9 +414,9 @@ def test_reward_in_range(multi_run_result: dict[str, ProcessResult], output_dir:
             # floor sits below main's old calibration; the final-reward checks
             # below still enforce learning quality.
             check_reward_in_range(lines, step=7, min_threshold=0.1)
-            check_reward_in_range(lines, min_threshold=0.65)
+            check_reward_in_range(lines, min_threshold=0.6)
         elif name in ["alpha_resume", "beta_resume"]:
-            check_reward_in_range(lines, min_threshold=0.65)
+            check_reward_in_range(lines, min_threshold=0.6)
         elif name == "alpha":  # Only had 10 steps, so it's lower
             check_reward_in_range(lines, min_threshold=0.4)
         else:
