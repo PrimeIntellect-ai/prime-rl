@@ -143,12 +143,14 @@ class SFTDataset(StatefulIterableDataset):
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
+        skip_invalid_samples: bool = False,
     ):
         super().__init__()
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
         self.renderer = renderer
+        self.skip_invalid_samples = skip_invalid_samples
         self.shuffle = shuffle
         self.seed = seed
         self.seq_len = seq_len
@@ -307,7 +309,15 @@ class SFTDataset(StatefulIterableDataset):
             example = dataset[(self.step - 1) % self.num_examples]
 
             # Process example
-            processed_example = self._process(cast(dict, example))
+            try:
+                processed_example = self._process(cast(dict, example))
+            except ValueError as e:
+                if not self.skip_invalid_samples:
+                    raise
+                self.logger.warning(
+                    f"Skipping example {cast(dict, example).get('__index', '')} because it could not be rendered: {e}"
+                )
+                continue
 
             # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
             if processed_example is None:
@@ -514,6 +524,7 @@ def setup_dataset(
             loss_mask_config=config.loss_mask,
             non_dp_size=non_dp_size,
             max_epochs=max_epochs,
+            skip_invalid_samples=config.skip_invalid_samples,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")

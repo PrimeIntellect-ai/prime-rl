@@ -98,6 +98,9 @@ class SFTDataConfig(BaseDataConfig):
     loss_mask: LossMaskConfig = LossMaskConfig()
     """Which message types contribute to the loss."""
 
+    skip_invalid_samples: bool = False
+    """Skip (and log) samples the renderer cannot render instead of crashing the run. Off by default so data problems fail loudly."""
+
     @model_validator(mode="after")
     def validate_subsets_and_splits(self):
         if self.subsets is not None or self.splits is not None:
