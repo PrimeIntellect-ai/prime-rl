@@ -909,6 +909,10 @@ class Orchestrator:
         # (the surplus then spills into later batches, aging as it goes).
         # Eval rollouts in the backlog undercount train demand briefly —
         # conservative, and it self-corrects as the queue drains.
+        # A batch held for ship (already popped from the sink) deliberately does
+        # NOT count as coverage: dispatch-ahead during the hold is what keeps
+        # inference busy through trainer-bound waits, and its staleness stays
+        # bounded by the freshness-scaled lookahead and the drop cutoff.
         in_transit = self.dispatcher.inflight_train_count + self.dispatcher.out_q.qsize()
         return self.train_sink.remaining_rollout_demand(in_transit, lookahead) > 0
 

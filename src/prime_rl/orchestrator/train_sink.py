@@ -195,7 +195,10 @@ class TrainSink:
         running mean payload size; before any survivor has been observed the
         raw token shortfall is used (effectively unbounded —
         ``max_inflight`` caps the first batch, as before)."""
-        committed = self.buffered_count() + in_transit
+        # All partial-group arrivals count as coverage — including group-scored
+        # envs' members, which ``buffered_count`` hides from the pipeline log.
+        buffered = sum(len(group) for group in self.pending_groups.values())
+        committed = buffered + in_transit
         if self.batch_size is not None:
             assert self.config.max_inflight_rollouts is not None
             target = max(self.batch_size, self.config.max_inflight_rollouts) + lookahead_batches * self.batch_size
