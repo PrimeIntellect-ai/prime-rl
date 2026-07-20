@@ -8,7 +8,6 @@ num_infer_gpus = 4
 
 [model]
 name = "Qwen/Qwen3.5-4B"
-impl = "custom"
 
 [model.vlm]
 vision_encoder_attr = "model.visual"
@@ -29,6 +28,7 @@ harness = { id = "null", runtime = { type = "subprocess" } }
 [trainer]
 
 [trainer.model]
+impl = "custom"
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
 
