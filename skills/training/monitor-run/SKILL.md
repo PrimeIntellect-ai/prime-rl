@@ -89,17 +89,17 @@ grep -E "WARNING|ERROR" {output_dir}/logs/envs/{train,eval}/*.log
 
 All metrics print to the console log (and W&B when configured).
 
-**Progress** — orchestrator log:
+**Progress** — orchestrator log. Rollout metrics are keyed `{scope}/{subset}/<metric>/<stat>`: `scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (post-filter).
 
 | Metric | Description |
 |--------|-------------|
-| `reward/{all,env}/mean` | mean training reward |
-| `seq_len/{all,env}/mean` | avg sequence length (tokens) |
-| `num_turns/{all,env}/mean` | avg turns per rollout (multi-turn only) |
-| `is_truncated/{all,env}/mean` | fraction truncated |
-| `empty_rollouts/{all,env}`, `errored_rollouts/{all,env}` | fraction empty/errored |
-| `metrics/{env}/{metric}` | env-specific (e.g. pass rate) |
-| `eval/{env}/{avg@k,pass@k}` | eval scores when configured |
+| `train/agg/all/reward/mean` | mean training reward (per env: `train/<env>/all/reward/mean`) |
+| `train/agg/all/num_total_tokens/mean` | avg tokens per rollout (also `num_input_tokens`, `num_output_tokens`) |
+| `train/agg/all/num_turns/mean` | avg turns per rollout (multi-turn only) |
+| `train/agg/all/is_truncated/mean` | fraction truncated |
+| `train/agg/all/has_error/mean` | fraction errored (per-type under `train/agg/all/error/<type>`; also `dispatcher/errored/{train,eval}`) |
+| `train/<env>/all/metrics/<name>/mean` | env-specific metrics (e.g. pass rate) |
+| `eval/<env>/all/{avg@k,pass@k}` | eval scores when configured |
 
 **Stability** — trainer log:
 
@@ -118,9 +118,9 @@ All metrics print to the console log (and W&B when configured).
 | trainer | `time/wait_for_batch` | **high → orchestrator is bottleneck** |
 | trainer | `time/forward_backward`, `time/broadcast_weights`, `time/save_ckpt` | phase timings |
 | trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU % |
-| orchestrator | `time/step`, `time/generate_completions`, `time/update_weights` | phase timings |
-| orchestrator | `time/wait_for_ckpt` | **high → trainer is bottleneck** |
-| orchestrator | `scheduler/async_level`, `scheduler/inflight_rollouts` | scheduler state |
+| orchestrator | `time/step`, `time/save_ckpt` | phase timings |
+| orchestrator | `time/wait_for_policy` | **high → trainer is bottleneck** |
+| orchestrator | `dispatcher/off_policy_level_{mean,max}`, `dispatcher/inflight_{train,eval}`, `dispatcher/groups_in_flight`, `dispatcher/queued/eval` | dispatcher / async state |
 | env server | event loop lag (min/mean/p90/p99/max), active task distribution | periodic |
 
 For live vLLM stats, query Prometheus directly:

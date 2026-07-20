@@ -85,6 +85,7 @@ COPY packages/ /app/packages/
 COPY deps/ /app/deps/
 COPY configs /app/configs
 COPY examples /app/examples
+COPY k8s /app/k8s
 COPY benchmarks/scripts /app/benchmarks/scripts
 COPY scripts/docker-editable-pretend-versions.sh /app/scripts/docker-editable-pretend-versions.sh
 

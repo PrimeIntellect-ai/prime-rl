@@ -90,7 +90,7 @@ def rl_sft_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/reverse_text_rl_sft/start.toml",
+        "configs/ci/integration/reverse-text-rl-sft/start.toml",
         "--clean-output-dir",
         "--wandb.project",
         wandb_project,

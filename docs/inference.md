@@ -9,7 +9,7 @@ This page covers the inference configuration and the supported features/deployme
 - [Multi-Node](#multi-node)
     - [Multi-replica](#multi-replica)
     - [Wide-EP](#wide-ep)
-- [P/D Dissagregation](#pd-dissagregation)
+- [P/D Disaggregation](#pd-disaggregation)
 - [Router](#router)
     - [Routing policies](#routing-policies)
 - [Advanced Configuration](#advanced-configuration)
@@ -26,7 +26,7 @@ This page covers the inference configuration and the supported features/deployme
 We support 3 distinct deployment shapes:
 - [Single-Node](#single-node) - Runs the inference server on a single node. Useful for debugging, small scale experiments or smaller models. The default deployment shape.
 - [Multi-Node](#multi-node) - Runs the inference server on multiple nodes. Useful for large scale experiments or larger models, where latency is not a concern - i.e. single turn inference, long context inference, etc.
-- [Disaggregated](#disaggregated) - Runs the inference server on multiple nodes, but disaggregates the prefill and decode stages. Useful for large scale experiments or larger models, where latency is a concern and multi-node deployment creates very high E2E rollout latency, such as agentic workflows.
+- [Disaggregated](#pd-disaggregation) - Runs the inference server on multiple nodes, but disaggregates the prefill and decode stages. Useful for large scale experiments or larger models, where latency is a concern and multi-node deployment creates very high E2E rollout latency, such as agentic workflows.
 
 Most of the features are supported for all deployment shapes, with few exceptions. These exceptions are rejected on validation.
 
@@ -124,7 +124,7 @@ dp = 8
 
 This configuration will run 2 vLLM processes, each with `data_parallel_size_local = 4` and `tp = 2` and expert parallelism spanning 2 nodes. The requests are again routed to these processes via the `vllm-router`.
 
-## P/D Dissagregation
+## P/D Disaggregation
 
 This is the most advanced deployment shape. It allows you to disaggregate the prefill and decode stages, with KV cache flowing between them. This is useful for large scale deployments, where there are high requirements on latency, such as agentic workflows spanning 100s of turns.
 
