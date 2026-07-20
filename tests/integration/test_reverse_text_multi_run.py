@@ -409,7 +409,11 @@ def test_reward_in_range(multi_run_result: dict[str, ProcessResult], output_dir:
         with open(log_file, "r") as f:
             lines = strip_escape_codes(f.read()).splitlines()
         if name in ["beta", "gamma"]:
-            check_reward_in_range(lines, step=7, min_threshold=0.2)
+            # Early-step rewards read 1-2 policy versions staler under strict
+            # pacing (batch N's data comes from v{N-2}..v{N-4}), so the early
+            # floor sits below main's old calibration; the final-reward checks
+            # below still enforce learning quality.
+            check_reward_in_range(lines, step=7, min_threshold=0.1)
             check_reward_in_range(lines, min_threshold=0.65)
         elif name in ["alpha_resume", "beta_resume"]:
             check_reward_in_range(lines, min_threshold=0.65)
