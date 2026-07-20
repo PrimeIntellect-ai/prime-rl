@@ -18,8 +18,6 @@ name = "reverse-text"
 taskset = { id = "reverse-text-v1" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
-# PrimeIntellect Qwen3 fine-tune - select its renderer explicitly (the -SFT
-# suffix misses the MODEL_RENDERER_MAP exact match).
 [renderer]
 name = "prime-qwen3"
 
