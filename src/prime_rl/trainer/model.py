@@ -35,12 +35,7 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.trainer.distributed import DeepEPExpertParallel, MXFP8AllToAllExpertParallel
-from prime_rl.trainer.lora import (
-    apply_lora_to_model,
-    freeze_all_except_lora_and_specified,
-    log_lora_parameter_counts,
-    strip_lora_from_state_dict,
-)
+from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PreTrainedModelPrimeRL,
@@ -1238,30 +1233,32 @@ def setup_model(
 
     frozen_vision_encoder = configure_trainable_parameters(model, config)
 
+    if config.freeze_moe_router:
+        freeze_moe_router(model)
+
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
 
+    # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
+    # never trainable. Freeze it so optimizer state stays symmetric across checkpoint
+    # save/resume. No-op for models without a sparse indexer.
+    freeze_sparse_indexer(model)
+
+    if config.debug.force_balanced_routing:
+        apply_force_balanced_routing(model)
+
     if parallel_dims.ep_enabled:
         apply_ep(model, config, parallel_dims)
+        # EP replaces params with DTensors that default to requires_grad=True,
+        # re-freeze base params that LoRA froze earlier.
+        if config.lora is not None:
+            freeze_all_except_lora_and_specified(model, config.lora)
 
-    if config.lora is not None:
-        # EP replaces parameters with DTensors that default to trainable.
-        freeze_all_except_lora_and_specified(model, config.lora)
-
-    # Explicit freezes take precedence over LoRA modules_to_save and EP replacements.
-    if config.freeze_moe_router:
-        freeze_moe_router(model)
-    freeze_sparse_indexer(model)
     if frozen_vision_encoder is not None:
         freeze_vision_encoder(
             model,
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
-    if config.lora is not None:
-        log_lora_parameter_counts(model)
-
-    if config.debug.force_balanced_routing:
-        apply_force_balanced_routing(model)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
