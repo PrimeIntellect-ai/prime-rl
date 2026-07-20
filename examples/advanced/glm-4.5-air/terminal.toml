@@ -125,7 +125,6 @@ timeout = { rollout = 3600 }
 
 [orchestrator.eval.env.taskset]
 id = "swebench-verified-v1"
-use_prime_registry = true
 
 # [[orchestrator.eval.env.taskset.judges]]
 # id = "rubric"
