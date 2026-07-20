@@ -34,7 +34,7 @@ Field values come from three sources — Pydantic defaults, TOML files (passed w
 The `@` token introduces a TOML file. Multiple `@` arguments compose left-to-right, deep-merged — unset fields in an overlay keep the base value:
 
 ```bash
-uv run rl @ examples/reverse_text/rl.toml                      # one file
+uv run rl @ examples/basic/reverse-text/rl.toml                      # one file
 uv run rl @ base.toml @ overlay.toml                           # left to right
 uv run rl --trainer @ trainer.toml --orchestrator @ orch.toml  # per-section
 uv run rl @ base.toml --trainer @ trainer.toml                 # mixed
@@ -206,30 +206,31 @@ For standalone `sft` and `inference` configs, `[env_vars]` applies to that entry
 
 ## Examples
 
-The shipped end-to-end examples in [`examples/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples) are the canonical, kept-up-to-date references — the rest of the repo's TOMLs (under `configs/`) are CI- and debug-internal and may drift. Each example directory has its own README with the full launch story.
+The shipped end-to-end examples in [`examples/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples) are the canonical, kept-up-to-date references — the rest of the repo's TOMLs (under `configs/`) are CI- and debug-internal and may drift. Each basic example directory has its own README with the full launch story; the advanced examples are config-only.
 
 **Basic** (1–8 GPUs):
 
-- [**Reverse Text**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/reverse_text) — `Qwen3-0.6B` reversing a chunk of text. Tiny single-turn SFT + RL; runs on a single consumer GPU in minutes.
-- [**Wordle**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/wordle) — `Qwen3-1.7B` playing Wordle. Multi-turn SFT + RL; 2–4 H100s.
-- [**Alphabet Sort**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/alphabet_sort) — `Qwen3-4B-Instruct-2507` sorting names alphabetically. Multi-turn LoRA RL without SFT warmup; one H100.
-- [**Wiki Search**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/wiki_search) — `Qwen3-4B-Instruct-2507` answering trivia by web-searching Wikipedia. Multi-turn with tool use.
-- [**Hendrycks Sanity**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/hendrycks_sanity) — `DeepSeek-R1-Distill-Qwen-1.5B` on a filtered MATH subset. Useful for algorithm ablations.
+- [**Reverse Text**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/reverse-text) — `Qwen3-0.6B` reversing a chunk of text. Tiny single-turn SFT + RL; runs on a single consumer GPU in minutes.
+- [**Wordle**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/wordle) — `Qwen3-1.7B` playing Wordle. Multi-turn SFT + RL; 2–4 H100s.
+- [**Alphabet Sort**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/alphabet-sort) — `Qwen3-4B-Instruct-2507` sorting names alphabetically. Multi-turn LoRA RL without SFT warmup; one H100.
+- [**Wiki Search**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/wiki-search) — `Qwen3-4B-Instruct-2507` answering trivia by searching a Wikipedia corpus. Multi-turn with tool use.
+- [**Hendrycks Sanity**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/hendrycks-sanity) — `DeepSeek-R1-Distill-Qwen-1.5B` on a filtered MATH subset. Useful for algorithm ablations.
 
 **Advanced** (32–2048 GPUs, SLURM):
 
-- [**Qwen 3 30B – A3B Math**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/qwen30b_math) — `Qwen3-30B-A3B` on hard math.
-- [**Qwen 3 30B – A3B SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/qwen30b_swe) — `Qwen3-30B-A3B` on hard SWE.
-- [**INTELLECT-3.1**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/intellect-3.1) — reproduces our INTELLECT-3.1 training run.
-- [**MiniMax-M2.5 SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/minimax_m2.5_swe) — `MiniMax-M2.5` on agentic SWE.
-- [**High-throughput GLM-5**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/glm5_pd_disag) — `GLM-5` with P/D disaggregation and FP8 inference.
+- [**Qwen3-30B-A3B**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/qwen3-30b-a3b) — `Qwen3-30B-A3B` on math, SWE, and tool use.
+- [**GLM-4.5-Air**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-4.5-air) — `GLM-4.5-Air` on search, SWE, and terminal.
+- [**Nemotron-3-Super**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/nemotron-3-super) — `Nemotron-3-Super-120B` hybrid-Mamba MoE on SWE at 131k context.
+- [**MiniMax-M2.5 SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/minimax-m2.5) — `MiniMax-M2.5` on agentic SWE.
+- [**INTELLECT-3.1**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/intellect-3.1) — reproduces our INTELLECT-3.1 training run.
+- [**High-throughput GLM-5**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.2) — large-scale `GLM-5`/`GLM-5.2` inference with P/D disaggregation and FP8.
 
 ### Worked Example: Compose, Override, Dry-Run
 
 Start from a shipped base config, override two fields on the CLI, and dry-run:
 
 ```bash
-uv run rl @ examples/reverse_text/rl.toml \
+uv run rl @ examples/basic/reverse-text/rl.toml \
   --wandb.name my-experiment \
   --trainer.optim.lr 5e-6 \
   --output-dir /tmp/reverse-dry \
