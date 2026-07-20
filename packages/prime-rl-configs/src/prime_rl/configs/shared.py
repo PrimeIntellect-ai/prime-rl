@@ -94,7 +94,7 @@ class VLMConfig(BaseConfig):
     """Dotted attribute path to the language model module (e.g. ``model.language_model``)."""
 
     freeze_vision_encoder: bool = True
-    """Freeze the vision encoder and exclude its subtree from LoRA targeting."""
+    """Freeze the vision encoder parameters during training."""
 
 
 class BaseModelConfig(BaseConfig):

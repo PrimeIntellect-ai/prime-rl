@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: false
       - name: Init public submodules
@@ -20,7 +20,7 @@ jobs:
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -48,9 +48,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -98,7 +98,7 @@ jobs:
           # The slim wheel intentionally excludes taskset packages, so validate a real
           # SFT config here. RL recipes are covered by the full config suite.
           for cfg_cls, args in [
-              (SFTConfig, ["@", "examples/reverse_text/slurm_sft.toml"]),
+              (SFTConfig, ["@", "configs/ci/slim_sft.toml"]),
           ]:
               cfg = cli(cfg_cls, args=args)
               assert cfg.slurm is not None, f"expected [slurm] in {args}"
