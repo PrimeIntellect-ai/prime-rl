@@ -10,8 +10,8 @@ prime-rl uses [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-
 ## Loading and composition
 
 ```bash
-uv run rl @ examples/reverse_text/rl.toml                                  # single TOML
-uv run rl @ examples/reverse_text/rl.toml --max-steps 50                   # CLI override
+uv run rl @ examples/basic/reverse-text/rl.toml                                  # single TOML
+uv run rl @ examples/basic/reverse-text/rl.toml --max-steps 50                   # CLI override
 uv run rl @ base.toml @ overlay.toml                                       # left-to-right merge
 uv run rl --model @ model.toml --data @ data.toml                          # nested section files
 uv run rl @ base.toml --trainer @ trainer.toml --trainer.lr 1e-3           # mixed

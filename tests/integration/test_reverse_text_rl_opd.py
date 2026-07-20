@@ -90,7 +90,7 @@ def rl_opd_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/reverse_text_rl_opd/start.toml",
+        "configs/ci/integration/reverse-text-rl-opd/start.toml",
         "--clean-output-dir",
         "--wandb.project",
         wandb_project,

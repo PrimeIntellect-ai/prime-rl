@@ -1,0 +1,35 @@
+max_steps = 15
+seq_len = 2048
+
+[weight_broadcast]
+# TEMP: NCCL weight broadcast currently crashes the trainer on CI GPU runners
+# (trainer exits during NCCL init). Use filesystem transport until the NCCL
+# path is fixed. See CI RL integration test failures on main.
+type = "filesystem"
+
+[ckpt]
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator]
+batch_size = 128
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+name = "reverse-text"
+taskset = { id = "reverse-text-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
+
+[inference]
+
+# PrimeIntellect Qwen3 fine-tune - select its renderer explicitly (the -SFT
+# suffix misses the MODEL_RENDERER_MAP exact match).
+[orchestrator.renderer]
+name = "prime-qwen3"

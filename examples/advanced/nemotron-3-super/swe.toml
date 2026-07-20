@@ -1,0 +1,110 @@
+max_steps = 1000
+# 131k context requires 4 train nodes on the optim-offload profile (on 2 nodes the params/grads
+# baseline stays on GPU and long contexts OOM).
+seq_len = 131072
+
+[env_vars]
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[slurm]
+job_name = "nemotron-3-super-swe"
+partition = "prod"
+# Nemotron-H needs the mamba-ssm kernels; sync that group, then clear this run's orphaned sandboxes.
+pre_run_command = 'uv sync --all-extras --all-packages --group mamba-ssm ; timeout 120 prime sandbox delete --label "nemotron-3-super-swe" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 1
+num_infer_replicas = 4
+
+[wandb]
+project = "nemotron-3-super"
+name = "nemotron-3-super-swe"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[ckpt]
+interval = 50
+keep_last = 1
+resume_step = -1
+
+[model]
+name = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+# Hybrid-Mamba model: ring CP is unsupported, so use ulysses (capped at 8 by n_groups).
+cp = 8
+cp_style = "ulysses"
+ep = 8
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.ckpt]
+skip_gather_master_weights = true
+skip_optimizer = true
+
+[trainer.optim]
+type = "adamw"
+
+[orchestrator]
+batch_size = 256
+group_size = 16
+max_off_policy_steps = 32
+max_inflight_rollouts = 1536
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.renderer]
+name = "nemotron-3"
+truncate_history_thinking = false
+
+[[orchestrator.train.env]]
+name = "scaleswe"
+taskset = { id = "scaleswe-v1", use_prime_registry = true }
+harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["nemotron-3-super-swe"] } }
+
+[orchestrator.prime_monitor]
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+taskset = { id = "swebench-verified-v1", use_prime_registry = true }
+harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["nemotron-3-super-swe"] } }
+timeout = { rollout = 3600 }
+
+[inference]
+enable_expert_parallel = true
+enable_return_routed_experts = true
+# vLLM disables prefix caching by default for hybrid-Mamba models; SWE turns share long prefixes.
+enable_prefix_caching = true
+
+[inference.model]
+max_model_len = 131072
+
+[inference.parallel]
+tp = 8
