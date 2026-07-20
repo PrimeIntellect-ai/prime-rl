@@ -8,6 +8,7 @@ from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAuto
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
+from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 
 from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
@@ -20,6 +21,7 @@ from prime_rl.trainer.models.llama import LlamaForCausalLM
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config, MiniMaxM2ForCausalLM
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
+from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig, Qwen3_5MoeForCausalLM
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
@@ -59,6 +61,7 @@ _register_custom_causal_lm(LagunaConfig, LagunaForCausalLM)
 _register_custom_causal_lm(MiniMaxM2Config, MiniMaxM2ForCausalLM)
 _register_custom_causal_lm(NemotronHConfig, NemotronHForCausalLM)
 _register_custom_causal_lm(Qwen3MoeConfig, Qwen3MoeForCausalLM)
+_register_custom_causal_lm(Qwen3_5TextConfig, Qwen3_5ForCausalLM)
 _register_custom_causal_lm(Qwen3_5MoeConfig, Qwen3_5MoeForCausalLM)
 _register_custom_causal_lm(GptOssConfig, GptOssForCausalLM)
 
