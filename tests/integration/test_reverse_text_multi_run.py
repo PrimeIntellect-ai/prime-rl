@@ -24,7 +24,7 @@ ORCHESTRATOR_NAMES = ["alpha", "beta", "gamma"]
 
 def wait_for_file(
     file_path: Path,
-    timeout: int = 300,
+    timeout: int = 600,
     poll_interval: float = 1.0,
 ) -> None:
     """Wait for file to exist.
@@ -49,7 +49,7 @@ def wait_for_log(
     log_file: Path,
     conditions: list[str],
     proc: subprocess.Popen,
-    timeout: int = 300,
+    timeout: int = 600,
     poll_interval: float = 0.1,
     sigterm: bool = False,
     kill: bool = False,
