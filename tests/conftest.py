@@ -39,9 +39,12 @@ def setup_world():
 
 @pytest.fixture(autouse=True, scope="module")
 def cleanup_zombies():
-    """Auto-fixture to cleanup zombies between module tests. Used in CI to avoid zombie processes from previous tests."""
-    subprocess.run(["pkill", "-f", "torchrun"])
-    subprocess.run(["pkill", "-f", "VLLM"])
+    """Auto-fixture to cleanup zombies between module tests in CI. The pkill sweep
+    matches every torchrun/vLLM on the machine, so it must never run locally — it
+    kills any live training run beside the test session."""
+    if os.environ.get("CI"):
+        subprocess.run(["pkill", "-f", "torchrun"])
+        subprocess.run(["pkill", "-f", "VLLM"])
     yield
 
 
