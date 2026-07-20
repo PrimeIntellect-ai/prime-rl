@@ -3,6 +3,7 @@ from __future__ import annotations
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
 
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.trainer import SchedulerConfig
 from prime_rl.trainer.optim import CPUOffloadOptimizer, MultiLoRAOptimizer
 from prime_rl.trainer.runs import get_multi_run_manager
@@ -186,6 +187,17 @@ def setup_multi_scheduler(
 ) -> MultiLoRAScheduler:
     """Create a MultiLoRAScheduler for managing per-run schedulers."""
     scheduler = MultiLoRAScheduler(scheduler_config, max_steps)
+    if scheduler.multi_run_manager.world.is_master and scheduler_config.type in ("linear", "cosine"):
+
+        def validate_scheduler_min_lr(orch_config: OrchestratorConfig) -> tuple[bool, str]:
+            if orch_config.optim.lr < scheduler_config.min_lr:
+                return (
+                    False,
+                    f"scheduler.min_lr ({scheduler_config.min_lr}) must be <= optim.lr ({orch_config.optim.lr})",
+                )
+            return True, ""
+
+        scheduler.multi_run_manager.register_config_validation_hook(validate_scheduler_min_lr)
     # Register callback at index 0 so schedulers are created before other callbacks
     optimizer.register_post_creation_callback(scheduler.scheduler_creation_hook, index=0)
     return scheduler
