@@ -24,7 +24,7 @@ class ServerConfig(BaseConfig):
 
 
 class ParallelConfig(BaseConfig):
-    tp: int = 1
+    tp: int = Field(1, ge=1)
     """Tensor parallel size. Forwarded to vLLM as ``--tensor-parallel-size``."""
 
     dp: int = Field(1, ge=1)

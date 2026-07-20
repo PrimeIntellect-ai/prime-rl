@@ -189,7 +189,7 @@ class ModelConfig(BaseModelConfig):
     deepep_token_chunk_size: int | None = Field(None, ge=1)
     """Token chunk size for DeepEP MoE pipelining. When set, DeepEP dispatch for chunk i+1 is launched while experts compute chunk i. Only used when ``ep_comm_backend='deepep'``."""
 
-    cp: int = 1
+    cp: int = Field(1, ge=1)
     """Context parallelism degree. 1 disables CP."""
 
     cp_style: Literal["ring", "ulysses"] = "ring"
