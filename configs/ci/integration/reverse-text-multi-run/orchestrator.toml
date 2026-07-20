@@ -26,6 +26,7 @@ resume_step = -1
 [weight_broadcast]
 type = "filesystem"
 
-# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+# PrimeIntellect Qwen3 fine-tune - select its renderer explicitly (the -SFT
+# suffix misses the MODEL_RENDERER_MAP exact match).
 [renderer]
-name = "default"
+name = "prime-qwen3"
