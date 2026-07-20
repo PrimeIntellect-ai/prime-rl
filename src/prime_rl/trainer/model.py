@@ -1152,7 +1152,7 @@ def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims)
 
 
 def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:
-    """Apply LoRA while excluding any vision encoder that must remain frozen."""
+    """Apply LoRA and identify any vision encoder that must remain frozen."""
     frozen_vision_encoder = None
     if config.vlm is not None and config.vlm.freeze_vision_encoder:
         frozen_vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
@@ -1162,8 +1162,7 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
             get_logger().info("Training a VLM checkpoint on text-only data; freezing the vision encoder")
 
     if config.lora is not None:
-        excluded_modules = (frozen_vision_encoder,) if frozen_vision_encoder is not None else ()
-        apply_lora_to_model(model, config.lora, excluded_modules=excluded_modules)
+        apply_lora_to_model(model, config.lora)
     return frozen_vision_encoder
 
 

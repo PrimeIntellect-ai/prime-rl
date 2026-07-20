@@ -67,11 +67,7 @@ def _matches_pattern(name: str, pattern: str) -> bool:
         return pattern in name.split(".")
 
 
-def _find_target_modules(
-    model: nn.Module,
-    target_patterns: List[str],
-    excluded_modules: tuple[nn.Module, ...] = (),
-) -> List[str]:
+def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[str]:
     """Find all module names that match any of the target patterns.
 
     Patterns can be simple module names (e.g., "q_proj") or regex patterns
@@ -79,12 +75,9 @@ def _find_target_modules(
 
     Supports both nn.Linear layers and GroupedExperts (MoE) modules.
     """
-    excluded_module_ids = {id(module) for excluded in excluded_modules for module in excluded.modules()}
     target_modules = []
 
     for name, module in model.named_modules():
-        if id(module) in excluded_module_ids:
-            continue
         # Check if module is Linear or one of the supported expert classes
         if not isinstance(module, (nn.Linear, GroupedExperts, NonGatedGroupedExperts, GptOssGroupedExperts)):
             continue
@@ -157,12 +150,7 @@ def log_lora_parameter_counts(model: nn.Module) -> None:
     logger.info(f"LoRA: {adapted_or_trainable:,} adapted or fully trainable out of {total_params:,} parameters")
 
 
-def apply_lora_to_model(
-    model: nn.Module,
-    config: LoRAConfig,
-    *,
-    excluded_modules: tuple[nn.Module, ...] = (),
-) -> None:
+def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     """
     Apply LoRA to target modules in the model.
 
@@ -172,7 +160,6 @@ def apply_lora_to_model(
     Args:
         model: The model to apply LoRA to
         config: LoRA configuration
-        excluded_modules: Subtrees that must not receive LoRA adapters
     """
     logger = get_logger()
     from prime_rl.trainer.models import PreTrainedModelPrimeRL
@@ -190,15 +177,13 @@ def apply_lora_to_model(
         raise RuntimeError("Cannot apply LoRA to FSDP-wrapped model. Apply LoRA before setup_fsdp().")
 
     logger.debug(f"Applying LoRA to model: {model} for {config.target_modules}")
-    target_modules = _find_target_modules(model, config.target_modules, excluded_modules)
+    target_modules = _find_target_modules(model, config.target_modules)
     logger.debug(
         f"Found {len(target_modules)} target modules for LoRA: {target_modules[:10]} ... {target_modules[-10:]}"
     )
 
     if not target_modules:
-        raise ValueError(
-            f"No LoRA target modules found for patterns {config.target_modules} after applying module exclusions."
-        )
+        raise ValueError(f"No LoRA target modules found for patterns {config.target_modules}.")
 
     for module_name in target_modules:
         base_module = _get_module_by_name(model, module_name)
