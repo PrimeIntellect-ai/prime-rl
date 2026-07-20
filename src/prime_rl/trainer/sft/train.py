@@ -163,11 +163,9 @@ def train(config: SFTConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
-    processor = setup_processor(config.tokenizer)
+    processor = setup_processor(config.model)
     if config.model.vlm is not None and processor is None:
-        raise ValueError(
-            f"[model.vlm] is set but no multimodal processor could be loaded for {config.tokenizer.name!r}"
-        )
+        raise ValueError(f"[model.vlm] is set but no multimodal processor could be loaded for {config.model.name!r}")
 
     # Fake data never renders messages, so a model without a hand-coded renderer
     # can still be used to benchmark step time / memory. Validation data is

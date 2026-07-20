@@ -44,21 +44,11 @@ def test_frozen_vision_encoder_is_excluded_from_lora(monkeypatch):
         moe_router_dtype="bfloat16",
     )
 
-    configure_trainable_parameters(model, config, SimpleNamespace(ep_enabled=False))
+    frozen_vision_encoder = configure_trainable_parameters(model, config)
 
+    assert frozen_vision_encoder is model.visual
     assert isinstance(model.visual.gate_proj, nn.Linear)
-    assert all(not parameter.requires_grad for parameter in model.visual.parameters())
     assert isinstance(model.language_model.gate_proj, MultiLoRALinear)
-    assert all(
-        parameter.requires_grad
-        for name, parameter in model.language_model.gate_proj.named_parameters()
-        if "lora_" in name
-    )
-    assert all(
-        not parameter.requires_grad
-        for name, parameter in model.language_model.gate_proj.named_parameters()
-        if "lora_" not in name
-    )
 
 
 def test_frozen_vision_encoder_rejects_lora_targets_only_in_vision(monkeypatch):
@@ -73,7 +63,7 @@ def test_frozen_vision_encoder_rejects_lora_targets_only_in_vision(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="No LoRA target modules found"):
-        configure_trainable_parameters(model, config, SimpleNamespace(ep_enabled=False))
+        configure_trainable_parameters(model, config)
 
 
 def test_forward_passes_renderer_mm_token_type_ids_through():

@@ -687,7 +687,7 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     return tokenizer
 
 
-def setup_processor(config: TokenizerConfig):
+def setup_processor(config: ModelConfig):
     """Load an ``AutoProcessor`` for VLM models. Returns ``None`` for text-only models."""
     from transformers import AutoProcessor
 
@@ -1123,8 +1123,8 @@ def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims)
             )
 
 
-def configure_trainable_parameters(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
-    """Apply parameter transforms, then enforce the final trainability policy."""
+def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:
+    """Apply LoRA while excluding any vision encoder that must remain frozen."""
     frozen_vision_encoder = None
     if config.vlm is not None and config.vlm.freeze_vision_encoder:
         frozen_vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
@@ -1136,28 +1136,7 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig, parall
     if config.lora is not None:
         excluded_modules = (frozen_vision_encoder,) if frozen_vision_encoder is not None else ()
         apply_lora_to_model(model, config.lora, excluded_modules=excluded_modules)
-
-    if config.moe_router_dtype == "float32":
-        apply_fp32_moe_router(model)
-
-    if parallel_dims.ep_enabled:
-        apply_ep(model, config, parallel_dims)
-
-    if config.lora is not None:
-        # Enforce the final policy after transforms that may replace parameters.
-        freeze_all_except_lora_and_specified(model, config.lora)
-
-    # Explicit freezes take precedence over LoRA modules_to_save and EP replacements.
-    if config.freeze_moe_router:
-        freeze_moe_router(model)
-    freeze_sparse_indexer(model)
-    if frozen_vision_encoder is not None:
-        freeze_vision_encoder(
-            model,
-            override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
-        )
-    if config.lora is not None:
-        log_lora_parameter_counts(model)
+    return frozen_vision_encoder
 
 
 def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
@@ -1258,7 +1237,29 @@ def setup_model(
 
     apply_quantization(model, config)
 
-    configure_trainable_parameters(model, config, parallel_dims)
+    frozen_vision_encoder = configure_trainable_parameters(model, config)
+
+    if config.moe_router_dtype == "float32":
+        apply_fp32_moe_router(model)
+
+    if parallel_dims.ep_enabled:
+        apply_ep(model, config, parallel_dims)
+
+    if config.lora is not None:
+        # EP replaces parameters with DTensors that default to trainable.
+        freeze_all_except_lora_and_specified(model, config.lora)
+
+    # Explicit freezes take precedence over LoRA modules_to_save and EP replacements.
+    if config.freeze_moe_router:
+        freeze_moe_router(model)
+    freeze_sparse_indexer(model)
+    if frozen_vision_encoder is not None:
+        freeze_vision_encoder(
+            model,
+            override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
+        )
+    if config.lora is not None:
+        log_lora_parameter_counts(model)
 
     if config.debug.force_balanced_routing:
         apply_force_balanced_routing(model)
