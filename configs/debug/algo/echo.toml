@@ -38,11 +38,9 @@ max_completion_tokens = 512
 type = "zero_advantage"
 enforce = false
 
-# Qwen3 finetune with the standard PI template patch; always re-emits prior
-# <think> blocks, matched by renderer thinking_retention.
+# Fine-tune inherits the PrimeIntellect Qwen3 template byte-for-byte.
 [orchestrator.renderer]
-name = "qwen3"
-thinking_retention = "all"
+name = "prime-qwen3"
 
 [trainer.optim]
 lr = 1e-6

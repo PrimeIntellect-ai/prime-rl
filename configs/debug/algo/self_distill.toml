@@ -24,7 +24,7 @@ type = "opsd"
 demo_key = "answer"
 
 [orchestrator.renderer]
-name = "qwen3"
+name = "prime-qwen3"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128

@@ -32,7 +32,7 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = ["http://localhost:8001/v1"]
 
 [orchestrator.renderer]
-name = "qwen3"
+name = "prime-qwen3"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128

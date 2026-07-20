@@ -33,9 +33,6 @@ max_completion_tokens = 1024
 
 [inference] # single inference GPU (no data parallelism)
 
-# Qwen3 finetune with the standard PI template patch (byte-identical to
-# PrimeIntellect/Qwen3-0.6B base); always re-emits prior <think> blocks.
-# Match that with renderer thinking_retention.
+# Fine-tune inherits the PrimeIntellect Qwen3 template byte-for-byte.
 [orchestrator.renderer]
-name = "qwen3"
-thinking_retention = "all"
+name = "prime-qwen3"
