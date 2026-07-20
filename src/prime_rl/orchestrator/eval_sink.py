@@ -18,7 +18,7 @@ from collections import defaultdict
 
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalRollouts
-from prime_rl.orchestrator.types import EvalBatch, Rollout
+from prime_rl.orchestrator.types import EvalBatch, Rollout, complete_episodes
 from prime_rl.utils.logger import get_logger
 
 
@@ -34,14 +34,15 @@ class EvalSink:
 
     def add(self, rollout: Rollout) -> EvalBatch | None:
         """Process one arrival; finalize the group on the ``group_size``-th
-        arrival and the per-env epoch on the ``num_examples × group_size``-th."""
+        complete episode and the per-env epoch on the ``num_examples ×
+        group_size``-th (a multi-seat episode's siblings count together)."""
         env_name = rollout.env_name
         self.process_rollout(rollout)
         bkey = (env_name, rollout.eval_step)
         self.pending_groups[rollout.group_id].append(rollout)
-        if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
+        if complete_episodes(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
             self.process_group(rollout.group_id)
-        if len(self.pending_batches[bkey]) >= self.batch_size_for(env_name):
+        if complete_episodes(self.pending_batches[bkey]) >= self.batch_size_for(env_name):
             return self.process_batch(bkey)
         return None
 
@@ -49,7 +50,7 @@ class EvalSink:
         return self.eval_envs.get(env_name).config.group_size
 
     def batch_size_for(self, env_name: str) -> int:
-        """``num_examples × group_size`` — total rollouts expected for one
+        """``num_examples × group_size`` — total episodes expected for one
         epoch of ``env_name``."""
         env = self.eval_envs.get(env_name)
         return len(env.examples) * env.config.group_size

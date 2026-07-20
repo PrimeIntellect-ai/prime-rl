@@ -6,14 +6,17 @@ orchestrator never *runs* an environment: it asks the server for ``info``
 (``num_tasks`` + whether group scoring is needed), then runs rollouts purely by
 **task index**. The server returns an ``Episode`` — the env-rollout atom: the task, a
 rollout-level ``errors`` list, and the run's traces, each a real ``vf.Trace[WireTaskData]``
-(never a loose dict) whose task keeps the env's task-specific fields as extras. A
-single-agent episode carries exactly one trace, which becomes the ``Rollout``;
-multi-trace (multi-agent) episodes aren't trainable yet and are refused — at train
-start when the env class is resolvable orchestrator-side, per episode otherwise. The
-env's *runtime* lives only in the server, and the orchestrator drives it purely by
-task index; the start-time class resolution is best-effort and exists only for that
-refusal. (Nothing here reads typed env task fields — only ``task.idx`` and a full
-``task.model_dump``, both of which ``WireTaskData`` preserves.)
+(never a loose dict) whose task keeps the env's task-specific fields as extras.
+``run_rollout`` yields one ``Rollout`` per trace, all sharing the episode stamp
+(``episode_id``/``episode_rollouts``) — group accounting downstream counts complete
+episodes, so a multi-seat episode is one scheduling unit however many traces it
+fans. Train drops frozen (``trainable=False``) seats and requires an algorithm that
+declares ``multi_seat`` before accepting a fanned episode — checked best-effort at
+start when the env class resolves orchestrator-side, per episode otherwise. Eval
+keeps only the policy-played seats of a fanned episode. The env's *runtime* lives
+only in the server, and the orchestrator drives it purely by task index. (Nothing
+here reads typed env task fields — only ``task.idx`` and a full ``task.model_dump``,
+both of which ``WireTaskData`` preserves.)
 """
 
 from __future__ import annotations
@@ -173,28 +176,28 @@ class Env:
 
     async def run_rollout(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
-    ) -> Rollout:
-        """Run one env-rollout for ``task_idx``; return its trace as a typed Rollout."""
+    ) -> list[Rollout]:
+        """Run one env-rollout for ``task_idx``; return its traces as typed Rollouts,
+        one per trace, sharing the episode stamp — group accounting counts complete
+        episodes, so a fanned episode is still one scheduling unit. Episode-level
+        errors (the env's rollout()/score() hooks) fail every sibling: the episode is
+        the failure atom, exactly as the env's own retries treat it."""
         episode = await self.env_client.run_rollout(
             task_idx=task_idx,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        if len(episode.traces) > 1:
-            raise RuntimeError(
-                f"env '{self.name}' returned a multi-trace episode ({len(episode.traces)} traces); "
-                "multi-agent episodes are not trainable yet"
-            )
         if not episode.traces:
             # The env-rollout failed before any trace completed (hook error, all
             # retries exhausted) — an error marker carrying the real task.
-            return ROLLOUT_TYPE(task=episode.task, errors=list(episode.errors), stop_condition="error")
-        rollout = ROLLOUT_TYPE.model_construct(**dict(episode.traces[0]))
-        # Episode-level errors (the env's rollout()/score() hooks) fail the run the
-        # same as the trace's own; appended so ``rollout.error`` surfaces them.
-        rollout.errors.extend(episode.errors)
-        return rollout
+            return [ROLLOUT_TYPE(task=episode.task, errors=list(episode.errors), stop_condition="error")]
+        rollouts = [ROLLOUT_TYPE.model_construct(**dict(trace)) for trace in episode.traces]
+        for rollout in rollouts:
+            rollout.episode_id = episode.id
+            rollout.episode_rollouts = len(rollouts)
+            rollout.errors = [*rollout.errors, *episode.errors]
+        return rollouts
 
     async def run_group(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
@@ -231,11 +234,14 @@ class TrainEnv(Env):
         await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
 
     def _refuse_multi_agent(self) -> None:
-        """Best-effort start-time refusal of multi-agent envs: refused per episode instead,
-        a training run would burn a full env-rollout per refusal and — the dispatcher turning
-        each RuntimeError into an error-marker rollout — never fill a batch. Only possible
+        """Best-effort start-time check that the env's shape matches its algorithm:
+        a multi-agent env needs an algorithm that declares ``multi_seat`` (per-episode
+        refusals would burn a full env-rollout each and — the dispatcher turning every
+        RuntimeError into an error-marker rollout — never fill a batch). Only possible
         when the env package is importable orchestrator-side; otherwise the server owns
-        resolution and the per-episode refusal in ``run_rollout`` still guards."""
+        resolution and the per-episode gate in ``run_rollout`` still guards."""
+        if self.algorithm.multi_seat:
+            return
         taskset = self.config.env.taskset
         try:
             env_cls = vf.environment_class(taskset.id if taskset is not None else "", self.config.env.id)
@@ -243,20 +249,36 @@ class TrainEnv(Env):
             return
         if not issubclass(env_cls, vf.SingleAgentEnv):
             raise RuntimeError(
-                f"env '{self.name}' resolves to {env_cls.__name__}; multi-agent envs are not trainable yet — "
-                "evaluate it with verifiers directly (uv run eval) for now"
+                f"env '{self.name}' resolves to {env_cls.__name__} (multi-agent) but algorithm "
+                f"'{type(self.algorithm).__name__}' trains single-agent episodes — set "
+                '[orchestrator.train.envs.algo] type = "hierarchical_grpo" (or another multi-seat algorithm)'
             )
 
     async def run_rollout(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
-    ) -> Rollout:
-        rollout = await super().run_rollout(client, task_idx, model_name, cache_salt)
-        if not rollout.trainable:
+    ) -> list[Rollout]:
+        """The train-side selection: frozen seats (``trainable=False``) are never
+        training data and drop out; the episode restamps to what actually ships."""
+        rollouts = await super().run_rollout(client, task_idx, model_name, cache_salt)
+        kept = [r for r in rollouts if r.trainable]
+        if not kept:
+            if any(r.has_error for r in rollouts):
+                # A failed episode of frozen seats still owes the sink one unit.
+                marker = ROLLOUT_TYPE(task=rollouts[0].task, errors=list(rollouts[0].errors), stop_condition="error")
+                return [marker]
             raise RuntimeError(
-                f"env '{self.name}' returned an untrainable trace (role={rollout.role!r}); "
-                "a frozen sole seat is not trainable"
+                f"env '{self.name}' returned an episode with no trainable traces "
+                f"(roles={sorted({r.role or 'agent' for r in rollouts})}); nothing to train on"
             )
-        return rollout
+        if len(kept) > 1 and not self.algorithm.multi_seat:
+            raise RuntimeError(
+                f"env '{self.name}' returned a multi-trace episode ({len(kept)} trainable traces) but "
+                f"algorithm '{type(self.algorithm).__name__}' trains single-agent episodes — set "
+                '[orchestrator.train.envs.algo] type = "hierarchical_grpo" (or another multi-seat algorithm)'
+            )
+        for r in kept:
+            r.episode_rollouts = len(kept)
+        return kept
 
 
 class EvalEnv(Env):
@@ -276,6 +298,21 @@ class EvalEnv(Env):
         else:
             n = self.num_tasks if self.config.num_examples < 0 else min(self.config.num_examples, self.num_tasks)
         self.examples = [{"task_idx": i} for i in range(n)]
+
+    async def run_rollout(
+        self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
+    ) -> list[Rollout]:
+        """Eval measures the policy: on a multi-seat episode only the trainable
+        (policy-played) seats count toward metrics — a frozen judge's own trace
+        would poison the env's reward stats. A sole frozen seat stays legal
+        (evaluating a pinned configuration)."""
+        rollouts = await super().run_rollout(client, task_idx, model_name, cache_salt)
+        if len(rollouts) <= 1:
+            return rollouts
+        kept = [r for r in rollouts if r.trainable] or rollouts
+        for r in kept:
+            r.episode_rollouts = len(kept)
+        return kept
 
 
 EnvT = TypeVar("EnvT", bound=Env)

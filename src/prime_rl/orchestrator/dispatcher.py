@@ -527,18 +527,22 @@ class RolloutDispatcher:
                         f"Rollout failed in group {meta.group_id} ({meta.env_name}) — {r.error.type}: {r.error.message}"
                     )
             await self.emit_rollout(meta, group, r)
+        # Group bookkeeping is in scheduling units (``meta.rollout_count``: the
+        # permits this task reserved), not emitted rollouts — a multi-seat episode
+        # fans several rollouts per unit, and counting those would pop the group
+        # while it still owes dispatches.
+        if group is not None:
+            group.emitted += meta.rollout_count
+            if group.emitted >= group.target_rollouts:
+                self.groups.pop(meta.group_id, None)
 
     async def emit_rollout(self, meta: InflightRollout, group: GroupState | None, rollout: Rollout) -> None:
-        """Stamp prime-rl metadata onto the completed rollout and put it on ``out_q``.
-        Pops the group from ``self.groups`` once every member has been emitted."""
+        """Stamp prime-rl metadata onto the completed rollout and put it on ``out_q``."""
         eval_step = meta.eval_step
         policy_version = meta.policy_version
         if group is not None:
             eval_step = group.eval_step
             policy_version = group.policy_version_at_start
-            group.emitted += 1
-            if group.emitted >= group.target_rollouts:
-                self.groups.pop(meta.group_id, None)
 
         rollout.kind = meta.kind
         rollout.env_name = meta.env_name

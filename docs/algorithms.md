@@ -66,6 +66,7 @@ type = "grpo"  # the default
 | `type` | Sampling | Loss | What it is |
 |---|---|---|---|
 | `grpo` | policy | `rl` on actions | Standard group-relative RL. |
+| `hierarchical_grpo` | policy | `rl` on actions | GRPO for multi-seat envs: each role is baselined against whoever attempted the same prompt — a role fanned within an episode (e.g. n solver attempts at one minted problem) baselines within its episode, a once-per-episode role (the proposer) across the group's episodes. Degenerates to plain GRPO on single-agent envs. |
 | `max_rl` | policy | `rl` on actions | MaxRL ([arXiv:2602.02710](https://arxiv.org/abs/2602.02710)): GRPO's centered reward normalized by the group **mean** instead of the standard deviation — the gradient is unbiased for the order-`group_size` truncation of the maximum-likelihood objective, upweighting hard examples like `1/p`. |
 | `opd` | policy | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs a `teacher`. |
 | `sft` | *(the teacher)* | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs a frozen `sampling.source` (the teacher it samples from). |
@@ -131,6 +132,7 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 | `algo.type` | Class | hook(s) — stage |
 |---|---|---|
 | `grpo` | `GRPOAlgorithm` | `score_group`: group-norm credit (optional length penalty) |
+| `hierarchical_grpo` | `HierarchicalGRPOAlgorithm` | `score_group`: per-partition group-norm credit (fanned roles within their episode, singleton roles across episodes); declares `multi_seat` |
 | `echo` | `EchoAlgorithm` | `score_rollout`: weighted ce on observation tokens; `score_group`: group-norm credit (inherited) |
 | `max_rl` | `MaxRLAlgorithm` | `score_group`: mean-normalized group credit |
 | `opd` | `OPDAlgorithm` | `score_rollout`: own-context prefill under the teacher |
@@ -270,6 +272,7 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 | Type | Component | Effect |
 |---|---|---|
 | `grpo` | `rl` | Group-norm: reward minus per-group baseline, optional length penalty. |
+| `hierarchical_grpo` | `rl` | Per-partition group-norm over a multi-seat episode bundle. |
 | `max_rl` | `rl` | Mean-normalized group credit (maximum-likelihood RL). |
 | `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-provided tokens selected by message role (each role's `alpha` is its ECHO λ), optionally narrowed by a user filter. |
 | `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream; `group_size` only fans out sampling. |

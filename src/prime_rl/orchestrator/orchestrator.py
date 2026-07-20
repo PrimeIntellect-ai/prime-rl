@@ -495,6 +495,7 @@ class Orchestrator:
                 run,
                 env_name=rollout.env_name,
                 group_id=str(rollout.group_id),
+                episode_id=rollout.episode_id,
                 policy_version=rollout.policy_version,
             )
             await asyncio.to_thread(

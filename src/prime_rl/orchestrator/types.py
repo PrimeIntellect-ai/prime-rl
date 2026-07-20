@@ -88,6 +88,12 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     kind: RolloutKind = Field(default="train", exclude=True)
     env_name: str = Field(default="", exclude=True)
     group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
+    # One env-rollout (episode) can carry several trainable traces — one Rollout
+    # each, sharing an episode_id. Group accounting counts complete episodes, so
+    # the default (a fresh id, size 1) keeps single-agent and legacy paths
+    # counting exactly as before.
+    episode_id: str = Field(default_factory=lambda: uuid.uuid4().hex, exclude=True)
+    episode_rollouts: int = Field(default=1, exclude=True)
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
@@ -132,6 +138,19 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
         """Whether the rollout carries a training signal — a nonzero advantage on some token. A
         uniform-reward GRPO group (all-zero advantages) or an unscored rollout has no gradient."""
         return bool(self.advantages) and any(a != 0.0 for a in self.advantages)
+
+
+def complete_episodes(rollouts: list[Rollout]) -> int:
+    """How many whole episodes ``rollouts`` contains — the sinks' counting rule.
+    An episode is complete when all of its ``episode_rollouts`` siblings have
+    arrived; singleton stamps (the default) make this identical to counting
+    rollouts, so single-agent and legacy paths are unchanged."""
+    arrived: dict[str, int] = {}
+    size: dict[str, int] = {}
+    for r in rollouts:
+        arrived[r.episode_id] = arrived.get(r.episode_id, 0) + 1
+        size[r.episode_id] = r.episode_rollouts
+    return sum(1 for eid, n in arrived.items() if n >= size[eid])
 
 
 @dataclass

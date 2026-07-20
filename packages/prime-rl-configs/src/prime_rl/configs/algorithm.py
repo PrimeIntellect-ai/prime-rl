@@ -200,6 +200,17 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
 
 
+class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
+    type: Literal["hierarchical_grpo"] = "hierarchical_grpo"
+    """GRPO for multi-seat envs: each role is baselined against whoever attempted
+    the same prompt — a role fanned within an episode (n solver attempts at one
+    minted problem) baselines within its episode, a once-per-episode role (the
+    proposer) baselines across the group's episodes. Degenerates to plain GRPO on
+    single-agent envs."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+
 class EchoAlgoConfig(GRPOAlgoConfig):
     type: Literal["echo"] = "echo"  # type: ignore[assignment]
     """ECHO: group-relative advantage on action tokens (GRPO), plus weighted
@@ -305,7 +316,13 @@ class SFTAlgoConfig(BaseAlgoConfig):
 
 
 AlgoConfig: TypeAlias = Annotated[
-    GRPOAlgoConfig | EchoAlgoConfig | MaxRLAlgoConfig | OPDAlgoConfig | OPSDAlgoConfig | SFTAlgoConfig,
+    GRPOAlgoConfig
+    | HierarchicalGRPOAlgoConfig
+    | EchoAlgoConfig
+    | MaxRLAlgoConfig
+    | OPDAlgoConfig
+    | OPSDAlgoConfig
+    | SFTAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -313,6 +330,7 @@ assignment and loss routing, fused). The ``type`` selects the algorithm, and
 its class defaults are the vetted setting.
 
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
+- ``hierarchical_grpo`` — GRPO for multi-seat envs: fanned roles baseline within their episode, once-per-episode roles across the group's episodes.
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).

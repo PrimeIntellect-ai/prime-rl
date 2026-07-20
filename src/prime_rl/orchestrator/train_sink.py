@@ -25,7 +25,7 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout, TrainBatch
+from prime_rl.orchestrator.types import Rollout, TrainBatch, complete_episodes
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -132,14 +132,15 @@ class TrainSink:
         return dict(counts)
 
     async def add(self, rollout: Rollout) -> TrainBatch | None:
-        """Process one arrival; finalize the group on the ``group_size``-th
-        arrival; return a ``TrainBatch`` if the finalization pushed (or left)
-        the batch over its threshold. Arrivals into still-incomplete groups
-        never ship a batch."""
+        """Process one arrival; finalize the group once ``group_size`` complete
+        episodes have arrived (a multi-seat episode's siblings count together);
+        return a ``TrainBatch`` if the finalization pushed (or left) the batch
+        over its threshold. Arrivals into still-incomplete groups never ship a
+        batch."""
         await self.process_rollout(rollout)
         env_name = rollout.env_name
         self.pending_groups[rollout.group_id].append(rollout)
-        if len(self.pending_groups[rollout.group_id]) < self.group_size_for(env_name):
+        if complete_episodes(self.pending_groups[rollout.group_id]) < self.group_size_for(env_name):
             return None
         await self.process_group(rollout.group_id)
         # ``pending_batch`` only grows on group finalization, so readiness is

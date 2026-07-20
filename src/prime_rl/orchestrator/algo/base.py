@@ -118,6 +118,10 @@ class Algorithm:
     renderer is not threaded in."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
+    multi_seat: ClassVar[bool] = False
+    """Whether the algorithm can credit a multi-seat episode (several trainable
+    traces per env-rollout, stamped ``role``/``episode_id``). Single-seat
+    algorithms are refused a multi-agent env up front (``TrainEnv.start``)."""
 
     def __init__(self, config: AlgoConfig, policy_pool: InferencePool):
         self.policy_pool = policy_pool

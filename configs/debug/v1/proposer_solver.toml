@@ -1,0 +1,53 @@
+# Debug RL run for a MULTI-AGENT v1 env: proposer-solver trained with
+# hierarchical GRPO — the proposer is baselined across the task's episodes,
+# each episode's solver fan-out against itself. Both seats play the policy on
+# the null harness (no sandbox): a pipeline smoke, not a curriculum recipe.
+
+max_steps = 4
+seq_len = 4096
+
+[wandb]
+project = "proposer-solver"
+name = "v1-debug"
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[orchestrator]
+# batch_size counts traces; one episode here fans 3 (1 proposer + 2 solvers),
+# so a group of 4 episodes contributes up to 12.
+batch_size = 24
+group_size = 4
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+# Proposals run long; a tighter cap truncates them mid-contract and fails the
+# episode.
+max_completion_tokens = 2048
+
+[[orchestrator.train.envs]]
+env.taskset = { id = "proposer-solver-v1" }
+env.n = 2
+env.max_turns = 3
+env.proposer.harness = { id = "null", runtime = { type = "subprocess" } }
+env.solver.harness = { id = "null", runtime = { type = "subprocess" } }
+algo = { type = "hierarchical_grpo" }
+
+[trainer.model.lora]
+rank = 8
+alpha = 32
+
+[trainer.optim]
+lr = 1e-5
+
+[ckpt]
+
+[inference]
+gpu_memory_utilization = 0.5
+
+[inference.model]
+# Qwen3-4B-Instruct's native 262k context wants a 36 GiB KV cache; the smoke
+# trains at seq_len 4096.
+max_model_len = 8192
