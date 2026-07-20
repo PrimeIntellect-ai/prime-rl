@@ -211,6 +211,19 @@ class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
 
+class RAEAlgoConfig(BaseAlgoConfig):
+    type: Literal["rae"] = "rae"
+    """Role-conditioned Advantage Estimation (SPIRAL): advantage = reward minus a
+    per-role EMA baseline maintained across the run — the self-play estimator for
+    zero-sum multi-seat envs, where sibling-relative baselines would couple the
+    opponents' credit."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    alpha: float = 0.95
+    """EMA decay: baseline <- alpha * baseline + (1 - alpha) * group role mean."""
+
+
 class EchoAlgoConfig(GRPOAlgoConfig):
     type: Literal["echo"] = "echo"  # type: ignore[assignment]
     """ECHO: group-relative advantage on action tokens (GRPO), plus weighted
@@ -318,6 +331,7 @@ class SFTAlgoConfig(BaseAlgoConfig):
 AlgoConfig: TypeAlias = Annotated[
     GRPOAlgoConfig
     | HierarchicalGRPOAlgoConfig
+    | RAEAlgoConfig
     | EchoAlgoConfig
     | MaxRLAlgoConfig
     | OPDAlgoConfig
@@ -331,6 +345,7 @@ its class defaults are the vetted setting.
 
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
 - ``hierarchical_grpo`` — GRPO for multi-seat envs: fanned roles baseline within their episode, once-per-episode roles across the group's episodes.
+- ``rae`` — SPIRAL's role-conditioned advantage: reward minus a per-role EMA baseline across the run, for zero-sum self-play games.
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).

@@ -35,6 +35,7 @@ from prime_rl.orchestrator.algo.hierarchical_grpo import HierarchicalGRPOAlgorit
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.opd import OPDAlgorithm
 from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
+from prime_rl.orchestrator.algo.rae import RAEAlgorithm
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
 from prime_rl.orchestrator.types import Rollout
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
 ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "grpo": GRPOAlgorithm,
     "hierarchical_grpo": HierarchicalGRPOAlgorithm,
+    "rae": RAEAlgorithm,
     "echo": EchoAlgorithm,
     "max_rl": MaxRLAlgorithm,
     "opd": OPDAlgorithm,
@@ -74,6 +76,7 @@ __all__ = [
     "HierarchicalGRPOAlgorithm",
     "MaxRLAlgorithm",
     "OPDAlgorithm",
+    "RAEAlgorithm",
     "OPSDAlgorithm",
     "Rollout",
     "SFTDistillAlgorithm",
