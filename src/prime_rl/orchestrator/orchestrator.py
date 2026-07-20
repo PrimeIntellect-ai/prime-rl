@@ -97,10 +97,8 @@ SHUTDOWN_TIMEOUT_S = 300
 # dataset; fail loudly instead of spinning
 MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
-# Maximum batches the orchestrator may run ahead of the trainer. The
-# dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
-# resumed when the watcher advances ``policy.version``.
-TARGET_LAG = 1
+# Dispatch gate lag is configured via ``orchestrator.target_lag`` (default 1).
+# Unrelated to ``max_off_policy_steps`` (per-rollout staleness).
 
 # Default wait for the trainer's startup weight broadcast when no ckpt block
 # configures ``wait_for_weights_timeout`` (e.g. a from-scratch run). The
@@ -851,7 +849,7 @@ class Orchestrator:
         )
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG and not building_final_batch_nccl:
+        if lead > self.config.target_lag and not building_final_batch_nccl:
             if was_set:
                 get_logger().info(
                     "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."
