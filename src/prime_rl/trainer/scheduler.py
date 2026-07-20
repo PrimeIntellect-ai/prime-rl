@@ -96,6 +96,9 @@ def setup_scheduler(
 
     Handles CPUOffloadOptimizer by extracting the base optimizer for the scheduler.
     """
+    if scheduler_config.type in ("linear", "cosine") and scheduler_config.min_lr > lr:
+        raise ValueError(f"scheduler.min_lr ({scheduler_config.min_lr}) must be <= optim.lr ({lr})")
+
     base_optimizer = _get_base_optimizer(optimizer)
 
     match scheduler_config.type:
