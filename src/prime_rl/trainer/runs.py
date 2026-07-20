@@ -236,8 +236,9 @@ class MultiRunManager:
             with open(config_path, "rb") as f:
                 config_dict = tomli.load(f)
 
-            from prime_rl.configs.orchestrator import OrchestratorConfig
             from verifiers.v1.loaders import skip_plugin_install
+
+            from prime_rl.configs.orchestrator import OrchestratorConfig
 
             # The trainer only reads training-relevant fields (model, lora, seq_len, buffers,
             # env names) and never runs the env, so skip resolving/installing taskset/harness
