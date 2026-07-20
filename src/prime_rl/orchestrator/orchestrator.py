@@ -478,6 +478,12 @@ class Orchestrator:
             try:
                 rollout: Rollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
+                # A dead component (dispatcher, watcher) would otherwise leave this
+                # loop polling an empty queue forever — surface its failure as the
+                # run's own.
+                for component in self.component_tasks:
+                    if component.done() and not component.cancelled() and component.exception() is not None:
+                        raise component.exception()  # noqa: B904
                 continue
 
             # Every completed rollout — errored, filtered, or never batched — lands in the

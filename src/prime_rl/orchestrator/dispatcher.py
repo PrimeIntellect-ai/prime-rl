@@ -34,7 +34,7 @@ from typing import Literal
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
 
-from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
+from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs, UntrainableEnvError
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
@@ -503,6 +503,10 @@ class RolloutDispatcher:
             rollouts: list[Rollout] = result if isinstance(result, list) else [result]
         except asyncio.CancelledError:
             return
+        except UntrainableEnvError:
+            # Categorical: every rollout of this env would refuse identically, and
+            # an all-marker stream never fills a batch. Fail the run instead.
+            raise
         except Exception as exc:
             get_logger().warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             task_idx = group.task_idx if group is not None else -1

@@ -10,7 +10,7 @@ import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.envs import EvalEnv, TrainEnv
+from prime_rl.orchestrator.envs import EvalEnv, TrainEnv, UntrainableEnvError
 from prime_rl.orchestrator.types import Rollout, complete_episodes
 
 
@@ -89,7 +89,7 @@ def test_empty_episode_becomes_error_marker_carrying_the_task():
 
 def test_multi_trace_episode_needs_a_multi_seat_algorithm():
     episode = _episode([_trace(role="proposer"), _trace(role="solver")])
-    with pytest.raises(RuntimeError, match="hierarchical_grpo"):
+    with pytest.raises(UntrainableEnvError, match="hierarchical_grpo"):
         _run(_train_env(episode))
     rollouts = _run(_train_env(episode, algorithm=_MultiSeat()))
     assert [r.role for r in rollouts] == ["proposer", "solver"]
@@ -114,9 +114,17 @@ def test_episode_errors_fail_every_sibling():
     assert len(rollouts) == 2 and all(r.has_error for r in rollouts)
 
 
+def test_sole_trainable_seat_trains_with_a_single_seat_algorithm():
+    """The agentic-judge shape: a frozen judge beside one trainable solver is
+    single-seat from the trainer's perspective — plain GRPO takes it."""
+    episode = _episode([_trace(role="solver"), _trace(trainable=False, role="judge")])
+    (rollout,) = _run(_train_env(episode))
+    assert rollout.role == "solver" and rollout.episode_rollouts == 1
+
+
 def test_untrainable_sole_trace_train_refuses_eval_accepts():
     episode = _episode([_trace(trainable=False, role="judge")])
-    with pytest.raises(RuntimeError, match="no trainable"):
+    with pytest.raises(UntrainableEnvError, match="no trainable"):
         _run(_train_env(episode))
     (rollout,) = _run(_eval_env(episode))
     assert rollout.trainable is False

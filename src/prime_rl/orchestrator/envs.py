@@ -11,12 +11,13 @@ rollout-level ``errors`` list, and the run's traces, each a real ``vf.Trace[Wire
 (``episode_id``/``episode_rollouts``) — group accounting downstream counts complete
 episodes, so a multi-seat episode is one scheduling unit however many traces it
 fans. Train drops frozen (``trainable=False``) seats and requires an algorithm that
-declares ``multi_seat`` before accepting a fanned episode — checked best-effort at
-start when the env class resolves orchestrator-side, per episode otherwise. Eval
-keeps only the policy-played seats of a fanned episode. The env's *runtime* lives
-only in the server, and the orchestrator drives it purely by task index. (Nothing
-here reads typed env task fields — only ``task.idx`` and a full ``task.model_dump``,
-both of which ``WireTaskData`` preserves.)
+declares ``multi_seat`` before accepting a fanned episode — a mismatch is
+categorical, so it raises ``UntrainableEnvError``, which fails the run instead of
+becoming an error-marker rollout (an all-refused stream would otherwise never fill
+a batch). Eval keeps only the policy-played seats of a fanned episode. The env's
+*runtime* lives only in the server, and the orchestrator drives it purely by task
+index. (Nothing here reads typed env task fields — only ``task.idx`` and a full
+``task.model_dump``, both of which ``WireTaskData`` preserves.)
 """
 
 from __future__ import annotations
@@ -50,6 +51,12 @@ ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 # loads the taskset (possibly downloading a dataset) before reporting, so this
 # is generous.
 ENV_SERVER_SPAWN_TIMEOUT = 600.0
+
+
+class UntrainableEnvError(RuntimeError):
+    """The env's episode shape can't be credited by its algorithm — a categorical
+    config mistake, identical every rollout. The dispatcher lets it fail the run
+    instead of absorbing it into error markers."""
 
 
 def _run_env_server(
@@ -229,36 +236,13 @@ class TrainEnv(Env):
         self.algorithm = algorithm
         self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
 
-    async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
-        self._refuse_multi_agent()
-        await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
-
-    def _refuse_multi_agent(self) -> None:
-        """Best-effort start-time check that the env's shape matches its algorithm:
-        a multi-agent env needs an algorithm that declares ``multi_seat`` (per-episode
-        refusals would burn a full env-rollout each and — the dispatcher turning every
-        RuntimeError into an error-marker rollout — never fill a batch). Only possible
-        when the env package is importable orchestrator-side; otherwise the server owns
-        resolution and the per-episode gate in ``run_rollout`` still guards."""
-        if self.algorithm.multi_seat:
-            return
-        taskset = self.config.env.taskset
-        try:
-            env_cls = vf.environment_class(taskset.id if taskset is not None else "", self.config.env.id)
-        except ModuleNotFoundError:
-            return
-        if not issubclass(env_cls, vf.SingleAgentEnv):
-            raise RuntimeError(
-                f"env '{self.name}' resolves to {env_cls.__name__} (multi-agent) but algorithm "
-                f"'{type(self.algorithm).__name__}' trains single-agent episodes — set "
-                '[orchestrator.train.envs.algo] type = "hierarchical_grpo" (or another multi-seat algorithm)'
-            )
-
     async def run_rollout(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
     ) -> list[Rollout]:
         """The train-side selection: frozen seats (``trainable=False``) are never
-        training data and drop out; the episode restamps to what actually ships."""
+        training data and drop out; the episode restamps to what actually ships. A
+        shape the algorithm can't credit is categorical — it fails the run
+        (``UntrainableEnvError``), not the rollout."""
         rollouts = await super().run_rollout(client, task_idx, model_name, cache_salt)
         kept = [r for r in rollouts if r.trainable]
         if not kept:
@@ -266,12 +250,12 @@ class TrainEnv(Env):
                 # A failed episode of frozen seats still owes the sink one unit.
                 marker = ROLLOUT_TYPE(task=rollouts[0].task, errors=list(rollouts[0].errors), stop_condition="error")
                 return [marker]
-            raise RuntimeError(
+            raise UntrainableEnvError(
                 f"env '{self.name}' returned an episode with no trainable traces "
                 f"(roles={sorted({r.role or 'agent' for r in rollouts})}); nothing to train on"
             )
         if len(kept) > 1 and not self.algorithm.multi_seat:
-            raise RuntimeError(
+            raise UntrainableEnvError(
                 f"env '{self.name}' returned a multi-trace episode ({len(kept)} trainable traces) but "
                 f"algorithm '{type(self.algorithm).__name__}' trains single-agent episodes — set "
                 '[orchestrator.train.envs.algo] type = "hierarchical_grpo" (or another multi-seat algorithm)'
