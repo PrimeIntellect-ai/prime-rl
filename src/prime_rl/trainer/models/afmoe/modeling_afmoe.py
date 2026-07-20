@@ -3,14 +3,9 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
-from transformers.masking_utils import (
-    create_causal_mask,
-    create_sliding_window_causal_mask,
-)
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import (
     MoeModelOutputWithPast,
@@ -33,7 +28,7 @@ from prime_rl.trainer.models.layers.rotary_emb import (
     RotaryEmbeddingConfig,
     apply_rotary_pos_emb,
 )
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 from .configuration_afmoe import AfmoeConfig
 from .converting_afmoe import (
@@ -103,78 +98,6 @@ class AfmoeAttentionBase(nn.Module):
         attn_output = attn_output.contiguous().view(*input_shape, -1)
         attn_output = attn_output * torch.sigmoid(gate_states)
         return self.o_proj(attn_output)
-
-
-class AfmoeSDPAAttention(AfmoeAttentionBase):
-    """AFMoE attention using PyTorch's scaled_dot_product_attention."""
-
-    def attn_projections(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
-
-        query_states = self.q_proj(hidden_states).view(hidden_shape)
-        key_states = self.k_proj(hidden_states).view(hidden_shape)
-        value_states = self.v_proj(hidden_states).view(hidden_shape)
-        gate_states = self.gate_proj(hidden_states)
-
-        query_states = self.q_norm(query_states)
-        key_states = self.k_norm(key_states)
-
-        query_states = query_states.transpose(1, 2)
-        key_states = key_states.transpose(1, 2)
-        value_states = value_states.transpose(1, 2)
-
-        if self.is_local_attention:
-            cos, sin = position_embeddings
-            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-
-        key_states = _repeat_kv(key_states, self.num_key_value_groups)
-        value_states = _repeat_kv(value_states, self.num_key_value_groups)
-
-        return query_states, key_states, value_states, gate_states
-
-    def _attention_core(
-        self,
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
-        dropout_p: float = 0.0,
-    ) -> torch.Tensor:
-        return F.scaled_dot_product_attention(
-            query_states,
-            key_states,
-            value_states,
-            attn_mask=attention_mask,
-            dropout_p=dropout_p,
-            is_causal=attention_mask is None,
-            scale=self.scaling,
-        )
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: torch.Tensor | None = None,
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> tuple[torch.Tensor, None]:
-        query_states, key_states, value_states, gate_states = self.attn_projections(hidden_states, position_embeddings)
-
-        dropout_p = self.attention_dropout if self.training else 0.0
-        attn_output = self._attention_core(
-            query_states,
-            key_states,
-            value_states,
-            attention_mask=attention_mask,
-            dropout_p=dropout_p,
-        )
-
-        return self.output_proj(attn_output, gate_states), None
 
 
 class AfmoeFlashAttention(AfmoeAttentionBase):
@@ -263,10 +186,9 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
 
 
 AFMOE_ATTN_IMPL2CLASS = {
-    "sdpa": AfmoeSDPAAttention,
     "flash_attention_2": functools.partial(AfmoeFlashAttention, flash_attn_version=2),
     "flash_attention_3": functools.partial(AfmoeFlashAttention, flash_attn_version=3),
-    "fa4": functools.partial(AfmoeFlashAttention, flash_attn_version=4),
+    "flash_attention_4": functools.partial(AfmoeFlashAttention, flash_attn_version=4),
 }
 
 
@@ -299,8 +221,6 @@ def _get_afmoe_attention(config: AfmoeConfig, layer_idx: int) -> nn.Module:
     )
 
     attn_impl = config._attn_implementation
-    if attn_impl == "eager":
-        attn_impl = "sdpa"
 
     if attn_impl not in AFMOE_ATTN_IMPL2CLASS:
         supported = list(AFMOE_ATTN_IMPL2CLASS.keys())
@@ -394,7 +314,7 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
         "k_norm",
         "norm",
     ]
-    _supports_sdpa = True
+    _supports_sdpa = False
     _supports_flash_attn = True
     _supports_flex_attn = False
     _supports_attention_backend = True
@@ -464,6 +384,8 @@ class AfmoeModel(AfmoePreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
     ) -> MoeModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
@@ -478,27 +400,11 @@ class AfmoeModel(AfmoePreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        use_flash = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
-
-        if use_flash:
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-            causal_mask_mapping = None
-        else:
-            cu_seqlens = None
-            max_seqlen = None
-            if not isinstance(causal_mask_mapping := attention_mask, dict):
-                mask_kwargs = {
-                    "config": self.config,
-                    "inputs_embeds": inputs_embeds,
-                    "attention_mask": attention_mask,
-                    "past_key_values": None,
-                    "position_ids": position_ids,
-                }
-                causal_mask_mapping = {
-                    "full_attention": create_causal_mask(**mask_kwargs),
-                    "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
-                }
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        causal_mask_mapping = None
 
         hidden_states = inputs_embeds
 
@@ -571,6 +477,8 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         token_type_ids: Optional[torch.Tensor] = None,  # will be ignored
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
@@ -591,6 +499,7 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
+            seq_lens=seq_lens,
         )
 
         hidden_states = outputs.last_hidden_state

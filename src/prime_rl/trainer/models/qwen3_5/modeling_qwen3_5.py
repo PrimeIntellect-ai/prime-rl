@@ -21,16 +21,11 @@ from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeGatedAttentionConfig,
     Qwen3_5MoeGatedDeltaNet,
     Qwen3_5MoeGatedFlashAttention,
-    Qwen3_5MoeGatedSDPAAttention,
     Qwen3_5MoeRMSNorm,
     Qwen3_5MoeRotaryEmbedding,
     normalize_qwen3_5_attn_implementation,
 )
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
-
-
-class Qwen3_5GatedSDPAAttention(Qwen3_5MoeGatedSDPAAttention):
-    pass
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
 class Qwen3_5GatedFlashAttention(Qwen3_5MoeGatedFlashAttention):
@@ -38,10 +33,9 @@ class Qwen3_5GatedFlashAttention(Qwen3_5MoeGatedFlashAttention):
 
 
 QWEN35_ATTN_IMPL2CLASS = {
-    "sdpa": Qwen3_5GatedSDPAAttention,
     "flash_attention_2": functools.partial(Qwen3_5GatedFlashAttention, flash_attn_version=2),
     "flash_attention_3": functools.partial(Qwen3_5GatedFlashAttention, flash_attn_version=3),
-    "fa4": functools.partial(Qwen3_5GatedFlashAttention, flash_attn_version=4),
+    "flash_attention_4": functools.partial(Qwen3_5GatedFlashAttention, flash_attn_version=4),
 }
 
 
@@ -130,7 +124,7 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
     _no_split_modules = ["Qwen3_5DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _supports_flex_attn = False
     _supports_attention_backend = True
     _can_compile_fullgraph = False
@@ -141,7 +135,7 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
     def _check_and_adjust_attn_implementation(
         self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
     ) -> str:
-        attn_impl = normalize_qwen3_5_attn_implementation(attn_implementation or "sdpa")
+        attn_impl = normalize_qwen3_5_attn_implementation(attn_implementation or "flash_attention_3")
         if attn_impl not in QWEN35_ATTN_IMPL2CLASS:
             supported = list(QWEN35_ATTN_IMPL2CLASS.keys())
             raise ValueError(
@@ -196,6 +190,8 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
     ) -> BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -206,14 +202,10 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
-        if flash_attn_enabled:
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        else:
-            cu_seqlens = None
-            max_seqlen = None
-
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
@@ -265,6 +257,8 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Union[torch.Tensor, None] = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5 for now"
@@ -280,6 +274,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
+            seq_lens=seq_lens,
         )
 
         hidden_states = outputs.last_hidden_state

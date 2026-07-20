@@ -34,9 +34,6 @@ class BaseDataConfig(BaseConfig):
     seq_len: int = Field(128, ge=1)
     """Sequence length."""
 
-    pack_function: Literal["cat", "stack"] = "cat"
-    """Sample packing strategy. ``cat`` concatenates; ``stack`` requires ``seq_len`` divisible by 256."""
-
     micro_batch_size: int = Field(1, ge=1)
     """Per-step micro batch size. ``batch_size`` must be divisible by this."""
 
@@ -221,9 +218,6 @@ class SFTConfig(BaseConfig):
     dist_timeout_seconds: int = 3600
     """Timeout in seconds for torch distributed ops."""
 
-    loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "torch"
-    """Cross-entropy loss implementation. ``liger_fused`` fuses the lm_head projection with the CE loss to avoid materializing full logits. ``quack_fused`` uses quack-kernels for chunked linear + CE with CuTe DSL CUDA kernels."""
-
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
@@ -290,15 +284,6 @@ class SFTConfig(BaseConfig):
         )
 
     @model_validator(mode="after")
-    def validate_pack_function(self):
-        if self.model.cp > 1:
-            if self.data.pack_function != "cat":
-                raise ValueError("Packing function must be 'cat' when CP is enabled")
-            if self.val is not None and self.val.data.pack_function != "cat":
-                raise ValueError("Validation packing function must be 'cat' when CP is enabled")
-        return self
-
-    @model_validator(mode="after")
     def validate_cp_seq_len(self):
         if self.model.cp > 1:
             if self.data.seq_len % self.model.cp != 0:
@@ -314,14 +299,6 @@ class SFTConfig(BaseConfig):
                 raise ValueError("Micro batch size must be 1 when CP is enabled")
             if self.val is not None and self.val.data.micro_batch_size != 1:
                 raise ValueError("Validation micro batch size must be 1 when CP is enabled")
-        return self
-
-    @model_validator(mode="after")
-    def validate_seq_len(self):
-        if self.data.pack_function == "stack" and self.data.seq_len % 256 != 0:
-            raise ValueError("The sequence length must be divisible by 256 when using pack function stack")
-        if self.val is not None and self.val.data.pack_function == "stack" and self.val.data.seq_len % 256 != 0:
-            raise ValueError("The validation sequence length must be divisible by 256 when using pack function stack")
         return self
 
     @model_validator(mode="after")
@@ -356,8 +333,9 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_and_disable_chunked_loss(self):
-        self.model.fused_lm_head_token_chunk_size = "disabled"
+    def validate_opt_and_fsdp_offload(self):
+        if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
+            raise ValueError("Muon optimizer does not support FSDP CPU offload")
         return self
 
     @model_validator(mode="after")

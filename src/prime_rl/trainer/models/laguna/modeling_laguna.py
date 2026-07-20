@@ -6,7 +6,6 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
-from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
@@ -22,12 +21,12 @@ from prime_rl.trainer.models.laguna.converting_laguna import (
     convert_prime_layer_to_hf,
     convert_prime_to_hf,
 )
-from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention, SDPAAttention
+from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
 class LagunaRotaryEmbedding(nn.Module):
@@ -138,70 +137,16 @@ class LagunaFlashAttention(FlashAttention):
         return self.o_proj(attn_output), None
 
 
-class LagunaSDPAAttention(SDPAAttention):
-    def __init__(self, config: LagunaConfig, layer_idx: int, num_heads: int):
-        super().__init__(_laguna_attention_config(config, num_heads))
-        self.num_heads = num_heads
-        self.config = config
-        self.layer_idx = layer_idx
-        self.attention_dropout = config.attention_dropout
-        self.is_local_attention = config.layer_types[layer_idx] == "sliding_attention"
-        self.sliding_window = config.sliding_window if self.is_local_attention else None
-        self.g_proj = nn.Linear(config.hidden_size, num_heads, bias=False)
-        self.o_proj = nn.Linear(num_heads * self.head_dim, config.hidden_size, bias=config.attention_bias)
-
-    def _attention_core(
-        self,
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
-        value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
-        dropout_p = 0.0 if not self.training else self.attention_dropout
-        out = F.scaled_dot_product_attention(
-            query_states,
-            key_states,
-            value_states,
-            attn_mask=attention_mask,
-            dropout_p=dropout_p,
-            is_causal=attention_mask is None,
-        )
-        out = out.transpose(1, 2).contiguous()
-        return out.view(out.shape[0], out.shape[1], -1)
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
-        attention_mask: torch.Tensor | None = None,
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        query_states, key_states, value_states = self.attn_projections(hidden_states, position_embeddings)
-        attn_output = self._attention_core(query_states, key_states, value_states, attention_mask=attention_mask)
-        input_shape = hidden_states.shape[:-1]
-        attn_output = attn_output.view(*input_shape, self.num_heads, self.head_dim)
-        gate = F.softplus(self.g_proj(hidden_states).float()).to(attn_output.dtype)
-        attn_output = (attn_output * gate.unsqueeze(-1)).view(*input_shape, -1)
-        return self.o_proj(attn_output), None
-
-
 def _get_laguna_attention(config: LagunaConfig, layer_idx: int):
     attn_impl = config._attn_implementation
-    if attn_impl == "eager":
-        attn_impl = "sdpa"
     num_heads = config.num_attention_heads_per_layer[layer_idx]
     match attn_impl:
         case "flash_attention_2":
             return LagunaFlashAttention(config, layer_idx, num_heads, flash_attn_version=2)
         case "flash_attention_3":
             return LagunaFlashAttention(config, layer_idx, num_heads, flash_attn_version=3)
-        case "fa4":
+        case "flash_attention_4":
             return LagunaFlashAttention(config, layer_idx, num_heads, flash_attn_version=4)
-        case "sdpa":
-            return LagunaSDPAAttention(config, layer_idx, num_heads)
         case _:
             raise ValueError(f"Laguna attention does not support '{config._attn_implementation}'.")
 
@@ -286,7 +231,7 @@ class LagunaPreTrainedModel(PreTrainedModelPrimeRL):
     _no_split_modules = ["LagunaDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _supports_flex_attn = False
     _can_compile_fullgraph = False
     _supports_attention_backend = True
@@ -345,6 +290,8 @@ class LagunaModel(LagunaPreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
+        *,
+        seq_lens: torch.LongTensor,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -354,27 +301,11 @@ class LagunaModel(LagunaPreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-            causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)
-        else:
-            cu_seqlens = None
-            max_seqlen = None
-            if isinstance(attention_mask, dict):
-                causal_mask_mapping = attention_mask
-            else:
-                mask_kwargs = {
-                    "config": self.config,
-                    "inputs_embeds": inputs_embeds,
-                    "attention_mask": attention_mask,
-                    "past_key_values": None,
-                    "position_ids": position_ids,
-                }
-                causal_mask_mapping = {
-                    "full_attention": create_causal_mask(**mask_kwargs),
-                    "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
-                }
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)
 
         hidden_states = inputs_embeds
         position_embeddings = {
@@ -433,6 +364,8 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom Laguna"
@@ -444,6 +377,7 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
+            seq_lens=seq_lens,
         )
         hidden_states = outputs.last_hidden_state
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep

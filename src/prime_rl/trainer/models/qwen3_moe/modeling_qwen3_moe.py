@@ -40,7 +40,7 @@ from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
     convert_tt_layer_to_hf,
     convert_tt_to_hf_moe,
 )
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 logger = logging.get_logger(__name__)
 
@@ -127,7 +127,7 @@ class Qwen3MoePreTrainedModel(PreTrainedModelPrimeRL):
     _no_split_modules = ["Qwen3MoeDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _supports_flex_attn = True
     _can_compile_fullgraph = False  # MoE models don't work with torch.compile (`torch.where(condition)` not supported)
     _supports_attention_backend = True
@@ -206,10 +206,14 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
     ) -> MoeModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -217,12 +221,10 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        else:
-            max_seqlen = None
-            cu_seqlens = None
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -282,9 +284,13 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Union[torch.Tensor, None] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
         cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
             Indices of input tokens in the KV cache. Accepted only for HuggingFace API
             compatibility — prime-rl asserts `use_cache is None` since training does not
@@ -332,6 +338,7 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
+            seq_lens=seq_lens,
         )
 
         hidden_states = outputs.last_hidden_state

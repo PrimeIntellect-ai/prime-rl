@@ -31,7 +31,7 @@ from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
     convert_prime_layer_to_hf,
     convert_prime_to_hf,
 )
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 logger = logging.get_logger(__name__)
 
@@ -342,7 +342,7 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     supports_gradient_checkpointing = True
     _no_split_modules = ["NemotronHMambaLayer", "NemotronHMoELayer", "NemotronHAttentionLayer"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _can_compile_fullgraph = False
 
     def _init_weights(self, module):
@@ -509,11 +509,15 @@ class NemotronHModel(NemotronHPreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
     ) -> BaseModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token, indexed by global layer index. Only used for router replay; slots
             for non-MoE (Mamba/attention) layers are ignored.
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -521,13 +525,10 @@ class NemotronHModel(NemotronHPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        # Compute cu_seqlens and max_seqlen for flash attention
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        else:
-            max_seqlen = None
-            cu_seqlens = None
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids) if self.rotary_emb is not None else None
@@ -570,6 +571,8 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
         logits_to_keep: int = 0,
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs,
     ) -> PrimeLmOutput:
         if position_ids is None:
@@ -583,6 +586,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
+            seq_lens=seq_lens,
         )
 
         hidden_states = outputs.last_hidden_state

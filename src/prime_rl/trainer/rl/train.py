@@ -65,6 +65,7 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.sequence import get_cp_local_seq_lens
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
@@ -108,7 +109,9 @@ def train(config: TrainerConfig):
             health_server.start()
 
     # Set precision
-    setup_torch_distributed(timeout=timedelta(seconds=config.dist_timeout_seconds))
+    setup_torch_distributed(
+        timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
+    )
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -367,6 +370,8 @@ def train(config: TrainerConfig):
                 else None
             )
 
+            seq_lens = micro_batch["seq_lens"].to("cuda")
+
             labels = shift_tensor_left(input_ids)
 
             # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
@@ -374,9 +379,17 @@ def train(config: TrainerConfig):
                 raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
 
             if cp_enabled:
+                total_tokens = input_ids.shape[1]
                 input_ids, forward_position_ids = setup_cp_params(
-                    input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                    input_ids,
+                    position_ids,
+                    cp_rank,
+                    cp_size,
+                    cp_group,
+                    seq_lens=seq_lens,
+                    cp_style=config.model.cp_style,
                 )
+                seq_lens = get_cp_local_seq_lens(seq_lens, total_tokens, cp_rank, cp_size)
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
@@ -411,6 +424,7 @@ def train(config: TrainerConfig):
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
+                    seq_lens=seq_lens,
                     routed_experts=routed_experts,
                 )
 

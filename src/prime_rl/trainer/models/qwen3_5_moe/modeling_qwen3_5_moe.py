@@ -4,6 +4,10 @@ from typing import Optional, Union
 
 import torch
 import torch.nn.functional as F
+from fla.modules import FusedRMSNormGated
+from fla.modules.conv import causal_conv1d as fla_causal_conv1d
+from fla.ops.cp import FLACPContext, build_cp_context
+from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import Tensor, nn
 from transformers.cache_utils import Cache
 from transformers.configuration_utils import PretrainedConfig
@@ -25,7 +29,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
 from .converting_qwen3_5_moe import (
@@ -35,24 +39,6 @@ from .converting_qwen3_5_moe import (
     convert_tt_to_hf_moe,
 )
 from .mrope import build_qwen3_5_mrope_position_ids
-
-# Flash linear attention imports (for GatedDeltaNet fast path)
-try:
-    from causal_conv1d import causal_conv1d_fn
-except ImportError:
-    causal_conv1d_fn = None  # type: ignore
-
-try:
-    from fla.modules import FusedRMSNormGated
-    from fla.modules.conv import causal_conv1d as fla_causal_conv1d
-    from fla.ops.cp import FLACPContext, build_cp_context
-    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
-except ImportError:
-    chunk_gated_delta_rule = None  # type: ignore
-    FusedRMSNormGated = None  # type: ignore
-    FLACPContext = None  # type: ignore
-    build_cp_context = None  # type: ignore
-    fla_causal_conv1d = None  # type: ignore
 
 logger = logging.get_logger(__name__)
 
@@ -79,110 +65,9 @@ class Qwen3_5MoeRMSNorm(nn.Module):
         return output.type_as(x)
 
 
-class Qwen3_5MoeRMSNormGated(nn.Module):
-    """RMSNorm with SiLU gating for GatedDeltaNet output."""
-
-    def __init__(self, hidden_size, eps=1e-6):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
-        self.variance_epsilon = eps
-
-    def forward(self, hidden_states, gate=None):
-        input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
-        variance = hidden_states.pow(2).mean(-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        hidden_states = self.weight * hidden_states.to(input_dtype)
-        hidden_states = hidden_states * F.silu(gate.to(torch.float32))
-        return hidden_states.to(input_dtype)
-
-
 # ---------------------------------------------------------------------------
 # GatedDeltaNet linear attention
 # ---------------------------------------------------------------------------
-
-
-def l2norm(x: torch.FloatTensor, dim: int = -1, eps: float = 1e-6):
-    inv_norm = torch.rsqrt((x * x).sum(dim=dim, keepdim=True) + eps)
-    return x * inv_norm
-
-
-def torch_chunk_gated_delta_rule(
-    query,
-    key,
-    value,
-    g,
-    beta,
-    chunk_size=64,
-    initial_state=None,
-    output_final_state=False,
-    use_qk_l2norm_in_kernel=False,
-):
-    """Pure-PyTorch fallback for chunk_gated_delta_rule."""
-    initial_dtype = query.dtype
-    if use_qk_l2norm_in_kernel:
-        query = l2norm(query, dim=-1, eps=1e-6)
-        key = l2norm(key, dim=-1, eps=1e-6)
-    query, key, value, beta, g = [
-        x.transpose(1, 2).contiguous().to(torch.float32) for x in (query, key, value, beta, g)
-    ]
-
-    batch_size, num_heads, sequence_length, k_head_dim = key.shape
-    v_head_dim = value.shape[-1]
-    pad_size = (chunk_size - sequence_length % chunk_size) % chunk_size
-    query = F.pad(query, (0, 0, 0, pad_size))
-    key = F.pad(key, (0, 0, 0, pad_size))
-    value = F.pad(value, (0, 0, 0, pad_size))
-    beta = F.pad(beta, (0, pad_size))
-    g = F.pad(g, (0, pad_size))
-    total_sequence_length = sequence_length + pad_size
-    scale = 1 / (query.shape[-1] ** 0.5)
-    query = query * scale
-
-    v_beta = value * beta.unsqueeze(-1)
-    k_beta = key * beta.unsqueeze(-1)
-    query, key, value, k_beta, v_beta = [
-        x.reshape(x.shape[0], x.shape[1], -1, chunk_size, x.shape[-1]) for x in (query, key, value, k_beta, v_beta)
-    ]
-    g = g.reshape(g.shape[0], g.shape[1], -1, chunk_size)
-    mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=0)
-
-    g = g.cumsum(dim=-1)
-    decay_mask = ((g.unsqueeze(-1) - g.unsqueeze(-2)).tril().exp().float()).tril()
-    attn = -((k_beta @ key.transpose(-1, -2)) * decay_mask).masked_fill(mask, 0)
-    for i in range(1, chunk_size):
-        row = attn[..., i, :i].clone()
-        sub = attn[..., :i, :i].clone()
-        attn[..., i, :i] = row + (row.unsqueeze(-1) * sub).sum(-2)
-    attn = attn + torch.eye(chunk_size, dtype=attn.dtype, device=attn.device)
-    value = attn @ v_beta
-    k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1))
-    last_recurrent_state = (
-        torch.zeros(batch_size, num_heads, k_head_dim, v_head_dim).to(value)
-        if initial_state is None
-        else initial_state.to(value)
-    )
-    core_attn_out = torch.zeros_like(value)
-    mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=1)
-
-    for i in range(0, total_sequence_length // chunk_size):
-        q_i, k_i, v_i = query[:, :, i], key[:, :, i], value[:, :, i]
-        attn = (q_i @ k_i.transpose(-1, -2) * decay_mask[:, :, i]).masked_fill_(mask, 0)
-        v_prime = (k_cumdecay[:, :, i]) @ last_recurrent_state
-        v_new = v_i - v_prime
-        attn_inter = (q_i * g[:, :, i, :, None].exp()) @ last_recurrent_state
-        core_attn_out[:, :, i] = attn_inter + attn @ v_new
-        last_recurrent_state = (
-            last_recurrent_state * g[:, :, i, -1, None, None].exp()
-            + (k_i * (g[:, :, i, -1, None] - g[:, :, i]).exp()[..., None]).transpose(-1, -2) @ v_new
-        )
-
-    if not output_final_state:
-        last_recurrent_state = None
-    core_attn_out = core_attn_out.reshape(core_attn_out.shape[0], core_attn_out.shape[1], -1, core_attn_out.shape[-1])
-    core_attn_out = core_attn_out[:, :, :sequence_length]
-    core_attn_out = core_attn_out.transpose(1, 2).contiguous().to(initial_dtype)
-    return core_attn_out, last_recurrent_state
 
 
 class Qwen3_5MoeGatedDeltaNet(nn.Module):
@@ -218,11 +103,7 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         A = torch.empty(self.num_v_heads).uniform_(0, 16)
         self.A_log = nn.Parameter(torch.log(A))
 
-        # Gated RMSNorm on output (per-head)
-        if FusedRMSNormGated is not None:
-            self.norm = FusedRMSNormGated(self.head_v_dim, eps=self.layer_norm_epsilon)
-        else:
-            self.norm = Qwen3_5MoeRMSNormGated(self.head_v_dim, eps=self.layer_norm_epsilon)
+        self.norm = FusedRMSNormGated(self.head_v_dim, eps=self.layer_norm_epsilon)
 
         self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
@@ -232,14 +113,10 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         self.in_proj_b = nn.Linear(self.hidden_size, self.num_v_heads, bias=False)
         self.in_proj_a = nn.Linear(self.hidden_size, self.num_v_heads, bias=False)
 
-        # Select best available kernel
-        self._causal_conv1d_fn = causal_conv1d_fn
-        self._chunk_gated_delta_rule = chunk_gated_delta_rule or torch_chunk_gated_delta_rule
-
     def _build_cp_context(self) -> "FLACPContext | None":
         """Build fla CP context from the full pre-shard document boundaries."""
         cp_group = getattr(self, "cp_group", None)
-        if cp_group is None or build_cp_context is None:
+        if cp_group is None:
             return None
         # Local cu_seqlens cannot describe documents straddling shard boundaries;
         # use the full (un-sharded) cu_seqlens published by setup_cp_params. fla
@@ -266,46 +143,14 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
 
         # Causal conv1d — must reset at sequence boundaries for packed batches,
         # otherwise the kernel-1 left pad leaks state across sequences.
-        if cp_context is not None:
-            # fla's CP conv resets at the true document boundaries and exchanges
-            # tail tokens with the previous rank for documents straddling the
-            # shard boundary; the local cu_seqlens can express neither.
-            conv_out, _ = fla_causal_conv1d(
-                x=mixed_qkv.transpose(1, 2),
-                weight=self.conv1d.weight.squeeze(1),
-                bias=self.conv1d.bias,
-                activation=self.activation,
-                cp_context=cp_context,
-            )
-            mixed_qkv = conv_out.transpose(1, 2)
-        elif self._causal_conv1d_fn is not None:
-            seq_idx = None
-            if cu_seqlens is not None:
-                seg_lens = cu_seqlens[1:] - cu_seqlens[:-1]
-                seq_idx = torch.repeat_interleave(
-                    torch.arange(seg_lens.numel(), dtype=torch.int32, device=hidden_states.device),
-                    seg_lens,
-                ).unsqueeze(0)
-            mixed_qkv = self._causal_conv1d_fn(
-                x=mixed_qkv,
-                weight=self.conv1d.weight.squeeze(1),
-                bias=self.conv1d.bias,
-                activation=self.activation,
-                seq_idx=seq_idx,
-            )
-        elif cu_seqlens is not None:
-            cu = cu_seqlens.tolist()
-            conv_outs = []
-            for i in range(len(cu) - 1):
-                s, e = cu[i], cu[i + 1]
-                if s == e:
-                    continue
-                conv_outs.append(self.conv1d(mixed_qkv[:, :, s:e])[:, :, : e - s])
-            mixed_qkv = F.silu(torch.cat(conv_outs, dim=-1))
-        else:
-            mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len])
-
-        mixed_qkv = mixed_qkv.transpose(1, 2)
+        mixed_qkv, _ = fla_causal_conv1d(
+            x=mixed_qkv.transpose(1, 2),
+            weight=self.conv1d.weight.squeeze(1),
+            bias=self.conv1d.bias,
+            activation=self.activation,
+            cu_seqlens=cu_seqlens if cp_context is None else None,
+            cp_context=cp_context,
+        )
         query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
 
         query = query.reshape(batch_size, seq_len, -1, self.head_k_dim)
@@ -319,10 +164,9 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
             query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-        # Use fla's native CP when available, otherwise fall back to PyTorch kernel
         if cp_context is not None:
             cu_seqlens = cp_context.cu_seqlens
-            core_attn_out, _ = self._chunk_gated_delta_rule(
+            core_attn_out, _ = chunk_gated_delta_rule(
                 query,
                 key,
                 value,
@@ -333,7 +177,7 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
                 cp_context=cp_context,
             )
         else:
-            core_attn_out, _ = self._chunk_gated_delta_rule(
+            core_attn_out, _ = chunk_gated_delta_rule(
                 query,
                 key,
                 value,
@@ -415,59 +259,6 @@ class Qwen3_5MoeGatedAttentionBase(nn.Module):
         attn_output = attn_output.contiguous().view(*input_shape, -1)
         attn_output = attn_output * torch.sigmoid(gate)
         return self.o_proj(attn_output)
-
-
-class Qwen3_5MoeGatedSDPAAttention(Qwen3_5MoeGatedAttentionBase):
-    """Gated softmax attention using PyTorch's scaled_dot_product_attention."""
-
-    def attn_projections(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
-
-        query_states, gate = torch.chunk(
-            self.q_proj(hidden_states).view(*input_shape, -1, self.head_dim * 2), 2, dim=-1
-        )
-        gate = gate.reshape(*input_shape, -1)
-
-        query_states = self.q_norm(query_states.view(hidden_shape)).transpose(1, 2)
-        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-
-        cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-
-        return query_states, key_states, value_states, gate
-
-    def _attention_core(
-        self,
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-    ) -> torch.Tensor:
-        key_states = _repeat_kv(key_states, self.num_key_value_groups)
-        value_states = _repeat_kv(value_states, self.num_key_value_groups)
-        return F.scaled_dot_product_attention(
-            query_states,
-            key_states,
-            value_states,
-            is_causal=True,
-            scale=self.scaling,
-        )
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> tuple[torch.Tensor, None]:
-        query_states, key_states, value_states, gate = self.attn_projections(hidden_states, position_embeddings)
-        attn_output = self._attention_core(query_states, key_states, value_states)
-        return self.output_proj(attn_output, gate), None
 
 
 class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
@@ -560,16 +351,13 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
 
 
 QWEN35MOE_ATTN_IMPL2CLASS = {
-    "sdpa": Qwen3_5MoeGatedSDPAAttention,
     "flash_attention_2": functools.partial(Qwen3_5MoeGatedFlashAttention, flash_attn_version=2),
     "flash_attention_3": functools.partial(Qwen3_5MoeGatedFlashAttention, flash_attn_version=3),
-    "fa4": functools.partial(Qwen3_5MoeGatedFlashAttention, flash_attn_version=4),
+    "flash_attention_4": functools.partial(Qwen3_5MoeGatedFlashAttention, flash_attn_version=4),
 }
 
 
 def normalize_qwen3_5_attn_implementation(attn_impl: str) -> str:
-    if attn_impl == "eager":
-        return "sdpa"
     if attn_impl == "kernels-community/vllm-flash-attn3":
         return "flash_attention_3"
     return attn_impl
@@ -798,7 +586,7 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
     _no_split_modules = ["Qwen3_5MoeDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _supports_flex_attn = False
     _supports_attention_backend = True
     _can_compile_fullgraph = False
@@ -809,7 +597,7 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
     def _check_and_adjust_attn_implementation(
         self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
     ) -> str:
-        attn_impl = normalize_qwen3_5_attn_implementation(attn_implementation or "sdpa")
+        attn_impl = normalize_qwen3_5_attn_implementation(attn_implementation or "flash_attention_3")
         if attn_impl not in QWEN35MOE_ATTN_IMPL2CLASS:
             supported = list(QWEN35MOE_ATTN_IMPL2CLASS.keys())
             raise ValueError(
@@ -874,7 +662,8 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
-        seq_lens: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -885,32 +674,12 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
-        flash_attn_enabled = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
-        if flash_attn_enabled:
-            if position_ids.ndim == 3:
-                if inputs_embeds.shape[0] != 1:
-                    raise ValueError("3D Qwen3.5 MRoPE positions require batch size 1 for varlen attention")
-                seq_len = inputs_embeds.shape[1]
-                if seq_lens is None:
-                    cu_seqlens = torch.tensor([0, seq_len], dtype=torch.int32, device=inputs_embeds.device)
-                    max_seqlen = seq_len
-                else:
-                    cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-                        seq_lens.to(device=inputs_embeds.device),
-                        total_tokens=seq_len,
-                    )
-            else:
-                cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        elif position_ids.ndim == 3 and seq_lens is not None:
-            seq_lens = seq_lens.to(device=inputs_embeds.device)
-            if seq_lens.numel() > 1 and "full_attention" in self.config.layer_types:
-                raise ValueError("Packed Qwen3.5 MRoPE batches with full_attention layers require flash attention")
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(seq_lens, total_tokens=inputs_embeds.shape[1])
-        else:
-            max_seqlen = None
-            cu_seqlens = None
-
+        if position_ids.ndim == 3 and inputs_embeds.shape[0] != 1:
+            raise ValueError("3D Qwen3.5 MRoPE positions require batch size 1 for varlen attention")
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
@@ -981,7 +750,8 @@ class Qwen3_5MoeVLMModel(nn.Module):
         image_grid_thw: torch.LongTensor | None = None,
         mm_token_type_ids: torch.LongTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
-        seq_lens: torch.LongTensor | None = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs,
     ) -> MoeModelOutputWithPast:
         if inputs_embeds is None:
@@ -1194,7 +964,8 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.LongTensor] = None,
         mm_token_type_ids: Optional[torch.LongTensor] = None,
-        seq_lens: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom qwen3_5_moe for now"

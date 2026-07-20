@@ -7,12 +7,6 @@ import numpy as np
 from prime_rl.trainer.utils import balanced_partition
 from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
 
-ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
-    "uint8": 1,
-    "int16": 2,
-    "int32": 4,
-}
-
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
 # means no component (weight 0.0).
@@ -28,7 +22,7 @@ def _copy_routed_experts(routed_experts: RoutedExperts) -> RoutedExperts:
 
 
 def _routed_experts_row_size(routed_experts: RoutedExperts) -> int:
-    return routed_experts.shape[1] * routed_experts.shape[2] * ROUTED_EXPERTS_DTYPE_ITEMSIZE[routed_experts.dtype]
+    return routed_experts.shape[1] * routed_experts.shape[2] * np.dtype(routed_experts.dtype).itemsize
 
 
 def _slice_routed_experts(routed_experts: RoutedExperts, seq_len: int) -> RoutedExperts:
@@ -214,6 +208,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         rl_weights=rl_weights,
         ce_weights=ce_weights,
         ref_kl_weights=ref_kl_weights,
+        seq_lens=[len(input_ids)],
     )
 
 
@@ -291,6 +286,7 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     ref_logprobs: list[float] | None = [] if has_ref_logprobs else None
     mm_token_type_ids: list[int] | None = [] if has_mm_token_type_ids else None
     streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
+    seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
     lora_num_tokens = [0] * num_loras
 
@@ -322,10 +318,12 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
                 assert routed_experts.shape[1:] == sample.routed_experts.shape[1:]
                 routed_experts.data += sample.routed_experts.data
                 routed_experts.shape[0] += sample.routed_experts.shape[0]
+        seq_lens.extend(sample.seq_lens)
         lora_num_tokens[lora_idx] += sample_len
 
     sequence_lengths = [len(sample.input_ids) for _, sample in bin_content.samples]
     assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
+    assert sum(seq_lens) == len(input_ids), (seq_lens, len(input_ids))
     first_sample = bin_content.first_sample
 
     return MicroBatch(
@@ -345,6 +343,7 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         rl_weights=streams["rl_weights"],
         ce_weights=streams["ce_weights"],
         ref_kl_weights=streams["ref_kl_weights"],
+        seq_lens=seq_lens,
     )
 
 
@@ -445,7 +444,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.advantages.extend([0.0] * padding_size)
     micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
-    micro_batch.sequence_lengths.append(padding_size)
+    micro_batch.sequence_lengths[-1] += padding_size
+    micro_batch.seq_lens[-1] += padding_size
     micro_batch.inference_logprobs.extend([0.0] * padding_size)
     # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)
     micro_batch.temperatures.extend([1.0] * padding_size)
@@ -497,6 +497,7 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
     assert sum(micro_batch.sequence_lengths) == num_tokens, (
         f"sequence_lengths sum {sum(micro_batch.sequence_lengths)} != {num_tokens} tokens"
     )
+    assert sum(micro_batch.seq_lens) == num_tokens, f"seq_lens sum {sum(micro_batch.seq_lens)} != {num_tokens} tokens"
     if micro_batch.routed_experts is not None:
         assert micro_batch.routed_experts.shape[0] == num_tokens, (
             f"routed_experts misaligned after packing: {micro_batch.routed_experts.shape[0]} != {num_tokens} tokens"

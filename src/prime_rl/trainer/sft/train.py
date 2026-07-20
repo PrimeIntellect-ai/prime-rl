@@ -29,6 +29,7 @@ from prime_rl.trainer.model import (
     get_load_balance_stats,
     is_tt_moe_model,
     setup_tokenizer,
+    resolve_auto_attn,
     setup_model,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -49,10 +50,9 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.sequence import get_cp_local_seq_lens
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
-from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
-from prime_rl.trainer.models.layers.lm_head import FUSED_CE_IGNORE_INDEX
 
 from torchtitan.distributed.utils import clip_grad_norm_
 
@@ -82,7 +82,9 @@ def train(config: SFTConfig):
         heart = Heartbeat(config.heartbeat.url)
 
     # Set precision
-    setup_torch_distributed(timeout=timedelta(seconds=config.dist_timeout_seconds))
+    setup_torch_distributed(
+        timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
+    )
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -104,6 +106,9 @@ def train(config: SFTConfig):
         f"world_size * micro_batch_size ({micro_batches_per_step})"
     )
     grad_accum_steps = total_micro_batches // micro_batches_per_step
+
+    # Resolve attn='auto' before CP setup so ring/ulysses patches use the correct kernel
+    resolve_auto_attn(config.model)
 
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
@@ -136,8 +141,7 @@ def train(config: SFTConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
-    fused_cross_entropy: bool | str = {"liger_fused": "liger", "quack_fused": "quack"}.get(config.loss_impl, False)
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, fused_cross_entropy=fused_cross_entropy)
+    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     if parallel_dims.cp_enabled:
         from prime_rl.utils.cp import assert_cp_style_supports_model
@@ -223,28 +227,26 @@ def train(config: SFTConfig):
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     cp_size = parallel_dims.cp
 
-    ce_loss = None
-    match config.loss_impl:
-        case "liger":
-            ce_loss = LigerCrossEntropyLoss(reduction="none")
-        case "torch":
-            ce_loss = CrossEntropyLoss(reduction="none")
-        case "liger_fused" | "quack_fused":
-            pass  # loss is computed inside the fused lm_head
-        case _:
-            raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
-
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
         input_ids = micro_batch["input_ids"].to("cuda")
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
+        seq_lens = micro_batch["seq_lens"].to("cuda")
 
         if cp_enabled:
+            total_tokens = input_ids.shape[1]
             input_ids, position_ids = setup_cp_params(
-                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                input_ids,
+                position_ids,
+                cp_rank,
+                cp_size,
+                cp_group,
+                seq_lens=seq_lens,
+                cp_style=config.model.cp_style,
             )
+            seq_lens = get_cp_local_seq_lens(seq_lens, total_tokens, cp_rank, cp_size)
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
@@ -254,16 +256,25 @@ def train(config: SFTConfig):
         token_count = loss_mask.sum(dtype=torch.int64)
 
         with maybe_activation_offloading(config.model.ac_offloading):
-            if config.loss_impl in ("liger_fused", "quack_fused"):
-                masked_target_ids = target_ids.clone()
-                masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
-                out = forward(model, input_ids, position_ids, labels=masked_target_ids)
-                loss_sum = out["loss"] * token_count
+            if isinstance(config.model.fused_lm_head_token_chunk_size, int):
+                # Same path as the RL trainer: the chunked LM head computes per-token
+                # logprobs without materializing the [N, V] logits, and per-token
+                # cross-entropy is the negative target logprob.
+                temperature = torch.ones_like(target_ids, dtype=torch.float32)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    seq_lens=seq_lens,
+                    labels=target_ids,
+                    temperature=temperature,
+                )
+                loss_sum = -out["logprobs"][loss_mask].sum()
             else:
-                out = forward(model, input_ids, position_ids)
+                out = forward(model, input_ids, position_ids, seq_lens=seq_lens)
                 logits = out["logits"]
                 B, L, V = logits.shape
-                token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+                token_loss = CrossEntropyLoss(reduction="none")(logits.view(-1, V), target_ids.view(-1)).view(B, L)
                 loss_sum = token_loss[loss_mask].sum()
                 del logits
 
