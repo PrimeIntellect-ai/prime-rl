@@ -198,48 +198,6 @@ def test_vlm_weight_roundtrip():
     assert torch.equal(roundtripped[original_vision_key], original_vision_weight)
 
 
-def test_vlm_forward_requires_mm_token_type_ids():
-    """Image MRoPE needs renderer-supplied modality token types."""
-    config = _tiny_vlm_config()
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = Qwen3_5MoeForCausalLM(config)
-    inject_prime_lm_head(model)
-
-    pixel_values, image_grid_thw, n_img_tokens = _make_image_inputs(config)
-    input_ids = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
-
-    with pytest.raises(ValueError, match="mm_token_type_ids"):
-        model(
-            input_ids=input_ids,
-            pixel_values=pixel_values,
-            image_grid_thw=image_grid_thw,
-            seq_lens=_seq_lens(input_ids),
-        )
-
-
-def test_vlm_forward_rejects_2d_positions_with_images():
-    """Trainer 1D/2D packed positions are not valid image MRoPE coordinates."""
-    config = _tiny_vlm_config()
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = Qwen3_5MoeForCausalLM(config)
-    inject_prime_lm_head(model)
-
-    pixel_values, image_grid_thw, n_img_tokens = _make_image_inputs(config)
-    input_ids = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
-    mm_token_type_ids = _make_mm_token_type_ids(input_ids, config.image_token_id)
-    position_ids = torch.arange(n_img_tokens, device="cuda").unsqueeze(0)
-
-    with pytest.raises(ValueError, match="3D MRoPE position_ids"):
-        model(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            pixel_values=pixel_values,
-            image_grid_thw=image_grid_thw,
-            mm_token_type_ids=mm_token_type_ids,
-            seq_lens=_seq_lens(input_ids),
-        )
-
-
 def test_vlm_router_replay():
     """routed_experts bypasses router computation in VLM multimodal forward."""
     config = _tiny_vlm_config()

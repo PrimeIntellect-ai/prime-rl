@@ -65,7 +65,6 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.sequence import get_cp_local_seq_lens
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
@@ -210,8 +209,7 @@ def train(config: TrainerConfig):
             substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
         from prime_rl.utils.cp import (
             assert_cp_style_supports_model,
-            setup_hybrid_cp,
-            setup_nemotron_h_cp,
+            setup_model_cp,
             setup_sparse_mla_cp,
         )
 
@@ -221,8 +219,7 @@ def train(config: TrainerConfig):
         # Linear-attn / Mamba layers are only configured under ulysses; with ring
         # we'd have already raised above.
         if config.model.cp_style == "ulysses":
-            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
-            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -384,7 +381,6 @@ def train(config: TrainerConfig):
                 raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
 
             if cp_enabled:
-                total_tokens = input_ids.shape[1]
                 input_ids, forward_position_ids = setup_cp_params(
                     input_ids,
                     position_ids,
@@ -394,7 +390,6 @@ def train(config: TrainerConfig):
                     seq_lens=seq_lens,
                     cp_style=config.model.cp_style,
                 )
-                seq_lens = get_cp_local_seq_lens(seq_lens, total_tokens, cp_rank, cp_size)
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
@@ -430,6 +425,7 @@ def train(config: TrainerConfig):
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
+                    seq_lens_are_pre_shard=cp_enabled,
                     routed_experts=routed_experts,
                 )
 

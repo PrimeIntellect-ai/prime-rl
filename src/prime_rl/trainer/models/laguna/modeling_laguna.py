@@ -271,6 +271,7 @@ class LagunaModel(LagunaPreTrainedModel):
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
+        seq_lens_are_pre_shard: bool = False,
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -281,7 +282,8 @@ class LagunaModel(LagunaPreTrainedModel):
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+            seq_lens.to(device=inputs_embeds.device),
+            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
         causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)
@@ -345,6 +347,7 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
+        seq_lens_are_pre_shard: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         assert use_cache is None, "use_cache is not supported for custom Laguna"
@@ -357,6 +360,7 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
+            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
         )
         hidden_states = outputs.last_hidden_state
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep

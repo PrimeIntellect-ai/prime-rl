@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import pytest
 import torch
 from transformers.models.nemotron_h.configuration_nemotron_h import NemotronHConfig as HFNemotronHConfig
@@ -10,7 +12,8 @@ from transformers.models.nemotron_h.modeling_nemotron_h import (
 
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
-from prime_rl.trainer.models.nemotron_h.modeling_nemotron_h import NemotronHAttentionLayer
+from prime_rl.trainer.models.nemotron_h.modeling_nemotron_h import NemotronHAttentionLayer, NemotronHMambaLayer
+from prime_rl.utils.cp import setup_model_cp
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -223,6 +226,27 @@ def test_nemotron_h_hybrid_override_pattern():
     config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
     assert config.layers_block_type == ["mamba", "moe", "attention", "moe"]
     assert config.num_hidden_layers == 4
+
+
+def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():
+    config = NemotronHConfig(
+        **(_BASE | {"mamba_n_groups": 2}),
+        layers_block_type=["mamba", "moe", "attention", "moe"],
+        use_grouped_mm=False,
+    )
+    with torch.device("meta"):
+        model = NemotronHForCausalLM(config)
+
+    mamba_layer = model.model.layers[0]
+    assert isinstance(mamba_layer, NemotronHMambaLayer)
+    model.model.layers[0] = torch.nn.Sequential(mamba_layer)
+
+    cp_group = MagicMock()
+    setup_model_cp(model, cp_group, cp_rank=1, cp_world_size=2)
+
+    assert mamba_layer._cp_group is cp_group
+    assert mamba_layer._cp_rank == 1
+    assert mamba_layer._cp_world_size == 2
 
 
 def test_nemotron_h_no_latent_projection():

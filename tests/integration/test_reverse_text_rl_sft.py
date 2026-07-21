@@ -14,7 +14,7 @@ from tests.utils import check_final_eval_reward_above, check_no_error, strip_esc
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
-TIMEOUT = 600  # 10 minutes
+TIMEOUT = 900  # 15 minutes (was 600s — same overhead as reverse_text)
 REF_PORT = 8001
 REF_READY_TIMEOUT_S = 300
 
@@ -90,7 +90,7 @@ def rl_sft_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/reverse_text_rl_sft/start.toml",
+        "configs/ci/integration/reverse-text-rl-sft/start.toml",
         "--clean-output-dir",
         "--wandb.project",
         wandb_project,

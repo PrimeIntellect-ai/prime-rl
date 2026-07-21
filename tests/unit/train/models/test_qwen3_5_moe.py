@@ -5,6 +5,7 @@ from transformers import Qwen3_5MoeForCausalLM as HFQwen3_5MoeForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeForCausalLM
+from prime_rl.utils.cp import setup_model_cp
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -144,6 +145,45 @@ def test_qwen3_5_moe_cp_patching():
     finally:
         for cls, method in originals.items():
             cls._compute_attention = method
+
+
+def test_qwen3_5_moe_context_parallel_setup_hook():
+    from unittest.mock import MagicMock
+
+    config = Qwen3_5MoeConfig(
+        vocab_size=128,
+        hidden_size=64,
+        num_hidden_layers=2,
+        layer_types=["linear_attention", "full_attention"],
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        moe_intermediate_size=64,
+        shared_expert_intermediate_size=64,
+        num_experts=4,
+        num_experts_per_tok=2,
+        max_position_embeddings=128,
+        linear_conv_kernel_dim=4,
+        linear_key_head_dim=8,
+        linear_value_head_dim=8,
+        linear_num_key_heads=4,
+        linear_num_value_heads=8,
+        use_grouped_mm=False,
+    )
+    config._attn_implementation = "flash_attention_2"
+    with torch.device("meta"):
+        model = PrimeRLQwen3_5MoeForCausalLM(config)
+
+    linear_layer = model.model.layers[0]
+    model.model.layers[0] = torch.nn.Sequential(linear_layer)
+    cp_group = MagicMock()
+    setup_model_cp(model, cp_group, cp_rank=1, cp_world_size=2)
+
+    assert model.model._cp_group is cp_group
+    assert model.model._cp_rank == 1
+    assert model.model._cp_world_size == 2
+    assert linear_layer.linear_attn.cp_group is cp_group
+    assert linear_layer.linear_attn.cp_world_size == 2
 
 
 if __name__ == "__main__":
