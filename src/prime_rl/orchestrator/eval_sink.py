@@ -63,17 +63,17 @@ class EvalSink:
         """One entry per accumulating ``(env, eval_step)`` batch:
         ``(env_name, eval_step, batch_count, expected, buffered)``.
         ``batch_count`` is finalized-group episodes in ``pending_batches``;
-        ``buffered`` is partial-group arrivals from non-group-scoring envs."""
+        ``buffered`` is partial-group episode arrivals from non-group-scoring envs."""
         batch_counts: dict[tuple[str, int], int] = dict(self.pending_batch_episodes)
         buffered: dict[tuple[str, int], int] = {}
-        for rollouts in self.pending_groups.values():
+        for group_id, rollouts in self.pending_groups.items():
             if not rollouts:
                 continue
             env_name = rollouts[0].env_name
             if self.eval_envs.get(env_name).requires_group_scoring:
                 continue
             bkey = (env_name, rollouts[0].eval_step)
-            buffered[bkey] = buffered.get(bkey, 0) + len(rollouts)
+            buffered[bkey] = buffered.get(bkey, 0) + self.pending_group_episodes.get(group_id, 0)
         return [
             (
                 env_name,

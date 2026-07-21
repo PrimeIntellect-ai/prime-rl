@@ -592,6 +592,7 @@ class RolloutDispatcher:
             for _ in range(meta.rollout_count):
                 trace = Rollout(
                     task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
+                    ok=False,
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
                     stop_condition="error",
                 )
@@ -618,6 +619,7 @@ class RolloutDispatcher:
             for _ in range(unscheduled_cancelled):
                 trace = Rollout(
                     task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
+                    ok=False,
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
                     stop_condition="error",
                 )

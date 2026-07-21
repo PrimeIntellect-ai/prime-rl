@@ -97,22 +97,6 @@ class TrainSink:
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
 
-    def in_progress_groups(self) -> list[list[Rollout]]:
-        """Per-rollout groups currently accumulating in ``pending_groups`` —
-        i.e. groups that haven't hit ``group_size`` yet, so the pipeline log
-        can reflect partial-group progress. Skips group-scoring envs (whose
-        rollouts only make sense as a unit — the user expects per-group
-        fill, not per-rollout, for those)."""
-        out: list[list[Rollout]] = []
-        for rollouts in self.pending_groups.values():
-            if not rollouts:
-                continue
-            env_name = rollouts[0].env_name
-            if self.train_envs.get(env_name).requires_group_scoring:
-                continue
-            out.append(rollouts)
-        return out
-
     def batch_progress(self) -> tuple[int, int, str]:
         """``(current, target, unit)`` for the train batch — counts only
         ``pending_batch`` (survivors of finalized groups, queued for the
@@ -124,9 +108,13 @@ class TrainSink:
         return self.pending_tokens, self.token_batch_size, "tokens"
 
     def buffered_count(self) -> int:
-        """Rollouts that have arrived but sit in not-yet-complete groups
+        """Episodes that have arrived but sit in not-yet-complete groups
         (non-group-scoring envs) — buffered in the sink ahead of the batch."""
-        return sum(len(group) for group in self.in_progress_groups())
+        return sum(
+            self.pending_group_episodes.get(group_id, 0)
+            for group_id, rollouts in self.pending_groups.items()
+            if rollouts and not self.train_envs.get(rollouts[0].env_name).requires_group_scoring
+        )
 
     def pending_batch_by_env(self) -> dict[str, int]:
         """Per-env breakdown of ``batch_progress()`` (``pending_batch`` only);
