@@ -236,6 +236,12 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
+    def vlm_only_with_custom_impl(self):
+        if self.vlm is not None and self.impl != "custom":
+            raise ValueError("VLM training requires model.impl='custom'")
+        return self
+
+    @model_validator(mode="after")
     def cp_only_with_flash_attn(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
