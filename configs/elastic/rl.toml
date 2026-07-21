@@ -42,5 +42,5 @@ sync_interval = 5.0
 
 [[orchestrator.train.env]]
 name = "alphabet-sort"
-taskset = { id = "alphabet-sort-v1", min_turns = 3, max_turns = 5, task = { power_per_turn = false } }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "alphabet-sort-v1", min_turns = 3, max_turns = 5, task = { power_per_turn = false } }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }

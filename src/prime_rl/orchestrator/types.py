@@ -41,7 +41,7 @@ RolloutKind = Literal["train", "eval"]
 @dataclass
 class InflightRollout:
     """Per-task scheduling state in the dispatcher; one entry per in-flight
-    ``run_rollout`` / ``run_group`` task."""
+    ``run`` / ``run_group`` task."""
 
     kind: RolloutKind
     env_name: str
@@ -88,6 +88,10 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     kind: RolloutKind = Field(default="train", exclude=True)
     env_name: str = Field(default="", exclude=True)
     group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
+    # The episode envelope's id — links the traces of one env-rollout (several
+    # for a multi-agent env). Stamped into ``info`` on arrival so saved records
+    # keep their episode grouping.
+    episode_id: str = Field(default="", exclude=True)
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)

@@ -149,25 +149,25 @@ Training environments are an array of tables — set one per env, optionally wit
 ```toml
 [[orchestrator.train.env]]
 name = "gsm8k"
-taskset = { id = "gsm8k-v1", split = "train" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "gsm8k-v1", split = "train" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 ratio = 3  # 75% of batches
 
 [[orchestrator.train.env]]
 name = "reverse-text"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 ratio = 1  # default — 25% of batches
 
 [[orchestrator.eval.env]]
 name = "gsm8k-eval"
-taskset = { id = "gsm8k-v1", split = "test" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "gsm8k-v1", split = "test" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 ```
 
 `ratio` defaults to `1` (equal weight per env); values are relative weights normalized to probabilities across envs.
 
-Fields in `taskset` configure the V1 taskset. `harness` selects how its tasks are run.
+Everything environment lives under the `env` block (verifiers' `[env]` shape): `env.taskset` configures the v1 taskset, and each agent is a field on the env — `env.agent.harness` selects how the single-agent env's tasks are run, and per-run caps are per-agent (`env.agent.max_turns`, `env.agent.timeout`, `env.agent.max_output_tokens`). A multi-agent env declares its own seats (`env.<role>.*`).
 
 The same taskset can appear multiple times across train and eval (or with different settings) — useful for evaluating on a held-out split or comparing two configurations side by side. When it is reused, set a distinct `name` on each entry; `name` defaults to the taskset id and must be unique across all envs in the same group.
 

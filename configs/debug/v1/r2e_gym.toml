@@ -61,8 +61,8 @@ temperature = 1.0
 
 [[orchestrator.train.env]]
 name = "rlm-swe-r2e"
-taskset = { id = "r2e-gym-v1" }
-harness = { id = "rlm", runtime = { type = "prime", labels = ["rlm-swe-qwen35-4b"] } }
+env.taskset = { id = "r2e-gym-v1" }
+env.agent.harness = { id = "rlm", runtime = { type = "prime", labels = ["rlm-swe-qwen35-4b"] } }
 
 [orchestrator.prime_monitor]
 

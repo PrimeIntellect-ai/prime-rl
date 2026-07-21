@@ -22,8 +22,8 @@ group_size = 16
 max_completion_tokens = 2048
 
 [[orchestrator.train.env]]
-taskset = { id = "gsm8k-v1", split = "train" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "gsm8k-v1", split = "train" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
 interval = 20
@@ -33,8 +33,8 @@ num_examples = 256
 max_completion_tokens = 2048
 
 [[orchestrator.eval.env]]
-taskset = { id = "gsm8k-v1", split = "test" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "gsm8k-v1", split = "test" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 [trainer] # Default trainer config
 

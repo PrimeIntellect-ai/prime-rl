@@ -137,18 +137,21 @@ curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
 {output_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
 
-JSONL files of `vf.Trace` records (training tensors excluded). `all` gets every completed
-rollout the moment it arrives — errored, filtered, and never-batched ones included — so it's
-crash-durable; `effective` gets the clean subset that went into the step's train batch (eval:
-the non-errored epoch cohort; multiple eval envs share the step file). Each record carries
-`run` (`{type, id, step}`; for eval, `step` is the trigger step), `verifiers` (producing build),
-`agent` (model, sampling, harness), and `runtime` (config + provisioned resource id, e.g. the
-sandbox id), plus `env_name`, `group_id`, and `policy_version` under `info`.
+JSONL files of `vf.Trace` records (training tensors excluded), one line per trace — a
+multi-agent env's episode contributes several lines sharing one `info.episode_id`. `all`
+gets every completed rollout the moment it arrives — errored, filtered, and never-batched
+ones included — so it's crash-durable; `effective` gets the clean subset that went into the
+step's train batch (eval: the non-errored epoch cohort; multiple eval envs share the step
+file). Each record carries `run` (`{type, id, step}`; for eval, `step` is the trigger step),
+`verifiers` (producing build), `agent` (model, sampling, harness, `name`, `trainable`), `ok`
+(the success sentinel — `errors` alone keeps retry history even after a recovery), and
+`runtime` (config + provisioned resource id, e.g. the sandbox id), plus `env_name`,
+`group_id`, `episode_id`, and `policy_version` under `info`.
 
 ```bash
 wc -l {output_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
 jq '.rewards' {output_dir}/rollouts/step_42/train/effective/traces.jsonl
-jq 'select(.errors != []) | {id, env: .info.env_name, runtime}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
+jq 'select(.ok | not) | {id, env: .info.env_name, runtime}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
 The binary batches consumed by the trainer still live at `{output_dir}/rollouts/step_N/train_rollouts.bin`, next to the trace subtrees.
