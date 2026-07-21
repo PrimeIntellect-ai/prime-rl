@@ -47,13 +47,8 @@ class EvalSource:
     def trigger(self, step: int) -> list[str]:
         """Fire eligible envs for ``step`` and return their names. On resume
         ``first_trigger`` is False, so the startup/base eval doesn't re-run."""
-        is_first, self.first_trigger = self.first_trigger, False
-        if is_first and self.eval_config.skip_first_step:
-            return []
-        fired: list[str] = []
-        for name, interval in self.intervals.items():
-            if is_first or step % interval == 0:
-                fired.append(name)
+        fired = self.eligible_envs(step)
+        self.first_trigger = False
         # Round-robin across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates at example granularity. ``try_schedule``'s
         # continue-group branch still keeps each example's group_size
@@ -67,6 +62,12 @@ class EvalSource:
                 row["eval_step"] = step
                 self.queue.append(row)
         return fired
+
+    def eligible_envs(self, step: int) -> list[str]:
+        """Return the envs due at ``step`` without mutating trigger state or the queue."""
+        if self.first_trigger:
+            return [] if self.eval_config.skip_first_step else list(self.intervals)
+        return [name for name, interval in self.intervals.items() if step % interval == 0]
 
     def next_example(self, available_permits: int) -> dict | None:
         """Pop the next eval example if the head's permit cost fits in

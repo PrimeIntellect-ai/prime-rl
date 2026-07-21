@@ -72,25 +72,42 @@ class WeightWatcher:
         return max(self.policy.version, latest_ckpt_step)
 
     async def apply_policy_update(self, next_step: int) -> None:
-        async with self.update_lock:
-            if next_step <= self.ckpt_step:
-                # Another caller raced us — bail without re-applying
-                return
+        if next_step <= self.ckpt_step:
+            return
 
-            broadcast_dir = get_broadcast_dir(self.config.output_dir)
+        # Waiting for a checkpoint does not mutate the live policy, so eval can safely retain the
+        # current version while the trainer finishes publishing the requested step.
+        requested_step = next_step
+        broadcast_dir = get_broadcast_dir(self.config.output_dir)
+        weights_path = get_step_path(broadcast_dir, next_step)
+        stable_marker = weights_path / "STABLE"
+        if not stable_marker.exists():
+            refreshed_step = self.compute_next_ckpt_step()
+            if refreshed_step > next_step:
+                next_step = refreshed_step
+                weights_path = get_step_path(broadcast_dir, next_step)
+                stable_marker = weights_path / "STABLE"
+        if not stable_marker.exists():
+            get_logger().info(
+                f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
+                "Training is progressing normally."
+            )
+            t0 = time.perf_counter()
+            await wait_for_path(stable_marker)
+            self.last_wait_for_ckpt_time = time.perf_counter() - t0
+            get_logger().info(
+                f"Orchestrator resumed: checkpoint {next_step} ready (after {format_time(self.last_wait_for_ckpt_time)})"
+            )
+
+        async with self.update_lock:
+            next_step = self.compute_next_ckpt_step()
+            if next_step <= self.ckpt_step:
+                return
+            if next_step != requested_step:
+                get_logger().info(
+                    f"Coalescing policy update from checkpoint {requested_step} to latest stable checkpoint {next_step}"
+                )
             weights_path = get_step_path(broadcast_dir, next_step)
-            stable_marker = weights_path / "STABLE"
-            if not stable_marker.exists():
-                get_logger().info(
-                    f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
-                    "Training is progressing normally."
-                )
-                t0 = time.perf_counter()
-                await wait_for_path(stable_marker)
-                self.last_wait_for_ckpt_time = time.perf_counter() - t0
-                get_logger().info(
-                    f"Orchestrator resumed: checkpoint {next_step} ready (after {format_time(self.last_wait_for_ckpt_time)})"
-                )
 
             # Drain off-policy rollouts BEFORE pausing the inference engines.
             # Aborting a rollout triggers vLLM's KV-connector cleanup (NIXL's

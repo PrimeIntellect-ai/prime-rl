@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from collections import deque
 from typing import TYPE_CHECKING
 
 import tomli_w
@@ -118,6 +119,11 @@ class Orchestrator:
     last_batch_at: float | None
     consecutive_empty_batches: int
     eval_triggered_at: dict[tuple[str, int], float]
+    active_eval_epochs: set[tuple[str, int]]
+    pending_eval_steps: deque[int]
+    eval_trigger_task: asyncio.Task | None
+    eval_trigger_error: BaseException | None
+    eval_policy_lock_held: bool
     ckpt_manager: CheckpointManager | None
     component_tasks: list[asyncio.Task]
 
@@ -171,6 +177,11 @@ class Orchestrator:
         self.last_batch_at = None
         # Trigger timestamps so eval success logs can report epoch duration
         self.eval_triggered_at = {}
+        self.active_eval_epochs = set()
+        self.pending_eval_steps = deque()
+        self.eval_trigger_task = None
+        self.eval_trigger_error = None
+        self.eval_policy_lock_held = False
         self.consecutive_empty_batches = 0
         self.gate_closed_at = None
         self.wait_for_policy_time = 0.0
@@ -354,6 +365,15 @@ class Orchestrator:
         )
 
         assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
+        if self.eval_envs is not None:
+            for env in self.eval_envs:
+                if not env.examples:
+                    raise ValueError(f"Eval environment {env.name!r} has no examples")
+                if env.requires_group_scoring and env.config.group_size > config.max_inflight_rollouts:
+                    raise ValueError(
+                        f"Eval environment {env.name!r} requires all {env.config.group_size} group rollouts "
+                        f"to run together, but max_inflight_rollouts={config.max_inflight_rollouts}"
+                    )
         log_interval = config.log.interval
         wandb_enabled = config.wandb is not None
         self.dispatcher = RolloutDispatcher(
@@ -419,29 +439,33 @@ class Orchestrator:
         get_logger().info(f"Starting orchestrator loop (max_steps={config.max_steps or 'infinite'})")
         start_time = time.perf_counter()
 
-        # Spawn background loops (dispatcher schedules, watcher polls). The
-        # pipeline ``main_loop`` runs inline in this task; the single
-        # ``PeriodicLogger`` polls dispatcher / watcher / sinks / lag
-        # monitor each ``log.interval`` seconds for the pipeline-view log
-        self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
-        await self.periodic_logger.start()
-        self.component_tasks = [
-            asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
-            asyncio.create_task(self.watcher.start(), name="watcher"),
-        ]
-
-        # Base-model eval (policy v0) — fires before any train rollouts, logged at the first
-        # step, unless ``eval.skip_first_step=True`` (or this is a resume)
-        self.maybe_trigger_eval(self.progress.step)
-
-        # Anchor step-time clock so the first step measures startup → first batch
-        self.last_batch_at = time.perf_counter()
-
         # ``clean_exit`` stays False if ``main_loop`` raises (signal-driven
         # CancelledError, KeyboardInterrupt, or a real error), so the teardown
         # logs a forced-cleanup warning instead of a clean-exit success.
         clean_exit = False
         try:
+            # Spawn background loops (dispatcher schedules, watcher polls). The
+            # pipeline ``main_loop`` runs inline in this task; the single
+            # ``PeriodicLogger`` polls dispatcher / watcher / sinks / lag
+            # monitor each ``log.interval`` seconds for the pipeline-view log.
+            self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
+            await self.periodic_logger.start()
+
+            # Pin the startup eval before the watcher can advance the policy or the dispatcher can
+            # schedule train work. Resumed runs skip the unconditional eval but still honor an
+            # interval due at the resumed step; skip_first_step consumes only the fresh-run trigger.
+            self.maybe_trigger_eval(self.progress.step)
+            startup_eval = self.eval_trigger_task
+            if startup_eval is not None:
+                await startup_eval
+
+            self.component_tasks = [
+                asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
+                asyncio.create_task(self.watcher.start(), name="watcher"),
+            ]
+
+            # Anchor step-time clock so the first step measures startup → first batch.
+            self.last_batch_at = time.perf_counter()
             await self.main_loop()
             clean_exit = True
         finally:
@@ -470,7 +494,8 @@ class Orchestrator:
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
-            if self.draining and self.dispatcher.is_idle:
+            self._raise_if_eval_trigger_failed()
+            if self.draining and self.dispatcher.is_idle and self.eval_pipeline_idle:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
                 break
@@ -649,13 +674,64 @@ class Orchestrator:
         trim_process_memory()
 
     def maybe_trigger_eval(self, step: int) -> None:
-        """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything
-        fires. No-op when eval is not configured."""
+        """Queue a due eval step without blocking the rollout-queue consumer."""
         if self.eval_source is None:
             return
-        fired = self.eval_source.trigger(step)
-        if not fired:
+
+        if not self.eval_source.eligible_envs(step):
+            # ``trigger`` consumes the first-trigger state even when the startup eval is skipped.
+            fired = self.eval_source.trigger(step)
+            if fired:
+                raise RuntimeError(f"Eval source eligibility changed while triggering step {step}: {fired}")
             return
+
+        if step not in self.pending_eval_steps:
+            self.pending_eval_steps.append(step)
+        self._ensure_eval_trigger_task()
+
+    @property
+    def eval_pipeline_idle(self) -> bool:
+        """Whether no due, triggering, or active eval epoch remains."""
+        return not self.pending_eval_steps and not self.active_eval_epochs and self.eval_trigger_task is None
+
+    def _ensure_eval_trigger_task(self) -> None:
+        if (
+            self.stopped.is_set()
+            or self.active_eval_epochs
+            or not self.pending_eval_steps
+            or self.eval_trigger_task is not None
+        ):
+            return
+        task = asyncio.create_task(self._trigger_next_eval(), name="eval_trigger")
+        self.eval_trigger_task = task
+        task.add_done_callback(self._on_eval_trigger_done)
+
+    def _on_eval_trigger_done(self, task: asyncio.Task) -> None:
+        if self.eval_trigger_task is task:
+            self.eval_trigger_task = None
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self.eval_trigger_error = error
+            return
+        self._ensure_eval_trigger_task()
+
+    async def _trigger_next_eval(self) -> None:
+        """Acquire the policy lease off the main consumer task, then enqueue one eval epoch."""
+        assert self.eval_source is not None
+        step = self.pending_eval_steps.popleft()
+        await self.watcher.update_lock.acquire()
+        self.eval_policy_lock_held = True
+        try:
+            fired = self.eval_source.trigger(step)
+            if not fired:
+                raise RuntimeError(f"Eval step {step} was queued but no environment was eligible")
+        except BaseException:
+            self._release_eval_policy_lease()
+            raise
+
+        self.active_eval_epochs.update((env_name, step) for env_name in fired)
         reason = f"eval was triggered at step {step}"
         self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=reason)
         now = time.perf_counter()
@@ -666,7 +742,22 @@ class Orchestrator:
             self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
             for env_name in fired
         )
-        get_logger().info(f"Starting evals in {', '.join(fired)} ({total_rollouts} total rollouts)")
+        get_logger().info(
+            f"Starting evals in {', '.join(fired)} ({total_rollouts} total rollouts) "
+            f"with policy v{self.policy.version} pinned until completion"
+        )
+
+    def _raise_if_eval_trigger_failed(self) -> None:
+        if self.eval_trigger_error is None:
+            return
+        error, self.eval_trigger_error = self.eval_trigger_error, None
+        raise RuntimeError("Eval trigger failed") from error
+
+    def _release_eval_policy_lease(self) -> None:
+        if not self.eval_policy_lock_held:
+            return
+        self.watcher.update_lock.release()
+        self.eval_policy_lock_held = False
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:
         """Pipeline view for the orchestrator's ``PeriodicLogger``. Returns
@@ -772,6 +863,19 @@ class Orchestrator:
         get_logger().success("\n\t\t ".join(lines))
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
+        """Release completed inference work, then persist and log one eval epoch."""
+        key = (batch.env_name, batch.step)
+        if key not in self.active_eval_epochs:
+            raise RuntimeError(f"Completed unexpected eval epoch env={batch.env_name!r} step={batch.step}")
+        self.active_eval_epochs.remove(key)
+        if not self.active_eval_epochs:
+            if not self.eval_policy_lock_held:
+                raise RuntimeError("Eval policy lease was lost before the epoch completed")
+            self._release_eval_policy_lease()
+            self._ensure_eval_trigger_task()
+        await self._finalize_eval_batch(batch)
+
+    async def _finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch (save_rollouts,
         monitor.log_eval_samples, monitor.log)."""
         if not batch.rollouts:
@@ -885,8 +989,15 @@ class Orchestrator:
                 self.sender.close()
             if self.dispatcher is not None:
                 await self.dispatcher.stop()
+            if self.eval_trigger_task is not None:
+                await safe_cancel(self.eval_trigger_task)
+                self.eval_trigger_task = None
             if self.watcher is not None:
                 await self.watcher.stop()
+            self._release_eval_policy_lease()
+            self.active_eval_epochs.clear()
+            self.pending_eval_steps.clear()
+            self.eval_trigger_error = None
             if self.periodic_logger is not None:
                 await self.periodic_logger.stop()
             if self.lag_task is not None:

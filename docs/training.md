@@ -63,6 +63,12 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `[[orchestrator.train.env]]` | Training environments. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Environments](configuration.md#environments-orchestratortrainenv). |
 | `[[orchestrator.eval.env]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
+Each eval step runs against one pinned policy version. The orchestrator finishes and drains
+pre-existing train work before dispatching the complete eval cohort, then may refill train capacity
+while the eval tail completes. Seeing train and eval rollouts in flight together is therefore
+expected; live-policy weight updates remain paused until every eval environment due at that step has
+finished.
+
 **Monitoring:**
 
 | Knob | What it does |
