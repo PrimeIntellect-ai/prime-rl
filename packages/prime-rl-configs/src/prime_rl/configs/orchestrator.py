@@ -178,8 +178,7 @@ class EnvConfig(vf.EnvServerConfig):
 
     @model_validator(mode="after")
     def validate_env(self):
-        taskset = self.env.taskset
-        if (taskset is None or not taskset.id) and not self.id:
+        if not self.env.taskset.id and not self.id:
             raise ValueError(
                 'no env configured — set env = { taskset = { id = "<id>" } } (v1) or id = "<id>" (v0/legacy)'
             )
