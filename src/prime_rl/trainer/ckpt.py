@@ -18,6 +18,7 @@ from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 from torchdata.stateful_dataloader import StatefulDataLoader
+from transformers.processing_utils import ProcessorMixin
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
@@ -377,6 +378,7 @@ class WeightCheckpointManager:
         lora_state_dict: dict[str, Tensor] | None,
         model,
         tokenizer: PreTrainedTokenizer,
+        processor: ProcessorMixin | None = None,
     ):
         """Save HF-compatible weight checkpoint to a given path."""
         if self.world.is_master:
@@ -403,6 +405,10 @@ class WeightCheckpointManager:
                     gen_config = deepcopy(model.generation_config)
                     gen_config.use_cache = True
                     gen_config.save_pretrained(path)
+                # Processor first: it saves its own (unmodified) tokenizer, which the
+                # configured tokenizer (pad token, custom chat template) must override.
+                if processor is not None:
+                    processor.save_pretrained(path)
                 tokenizer.save_pretrained(path)
 
             if lora_state_dict is not None:
@@ -426,6 +432,7 @@ class WeightCheckpointManager:
         step: int,
         model: nn.Module,
         tokenizer: PreTrainedTokenizer,
+        processor: ProcessorMixin | None = None,
     ):
         """Save a HF-compatible weight-only checkpoint for a given step."""
         step_path = self.get_step_path(step)
@@ -471,7 +478,7 @@ class WeightCheckpointManager:
             self.logger.debug(f"Reverted to HF hub format in {time.perf_counter() - start_time:.2f} seconds")
 
         # Save weight checkpoint on master rank
-        self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
+        self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer, processor)
         self.mark_stable(step)
         bisect.insort(self.ckpt_steps, step)
 

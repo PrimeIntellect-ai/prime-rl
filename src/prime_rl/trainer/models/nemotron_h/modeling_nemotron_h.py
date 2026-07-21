@@ -225,20 +225,22 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
         routed_experts: torch.Tensor | None = None,
+        cu_seqlens_are_pre_shard: bool = False,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
 
         if self.cp_enabled:
-            # The local cu_seqlens cover only this shard; conv/scan need the full
-            # pre-shard document boundaries published by setup_cp_params.
+            global_cu_seqlens = (
+                cu_seqlens if cu_seqlens is not None and cu_seqlens_are_pre_shard else ULYSSES_PARAMS["cu_seqlens"]
+            )
             hidden_states = mamba_cp_forward(
                 self.mamba,
                 hidden_states,
                 self._cp_group,
                 self._cp_rank,
                 self._cp_world_size,
-                ULYSSES_PARAMS["cu_seqlens"],
+                global_cu_seqlens,
             )
         else:
             hidden_states = self.mamba(hidden_states, cu_seqlens=cu_seqlens)
@@ -275,6 +277,7 @@ class NemotronHMoELayer(GradientCheckpointingLayer):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
         routed_experts: torch.Tensor | None = None,
+        cu_seqlens_are_pre_shard: bool = False,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
@@ -308,6 +311,7 @@ class NemotronHAttentionLayer(GradientCheckpointingLayer):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
         routed_experts: torch.Tensor | None = None,
+        cu_seqlens_are_pre_shard: bool = False,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
@@ -502,6 +506,11 @@ class NemotronHModel(NemotronHPreTrainedModel):
         self.gradient_checkpointing = False
         self.post_init()
 
+    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+        for layer in self.layers.modules():
+            if isinstance(layer, NemotronHMambaLayer):
+                layer.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+
     @auto_docstring
     def forward(
         self,
@@ -511,6 +520,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
         routed_experts: Optional[torch.LongTensor] = None,
         *,
         seq_lens: torch.LongTensor,
+        seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
@@ -518,6 +528,8 @@ class NemotronHModel(NemotronHPreTrainedModel):
             for non-MoE (Mamba/attention) layers are ignored.
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
+        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -526,7 +538,8 @@ class NemotronHModel(NemotronHPreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+            seq_lens.to(device=inputs_embeds.device),
+            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
 
@@ -542,6 +555,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
                 routed_experts=routed_experts_layer,
+                cu_seqlens_are_pre_shard=seq_lens_are_pre_shard,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -562,6 +576,9 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
     def get_decoder(self):
         return self.model
 
+    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+        self.model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -573,6 +590,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
         routed_experts: Optional[torch.LongTensor] = None,
         *,
         seq_lens: torch.LongTensor,
+        seq_lens_are_pre_shard: bool = False,
         **kwargs,
     ) -> PrimeLmOutput:
         if position_ids is None:
@@ -587,6 +605,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
+            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
         )
 
         hidden_states = outputs.last_hidden_state

@@ -15,13 +15,14 @@ from tests.utils import check_reward_goes_up, check_reward_in_range, strip_escap
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
-TIMEOUT = 300  # 5 minutes
+TIMEOUT = 600  # 10 minutes (was 300s — too tight when 3 concurrent orchestrators
+# contend for 2 inference GPUs; verifiers per-call tracing added overhead)
 ORCHESTRATOR_NAMES = ["alpha", "beta", "gamma"]
 
 
 def wait_for_file(
     file_path: Path,
-    timeout: int = 300,
+    timeout: int = 600,
     poll_interval: float = 1.0,
 ) -> None:
     """Wait for file to exist.
@@ -46,7 +47,7 @@ def wait_for_log(
     log_file: Path,
     conditions: list[str],
     proc: subprocess.Popen,
-    timeout: int = 300,
+    timeout: int = 600,
     poll_interval: float = 0.1,
     sigterm: bool = False,
     kill: bool = False,
@@ -111,7 +112,7 @@ def start_inference_and_trainer(
                     "run",
                     "inference",
                     "@",
-                    "configs/ci/integration/reverse_text_multi_run/inference.toml",
+                    "configs/ci/integration/reverse-text-multi-run/inference.toml",
                     "--server.port",
                     str(port),
                 ],
@@ -134,7 +135,7 @@ def start_inference_and_trainer(
                 "-m",
                 "prime_rl.trainer.rl.train",
                 "@",
-                "configs/ci/integration/reverse_text_multi_run/trainer.toml",
+                "configs/ci/integration/reverse-text-multi-run/trainer.toml",
                 "--output-dir",
                 output_dir.as_posix(),
                 "--wandb.project",
@@ -200,7 +201,7 @@ def start_orchestrator(
         "run",
         "orchestrator",
         "@",
-        "configs/ci/integration/reverse_text_multi_run/orchestrator.toml",
+        "configs/ci/integration/reverse-text-multi-run/orchestrator.toml",
         "--output-dir",
         run_dir.as_posix(),
         "--max-steps",
