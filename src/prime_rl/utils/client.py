@@ -619,12 +619,17 @@ async def init_nccl_broadcast(
         f"inference_world_size={inference_world_size}, engine_world_sizes={engine_world_sizes}"
     )
 
-    async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
+    async def _init_nccl_broadcast(
+        admin_client: AsyncClient,
+        rank_offset: int,
+        engine_world_size: int,
+    ) -> None:
         init_kwargs = {
             "host": host,
             "port": port,
             "rank_offset": rank_offset,
             "inference_world_size": inference_world_size,
+            "engine_world_size": engine_world_size,
             "timeout": timeout,
             "quantize_in_weight_transfer": quantize_in_weight_transfer,
         }
@@ -645,8 +650,10 @@ async def init_nccl_broadcast(
 
     await asyncio.gather(
         *[
-            _init_nccl_broadcast(admin_client, rank_offset)
-            for admin_client, rank_offset in zip(admin_clients, rank_offsets, strict=True)
+            _init_nccl_broadcast(admin_client, rank_offset, engine_world_size)
+            for admin_client, rank_offset, engine_world_size in zip(
+                admin_clients, rank_offsets, engine_world_sizes, strict=True
+            )
         ]
     )
 

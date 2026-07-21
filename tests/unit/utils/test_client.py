@@ -104,6 +104,7 @@ def test_init_nccl_broadcast_uses_native_collective_rpc_explicitly():
                     "port": 29519,
                     "rank_offset": rank_offset,
                     "inference_world_size": 4,
+                    "engine_world_size": 2,
                     "timeout": 1200,
                     "quantize_in_weight_transfer": False,
                 },
@@ -137,6 +138,7 @@ def test_init_nccl_broadcast_skips_missing_wrapper_without_native_probe():
 
     client.post.assert_awaited_once()
     assert client.post.await_args.args == ("/init_broadcaster",)
+    assert client.post.await_args.kwargs["json"]["engine_world_size"] == 1
 
 
 def test_setup_clients_assigns_renderer_and_dp_rank_headers():

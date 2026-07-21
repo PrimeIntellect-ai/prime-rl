@@ -3,10 +3,7 @@ from pathlib import Path
 
 import pytest
 
-RANKS_PATH = (
-    Path(__file__).parents[3]
-    / "src/prime_rl/inference/vllm/worker/ranks.py"
-)
+RANKS_PATH = Path(__file__).parents[3] / "src/prime_rl/inference/vllm/worker/ranks.py"
 SPEC = importlib.util.spec_from_file_location("prime_rl_nccl_ranks_under_test", RANKS_PATH)
 assert SPEC and SPEC.loader
 ranks = importlib.util.module_from_spec(SPEC)
@@ -89,4 +86,35 @@ def test_global_inference_rank_rejects_out_of_bounds_rank():
             tensor_parallel_size=2,
             pipeline_parallel_size=1,
             inference_world_size=8,
+        )
+
+
+def test_prefill_context_parallel_ranks_are_unique():
+    actual = {
+        ranks.global_inference_rank(
+            rank_offset=0,
+            data_parallel_index=0,
+            worker_rank=worker_rank,
+            tensor_parallel_size=1,
+            pipeline_parallel_size=1,
+            prefill_context_parallel_size=2,
+            inference_world_size=2,
+            engine_world_size=2,
+        )
+        for worker_rank in range(2)
+    }
+
+    assert actual == {0, 1}
+
+
+def test_global_inference_rank_rejects_rank_outside_engine_interval():
+    with pytest.raises(ValueError, match="outside engine rank interval"):
+        ranks.global_inference_rank(
+            rank_offset=2,
+            data_parallel_index=1,
+            worker_rank=0,
+            tensor_parallel_size=2,
+            pipeline_parallel_size=1,
+            inference_world_size=8,
+            engine_world_size=2,
         )

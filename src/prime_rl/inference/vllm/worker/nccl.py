@@ -108,12 +108,14 @@ class NCCLWeightUpdateWorker(Worker):
         inference_world_size: int,
         timeout: int,
         quantize_in_weight_transfer: bool = False,
+        engine_world_size: int | None = None,
     ) -> None:
         """Initialize the NCCL broadcast receiver.
 
         Args:
             rank_offset: Starting GPU offset for this server in the global inference group.
             inference_world_size: Total number of inference GPUs across all servers.
+            engine_world_size: Number of inference GPUs assigned to this server.
         """
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
         parallel_config = self.parallel_config
@@ -124,7 +126,9 @@ class NCCLWeightUpdateWorker(Worker):
             worker_rank=self.rank,
             tensor_parallel_size=parallel_config.tensor_parallel_size,
             pipeline_parallel_size=parallel_config.pipeline_parallel_size,
+            prefill_context_parallel_size=getattr(parallel_config, "prefill_context_parallel_size", 1),
             inference_world_size=inference_world_size,
+            engine_world_size=engine_world_size,
         )
 
         logger.info(
