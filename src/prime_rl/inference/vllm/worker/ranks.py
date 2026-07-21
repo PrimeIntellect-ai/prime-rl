@@ -15,11 +15,25 @@ def global_inference_rank(
     if model_parallel_size <= 0:
         raise ValueError("model parallel size must be positive")
 
-    expected_engine_world_size = data_parallel_size * model_parallel_size
-    if engine_world_size is not None and engine_world_size != expected_engine_world_size:
+    logical_data_parallel_size = data_parallel_size
+    if engine_world_size is not None:
+        if engine_world_size <= 0 or engine_world_size % model_parallel_size:
+            raise ValueError(
+                f"engine world size {engine_world_size} is not divisible by model parallel size {model_parallel_size}"
+            )
+        logical_data_parallel_size = engine_world_size // model_parallel_size
+        # Dense vLLM EngineCore processes retain their global DP index but rewrite
+        # data_parallel_size to one. MoE EngineCore processes preserve the logical
+        # size, so keep validating that value rather than masking bad discovery.
+        if data_parallel_size != 1 and data_parallel_size != logical_data_parallel_size:
+            raise ValueError(
+                f"data parallel size {data_parallel_size} does not match engine-derived size "
+                f"{logical_data_parallel_size}"
+            )
+    if not 0 <= data_parallel_index < logical_data_parallel_size:
         raise ValueError(
-            f"engine world size {engine_world_size} does not match expected topology size "
-            f"{expected_engine_world_size}"
+            f"data parallel index {data_parallel_index} is outside logical data parallel size "
+            f"{logical_data_parallel_size}"
         )
 
     local_rank = data_parallel_index * model_parallel_size + worker_rank % model_parallel_size
