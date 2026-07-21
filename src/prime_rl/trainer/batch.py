@@ -585,13 +585,7 @@ def prepare_batch(
     """
     all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
-    micro_batches = packed_samples_into_micro_bs(
-        all_samples,
-        seq_len,
-        num_loras,
-        num_train_workers,
-        bin_cost,
-    )
+    micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras, num_train_workers, bin_cost)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
     # Separate by modality so each step index has uniform modality across all ranks

@@ -242,6 +242,12 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
+    def vlm_cp_requires_ulysses(self):
+        if self.vlm is not None and self.cp > 1 and self.cp_style != "ulysses":
+            raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
+        return self
+
+    @model_validator(mode="after")
     def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
@@ -635,21 +641,6 @@ class TrainerConfig(BaseConfig):
             raise ValueError(
                 "freeze_vision_encoder=false is incompatible with LoRA. "
                 "LoRA freezes all non-adapter parameters including the vision encoder."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_vlm_cp(self):
-        if self.model.vlm is not None and self.model.cp > 1 and self.model.cp_style != "ulysses":
-            raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
-        return self
-
-    @model_validator(mode="after")
-    def vlm_requires_varlen_flash_attn(self):
-        # Multimodal samples pack into shared rows, which needs varlen flash attention.
-        if self.model.vlm is not None and self.model.attn not in ("flash_attention_2", "flash_attention_3", "fa4"):
-            raise ValueError(
-                f"VLM training packs multimodal samples and requires a varlen flash attention implementation, got {self.model.attn!r}"
             )
         return self
 

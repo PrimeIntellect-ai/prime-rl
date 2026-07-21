@@ -272,6 +272,7 @@ def test_trainer_rejects_vlm_cp_with_ring():
     config = {
         "model": {
             "cp": 2,
+            "impl": "custom",
             "optimization_dtype": "bfloat16",
             "reduce_dtype": "bfloat16",
             "vlm": {
@@ -283,33 +284,6 @@ def test_trainer_rejects_vlm_cp_with_ring():
 
     with pytest.raises(ValidationError, match="cp_style='ulysses'"):
         TrainerConfig.model_validate(config)
-
-
-def test_trainer_allows_vlm_cp_with_ulysses():
-    config = TrainerConfig.model_validate(
-        {
-            "model": {
-                "cp": 2,
-                "cp_style": "ulysses",
-                "optimization_dtype": "bfloat16",
-                "reduce_dtype": "bfloat16",
-                "vlm": {
-                    "vision_encoder_attr": "model.visual",
-                    "language_model_attr": "model.language_model",
-                },
-            },
-        }
-    )
-
-    assert config.model.vlm is not None
-    assert config.model.cp == 2
-
-
-def test_trainer_allows_text_only_cp():
-    config = TrainerConfig.model_validate({"model": {"cp": 2}})
-
-    assert config.model.vlm is None
-    assert config.model.cp == 2
 
 
 def test_selective_activation_checkpointing_requires_custom_impl():

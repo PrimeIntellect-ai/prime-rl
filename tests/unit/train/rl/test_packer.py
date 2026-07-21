@@ -232,7 +232,7 @@ def test_multipacker_pack_mm_padding_is_zero_loss(tmp_path, monkeypatch):
         assert all(advantage == 0.0 for advantage in dummy.advantages)
 
 
-def test_multipacker_pack_packs_mm_kwargs_within_each_run_when_enabled(tmp_path, monkeypatch):
+def test_multipacker_packs_mm_kwargs_within_each_run(tmp_path, monkeypatch):
     """Compatible eager multimodal samples pack within a run but never across runs."""
     from prime_rl.trainer.batch import _is_multimodal_sample
 

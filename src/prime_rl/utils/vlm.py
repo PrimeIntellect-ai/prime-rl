@@ -23,9 +23,6 @@ class VLMModelInfo:
     language_model_attr: str
 
 
-PACKED_MM_ATTN_IMPLS = ("flash_attention_2", "flash_attention_3", "fa4")
-
-
 # Central registry: model_type -> architecture info.
 VLM_REGISTRY: dict[str, VLMModelInfo] = {
     "qwen3_vl": VLMModelInfo(vision_encoder_attr="model.visual", language_model_attr="model.language_model"),
@@ -98,26 +95,6 @@ def get_final_logit_softcapping(model_config: PretrainedConfig) -> float | None:
     models, so a plain top-level ``getattr`` would miss it and silently drop softcapping.
     """
     return getattr(model_config.get_text_config(), "final_logit_softcapping", None)
-
-
-def supports_packed_multimodal_training(model: nn.Module) -> bool:
-    """Return whether the model advertises safe packed multimodal training."""
-    return bool(getattr(model, "supports_packed_multimodal_training", False))
-
-
-def validate_multi_modal_pack(
-    model: nn.Module,
-    *,
-    attn_impl: str,
-) -> None:
-    """Raise if this runtime cannot safely train packed multimodal batches."""
-    if not supports_packed_multimodal_training(model):
-        raise ValueError("Packed multimodal training requires model support")
-    if attn_impl not in PACKED_MM_ATTN_IMPLS:
-        raise ValueError(
-            "Packed multimodal training requires a varlen flash attention implementation "
-            f"({', '.join(PACKED_MM_ATTN_IMPLS)}), got {attn_impl!r}"
-        )
 
 
 def get_layer_prefix(model_config: PretrainedConfig, override: str | None = None) -> str:
