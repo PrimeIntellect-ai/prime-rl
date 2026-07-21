@@ -140,9 +140,9 @@ curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
 JSONL files of `vf.Trace` records (training tensors excluded), one line per trace — a
 multi-agent env's episode contributes several lines sharing one `info.episode_id`. `all`
 gets every completed rollout the moment it arrives — errored, filtered, and never-batched
-ones included — so it's crash-durable; `effective` gets the clean subset that went into the
-step's train batch (eval: the non-errored epoch cohort; multiple eval envs share the step
-file). Each record carries `run` (`{type, id, step}`; for eval, `step` is the trigger step),
+ones included — so it's crash-durable; `effective` gets the clean trainable subset that went
+into the step's train batch (eval: the non-errored trainable epoch cohort; multiple eval envs
+share the step file) — untrainable traces (a frozen judge's) appear only in `all`. Each record carries `run` (`{type, id, step}`; for eval, `step` is the trigger step),
 `verifiers` (producing build), `agent` (model, sampling, harness, `name`, `trainable`), `ok`
 (the success sentinel — `errors` alone keeps retry history even after a recovery), and
 `runtime` (config + provisioned resource id, e.g. the sandbox id), plus `env_name`,
