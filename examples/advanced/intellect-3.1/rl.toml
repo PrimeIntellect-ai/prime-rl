@@ -50,32 +50,32 @@ oversampling_factor = 2
 [[orchestrator.train.env]]
 name = "swe"
 ratio = 0.3
-taskset = { id = "r2e-gym-v1" }
-harness = { id = "bash", runtime = { type = "prime", labels = ["intellect-3.1", "swe"] } }
+env.taskset = { id = "r2e-gym-v1" }
+env.agent.harness = { id = "bash", runtime = { type = "prime", labels = ["intellect-3.1", "swe"] } }
 
 [[orchestrator.train.env]]
 name = "deepdive"
 ratio = 0.2
-taskset = { id = "deepdive-v1" }
-harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["intellect-3.1", "deepdive"] } }
+env.taskset = { id = "deepdive-v1" }
+env.agent.harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], runtime = { type = "prime", labels = ["intellect-3.1", "deepdive"] } }
 
 [[orchestrator.train.env]]
 name = "math"
 ratio = 0.3
-taskset = { id = "i3_math_v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "i3_math_v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 [[orchestrator.train.env]]
 name = "logic"
 ratio = 0.2
-taskset = { id = "i3_logic_v1", filter = { max = 0.874 } }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "i3_logic_v1", filter = { max = 0.874 } }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 [[orchestrator.train.env]]
 name = "code"
 ratio = 0.2
-taskset = { id = "i3_code_v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "i3_code_v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 [[orchestrator.pre_batch_filters]]
 type = "zero_advantage"
@@ -86,13 +86,13 @@ interval = 25
 
 [[orchestrator.eval.env]]
 name = "swe-bench-verified"
-taskset = { id = "swebench-verified-v1" }
-harness = { id = "bash", runtime = { type = "prime", labels = ["intellect-3.1", "swe-bench-verified"] } }
+env.taskset = { id = "swebench-verified-v1" }
+env.agent.harness = { id = "bash", runtime = { type = "prime", labels = ["intellect-3.1", "swe-bench-verified"] } }
 
 [[orchestrator.eval.env]]
 name = "aime2025"
-taskset = { id = "aime25-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "aime25-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 [inference.parallel]
 tp = 8

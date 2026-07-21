@@ -4,10 +4,10 @@ Each ``Env`` owns a v1 ``EnvServer`` (spawned as a child process, or an
 external one given by ``config.address``) and an ``EnvClient`` to drive it. The
 orchestrator never *runs* an environment: it asks the server for ``info``
 (``num_tasks`` + whether group scoring is needed), then runs rollouts purely by
-**task index**. The server returns a ``Trace`` (a plain ``model_dump`` — derived values are
-properties, not serialized) which we validate into a ``Trace[WireTaskData]`` — a real ``vf.Trace``
-(never a loose dict) whose task keeps the env's
-task-specific fields as extras (``WireTaskData`` allows them). The orchestrator never imports the
+**task index**. The server answers one ``Episode`` per env-rollout, whose traces
+we validate into ``Trace[WireTaskData]`` — real ``vf.Trace``\\ s (never loose
+dicts) whose task keeps the env's task-specific
+fields as extras (``WireTaskData`` allows them). The orchestrator never imports the
 env package: the env's *type* and *runtime* both live only in the server, and the orchestrator
 drives it purely by task index. (Nothing here reads typed env task fields — only ``task.idx``
 and a full ``task.model_dump``, both of which ``WireTaskData`` preserves.)
@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
-from verifiers.v1.serve import EnvClient
+from verifiers.v1.serve import EnvClient, env_config_data
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
@@ -135,7 +135,8 @@ class Env:
                 extra_env_kwargs=self.config.extra_env_kwargs,
             )
             if self.config.is_legacy
-            else dict(legacy=False, config=self.config)
+            # Picklable dict — the narrowed config class doesn't survive the spawn.
+            else dict(legacy=False, config_data=env_config_data(self.config.env))
         )
         process = ctx.Process(
             target=_run_env_server,
@@ -168,17 +169,32 @@ class Env:
             sampling["extra_body"] = {**sampling.get("extra_body", {}), "cache_salt": cache_salt}
         return vf.SamplingConfig(**sampling)
 
-    async def run_rollout(
+    async def run(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
-    ) -> Rollout:
-        """Run a single rollout for ``task_idx``; return a typed Trace."""
-        wire = await self.env_client.run_rollout(
+    ) -> list[Rollout]:
+        """Run one episode for ``task_idx``; return its typed Traces. A zero-trace
+        episode raises (the dispatcher synthesizes the error marker); a not-``ok``
+        episode marks its clean traces failed so partial episodes never train."""
+        episode = await self.env_client.run(
             task_idx=task_idx,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return ROLLOUT_TYPE.model_construct(**dict(wire))
+        if not episode.traces:
+            error = episode.error
+            detail = f"{error.type}: {error.message}" if error is not None else "no traces and no error recorded"
+            raise RuntimeError(f"env-rollout failed before any trace was minted — {detail}")
+        rollouts = [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in episode.traces]
+        for rollout in rollouts:
+            rollout.episode_id = episode.id
+            if not episode.ok and rollout.ok:
+                error = episode.error or vf.Error(
+                    type="EpisodeFailed", message="A sibling trace in this episode failed"
+                )
+                rollout.errors = [*rollout.errors, error]
+                rollout.ok = False
+        return rollouts
 
     async def run_group(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None

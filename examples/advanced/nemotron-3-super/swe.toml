@@ -83,8 +83,8 @@ truncate_history_thinking = false
 
 [[orchestrator.train.env]]
 name = "scaleswe"
-taskset = { id = "scaleswe-v1" }
-harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["nemotron-3-super-swe"] } }
+env.taskset = { id = "scaleswe-v1" }
+env.agent.harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["nemotron-3-super-swe"] } }
 
 [orchestrator.prime_monitor]
 
@@ -93,9 +93,9 @@ interval = 20
 
 [[orchestrator.eval.env]]
 name = "swebench-verified"
-taskset = { id = "swebench-verified-v1" }
-harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["nemotron-3-super-swe"] } }
-timeout = { rollout = 3600 }
+env.taskset = { id = "swebench-verified-v1" }
+env.agent.harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["nemotron-3-super-swe"] } }
+env.agent.timeout = { rollout = 3600 }
 
 [inference]
 enable_expert_parallel = true

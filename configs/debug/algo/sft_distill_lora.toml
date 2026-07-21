@@ -40,8 +40,8 @@ max_completion_tokens = 128
 
 [[orchestrator.train.env]]
 name = "reverse-text"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
 interval = 1
@@ -52,8 +52,8 @@ max_completion_tokens = 128
 
 [[orchestrator.eval.env]]
 name = "reverse-text"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 [trainer.optim]
 lr = 1e-4
