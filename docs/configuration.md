@@ -149,19 +149,19 @@ Training environments are an array of tables — set one per env, optionally wit
 ```toml
 [[orchestrator.train.env]]
 name = "gsm8k"
-taskset = { id = "gsm8k-v1", split = "train" }
+taskset = { id = "gsm8k", split = "train" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 ratio = 3  # 75% of batches
 
 [[orchestrator.train.env]]
 name = "reverse-text"
-taskset = { id = "reverse-text-v1" }
+taskset = { id = "reverse-text" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 ratio = 1  # default — 25% of batches
 
 [[orchestrator.eval.env]]
 name = "gsm8k-eval"
-taskset = { id = "gsm8k-v1", split = "test" }
+taskset = { id = "gsm8k", split = "test" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 ```
 

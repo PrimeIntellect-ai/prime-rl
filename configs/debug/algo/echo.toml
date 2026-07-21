@@ -26,7 +26,7 @@ alpha = 0.1
 
 [[orchestrator.train.env]]
 name = "alphabet-sort"
-taskset = { id = "alphabet-sort-v1", min_turns = 3, max_turns = 5, task = { power_per_turn = false } }
+taskset = { id = "alphabet-sort", min_turns = 3, max_turns = 5, task = { power_per_turn = false } }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.train.sampling]

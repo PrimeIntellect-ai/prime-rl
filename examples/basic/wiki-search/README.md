@@ -16,7 +16,7 @@ In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to answer 
 The taskset is included through the Verifiers workspace. After syncing the repository, verify it with:
 
 ```bash
-uv run python -c "import wiki_search_v1"
+uv run python -c "import wiki_search"
 ```
 
 Set up the credentials for the configured reference judge:
@@ -77,7 +77,7 @@ Evaluate the base model:
 
 ```bash
 # In the `Trainer` pane
-uv run eval wiki-search-v1 --harness.id null \
+uv run eval wiki-search --harness.id null \
   -m Qwen/Qwen3-4B-Instruct-2507 \
   --client.base-url http://localhost:8000/v1 \
   -n 20 \
@@ -119,7 +119,7 @@ uv run inference --enable-lora --model.name <user>/Qwen3-4B-Instruct-WikiSearch-
 
 ```bash
 # In the `Trainer` pane
-uv run eval wiki-search-v1 --harness.id null \
+uv run eval wiki-search --harness.id null \
   -m <user>/Qwen3-4B-Instruct-WikiSearch-RL \
   --client.base-url http://localhost:8000/v1 \
   -n 20 \
@@ -135,7 +135,7 @@ The V1 taskset fixes the question bank and searchable corpus. You can replace it
 ```toml
 [[orchestrator.train.env]]
 name = "wiki-search"
-taskset = { id = "wiki-search-v1", task = { judges = [{ id = "reference", model = "openai/gpt-5.4-nano" }] } }
+taskset = { id = "wiki-search", task = { judges = [{ id = "reference", model = "openai/gpt-5.4-nano" }] } }
 harness = { id = "null", runtime = { type = "subprocess" } }
 ```
 

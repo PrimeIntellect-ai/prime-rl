@@ -46,7 +46,7 @@ enforce = true
 
 [[orchestrator.train.env]]
 name = "wiki-search"
-taskset = { id = "wiki-search-v1" }
+taskset = { id = "wiki-search" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
 [ckpt] # Checkpoint at the end of training

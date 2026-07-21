@@ -15,7 +15,7 @@ max_completion_tokens = 128
 
 [[train.env]]
 name = "reverse-text"
-taskset = { id = "reverse-text-v1" }
+taskset = { id = "reverse-text" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
 [renderer]

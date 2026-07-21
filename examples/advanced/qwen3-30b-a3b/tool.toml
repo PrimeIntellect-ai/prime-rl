@@ -36,7 +36,7 @@ group_size = 16
 max_off_policy_steps = 32
 
 [[orchestrator.train.env]]
-taskset = { id = "general-agent-v1", task = { tools = { colocated = true } }, min_tier = 1 }
+taskset = { id = "general-agent", task = { tools = { colocated = true } }, min_tier = 1 }
 harness = { id = "null", runtime = { type = "modal" } }
 
 [inference]

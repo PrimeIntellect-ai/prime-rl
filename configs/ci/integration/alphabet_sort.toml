@@ -24,7 +24,7 @@ max_completion_tokens = 384
 
 [[orchestrator.train.env]]
 name = "alphabet-sort"
-taskset = { id = "alphabet-sort-v1", min_turns = 2, max_turns = 2, min_names_per_turn = 1, max_names_per_turn = 3, task = { similarity_power = 4, power_per_turn = false } }
+taskset = { id = "alphabet-sort", min_turns = 2, max_turns = 2, min_names_per_turn = 1, max_names_per_turn = 3, task = { similarity_power = 4, power_per_turn = false } }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
 [inference]

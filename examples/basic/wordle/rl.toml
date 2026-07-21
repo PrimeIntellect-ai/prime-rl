@@ -20,7 +20,7 @@ group_size = 16
 
 [[orchestrator.train.env]]
 name = "wordle"
-taskset = { id = "wordle-v1" }
+taskset = { id = "wordle" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.train.sampling]

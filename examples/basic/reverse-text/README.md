@@ -1,15 +1,15 @@
 # Reverse Text
 
-We demonstrate how to train `Qwen3-0.6B` to reverse a small chunk of text. We will use a SFT warmup to learn the skill of text reversal on longer documents and then a quick RL run on the `reverse-text-v1` taskset. We use a similar setup in our CI and for development.
+We demonstrate how to train `Qwen3-0.6B` to reverse a small chunk of text. We will use a SFT warmup to learn the skill of text reversal on longer documents and then a quick RL run on the `reverse-text` taskset. We use a similar setup in our CI and for development.
 
 > The commands in this example were designed to be run on 2 GPUs (one trainer and one inference GPU). It is possible to run on less or more GPUs using different deployment strategies. If you run on a different setup, you may need to adjust the start commands.
 
 ## Setup
 
-The `reverse-text-v1` taskset is included through the Verifiers workspace. After syncing the repository, verify it with:
+The `reverse-text` taskset is included through the Verifiers workspace. After syncing the repository, verify it with:
 
 ```bash
-uv run python -c "import reverse_text_v1"
+uv run python -c "import reverse_text"
 ```
 
 First, let's start a `tmux` session which we will use throughout the experiment.
@@ -27,7 +27,7 @@ uv run inference --model.name Qwen/Qwen3-0.6B
 
 ```bash
 # Run this in the `Trainer` pane
-uv run eval reverse-text-v1 --harness.id null -m Qwen/Qwen3-0.6B --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
+uv run eval reverse-text --harness.id null -m Qwen/Qwen3-0.6B --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
 ```
 
 This is of course just a quick vibe check and no full-fledged evaluation, but we can see that the model struggles with this task. In this specific instance, we got an **average reward of ~0.05** across the 20x3 rollouts. Let's do some training!
@@ -100,7 +100,7 @@ uv run inference --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL
 
 ```bash
 # Run this in the `Trainer` pane
-uv run eval reverse-text-v1 --harness.id null -m PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
+uv run eval reverse-text --harness.id null -m PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
 ```
 
 Way better! Now we get an **average reward of ~0.8**.
@@ -213,7 +213,7 @@ kubectl exec -it my-exp-inference-0 -- bash
 uv run inference --model.name /data/outputs/weights/step_20
 
 # Back in trainer pod, run evaluation
-uv run eval reverse-text-v1 --harness.id null \
+uv run eval reverse-text --harness.id null \
   -m /data/outputs/weights/step_20 \
   --client.base-url $INFERENCE_URL \
   -n 20 -r 3 --sampling.max-tokens 1024 --no-push

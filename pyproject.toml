@@ -133,11 +133,11 @@ members = [
     "deps/research-environments/environments/*/*",
     "deps/verifiers/environments/*",
 ]
-# tau2-synth-v1 and tau3-bench-v1 pin `tau2` forks/revs that conflict with the
-# canonical tau2-bench-v1; a workspace shares one lock, so these can't coexist.
+# tau2-synth and tau3-bench pin `tau2` forks/revs that conflict with the
+# canonical tau2-bench; a workspace shares one lock, so these can't coexist.
 exclude = [
-    "deps/research-environments/environments/tool_use/tau2_synth_v1",
-    "deps/research-environments/environments/tool_use/tau3_bench_v1",
+    "deps/research-environments/environments/tool_use/tau2_synth",
+    "deps/research-environments/environments/tool_use/tau3_bench",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is

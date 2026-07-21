@@ -33,12 +33,12 @@ max_completion_tokens = 128
 
 [[orchestrator.train.env]]
 name = "reverse-text-grpo"
-taskset = { id = "reverse-text-v1" }
+taskset = { id = "reverse-text" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
 [[orchestrator.train.env]]
 name = "reverse-text-opd"
-taskset = { id = "reverse-text-v1" }
+taskset = { id = "reverse-text" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.train.env.algo]
@@ -57,7 +57,7 @@ max_completion_tokens = 128
 
 [[orchestrator.eval.env]]
 name = "reverse-text"
-taskset = { id = "reverse-text-v1" }
+taskset = { id = "reverse-text" }
 harness = { id = "null", runtime = { type = "subprocess" } }
 
 [trainer.optim]
