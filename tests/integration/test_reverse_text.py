@@ -15,7 +15,8 @@ from tests.utils import (
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
-TIMEOUT = 600  # 10 minutes
+TIMEOUT = 900  # 15 minutes (was 600s — can be tight on contended CI runners
+# after verifiers per-call tracing overhead was added)
 
 
 @pytest.fixture(scope="module")

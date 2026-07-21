@@ -236,21 +236,19 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
-    def cp_only_with_flash_attn(self):
+    def vlm_only_with_custom_impl(self):
+        if self.vlm is not None and self.impl != "custom":
+            raise ValueError("VLM training requires model.impl='custom'")
+        return self
+
+    @model_validator(mode="after")
+    def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
-        if (
-            self.cp > 1
-            and self.attn in ("flash_attention_3", "flash_attention_4", "auto")
-            and self.impl not in ("custom", "auto")
-        ):
-            # Both ring and ulysses route FA3/FA4 through our custom FlashAttention class:
-            # ring patches `_compute_attention` with the ring kernel, ulysses patches it with
-            # the all-to-all wrapper around the FA3/FA4 kernel. The HF path patches
-            # `_flash_attention_forward` which only wraps FA2.
+        if self.cp > 1 and self.impl not in ("custom", "auto"):
             raise ValueError(
-                f"CP with {self.attn} requires model.impl='custom' or 'auto' "
-                "(FA3/FA4 paths are only implemented for the custom model attention class)"
+                "Context parallelism requires model.impl='custom' or 'auto' "
+                "(resolved to a custom PrimeRL implementation)"
             )
         return self
 

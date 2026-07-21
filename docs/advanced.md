@@ -28,7 +28,7 @@ impl = "custom"        # or "hf" to force the HF path
 | GLM-5 / GLM-5.2 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8`, `zai-org/GLM-5.2`, `zai-org/GLM-5.2-FP8` | ✅ | ✅ |
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
-| Qwen3 / Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
+| Qwen3 / Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ❌ |
 | Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
 | MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
@@ -72,12 +72,8 @@ The built-in VLM registry covers:
 
 | Family | `model_type` | Vision attr | LM attr |
 |---|---|---|---|
-| Qwen3-VL | `qwen3_vl` | `model.visual` | `model.language_model` |
-| Qwen3-VL MoE | `qwen3_vl_moe` | `model.visual` | `model.language_model` |
 | Qwen3.5 | `qwen3_5` | `model.visual` | `model.language_model` |
 | Qwen3.5-MoE | `qwen3_5_moe` | `model.visual` | `model.language_model` |
-
-For a model not in the table, look up the attribute paths on the loaded HF model with `model.named_children()` and set them under `[model.vlm]` directly.
 
 ### Enabling VLM Mode
 
@@ -85,7 +81,8 @@ Add `[model.vlm]` and bfloat16 dtypes:
 
 ```toml
 [model]
-name = "Qwen/Qwen3-VL-4B-Instruct"
+name = "Qwen/Qwen3.5-4B"
+impl = "custom"
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
 
@@ -97,12 +94,11 @@ language_model_attr = "model.language_model"
 
 The weight-broadcast key prefix is derived as `{language_model_attr}.layers.` automatically.
 
-To add a new model family permanently, append an entry to `VLM_REGISTRY` in `src/prime_rl/utils/vlm.py`.
+VLM training requires a registered custom PrimeRL implementation.
 
 ### Limitations
 
-- **Vision encoder frozen by default.** Set `freeze_vision_encoder = false` to fine-tune it; in that case it's FSDP-sharded per block. The combination `freeze_vision_encoder = false` + LoRA is rejected by a config validator — LoRA freezes everything non-adapter, so unfreezing the encoder under LoRA would be a silent no-op.
-- **No multimodal-safe truncation.** Token sequences are truncated to `seq_len`, but `pixel_values` and `image_grid_thw` pass through unchanged. If a sample's tokens overflow, image tokens may get dropped while image tensors still describe the full image set. Set `seq_len` to cover your longest sample.
+- **Vision encoder frozen by default.** The default LoRA targets do not match Qwen3.5 vision modules. Set `freeze_vision_encoder = false` to fine-tune the encoder; this is incompatible with LoRA because LoRA freezes all non-adapter parameters.
 - **bfloat16 mandatory.** The trainer config validator refuses any other `optimization_dtype` / `reduce_dtype` for VLMs — vLLM serves VLMs in bfloat16 and a mismatch breaks the importance ratio.
 - **Higher KL mismatch with multi-image inputs.** Expect noisier `mismatch_kl` than text-only; this is from minor numerical differences between the trainer's and vLLM's image processing.
 - **Images aren't logged to monitors.** Sample logging captures the prompt text but not the actual images.
