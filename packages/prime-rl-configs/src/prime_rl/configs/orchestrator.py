@@ -396,6 +396,9 @@ FilterConfig: TypeAlias = Annotated[
 class FileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    inference_world_size: int | None = Field(None, ge=1)
+    """Expected inference ranks for Dynamo discovery completeness; unused by filesystem transfer itself."""
+
 
 class NCCLWeightBroadcastConfig(BaseConfig):
     type: Literal["nccl"] = "nccl"

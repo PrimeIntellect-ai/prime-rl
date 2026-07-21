@@ -7,6 +7,7 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
+from prime_rl.inference.vllm.worker.ranks import global_inference_rank
 from prime_rl.inference.vllm.worker.weight_transfer import (
     load_weights_checkpoint_layerwise,
     load_weights_kernel,
@@ -78,15 +79,22 @@ class NCCLWeightBroadcastReceiver:
         self.communicator = PyNcclCommunicator(pg, device=device)
 
     @torch.no_grad()
-    def receive_state_dict(self):
-        """Receives the state dict of a model from the trainer master rank using NCCL communicator."""
+    def receive_state_dicts(
+        self,
+    ) -> Generator[Generator[tuple[str, torch.Tensor], None, None], None, None]:
+        """Receive each trainer-broadcast state dict as a separate stream."""
         logger.info("Receiving weights from trainer")
         num_state_dict_to_receive = receive_integer(self.communicator)
         logger.info(f"Receiving {num_state_dict_to_receive} layer state dicts")
         for layer_id in range(num_state_dict_to_receive):
             logger.info(f"Receiving state dict {layer_id + 1}/{num_state_dict_to_receive}")
-            for key, value in receive_state_dict(self.communicator):
-                yield key, value
+            yield receive_state_dict(self.communicator)
+
+    @torch.no_grad()
+    def receive_state_dict(self):
+        """Receive trainer weights as one flat stream for kernel-format loading."""
+        for state_dict in self.receive_state_dicts():
+            yield from state_dict
 
 
 class NCCLWeightUpdateWorker(Worker):
@@ -100,23 +108,33 @@ class NCCLWeightUpdateWorker(Worker):
         inference_world_size: int,
         timeout: int,
         quantize_in_weight_transfer: bool = False,
+        engine_world_size: int | None = None,
     ) -> None:
         """Initialize the NCCL broadcast receiver.
 
         Args:
             rank_offset: Starting GPU offset for this server in the global inference group.
             inference_world_size: Total number of inference GPUs across all servers.
+            engine_world_size: Number of inference GPUs assigned to this server.
         """
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
-        # Use the worker's device index directly as the local rank.
-        # The previous dp_group-based computation broke in vLLM v1 multiprocess
-        # DP mode where each worker is a separate process with a singleton
-        # DP group (rank_in_group is always 0).
-        local_rank = self.device.index
-        global_rank_inference = rank_offset + local_rank
+        parallel_config = self.parallel_config
+        data_parallel_index = parallel_config.data_parallel_index
+        global_rank_inference = global_inference_rank(
+            rank_offset=rank_offset,
+            data_parallel_index=data_parallel_index,
+            data_parallel_size=parallel_config.data_parallel_size,
+            worker_rank=self.rank,
+            tensor_parallel_size=parallel_config.tensor_parallel_size,
+            pipeline_parallel_size=parallel_config.pipeline_parallel_size,
+            prefill_context_parallel_size=getattr(parallel_config, "prefill_context_parallel_size", 1),
+            inference_world_size=inference_world_size,
+            engine_world_size=engine_world_size,
+        )
 
         logger.info(
-            f"Worker [local_rank={local_rank} rank_offset={rank_offset}] "
+            f"Worker [worker_rank={self.rank} data_parallel_index={data_parallel_index} "
+            f"rank_offset={rank_offset}] "
             f"-> [global_rank={global_rank_inference} inference_world_size={inference_world_size}]"
         )
 
@@ -142,15 +160,16 @@ class NCCLWeightUpdateWorker(Worker):
             model = model_runner.model
         assert isinstance(model, Module)
 
-        state_iter = self.nccl_broadcast_receiver.receive_state_dict()
         if self.quantize_in_weight_transfer:
+            state_iter = self.nccl_broadcast_receiver.receive_state_dict()
             load_weights_kernel(model, state_iter)
             update_mla_absorbed_weights(model)
             return
 
-        load_weights_checkpoint_layerwise(
-            model,
-            state_iter,
-            self.model_runner.model_config,
-            self.vllm_config,
-        )
+        for state_iter in self.nccl_broadcast_receiver.receive_state_dicts():
+            load_weights_checkpoint_layerwise(
+                model,
+                state_iter,
+                self.model_runner.model_config,
+                self.vllm_config,
+            )

@@ -142,10 +142,19 @@ async def init_broadcaster(request: Request):
     timeout = data.get("timeout")
     rank_offset = data.get("rank_offset")
     inference_world_size = data.get("inference_world_size")
+    engine_world_size = data.get("engine_world_size")
     quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer),
+        args=(
+            host,
+            port,
+            rank_offset,
+            inference_world_size,
+            timeout,
+            quantize_in_weight_transfer,
+            engine_world_size,
+        ),
     )
     return {"status": "ok"}
 
@@ -168,16 +177,13 @@ async def custom_init_app_state(
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
 
-    # Swap in our ServingTokens subclass for /inference/v1/generate so the
-    # X-data-parallel-rank header and routed_experts response field — both
-    # used by prime-RL's renderer / router-replay paths — keep working.
+    # Preserve vLLM's initialized collaborators while constructing the Prime
+    # subclass normally. Copying ``__dict__`` across versions is unsafe when
+    # vLLM renames renderer state or adds constructor-owned invariants.
     if "generate" in supported_tasks and state.serving_tokens is not None:
-        from prime_rl.inference.vllm.serving_tokens import PrimeRlServingTokens
+        from prime_rl.inference.vllm.serving_tokens import build_prime_serving_tokens
 
-        upstream = state.serving_tokens
-        prime_serving = object.__new__(PrimeRlServingTokens)
-        prime_serving.__dict__.update(upstream.__dict__)
-        state.serving_tokens = prime_serving
+        state.serving_tokens = build_prime_serving_tokens(state.serving_tokens)
 
 
 import vllm.entrypoints.openai.api_server

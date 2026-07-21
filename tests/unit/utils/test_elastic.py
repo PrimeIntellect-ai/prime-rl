@@ -444,3 +444,34 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
                 headers={},
             )
         ]
+
+
+def test_elastic_pool_initializes_nccl_through_static_admin_route():
+    client_config = MagicMock()
+    client_config.elastic.hostname = "workers"
+    client_config.elastic.port = 8000
+    client_config.elastic.sync_interval = 5.0
+    client_config.router_url = None
+    pool = ElasticInferencePool(client_config=client_config, model_name="base-model")
+    admin_client = AsyncMock()
+    pool._admin_clients = {"10.0.0.1": admin_client}
+
+    with patch("prime_rl.utils.elastic.init_nccl_broadcast", new_callable=AsyncMock) as init_broadcast:
+        asyncio.run(
+            pool.init_nccl_broadcast(
+                host="127.0.0.1",
+                port=29519,
+                timeout=1200,
+                inference_world_size=1,
+                quantize_in_weight_transfer=False,
+            )
+        )
+
+    init_broadcast.assert_awaited_once_with(
+        [admin_client],
+        host="127.0.0.1",
+        port=29519,
+        timeout=1200,
+        inference_world_size=1,
+        quantize_in_weight_transfer=False,
+    )
