@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
-from verifiers.v1.serve import EnvClient
+from verifiers.v1.serve import PROTOCOL_VERSION, EnvClient, env_config_data
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
@@ -111,6 +111,11 @@ class Env:
         if external:
             await self.env_client.wait_for_server_startup()
         info = await self.env_client.info()
+        if info.protocol != PROTOCOL_VERSION:
+            raise RuntimeError(
+                f"Env server {self.name} speaks serve protocol {info.protocol}, but this "
+                f"orchestrator expects {PROTOCOL_VERSION} — align the verifiers versions"
+            )
         self.num_tasks = info.num_tasks
         self.requires_group_scoring = info.requires_group_scoring
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
@@ -135,7 +140,9 @@ class Env:
                 extra_env_kwargs=self.config.extra_env_kwargs,
             )
             if self.config.is_legacy
-            else dict(legacy=False, config=self.config)
+            # The env block only — and as a picklable dict: the narrowed config
+            # class doesn't survive the spawn.
+            else dict(legacy=False, config_data=env_config_data(self.config.env))
         )
         process = ctx.Process(
             target=_run_env_server,
@@ -168,17 +175,19 @@ class Env:
             sampling["extra_body"] = {**sampling.get("extra_body", {}), "cache_salt": cache_salt}
         return vf.SamplingConfig(**sampling)
 
-    async def run_rollout(
+    async def run(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
-    ) -> Rollout:
-        """Run a single rollout for ``task_idx``; return a typed Trace."""
-        wire = await self.env_client.run_rollout(
+    ) -> list[Rollout]:
+        """Run one env-rollout (episode) for ``task_idx``; return its typed Traces —
+        one for a single-agent env, several for a multi-agent one, linked through
+        each trace's ``episode`` stamp."""
+        wires = await self.env_client.run(
             task_idx=task_idx,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return ROLLOUT_TYPE.model_construct(**dict(wire))
+        return [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in wires]
 
     async def run_group(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None

@@ -173,23 +173,16 @@ class EnvConfig(vf.EnvServerConfig):
         return data
 
     @property
-    def is_legacy(self) -> bool:
-        """A v0/legacy env (run via the bridge): an ``id`` is set and no v1 ``taskset`` is."""
-        return not self.taskset.id
-
-    @property
-    def env_id(self) -> str:
-        """The env identifier — the v1 taskset id (v1) or the legacy env id (v0)."""
-        return self.taskset.id or self.id or ""
-
-    @property
     def resolved_name(self) -> str:
         return self.name or self.env_id
 
     @model_validator(mode="after")
     def validate_env(self):
-        if not self.taskset.id and not self.id:
-            raise ValueError('no env configured — set taskset = { id = "<id>" } (v1) or id = "<id>" (v0/legacy)')
+        taskset = self.env.taskset
+        if (taskset is None or not taskset.id) and not self.id:
+            raise ValueError(
+                'no env configured — set env = { taskset = { id = "<id>" } } (v1) or id = "<id>" (v0/legacy)'
+            )
         if self.resolved_name == "agg":
             raise ValueError(
                 'Environment name "agg" is reserved for cross-env metric aggregation. Use a different name or id.'
@@ -200,13 +193,16 @@ class EnvConfig(vf.EnvServerConfig):
     def resolve_legacy_env_kwargs(self):
         """For a v0/legacy env, surface the v1 knobs the legacy bridge applies via
         ``extra_env_kwargs`` (``env.set_kwargs(...)``): the per-rollout wall-clock timeout and
-        the multi-turn completion-token budget. (``max_seq_len`` is added per train run in
+        the multi-turn completion-token budget — read off the default single-agent block, the
+        only per-run cap site. (``max_seq_len`` is added per train run in
         ``OrchestratorConfig.resolve_env_config``, which knows ``seq_len``.)"""
         if self.is_legacy:
-            if self.timeout.rollout is not None:
-                self.extra_env_kwargs["timeout_seconds"] = self.timeout.rollout
-            if self.max_output_tokens is not None:
-                self.extra_env_kwargs["max_total_completion_tokens"] = self.max_output_tokens
+            agent = getattr(self.env, "agent", None)
+            if agent is not None:
+                if agent.timeout.rollout is not None:
+                    self.extra_env_kwargs["timeout_seconds"] = agent.timeout.rollout
+                if agent.max_output_tokens is not None:
+                    self.extra_env_kwargs["max_total_completion_tokens"] = agent.max_output_tokens
         return self
 
 

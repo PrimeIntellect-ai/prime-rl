@@ -1,7 +1,7 @@
 from functools import partial
 
 from verifiers.v1 import pool_serve_kwargs
-from verifiers.v1.serve import serve_env
+from verifiers.v1.serve import env_config_data, serve_env
 
 from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.orchestrator.utils import setup_env_server_logging
@@ -21,7 +21,7 @@ def run_server(config: EnvServerConfig):
     server_kwargs = (
         {"env_id": env.env_id, "env_args": env.args, "extra_env_kwargs": env.extra_env_kwargs}
         if env.is_legacy
-        else {"config": env}
+        else {"config_data": env_config_data(env.env)}
     )
     serve_env(
         **pool_serve_kwargs(env.pool),
