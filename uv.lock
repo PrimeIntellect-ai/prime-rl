@@ -3972,7 +3972,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "multi-swe-bench" },
-    { name = "verifiers", specifier = ">=0.2.1" },
+    { name = "verifiers", specifier = ">=0.2.2.dev5" },
 ]
 
 [[package]]
@@ -4631,7 +4631,7 @@ requires-dist = [
 
 [[package]]
 name = "openswe-v1"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "deps/research-environments/environments/swe/openswe_v1" }
 dependencies = [
     { name = "datasets" },
@@ -4643,7 +4643,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.2.1" },
+    { name = "verifiers", specifier = ">=0.2.2.dev5" },
 ]
 
 [[package]]
@@ -5999,7 +5999,7 @@ wheels = [
 
 [[package]]
 name = "r2e-gym-v1"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "deps/research-environments/environments/swe/r2e_gym_v1" }
 dependencies = [
     { name = "datasets" },
@@ -6009,7 +6009,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.1" },
+    { name = "verifiers", specifier = ">=0.2.2.dev5" },
 ]
 
 [[package]]
@@ -6314,7 +6314,7 @@ wheels = [
 
 [[package]]
 name = "scaleswe-v1"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "deps/research-environments/environments/swe/scaleswe_v1" }
 dependencies = [
     { name = "datasets" },
@@ -6324,7 +6324,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.1" },
+    { name = "verifiers", specifier = ">=0.2.2.dev5" },
 ]
 
 [[package]]
@@ -6887,7 +6887,7 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.2.1" }]
 
 [[package]]
 name = "swelego-v1"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "deps/research-environments/environments/swe/swelego_v1" }
 dependencies = [
     { name = "datasets" },
@@ -6897,12 +6897,12 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.1" },
+    { name = "verifiers", specifier = ">=0.2.2.dev5" },
 ]
 
 [[package]]
 name = "swerebench-v2-v1"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "deps/research-environments/environments/swe/swerebench_v2_v1" }
 dependencies = [
     { name = "datasets" },
@@ -6912,7 +6912,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.1" },
+    { name = "verifiers", specifier = ">=0.2.2.dev5" },
 ]
 
 [[package]]
@@ -6922,7 +6922,7 @@ source = { git = "https://github.com/SWE-bench/SWE-smith.git?rev=9b74ac0#9b74ac0
 
 [[package]]
 name = "swesmith-v1"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "deps/research-environments/environments/swe/swesmith_v1" }
 dependencies = [
     { name = "datasets" },
@@ -6936,7 +6936,7 @@ requires-dist = [
     { name = "datasets" },
     { name = "swebench" },
     { name = "swesmith", git = "https://github.com/SWE-bench/SWE-smith.git?rev=9b74ac0" },
-    { name = "verifiers", specifier = ">=0.2.1" },
+    { name = "verifiers", specifier = ">=0.2.2.dev5" },
 ]
 
 [[package]]
