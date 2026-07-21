@@ -14,7 +14,8 @@ from tests.utils import check_final_eval_reward_above, check_no_error, strip_esc
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
-TIMEOUT = 600  # 10 minutes
+TIMEOUT = 900  # 15 minutes (was 600s — the OPD orchestrator finishes in ~8m but
+# the rl entrypoint cleanup phase can push total wall-clock past the old limit)
 REF_PORT = 8001
 REF_READY_TIMEOUT_S = 300
 
