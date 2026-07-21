@@ -15,6 +15,7 @@ def test_dense_aggregate_dp4_tp2_ranks_are_unique_across_nodes():
         ranks.global_inference_rank(
             rank_offset=0,
             data_parallel_index=dp_index,
+            data_parallel_size=4,
             worker_rank=tp_rank,
             tensor_parallel_size=2,
             pipeline_parallel_size=1,
@@ -32,6 +33,7 @@ def test_already_global_moe_worker_ranks_are_not_double_counted():
         ranks.global_inference_rank(
             rank_offset=0,
             data_parallel_index=dp_index,
+            data_parallel_size=4,
             worker_rank=dp_index * 2 + tp_rank,
             tensor_parallel_size=2,
             pipeline_parallel_size=1,
@@ -49,6 +51,7 @@ def test_rank_offset_composes_with_pipeline_parallel_rank():
         ranks.global_inference_rank(
             rank_offset=8,
             data_parallel_index=dp_index,
+            data_parallel_size=2,
             worker_rank=model_parallel_rank,
             tensor_parallel_size=2,
             pipeline_parallel_size=2,
@@ -66,6 +69,7 @@ def test_per_server_rank_offset_with_internal_dp_zero_is_unchanged():
         ranks.global_inference_rank(
             rank_offset=4,
             data_parallel_index=0,
+            data_parallel_size=1,
             worker_rank=tp_rank,
             tensor_parallel_size=2,
             pipeline_parallel_size=1,
@@ -82,6 +86,7 @@ def test_global_inference_rank_rejects_out_of_bounds_rank():
         ranks.global_inference_rank(
             rank_offset=0,
             data_parallel_index=4,
+            data_parallel_size=4,
             worker_rank=0,
             tensor_parallel_size=2,
             pipeline_parallel_size=1,
@@ -94,6 +99,7 @@ def test_prefill_context_parallel_ranks_are_unique():
         ranks.global_inference_rank(
             rank_offset=0,
             data_parallel_index=0,
+            data_parallel_size=1,
             worker_rank=worker_rank,
             tensor_parallel_size=1,
             pipeline_parallel_size=1,
@@ -112,9 +118,26 @@ def test_global_inference_rank_rejects_rank_outside_engine_interval():
         ranks.global_inference_rank(
             rank_offset=2,
             data_parallel_index=1,
+            data_parallel_size=1,
             worker_rank=0,
             tensor_parallel_size=2,
             pipeline_parallel_size=1,
             inference_world_size=8,
             engine_world_size=2,
         )
+
+
+def test_engine_world_size_mismatch_is_rejected_by_every_worker():
+    for worker_rank in range(2):
+        with pytest.raises(ValueError, match="engine world size 1 does not match expected topology size 2"):
+            ranks.global_inference_rank(
+                rank_offset=0,
+                data_parallel_index=0,
+                data_parallel_size=1,
+                worker_rank=worker_rank,
+                tensor_parallel_size=1,
+                pipeline_parallel_size=1,
+                prefill_context_parallel_size=2,
+                inference_world_size=2,
+                engine_world_size=1,
+            )

@@ -2,6 +2,7 @@ def global_inference_rank(
     *,
     rank_offset: int,
     data_parallel_index: int,
+    data_parallel_size: int,
     worker_rank: int,
     tensor_parallel_size: int,
     pipeline_parallel_size: int,
@@ -13,6 +14,13 @@ def global_inference_rank(
     model_parallel_size = tensor_parallel_size * pipeline_parallel_size * prefill_context_parallel_size
     if model_parallel_size <= 0:
         raise ValueError("model parallel size must be positive")
+
+    expected_engine_world_size = data_parallel_size * model_parallel_size
+    if engine_world_size is not None and engine_world_size != expected_engine_world_size:
+        raise ValueError(
+            f"engine world size {engine_world_size} does not match expected topology size "
+            f"{expected_engine_world_size}"
+        )
 
     local_rank = data_parallel_index * model_parallel_size + worker_rank % model_parallel_size
     rank = rank_offset + local_rank

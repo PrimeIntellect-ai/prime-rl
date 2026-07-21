@@ -123,6 +123,7 @@ class NCCLWeightUpdateWorker(Worker):
         global_rank_inference = global_inference_rank(
             rank_offset=rank_offset,
             data_parallel_index=data_parallel_index,
+            data_parallel_size=parallel_config.data_parallel_size,
             worker_rank=self.rank,
             tensor_parallel_size=parallel_config.tensor_parallel_size,
             pipeline_parallel_size=parallel_config.pipeline_parallel_size,
