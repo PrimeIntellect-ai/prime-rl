@@ -1,6 +1,7 @@
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -8,6 +9,7 @@ import uuid
 from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
+from urllib.parse import urlsplit, urlunsplit
 
 import pynvml
 import tomli_w
@@ -43,6 +45,8 @@ TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
 INFERENCE_TOML = "inference.toml"
 
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
 
 def get_physical_gpu_ids() -> list[int]:
     """Return physical GPU IDs visible to the launcher."""
@@ -77,6 +81,55 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             tomli_w.dump(to_toml_dict(config.inference, exclude=exclude_inference), f)
 
 
+def _replace_loopback_host(url: str, advertised_host: str) -> str:
+    """Replace a loopback URL host while preserving all other URL components."""
+    parsed = urlsplit(url)
+    if parsed.hostname not in LOOPBACK_HOSTS:
+        return url
+
+    host = f"[{advertised_host}]" if ":" in advertised_host else advertised_host
+    userinfo = ""
+    if parsed.username is not None:
+        userinfo = parsed.username
+        if parsed.password is not None:
+            userinfo += f":{parsed.password}"
+        userinfo += "@"
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return urlunsplit(parsed._replace(netloc=f"{userinfo}{host}{port}"))
+
+
+def advertise_inference_to_external_envs(config: RLConfig, advertised_host: str | None = None) -> bool:
+    """Expose launcher-managed inference to external v1 environment servers.
+
+    V1 environment workers execute the serialized model client themselves. A
+    loopback URL therefore resolves on the environment node, not on the node
+    where this launcher starts inference. Keep loopback URLs for colocated
+    administrative traffic and advertise this node for rollout traffic.
+
+    Returns whether the model client was changed.
+    """
+    if config.inference is None:
+        return False
+
+    envs = list(config.orchestrator.train.env)
+    if config.orchestrator.eval is not None:
+        envs.extend(config.orchestrator.eval.env)
+    if not any(env.address is not None for env in envs):
+        return False
+
+    client = config.orchestrator.model.client
+    original_urls = list(client.base_url)
+    host = advertised_host or socket.gethostname()
+    advertised_urls = [_replace_loopback_host(url, host) for url in original_urls]
+    if advertised_urls == original_urls:
+        return False
+
+    if client.admin_base_url is None:
+        client.admin_base_url = original_urls
+    client.base_url = advertised_urls
+    return True
+
+
 def rl_local(config: RLConfig):
     assert config.deployment.type == "single_node"
 
@@ -84,6 +137,11 @@ def rl_local(config: RLConfig):
         config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
         json_logging=config.log.json_logging,
     )
+
+    if advertise_inference_to_external_envs(config):
+        logger.info(
+            f"Advertising inference to external env servers at {', '.join(config.orchestrator.model.client.base_url)}"
+        )
 
     config_dir = config.output_dir / "configs"
     write_subconfigs(config, config_dir)
