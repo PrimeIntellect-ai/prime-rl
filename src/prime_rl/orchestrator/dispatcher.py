@@ -4,10 +4,9 @@
   A group-scoring task that runs N rollouts in one call reserves N permits.
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched env-rollout eventually reaches
-  ``out_q`` exactly once, as one episode — a ``list[Rollout]`` (one trace for a
-  single-agent env, several for a multi-agent one). Failures (env error, empty
-  trajectory, task exception, off-policy cancel) carry ``trace.error`` set;
-  sinks decide drop / partial-train policy.
+  ``out_q`` exactly once, as one episode (a ``list[Rollout]``). Failures
+  (env error, empty trajectory, task exception, off-policy cancel) carry
+  ``trace.error`` set; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight rollouts of the opposite kind drain
@@ -153,9 +152,8 @@ class RolloutDispatcher:
         self.inflight: dict[asyncio.Task, InflightRollout] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
 
-        # Bounded so the dispatcher backpressures on a slow sink.
-        # One entry per episode: the traces of one env-rollout travel together, so
-        # the sinks' group accounting counts episodes, never loose traces.
+        # Bounded so the dispatcher backpressures on a slow sink. One entry per
+        # episode — the sinks count episodes, never loose traces.
         self.out_q: asyncio.Queue[list[Rollout]] = asyncio.Queue(maxsize=max(8, self.max_inflight))
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
@@ -488,13 +486,13 @@ class RolloutDispatcher:
         self.inflight_permits -= n
 
     async def handle_completed_rollout(self, task: asyncio.Task) -> None:
-        """Emit every dispatched env-rollout exactly once to ``out_q``. A ``run``
-        task's result is one episode (its traces emitted together); a legacy
-        ``run_group`` task's result is ``rollout_count`` single-trace episodes.
-        Task exceptions synthesize ``rollout_count`` error-marker episodes so
-        the sink's count-to-``group_size`` finalization still triggers.
-        Cancelled tasks (popped by ``drop_group``) raise ``CancelledError``
-        and are discarded — ``drop_group`` already emitted their markers.
+        """Emit every dispatched env-rollout exactly once to ``out_q``: a ``run``
+        result as one episode, a legacy ``run_group`` result as ``rollout_count``
+        single-trace episodes. Task exceptions synthesize ``rollout_count``
+        error-marker episodes so the sink's count-to-``group_size`` finalization
+        still triggers. Cancelled tasks (popped by ``drop_group``) raise
+        ``CancelledError`` and are discarded — ``drop_group`` already emitted
+        their markers.
         """
         meta = self.inflight.pop(task, None)
         if meta is None:
@@ -524,8 +522,7 @@ class RolloutDispatcher:
         for r in rollouts:
             if not r.has_error and r.num_turns == 0:
                 # Empty trajectory: promote to an explicit error so the sink
-                # treats it like any other failure (``has_error`` reads ``ok``,
-                # so appending the error alone wouldn't flip it)
+                # treats it like any other failure (``has_error`` reads ``ok``)
                 r.errors.append(vf.Error(type="EmptyTrajectory", message="Rollout returned with no trajectory steps"))
                 r.ok = False
                 get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
@@ -539,14 +536,13 @@ class RolloutDispatcher:
             # A ``run`` task: the whole result is one episode.
             await self.emit_episode(meta, group, rollouts)
         else:
-            # A legacy ``run_group`` task (or its error markers): each trace is
-            # its own single-trace episode.
+            # A legacy ``run_group`` task: one single-trace episode per trace.
             for r in rollouts:
                 await self.emit_episode(meta, group, [r])
 
     async def emit_episode(self, meta: InflightRollout, group: GroupState | None, rollouts: list[Rollout]) -> None:
-        """Stamp prime-rl metadata onto one completed episode's traces and put it
-        on ``out_q``. Pops the group from ``self.groups`` once every owed episode
+        """Stamp prime-rl metadata onto one completed episode and put it on
+        ``out_q``. Pops the group from ``self.groups`` once every owed episode
         has been emitted."""
         eval_step = meta.eval_step
         policy_version = meta.policy_version

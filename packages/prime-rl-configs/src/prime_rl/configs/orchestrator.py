@@ -192,9 +192,9 @@ class EnvConfig(vf.EnvServerConfig):
     def resolve_legacy_env_kwargs(self):
         """For a v0/legacy env, surface the v1 knobs the legacy bridge applies via
         ``extra_env_kwargs`` (``env.set_kwargs(...)``): the per-rollout wall-clock timeout and
-        the multi-turn completion-token budget — read off the default single-agent block, the
-        only per-run cap site. (``max_seq_len`` is added per train run in
-        ``OrchestratorConfig.resolve_env_config``, which knows ``seq_len``.)"""
+        the multi-turn completion-token budget, read off ``env.agent``. (``max_seq_len`` is
+        added per train run in ``OrchestratorConfig.resolve_env_config``, which knows
+        ``seq_len``.)"""
         if self.is_legacy:
             agent = getattr(self.env, "agent", None)
             if agent is not None:

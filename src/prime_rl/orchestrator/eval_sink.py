@@ -8,9 +8,8 @@ Same shape as ``TrainSink``, but no tokenization / advantages / filters:
 3. ``process_batch`` — at ``num_examples × group_size`` episodes, return an
    ``EvalBatch`` with the full returned cohort (metrics are computed downstream).
 
-``add()`` takes one episode (``list[Rollout]`` — the traces of one env-rollout,
-arriving atomically) and returns ``EvalBatch | None``; all accounting counts
-episodes, never loose traces.
+``add()`` takes one episode (``list[Rollout]``) and returns ``EvalBatch | None``;
+all accounting counts episodes, never loose traces.
 """
 
 from __future__ import annotations
@@ -30,8 +29,7 @@ class EvalSink:
     def __init__(self, *, eval_envs: EvalEnvs) -> None:
         self.eval_envs = eval_envs
         self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
-        # Episodes arrived per group / per batch bucket — the finalization
-        # counts. A multi-agent episode adds several traces but one count.
+        # Episodes arrived per group / per batch bucket — the finalization counts.
         self.pending_group_episodes: dict[uuid.UUID, int] = defaultdict(int)
         self.pending_batches: dict[tuple[str, int], list[Rollout]] = defaultdict(list)
         self.pending_batch_episodes: dict[tuple[str, int], int] = defaultdict(int)

@@ -4,10 +4,9 @@ Each ``Env`` owns a v1 ``EnvServer`` (spawned as a child process, or an
 external one given by ``config.address``) and an ``EnvClient`` to drive it. The
 orchestrator never *runs* an environment: it asks the server for ``info``
 (``num_tasks`` + whether group scoring is needed), then runs rollouts purely by
-**task index**. The server answers one ``Episode`` per env-rollout — the envelope
-``{id, env, ok, errors, traces}`` (one trace for a single-agent env, several for
-a multi-agent one) — whose traces we validate into ``Trace[WireTaskData]`` — real
-``vf.Trace``\\ s (never loose dicts) whose task keeps the env's task-specific
+**task index**. The server answers one ``Episode`` per env-rollout, whose traces
+we validate into ``Trace[WireTaskData]`` — real ``vf.Trace``\\ s (never loose
+dicts) whose task keeps the env's task-specific
 fields as extras (``WireTaskData`` allows them). The orchestrator never imports the
 env package: the env's *type* and *runtime* both live only in the server, and the orchestrator
 drives it purely by task index. (Nothing here reads typed env task fields — only ``task.idx``
@@ -136,8 +135,7 @@ class Env:
                 extra_env_kwargs=self.config.extra_env_kwargs,
             )
             if self.config.is_legacy
-            # The env block only — and as a picklable dict: the narrowed config
-            # class doesn't survive the spawn.
+            # Picklable dict — the narrowed config class doesn't survive the spawn.
             else dict(legacy=False, config_data=env_config_data(self.config.env))
         )
         process = ctx.Process(
@@ -174,12 +172,9 @@ class Env:
     async def run(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
     ) -> list[Rollout]:
-        """Run one env-rollout (episode) for ``task_idx``; return its typed Traces —
-        one for a single-agent env, several for a multi-agent one. The episode is
-        the failure unit: a hook failure before any trace minted raises (the
-        dispatcher synthesizes its error marker), and a not-``ok`` episode marks
-        every clean trace failed so the sinks never train on a broken episode's
-        partial seats."""
+        """Run one episode for ``task_idx``; return its typed Traces. A zero-trace
+        episode raises (the dispatcher synthesizes the error marker); a not-``ok``
+        episode marks its clean traces failed so partial episodes never train."""
         episode = await self.env_client.run(
             task_idx=task_idx,
             client=client,

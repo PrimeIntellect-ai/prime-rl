@@ -3,18 +3,17 @@
 1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
    dispatcher producing more rollouts), then the env algorithm's
    ``finalize_rollout`` (rollout-local scoring + any reference I/O). Errored
-   and untrainable rollouts (a multi-agent env's frozen agents) skip this —
-   only the trainable subset becomes training samples.
+   and untrainable rollouts skip this.
 2. ``process_group`` — filters errored rollouts, hands the trainable
    survivors to the env algorithm's ``finalize_group`` (advantages +
    per-sample wire stamping), runs the pre-batch filter pass.
 3. ``process_batch`` — applies post-batch filter annotations and assembles
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
-``add()`` takes one episode (``list[Rollout]`` — the traces of one
-env-rollout, arriving atomically) and returns ``TrainBatch | None``; group
-accounting counts episodes, never loose traces. I/O concerns (ship to
-trainer, save_rollouts, monitor.log) live on the orchestrator.
+``add()`` takes one episode (``list[Rollout]``) and returns
+``TrainBatch | None``; group accounting counts episodes, never loose traces.
+I/O concerns (ship to trainer, save_rollouts, monitor.log) live on the
+orchestrator.
 """
 
 from __future__ import annotations
@@ -81,8 +80,8 @@ class TrainSink:
         # isn't unique — the same task can be re-sampled while an
         # earlier group is still in flight
         self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
-        # Episodes arrived per group — the finalization count. A multi-agent
-        # episode adds several traces to ``pending_groups`` but one here.
+        # Episodes arrived per group — the finalization count (an episode may
+        # add several traces to ``pending_groups`` but counts once here).
         self.pending_group_episodes: dict[uuid.UUID, int] = defaultdict(int)
         self.pending_batch: list[Rollout] = []
         # Running payload-token total of ``pending_batch`` (token-batched
@@ -138,10 +137,10 @@ class TrainSink:
         return dict(counts)
 
     async def add(self, episode: list[Rollout]) -> TrainBatch | None:
-        """Process one episode arrival (the traces of one env-rollout, together);
-        finalize the group on the ``group_size``-th episode; return a
-        ``TrainBatch`` if the finalization pushed (or left) the batch over its
-        threshold. Arrivals into still-incomplete groups never ship a batch."""
+        """Process one episode arrival; finalize the group on the
+        ``group_size``-th episode; return a ``TrainBatch`` if the finalization
+        pushed (or left) the batch over its threshold. Arrivals into
+        still-incomplete groups never ship a batch."""
         group_id = episode[0].group_id
         env_name = episode[0].env_name
         for rollout in episode:
@@ -167,8 +166,7 @@ class TrainSink:
         """Build training samples from the rollout's Trace (one per branch), walking the
         message graph. Training is renderer-only across all modes (RL/OPD student, SFT teacher),
         so every node already carries its tokens. Errored rollouts are dropped at the group
-        level, so skip them here; untrainable traces (a multi-agent env's frozen agents —
-        ``trace.agent.trainable`` is False) never become training data."""
+        level, so skip them here; untrainable traces never become training data."""
         if rollout.has_error or not rollout.trainable:
             return
         samples = await asyncio.to_thread(
@@ -211,9 +209,7 @@ class TrainSink:
                 f"rollouts={len(group)} (errored={num_errored}) | dropped: group-scored partial"
             )
             return
-        # The training signal comes from the trainable subset only: a
-        # multi-agent env's frozen agents (a grader, a pinned user sim) carry
-        # no samples and must not skew the group baseline.
+        # Untrainable traces carry no samples and must not skew the group baseline.
         survivors = [r for r in survivors if r.trainable]
         if not survivors:
             get_logger().debug(
