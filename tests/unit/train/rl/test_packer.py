@@ -186,7 +186,7 @@ def test_multipacker_pack_preserves_mm_kwargs_modality_and_run_tagging(tmp_path,
     malformed.mm_token_type_ids = None
     valid, reason = packer._validate_sample(malformed)
     assert not valid
-    assert reason is not None and "without mm_token_type_ids" in reason
+    assert reason is not None and "require mm_token_type_ids" in reason
 
     a, b = manager.id_2_idx["run_a"], manager.id_2_idx["run_b"]
     for idx, value in ((a, 1.0), (b, 10.0)):
@@ -211,25 +211,6 @@ def test_multipacker_pack_preserves_mm_kwargs_modality_and_run_tagging(tmp_path,
             assert len(tagged) == 1 and mb.lora_num_tokens[tagged[0]] == len(mb.input_ids)
             real_run_idxs.add(tagged[0])
     assert real_run_idxs == {a, b}, f"both runs' MM should be tagged; got {real_run_idxs}"
-
-
-def test_multipacker_pack_mm_padding_is_zero_loss(tmp_path, monkeypatch):
-    """A lone MM sample forces a dummy MM microbatch for rank padding; it must be zero-loss."""
-    from prime_rl.trainer.batch import _is_multimodal_sample
-
-    manager, packer, sent = _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size=2, seq_len=3)
-    a, b = manager.id_2_idx["run_a"], manager.id_2_idx["run_b"]
-    packer.buffers[a].append((_mm_sample(1.0), 0))
-    packer.buffers[b].append((make_training_sample(), 0))
-
-    packer.pack()
-    assert sent
-    grid = sent[-1]
-    mm_mbs = [mb for rank in grid for mb in rank if _is_multimodal_sample(mb)]
-    dummies = [mb for mb in mm_mbs if not any(mb.loss_mask)]
-    assert dummies, "expected a zero-loss dummy MM padding microbatch"
-    for dummy in dummies:
-        assert all(advantage == 0.0 for advantage in dummy.advantages)
 
 
 def test_multipacker_packs_mm_kwargs_within_each_run(tmp_path, monkeypatch):

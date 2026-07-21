@@ -94,11 +94,25 @@ def _truncate_mm(
     return cut, sliced
 
 
+def multimodal_sample_error(sample: TrainingSample) -> str | None:
+    mm_token_type_ids = sample.mm_token_type_ids
+    if mm_token_type_ids is not None and len(mm_token_type_ids) != len(sample.token_ids):
+        return (
+            "mm_token_type_ids length must match token_ids length "
+            f"({len(mm_token_type_ids)} != {len(sample.token_ids)})"
+        )
+    if sample.mm_kwargs is not None and "image_grid_thw" in sample.mm_kwargs and mm_token_type_ids is None:
+        return "image_grid_thw multimodal samples require mm_token_type_ids"
+    return None
+
+
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
     Tokenize and prepare tensors.
     """
+    if error := multimodal_sample_error(training_example):
+        raise ValueError(error)
     input_ids = training_example.token_ids
     loss_mask = training_example.mask
     inference_logprobs = training_example.logprobs
@@ -186,12 +200,6 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         )
         assert len(routed_experts.data) == len(input_ids) * _routed_experts_row_size(routed_experts)
 
-    if mm_token_type_ids is not None:
-        assert len(mm_token_type_ids) == len(input_ids), (
-            f"mm_token_type_ids: {len(mm_token_type_ids)}, input_ids: {len(input_ids)}"
-        )
-    if mm_kwargs is not None and "image_grid_thw" in mm_kwargs and mm_token_type_ids is None:
-        raise ValueError("image_grid_thw multimodal samples require mm_token_type_ids")
     assert len(env_names) == len(input_ids), f"env_names: {len(env_names)}, input_ids: {len(input_ids)}"
 
     return MicroBatch(
