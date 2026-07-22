@@ -342,6 +342,15 @@ class BaseOptimizerConfig(BaseConfig):
     lr: float = Field(1e-6, ge=0)
     """Peak learning rate."""
 
+    module_lrs: dict[str, float] = {}
+    """Per-module peak learning-rate overrides, mapping a parameter-name prefix (e.g.
+    ``model.visual`` or ``mlp1``) to its own peak LR. Trainable parameters whose
+    fully-qualified name starts with a listed prefix form a separate param group at
+    that LR (longest matching prefix wins); all other parameters use ``lr``.
+    Schedulers scale every group multiplicatively, preserving the LR ratios (a
+    ``min_lr > 0`` breaks the ratios — keep it at 0 with overrides). Not supported
+    with the Muon optimizer."""
+
     weight_decay: float = Field(0.01, ge=0)
     """L2 weight-decay coefficient."""
 

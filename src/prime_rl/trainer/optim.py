@@ -131,6 +131,32 @@ def setup_optimizer(
     return optimizer
 
 
+def _group_params_by_module_lr(
+    named_params: list[tuple[str, nn.Parameter]], lr: float, module_lrs: dict[str, float]
+) -> list[dict]:
+    """Split trainable params into param groups by longest-matching name prefix.
+
+    The default group (``lr``) always comes first so ``param_groups[0]["lr"]`` keeps
+    reporting the main learning rate; override groups follow in sorted prefix order
+    and are tagged with ``group_name`` for logging.
+    """
+    prefixes = sorted(module_lrs, key=len, reverse=True)
+    grouped: dict[str | None, list[nn.Parameter]] = {None: [], **{prefix: [] for prefix in prefixes}}
+    for name, param in named_params:
+        if not param.requires_grad:
+            continue
+        match = next((prefix for prefix in prefixes if name.startswith(prefix)), None)
+        grouped[match].append(param)
+    param_groups = [dict(params=grouped[None], lr=lr, group_name="default")]
+    for prefix in sorted(module_lrs):
+        if not grouped[prefix]:
+            get_logger().warning(f"module_lrs prefix {prefix!r} matched no trainable parameters")
+            continue
+        get_logger().info(f"Param group {prefix!r}: {len(grouped[prefix])} tensors at lr={module_lrs[prefix]:.2e}")
+        param_groups.append(dict(params=grouped[prefix], lr=module_lrs[prefix], group_name=prefix))
+    return param_groups
+
+
 def _create_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
@@ -144,11 +170,16 @@ def _create_optimizer(
     # indexer, which runs under no_grad) carry no optimizer state, and including them
     # breaks strict checkpoint resume (DCP materializes state for every requires_grad
     # param at load time, mismatching the saved state). Muon filters internally below.
-    trainable_params = [p for _, p in named_params if p.requires_grad]
+    if config.module_lrs and config.type != "muon":
+        params = _group_params_by_module_lr(named_params, lr, config.module_lrs)
+    elif config.module_lrs:
+        raise ValueError("module_lrs is not supported with the Muon optimizer")
+    else:
+        params = [p for _, p in named_params if p.requires_grad]
     match config.type:
         case "sgd":
             return SGD(
-                params=trainable_params,
+                params=params,
                 lr=lr,
                 weight_decay=config.weight_decay,
                 momentum=config.momentum,
@@ -156,7 +187,7 @@ def _create_optimizer(
             )
         case "adamw":
             return AdamW(
-                params=trainable_params,
+                params=params,
                 lr=lr,
                 weight_decay=config.weight_decay,
                 betas=(config.betas1, config.betas2),
@@ -165,7 +196,7 @@ def _create_optimizer(
             return _create_muon_optimizer(config, named_params, parallel_dims, lr)
         case "sign_sgd":
             return SignSGD(
-                params=trainable_params,
+                params=params,
                 lr=lr,
                 weight_decay=config.weight_decay,
             )

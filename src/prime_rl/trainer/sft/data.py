@@ -26,6 +26,7 @@ class Sample(TypedDict):
     loss_mask: list[bool]
     target_ids: list[int]
     seq_lens: list[int]
+    source_ids: list[int]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: list[int] | None
 
@@ -36,6 +37,7 @@ class Batch(TypedDict):
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
     seq_lens: Int[Tensor, "packed"]
+    source_ids: Int[Tensor, "packed"]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -108,6 +110,7 @@ class FakeDataset(StatefulIterableDataset):
                 "position_ids": position_ids,
                 "loss_mask": loss_mask,
                 "seq_lens": [seq_len],
+                "source_ids": [0],
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
             }
@@ -192,6 +195,7 @@ class SFTDataset(StatefulIterableDataset):
         max_examples: int | None = None,
         max_epochs: int | None = None,
         multimodal: bool = False,
+        source_names: list[str] | None = None,
     ):
         super().__init__()
         self.logger = get_logger()
@@ -205,6 +209,9 @@ class SFTDataset(StatefulIterableDataset):
         self.max_examples = max_examples
         self.max_epochs = max_epochs
         self.multimodal = multimodal
+        # Subset name -> per-source id for per-source loss logging. Unknown
+        # subsets map to the trailing "other" bucket (id = len(source_names)).
+        self._source_to_id = {name: i for i, name in enumerate(source_names)} if source_names else None
 
         # If specified, select a subset of the dataset
         if self.max_examples is not None:
@@ -361,12 +368,17 @@ class SFTDataset(StatefulIterableDataset):
         if mm_token_type_ids is not None:
             assert len(mm_token_type_ids) == len(input_ids)
 
+        source_id = 0
+        if self._source_to_id is not None:
+            source_id = self._source_to_id.get(example.get("__subset"), len(self._source_to_id))
+
         return {
             "input_ids": input_ids,
             "target_ids": target_ids,
             "loss_mask": loss_mask,
             "position_ids": list(range(len(input_ids))),
             "seq_lens": [len(input_ids)],
+            "source_ids": [source_id],
             "mm_kwargs": mm_kwargs,
             "mm_token_type_ids": mm_token_type_ids,
         }
@@ -466,6 +478,7 @@ class CatDataset(StatefulIterableDataset):
                 assert isinstance(value, list)
                 packed_samples[key].extend(value)
             packed_samples["seq_lens"].append(sample_len)
+            packed_samples["source_ids"].extend(sample.get("source_ids") or [0])
 
             sample_mm_kwargs = sample.get("mm_kwargs")
             sample_mm_type_ids = sample.get("mm_token_type_ids")
@@ -516,6 +529,7 @@ class CatDataset(StatefulIterableDataset):
             if kept > 0:
                 result["seq_lens"].append(kept)
             remaining -= kept
+        result["source_ids"] = packed["source_ids"][: len(result["seq_lens"])]
         pad_len = seq_len - len(result["input_ids"])
         if pad_len > 0:
             result["input_ids"].extend([0] * pad_len)
@@ -541,6 +555,9 @@ def cat_collate(samples: list[Sample]) -> Batch:
         "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda").unsqueeze(0),
         "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
         "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long, device="cuda"),
+        "source_ids": torch.tensor(
+            sample.get("source_ids") or [0] * len(sample["seq_lens"]), dtype=torch.long, device="cuda"
+        ),
         "mm_kwargs": {key: value.to("cuda") for key, value in mm_kwargs.items()} if mm_kwargs is not None else None,
         "mm_token_type_ids": (
             torch.tensor(mm_token_type_ids, dtype=torch.long, device="cuda").unsqueeze(0)
@@ -650,6 +667,7 @@ def setup_dataset(
             non_dp_size=non_dp_size,
             max_epochs=max_epochs,
             multimodal=multimodal,
+            source_names=config.subsets,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")

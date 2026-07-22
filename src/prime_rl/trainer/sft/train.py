@@ -239,13 +239,23 @@ def train(config: SFTConfig):
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     cp_size = parallel_dims.cp
 
-    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, weight_sum) over unmasked tokens.
+    # Per-source loss split: one bin per configured subset plus a trailing "other"
+    # bucket. With interleaved blends the aggregate loss is dominated by whatever
+    # subset composition landed in the step, so per-source curves are the signal.
+    source_labels: list[str] = []
+    if config.data.type == "sft" and config.data.subsets:
+        source_labels = list(config.data.subsets) + ["other"]
+    num_sources = len(source_labels)
+
+    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """Forward pass returning (loss_sum, weight_sum, src_loss_sums, src_weight_sums).
 
         ``loss_sum`` is a raw (weighted) sum — normalization against the global weight
         sum happens once per optimizer step, keeping gradients invariant to how the
         global batch is split into microbatches. For "token" weighting the weight sum
-        is exactly the supervised-token count.
+        is exactly the supervised-token count. ``src_*`` are detached ``[num_sources]``
+        accumulators of the same sums split by the document's source id (None when
+        per-source logging is disabled).
         """
         input_ids = micro_batch["input_ids"].to("cuda")
         position_ids = micro_batch["position_ids"].to("cuda")
@@ -254,6 +264,11 @@ def train(config: SFTConfig):
         seq_lens = micro_batch["seq_lens"].to("cuda")
         mm_kwargs = micro_batch.get("mm_kwargs")
         mm_type_ids = micro_batch.get("mm_token_type_ids")
+
+        token_sources = None
+        if num_sources > 0 and micro_batch.get("source_ids") is not None:
+            source_ids = micro_batch["source_ids"].to("cuda").clamp(max=num_sources - 1)
+            token_sources = torch.repeat_interleave(source_ids, seq_lens).reshape(loss_mask.shape)
 
         # Square-averaging weights need the full (pre-CP-shard) mask and the packed row's
         # per-document boundaries; len_i is the document's supervised-token count, so image
@@ -287,6 +302,8 @@ def train(config: SFTConfig):
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
             if loss_weights is not None:
                 loss_weights = shard_for_cp(loss_weights, cp_rank=cp_rank, cp_world_size=cp_size)
+            if token_sources is not None:
+                token_sources = shard_for_cp(token_sources, cp_rank=cp_rank, cp_world_size=cp_size)
 
         if config.model.lora is not None:
             set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
@@ -315,6 +332,7 @@ def train(config: SFTConfig):
                 )
                 logprobs = out["logprobs"] if loss_weights is None else out["logprobs"] * loss_weights
                 loss_sum = -logprobs[loss_mask].sum()
+                masked_token_losses = (-logprobs[loss_mask]).detach()
             else:
                 out = forward(
                     model,
@@ -331,18 +349,32 @@ def train(config: SFTConfig):
                 if loss_weights is not None:
                     token_loss = token_loss * loss_weights
                 loss_sum = token_loss[loss_mask].sum()
+                masked_token_losses = token_loss[loss_mask].detach()
                 del logits
 
+        src_loss_sums = src_weight_sums = None
+        if token_sources is not None:
+            src = token_sources[loss_mask]
+            masked_weights = (
+                loss_weights[loss_mask].float()
+                if loss_weights is not None
+                else torch.ones_like(src, dtype=torch.float32)
+            )
+            src_loss_sums = torch.zeros(num_sources, device="cuda").scatter_add_(0, src, masked_token_losses.float())
+            src_weight_sums = torch.zeros(num_sources, device="cuda").scatter_add_(0, src, masked_weights)
+
         del out
-        return loss_sum, weight_sum
+        return loss_sum, weight_sum, src_loss_sums, src_weight_sums
 
     maybe_record_function = nullcontext
 
     def run_eval_loop(data_iter):
-        """Validation forward loop. Returns the weight-normalized global mean loss."""
+        """Validation forward loop. Returns (global mean loss, nan count, per-source mean losses)."""
         total_loss_sum = torch.tensor(0.0, device="cuda")
         total_weight_sum = torch.tensor(0.0, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
+        total_src_loss_sums = torch.zeros(num_sources, device="cuda")
+        total_src_weight_sums = torch.zeros(num_sources, device="cuda")
 
         # Variable-length packing yields different per-rank batch counts. Under FSDP
         # every forward is a collective, so all ranks must agree on when to stop —
@@ -357,10 +389,13 @@ def train(config: SFTConfig):
                 dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
                 if has_data.item() == 0:
                     break
-                loss_sum, weight_sum = compute_loss(micro_batch)
+                loss_sum, weight_sum, src_loss_sums, src_weight_sums = compute_loss(micro_batch)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()
                     total_weight_sum += weight_sum
+                    if src_loss_sums is not None:
+                        total_src_loss_sums += src_loss_sums
+                        total_src_weight_sums += src_weight_sums
                 else:
                     nan_count += 1
 
@@ -368,8 +403,16 @@ def train(config: SFTConfig):
         dist.all_reduce(total_weight_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
+        src_mean_losses: dict[str, float] = {}
+        if num_sources > 0:
+            dist.all_reduce(total_src_loss_sums, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            dist.all_reduce(total_src_weight_sums, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            for label, s, w in zip(source_labels, total_src_loss_sums.tolist(), total_src_weight_sums.tolist()):
+                if w > 0:
+                    src_mean_losses[label] = s / w
+
         mean_loss = (total_loss_sum / total_weight_sum).item() if total_weight_sum.item() > 0 else float("nan")
-        return mean_loss, nan_count.item()
+        return mean_loss, nan_count.item(), src_mean_losses
 
     def run_validation(step: int) -> None:
         val_dataset = setup_dataset(
@@ -384,14 +427,21 @@ def train(config: SFTConfig):
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
+        mean_loss, nan_count, src_mean_losses = run_eval_loop(val_dataloader)
         if nan_count > 0:
             logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
         if mean_loss != mean_loss:
             logger.warning(f"Validation at step {step} had no valid tokens")
         else:
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        monitor.log({"val/loss": mean_loss, "step": step}, step=step)
+        if src_mean_losses:
+            logger.info(
+                "Validation per-source | "
+                + " | ".join(f"{label} {loss:.4f}" for label, loss in src_mean_losses.items())
+            )
+        val_metrics = {"val/loss": mean_loss, "step": step}
+        val_metrics.update({f"val/loss/{label}": loss for label, loss in src_mean_losses.items()})
+        monitor.log(val_metrics, step=step)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -419,6 +469,9 @@ def train(config: SFTConfig):
         step_loss_sum = torch.tensor(0.0, device="cuda")
         step_local_weight_sum = torch.tensor(0.0, device="cuda")
         nan_loss_count = torch.tensor(0, device="cuda")
+        step_src_loss_sums = torch.zeros(num_sources, device="cuda")
+        step_src_weight_sums = torch.zeros(num_sources, device="cuda")
+        step_num_docs = torch.tensor(0, dtype=torch.long, device="cuda")
         is_moe_model = is_tt_moe_model(model)
         moe_stats = (
             {
@@ -437,9 +490,10 @@ def train(config: SFTConfig):
                 )
 
             with maybe_record_function("forward"):
-                local_loss_sum, local_weight_sum = compute_loss(micro_batch)
+                local_loss_sum, local_weight_sum, local_src_loss_sums, local_src_weight_sums = compute_loss(micro_batch)
 
             step_local_weight_sum += local_weight_sum
+            step_num_docs += micro_batch["seq_lens"].numel()
 
             if torch.isnan(local_loss_sum.detach()):
                 nan_loss_count += 1
@@ -448,6 +502,9 @@ def train(config: SFTConfig):
             else:
                 step_loss_sum += local_loss_sum.detach()
                 scaled_loss = local_loss_sum / grad_accum_steps
+                if local_src_loss_sums is not None:
+                    step_src_loss_sums += local_src_loss_sums
+                    step_src_weight_sums += local_src_weight_sums
 
             with maybe_record_function("backward"):
                 scaled_loss.backward()
@@ -617,6 +674,10 @@ def train(config: SFTConfig):
             "optim/zero_grad_ratio": zero_grad_ratio,
             "step": progress.step,
         }
+        for group in optimizer.param_groups:
+            group_name = group.get("group_name")
+            if group_name and group_name != "default":
+                optim_metrics[f"optim/lr/{group_name}"] = group["lr"]
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
         monitor.log(optim_metrics, step=progress.step)
@@ -626,6 +687,15 @@ def train(config: SFTConfig):
             "loss/nan_count": nan_loss_count,
             "step": progress.step,
         }
+        if num_sources > 0:
+            dist.all_reduce(step_src_loss_sums, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            dist.all_reduce(step_src_weight_sums, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            for label, s, w in zip(source_labels, step_src_loss_sums.tolist(), step_src_weight_sums.tolist()):
+                if w > 0:
+                    loss_log_metrics[f"loss/{label}"] = s / w
+        # CP ranks see the same documents, so divide the dp_cp doc count by cp size.
+        dist.all_reduce(step_num_docs, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        loss_log_metrics["data/docs_per_step"] = step_num_docs.item() // cp_size
         # Log tensor stats
         monitor.log(loss_log_metrics, step=progress.step)
 
