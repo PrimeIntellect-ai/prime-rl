@@ -544,8 +544,13 @@ def iter_groundcua(manifest: dict, rng: random.Random) -> Iterator[tuple[dict, i
     preferred = ("Button", "Menu", "Input")
     for image_path in images:
         elems = by_image[image_path]
-        img_file = base / "images" / image_path if (base / "images").exists() else base / image_path
+        img_file = next(
+            (c for c in (base / "data" / image_path, base / "images" / image_path, base / image_path) if c.exists()),
+            None,
+        )
         dims = None
+        if img_file is None:
+            continue
         if img_file.exists():
             with open(img_file, "rb") as fh:
                 dims = png_jpeg_dims(fh.read(64 * 1024))
@@ -798,7 +803,7 @@ def iter_vwi(manifest: dict, rng: random.Random) -> Iterator[tuple[dict, int]]:
                 )
 
 
-PYAUTOGUI_RE = re.compile(r"pyautogui\.(\w+)\((.*?)\)", re.DOTALL)
+PYAUTOGUI_RE = re.compile(r"pyautogui\.(\w+)\(((?:[^()]|\([^()]*\))*)\)", re.DOTALL)
 
 
 def pyautogui_to_tool_calls(code: str, idx: int) -> list[dict] | None:
