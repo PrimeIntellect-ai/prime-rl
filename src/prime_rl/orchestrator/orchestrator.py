@@ -975,13 +975,16 @@ class Orchestrator:
 
     async def on_version_pending(self, step: int) -> None:
         """``VersionObserver`` hook, fired *before* the engines pause for the
-        weight update: record the newly published version (waking a held ship
-        — filesystem holds release on publish), then drop everything already
+        weight update: signal the NIXL trainer this side is ready for the
+        transfer, record the newly published version (waking a held ship —
+        filesystem holds release on publish), then drop everything already
         past the staleness cutoff — in-flight groups (their aborts must be
         processed while the engine is still stepping) and buffered survivors
         in the sink. The cutoff is the oldest generation version that can
         still train within ``max_off_policy_steps``, were it to ship in the
         batch being collected (which trains on policy v{progress.step - 1})."""
+        if self.model_express is not None:
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
         self.published_version = max(self.published_version, step)
         self.version_advanced.set()
         cutoff = (self.progress.step - 1) - self.config.max_off_policy_steps
@@ -990,7 +993,10 @@ class Orchestrator:
 
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
-        wake a held ship in ``finalize_train_batch``."""
+        reset the NIXL rendezvous for the next broadcast cycle and wake a held
+        ship in ``finalize_train_batch``."""
+        if self.model_express is not None:
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.version_advanced.set()
 
     async def stop(self) -> None:
