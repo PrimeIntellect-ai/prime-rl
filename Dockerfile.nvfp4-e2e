@@ -1,0 +1,21 @@
+ARG BASE_IMAGE=ghcr.io/primeintellect-ai/prime-rl@sha256:a86004b9b44d43c8018633283ec0267c3339c0dac0e35a9957f48f0a6b56153c
+FROM ${BASE_IMAGE}
+
+USER root
+
+COPY pyproject.toml /app/pyproject.toml
+COPY uv.lock /app/uv.lock
+COPY scripts/patch-vllm-nvfp4-writable-scales.py /app/scripts/patch-vllm-nvfp4-writable-scales.py
+COPY k8s/experiments/run_nvfp4_inference.sh /app/k8s/experiments/run_nvfp4_inference.sh
+
+RUN uv --no-config pip install \
+        --python /app/.venv/bin/python \
+        --upgrade \
+        --no-deps \
+        'https://wheels.vllm.ai/910cc8543a6907c9cc87c417f8f2420969278bf5/vllm-0.23.1rc1.dev1392%2Bg910cc8543-cp38-abi3-manylinux_2_28_aarch64.whl' \
+        'https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.15.post1/flashinfer_python-0.6.15.post1-py3-none-any.whl' \
+        'https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.15.post1/flashinfer_cubin-0.6.15.post1-py3-none-any.whl' \
+    && /app/.venv/bin/python /app/scripts/patch-vllm-nvfp4-writable-scales.py \
+    && /app/.venv/bin/python -c 'from importlib.metadata import version; expected={"vllm":"0.23.1rc1.dev1392+g910cc8543","flashinfer-python":"0.6.15.post1","flashinfer-cubin":"0.6.15.post1"}; actual={name:version(name) for name in expected}; assert actual == expected, (actual, expected)'
+
+USER appuser

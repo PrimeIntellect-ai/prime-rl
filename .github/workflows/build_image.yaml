@@ -157,7 +157,10 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: ./Dockerfile.cuda
+          # This experiment tag derives from the immutable current-main arm64
+          # image and only bakes the pinned NVFP4 runtime. Main still uses
+          # Dockerfile.cuda; this workflow change exists solely on the tag.
+          file: ./Dockerfile.nvfp4-e2e
           push: true
           platforms: ${{ matrix.platform }}
           tags: |
