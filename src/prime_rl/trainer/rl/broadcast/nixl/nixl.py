@@ -11,6 +11,7 @@ from math import prod
 from pathlib import Path
 from typing import cast
 
+import httpx
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -42,6 +43,7 @@ from prime_rl.trainer.utils import get_world
 LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
 BUFFER_POLL_INTERVAL = 0.01
 MAX_STAGING_BUFFER_COUNT = 8
+WORKER_DISCOVERY_POLL_INTERVAL = 1.0
 
 
 @dataclass
@@ -338,6 +340,78 @@ class NIXLWeightBroadcast(WeightBroadcast):
             ],
         )
 
+    @staticmethod
+    def worker_admin_url(url: str) -> str:
+        return re.sub(r"@\d+$", "", url.rstrip("/")).removesuffix("/v1")
+
+    def discover_inference_workers(self) -> list[str]:
+        router_url = self.worker_admin_url(cast(str, self.config.router_url))
+        deadline = time.monotonic() + self.config.timeout
+        last_error: httpx.HTTPError | None = None
+        while True:
+            try:
+                response = httpx.get(f"{router_url}/workers", timeout=10.0)
+                response.raise_for_status()
+            except httpx.HTTPStatusError as error:
+                if error.response.is_client_error:
+                    raise
+                last_error = error
+            except httpx.TransportError as error:
+                last_error = error
+            else:
+                workers = response.json()["workers"]
+                urls = sorted({self.worker_admin_url(worker["url"]) for worker in workers if worker["is_healthy"]})
+                if urls:
+                    return urls
+
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"timed out waiting for inference workers at {router_url}/workers") from last_error
+            time.sleep(WORKER_DISCOVERY_POLL_INTERVAL)
+
+    def initialize_inference_workers(self) -> None:
+        worker_urls = self.discover_inference_workers()
+        workers_per_server = self.config.inference_world_size // len(worker_urls)
+        timeout = httpx.Timeout(connect=10.0, read=self.config.timeout, write=60.0, pool=10.0)
+        deadline = time.monotonic() + self.config.timeout
+        pending = {worker_url: index * workers_per_server for index, worker_url in enumerate(worker_urls)}
+        last_errors: dict[str, httpx.HTTPError] = {}
+        with httpx.Client(timeout=timeout) as client:
+            while pending:
+                for worker_url, rank_offset in list(pending.items()):
+                    try:
+                        response = client.post(
+                            f"{worker_url}/init_broadcaster",
+                            json={
+                                "host": self.config.host,
+                                "port": self.config.port,
+                                "rank_offset": rank_offset,
+                                "inference_world_size": self.config.inference_world_size,
+                                "timeout": self.config.timeout,
+                                "quantize_in_weight_transfer": False,
+                                "session_id": self.config.session_id,
+                            },
+                        )
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as error:
+                        if error.response.is_client_error:
+                            raise
+                        last_errors[worker_url] = error
+                    except httpx.TransportError as error:
+                        last_errors[worker_url] = error
+                    else:
+                        del pending[worker_url]
+
+                if pending:
+                    if time.monotonic() >= deadline:
+                        pending_urls = ", ".join(pending)
+                        raise TimeoutError(f"timed out initializing inference workers: {pending_urls}") from next(
+                            iter(last_errors.values()), None
+                        )
+                    time.sleep(WORKER_DISCOVERY_POLL_INTERVAL)
+        self.logger.info(
+            f"Initialized NIXL transfer on {len(worker_urls)} inference servers from {self.config.router_url}"
+        )
+
     def initialize_transfer(self, model: nn.Module) -> None:
         if self.initialized:
             return
@@ -379,6 +453,8 @@ class NIXLWeightBroadcast(WeightBroadcast):
             )
             self.model_express.publish(nixl_metadata=table.encode())
             self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            if self.config.router_url is not None:
+                self.initialize_inference_workers()
             tensor_count = sum(len(group.tensors) for group in table.groups)
             self.logger.info(
                 f"Published {tensor_count} trainer tensors in {len(table.groups)} groups "
