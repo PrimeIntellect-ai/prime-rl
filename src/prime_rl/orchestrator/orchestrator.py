@@ -555,7 +555,7 @@ class Orchestrator:
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
 
-    async def _start_draining(self) -> None:
+    async def start_draining(self) -> None:
         """Stop train scheduling while allowing in-flight evals to finish."""
         if self.draining:
             return
@@ -582,7 +582,7 @@ class Orchestrator:
         self.last_batch_at = now
 
         if config.max_steps is not None and step > config.max_steps:
-            await self._start_draining()
+            await self.start_draining()
             return
 
         if not batch.samples:
@@ -616,7 +616,7 @@ class Orchestrator:
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         if config.max_steps is not None and step == config.max_steps:
-            await self._start_draining()
+            await self.start_draining()
         self.progress.step += 1
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).

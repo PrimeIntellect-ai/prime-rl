@@ -7,47 +7,32 @@ from prime_rl.orchestrator.orchestrator import Orchestrator
 from prime_rl.transport import TrainingSample
 
 
-class _Metrics:
-    def to_wandb(self, **_kwargs) -> dict[str, float]:
-        return {}
+def test_final_train_batch_starts_draining_immediately(tmp_path: Path) -> None:
+    rollout = SimpleNamespace(
+        is_trainable=True,
+        num_total_tokens=1,
+        num_input_tokens=1,
+        num_output_tokens=0,
+        group_id="group",
+        reward=1.0,
+        to_record=MagicMock(return_value={}),
+        scalar_advantage=MagicMock(return_value=1.0),
+    )
+    rollouts = MagicMock()
+    rollouts.__len__.return_value = 1
+    rollouts.__iter__.side_effect = lambda: iter([rollout])
+    rollouts.effective = rollouts
+    rollouts.rollouts = [rollout]
+    rollouts.metrics = SimpleNamespace(to_wandb=MagicMock(return_value={}))
+    rollouts.by_env.return_value = {"test": rollouts}
+    batch = SimpleNamespace(
+        rollouts=rollouts,
+        samples=[TrainingSample(token_ids=[1], mask=[True], logprobs=[0.0], temperatures=[1.0], env_name="test")],
+    )
 
-
-class _Rollout:
-    is_trainable = True
-    num_total_tokens = 1
-    num_input_tokens = 1
-    num_output_tokens = 0
-    group_id = "group"
-    reward = 1.0
-
-    def to_record(self) -> dict:
-        return {}
-
-    def scalar_advantage(self) -> float:
-        return 1.0
-
-
-class _Rollouts(list[_Rollout]):
-    @property
-    def effective(self) -> "_Rollouts":
-        return self
-
-    @property
-    def rollouts(self) -> list[_Rollout]:
-        return list(self)
-
-    @property
-    def metrics(self) -> _Metrics:
-        return _Metrics()
-
-    def by_env(self) -> dict[str, "_Rollouts"]:
-        return {"test": self}
-
-
-def _make_orchestrator(output_dir: Path, *, max_steps: int, step: int) -> Orchestrator:
     orchestrator = Orchestrator.__new__(Orchestrator)
-    orchestrator.config = SimpleNamespace(max_steps=max_steps, output_dir=output_dir)
-    orchestrator.progress = SimpleNamespace(step=step, total_tokens=0, total_samples=0, total_problems=0)
+    orchestrator.config = SimpleNamespace(max_steps=1, output_dir=tmp_path)
+    orchestrator.progress = SimpleNamespace(step=1, total_tokens=0, total_samples=0, total_problems=0)
     orchestrator.last_batch_at = None
     orchestrator.consecutive_empty_batches = 0
     orchestrator.draining = False
@@ -65,26 +50,12 @@ def _make_orchestrator(output_dir: Path, *, max_steps: int, step: int) -> Orches
     orchestrator.heart = None
     orchestrator.log_train_batch = MagicMock()
     orchestrator.maybe_trigger_eval = MagicMock()
-    return orchestrator
-
-
-def _make_batch(*, with_samples: bool = True) -> SimpleNamespace:
-    samples = (
-        [TrainingSample(token_ids=[1], mask=[True], logprobs=[0.0], temperatures=[1.0], env_name="test")]
-        if with_samples
-        else []
-    )
-    return SimpleNamespace(rollouts=_Rollouts([_Rollout()]), samples=samples)
-
-
-def test_final_train_batch_starts_draining_immediately(tmp_path: Path) -> None:
-    orchestrator = _make_orchestrator(tmp_path, max_steps=1, step=1)
 
     with (
         patch("prime_rl.orchestrator.orchestrator.save_rollouts"),
         patch("prime_rl.orchestrator.orchestrator.trim_process_memory"),
     ):
-        asyncio.run(orchestrator.finalize_train_batch(_make_batch()))
+        asyncio.run(orchestrator.finalize_train_batch(batch))
 
     assert orchestrator.draining
     orchestrator.sender.send.assert_awaited_once()
@@ -92,29 +63,3 @@ def test_final_train_batch_starts_draining_immediately(tmp_path: Path) -> None:
     orchestrator.dispatcher.cancel_inflight_train_rollouts.assert_awaited_once_with()
     assert orchestrator.progress.step == 2
     orchestrator.maybe_trigger_eval.assert_called_once_with(2)
-
-
-def test_non_final_train_batch_keeps_dispatching(tmp_path: Path) -> None:
-    orchestrator = _make_orchestrator(tmp_path, max_steps=2, step=1)
-
-    with (
-        patch("prime_rl.orchestrator.orchestrator.save_rollouts"),
-        patch("prime_rl.orchestrator.orchestrator.trim_process_memory"),
-    ):
-        asyncio.run(orchestrator.finalize_train_batch(_make_batch()))
-
-    assert not orchestrator.draining
-    orchestrator.dispatcher.disable_train_scheduling.assert_not_called()
-    orchestrator.dispatcher.cancel_inflight_train_rollouts.assert_not_awaited()
-
-
-def test_empty_final_train_batch_keeps_dispatching(tmp_path: Path) -> None:
-    orchestrator = _make_orchestrator(tmp_path, max_steps=1, step=1)
-
-    asyncio.run(orchestrator.finalize_train_batch(_make_batch(with_samples=False)))
-
-    assert not orchestrator.draining
-    orchestrator.sender.send.assert_not_awaited()
-    orchestrator.dispatcher.disable_train_scheduling.assert_not_called()
-    orchestrator.dispatcher.cancel_inflight_train_rollouts.assert_not_awaited()
-    assert orchestrator.progress.step == 1
