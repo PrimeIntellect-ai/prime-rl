@@ -699,7 +699,7 @@ def iter_scalecua(manifest: dict, rng: random.Random) -> Iterator[tuple[dict, in
 
 
 def iter_pixmo_points(rng: random.Random) -> Iterator[tuple[dict, int]]:
-    base = _first_existing(RAW_ROOT / "pixmo-points", RAW_ROOT / "pixmo_points")
+    base = _first_existing(RAW_ROOT / "pixmo_points", RAW_ROOT / "pixmo-points")
     img_root = RAW_ROOT / "pixmo_images"
     if base is None:
         print("  !! pixmo-points raw not found")
@@ -711,7 +711,9 @@ def iter_pixmo_points(rng: random.Random) -> Iterator[tuple[dict, int]]:
                 if not url or not label or not points or len(points) > 40:
                     continue
                 sha = hashlib.sha1(url.encode()).hexdigest()
-                img_file = next(iter(img_root.glob(f"{sha}.*")), None)
+                img_file = next(
+                    (c for sub in ("points", "cap", ".") for c in img_root.joinpath(sub).glob(f"{sha}.*")), None
+                )
                 if img_file is None:
                     continue
                 target = f"{MEDIA_PREFIX}/pixmo/{img_file.name}"
@@ -735,7 +737,7 @@ def iter_pixmo_points(rng: random.Random) -> Iterator[tuple[dict, int]]:
 
 
 def iter_pixmo_cap(rng: random.Random) -> Iterator[tuple[dict, int]]:
-    base = _first_existing(RAW_ROOT / "pixmo-cap", RAW_ROOT / "pixmo_cap")
+    base = _first_existing(RAW_ROOT / "pixmo_cap", RAW_ROOT / "pixmo-cap")
     img_root = RAW_ROOT / "pixmo_images"
     if base is None:
         print("  !! pixmo-cap raw not found")
@@ -752,7 +754,9 @@ def iter_pixmo_cap(rng: random.Random) -> Iterator[tuple[dict, int]]:
                 if not url or not caption:
                     continue
                 sha = hashlib.sha1(url.encode()).hexdigest()
-                img_file = next(iter(img_root.glob(f"{sha}.*")), None)
+                img_file = next(
+                    (c for sub in ("cap", "points", ".") for c in img_root.joinpath(sub).glob(f"{sha}.*")), None
+                )
                 if img_file is None:
                     continue
                 target = f"{MEDIA_PREFIX}/pixmo/{img_file.name}"
@@ -768,7 +772,7 @@ def iter_pixmo_cap(rng: random.Random) -> Iterator[tuple[dict, int]]:
 
 
 def iter_vwi(manifest: dict, rng: random.Random) -> Iterator[tuple[dict, int]]:
-    base = _first_existing(RAW_ROOT / "VisualWebInstruct", RAW_ROOT / "visualwebinstruct")
+    base = _first_existing(RAW_ROOT / "visualwebinstruct", RAW_ROOT / "VisualWebInstruct")
     if base is None:
         print("  !! visualwebinstruct raw not found")
         return
@@ -789,6 +793,159 @@ def iter_vwi(manifest: dict, rng: random.Random) -> Iterator[tuple[dict, int]]:
                 yield (
                     make_row(f"vwi-{raw.get('idx', i)}", "visualwebinstruct", messages),
                     row_cost(messages, [900] * len(images)),
+                )
+
+
+PYAUTOGUI_RE = re.compile(r"pyautogui\.(\w+)\((.*?)\)", re.DOTALL)
+
+
+def pyautogui_to_tool_calls(code: str, idx: int) -> list[dict] | None:
+    """AgentNet step code (pyautogui calls, coords normalized 0-1) -> computer_* calls."""
+    calls = []
+    for name, args_s in PYAUTOGUI_RE.findall(code):
+        kwargs, pos = {}, []
+        for kv in re.findall(r"(\w+)\s*=\s*([^,()\[\]]+|\[[^\]]*\])", args_s):
+            v = kv[1].strip().strip("'\"")
+            try:
+                v = float(v) if "." in v else int(v)
+            except ValueError:
+                pass
+            kwargs[kv[0]] = v
+        list_m = re.search(r"\[([^\]]*)\]", args_s)
+        if list_m:
+            pos = [x.strip().strip("'\"") for x in list_m.group(1).split(",")]
+        elif not kwargs and args_s.strip():
+            pos = [x.strip().strip("'\"") for x in args_s.split(",")]
+
+        def scale(k):
+            return int(round(float(kwargs[k]) * 1000)) if k in kwargs else None
+
+        if name in ("click", "doubleClick", "rightClick", "middleClick", "moveTo", "mouseDown", "mouseUp"):
+            args = {"x": scale("x") or 500, "y": scale("y") or 500}
+            if name == "doubleClick":
+                args["double"] = True
+            if name == "rightClick":
+                args["button"] = "right"
+            calls.append(("computer_click", args))
+        elif name in ("write", "typewrite"):
+            text = kwargs.get("message", kwargs.get("text", pos[0] if pos else ""))
+            calls.append(("computer_type", {"text": str(text)}))
+        elif name in ("press", "hotkey", "keyDown", "keyUp"):
+            keys = "+".join(pos) if pos else str(kwargs.get("keys", kwargs.get("key", "")))
+            if not keys:
+                return None
+            calls.append(("computer_key", {"keys": keys}))
+        elif name in ("scroll", "hscroll", "vscroll"):
+            clicks = kwargs.get("clicks", pos[0] if pos else -3)
+            try:
+                dy = -int(float(clicks))
+            except (TypeError, ValueError):
+                dy = 3
+            calls.append(("computer_scroll", {"x": scale("x") or 500, "y": scale("y") or 500, "dy": dy}))
+        elif name in ("dragTo", "drag"):
+            calls.append(("computer_drag", {"x1": 500, "y1": 500, "x2": scale("x") or 500, "y2": scale("y") or 500}))
+        elif name == "sleep":
+            calls.append(("computer_wait", {}))
+        else:
+            return None
+    if not calls:
+        return None
+    return [
+        {"id": f"agn_{idx}_{j}", "type": "function", "function": {"name": n, "arguments": json.dumps(a)}}
+        for j, (n, a) in enumerate(calls)
+    ]
+
+
+def iter_agentnet(rng: random.Random) -> Iterator[tuple[dict, int]]:
+    """AgentNet human trajectories -> short action sequences in the computer_* schema.
+
+    Quality gates: task_completed, alignment_score >= 7, every kept step marked
+    correct; redundant steps dropped. Screenshots hardlinked from the extracted
+    image trees (missing screenshot -> row skipped)."""
+    base = _first_existing(RAW_ROOT / "agentnet")
+    if base is None:
+        print("  !! agentnet raw not found")
+        return
+    img_roots = [base / "ubuntu_images_extracted", base / "win_mac_images_extracted"]
+    store_dir = MEDIA_ROOT / "agentnet"
+    store_dir.mkdir(parents=True, exist_ok=True)
+    files = [f for f in (base / "agentnet_ubuntu_5k.jsonl", base / "agentnet_win_mac_18k.jsonl") if f.exists()]
+    for f in files:
+        with open(f) as fh:
+            for li, line in enumerate(fh):
+                row = json.loads(line)
+                if not row.get("task_completed") or (row.get("alignment_score") or 0) < 7:
+                    continue
+                traj = row.get("traj") or []
+                if not 1 <= len(traj) <= 12:
+                    continue
+                messages = [
+                    {"role": "user", "content": [text_part(f"Task: {row['instruction'].strip()}")]},
+                ]
+                ok, n_img = True, 0
+                for si, step in enumerate(traj):
+                    v = step.get("value") or {}
+                    if not v.get("last_step_correct", True):
+                        ok = False
+                        break
+                    if v.get("last_step_redundant"):
+                        continue
+                    img_name = step.get("image")
+                    src = next((r / img_name for r in img_roots if img_name and (r / img_name).exists()), None)
+                    if src is None:
+                        ok = False
+                        break
+                    dst = store_dir / img_name
+                    if not dst.exists():
+                        os.link(src, dst)
+                    tcs = pyautogui_to_tool_calls(v.get("code") or "", li * 100 + si)
+                    if tcs is None:
+                        ok = False
+                        break
+                    messages.append({"role": "user", "content": [image_part(f"{MEDIA_PREFIX}/agentnet/{img_name}")]})
+                    messages.append({"role": "assistant", "content": [], "tool_calls": tcs})
+                    n_img += 1
+                if not ok or n_img == 0 or messages[-1]["role"] != "assistant":
+                    continue
+                yield (
+                    make_row(f"agentnet-{row['task_id']}", "agentnet", messages, tools=COMPUTER_TOOLS_JSON),
+                    row_cost(messages, [1200] * n_img),
+                )
+
+
+def vr1_transform(value: str) -> str | None:
+    """Vision-R1-cold: keep the <think> block, unwrap <answer>...</answer>."""
+    if "<think>" not in value:
+        return None
+    out = re.sub(r"<answer>\s*(.*?)\s*</answer>", r"\1", value, flags=re.DOTALL).strip()
+    return out
+
+
+def iter_mmk12(rng: random.Random) -> Iterator[tuple[dict, int]]:
+    """MMK12 (MM-Eureka K12 visual math): embedded image + question -> boxed answer."""
+    base = _first_existing(RAW_ROOT / "mmk12")
+    if base is None:
+        print("  !! mmk12 raw not found")
+        return
+    store = MediaStore("mmk12")
+    files = sorted(base.rglob("train-*.parquet"))
+    rng.shuffle(files)
+    for f in files:
+        for batch in pq.ParquetFile(f).iter_batches(batch_size=64):
+            for raw in batch.to_pylist():
+                img = raw.get("image")
+                data = img.get("bytes") if isinstance(img, dict) else None
+                q, a = raw.get("question"), raw.get("answer")
+                if not data or not q or not a:
+                    continue
+                path, dims = store.put(data, "png")
+                messages = [
+                    {"role": "user", "content": [image_part(path), text_part(q)]},
+                    {"role": "assistant", "content": [text_part(f"The answer is \\boxed{{{a.strip()}}}")]},
+                ]
+                yield (
+                    make_row(f"mmk12-{raw['id']}", "mmk12", messages),
+                    row_cost(messages, [est_image_tokens(*(dims or (None, None)))]),
                 )
 
 
@@ -903,7 +1060,7 @@ def build_slices(manifest: dict, rng: random.Random) -> dict[str, SliceSpec]:
                 SourceSpec("scalecua", lambda: iter_scalecua(manifest, rng), 480 * B),
                 SourceSpec("visualwebinstruct", lambda: iter_vwi(manifest, rng), 240 * B),
                 SourceSpec("screenqa", lambda: iter_screenqa(rng), 240 * B),
-                # agentnet appended once its extracted trajectory layout is confirmed
+                SourceSpec("agentnet", lambda: iter_agentnet(rng), 480 * B),
             ],
         ),
         "docs_ocr_v31": SliceSpec(
@@ -935,7 +1092,15 @@ def build_slices(manifest: dict, rng: random.Random) -> dict[str, SliceSpec]:
                 # long_document_arxiv_1-3 dropped: media needs arXiv bulk S3 (requester
                 # pays) + local PDF rendering; budget folded into ccpdf.
                 SourceSpec(
-                    "docmatix", lambda: iter_embedded_qa("docmatix", RAW_ROOT / "Docmatix", "docmatix", rng), 400 * B
+                    "docmatix",
+                    lambda: iter_embedded_qa(
+                        "docmatix",
+                        _first_existing(RAW_ROOT / "docmatix_sample", RAW_ROOT / "Docmatix")
+                        or RAW_ROOT / "docmatix_sample",
+                        "docmatix",
+                        rng,
+                    ),
+                    400 * B,
                 ),
             ],
         ),
@@ -1003,7 +1168,19 @@ def build_slices(manifest: dict, rng: random.Random) -> dict[str, SliceSpec]:
                     ),
                     300 * B,
                 ),
-                # vision-r1-cold + mmk12 appended by --extend after repo resolution
+                SourceSpec(
+                    "vision_r1",
+                    lambda: iter_sharegpt(
+                        "vision_r1",
+                        RAW_ROOT / "vision_r1_cold",
+                        "vision_r1",
+                        manifest,
+                        rng,
+                        transform=vr1_transform,
+                    ),
+                    260 * B,
+                ),
+                SourceSpec("mmk12", lambda: iter_mmk12(rng), 120 * B),
             ],
         ),
         "perception_v31": SliceSpec(
@@ -1040,7 +1217,14 @@ def build_slices(manifest: dict, rng: random.Random) -> dict[str, SliceSpec]:
                 ),
                 SourceSpec(
                     "honey",
-                    lambda: iter_embedded_qa("honey", RAW_ROOT / "Honey-Data-1M", "honey", rng, strip_think=True),
+                    lambda: iter_embedded_qa(
+                        "honey",
+                        _first_existing(RAW_ROOT / "honey_data_1m", RAW_ROOT / "Honey-Data-1M")
+                        or RAW_ROOT / "honey_data_1m",
+                        "honey",
+                        rng,
+                        strip_think=True,
+                    ),
                     300 * B,
                 ),
             ],
@@ -1056,7 +1240,7 @@ def build_slices(manifest: dict, rng: random.Random) -> dict[str, SliceSpec]:
 
 
 def iter_finevision_group(configs: list[str], rng: random.Random, quality_min: int = 4):
-    base = RAW_ROOT / "FineVision"
+    base = _first_existing(RAW_ROOT / "finevision", RAW_ROOT / "FineVision") or RAW_ROOT / "finevision"
     for cfg in configs:
         cfg_dir = next(iter(base.glob(f"**/{cfg}")), None)
         if cfg_dir is None:
