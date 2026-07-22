@@ -285,7 +285,7 @@ def multi_run_result(
     print(f"Copied alpha checkpoint to {tmp_path / 'alpha_ckpt_step_10'}")
 
     # Remove alpha run directory
-    shutil.rmtree(output_dir / "run_alpha")
+    remove_run_dir(output_dir / "run_alpha")
 
     # ===========================
     # Queue alpha's resume proc
