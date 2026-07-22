@@ -1,0 +1,110 @@
+output_dir = "/data/nvfp4-e2e/runs/qwen3-30b-a3b-instruct-4x4"
+max_steps = 20
+seq_len = 8192
+clean_output_dir = true
+
+[log]
+level = "info"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 7200
+quantize_in_weight_transfer = false
+
+# The k8s launcher maps these two counts to separate, full-node pods. The
+# aggregate gpus_per_node value only satisfies prime-rl's single-node schema;
+# each GB200 node physically has four GPUs.
+[deployment]
+type = "single_node"
+num_train_gpus = 4
+num_infer_gpus = 4
+gpus_per_node = 8
+
+[trainer]
+dist_timeout_seconds = 7200
+
+[trainer.file_monitor]
+filename = "trainer-metrics.jsonl"
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+ep = 4
+ep_comm_backend = "torch"
+optim_cpu_offload = true
+fsdp_cpu_offload = false
+ac_offloading = "None"
+conversion_dir = "/data/nvfp4-e2e/model-conversions/qwen3-30b-a3b-instruct-2507"
+fused_lm_head_token_chunk_size = 1024
+
+[trainer.model.ac]
+mode = "full"
+freq = 1
+
+[trainer.model.compile]
+
+[trainer.optim]
+type = "sign_sgd"
+lr = 1e-6
+weight_decay = 0.0
+max_norm = 1.0
+
+[trainer.loss]
+type = "default"
+kl_tau = 0.001
+
+[orchestrator]
+batch_size = 64
+group_size = 8
+oversampling_factor = 1.0
+max_off_policy_steps = 0
+post_batch_filters = []
+collect_inference_metrics = true
+
+[orchestrator.file_monitor]
+filename = "orchestrator-metrics.jsonl"
+
+[orchestrator.model.client]
+wait_for_ready_timeout = 10800
+
+[orchestrator.renderer]
+name = "qwen3"
+enable_thinking = false
+
+[orchestrator.train.sampling]
+temperature = 1.0
+max_completion_tokens = 2048
+
+[[orchestrator.train.env]]
+name = "math"
+env.taskset = { id = "i3_math_v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[inference]
+quantization = "nvfp4_per_token"
+gpu_memory_utilization = 0.85
+enable_prefix_caching = true
+
+[inference.model]
+dtype = "bfloat16"
+max_model_len = 8192
+# Establish the RL/weight-transfer baseline before separately validating
+# online-NVFP4 reloads under captured CUDA graphs.
+enforce_eager = true
+
+[inference.parallel]
+tp = 4
+
+[k8s]
+release = "nvfp4-qwen3-e2e-4x4"
+namespace = "dev-matej"
+create_namespace = false
+chart = "../fft/charts/prime-rl-fft"
+example = "nvfp4-qwen3-e2e-4x4"
+values_out = "k8s/experiments/nvfp4-qwen3-e2e-4x4.generated.values.yaml"
+overlays = [
+  "k8s/experiments/nvfp4-qwen3-e2e-4x4.values.yaml",
+]

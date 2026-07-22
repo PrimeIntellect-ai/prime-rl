@@ -88,6 +88,7 @@ COPY examples /app/examples
 COPY k8s /app/k8s
 COPY benchmarks/scripts /app/benchmarks/scripts
 COPY scripts/docker-editable-pretend-versions.sh /app/scripts/docker-editable-pretend-versions.sh
+COPY scripts/patch-vllm-nvfp4-writable-scales.py /app/scripts/patch-vllm-nvfp4-writable-scales.py
 
 # Use submodule git metadata from the build context when present. Docker copies
 # only the submodule .git pointer files into /app/deps, so we temporarily link
@@ -108,7 +109,9 @@ RUN --mount=type=cache,target=/app/.cache/uv \
     && \
     uv sync --all-packages --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra gpt-oss --extra quack --group mamba-ssm --locked --no-dev \
     && \
-    /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "quack-kernels", "vllm", "vllm-router")]'
+    /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "quack-kernels", "vllm", "vllm-router")]' \
+    && \
+    /app/.venv/bin/python /app/scripts/patch-vllm-nvfp4-writable-scales.py
 
 # Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
 # nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer

@@ -1,0 +1,120 @@
+runId: nvfp4-qwen3-e2e-4x4
+
+imagePullSecrets:
+  - name: ghcr-secret
+
+image:
+  repository: ghcr.io/primeintellect-ai/prime-rl
+  tag: nvfp4-e2e.dev1-arm64
+  pullPolicy: IfNotPresent
+
+devSource:
+  enabled: false
+
+# Reuse the large RWX PVC for run output and the one-time trainer-native model
+# conversion. The root was provisioned world-writable by the dev workspace.
+storage:
+  enabled: true
+  existingClaim: model-cache
+  mountPath: /data
+  fixPermissions: false
+
+# The HF snapshot is already present on every GB200 node.
+modelCache:
+  enabled: true
+  type: hostPath
+  hostPath: /scratch/model-cache
+  subPath: ""
+  mountPath: /model-cache
+  readOnly: true
+  offline: true
+
+# Mount the exact cache populated by the successful SM100 layerwise test.
+inferenceCache:
+  enabled: true
+  existingClaim: prime-rl-dev-source
+  subPath: .cache/nvfp4/sm100a/vllm-910cc8543-flashinfer-0.6.15.post1-torch-2.11.0-cu128-gcc13
+  mountPath: /inference-cache
+
+weightBroadcast:
+  type: nccl
+  port: 29501
+  inferenceWorldSize: 4
+
+orchestrator:
+  runAsRoot: true
+  resources:
+    requests:
+      cpu: "4"
+      memory: 16Gi
+  nodeSelector:
+    kubernetes.io/arch: arm64
+    nvidia.com/gpu.product: NVIDIA-GB200
+
+trainer:
+  hostNetwork: true
+  resources:
+    requests:
+      cpu: "64"
+      memory: 640Gi
+  rdma:
+    enabled: true
+    deviceName: rdma/rdma_shared_device_a
+    count: 1
+  nodeSelector:
+    kubernetes.io/arch: arm64
+    nvidia.com/gpu.product: NVIDIA-GB200
+  env: &nccl-env
+    - name: NCCL_IB_HCA
+      value: mlx5_2
+    - name: NCCL_CROSS_NIC
+      value: "0"
+    - name: VLLM_RPC_TIMEOUT
+      value: "7200000"
+    - name: TRANSFORMERS_OFFLINE
+      value: "1"
+
+inference:
+  # Avoid the auxiliary vllm-router for this one TP=4 server.
+  router:
+    enabled: false
+  hostNetwork: true
+  command: bash /app/k8s/experiments/run_nvfp4_inference.sh
+  resources:
+    requests:
+      cpu: "64"
+      memory: 384Gi
+  rdma:
+    enabled: true
+    deviceName: rdma/rdma_shared_device_a
+    count: 1
+  nodeSelector:
+    kubernetes.io/arch: arm64
+    nvidia.com/gpu.product: NVIDIA-GB200
+  env:
+    - name: NCCL_IB_HCA
+      value: mlx5_2
+    - name: NCCL_CROSS_NIC
+      value: "0"
+    - name: VLLM_RPC_TIMEOUT
+      value: "7200000"
+    - name: TRANSFORMERS_OFFLINE
+      value: "1"
+    - name: VLLM_ALLOW_INSECURE_SERIALIZATION
+      value: "1"
+    - name: TOKENIZERS_PARALLELISM
+      value: "false"
+    - name: UV_CACHE_DIR
+      value: /inference-cache/uv
+    - name: UV_LINK_MODE
+      value: copy
+    - name: VLLM_CACHE_ROOT
+      value: /inference-cache/vllm
+    - name: TORCH_EXTENSIONS_DIR
+      value: /inference-cache/torch-extensions
+    - name: CUDA_CACHE_PATH
+      value: /inference-cache/cuda
+    - name: NVFP4_CACHE_KEY
+      value: image-91292f812_sm100a_cuda12.8_torch2.11.0_vllm-910cc8543_flashinfer-0.6.15.post1
+    - name: NVFP4_CACHE_READY_MARKER
+      value: /inference-cache/.prime-rl-ready

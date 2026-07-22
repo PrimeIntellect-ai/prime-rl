@@ -1,0 +1,144 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: nvfp4-layerwise-
+  labels:
+    app.kubernetes.io/name: nvfp4-layerwise-reload
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 10800
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nvfp4-layerwise-reload
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-secret
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        nvidia.com/gpu.product: NVIDIA-GB200
+      containers:
+        - name: experiment
+          image: ghcr.io/primeintellect-ai/hosted-rl/prime-rl:v0.7.1.dev2-13-g91292f812-feat-convert-entrypoint
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              vllm_wheel='https://wheels.vllm.ai/910cc8543a6907c9cc87c417f8f2420969278bf5/vllm-0.23.1rc1.dev1392%2Bg910cc8543-cp38-abi3-manylinux_2_28_aarch64.whl'
+              uv --no-config pip install \
+                --python /app/.venv/bin/python \
+                --upgrade \
+                --no-deps \
+                "$vllm_wheel" \
+                'https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.15.post1/flashinfer_python-0.6.15.post1-py3-none-any.whl' \
+                'https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.15.post1/flashinfer_cubin-0.6.15.post1-py3-none-any.whl'
+              if [[ -n "${PRIME_RL_VLLM_PYTHON_OVERLAY:-}" ]]; then
+                site_packages=$(/app/.venv/bin/python -c 'import site; print(site.getsitepackages()[0])')
+                cp -a "${PRIME_RL_VLLM_PYTHON_OVERLAY}/vllm/." "${site_packages}/vllm/"
+              fi
+              export NVFP4_CACHE_HIT=0
+              if [[ -f "${NVFP4_CACHE_READY_MARKER}" ]] && \
+                 [[ "$(<"${NVFP4_CACHE_READY_MARKER}")" == "${NVFP4_CACHE_KEY}" ]]; then
+                # The image recreates /app/.venv for every pod. Its wheel sources
+                # are byte-identical for this exact cache key, but receive fresh
+                # mtimes, which otherwise makes Ninja rebuild cached objects.
+                find "${FLASHINFER_WORKSPACE_BASE}" \
+                  -type f \( -name '*.so' -o -name '*.o' -o -name '*.a' \) \
+                  -exec touch {} +
+                export NVFP4_CACHE_HIT=1
+                echo "Reusing persistent NVFP4 JIT cache: ${NVFP4_CACHE_KEY}"
+              fi
+              export PYTHONPATH="${PRIME_RL_SOURCE}/src${PYTHONPATH:+:${PYTHONPATH}}"
+              probe_args=()
+              if [[ "${NVFP4_ENVIRONMENT_ONLY}" == "1" ]]; then
+                probe_args+=(--environment-only)
+              fi
+              cd /app
+              VIRTUAL_ENV=/app/.venv uv run --active --no-sync python \
+                "${PRIME_RL_SOURCE}/benchmarks/scripts/nvfp4_layerwise_reload.py" \
+                "${probe_args[@]}" \
+                --output "/workspace/results/${POD_NAME}.json"
+          env:
+            - name: PRIME_RL_SOURCE
+              value: /workspace/live
+            - name: NVFP4_ENVIRONMENT_ONLY
+              value: "${NVFP4_ENVIRONMENT_ONLY}"
+            - name: PRIME_RL_VLLM_PYTHON_OVERLAY
+              value: /workspace/vllm-fixes/fix-nvfp4-reload-writable-scales
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: HF_HOME
+              value: /tmp/huggingface
+            - name: HF_HUB_CACHE
+              value: /model-cache
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+            - name: HF_HUB_DISABLE_XET
+              value: "1"
+            - name: HF_HUB_DOWNLOAD_TIMEOUT
+              value: "1800"
+            - name: HF_HUB_ETAG_TIMEOUT
+              value: "300"
+            - name: UV_CACHE_DIR
+              value: /workspace/.cache/uv/arm64
+            - name: UV_LINK_MODE
+              value: copy
+            # Keep generated kernels across Jobs. The versioned root prevents a
+            # vLLM/FlashInfer/Torch or compiler upgrade from reusing stale code.
+            - name: FLASHINFER_WORKSPACE_BASE
+              value: /workspace/.cache/nvfp4/sm100a/vllm-910cc8543-flashinfer-0.6.15.post1-torch-2.11.0-cu128-gcc13
+            - name: VLLM_CACHE_ROOT
+              value: /workspace/.cache/nvfp4/sm100a/vllm-910cc8543-flashinfer-0.6.15.post1-torch-2.11.0-cu128-gcc13/vllm
+            - name: TORCH_EXTENSIONS_DIR
+              value: /workspace/.cache/nvfp4/sm100a/vllm-910cc8543-flashinfer-0.6.15.post1-torch-2.11.0-cu128-gcc13/torch-extensions
+            - name: TRITON_CACHE_DIR
+              value: /workspace/.cache/nvfp4/sm100a/vllm-910cc8543-flashinfer-0.6.15.post1-torch-2.11.0-cu128-gcc13/triton
+            - name: CUDA_CACHE_PATH
+              value: /workspace/.cache/nvfp4/sm100a/vllm-910cc8543-flashinfer-0.6.15.post1-torch-2.11.0-cu128-gcc13/cuda
+            - name: NVFP4_CACHE_KEY
+              value: image-91292f812_sm100a_cuda12.8_torch2.11.0_vllm-910cc8543_flashinfer-0.6.15.post1
+            - name: NVFP4_CACHE_READY_MARKER
+              value: /workspace/.cache/nvfp4/sm100a/vllm-910cc8543-flashinfer-0.6.15.post1-torch-2.11.0-cu128-gcc13/.prime-rl-ready
+            - name: VLLM_ALLOW_INSECURE_SERIALIZATION
+              value: "1"
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+          resources:
+            requests:
+              cpu: "16"
+              memory: 96Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "64"
+              memory: 256Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: source
+              mountPath: /workspace
+            - name: model-cache
+              mountPath: /model-cache
+              readOnly: true
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: source
+          persistentVolumeClaim:
+            claimName: prime-rl-dev-source
+        - name: model-cache
+          hostPath:
+            path: /scratch/model-cache
+            type: Directory
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
