@@ -247,6 +247,7 @@ def _first_existing(*paths: Path) -> Path | None:
 def iter_itv3(source: str, keep_think: bool, manifest: dict, rng: random.Random) -> Iterator[tuple[dict, int]]:
     """nvidia house format: {id, messages} with content = [str | {type:image,image:relpath}]."""
     base = _first_existing(
+        RAW_ROOT / "nemotron_image_v3" / source,
         RAW_ROOT / "Nemotron-Image-Training-v3" / source,
         RAW_ROOT / "itv3" / source,
         REPO_ROOT / "datasets" / "raw" / source,
