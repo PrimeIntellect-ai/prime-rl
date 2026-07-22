@@ -9,6 +9,7 @@
                 "training",
                 "inference",
                 "scaling",
+                "staleness",
                 "algorithms",
                 "advanced",
                 "development"

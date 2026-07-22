@@ -1,6 +1,6 @@
 """WeightWatcher: polls the broadcast dir, advances ``Policy``, notifies
-observers (orchestrator → staleness drops, ship-hold wakeup). Standalone
-async task."""
+observers (dispatcher → off-policy cancel). Standalone async task; the
+orchestrator's barrier bounds the in-flight lead."""
 
 from __future__ import annotations
 
@@ -64,6 +64,12 @@ class WeightWatcher:
 
     async def stop(self) -> None:
         self.stopped.set()
+        # Let an in-flight apply finish before dying: the trainer blocks inside
+        # its in-memory broadcast until the apply completes, so cancelling
+        # mid-apply would strand it. The orchestrator's global teardown budget
+        # bounds this wait.
+        async with self.update_lock:
+            pass
         if self.task is not None:
             await safe_cancel(self.task)
             self.task = None
@@ -103,6 +109,14 @@ class WeightWatcher:
                     await wait_for_path(stable_marker)
             self.last_wait_for_ckpt_time = time.perf_counter() - t0
 
+            # Publish confirmed: the policy version advances here, before the
+            # apply — inference pauses during the update, so nothing can generate
+            # under the new number from the old weights, and a ship held on this
+            # version (see docs/staleness.md) releases without waiting out the
+            # inference weight reload.
+            self.ckpt_step = next_step
+            self.policy.version = next_step
+
             # Drain off-policy rollouts BEFORE pausing the inference engines.
             # Aborting a rollout triggers vLLM's KV-connector cleanup (NIXL's
             # ``_reqs_not_processed``), which is only propagated to the workers
@@ -128,8 +142,6 @@ class WeightWatcher:
             self.update_count += 1
             get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
 
-            self.ckpt_step = next_step
-            self.policy.version = next_step
             if self.lora_name is not None:
                 self.inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name

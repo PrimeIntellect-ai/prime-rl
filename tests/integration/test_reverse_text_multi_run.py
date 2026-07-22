@@ -15,10 +15,8 @@ from tests.utils import check_reward_goes_up, check_reward_in_range, strip_escap
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
-# Resumed orchestrators pace to the shared trainer (a batch only ships once the
-# trainer has produced the required policy version), so with three runs
-# round-robining one trainer their wall time is coupled to its scheduling.
-TIMEOUT = 900  # 15 minutes
+TIMEOUT = 600  # 10 minutes (was 300s — too tight when 3 concurrent orchestrators
+# contend for 2 inference GPUs; verifiers per-call tracing added overhead)
 ORCHESTRATOR_NAMES = ["alpha", "beta", "gamma"]
 
 
@@ -420,14 +418,10 @@ def test_reward_in_range(multi_run_result: dict[str, ProcessResult], output_dir:
         with open(log_file, "r") as f:
             lines = strip_escape_codes(f.read()).splitlines()
         if name in ["beta", "gamma"]:
-            # Early-step rewards read 1-2 policy versions staler under strict
-            # pacing (batch N's data comes from v{N-2}..v{N-4}), so the early
-            # floor sits below main's old calibration; the final-reward checks
-            # below still enforce learning quality.
-            check_reward_in_range(lines, step=7, min_threshold=0.1)
-            check_reward_in_range(lines, min_threshold=0.6)
+            check_reward_in_range(lines, step=7, min_threshold=0.2)
+            check_reward_in_range(lines, min_threshold=0.65)
         elif name in ["alpha_resume", "beta_resume"]:
-            check_reward_in_range(lines, min_threshold=0.6)
+            check_reward_in_range(lines, min_threshold=0.65)
         elif name == "alpha":  # Only had 10 steps, so it's lower
             check_reward_in_range(lines, min_threshold=0.4)
         else:

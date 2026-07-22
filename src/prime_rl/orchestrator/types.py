@@ -49,6 +49,7 @@ class InflightRollout:
     policy_version: int
     rollout_count: int
     client_config: vf.ClientConfig | None = None
+    off_policy_steps: int = 0
     eval_step: int | None = None
 
 

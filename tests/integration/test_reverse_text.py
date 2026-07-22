@@ -98,15 +98,10 @@ def test_reward_in_range(rl_process: ProcessResult, test_no_error, output_dir: P
 
 
 def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, output_dir: Path):
-    """Tests that the average mismatch KL stays within budget over the last steps.
-
-    Mismatch KL compares generation-time inference logprobs against the training
-    weights, so it includes the bounded policy-version gap of async training
-    (steady-state consumption lag of 2-3 versions with dispatch lookahead), not
-    just trainer/inference numerics."""
+    """Tests that the average mismatch KL is below 0.01 across all steps"""
     with open(output_dir / "logs" / "trainer.log", "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
-    check_avg_mismatch_kl_in_range(trainer_stdout, last_n_steps=3, max_threshold=0.02)
+    check_avg_mismatch_kl_in_range(trainer_stdout, last_n_steps=3, max_threshold=0.01)
 
 
 @pytest.fixture(scope="module")
