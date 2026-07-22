@@ -876,14 +876,12 @@ def build_slices(manifest: dict, rng: random.Random) -> dict[str, SliceSpec]:
                     ]
                 ],
                 *[
-                    SourceSpec(f"long_document_ccpdf_{i:02d}", itv3(f"long_document_ccpdf_{i:02d}"), 40 * B)
+                    SourceSpec(f"long_document_ccpdf_{i:02d}", itv3(f"long_document_ccpdf_{i:02d}"), 46 * B)
                     for i in range(1, 12)
                 ],
                 *[SourceSpec(f"long_document_sec_{i}", itv3(f"long_document_sec_{i}"), 20 * B) for i in range(1, 5)],
-                *[
-                    SourceSpec(f"long_document_arxiv_{i}", itv3(f"long_document_arxiv_{i}"), 20 * B)
-                    for i in range(1, 4)
-                ],
+                # long_document_arxiv_1-3 dropped: media needs arXiv bulk S3 (requester
+                # pays) + local PDF rendering; budget folded into ccpdf.
                 SourceSpec(
                     "docmatix", lambda: iter_embedded_qa("docmatix", RAW_ROOT / "Docmatix", "docmatix", rng), 400 * B
                 ),

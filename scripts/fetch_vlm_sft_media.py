@@ -444,6 +444,62 @@ def cmd_itv3_shards(args) -> None:
             print(f"  {tar_path}: {before - len(todo)} matched, {len(todo)} remaining", flush=True)
 
 
+def cmd_local_archives(args) -> None:
+    """Generic lane: resolve a kind from archives/trees under --archive-root/<kind>/.
+
+    Tries loose files first (direct ref path or basename), then streams every
+    tar/tar.gz/zip in the kind dir matching members to refs by path suffix.
+    """
+    kind = args.itv3_kind
+    todo = load_kind(kind)
+    if not todo:
+        return
+    root = Path(args.archive_root) / kind
+    if not root.exists():
+        print(f"  !! no archive dir {root}")
+        return
+    loose = {}
+    for f in root.rglob("*"):
+        if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
+            loose[f.name] = f
+    resolved = 0
+    for abs_target, entry in list(todo.items()):
+        cand = root / entry["raw_path"]
+        src = cand if cand.exists() else loose.get(Path(entry["raw_path"]).name)
+        if src is not None:
+            abs_target.parent.mkdir(parents=True, exist_ok=True)
+            if not abs_target.exists():
+                try:
+                    import os as _os
+
+                    _os.link(src, abs_target)
+                except OSError:
+                    shutil.copyfile(src, abs_target)
+            todo.pop(abs_target)
+            resolved += 1
+    print(f"  loose files: {resolved} resolved, {len(todo)} left for archives")
+    archives = [f for f in sorted(root.rglob("*")) if f.suffixes and f.suffixes[-1] in (".tar", ".zip", ".gz", ".tgz")]
+    for arch in archives:
+        if not todo:
+            break
+        print(f"  scanning {arch.name} ...", flush=True)
+        try:
+            if arch.suffix == ".zip":
+                with zipfile.ZipFile(arch) as zf:
+                    _extract_by_suffix(zf.namelist(), todo, lambda n: zf.read(n))
+            else:
+                mode = "r:gz" if arch.name.endswith((".tar.gz", ".tgz")) else "r"
+                with tarfile.open(arch, mode) as tf:
+                    _extract_by_suffix(tf.getnames(), todo, lambda n: tf.extractfile(n).read())
+        except Exception as e:
+            print(f"  !! {arch.name}: {type(e).__name__}: {e}")
+        for t in [t for t in todo if t.exists()]:
+            todo.pop(t, None)
+    print(f"  [{kind}] final unresolved: {len(todo)}")
+    for t in list(todo)[:5]:
+        print(f"    missing e.g. {todo[t]['raw_path']}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -461,6 +517,7 @@ def main():
             "clevr",
             "plotqa",
             "itv3_shards",
+            "local_archives",
         ],
     )
     parser.add_argument("--workers", type=int, default=16)
