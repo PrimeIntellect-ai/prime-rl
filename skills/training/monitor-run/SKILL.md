@@ -72,7 +72,7 @@ After a restart, verify all processes are back up and progress resumed before th
 │   └── torchrun/              # per-rank stdout/stderr
 ├── inference/
 │   ├── node_*.log             # per-node (multi-node only)
-│   └── router_0.log           # vllm-router per replica (multi-node only)
+│   └── router.log             # the single global router (multi-node only; single-node logs it in inference.log)
 └── envs/{train,eval}/{env_name}.log    # one log file per env
 ```
 
@@ -126,7 +126,7 @@ All metrics print to the console log (and W&B when configured).
 For live vLLM stats, query Prometheus directly:
 
 ```bash
-curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
+curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  # engine port (8000 is the router)
 # vllm:num_requests_running, vllm:num_requests_waiting, vllm:gpu_cache_usage_perc (→1.0 = KV cache saturated)
 ```
 

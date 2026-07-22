@@ -256,7 +256,7 @@ For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write t
 
 ### Log Files
 
-The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The full layout (single-node runs skip the `node_*.log` and `router_*.log` files):
+The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The full layout (single-node runs skip the `node_*.log` and `router.log` files — there the router logs into `inference.log`):
 
 ```
 <output_dir>/logs/
@@ -268,7 +268,7 @@ The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The f
 │   └── torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log   # per-rank
 ├── inference/
 │   ├── node_*.log               # per-node inference stdout (multi-node only)
-│   └── router_*.log             # vllm-router per replica (multi-node only)
+│   └── router.log               # the single global router (multi-node only)
 └── envs/{train,eval}/<env_name>/
     ├── env_server.log
     └── env_worker_<id>.log
@@ -281,7 +281,7 @@ Live tailing from a single point (works on the head node for multi-node runs ove
 ```bash
 tail -F <output_dir>/logs/{trainer,orchestrator,inference}.log
 tail -F <output_dir>/logs/trainer/node_*.log     # multi-node only
-tail -F <output_dir>/logs/inference/router_*.log # multi-node only
+tail -F <output_dir>/logs/inference/router.log   # multi-node only
 ```
 
 ### Console Output

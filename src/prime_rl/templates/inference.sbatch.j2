@@ -38,13 +38,13 @@ export NODES_PER_PREFILL_REPLICA={{ prefill_nodes_per_replica }}
 export NODES_PER_DECODE_REPLICA={{ decode_nodes_per_replica }}
 export PREFILL_PORT={{ prefill_port }}
 export DECODE_PORT={{ decode_port }}
-export ROUTER_PORT={{ router.port }}
+export ROUTER_PORT={{ router_port }}
 export RPC_PORT={{ data_parallel_rpc_port }}
 {%- if router.type == "llm-d" %}
 export DECODE_SIDECAR_PORT={{ router.decode_sidecar_port }}
 {%- endif %}
 {%- elif num_nodes > 1 %}
-export ROUTER_PORT={{ router.port }}
+export ROUTER_PORT={{ router_port }}
 export BACKEND_PORT={{ backend_port }}
 export RPC_PORT={{ data_parallel_rpc_port }}
 {%- endif %}
@@ -77,32 +77,24 @@ uv sync --all-extras --all-packages
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
 {% if is_disaggregated -%}
-# Build per-replica router URLs
-INFER_URLS=""
-ALL_ROUTER_ARGS=""
-for ((r=0; r<NUM_NODES/NODES_PER_REPLICA; r++)); do
-    replica_base=$((r * NODES_PER_REPLICA))
-    router_host="${HOSTNAMES[$replica_base]}"
-    INFER_URLS="${INFER_URLS:+$INFER_URLS,}http://${router_host}:${ROUTER_PORT}/v1"
-
-    REPLICA_ROUTER_ARGS=""
-    # External-LB: one --prefill/--decode endpoint per DP rank (PORT + k) on each node.
-    for ((p=0; p<NUM_PREFILL_NODES; p++)); do
-        host="${HOSTNAMES[$((replica_base + p))]}"
-        for ((k=0; k<{{ dp_per_node }}; k++)); do
-            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --prefill http://${host}:$((PREFILL_PORT + k))"
-        done
+# Single global router on node 0 fronts every per-rank endpoint.
+INFER_URLS="http://${HOSTNAMES[0]}:${ROUTER_PORT}/v1"
+ROUTER_ARGS=""
+# External-LB: one --prefill/--decode endpoint per DP rank (PORT + k) on each node.
+for ((p=0; p<NUM_PREFILL_NODES; p++)); do
+    host="${HOSTNAMES[$p]}"
+    for ((k=0; k<{{ dp_per_node }}; k++)); do
+        ROUTER_ARGS="$ROUTER_ARGS --prefill http://${host}:$((PREFILL_PORT + k))"
     done
-    for ((d=0; d<NUM_DECODE_NODES; d++)); do
-        host="${HOSTNAMES[$((replica_base + NUM_PREFILL_NODES + d))]}"
-        for ((k=0; k<{{ dp_per_node }}; k++)); do
-            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --decode http://${host}:$((DECODE_PORT + k))"
-        done
+done
+for ((d=0; d<NUM_DECODE_NODES; d++)); do
+    host="${HOSTNAMES[$((NUM_PREFILL_NODES + d))]}"
+    for ((k=0; k<{{ dp_per_node }}; k++)); do
+        ROUTER_ARGS="$ROUTER_ARGS --decode http://${host}:$((DECODE_PORT + k))"
     done
-    ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS|}$REPLICA_ROUTER_ARGS"
 done
 export INFER_URLS
-export ALL_ROUTER_ARGS
+export ROUTER_ARGS
 {%- elif num_nodes > 1 %}
 # External LB: one router on node 0; one endpoint per DP rank (BACKEND_PORT + dp_local) on every node.
 INFER_URLS="http://${HOSTNAMES[0]}:${ROUTER_PORT}/v1"
@@ -273,10 +265,9 @@ srun --kill-on-bad-exit=1 bash -c '
     echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
         | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
-    # Start the router on the first prefill node of each replica (external LB across per-rank endpoints)
-    if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-        REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-        launch_router pd "$REPLICA_ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log" "$REPLICA_IDX" "$REPLICA_BASE"
+    # Start the single global router on node 0 (external LB across all per-rank endpoints)
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        launch_router pd "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log"
     fi
 {%- if router.type == "llm-d" %}
     # pd-sidecar on each decode node: EPP routes decode -> sidecar (DECODE_SIDECAR_PORT
@@ -318,9 +309,9 @@ srun --kill-on-bad-exit=1 bash -c '
     TP=$((GPUS_PER_NODE / DP_PER_NODE))
     EP={{ "1" if enable_expert_parallel else "0" }}
 
-    # Start the router on node 0 (balances across per-rank endpoints — no intra-node DP header)
+    # Start the single global router on node 0 (balances across per-rank endpoints — no intra-node DP header)
     if [ "$INFER_NODE_RANK" -eq 0 ]; then
-        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log" 0 0 "$NUM_NODES"
+        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log"
     fi
 
     # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + dp_local),
