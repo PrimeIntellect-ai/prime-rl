@@ -148,13 +148,26 @@ def train(config: TrainerConfig):
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
 
-    optimizer = setup_optimizer(
-        config.optim,
-        list(model.named_parameters()),
-        parallel_dims,
-        cpu_offload=config.model.optim_cpu_offload,
-    )
-    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+    if config.max_concurrent_runs == 1:
+        optimizer = setup_optimizer(
+            config.optim,
+            list(model.named_parameters()),
+            parallel_dims,
+            lora=config.model.lora is not None,
+            cpu_offload=config.model.optim_cpu_offload,
+            cpu_offload_chunked=config.model.optim_cpu_offload_chunked,
+            cpu_offload_stream=config.model.optim_cpu_offload_stream,
+        )
+        scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+    else:
+        optimizer = setup_multi_optimizer(config.optim, parallel_dims)
+        scheduler = setup_multi_scheduler(optimizer, config.scheduler, config.max_steps)
+
+        # Register checkpoint loading callback at index 1 (after scheduler creation at index 0)
+        def load_run_checkpoint(_optimizer, idx: int) -> None:
+            ckpt_manager.load_run(idx, optimizer, scheduler)
+
+        optimizer.register_post_creation_callback(load_run_checkpoint, index=1)
 
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
