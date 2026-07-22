@@ -2,10 +2,13 @@ name: Sync Docs to Public Docs
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - 'docs/**'
+    tags:
+      # Sync docs on stable releases only, not on every commit to main.
+      # `.dev` tags are created by `devx_tag.yaml` via GITHUB_TOKEN (which
+      # does not retrigger workflows), so they would not arrive here anyway —
+      # the exclusion is defensive for manual pushes.
+      - 'v*'
+      - '!v*dev*'
   workflow_dispatch:
 
 jobs:
