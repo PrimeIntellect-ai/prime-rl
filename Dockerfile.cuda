@@ -128,6 +128,24 @@ RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
         && rm -rf /tmp/nixl /app/deps/nixl_cu12-*.whl; \
     fi
 
+# Optional: build NIXL from source against the UCX 1.19 baked above. The PyPI
+# nixl wheel ships its own UCX which segfaults on prefill→decode KV transfer
+# (#2883); rebuilding against our UCX is the documented fix. Only needed for
+# the disaggregated P/D path — default off so training-only / single-node
+# inference builds are unaffected. Enable via `--build-arg INCLUDE_NIXL_FROM_SOURCE=1`.
+ARG INCLUDE_NIXL_FROM_SOURCE=0
+ARG NIXL_VERSION=0.10.1
+RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
+        VIRTUAL_ENV=/app/.venv uv pip install pip \
+        && git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git /tmp/nixl \
+        && cd /tmp/nixl \
+        && PKG_CONFIG_PATH=/opt/ucx/lib/pkgconfig \
+           LD_LIBRARY_PATH=/opt/ucx/lib:/opt/ucx/lib/ucx \
+           /app/.venv/bin/python -m pip wheel . --no-deps --wheel-dir=/app/deps \
+        && VIRTUAL_ENV=/app/.venv uv pip install --reinstall --no-deps /app/deps/nixl_cu12-*.whl \
+        && rm -rf /tmp/nixl /app/deps/nixl_cu12-*.whl; \
+    fi
+
 # arm64: build flash-attn from source, fix namespace conflicts, apply workarounds
 ARG TARGETARCH
 COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
