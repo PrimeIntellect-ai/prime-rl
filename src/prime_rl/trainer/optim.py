@@ -42,9 +42,11 @@ class CPUOffloadOptimizer:
         optimizer: Optimizer,
         named_params: list[tuple[str, nn.Parameter]] | None = None,
         pin_memory: bool = True,
+        stream: bool = True,
     ):
         self.optimizer = optimizer
         self.pin_memory = pin_memory
+        self.stream = stream
         self._initialized = False
 
         # Build per-layer chunks from the optimizer's actual param_groups so
@@ -221,11 +223,34 @@ class CPUOffloadOptimizer:
             self._move_states("cpu")
             return result
 
-        # ---- Chunked step with stream-overlapped H2D / D2H ---- #
-
+        # Chunked step.
         self._original_param_groups = self.optimizer.param_groups
         original_steps = [g.get("step", 0) for g in self._original_param_groups]
 
+        if self.stream:
+            self._step_chunked_streamed(closure)
+        else:
+            self._step_chunked(closure)
+
+        self._sync_step_counters(original_steps)
+        self._original_param_groups = None
+        return None
+
+    def _step_chunked(self, closure=None):
+        """Per-layer optimizer step without stream overlap — simple sequential loop."""
+        for i in range(len(self._chunks)):
+            self._move_chunk_states(i, "cuda")
+            self._step_chunk(i, closure)
+            self._move_chunk_states(i, "cpu")
+
+    def _step_chunked_streamed(self, closure=None):
+        """Per-layer optimizer step with stream-overlapped H2D / D2H.
+
+        H2D (state→GPU) for chunk i+1 is issued on a dedicated stream while
+        the optimizer compute for chunk i runs on the compute stream.  D2H
+        (state→CPU) for chunk i runs on a second dedicated stream, overlapping
+        with the compute for chunk i+1.
+        """
         h2d_stream = torch.cuda.Stream()
         d2h_stream = torch.cuda.Stream()
         compute_stream = torch.cuda.current_stream()
@@ -253,12 +278,6 @@ class CPUOffloadOptimizer:
         # Ensure all transfers are complete before returning.
         compute_stream.wait_stream(h2d_stream)
         compute_stream.wait_stream(d2h_stream)
-
-        # Fix step counters on the original param_groups (Muon only).
-        self._sync_step_counters(original_steps)
-        self._original_param_groups = None
-
-        return None
 
     def zero_grad(self, set_to_none: bool = True):
         self.optimizer.zero_grad(set_to_none=set_to_none)
@@ -301,6 +320,8 @@ def setup_optimizer(
     parallel_dims: ParallelDims,
     lora: bool = False,
     cpu_offload: bool = False,
+    cpu_offload_chunked: bool = True,
+    cpu_offload_stream: bool = True,
 ) -> Optimizer | CPUOffloadOptimizer:
     if lora:
         # Wait for run 0 to be created in the multi run manager
@@ -313,7 +334,11 @@ def setup_optimizer(
 
     if cpu_offload:
         get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
-        return CPUOffloadOptimizer(optimizer, named_params=named_params)
+        return CPUOffloadOptimizer(
+            optimizer,
+            named_params=named_params if cpu_offload_chunked else None,
+            stream=cpu_offload_stream,
+        )
 
     return optimizer
 
