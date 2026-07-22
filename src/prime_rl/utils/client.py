@@ -568,6 +568,38 @@ async def init_nccl_broadcast(
     )
 
 
+async def init_nixl_broadcast(
+    admin_clients: list[AsyncClient],
+    host: str,
+    port: int,
+    timeout: int,
+    inference_world_size: int,
+    session_id: str,
+) -> None:
+    """Configure every vLLM worker for NIXL + ModelExpress pulls."""
+    workers_per_server = inference_world_size // len(admin_clients)
+
+    async def initialize(admin_client: AsyncClient, rank_offset: int) -> None:
+        await _admin_post(
+            admin_client,
+            "/init_broadcaster",
+            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
+            json={
+                "host": host,
+                "port": port,
+                "rank_offset": rank_offset,
+                "inference_world_size": inference_world_size,
+                "timeout": timeout,
+                "quantize_in_weight_transfer": False,
+                "session_id": session_id,
+            },
+        )
+
+    await asyncio.gather(
+        *[initialize(admin_client, index * workers_per_server) for index, admin_client in enumerate(admin_clients)]
+    )
+
+
 async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:
     """Prefill-score ``token_ids`` under ``model`` via ``/inference/v1/generate``
     + ``prompt_logprobs`` (the prime-rl server-side extension in
