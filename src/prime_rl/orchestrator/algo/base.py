@@ -78,6 +78,22 @@ async def connect_frozen_pool(
     return pool
 
 
+def assert_single_trainable_agent(group: list[Rollout]) -> None:
+    """Group-relative credit assumes the group is exchangeable attempts by one
+    agent; a cohort spanning several trainable agents would mix different
+    agents' reward scales into one baseline. What the right cross-agent credit
+    assignment is is an open question — refuse instead of guessing."""
+    names = {rollout.agent_name for rollout in group}
+    if len(names) > 1:
+        raise ValueError(
+            f"group for env '{group[0].env_name}' spans trainable agents "
+            f"{sorted(str(name) for name in names)} — group-relative advantages assume a "
+            "single trainable agent. Mark the other agents untrainable in the env's "
+            "setup() (agents.<name>.trainable = False), or implement an algorithm that "
+            "assigns credit across agents."
+        )
+
+
 class Algorithm:
     """Base class for one env's training algorithm — the runtime of the
     algorithm config's per-token training signal (its sibling :class:`Sampler`

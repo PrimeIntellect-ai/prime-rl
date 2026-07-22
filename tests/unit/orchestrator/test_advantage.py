@@ -183,6 +183,22 @@ def test_max_rl_mean_normalized():
     assert _max_rl(_make_group(rewards=[1.0, 1.0])) == pytest.approx([0.0, 0.0])
 
 
+def test_group_algos_refuse_multiple_trainable_agents():
+    """One baseline can't span agents: a group mixing trainable agent names is
+    refused; a same-agent multi-trace cohort stays exchangeable and passes."""
+
+    def _agent_rollout(name: str, reward: float) -> Rollout:
+        rollout = _build_rollout(reward, sampled_lengths=[2])
+        rollout.agent = vf.AgentInfo(model="policy", name=name)
+        return rollout
+
+    for drive in (_grpo, _max_rl):
+        with pytest.raises(ValueError, match="single trainable agent"):
+            drive([_agent_rollout("solver", 1.0), _agent_rollout("opponent", 0.0)])
+    advs = _grpo([_agent_rollout("solver", 1.0), _agent_rollout("solver", 0.0)])
+    assert sum(advs) == pytest.approx(0.0, abs=1e-6)
+
+
 # --------------------------------------------------------------------------
 # GRPO linear length penalty: pass_rate-scaled penalty before the baseline.
 # --------------------------------------------------------------------------
