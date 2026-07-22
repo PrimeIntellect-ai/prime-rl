@@ -4632,7 +4632,7 @@ requires-dist = [
 
 [[package]]
 name = "openswe-v1"
-version = "0.1.2"
+version = "0.1.3"
 source = { editable = "deps/research-environments/environments/swe/openswe_v1" }
 dependencies = [
     { name = "datasets" },
@@ -4774,7 +4774,7 @@ wheels = [
 
 [[package]]
 name = "openthoughts-tblite-v1"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/research-environments/environments/terminal/openthoughts_tblite_v1" }
 dependencies = [
     { name = "verifiers" },
@@ -5131,6 +5131,7 @@ dependencies = [
     { name = "flash-linear-attention" },
     { name = "jaxtyping" },
     { name = "loguru" },
+    { name = "modelexpress" },
     { name = "mooncake-transfer-engine" },
     { name = "msgspec" },
     { name = "numpy" },
@@ -5203,9 +5204,6 @@ flash-attn-cute = [
 gpt-oss = [
     { name = "kernels" },
 ]
-modelexpress = [
-    { name = "modelexpress" },
-]
 quack = [
     { name = "quack-kernels" },
 ]
@@ -5241,7 +5239,7 @@ requires-dist = [
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "kernels", marker = "extra == 'gpt-oss'" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "modelexpress", marker = "extra == 'modelexpress'", specifier = "==0.3.0" },
+    { name = "modelexpress", specifier = "==0.3.0" },
     { name = "mooncake-transfer-engine", specifier = ">=0.3.10.post2" },
     { name = "msgspec", specifier = ">=0.18" },
     { name = "nixl", marker = "extra == 'disagg'" },
@@ -5289,7 +5287,7 @@ requires-dist = [
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wandb-workspaces", specifier = ">=0.4.3" },
 ]
-provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "gpt-oss", "modelexpress", "quack", "all"]
+provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "gpt-oss", "quack", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -6448,7 +6446,7 @@ wheels = [
 
 [[package]]
 name = "senior-swe-bench-v1"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/research-environments/environments/swe/senior_swe_bench_v1" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
@@ -7093,7 +7091,7 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.2.1" }]
 
 [[package]]
 name = "terminal-lego-v1"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/research-environments/environments/terminal/terminal_lego_v1" }
 dependencies = [
     { name = "huggingface-hub" },

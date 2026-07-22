@@ -79,15 +79,15 @@ def test_qwen3_5_moe_roundtrip():
     prime_sd = prime_model.state_dict()
 
     # Convert PrimeRL → per-expert HF format
-    converted_hf_sd = PrimeRLQwen3_5MoeForCausalLM.convert_to_hf(dict(prime_sd))
+    converted_hf_sd = prime_model.convert_to_hf(dict(prime_sd))
 
     # Also convert original HF (fused) to per-expert format for comparison
 
     # First convert original HF → PrimeRL, then back to per-expert HF
     orig_prime_sd = dict(original_hf_sd)
-    PrimeRLQwen3_5MoeForCausalLM.convert_to_prime(orig_prime_sd)
+    prime_model.convert_to_prime(orig_prime_sd)
     orig_roundtripped = dict(orig_prime_sd)
-    PrimeRLQwen3_5MoeForCausalLM.convert_to_hf(orig_roundtripped)
+    prime_model.convert_to_hf(orig_roundtripped)
 
     # All non-expert keys should match exactly, expert keys should match after roundtrip
     for key in orig_roundtripped:

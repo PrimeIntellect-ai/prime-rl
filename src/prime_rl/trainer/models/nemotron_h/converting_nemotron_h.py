@@ -1,176 +1,108 @@
-"""Weight conversion between HuggingFace and PrimeRL formats for NemotronH.
+"""Declarative HF<->prime conversion chain for NemotronH.
 
-HF NemotronH uses a unified `mixer` attribute for all layer types:
-  - Mamba layers: backbone.layers.{i}.mixer.{in_proj, conv1d, ...}
-  - Attention layers: backbone.layers.{i}.mixer.{q_proj, k_proj, v_proj, o_proj}
-  - MoE layers: backbone.layers.{i}.mixer.{gate, experts, shared_experts, fc1_latent_proj, fc2_latent_proj}
-
-PrimeRL separates these into distinct namespaces:
-  - Mamba layers: model.layers.{i}.mamba.*
-  - Attention layers: model.layers.{i}.self_attn.*
-  - MoE layers: model.layers.{i}.mlp.{router, experts, shared_expert, fc1_latent_proj, fc2_latent_proj}
-
-Global renames:
-  - HF: backbone.embeddings.weight <-> PrimeRL: model.embed_tokens.weight
-  - HF: backbone.norm_f.weight <-> PrimeRL: model.norm.weight
-  - HF uses "backbone." prefix, PrimeRL uses "model." prefix
-  - HF mtp.* keys (multi-token prediction) are dropped during conversion
+NemotronH is the most involved conversion: a unified HF ``mixer`` namespace is
+split into prime's ``mamba`` / ``self_attn`` / ``mlp`` by layer type, the
+checkpoint uses a ``backbone.`` prefix, and the MoE router bias is shifted by
+its per-tensor min on the way in (and intentionally *not* restored on the way
+out — a lossy roundtrip the chain reproduces via a :class:`MapValue` whose
+backward is the identity). Experts are up/down only (no gate); a dummy ``w3``
+of shape ``(0,)`` is synthesised for expert-parallel compatibility.
 """
 
+from __future__ import annotations
+
 import torch
-from torch import Tensor
+
+from prime_rl.trainer.models.conversion_ops import (
+    Conditional,
+    ConvOp,
+    Drop,
+    MapValue,
+    PrefixRename,
+    Rename,
+    Stack,
+    Synthetic,
+    key_present,
+)
 
 
-def _rename_keys(state_dict: dict[str, Tensor], old_prefix: str, new_prefix: str):
-    """Rename all keys matching old_prefix to new_prefix in-place."""
-    keys_to_rename = [k for k in state_dict if k.startswith(old_prefix)]
-    for key in keys_to_rename:
-        new_key = new_prefix + key[len(old_prefix) :]
-        state_dict[new_key] = state_dict.pop(key)
+def _empty_w3(prefix: str):
+    def factory(sd):
+        w1 = f"{prefix}.mlp.experts.w1"
+        device = sd[w1].device if w1 in sd else "cpu"
+        return torch.empty(0, device=device)
+
+    return factory
 
 
-def convert_hf_layer_to_prime(state_dict: dict[str, Tensor], layer_idx: int, layer_type: str):
-    """Convert a single layer from HF to PrimeRL format in-place."""
-    prefix = f"model.layers.{layer_idx}."
-
-    if layer_type == "moe":
-        _convert_hf_moe_layer_to_prime(state_dict, prefix)
-    elif layer_type == "attention":
-        _convert_hf_attention_layer_to_prime(state_dict, prefix)
-    elif layer_type == "mamba":
-        _rename_keys(state_dict, f"{prefix}mixer.", f"{prefix}mamba.")
-
-
-def _convert_hf_moe_layer_to_prime(state_dict: dict[str, Tensor], prefix: str):
-    """Convert MoE layer: mixer.gate -> mlp.router, mixer.experts -> mlp.experts, etc."""
-    mixer = f"{prefix}mixer."
-    mlp = f"{prefix}mlp."
-
-    # Router: gate.weight -> router.gate (nn.Parameter), gate.e_score_correction_bias -> router.e_score_correction_bias
-    if f"{mixer}gate.weight" in state_dict:
-        state_dict[f"{mlp}router.gate"] = state_dict.pop(f"{mixer}gate.weight")
-    if f"{mixer}gate.e_score_correction_bias" in state_dict:
-        bias = state_dict.pop(f"{mixer}gate.e_score_correction_bias")
-        # Shift by per-row min so values land in a range bf16 can represent without
-        # collapsing. NemotronH biases sit ~57 with ~0.04 inter-expert spread, well
-        # under bf16's ~0.4 step at that magnitude. topk(scores + bias) is invariant
-        # to a constant shift of bias, and the returned routing weights are gathered
-        # from raw sigmoid scores (not biased), so this does not change routing math.
-        bias = bias - bias.min()
-        state_dict[f"{mlp}router.e_score_correction_bias"] = bias
-
-    # Experts: check if stored as individual weights (experts.{i}.up_proj.weight)
-    # or fused 3D tensors (experts.up_proj)
-    individual_keys = [
-        k
-        for k in state_dict
-        if k.startswith(f"{mixer}experts.") and k[len(f"{mixer}experts.") :].split(".")[0].isdigit()
+def _moe_layer_ops(prefix: str) -> list[ConvOp]:
+    return [
+        # Router: gate.weight -> router.gate (note: prime drops the .weight),
+        # plus the load-balancing bias which is shifted by its min on the way in
+        # and not undone on the way out (MapValue backward = identity).
+        Rename(f"{prefix}.mixer.gate.weight", f"{prefix}.mlp.router.gate"),
+        Rename(f"{prefix}.mixer.gate.e_score_correction_bias", f"{prefix}.mlp.router.e_score_correction_bias"),
+        MapValue(
+            f"{prefix}.mlp.router.e_score_correction_bias",
+            forward=lambda x: x - x.min(),
+            backward=lambda x: x,
+        ),
+        # Experts: w1=up, w2=down (no gate). HF is either per-expert weights or
+        # a 3-D fused-at-experts-level up_proj/down_proj. Backward always emits
+        # per-expert (the predicate's HF key is absent in prime -> else branch).
+        Conditional(
+            predicate=key_present(f"{prefix}.mixer.experts.up_proj"),
+            then=[
+                Rename(f"{prefix}.mixer.experts.up_proj", f"{prefix}.mlp.experts.w1"),
+                Rename(f"{prefix}.mixer.experts.down_proj", f"{prefix}.mlp.experts.w2"),
+            ],
+            else_=[
+                Stack(stacked=f"{prefix}.mlp.experts.w1", item=f"{prefix}.mixer.experts.{{e}}.up_proj.weight"),
+                Stack(stacked=f"{prefix}.mlp.experts.w2", item=f"{prefix}.mixer.experts.{{e}}.down_proj.weight"),
+            ],
+        ),
+        Synthetic(f"{prefix}.mlp.experts.w3", factory=_empty_w3(prefix)),
+        PrefixRename(f"{prefix}.mixer.shared_experts.", f"{prefix}.mlp.shared_expert."),
+        PrefixRename(f"{prefix}.mixer.fc1_latent_proj.", f"{prefix}.mlp.fc1_latent_proj."),
+        PrefixRename(f"{prefix}.mixer.fc2_latent_proj.", f"{prefix}.mlp.fc2_latent_proj."),
     ]
 
-    if individual_keys:
-        expert_indices = sorted({int(k[len(f"{mixer}experts.") :].split(".")[0]) for k in individual_keys})
 
-        up_projs = [state_dict.pop(f"{mixer}experts.{i}.up_proj.weight") for i in expert_indices]
-        state_dict[f"{mlp}experts.w1"] = torch.stack(up_projs)
-
-        down_projs = [state_dict.pop(f"{mixer}experts.{i}.down_proj.weight") for i in expert_indices]
-        state_dict[f"{mlp}experts.w2"] = torch.stack(down_projs)
-    else:
-        # Fused 3D tensors
-        if f"{mixer}experts.up_proj" in state_dict:
-            state_dict[f"{mlp}experts.w1"] = state_dict.pop(f"{mixer}experts.up_proj")
-        if f"{mixer}experts.down_proj" in state_dict:
-            state_dict[f"{mlp}experts.w2"] = state_dict.pop(f"{mixer}experts.down_proj")
-
-    # Dummy w3 required by @expert_parallel decorator compatibility
-    device = state_dict[f"{mlp}experts.w1"].device if f"{mlp}experts.w1" in state_dict else "cpu"
-    state_dict[f"{mlp}experts.w3"] = torch.empty(0, device=device)
-
-    # Shared expert
-    _rename_keys(state_dict, f"{mixer}shared_experts.", f"{mlp}shared_expert.")
-
-    # Latent projections
-    _rename_keys(state_dict, f"{mixer}fc1_latent_proj.", f"{mlp}fc1_latent_proj.")
-    _rename_keys(state_dict, f"{mixer}fc2_latent_proj.", f"{mlp}fc2_latent_proj.")
-
-
-def _convert_hf_attention_layer_to_prime(state_dict: dict[str, Tensor], prefix: str):
-    """Convert attention layer: mixer.{q,k,v,o}_proj -> self_attn.{q,k,v,o}_proj."""
-    _rename_keys(state_dict, f"{prefix}mixer.", f"{prefix}self_attn.")
+def _layer_op(prefix: str) -> ConvOp:
+    """One uniform op for any layer: detect its type from a signature key and
+    dispatch. No ``layers_block_type`` needed — the unified HF ``mixer.``
+    namespace is disambiguated by which sub-key is present (and, on the way
+    back, by which prime namespace is present, so the predicates work both
+    directions). Mamba/attention keep a bulk ``PrefixRename`` (robust to params
+    we didn't enumerate); MoE needs its specific ops (and the gated
+    ``Synthetic`` w3, which is why this is a Conditional rather than a plain
+    catch-all)."""
+    is_attention = lambda sd: (  # noqa: E731
+        f"{prefix}.mixer.q_proj.weight" in sd or f"{prefix}.self_attn.q_proj.weight" in sd
+    )
+    is_moe = lambda sd: f"{prefix}.mixer.gate.weight" in sd or f"{prefix}.mlp.router.gate" in sd  # noqa: E731
+    return Conditional(
+        is_attention,
+        then=[PrefixRename(f"{prefix}.mixer.", f"{prefix}.self_attn.")],
+        else_=[
+            Conditional(
+                is_moe,
+                then=_moe_layer_ops(prefix),
+                else_=[PrefixRename(f"{prefix}.mixer.", f"{prefix}.mamba.")],
+            )
+        ],
+    )
 
 
-def convert_prime_layer_to_hf(state_dict: dict[str, Tensor], layer_idx: int, layer_type: str):
-    """Convert a single layer from PrimeRL to HF format in-place."""
-    prefix = f"model.layers.{layer_idx}."
-
-    if layer_type == "moe":
-        _convert_prime_moe_layer_to_hf(state_dict, prefix)
-    elif layer_type == "attention":
-        _rename_keys(state_dict, f"{prefix}self_attn.", f"{prefix}mixer.")
-    elif layer_type == "mamba":
-        _rename_keys(state_dict, f"{prefix}mamba.", f"{prefix}mixer.")
-
-
-def _convert_prime_moe_layer_to_hf(state_dict: dict[str, Tensor], prefix: str):
-    """Convert MoE layer back to HF format."""
-    mlp = f"{prefix}mlp."
-    mixer = f"{prefix}mixer."
-
-    # Router
-    if f"{mlp}router.gate" in state_dict:
-        state_dict[f"{mixer}gate.weight"] = state_dict.pop(f"{mlp}router.gate")
-    if f"{mlp}router.e_score_correction_bias" in state_dict:
-        state_dict[f"{mixer}gate.e_score_correction_bias"] = state_dict.pop(f"{mlp}router.e_score_correction_bias")
-
-    # Experts: unstack fused 3D tensors into individual expert weights
-    if f"{mlp}experts.w1" in state_dict:
-        w1 = state_dict.pop(f"{mlp}experts.w1")
-        for i in range(w1.shape[0]):
-            state_dict[f"{mixer}experts.{i}.up_proj.weight"] = w1[i]
-    if f"{mlp}experts.w2" in state_dict:
-        w2 = state_dict.pop(f"{mlp}experts.w2")
-        for i in range(w2.shape[0]):
-            state_dict[f"{mixer}experts.{i}.down_proj.weight"] = w2[i]
-    # Remove dummy w3 (not present in HF format)
-    state_dict.pop(f"{mlp}experts.w3", None)
-
-    # Shared expert
-    _rename_keys(state_dict, f"{mlp}shared_expert.", f"{mixer}shared_experts.")
-
-    # Latent projections
-    _rename_keys(state_dict, f"{mlp}fc1_latent_proj.", f"{mixer}fc1_latent_proj.")
-    _rename_keys(state_dict, f"{mlp}fc2_latent_proj.", f"{mixer}fc2_latent_proj.")
-
-
-def convert_hf_to_prime(state_dict: dict[str, Tensor], layers_block_type: list[str]):
-    """Convert full model from HF to PrimeRL format in-place."""
-    # Handle backbone.* -> model.* prefix (HF NemotronH uses "backbone" instead of "model")
-    _rename_keys(state_dict, "backbone.", "model.")
-
-    # Drop multi-token prediction keys (not used in training)
-    for key in [k for k in state_dict if k.startswith("mtp.")]:
-        del state_dict[key]
-
-    # Global renames
-    if "model.embeddings.weight" in state_dict:
-        state_dict["model.embed_tokens.weight"] = state_dict.pop("model.embeddings.weight")
-    if "model.norm_f.weight" in state_dict:
-        state_dict["model.norm.weight"] = state_dict.pop("model.norm_f.weight")
-
-    for i, layer_type in enumerate(layers_block_type):
-        convert_hf_layer_to_prime(state_dict, i, layer_type)
-
-
-def convert_prime_to_hf(state_dict: dict[str, Tensor], layers_block_type: list[str]):
-    """Convert full model from PrimeRL to HF format in-place."""
-    # Global renames
-    if "model.embed_tokens.weight" in state_dict:
-        state_dict["model.embeddings.weight"] = state_dict.pop("model.embed_tokens.weight")
-    if "model.norm.weight" in state_dict:
-        state_dict["model.norm_f.weight"] = state_dict.pop("model.norm.weight")
-
-    for i, layer_type in enumerate(layers_block_type):
-        convert_prime_layer_to_hf(state_dict, i, layer_type)
-
-    # Rename model.* -> backbone.* (HF checkpoint uses "backbone" prefix)
-    _rename_keys(state_dict, "model.", "backbone.")
+def conversion_chain(config) -> list[ConvOp]:
+    """Uniform per-layer dispatch — no ``layers_block_type`` required."""
+    ops: list[ConvOp] = [
+        # Global. Listed first so the backbone<->model swap is played LAST on the
+        # way back (everything must be in model.* form before re-prefixing).
+        PrefixRename("backbone.", "model."),
+        Drop("mtp.", is_prefix=True),
+        Rename("model.embeddings.weight", "model.embed_tokens.weight"),
+        Rename("model.norm_f.weight", "model.norm.weight"),
+    ]
+    ops.extend(_layer_op(f"model.layers.{i}") for i in range(config.num_hidden_layers))
+    return ops

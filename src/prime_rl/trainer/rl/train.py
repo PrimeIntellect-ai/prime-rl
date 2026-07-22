@@ -186,7 +186,12 @@ def train(config: TrainerConfig):
         logger.info("Skipping weight broadcast setup (fake data mode)")
     else:
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast, config.model.lora)
+        weight_broadcast = setup_weight_broadcast(
+            config.output_dir,
+            config.weight_broadcast,
+            parallel_dims,
+            config.model.lora,
+        )
 
     if parallel_dims.cp_enabled:
         cp_group = parallel_dims.world_mesh["cp"].get_group()
@@ -264,13 +269,13 @@ def train(config: TrainerConfig):
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
 
-        # With NCCL, broadcast the incoming policy (v{progress.step-1}) before waiting for its
-        # rollouts: #2896 broadcasts at the END of a step, so the first step would otherwise block
-        # on rollouts the paused inference engines cannot produce until they receive
-        # v{progress.step-1}. Filesystem broadcast needs no startup rendezvous (fresh: base model
-        # = v0; resume: the orchestrator reads its checkpoint dir), and a one-shot startup
-        # broadcast would miss multi-run runs registered after the first step.
-        if progress.step == start_step and weight_broadcast is not None and config.weight_broadcast.type == "nccl":
+        # In-memory transfers broadcast the incoming policy (v{progress.step-1}) before waiting
+        # for its rollouts so the trainer and inference pool join the same update lifecycle.
+        if (
+            progress.step == start_step
+            and weight_broadcast is not None
+            and config.weight_broadcast.type in ("nccl", "nixl")
+        ):
             logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
             multi_run_manager.wait_for_run(0)
             for idx in multi_run_manager.used_idxs:
@@ -577,19 +582,17 @@ def train(config: TrainerConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
-        # sample its next step from it. Skip the final NCCL broadcasts: with a 1-step async barrier
-        # the orchestrator's last step uses the trainer's penultimate ckpt, so they have no receiver
-        # (the inference NCCL group is torn down). Filesystem broadcast still writes them so we can
-        # resume from the broadcast directory.
+        # sample its next step from it. In-memory transports retain their two-step shutdown
+        # window; filesystem broadcast still writes every version for resume.
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
-            nccl_broadcast_unused = (
-                config.weight_broadcast.type == "nccl"
+            broadcast_unused = (
+                config.weight_broadcast.type in ("nccl", "nixl")
                 and config.max_steps is not None
                 and progress.step >= config.max_steps - 1
             )
-            if not nccl_broadcast_unused:
+            if not broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time

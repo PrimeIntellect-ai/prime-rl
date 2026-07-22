@@ -392,27 +392,43 @@ class FileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
 
-class NCCLWeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl"] = "nccl"
-
+class InMemoryWeightBroadcastConfig(BaseConfig):
     host: str = "localhost"
-    """Host for the NCCL broadcast rendezvous."""
+    """Weight transfer host."""
+
+    port: int
+    """Weight transfer port."""
+
+    timeout: int = 1200
+    """Weight transfer timeout in seconds."""
+
+    inference_world_size: int = Field(1, ge=1)
+    """Total inference workers across all servers."""
+
+
+class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nccl"] = "nccl"
 
     port: int = 29501
     """Port for the NCCL broadcast rendezvous."""
 
-    timeout: int = 1200
-    """Timeout in seconds for the NCCL broadcast."""
-
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates."""
 
-    inference_world_size: int = Field(1, ge=1)
-    """Total inference GPUs across all servers. Used by ``init_nccl_broadcast`` to compute per-server rank offsets."""
+
+class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nixl"] = "nixl"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    session_id: str = "default"
+    """ModelExpress session ID."""
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 

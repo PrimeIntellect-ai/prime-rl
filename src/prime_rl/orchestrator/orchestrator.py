@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING
 
 import tomli_w
 import verifiers.v1 as vf
+from modelexpress import p2p_pb2
+from modelexpress.client import MxClient
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -70,9 +72,10 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
+from prime_rl.trainer.rl.broadcast.nixl.model_express import ModelExpressSession
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
-from prime_rl.utils.client import init_nccl_broadcast
+from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.config import to_toml_dict
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
@@ -189,6 +192,7 @@ class Orchestrator:
         self.lora_name = None
         self.resume_step = None
         self.lag_task = None
+        self.model_express = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -308,6 +312,24 @@ class Orchestrator:
                 inference_world_size=config.weight_broadcast.inference_world_size,
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
             )
+        elif config.weight_broadcast.type == "nixl":
+            await init_nixl_broadcast(
+                self.policy_inference.admin_clients,
+                config.weight_broadcast.host,
+                config.weight_broadcast.port,
+                config.weight_broadcast.timeout,
+                config.weight_broadcast.inference_world_size,
+                config.weight_broadcast.session_id,
+            )
+            self.model_express = ModelExpressSession(
+                client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
+                role="orchestrator",
+                rank=0,
+                session_id=config.weight_broadcast.session_id,
+                worker_id="orchestrator",
+            )
+            self.model_express.publish()
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
         self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
@@ -325,18 +347,31 @@ class Orchestrator:
             get_logger().info("Training from scratch")
 
         # Sync inference to the incoming policy before the first step when resuming or when using
-        # NCCL, which rendezvouses with the trainer's first-step broadcast (train.py). A fresh
-        # filesystem run needs no sync (the base model IS policy v0) and must not wait for a
-        # startup broadcast: runs registered after the trainer's first step never receive one.
-        if self.resume_step is not None or config.weight_broadcast.type == "nccl":
+        # an in-memory transport, which rendezvouses with the trainer's startup broadcast.
+        if self.resume_step is not None or config.weight_broadcast.type in ("nccl", "nixl"):
             sync_version = self.resume_step if self.resume_step is not None else 0
-            check_exists = config.weight_broadcast.type != "nccl"
-            # Without a ckpt block, fall back to a default timeout instead of not waiting at all.
-            wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
-            weights_path = get_weight_dir(
-                config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
-            )
+            if config.weight_broadcast.type == "nixl":
+                weights_path = None
+            else:
+                check_exists = config.weight_broadcast.type == "filesystem"
+                # Without a ckpt block, fall back to a default timeout instead of not waiting at all.
+                wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
+                weights_path = get_weight_dir(
+                    config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
+                )
+            if self.model_express is not None:
+                await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
             await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
+            if self.model_express is not None:
+                await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                # Complete the startup rendezvous before the watcher begins its next cycle.
+                await asyncio.to_thread(
+                    self.model_express.wait_for,
+                    "trainer",
+                    count=1,
+                    status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
+                    timeout=config.weight_broadcast.timeout,
+                )
             if self.lora_name is not None:
                 self.policy_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
@@ -385,6 +420,7 @@ class Orchestrator:
             observers=[self.dispatcher, self],
             lora_name=self.lora_name,
             ckpt_step=self.policy.version,
+            model_express=self.model_express,
         )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
@@ -843,18 +879,16 @@ class Orchestrator:
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
         count is ``progress.step - 1``."""
         lead = (self.progress.step - 1) - self.policy.version
-        # The trainer skips the final NCCL weight broadcast (inference group is
-        # torn down), so policy.version never reaches the last step. Without this
-        # the gate deadlocks waiting for a version that will never be published.
-        # The last batch uses the penultimate policy anyway, so let it through.
-        building_final_batch_nccl = (
-            self.config.weight_broadcast.type == "nccl"
+        # The trainer skips the final in-memory weight broadcasts, so policy.version never
+        # reaches the last step. Let the final batch through instead of waiting for it.
+        building_final_batch_without_update = (
+            self.config.weight_broadcast.type in ("nccl", "nixl")
             and self.config.max_steps is not None
             and self.progress.step >= self.config.max_steps - 1
         )
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG and not building_final_batch_nccl:
+        if lead > TARGET_LAG and not building_final_batch_without_update:
             if was_set:
                 get_logger().info(
                     "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."
@@ -870,12 +904,14 @@ class Orchestrator:
             gate.set()
 
     async def on_version_pending(self, step: int) -> None:
-        """No-op: the dispatch gate is re-evaluated in ``on_new_version`` once
-        the new policy version is live."""
+        if self.model_express is not None:
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
 
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""
+        if self.model_express is not None:
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.update_dispatch_gate()
 
     async def stop(self) -> None:
