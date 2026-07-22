@@ -623,6 +623,15 @@ class Orchestrator:
                 await self.version_advanced.wait()
             self.wait_for_policy_time += time.perf_counter() - hold_start
 
+        # Stamp each rollout's true staleness: batch ``step`` trains on policy
+        # v{step-1}, so a rollout generated from v{k} is (step-1)-k versions
+        # off-policy — queue time included, unlike the dispatcher's in-flight
+        # counter, which only sees weight updates during generation. Frozen-
+        # sourced rollouts stay 0 (their sampler doesn't follow the policy).
+        for r in batch.rollouts:
+            if self.train_envs.get(r.env_name).sampler.samples_from_live_policy:
+                r.off_policy_steps = (step - 1) - r.policy_version
+
         # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
         # at ship time; the full arrival window already streamed into ``all`` on arrival.
         # to_record drops the per-node training tensors — they're for training, not the rollout
