@@ -54,6 +54,7 @@ from prime_rl.trainer.utils import (
     filter_rl_trainer_tensor_stats_for_wandb,
     get_zero_gradient_ratio,
     get_ckpt_disk_metrics,
+    raise_if_nonfinite_gradients,
     setup_torch_distributed,
     print_benchmark,
 )
@@ -563,10 +564,15 @@ def train(config: TrainerConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             grad_norm = clip_grad_norm_(
-                model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
+                model.parameters(),
+                max_norm=config.optim.max_norm,
+                ep_enabled=parallel_dims.ep_enabled,
+                error_if_nonfinite=True,
             )
             if grad_norm.device.type == "cpu":
                 grad_norm = grad_norm.to(torch.device("cuda"))
+        else:
+            raise_if_nonfinite_gradients(model.parameters())
 
         zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
 

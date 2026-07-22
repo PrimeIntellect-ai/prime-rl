@@ -462,6 +462,9 @@ class DefaultLossConfig(BaseConfig):
     kl_tau: float = Field(1e-3, ge=0)
     """Temperature for the KL term."""
 
+    importance_ratio_max: float = Field(20.0, gt=0, allow_inf_nan=False)
+    """Upper clip for the policy-gradient importance ratio."""
+
 
 class IPOLossConfig(BaseConfig):
     type: Literal["ipo"] = "ipo"
@@ -473,6 +476,9 @@ class IPOLossConfig(BaseConfig):
 
     kl_tau: float = Field(1e-3, ge=0)
     """Temperature for the KL term."""
+
+    importance_ratio_max: float = Field(20.0, gt=0, allow_inf_nan=False)
+    """Upper clip for the policy-gradient importance ratio."""
 
 
 class CustomLossConfig(BaseConfig):
