@@ -244,6 +244,43 @@ def _first_existing(*paths: Path) -> Path | None:
     return next((p for p in paths if p.exists()), None)
 
 
+# Subset -> media kind. Kinds with dedicated fetch handlers in
+# scripts/fetch_vlm_sft_media.py (openimages/cc3m/chartqa/docvqa/ccpdf/coco/
+# mulberry/clevr/plotqa/flickr30k) reuse them; every other kind is resolved by
+# the generic `archives` lane from the downloaded per-subset media archives.
+ITV3_MEDIA_KIND = {
+    **{f"long_document_ccpdf_{i:02d}": "ccpdf" for i in range(1, 12)},
+    **{f"openimages_{i}": "openimages" for i in range(1, 6)},
+    **{f"sa_finance_{i}": "sa_finance" for i in range(1, 6)},
+    "textvqa_commercial": "openimages",
+    "textcaps_commercial": "openimages",
+    "textcaps": "coco",
+    "flickr30k": "flickr30k",
+    "docvqa": "docvqa",
+    "cc3m": "cc3m",
+    "chartqa_1": "chartqa",
+    "plotqa_1": "plotqa",
+    "plotqa_2": "plotqa",
+    "mulberry_1": "mulberry",
+    "mulberry_2": "mulberry",
+    "aokvqa_1": "coco",
+    "aokvqa_2": "coco",
+    "clevr_1": "clevr",
+}
+ITV3_STRIP_PREFIXES = ("train/data/", "train_images/", "train/png/")
+
+
+def itv3_media_target(source: str, raw_path: str) -> tuple[str, str]:
+    kind = ITV3_MEDIA_KIND.get(source, source)
+    rel = raw_path
+    for prefix in ITV3_STRIP_PREFIXES:
+        rel = rel.removeprefix(prefix)
+    if kind == "ccpdf":
+        batch = source.removeprefix("long_document_ccpdf_").lstrip("0") or "0"
+        return kind, f"{MEDIA_PREFIX}/media/{kind}/{batch}/{rel}"
+    return kind, f"{MEDIA_PREFIX}/media/{kind}/{rel}"
+
+
 def iter_itv3(source: str, keep_think: bool, manifest: dict, rng: random.Random) -> Iterator[tuple[dict, int]]:
     """nvidia house format: {id, messages} with content = [str | {type:image,image:relpath}]."""
     base = _first_existing(
@@ -257,7 +294,6 @@ def iter_itv3(source: str, keep_think: bool, manifest: dict, rng: random.Random)
         return
     files = sorted(base.rglob("*.jsonl")) or sorted(base.rglob("*.parquet"))
     rng.shuffle(files)
-    kind = f"itv3_{source}"
     per_img = (
         700
         if any(k in source for k in ("chartqa", "plotqa", "figureqa", "ecd", "mapqa"))
@@ -285,8 +321,8 @@ def iter_itv3(source: str, keep_think: bool, manifest: dict, rng: random.Random)
                         if text:
                             parts.append(text_part(text))
                     elif isinstance(p, dict) and p.get("type") == "image":
-                        target = f"{MEDIA_PREFIX}/{kind}/{p['image']}"
-                        manifest[target] = {"kind": kind, "ref": p["image"], "source": source}
+                        kind, target = itv3_media_target(source, p["image"])
+                        manifest[target] = {"kind": kind, "ref": p["image"], "source": source, "raw_path": p["image"]}
                         parts.append(image_part(target))
                         img_tokens.append(per_img)
                     else:

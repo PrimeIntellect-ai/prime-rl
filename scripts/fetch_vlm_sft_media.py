@@ -401,6 +401,49 @@ def cmd_plotqa(args) -> None:
     _cmd_nvidia_shards("plotqa", "plotqa_1")
 
 
+def cmd_itv3_shards(args) -> None:
+    """Generic ITv3 media: webdataset shards under <subset>/media/shard_*.tar.
+
+    Prefers shards already on disk (a full-repo download via --local-dir, e.g.
+    $ITV3_RAW/<subset>/media/), falling back to per-shard hub downloads. The
+    manifest kind equals the target dir name; --subset names the repo subset
+    (defaults to the kind itself).
+    """
+    import os
+
+    from huggingface_hub import HfApi, hf_hub_download
+
+    kind = args.itv3_kind
+    subset = args.subset or kind
+    todo = load_kind(kind)
+    if not todo:
+        return
+    raw_root = Path(os.environ.get("ITV3_RAW", "/shared/hubert/raw/nemotron_image_v3"))
+    local_shards = sorted((raw_root / subset / "media").glob("shard_*.tar")) if (raw_root / subset).exists() else []
+    if local_shards:
+        print(f"  using {len(local_shards)} local shards from {raw_root / subset / 'media'}")
+        shard_paths = local_shards
+    else:
+        files = HfApi().list_repo_files("nvidia/Nemotron-Image-Training-v3", repo_type="dataset")
+        shard_paths = [f for f in files if f.startswith(f"{subset}/media/shard_") and f.endswith(".tar")]
+        print(f"  {len(shard_paths)} shards on the hub for {subset}")
+    for shard in shard_paths:
+        if not todo:
+            break
+        tar_path = (
+            shard
+            if isinstance(shard, Path)
+            else hf_hub_download("nvidia/Nemotron-Image-Training-v3", shard, repo_type="dataset")
+        )
+        with tarfile.open(tar_path) as tf:
+            names = tf.getnames()
+            before = len(todo)
+            _extract_by_suffix(names, todo, lambda n: tf.extractfile(n).read())
+            for t in [t for t in todo if t.exists()]:
+                todo.pop(t, None)
+            print(f"  {tar_path}: {before - len(todo)} matched, {len(todo)} remaining", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -417,10 +460,13 @@ def main():
             "mulberry",
             "clevr",
             "plotqa",
+            "itv3_shards",
         ],
     )
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--manifest", type=Path, default=MANIFEST)
+    parser.add_argument("--itv3-kind", type=str, default=None, help="manifest kind for itv3_shards")
+    parser.add_argument("--subset", type=str, default=None, help="ITv3 repo subset (defaults to --itv3-kind)")
     args = parser.parse_args()
     global _manifest_path
     _manifest_path = args.manifest
