@@ -19,6 +19,16 @@ from prime_rl.utils.utils import (
 )
 
 
+def raise_for_failed_component_tasks(tasks: list[asyncio.Task]) -> None:
+    """Raise a named error for any failed long-lived orchestrator task."""
+    for task in tasks:
+        if not task.done() or task.cancelled():
+            continue
+        exception = task.exception()
+        if exception is not None:
+            raise RuntimeError(f"Orchestrator component task {task.get_name()!r} failed") from exception
+
+
 async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     """Build the live policy inference pool + matching renderer. Returns
     ``(renderer, inference_pool)``.

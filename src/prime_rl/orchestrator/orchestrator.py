@@ -65,6 +65,7 @@ from prime_rl.orchestrator.types import (
 from prime_rl.orchestrator.utils import (
     get_weight_dir,
     intercept_vf_logging,
+    raise_for_failed_component_tasks,
     save_rollouts,
     set_default_executor,
     setup_policy_inference_pool,
@@ -507,6 +508,7 @@ class Orchestrator:
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
+            raise_for_failed_component_tasks(self.component_tasks)
             if self.draining and self.dispatcher.is_idle:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
