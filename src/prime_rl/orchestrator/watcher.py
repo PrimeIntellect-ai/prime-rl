@@ -112,7 +112,7 @@ class WeightWatcher:
             # Publish confirmed: the policy version advances here, before the
             # apply — inference pauses during the update, so nothing can generate
             # under the new number from the old weights, and a ship held on this
-            # version (see docs/staleness.md) releases without waiting out the
+            # version (see docs/training.md#staleness-and-pacing) releases without waiting out the
             # inference weight reload.
             self.ckpt_step = next_step
             self.policy.version = next_step

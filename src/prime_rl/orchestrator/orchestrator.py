@@ -603,7 +603,7 @@ class Orchestrator:
                 f"({n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
-        # ADVANCE rule (docs/staleness.md): batch ``step`` ships only once the
+        # ADVANCE rule (docs/training.md#staleness-and-pacing): batch ``step`` ships only once the
         # trainer has published policy v{step-1-TARGET_LAG}. On fast envs the sink
         # otherwise fills batches from buffered rollouts faster than the trainer
         # consumes them; the orchestrator would finish all its steps, tear down the
