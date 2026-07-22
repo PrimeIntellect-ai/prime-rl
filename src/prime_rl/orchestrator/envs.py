@@ -125,7 +125,6 @@ class Env:
             self.num_tasks = info.num_tasks
             self.requires_group_scoring = info.requires_group_scoring
         else:
-            assert self.config.env.taskset is not None  # validate_env refused empty ids
             taskset = vf.load_taskset(self.config.env.taskset)
             if type(taskset).INFINITE:
                 self.task_iter = iter(taskset.load())
