@@ -5,7 +5,8 @@ imagePullSecrets:
 
 image:
   repository: ghcr.io/primeintellect-ai/prime-rl
-  tag: nvfp4-e2e.dev1-arm64
+  tag: nvfp4-e2e.dev2-arm64
+  digest: sha256:823eea93b07b5adbaaafddacdc00a7d0f7384c65696b952b92ff28b5790af6b7
   pullPolicy: IfNotPresent
 
 devSource:
