@@ -281,6 +281,17 @@ def test_default_nccl_world_size_does_not_bypass_local_gpu_guard():
         )
 
 
+def test_glm52_dynamo_r2e_example_includes_post_update_rollout():
+    example = Path("examples/dynamo/glm52_fp8_r2e")
+    with (example / "orchestrator.toml").open("rb") as stream:
+        orchestrator = tomllib.load(stream)
+    with (example / "trainer.toml").open("rb") as stream:
+        trainer = tomllib.load(stream)
+
+    assert orchestrator["max_steps"] == 3
+    assert trainer["max_steps"] == 3
+
+
 def test_two_gpu_dynamo_qwen30b_example_uses_bfloat16_training():
     path = Path("examples/dynamo/qwen3_30b_Thinking/rl.toml")
     with path.open("rb") as stream:

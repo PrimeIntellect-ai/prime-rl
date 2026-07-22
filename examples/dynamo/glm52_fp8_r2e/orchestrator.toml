@@ -1,4 +1,4 @@
-max_steps = 1
+max_steps = 3
 batch_size = 2
 group_size = 2
 seq_len = 32768

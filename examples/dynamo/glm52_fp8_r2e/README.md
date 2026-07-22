@@ -1,6 +1,6 @@
 # GLM-5.2 FP8 R2E with external Dynamo inference
 
-This one-step smoke recipe runs a distributed Prime trainer and orchestrator
+This three-step smoke recipe runs a distributed Prime trainer and orchestrator
 against a separately managed Dynamo deployment serving
 `zai-org/GLM-5.2-FP8`. Dynamo owns the frontend, vLLM engines, and one native
 gRPC sidecar per engine group; Prime discovers the mutable engine control
@@ -75,6 +75,9 @@ uv run orchestrator \
   --output-dir /shared/glm52-dynamo-r2e/train/run_0
 ```
 
-The gate succeeds when one optimizer step completes, the NCCL update settles
-on all 16 inference ranks, and a post-update multi-turn rollout completes
-without changing its Dynamo session assignment.
+The gate succeeds when the first optimizer step completes, policy version 1
+settles on all 16 inference ranks through NCCL, and a later multi-turn rollout
+completes without changing its Dynamo session assignment. Three steps are
+required because finite NCCL runs skip broadcasts once
+`step >= max_steps - 1`; this leaves step 1 as the first non-final broadcast
+slot.

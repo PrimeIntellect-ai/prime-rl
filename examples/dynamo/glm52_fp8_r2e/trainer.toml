@@ -1,4 +1,4 @@
-max_steps = 1
+max_steps = 3
 dist_timeout_seconds = 12000
 
 [model]
