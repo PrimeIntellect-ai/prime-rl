@@ -895,7 +895,7 @@ def iter_agentnet(rng: random.Random) -> Iterator[tuple[dict, int]]:
                 if not row.get("task_completed") or (row.get("alignment_score") or 0) < 7:
                     continue
                 traj = row.get("traj") or []
-                if not 1 <= len(traj) <= 12:
+                if not 1 <= len(traj) <= 25:
                     continue
                 messages = [
                     {"role": "user", "content": [text_part(f"Task: {row['instruction'].strip()}")]},
@@ -908,6 +908,9 @@ def iter_agentnet(rng: random.Random) -> Iterator[tuple[dict, int]]:
                         break
                     if v.get("last_step_redundant"):
                         continue
+                    code = v.get("code") or ""
+                    if "computer.terminate" in code or "computer.answer" in code or not code.strip():
+                        continue  # terminal/no-op marker, not an action step
                     img_name = step.get("image")
                     src = next((r / img_name for r in img_roots if img_name and (r / img_name).exists()), None)
                     if src is None:
@@ -916,7 +919,7 @@ def iter_agentnet(rng: random.Random) -> Iterator[tuple[dict, int]]:
                     dst = store_dir / img_name
                     if not dst.exists():
                         os.link(src, dst)
-                    tcs = pyautogui_to_tool_calls(v.get("code") or "", li * 100 + si)
+                    tcs = pyautogui_to_tool_calls(code, li * 100 + si)
                     if tcs is None:
                         ok = False
                         break
