@@ -1169,7 +1169,8 @@ def build_slices(manifest: dict, rng: random.Random) -> dict[str, SliceSpec]:
                     "llava_cot",
                     lambda: iter_sharegpt(
                         "llava_cot",
-                        _first_existing(RAW_ROOT / "LLaVA-CoT-100k", RAW_ROOT / "llava_cot") or RAW_ROOT / "llava_cot",
+                        _first_existing(RAW_ROOT / "llava_cot_100k", RAW_ROOT / "LLaVA-CoT-100k")
+                        or RAW_ROOT / "llava_cot_100k",
                         "llavacot",
                         manifest,
                         rng,
