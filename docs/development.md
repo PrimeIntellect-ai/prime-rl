@@ -71,7 +71,7 @@ Drop the modeling code under `src/prime_rl/trainer/models/<arch>/` (HF-compatibl
 
 ### Register a Mini Preset
 
-Add an entry to [`scripts/mini_moe.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/mini_moe.py) so the smoke-test workflow can build a ~0.5B test model in your architecture. The preset names the config class, picks small dimensions, and wires up the HF + PrimeRL model classes plus a tokenizer source:
+Add an entry to [`scripts/mini_moe.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/mini_moe.py) so the smoke-test workflow can build a ~0.5B test model in your architecture. The preset names the config class, picks small dimensions, and wires up the HF + prime-rl model classes plus a tokenizer source:
 
 ```python
 ARCH_PRESETS = {
@@ -88,7 +88,7 @@ ARCH_PRESETS = {
 
 ### Run the Smoke Test
 
-Build the mini model. This creates a ~543M-parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) with random weights, copies the tokenizer from the original GLM-4 model, and verifies the HF↔PrimeRL roundtrip is lossless:
+Build the mini model. This creates a ~543M-parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) with random weights, copies the tokenizer from the original GLM-4 model, and verifies the HF↔prime-rl roundtrip is lossless:
 
 ```bash
 uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
@@ -103,10 +103,9 @@ uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --
 Warm up the random-weight mini model with SFT on reverse-text so KL divergence becomes meaningful in the RL phase. Loss drops from ~12 to ~2.5 — the output won't be coherent, but the distribution is non-trivial. A pre-built SFT'd checkpoint lives at [samsja/mini-glm-moe](https://huggingface.co/samsja/mini-glm-moe) if you want to skip this step:
 
 ```bash
-uv run sft @ configs/debug/moe/sft/train.toml \
+uv run sft \
   --model.name ./mini-glm-moe \
   --data.name PrimeIntellect/Reverse-Text-SFT \
-  --data.type null \
   --max_steps 200 \
   --optim.lr 1e-4 \
   --ckpt.weights
@@ -115,7 +114,7 @@ uv run sft @ configs/debug/moe/sft/train.toml \
 Then run the full RL stack on reverse-text:
 
 ```bash
-uv run rl @ configs/ci/integration/reverse_text_moe/start.toml \
+uv run rl @ configs/ci/integration/reverse-text-moe/start.toml \
   --model.name samsja/mini-glm-moe \
   --trainer.model.impl custom \
   --inference.gpu-memory-utilization 0.7 \

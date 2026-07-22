@@ -336,7 +336,7 @@ class PrimeMonitor(Monitor):
         rows = []
 
         for sample_id, rollout in enumerate(rollouts):
-            sample = trace_to_sample(rollout, rollout_number=sample_id + 1)
+            sample = trace_to_sample(rollout, rollout_number=sample_id + 1, episode_id=rollout.episode_id or None)
             trajectory = sample["trajectory"]
             if not trajectory:  # no branches (e.g. a rollout that errored before any message)
                 continue

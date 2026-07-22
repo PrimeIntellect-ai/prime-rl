@@ -1,0 +1,70 @@
+# Start the frozen reference server first (on a separate GPU):
+#   CUDA_VISIBLE_DEVICES=1 uv run inference \
+#     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
+#     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
+# Then:
+#   uv run rl @ configs/debug/algo/sft_distill_lora.toml
+
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "algorithms-debug"
+name = "debug-sft-lora"
+
+[orchestrator]
+batch_size = 128
+group_size = 4
+
+[orchestrator.algo]
+type = "sft"
+
+# sft's teacher IS the model it samples from.
+[orchestrator.algo.sampling.source]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+base_url = ["http://localhost:8001/v1"]
+
+# The student's renderer tokenizes the teacher's messages into the student's
+# token space (backfill). Use `prime-qwen3` — it matches this PrimeIntellect
+# Qwen3 model's chat template token-for-token (single-turn + system), keeping the
+# CE target faithful, without the empty `<think></think>` block the stock `qwen3`
+# renderer injects (which this model's template never emits).
+[orchestrator.renderer]
+name = "prime-qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+name = "reverse-text"
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.eval]
+interval = 1
+num_examples = 128
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.eval.env]]
+name = "reverse-text"
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[trainer.optim]
+lr = 1e-4
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[ckpt]
+
+[inference]
+gpu_memory_utilization = 0.5

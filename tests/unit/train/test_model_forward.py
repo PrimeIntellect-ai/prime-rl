@@ -33,6 +33,7 @@ def test_forward_passes_renderer_mm_token_type_ids_through():
         model,
         input_ids,
         position_ids,
+        seq_lens=torch.tensor([input_ids.shape[1]]),
         mm_kwargs={"pixel_values": pixel_values, "image_grid_thw": image_grid_thw},
         mm_token_type_ids=mm_token_type_ids,
     )
@@ -57,6 +58,7 @@ def test_forward_omits_mm_token_type_ids_when_renderer_does_not_supply():
         model,
         input_ids,
         position_ids,
+        seq_lens=torch.tensor([input_ids.shape[1]]),
         mm_kwargs={"pixel_values": torch.ones(2, 3), "image_grid_thw": torch.tensor([[1, 1, 2]])},
     )
 
@@ -76,6 +78,7 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
         model,
         input_ids,
         position_ids,
+        seq_lens=torch.tensor([input_ids.shape[1]]),
         mm_kwargs={"pixel_values": torch.ones(2, 3)},
     )
 

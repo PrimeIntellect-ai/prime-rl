@@ -1,0 +1,38 @@
+# Wordle on 2 GPUs (1 trainer + 1 inference). The Wordle-SFT model plays a
+# full ~6-turn game per rollout.
+
+max_steps = 200
+seq_len = 8192
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[wandb]
+project = "wordle"
+name = "wordle"
+
+[ckpt] # Checkpoint at the end of training
+
+[model]
+name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
+
+[orchestrator]
+batch_size = 128
+group_size = 8
+
+[[orchestrator.train.env]]
+name = "wordle"
+env.taskset = { id = "wordle-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.train.sampling]
+max_completion_tokens = 1024
+
+[trainer] # Default trainer config
+
+[inference] # single inference GPU (no data parallelism)
+
+# Fine-tune inherits the PrimeIntellect Qwen3 template byte-for-byte.
+[orchestrator.renderer]
+name = "prime-qwen3"

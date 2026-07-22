@@ -36,6 +36,7 @@ def test_qwen35_mrope_text_only_positions():
         mm_token_type_ids=mm_token_type_ids,
         image_grid_thw=None,
         spatial_merge_size=2,
+        seq_lens=torch.tensor([input_ids.shape[1]]),
     )
 
     expected = torch.arange(4).view(1, 1, -1).expand(3, 1, -1)
@@ -52,6 +53,7 @@ def test_qwen35_mrope_single_image_with_surrounding_text():
         mm_token_type_ids=mm_token_type_ids,
         image_grid_thw=image_grid_thw,
         spatial_merge_size=2,
+        seq_lens=torch.tensor([input_ids.shape[1]]),
     )
 
     expected = torch.tensor(
@@ -74,6 +76,7 @@ def test_qwen35_mrope_adjacent_images_consume_multiple_grids():
         mm_token_type_ids=mm_token_type_ids,
         image_grid_thw=image_grid_thw,
         spatial_merge_size=2,
+        seq_lens=torch.tensor([input_ids.shape[1]]),
     )
 
     expected = torch.tensor(
@@ -121,6 +124,7 @@ def test_qwen35_mrope_packed_matches_standalone_segments():
         mm_token_type_ids=segment_token_types,
         image_grid_thw=image_grid_thw,
         spatial_merge_size=2,
+        seq_lens=torch.tensor([segment_input_ids.shape[1]]),
     )
     packed = build_qwen3_5_mrope_position_ids(
         input_ids=torch.cat([segment_input_ids, segment_input_ids], dim=1),
@@ -145,6 +149,7 @@ def test_qwen35_mrope_rejects_image_length_grid_mismatch():
             mm_token_type_ids=mm_token_type_ids,
             image_grid_thw=image_grid_thw,
             spatial_merge_size=2,
+            seq_lens=torch.tensor([input_ids.shape[1]]),
         )
 
 
@@ -158,6 +163,7 @@ def test_qwen35_mrope_rejects_video_tokens():
             mm_token_type_ids=mm_token_type_ids,
             image_grid_thw=None,
             spatial_merge_size=2,
+            seq_lens=torch.tensor([input_ids.shape[1]]),
         )
 
 

@@ -11,7 +11,7 @@ import torch.distributed.nn as dist_nn
 import torch.nn as nn
 from ring_flash_attn import update_ring_flash_attn_params
 
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 CPStyle = Literal["ring", "ulysses"]
 
@@ -24,7 +24,8 @@ def _has_linear_attn_layer(model: nn.Module) -> bool:
     layers = getattr(inner, "layers", None)
     if layers is None:
         return False
-    for layer in layers:
+    layer_modules = layers.modules() if isinstance(layers, nn.Module) else layers
+    for layer in layer_modules:
         # Qwen3.5 hybrid DeltaNet
         if getattr(layer, "layer_type", None) == "linear_attention":
             return True
@@ -52,54 +53,22 @@ def assert_cp_style_supports_model(cp_style: CPStyle, model: nn.Module) -> None:
         )
 
 
-def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-    """Configure DeltaNet modules in Qwen3.5 hybrid models for ulysses-style CP."""
-    layers = None
-    if hasattr(model, "model"):
-        inner = model.model
-        if hasattr(inner, "language_model"):
-            inner = inner.language_model
-        if hasattr(inner, "layers"):
-            layers = inner.layers
+def setup_model_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+    """Hand the CP topology to models whose layers need it (DeltaNet, Mamba).
 
-    if layers is None:
-        return
-
-    count = 0
-    for layer in layers:
-        if getattr(layer, "layer_type", None) == "linear_attention":
-            attn = getattr(layer, "linear_attn", None)
-            if attn is not None:
-                attn.cp_group = cp_group
-                attn.cp_rank = cp_rank
-                attn.cp_world_size = cp_world_size
-                count += 1
-
-    if count > 0:
+    Such models expose ``set_context_parallel_attributes`` at the top level and
+    own their layer wiring; softmax-only models don't and need nothing.
+    """
+    if hasattr(model, "set_context_parallel_attributes"):
+        model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
         from prime_rl.utils.logger import get_logger
 
-        get_logger().info(f"Configured hybrid CP on {count} DeltaNet modules (fla native state passing)")
-
-
-def setup_nemotron_h_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-    """Configure NemotronH Mamba layers for ulysses-style all-to-all head partitioning."""
-    layers = None
-    if hasattr(model, "model") and hasattr(model.model, "layers"):
-        layers = model.model.layers
-
-    if layers is None:
-        return
-
-    count = 0
-    for layer in layers:
-        if hasattr(layer, "mamba") and hasattr(layer, "set_context_parallel_attributes"):
-            layer.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
-            count += 1
-
-    if count > 0:
-        from prime_rl.utils.logger import get_logger
-
-        get_logger().info(f"Configured NemotronH CP on {count} Mamba layers (all-to-all head partitioning)")
+        get_logger().info("Configured model CP attributes")
+    elif _has_linear_attn_layer(model):
+        raise ValueError(
+            "Model has linear-attention/Mamba layers but does not implement "
+            "set_context_parallel_attributes; CP would silently misconfigure them"
+        )
 
 
 def setup_sparse_mla_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
@@ -125,7 +94,7 @@ def setup_sparse_mla_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: 
         get_logger().info(f"Configured sparse MLA CP on {count} DSA layers")
 
 
-def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Tensor:
+def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int, seq_dim: int = 1) -> torch.Tensor:
     """
     Shard a tensor for context parallelism.
     Args:
@@ -136,11 +105,24 @@ def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Ten
         The shard of the tensor for the current rank.
     """
 
-    assert t.shape[0] == 1, "For CP, tensor must have batch dimension of 1"
+    if seq_dim == 1 and t.shape[0] != 1:
+        raise ValueError(f"For CP, tensor must have batch dimension 1, got shape={tuple(t.shape)}")
+    if t.shape[seq_dim] % cp_world_size != 0:
+        raise ValueError(
+            f"CP requires sequence dimension {seq_dim} to be divisible by cp size: "
+            f"shape={tuple(t.shape)}, cp_size={cp_world_size}; "
+            "uneven shards deadlock CP collectives (e.g. ulysses all-to-all)"
+        )
 
-    chunked_t = torch.chunk(t, cp_world_size, dim=1)
+    chunked_t = torch.chunk(t, cp_world_size, dim=seq_dim)
 
     return chunked_t[cp_rank]
+
+
+def shard_position_ids_for_cp(position_ids: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Tensor:
+    if position_ids.ndim == 3:
+        return shard_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size, seq_dim=2)
+    return shard_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
 
 
 def gather_for_cp(t: torch.Tensor, cp_group: dist.ProcessGroup) -> torch.Tensor:
@@ -161,20 +143,40 @@ def setup_cp_params(
     cp_rank: int,
     cp_world_size: int,
     cp_group: dist.ProcessGroup,
+    *,
+    seq_lens: torch.Tensor,
     cp_style: CPStyle = "ring",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Prepare the input for context parallelism and set required attention params.
 
-    Both ring and ulysses styles need cu_seqlens computed from the *full*
-    (un-sharded) position_ids, then publish them to the patched attention layer:
+    Both ring and ulysses styles need cu_seqlens computed from the full,
+    unsharded sequence lengths, then publish them to the patched attention layer:
       - ring: via ring_flash_attn's DATA_PARAMS (with local_k_slice).
       - ulysses: via ULYSSES_PARAMS (just the full cu_seqlens / max_seqlen).
 
     Returns the sequence-sharded input_ids and position_ids — the rest of the
     model still runs sequence-sharded; only attention sees the full sequence.
     """
-    cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+    setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style=cp_style, seq_lens=seq_lens)
+
+    input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
+    position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
+    return input_ids, position_ids
+
+
+def setup_cp_attention_params(
+    position_ids: torch.Tensor,
+    cp_group: dist.ProcessGroup,
+    *,
+    seq_lens: torch.Tensor,
+    cp_style: CPStyle = "ring",
+) -> None:
+    total_tokens = position_ids.shape[-1]
+    cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+        seq_lens.to(device=position_ids.device),
+        total_tokens=total_tokens,
+    )
 
     if cp_style == "ring":
         update_ring_flash_attn_params(cu_seqlens, cp_group)
@@ -186,7 +188,3 @@ def setup_cp_params(
         update_ulysses_params(cu_seqlens, max_seqlen)
     else:
         raise ValueError(f"Unknown cp_style: {cp_style}")
-
-    input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
-    position_ids = shard_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
-    return input_ids, position_ids

@@ -55,8 +55,16 @@ def _build_rollout(
     )
     parent = len(nodes) - 1
 
+    # Trace token counts are usage-based, so carry provider usage on the final turn's call:
+    # every model-generated token as completion, the leading prompt + tool observations as the
+    # fed-in context (num_input_tokens = num_total_tokens - num_output_tokens).
+    output_tokens = sum(sampled_lengths)
+    input_tokens = 1 + sum(obs_lengths)
+    calls: list[vf.ModelCall] = []
+
     for i, n_sampled in enumerate(sampled_lengths):
         ids = _take(n_sampled)
+        is_last = i == len(sampled_lengths) - 1
         nodes.append(
             vf.MessageNode(
                 message=vf.AssistantMessage(content="a"),
@@ -68,6 +76,13 @@ def _build_rollout(
             )
         )
         parent = len(nodes) - 1
+        if is_last:
+            calls.append(
+                vf.ModelCall(
+                    node=parent,
+                    usage=vf.Usage(prompt_tokens=input_tokens, completion_tokens=output_tokens),
+                )
+            )
         if i < len(obs_lengths):
             obs_ids = _take(obs_lengths[i])
             nodes.append(
@@ -85,6 +100,7 @@ def _build_rollout(
     rollout = Rollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
         nodes=nodes,
+        calls=calls,
         rewards={"reward": reward},
         metrics=metrics or {},
     )

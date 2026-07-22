@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: false
       - name: Init public submodules
@@ -20,7 +20,7 @@ jobs:
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -48,9 +48,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -90,20 +90,15 @@ jobs:
           assert find_package_resource("templates") is None, "templates should not be in slim wheel"
           print("slim install OK — configs import with no heavy deps loaded")
           PY
-      - name: Verify real configs (with [slurm]) parse on slim install
+      - name: Verify real SFT config (with [slurm]) parses on slim install
         run: |
           /tmp/slim/bin/python - <<'PY'
           from pydantic_config import cli
           from prime_rl.configs.sft import SFTConfig
-          from prime_rl.configs.rl import RLConfig
-          # Configs that don't pull in a v1 env package parse on the slim
-          # (prime-rl-configs-only) install: the SFT config has no env sections, and the
-          # reverse_text RL recipe uses a v0 env id (resolved lazily, not imported at parse).
-          # RL configs on a v1 taskset can't parse here because vf.EnvServerConfig imports the
-          # (uninstalled) env package at parse time.
+          # The slim wheel intentionally excludes taskset packages, so validate a real
+          # SFT config here. RL recipes are covered by the full config suite.
           for cfg_cls, args in [
-              (SFTConfig, ["@", "examples/reverse_text/slurm_sft.toml"]),
-              (RLConfig, ["@", "examples/reverse_text/rl.toml", "@", "examples/reverse_text/slurm_rl.toml"]),
+              (SFTConfig, ["@", "configs/ci/slim_sft.toml"]),
           ]:
               cfg = cli(cfg_cls, args=args)
               assert cfg.slurm is not None, f"expected [slurm] in {args}"

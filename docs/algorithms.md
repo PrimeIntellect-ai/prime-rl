@@ -117,10 +117,15 @@ Both components resolve per environment. Each env inherits `[orchestrator.algo]`
 type = "grpo"
 
 [[orchestrator.train.env]]
-id = "math-env"     # inherits grpo
+name = "math"
+taskset = { id = "math-v1" }
+harness = { id = "null", runtime = { type = "subprocess" } }
+# inherits the top-level grpo
 
 [[orchestrator.train.env]]
-id = "terminal-env"
+name = "terminal"
+taskset = { id = "terminal-v1" }
+harness = { id = "bash", runtime = { type = "subprocess" } }
 algo = { type = "echo" }   # this env runs its own algorithm
 ```
 
@@ -272,7 +277,7 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 | `grpo` | `rl` | Group-norm: reward minus per-group baseline, optional length penalty. |
 | `max_rl` | `rl` | Mean-normalized group credit (maximum-likelihood RL). |
 | `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-provided tokens selected by message role (each role's `alpha` is its ECHO λ), optionally narrowed by a user filter. |
-| `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream; `group_size` only fans out sampling. |
+| `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`teacher`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream; `group_size` only fans out sampling. |
 | `opsd` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream. |
 | `sft` | `ce` | Cross-entropy on the sampled tokens. Assigns no advantage — trains on every sampled token. |
 
@@ -415,7 +420,7 @@ tok.apply_chat_template(messages, tokenize=False)
 # (the <think>R1</think> from turn 2 is gone)
 ```
 
-Hand-coded renderers ship for `qwen3`, `qwen3-vl`, `qwen3.5`, `glm5`, `glm4.5`, `minimax-m2`, `deepseek-v3`, `kimi-k2`, `kimi-k2.5`, `nemotron-3`, `gpt-oss`; anything else falls back to `DefaultRenderer` (a generic `apply_chat_template` wrapper). Pick one via:
+Hand-coded renderers ship for `qwen3`, `qwen3-vl`, `qwen3.5`, `glm-5`, `glm-4.5`, `minimax-m2`, `deepseek-v3`, `kimi-k2`, `kimi-k2.5`, `nemotron-3`, `gpt-oss`; anything else falls back to `DefaultRenderer` (a generic `apply_chat_template` wrapper). Pick one via:
 
 ```toml
 [orchestrator.renderer]

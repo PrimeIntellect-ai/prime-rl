@@ -34,7 +34,7 @@ def build_qwen3_5_mrope_position_ids(
     mm_token_type_ids: torch.LongTensor,
     image_grid_thw: torch.LongTensor | None,
     spatial_merge_size: int,
-    seq_lens: torch.Tensor | None = None,
+    seq_lens: torch.Tensor,
 ) -> torch.LongTensor:
     if input_ids.ndim != 2:
         raise ValueError(f"input_ids must be 2D, got shape={tuple(input_ids.shape)}")
@@ -47,10 +47,7 @@ def build_qwen3_5_mrope_position_ids(
         raise ValueError("Packed Qwen3.5 MRoPE builder currently supports batch size 1")
 
     total_seq_len = input_ids.shape[1]
-    if seq_lens is None:
-        seq_lens = torch.tensor([total_seq_len], dtype=torch.long, device=input_ids.device)
-    else:
-        seq_lens = seq_lens.to(device=input_ids.device, dtype=torch.long)
+    seq_lens = seq_lens.to(device=input_ids.device, dtype=torch.long)
 
     if seq_lens.ndim != 1:
         raise ValueError(f"seq_lens must be 1D, got shape={tuple(seq_lens.shape)}")

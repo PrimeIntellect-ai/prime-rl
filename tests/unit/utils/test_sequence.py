@@ -1,7 +1,10 @@
 import pytest
 import torch
 
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids, get_cu_seqlens_from_seq_lens
+from prime_rl.utils.sequence import (
+    get_cu_seqlens_from_position_ids,
+    get_cu_seqlens_from_seq_lens,
+)
 
 
 @pytest.mark.parametrize(

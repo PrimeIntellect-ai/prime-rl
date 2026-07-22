@@ -28,7 +28,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/reverse_text_moe/start.toml",
+        "configs/ci/integration/reverse-text-moe/start.toml",
         "--trainer.model.impl",
         "custom",
         "--wandb.project",

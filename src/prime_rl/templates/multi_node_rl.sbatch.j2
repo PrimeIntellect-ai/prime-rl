@@ -367,12 +367,15 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     for ((d=0; d<INFERENCE_DP_LOCAL; d++)); do
         RANK_GPUS=$(seq -s, $((d * INFERENCE_TP)) $((d * INFERENCE_TP + INFERENCE_TP - 1)))
         RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
-        if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ]; then
+        if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ "$INFER_GROUP_DP" -gt 1 ]; then
             GLOBAL_DP_RANK=$((RANK_IN_REPLICA * INFERENCE_DP_LOCAL + d))
             RANK_EXTRA="{\"data_parallel_rank\": $GLOBAL_DP_RANK, \"data_parallel_address\": \"$DP_ADDR\"}"
             launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$INFER_GROUP_DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
         else
-            # Dense: independent single-engine servers (no DP linkage).
+            # Dense or single-DP-rank EP (dp=1, e.g. EP within one tp=8 group):
+            # independent single-engine servers. vLLM rejects the external-LB DP
+            # args when data_parallel_size == 1; enable_expert_parallel in the
+            # inference config alone shards experts across the TP group.
             launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG"
         fi
     done

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
+from prime_rl.utils.monitor.prime import PrimeMonitor
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
@@ -15,6 +16,9 @@ class MultiMonitor(Monitor):
     def __init__(self, monitors: list[Monitor]):
         self.monitors = monitors
         self.logger = get_logger()
+        # Prefer the platform run id over W&B's when both report one.
+        prime = next((m for m in monitors if isinstance(m, PrimeMonitor)), None)
+        self.run_id = (prime.run_id if prime else None) or next((m.run_id for m in monitors if m.run_id), None)
 
     @property
     def history(self) -> list[dict[str, Any]]:

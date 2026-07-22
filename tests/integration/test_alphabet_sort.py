@@ -15,7 +15,8 @@ from tests.utils import (
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
-TIMEOUT = 900  # 15 minutes
+TIMEOUT = 1200  # 20 minutes (was 900s — alphabet-sort steps can take 2+ min
+# each on contended CI GPU runners, and vLLM warm-up eats ~2 min)
 
 
 @pytest.fixture(scope="module")

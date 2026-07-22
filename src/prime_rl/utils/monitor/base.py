@@ -37,6 +37,9 @@ class Monitor(ABC):
     to store logged metrics.
     """
 
+    run_id: str | None = None
+    """External identifier of the run this monitor reports to (platform / W&B), when it has one."""
+
     @abstractmethod
     def log(self, metrics: dict[str, Any], step: int) -> None:
         pass

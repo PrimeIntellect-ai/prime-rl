@@ -41,7 +41,7 @@ RolloutKind = Literal["train", "eval"]
 @dataclass
 class InflightRollout:
     """Per-task scheduling state in the dispatcher; one entry per in-flight
-    ``run_rollout`` / ``run_group`` task."""
+    ``run`` / ``run_group`` task."""
 
     kind: RolloutKind
     env_name: str
@@ -63,9 +63,6 @@ class GroupState:
     task_idx: int
     rollouts_to_schedule: int
     target_rollouts: int
-    task: vf.Task | None = None
-    """The group's task (v1 envs — its data is shipped on every dispatch). ``None`` for
-    legacy envs, which are addressed by ``task_idx`` alone."""
     emitted: int = 0
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None
@@ -76,8 +73,10 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     """A completed rollout: the env's typed ``vf.Trace`` *is* the rollout — prime-rl's
     orchestration metadata lives on it directly (set by the dispatcher once the rollout
     returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
-    fields are ``exclude=True``, so dumping a Rollout yields a plain trace on the wire;
-    :meth:`to_record` adds the small metadata fields back for the on-disk trace files.
+    fields are ``exclude=True``, so dumping a Rollout yields a plain trace on the wire; the
+    orchestrator mirrors them onto the trace's own fields via ``vf.Trace.stamp`` (``kind`` as
+    ``run.type``, the run id, the step, and ``env_name``/``group_id``/``policy_version`` into
+    ``info``) when a rollout arrives, so the on-disk records stay fully placeable.
 
     It is also the single currency the scoring hooks receive: a hook reads the trace
     directly (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``) and writes
@@ -89,6 +88,9 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     kind: RolloutKind = Field(default="train", exclude=True)
     env_name: str = Field(default="", exclude=True)
     group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
+    # Links the traces of one episode; stamped into ``info`` on arrival so
+    # saved records keep their grouping.
+    episode_id: str = Field(default="", exclude=True)
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
@@ -100,19 +102,6 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     is_filtered: bool = Field(default=False, exclude=True)
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
     eval_step: int | None = Field(default=None, exclude=True)
-
-    def to_record(self) -> dict:
-        """The plain trace record plus the orchestration metadata (excluded from the pydantic
-        dump), so a record stays fully placeable — kind, env, policy — even when trace files
-        are merged or read away from their paths. ``eval_step`` is the eval trigger step (None
-        for train rollouts)."""
-        return super().to_record() | {
-            "kind": self.kind,
-            "env_name": self.env_name,
-            "group_id": str(self.group_id),
-            "policy_version": self.policy_version,
-            "eval_step": self.eval_step,
-        }
 
     def assign_advantages(self, values: float | list[float]) -> None:
         """Write the rl advantage stream: a scalar broadcast over the

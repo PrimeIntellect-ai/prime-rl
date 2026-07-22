@@ -1,0 +1,40 @@
+# Reverse-text on 2 GPUs (1 trainer + 1 inference) — the smallest end-to-end RL loop
+# (single-turn, 0.6B). Dev-sized mirror of examples/basic/reverse-text.
+
+max_steps = 20
+seq_len = 2048
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "reverse-text"
+name = "reverse-text"
+
+[orchestrator]
+batch_size = 128
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+name = "reverse-text"
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt] # Checkpoint at the end of training
+
+[inference]
+
+# PrimeIntellect Qwen3 fine-tune - select its renderer explicitly (the -SFT
+# suffix misses the MODEL_RENDERER_MAP exact match).
+[orchestrator.renderer]
+name = "prime-qwen3"

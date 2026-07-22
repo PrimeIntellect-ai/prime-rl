@@ -28,7 +28,9 @@ from prime_rl.trainer.model import (
     forward,
     get_load_balance_stats,
     is_tt_moe_model,
+    setup_processor,
     setup_tokenizer,
+    resolve_auto_attn,
     setup_model,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -51,8 +53,6 @@ from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
-from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
-from prime_rl.trainer.models.layers.lm_head import FUSED_CE_IGNORE_INDEX
 
 from torchtitan.distributed.utils import clip_grad_norm_
 
@@ -107,6 +107,9 @@ def train(config: SFTConfig):
     )
     grad_accum_steps = total_micro_batches // micro_batches_per_step
 
+    # Resolve attn='auto' before CP setup so ring/ulysses patches use the correct kernel
+    resolve_auto_attn(config.model)
+
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
         cp_group = parallel_dims.world_mesh["cp"].get_group()
@@ -122,7 +125,7 @@ def train(config: SFTConfig):
 
             substitute_hf_ulysses_attn(cp_group)
             substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_hybrid_cp, setup_nemotron_h_cp, setup_sparse_mla_cp
+        from prime_rl.utils.cp import setup_model_cp, setup_sparse_mla_cp
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
@@ -138,8 +141,7 @@ def train(config: SFTConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
-    fused_cross_entropy: bool | str = {"liger_fused": "liger", "quack_fused": "quack"}.get(config.loss_impl, False)
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, fused_cross_entropy=fused_cross_entropy)
+    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     if parallel_dims.cp_enabled:
         from prime_rl.utils.cp import assert_cp_style_supports_model
@@ -150,8 +152,7 @@ def train(config: SFTConfig):
         # Linear-attn / Mamba layers are only configured under ulysses; with ring
         # we'd have already raised above.
         if config.model.cp_style == "ulysses":
-            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
-            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     if config.model.lora is not None:
         multi_run_manager = get_multi_run_manager()
@@ -160,6 +161,9 @@ def train(config: SFTConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
+    processor = setup_processor(config.model)
+    if config.model.vlm is not None and processor is None:
+        raise ValueError(f"[model.vlm] is set but no multimodal processor could be loaded for {config.model.name!r}")
 
     # Fake data never renders messages, so a model without a hand-coded renderer
     # can still be used to benchmark step time / memory. Validation data is
@@ -167,6 +171,8 @@ def train(config: SFTConfig):
     renderer = None
     if config.data.type != "fake" or config.val is not None:
         renderer = create_renderer(tokenizer, config.renderer)
+        if processor is not None and hasattr(renderer, "_processor"):
+            renderer._processor = processor
         logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
 
     # Set up the optimizer
@@ -187,7 +193,8 @@ def train(config: SFTConfig):
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer)
+    multimodal = config.model.vlm is not None
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer, multimodal=multimodal)
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
@@ -225,47 +232,74 @@ def train(config: SFTConfig):
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     cp_size = parallel_dims.cp
 
-    ce_loss = None
-    match config.loss_impl:
-        case "liger":
-            ce_loss = LigerCrossEntropyLoss(reduction="none")
-        case "torch":
-            ce_loss = CrossEntropyLoss(reduction="none")
-        case "liger_fused" | "quack_fused":
-            pass  # loss is computed inside the fused lm_head
-        case _:
-            raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
-
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
         input_ids = micro_batch["input_ids"].to("cuda")
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
+        seq_lens = micro_batch["seq_lens"].to("cuda")
+        mm_kwargs = micro_batch.get("mm_kwargs")
+        mm_type_ids = micro_batch.get("mm_token_type_ids")
+
+        seq_lens_are_pre_shard = False
 
         if cp_enabled:
-            input_ids, position_ids = setup_cp_params(
-                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+            # CP requires the sequence length to be divisible by cp_size. CatDataset
+            # pads every pack to seq_len; shard_for_cp raises on violations.
+            defer_vlm_cp_to_model = (
+                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
             )
+            if not defer_vlm_cp_to_model:
+                input_ids, position_ids = setup_cp_params(
+                    input_ids,
+                    position_ids,
+                    cp_rank,
+                    cp_size,
+                    cp_group,
+                    seq_lens=seq_lens,
+                    cp_style=config.model.cp_style,
+                )
+            seq_lens_are_pre_shard = True
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
         if config.model.lora is not None:
-            set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
+            set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
         with maybe_activation_offloading(config.model.ac_offloading):
-            if config.loss_impl in ("liger_fused", "quack_fused"):
-                masked_target_ids = target_ids.clone()
-                masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
-                out = forward(model, input_ids, position_ids, labels=masked_target_ids)
-                loss_sum = out["loss"] * token_count
+            if isinstance(config.model.fused_lm_head_token_chunk_size, int):
+                # Same path as the RL trainer: the chunked LM head computes per-token
+                # logprobs without materializing the [N, V] logits, and per-token
+                # cross-entropy is the negative target logprob.
+                temperature = torch.ones_like(target_ids, dtype=torch.float32)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    seq_lens=seq_lens,
+                    labels=target_ids,
+                    temperature=temperature,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
+                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                )
+                loss_sum = -out["logprobs"][loss_mask].sum()
             else:
-                out = forward(model, input_ids, position_ids)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
+                    seq_lens=seq_lens,
+                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                )
                 logits = out["logits"]
                 B, L, V = logits.shape
-                token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+                token_loss = CrossEntropyLoss(reduction="none")(logits.view(-1, V), target_ids.view(-1)).view(B, L)
                 loss_sum = token_loss[loss_mask].sum()
                 del logits
 
@@ -315,6 +349,7 @@ def train(config: SFTConfig):
             max_epochs=1,
             raw_dataset=val_raw_dataset,
             renderer=renderer,
+            multimodal=multimodal,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
@@ -471,7 +506,7 @@ def train(config: SFTConfig):
             if weight_ckpt_manager is not None:
                 logger.info(f"Saving weight checkpoint at step {progress.step}")
                 save_ckpt_start_time = time.perf_counter()
-                weight_ckpt_manager.save(progress.step, model, tokenizer)
+                weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
                 save_ckpt_time += time.perf_counter() - save_ckpt_start_time
                 weight_ckpt_manager.maybe_clean()
         else:
@@ -607,7 +642,7 @@ def train(config: SFTConfig):
     # Write final weight checkpoint
     if weight_ckpt_manager is not None:
         logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(progress.step, model, tokenizer)
+        weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
         weight_ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
