@@ -82,7 +82,7 @@ class ModelConfig(BaseModelConfig):
 
 
 class WeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem"] = "filesystem"
+    type: Literal["nccl", "filesystem", "nixl"] = "filesystem"
     """Weight broadcast transport."""
 
 
@@ -366,7 +366,7 @@ class InferenceConfig(BaseConfig):
     gpu_memory_utilization: float = 0.9
     """GPU memory utilization. Forwarded as ``--gpu-memory-utilization``."""
 
-    quantization: Literal["mxfp8", "fp8_per_block"] | None = None
+    quantization: str | None = None
     """Online inference quantization method. Forwarded as ``--quantization``."""
 
     api_server_count: int = Field(1, ge=0)
@@ -433,24 +433,6 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
-        return self
-
-    @model_validator(mode="after")
-    def validate_mxfp8_requires_sm100(self):
-        """Reject MXFP8 when validation runs on a non-SM100 CUDA host."""
-        if self.quantization != "mxfp8":
-            return self
-
-        try:
-            import torch
-        except ModuleNotFoundError as exc:
-            raise ValueError("inference.quantization='mxfp8' requires torch to validate SM100 support.") from exc
-
-        if torch.cuda.is_available():
-            capability = torch.cuda.get_device_capability()
-            if capability != (10, 0):
-                detected = f"SM{capability[0]}{capability[1]}"
-                raise ValueError(f"inference.quantization='mxfp8' requires SM100, detected {detected}.")
         return self
 
     @model_validator(mode="after")

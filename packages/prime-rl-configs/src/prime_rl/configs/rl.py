@@ -13,6 +13,9 @@ from prime_rl.configs.orchestrator import (
     NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig,
 )
 from prime_rl.configs.orchestrator import (
+    NIXLWeightBroadcastConfig as OrchestratorNIXLWeightBroadcastConfig,
+)
+from prime_rl.configs.orchestrator import (
     OrchestratorConfig,
 )
 from prime_rl.configs.shared import (
@@ -31,6 +34,9 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
+)
+from prime_rl.configs.trainer import (
+    NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
@@ -110,18 +116,45 @@ class SharedModelConfig(BaseConfig):
     """VLM configuration. Set this to enable vision-language model support."""
 
 
-class SharedWeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem"] = "nccl"
-    """Weight broadcast transport."""
+class SharedInMemoryWeightBroadcastConfig(BaseConfig):
+    host: str = "localhost"
+    """Weight transfer host."""
+
+    port: int
+    """Weight transfer port."""
+
+    timeout: int = 1200
+    """Timeout in seconds for in-memory weight transfer."""
+
+
+class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
+    type: Literal["nccl"] = "nccl"
 
     port: int = 29501
     """Port for NCCL weight broadcast."""
 
-    timeout: int = 1200
-    """Timeout in seconds for NCCL weight broadcast."""
-
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
+
+
+class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
+    type: Literal["nixl"] = "nixl"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    session_id: str = "default"
+    """ModelExpress session ID."""
+
+
+class SharedFileSystemWeightBroadcastConfig(BaseConfig):
+    type: Literal["filesystem"] = "filesystem"
+
+
+SharedWeightBroadcastConfig: TypeAlias = Annotated[
+    SharedFileSystemWeightBroadcastConfig | SharedNCCLWeightBroadcastConfig | SharedNIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
+]
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -295,11 +328,11 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_quantize_in_weight_transfer(self):
-        if self.weight_broadcast is None or not self.weight_broadcast.quantize_in_weight_transfer:
+        if not isinstance(self.weight_broadcast, SharedNCCLWeightBroadcastConfig):
             return self
 
-        if self.weight_broadcast.type != "nccl":
-            raise ValueError("weight_broadcast.quantize_in_weight_transfer requires weight_broadcast.type = 'nccl'.")
+        if not self.weight_broadcast.quantize_in_weight_transfer:
+            return self
 
         if self.inference is None:
             raise ValueError("weight_broadcast.quantize_in_weight_transfer requires an inference config.")
@@ -339,38 +372,39 @@ class RLConfig(BaseConfig):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference.
 
         Defaults to NCCL broadcast when no ``weight_broadcast`` is configured. Falls back to
-        filesystem when LoRA is enabled (not yet supported with NCCL) or when no inference
-        server is configured (NCCL requires a running inference pool).
+        filesystem when LoRA is enabled (not yet supported by in-memory transfer) or when no
+        inference server is configured.
         """
         if self.weight_broadcast is None:
             if self.trainer.model.lora is not None or self.inference is None:
-                self.weight_broadcast = SharedWeightBroadcastConfig(type="filesystem")
+                self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
             else:
-                self.weight_broadcast = SharedWeightBroadcastConfig()
-        if self.weight_broadcast.type == "nccl" and self.trainer.model.lora is not None:
-            # LoRA adapters are transferred via the filesystem (loaded from disk by the inference
-            # servers); NCCL broadcast only writes a STABLE marker, so LoRA over NCCL cannot transfer
-            # an adapter and would hang/fail on the startup weight sync.
+                self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
+        if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
-                "LoRA training is not yet supported with NCCL weight broadcast. "
+                "LoRA training is not yet supported with in-memory weight broadcast. "
                 "Set weight_broadcast.type = 'filesystem'."
             )
-        if self.weight_broadcast.type == "nccl":
+        if self.weight_broadcast.type in ("nccl", "nixl"):
             inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
-            self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
-                type=self.weight_broadcast.type,
-                inference_world_size=inference_world_size,
-                port=self.weight_broadcast.port,
-                timeout=self.weight_broadcast.timeout,
-                quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
-            )
-            self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
-                type=self.weight_broadcast.type,
+            common_config = dict(
+                host=self.weight_broadcast.host,
                 port=self.weight_broadcast.port,
                 timeout=self.weight_broadcast.timeout,
                 inference_world_size=inference_world_size,
-                quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
             )
+            if self.weight_broadcast.type == "nccl":
+                transport_config = dict(
+                    quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
+                )
+                trainer_config_type = TrainerNCCLWeightBroadcastConfig
+                orchestrator_config_type = OrchestratorNCCLWeightBroadcastConfig
+            else:
+                transport_config = dict(session_id=self.weight_broadcast.session_id)
+                trainer_config_type = TrainerNIXLWeightBroadcastConfig
+                orchestrator_config_type = OrchestratorNIXLWeightBroadcastConfig
+            self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
+            self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
         elif self.weight_broadcast.type == "filesystem":
             self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
             self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
@@ -417,9 +451,6 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_lora(self):
         if self.trainer.model.lora is not None:
-            if self.trainer.weight_broadcast.type == "nccl":
-                raise ValueError("NCCL weight broadcast does not support LoRA yet.")
-
             if self.orchestrator.model.lora is None:
                 from prime_rl.configs.orchestrator import LoRAConfig
 
@@ -548,7 +579,7 @@ class RLConfig(BaseConfig):
                     )
                     self.inference.parallel.dp = num_infer_gpus // self.inference.parallel.tp
                 # Ensure api_server_count matches DP so all workers are created.
-                # Without this, the NCCL broadcast group expects dp*tp workers
+                # Without this, in-memory weight transfer expects dp*tp workers
                 # but only api_server_count*tp exist, causing a deadlock.
                 dp = self.inference.parallel.dp
                 if self.inference.api_server_count < dp and not self.inference.enable_lora:
@@ -602,7 +633,7 @@ class RLConfig(BaseConfig):
             # Auto-infer DP and api_server_count for standard multi-node inference.
             # Without EP, vLLM only creates api_server_count * tp workers per node,
             # not gpus_per_node workers. If DP isn't set, the broadcast group expects
-            # more workers than exist, deadlocking NCCL init.
+            # more workers than exist, deadlocking in-memory transfer initialization.
             if (
                 self.inference is not None
                 and not self.inference.enable_expert_parallel
@@ -616,19 +647,20 @@ class RLConfig(BaseConfig):
                 if self.inference.api_server_count == 1 and dp_per_node > 1:
                     self.inference.api_server_count = dp_per_node
 
-            if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
-                # Every allocated inference GPU is a NCCL rank in the weight broadcast.
+            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+                # Every allocated inference GPU is an in-memory transfer worker.
                 # The external-LB launcher starts dp_per_node (= gpus_per_node / tp)
                 # TP-sharded servers per node, i.e. gpus_per_node workers per node, so use
                 # the GPU count directly. Deriving it from api_server_count double-counts:
                 # api_server_count can resolve to the *global* DP size, making the node
-                # factor count twice and NCCL wait for ranks that never connect. Matches
+                # factor count twice and wait for ranks that never connect. Matches
                 # the disaggregated path below.
                 total_infer_workers = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
-                assert self.trainer.weight_broadcast.type == "nccl"
-                self.trainer.weight_broadcast.host = "0.0.0.0"
+                assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
+                if self.trainer.weight_broadcast.type == "nccl":
+                    self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
-                assert self.orchestrator.weight_broadcast.type == "nccl"
+                assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
         return self
@@ -659,10 +691,10 @@ class RLConfig(BaseConfig):
                 infer_deploy.num_decode_nodes * stride
             )
             self.orchestrator.inference_metrics_roles = role_order * self.deployment.num_infer_replicas
-        if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
-            assert self.trainer.weight_broadcast.type == "nccl"
+        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+            assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
-            assert self.orchestrator.weight_broadcast.type == "nccl"
+            assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
         return self

@@ -514,28 +514,44 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Weight checkpoint serialization format."""
 
 
-class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    type: Literal["nccl"] = "nccl"
-
+class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"
-    """Host for the NCCL broadcast rendezvous."""
+    """Weight transfer host."""
 
-    port: int = 29501
-    """Port for the NCCL broadcast rendezvous."""
+    port: int
+    """Weight transfer port."""
 
     timeout: int = 1200
-    """Timeout in seconds for the NCCL broadcast."""
+    """Weight transfer timeout in seconds."""
 
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: int = 1
-    """Number of GPUs used for inference."""
+    """Number of inference workers."""
+
+
+class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nccl"] = "nccl"
+
+    port: int = 29501
+    """Port for the NCCL broadcast rendezvous."""
 
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
 
+class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nixl"] = "nixl"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    session_id: str = "default"
+    """ModelExpress session ID."""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -684,9 +700,8 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.model.lora is not None and self.weight_broadcast.type == "nccl":
-            # TODO: Support NCCL broadcast with LoRA
-            raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+            raise ValueError("In-memory weight broadcast does not support LoRA yet.")
         return self
 
     @model_validator(mode="after")

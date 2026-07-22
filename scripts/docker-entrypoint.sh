@@ -61,7 +61,7 @@ if [ -n "$PRIME_RL_REF" ]; then
     # override's lockfile pins different versions.
     ( cd "$DEST" && uv sync --inexact --no-dev --all-packages \
         --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute \
-        --extra gpt-oss --extra modelexpress \
+        --extra gpt-oss \
         --group mamba-ssm )
     export VIRTUAL_ENV="$DEST/.venv"
     export PATH="$DEST/.venv/bin:$PATH"
