@@ -8,6 +8,7 @@ from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.shared import (
     EnvVars,
+    FileMonitorConfig,
     HeartbeatConfig,
     SlurmConfig,
     TrainerLogConfig,
@@ -190,6 +191,9 @@ class SFTConfig(BaseConfig):
     log: TrainerLogConfig = TrainerLogConfig()
 
     wandb: WandbConfig | None = None
+
+    file_monitor: FileMonitorConfig | None = None
+    """Local JSONL metric sink. If set, metrics are appended to ``<output_dir>/metrics.jsonl``."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — checkpoints and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
