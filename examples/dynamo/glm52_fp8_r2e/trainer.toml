@@ -1,0 +1,47 @@
+max_steps = 1
+dist_timeout_seconds = 12000
+
+[model]
+name = "zai-org/GLM-5.2-FP8"
+seq_len = 32768
+impl = "custom"
+attn = "flash_attention_2"
+dp_replicate = 1
+cp = 4
+ep = 8
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+moe_router_dtype = "float32"
+fp8 = false
+optim_cpu_offload = true
+fused_lm_head_token_chunk_size = 1024
+
+[model.ac]
+freq = 1
+
+[model.ac_offloading]
+max_inflight_activations = 1
+
+[tokenizer]
+name = "zai-org/GLM-5.2-FP8"
+
+[optim]
+type = "sign_sgd"
+lr = 1e-6
+weight_decay = 0.0
+
+[scheduler]
+type = "constant"
+
+[weight_broadcast]
+type = "nccl"
+host = "0.0.0.0"
+port = 29500
+timeout = 12000
+inference_world_size = 16
+
+[rollout_transport]
+type = "filesystem"
+
+[log]
+level = "debug"

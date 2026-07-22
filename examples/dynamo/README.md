@@ -69,3 +69,12 @@ Kubernetes Service is required when trainer-to-pod networking is routable.
 After startup, `/v1/rl/workers` must return every expected worker with a
 non-null `admin_base_url`, positive `world_size`, and no `error` before Prime is
 launched.
+
+## Recipes
+
+- [`qwen3_06b_math`](qwen3_06b_math): single-GPU trainer and aggregate Dynamo
+  inference smoke test.
+- [`qwen3_30b_Thinking`](qwen3_30b_Thinking): Qwen3-30B Thinking math with an
+  external prefill/decode deployment.
+- [`glm52_fp8_r2e`](glm52_fp8_r2e): multi-node GLM-5.2 FP8 R2E training with a
+  separately managed DGD.

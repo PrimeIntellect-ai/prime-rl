@@ -1,0 +1,64 @@
+max_steps = 1
+batch_size = 2
+group_size = 2
+seq_len = 32768
+max_inflight_rollouts = 2
+max_off_policy_steps = 1
+tasks_per_minute = 1
+
+[model]
+name = "zai-org/GLM-5.2-FP8"
+
+[model.client]
+base_url = ["http://dynamo-frontend:8000/v1"]
+dynamo_discovery_url = "http://dynamo-frontend:8001"
+wait_for_ready_timeout = 7200
+
+[model.client.extra_headers_from_state]
+X-Session-ID = "trajectory_id"
+X-Dynamo-Session-ID = "trajectory_id"
+
+[tokenizer]
+name = "zai-org/GLM-5.2-FP8"
+
+[renderer]
+name = "glm-5.1"
+clear_thinking = false
+
+[train.sampling]
+temperature = 1.0
+max_completion_tokens = 2048
+extra_body = { chat_template_kwargs = { clear_thinking = false } }
+
+[[train.env]]
+name = "r2e"
+group_size = 2
+max_turns = 64
+max_input_tokens = 30720
+max_output_tokens = 16384
+max_total_tokens = 32768
+timeout = { setup = 600, rollout = 1800, finalize = 300, scoring = 600 }
+pool = { type = "static", num_workers = 2 }
+taskset = { id = "r2e-gym-v1", dataset_name = "R2E-Gym/R2E-Gym-Subset", split = "train" }
+harness = { id = "default", edit = true, runtime = { type = "prime", labels = ["glm52-dynamo"], cpu = 4, creates_per_min = 2 } }
+
+[[pre_batch_filters]]
+type = "zero_advantage"
+enforce = false
+
+[[post_batch_filters]]
+type = "zero_advantage"
+enforce = false
+
+[weight_broadcast]
+type = "nccl"
+host = "trainer-0.trainer-headless"
+port = 29500
+timeout = 12000
+inference_world_size = 16
+
+[rollout_transport]
+type = "filesystem"
+
+[log]
+level = "debug"
