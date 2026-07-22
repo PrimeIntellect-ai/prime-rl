@@ -99,10 +99,17 @@ MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
 # Maximum batches the orchestrator may run ahead of the trainer: shipping
 # batch N holds until the trainer has published policy v{N-1-TARGET_LAG}
-# (``finalize_train_batch``). Dispatch needs no lead gate of its own —
-# ``train_needed`` stops it once the batch being collected is covered, and the
-# hold stops the batch counter from running ahead.
+# (``finalize_train_batch``). ``train_needed`` bounds dispatch: coverage stops
+# once the batch being collected (+ lookahead) is covered, and freshness stops
+# it once new rollouts would train more than ``DISPATCH_LAG`` versions behind
+# their generation policy.
 TARGET_LAG = 1
+
+# Freshness bound on *starting* rollouts: with the ship-hold releasing batch N
+# at v{N-2}, a bound of TARGET_LAG+1 is the tightest that still lets the
+# lookahead keep inference busy during holds; landing lag stays ≤ ~2 (spill 3),
+# matching what the old lead gate enforced at dispatch.
+DISPATCH_LAG = TARGET_LAG + 1
 
 # Default wait for the trainer's startup weight broadcast when no ckpt block
 # configures ``wait_for_weights_timeout`` (e.g. a from-scratch run). The
@@ -893,19 +900,29 @@ class Orchestrator:
         """Whether the dispatcher may start another train rollout — injected as
         its scheduling predicate, re-evaluated per scheduled group. True while
         the batch being collected — plus up to ``TARGET_LAG`` batches of
-        lookahead, staleness budget permitting — isn't covered yet by buffered,
+        lookahead, freshness budget permitting — isn't covered yet by buffered,
         partial-group, and in-transit rollouts. The lookahead keeps dispatch
         continuous in steady state (each arrival frees demand for the next
         start) instead of synchronizing it into one wave per batch, which
         idles inference whenever rollouts spend time outside the engine
-        (multi-turn env round-trips) and stampedes the env server. False while
-        rollouts started now would already exceed ``max_off_policy_steps``."""
+        (multi-turn env round-trips) and stampedes the env server.
+
+        ``DISPATCH_LAG`` bounds the data: no rollout starts when it would
+        already train more than that many versions behind its generation
+        policy, so mean consumption lag stays at ~TARGET_LAG+1 — the same
+        freshness the old lead gate enforced. ``max_off_policy_steps`` is not
+        a dispatch bound (it's the drop safety net for work that goes stale
+        *after* starting); gating dispatch on it would let data run up to the
+        drop cutoff before pausing. Bench runs have no trainer publishing
+        versions, so they dispatch freely."""
         lag = (self.progress.step - 1) - self.policy.version
-        if lag > self.config.max_off_policy_steps:
+        if self.config.bench:
+            lag = 0
+        if lag > DISPATCH_LAG:
             return False
         # A rollout started now that lands l batches ahead trains lag+l versions
-        # behind; only look ahead as far as the staleness budget allows.
-        lookahead = min(TARGET_LAG, self.config.max_off_policy_steps - lag)
+        # behind; only look ahead as far as the freshness budget allows.
+        lookahead = min(TARGET_LAG, DISPATCH_LAG - lag)
         # ``out_q`` backlog counts as coverage: while a ship holds for the
         # trainer, the main loop isn't routing arrivals into the sink, and
         # without this the dispatcher would over-provision through every hold
