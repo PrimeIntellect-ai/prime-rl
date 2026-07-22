@@ -31,6 +31,7 @@ from prime_rl.trainer.rl.loss import (
     compute_loss,
     compute_importance_ratio_and_mismatch_kl,
     selective_log_softmax,
+    selective_log_softmax_with_kept,
     setup_rl_loss_fn,
     shift_tensor_left,
     shift_tensor_right,
@@ -362,6 +363,8 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
+            kept_tokens = micro_batch["kept_tokens"].to("cuda") if micro_batch["kept_tokens"] is not None else None
+
             # Multimodal kwargs are an opaque per-model dict (e.g.
             # {"pixel_values": ..., "image_grid_thw": ...} for Qwen3-VL,
             # just {"pixel_values": ...} for Gemma3-VL) — we move every
@@ -377,6 +380,10 @@ def train(config: TrainerConfig):
             seq_lens = micro_batch["seq_lens"].to("cuda")
 
             labels = shift_tensor_left(input_ids)
+            if kept_tokens is not None:
+                # Kept sets ride at the sampled token's own position (like inference
+                # logprobs); shift to align with the label each position predicts.
+                kept_tokens = shift_tensor_left(kept_tokens, pad_value=-1)
 
             # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
             if cp_enabled and mm_kwargs is not None:
@@ -395,6 +402,8 @@ def train(config: TrainerConfig):
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
+                if kept_tokens is not None:
+                    kept_tokens = shard_for_cp(kept_tokens, cp_rank=cp_rank, cp_world_size=cp_size)
             else:
                 forward_position_ids = position_ids
 
@@ -429,6 +438,7 @@ def train(config: TrainerConfig):
                     seq_lens=seq_lens,
                     seq_lens_are_pre_shard=cp_enabled,
                     routed_experts=routed_experts,
+                    kept_tokens=kept_tokens,
                 )
 
             if out.get("logprobs") is None:
@@ -437,7 +447,10 @@ def train(config: TrainerConfig):
                 logits = out["logits"]
                 # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
                 scaled_logits = logits / temperatures.unsqueeze(-1)
-                out["logprobs"] = selective_log_softmax(scaled_logits, labels)
+                if kept_tokens is not None:
+                    out["logprobs"] = selective_log_softmax_with_kept(scaled_logits, labels, kept_tokens)
+                else:
+                    out["logprobs"] = selective_log_softmax(scaled_logits, labels)
                 out["entropy"] = compute_entropy(scaled_logits)
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 

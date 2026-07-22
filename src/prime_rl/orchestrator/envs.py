@@ -253,6 +253,12 @@ class TrainEnv(Env):
         self.sampler = sampler
         self.algorithm = algorithm
         self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
+        # Truncated policy sampling must ship the kept-set masks the trainer replays.
+        self.requires_kept_masks = (
+            config.sampling.truncates_distribution()
+            and config.algo is not None
+            and config.algo.sampling.source == "policy"
+        )
 
 
 class EvalEnv(Env):

@@ -27,6 +27,7 @@ from prime_rl.inference.patches import (
     monkey_patch_tokenize_params_validation,
     monkey_patch_vllm_padded_input_scrub,
 )
+from prime_rl.inference.vllm.kept_tokens import kept_tokens_enabled, monkey_patch_kept_tokens_output_capture
 
 # NOTE: Fix harmony stop token propagation for GPT-OSS models
 # Upstream issue still open: https://github.com/vllm-project/vllm/issues/22519
@@ -46,6 +47,12 @@ monkey_patch_vllm_padded_input_scrub()
 # routed_experts from chat responses since the server-wide enable flag has no
 # per-request toggle.
 monkey_patch_strip_routed_experts_from_chat()
+# NOTE: Kept-set sampling masks (top-p/top-k replay) ride the logprobs rows as a
+# -1-separated extension; split it off before vLLM builds per-position logprob
+# dicts and attach it to the finished CompletionOutput. No-op without
+# PRIME_RETURN_KEPT_TOKENS=1 (set by setup_vllm_env before this module loads).
+if kept_tokens_enabled():
+    monkey_patch_kept_tokens_output_capture()
 # NOTE: vLLM hard-codes a 120s DP coordinator startup timeout, which the rank-0
 # API server blows through when all engine-core ranks on the node are loading
 # weights concurrently (multi-node disaggregated deployments).
@@ -235,6 +242,23 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
     args = parser.parse_args(args=[], namespace=namespace)
     assert args is not None
     validate_parsed_serve_args(args)
+
+    if config.kept_tokens is not None:
+        # Both would leave the sampler patch silently inert (no kept sets ever
+        # emitted) while the trainer keeps replaying nothing — exactly the
+        # top-p bias the feature exists to fix. Fail fast instead.
+        if getattr(args, "speculative_config", None):
+            raise ValueError(
+                "kept_tokens capture is incompatible with speculative decoding: vLLM's "
+                "RejectionSampler builds logprobs via gather_logprobs, bypassing the patched "
+                "Sampler.forward. Disable speculative_config or the kept-set capture."
+            )
+        if getattr(args, "logprobs_mode", None) != "processed_logprobs":
+            raise ValueError(
+                "kept_tokens capture requires logprobs_mode='processed_logprobs' (the "
+                "default): the kept set is recovered from the truncation-masked logprobs. "
+                f"Got logprobs_mode={getattr(args, 'logprobs_mode', None)!r} (vllm_extra override?)."
+            )
 
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]

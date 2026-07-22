@@ -54,6 +54,16 @@ class TrainSamplingConfig(BaseConfig):
     temperature: float = Field(1.0, ge=0, le=2.0)
     """Sampling temperature."""
 
+    top_p: float = Field(1.0, gt=0, le=1.0)
+    """Nucleus (top-p) sampling for train rollouts. Values below 1.0 truncate the sampling
+    distribution; the ``rl`` entrypoint auto-enables sampling replay so trainer and
+    rollout distributions stay consistent — see docs/inference.md (Sampling Replay)."""
+
+    top_k: int | None = Field(None, ge=1)
+    """Top-k sampling for train rollouts. Truncation triggers sampling replay, and
+    a default top-k is injected when only top-p truncates so kept sets stay
+    bounded — see docs/inference.md (Sampling Replay)."""
+
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
     )
@@ -64,18 +74,46 @@ class TrainSamplingConfig(BaseConfig):
     extra_body: dict[str, Any] = {}
     """Extra body forwarded with each request to the inference server."""
 
+    def truncates_distribution(self) -> bool:
+        return self.top_p < 1.0 or self.top_k is not None
+
+    @model_validator(mode="after")
+    def validate_no_extra_body_truncation(self):
+        """Truncating values must come from the typed fields — the replay policy reads
+        them. Disabled values pass so resolved configs (where ``resolve_env_config``
+        stamped the ``top_k = -1`` / ``min_p = 0.0`` sentinels) re-validate cleanly."""
+        smuggled = [
+            key
+            for key, truncates in (
+                ("top_p", self.extra_body.get("top_p", 1.0) < 1.0),
+                ("top_k", self.extra_body.get("top_k") not in (None, -1, 0)),
+                ("min_p", self.extra_body.get("min_p", 0.0) > 0.0),
+            )
+            if truncates
+        ]
+        if smuggled:
+            raise ValueError(
+                f"extra_body carries truncating {smuggled}; set them as fields on the train "
+                "sampling config instead (they drive sampling replay)."
+            )
+        return self
+
     def to_sampling_args(self) -> dict[str, Any]:
         """Convert to OAI-compatible sampling args dict, omitting None values."""
         args: dict[str, Any] = {
             "temperature": self.temperature,
-            "top_p": 1.0,
+            "top_p": self.top_p,
             "logprobs": True,
         }
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens
 
-        if self.extra_body:
-            args["extra_body"] = dict(self.extra_body)
+        # top_k rides extra_body (like EvalSamplingConfig), overriding the sentinel.
+        extra_body = dict(self.extra_body)
+        if self.top_k is not None:
+            extra_body["top_k"] = self.top_k
+        if extra_body:
+            args["extra_body"] = extra_body
 
         return args
 
@@ -433,6 +471,12 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
+# Top-k injected on truncated policy sampling that has none: large enough that a
+# 0.95-0.99 nucleus rarely reaches it (the sampling policy is essentially unchanged),
+# small enough to bound the kept-set capture width and trainer mask tensors.
+DEFAULT_TRAIN_TOP_K = 512
+
+
 class OrchestratorConfig(BaseConfig):
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm: sampling plus the per-token training signal (credit
@@ -620,6 +664,56 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.env:
             if env_cfg.algo is None:
                 env_cfg.algo = self.algo.model_copy(deep=True)
+        return self
+
+    @model_validator(mode="after")
+    def setup_truncated_sampling(self):
+        """Truncated policy sampling trains with sampling replay (rollout
+        logprobs are renormalized — see docs/inference.md, Sampling Replay).
+        Owned here: every truncating config gets a top-k bound (bounds the kept
+        sets); opd/opsd is rejected (full-vocab prefill refs would mix
+        normalizations); the gibberish/repetition filters are pruned or rejected
+        (their full-softmax thresholds misfire on renormalized logprobs).
+        Frozen-source envs sample externally and are exempt."""
+        policy_samplings = [
+            env.sampling for env in self.train.env if env.algo is not None and env.algo.sampling.source == "policy"
+        ] or ([self.train.sampling] if not self.train.env else [])
+        truncating = [sampling for sampling in policy_samplings if sampling.truncates_distribution()]
+        if not truncating:
+            return self
+
+        unbounded = [sampling for sampling in truncating if sampling.top_k is None]
+        if unbounded:
+            warnings.warn(
+                f"Truncated train sampling: defaulting top_k = {DEFAULT_TRAIN_TOP_K} so every kept set is "
+                "bounded and sampling replay stays exact. Set top_k explicitly to override.",
+                stacklevel=2,
+            )
+            for sampling in unbounded:
+                sampling.top_k = DEFAULT_TRAIN_TOP_K
+
+        algos = [env.algo for env in self.train.env if env.algo is not None] or [self.algo]
+        if any(algo.type in ("opd", "opsd") for algo in algos):
+            raise ValueError(
+                "opd/opsd is not supported with truncated train sampling: reference logprobs are full-vocab "
+                "prefill scores while trainer logprobs are renormalized over the kept set, biasing the "
+                "ref_kl term. Remove the truncation (top_p/top_k) or the opd/opsd algo."
+            )
+
+        logprob_filter_types = ("gibberish", "repetition")
+        for slot_name in ("pre_batch_filters", "post_batch_filters"):
+            filters = getattr(self, slot_name)
+            if not any(f.type in logprob_filter_types for f in filters):
+                continue
+            if slot_name in self.model_fields_set:
+                raise ValueError(
+                    f"{slot_name} contains logprob-based filters "
+                    f"({[f.type for f in filters if f.type in logprob_filter_types]}) which misfire under "
+                    "truncated sampling: rollout logprobs are renormalized over the kept set, so "
+                    "full-softmax thresholds over-detect repetition and under-detect gibberish. Remove them "
+                    "from the list (zero_advantage is unaffected)."
+                )
+            setattr(self, slot_name, [f for f in filters if f.type not in logprob_filter_types])
         return self
 
     @property

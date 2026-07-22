@@ -282,3 +282,17 @@ enable_return_routed_experts = true
 This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend increasing `orchestrator.*.env.num_workers` to allow for more parallelization on the verifiers side.
 
 Currently this feature is also not supported with CPU KV cache offload, which can have negative impact on the inference throughput.
+
+### Sampling Replay
+
+Truncated sampling (`top_p < 1`, `top_k`) renormalizes the sampling distribution over the surviving "kept set" of tokens. The rollout logprobs reflect that (`logprobs_mode = "processed_logprobs"`), so the trainer must renormalize over the same set — otherwise every importance ratio is biased and training collapses (DeepSeek V3.2's "Keep Sampling Mask", [arXiv:2512.02556](https://arxiv.org/abs/2512.02556) §3.1; Cognition's [SWE-1.7 post](https://cognition.com/blog/swe-1-7)). prime-rl handles this automatically: the kept-set token ids are recorded at sampling time and the trainer renormalizes its logprobs over them.
+
+```toml
+[orchestrator.train.sampling]
+top_p = 0.95
+top_k = 512   # optional, defaults to 512 under truncation (bounds the kept sets)
+```
+
+That's all — there are no replay flags. Truncated train sampling makes the inference server return kept sets (`inference.kept_tokens`, derived from the largest configured top_k) and the trainer replays whatever masks arrive. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd`, the gibberish/repetition filters (removed from the defaults, rejected if explicitly configured), truncation knobs smuggled via `extra_body`, speculative decoding, and Gemma-family (softcapped) lm_heads. Frozen-source envs are exempt.
+
+When launching the inference server standalone, set `inference.kept_tokens` yourself to cover the clients' top_k.

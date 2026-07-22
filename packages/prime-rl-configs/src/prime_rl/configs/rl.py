@@ -540,6 +540,36 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_kept_tokens_capture(self):
+        """Size the inference server's kept-set capture to cover the largest train
+        sampling top-k (OrchestratorConfig guarantees truncating configs have one)."""
+        policy_samplings = [
+            env.sampling
+            for env in self.orchestrator.train.env
+            if env.algo is not None and env.algo.sampling.source == "policy"
+        ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.env else [])
+        top_ks = [sampling.top_k for sampling in policy_samplings if sampling.top_k is not None]
+        if not top_ks:
+            return self
+        if self.inference is None:
+            warnings.warn(
+                "Truncated train sampling with no managed inference server: set "
+                f"`kept_tokens = {max(top_ks)}` on the standalone server's config so it returns "
+                "the sampling masks the trainer replays.",
+                stacklevel=2,
+            )
+            return self
+        derived = max(top_ks)
+        if "kept_tokens" in self.inference.model_fields_set and self.inference.kept_tokens != derived:
+            warnings.warn(
+                f"Overriding inference.kept_tokens = {self.inference.kept_tokens} with {derived}, "
+                "derived from the largest train sampling top_k (keeps sampling replay exact).",
+                stacklevel=2,
+            )
+        self.inference.kept_tokens = derived
+        return self
+
+    @model_validator(mode="after")
     def validate_router_replay_without_kv_offload(self):
         if (
             self.trainer.enable_router_replay

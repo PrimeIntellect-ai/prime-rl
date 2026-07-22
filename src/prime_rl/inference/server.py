@@ -30,6 +30,14 @@ def setup_vllm_env(config: InferenceConfig):
     os.environ["VLLM_USE_DEEP_GEMM"] = deep_gemm_enabled
     os.environ["VLLM_MOE_USE_DEEP_GEMM"] = deep_gemm_enabled
 
+    # Kept-set sampling-mask capture (top-p/top-k replay training). Env vars
+    # rather than additional_config because the sampler patch (engine-core
+    # workers) and the output-capture patch (API server procs, applied at
+    # import time) have no guaranteed vLLM config context; children inherit.
+    if config.kept_tokens is not None:
+        os.environ["PRIME_RETURN_KEPT_TOKENS"] = "1"
+        os.environ["PRIME_KEPT_TOKENS_MAX"] = str(config.kept_tokens)
+
     if config.enable_lora:
         os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
 
