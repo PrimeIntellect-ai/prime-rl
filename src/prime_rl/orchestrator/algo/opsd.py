@@ -65,7 +65,13 @@ class OPSDAlgorithm(Algorithm):
         pool = self.teacher_pool
         renderer = self.renderer
         assert renderer is not None, "renderer not built — Algorithm.setup() must run first"
-        hint = self.template.format(demonstration=self._demonstration(rollout))
+        # Use str.replace, not str.format, to substitute the demonstration.
+        # Demonstrations come from dataset content and commonly contain braces
+        # (code: "x = {1, 2, 3}", f-strings, LaTeX: "\frac{a}{b}"). str.format
+        # would raise KeyError/IndexError/ValueError on any such content,
+        # crashing the orchestrator. str.replace treats the value as literal
+        # text, so no character in the demonstration can break the substitution.
+        hint = self.template.replace("{demonstration}", self._demonstration(rollout))
         hint_block = renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)
 
         async def score_sample(sample: TrainingSample) -> None:
