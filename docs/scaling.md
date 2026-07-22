@@ -150,8 +150,8 @@ The optimizer step is performed per-transformer-layer ("chunked"): each layer's 
 
 ```toml
 [trainer.model]
-optim_cpu_offload_chunked = true   # already the default
-optim_cpu_offload_stream = true    # already the default
+optim_cpu_offload_chunked = true
+optim_cpu_offload_stream = true
 ```
 
 Set `optim_cpu_offload_chunked = false` to fall back to all-at-once offloading (loads the full model's optimizer states to GPU in one shot — simpler but requires enough VRAM to hold them all simultaneously). Set `optim_cpu_offload_stream = false` to disable stream overlap within the chunked step, falling back to a simple sequential move→step→move loop.
