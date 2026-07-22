@@ -91,11 +91,11 @@ class Env:
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the taskset is infinite."""
         self.requires_group_scoring: bool = False
-        self.tasks: list[vf.Task] | None = None
-        """A finite v1 taskset's tasks, materialized at ``start()``. None for legacy
-        (dataset lives on the server) and for infinite tasksets (see ``task_iter``)."""
-        self.task_iter: Iterator[vf.Task] | None = None
-        """An infinite v1 taskset's generator — pulled per example, never materialized."""
+        self.tasks: Iterator[vf.Task] | None = None
+        """The env's tasks, client-side; ``None`` for legacy (its dataset lives on the
+        server). A finite taskset is materialized at ``start()`` (``num_tasks`` is its
+        count) and iterated from there; an infinite one streams off its generator.
+        Consumed once — by ``TrainSource`` (train) or ``EvalEnv.start`` (eval)."""
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
 
@@ -127,12 +127,13 @@ class Env:
         else:
             taskset = vf.load_taskset(self.config.env.taskset)
             if type(taskset).INFINITE:
-                self.task_iter = iter(taskset.load())
+                self.tasks = iter(taskset.load())
                 self.num_tasks = None
             else:
                 # Materialize off the event loop — load() may pull a dataset.
-                self.tasks = await asyncio.to_thread(lambda: list(taskset.load()))
-                self.num_tasks = len(self.tasks)
+                materialized = await asyncio.to_thread(lambda: list(taskset.load()))
+                self.tasks = iter(materialized)
+                self.num_tasks = len(materialized)
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
         get_logger().info(f"Env {self.name} ready: num_tasks={num_tasks} group_scoring={self.requires_group_scoring}")
 
@@ -265,18 +266,14 @@ class EvalEnv(Env):
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
         n = self.config.num_examples
-        if self.num_tasks is None:
-            if n < 0:
-                raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
-            assert self.task_iter is not None
-            # A fixed eval set off the generator, pulled once and reused every epoch.
-            tasks = list(islice(self.task_iter, n))
-        elif self.tasks is not None:
-            tasks = self.tasks if n < 0 else self.tasks[:n]
-        else:  # legacy: the dataset lives on the server — address it by row
+        if self.tasks is None:  # legacy: the dataset lives on the server — address it by row
             count = self.num_tasks if n < 0 else min(n, self.num_tasks)
             self.examples = [{"task_idx": i} for i in range(count)]
             return
+        if self.num_tasks is None and n < 0:
+            raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
+        # A fixed eval set, pulled off the tasks once and reused every epoch.
+        tasks = list(self.tasks) if n < 0 else list(islice(self.tasks, n))
         self.examples = [{"task_idx": task.data.idx, "task": task} for task in tasks]
 
 

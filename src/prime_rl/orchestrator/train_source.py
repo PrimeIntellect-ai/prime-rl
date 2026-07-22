@@ -39,18 +39,15 @@ class TrainSource:
         # per-rollout envs need 1
         self.env_costs: dict[str, int] = {}
         for env in self.envs:
-            if env.num_tasks is None:
-                assert env.task_iter is not None
-                self.examples[env.name] = None
-                self.iters[env.name] = env.task_iter
-            elif env.tasks is not None:
-                rows: list[dict] = [
-                    {"task_idx": task.data.idx, "task": task, "env_name": env.name} for task in env.tasks
-                ]
+            if env.tasks is None:  # legacy: sample over the index range from info()
+                rows: list[dict] = [{"task_idx": i, "env_name": env.name} for i in range(env.num_tasks)]
                 self.rng.shuffle(rows)
                 self.examples[env.name] = rows
-            else:  # legacy: sample over the index range the server reported via info()
-                rows = [{"task_idx": i, "env_name": env.name} for i in range(env.num_tasks)]
+            elif env.num_tasks is None:  # infinite: pull the generator per example
+                self.examples[env.name] = None
+                self.iters[env.name] = env.tasks
+            else:
+                rows = [{"task_idx": task.data.idx, "task": task, "env_name": env.name} for task in env.tasks]
                 self.rng.shuffle(rows)
                 self.examples[env.name] = rows
             self.cursors[env.name] = 0
