@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 import torch
 
-from prime_rl.nixl_weight_transfer.graph import TensorReplayPlan
-from prime_rl.nixl_weight_transfer.trainer_tensor_table import TrainerTensor
+from prime_rl.trainer.rl.broadcast.nixl.graph import TensorReplayPlan
+from prime_rl.trainer.rl.broadcast.nixl.trainer_tensor_table import TrainerTensor
 
 
 @dataclass(frozen=True)

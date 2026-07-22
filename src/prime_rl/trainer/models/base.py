@@ -82,15 +82,15 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
 
     def convert_to_hf(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Convert a PrimeRL state dict to HuggingFace format in-place."""
-        from prime_rl.trainer.models.conversion_ops import apply_tt_to_hf
+        from prime_rl.trainer.models.conversion_ops import apply_prime_to_hf
 
-        return apply_tt_to_hf(state_dict, self.conversion_chain(self.config))
+        return apply_prime_to_hf(state_dict, self.conversion_chain(self.config))
 
     def convert_to_prime(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Convert a HuggingFace state dict to PrimeRL format in-place."""
-        from prime_rl.trainer.models.conversion_ops import apply_hf_to_tt
+        from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime
 
-        return apply_hf_to_tt(state_dict, self.conversion_chain(self.config))
+        return apply_hf_to_prime(state_dict, self.conversion_chain(self.config))
 
     def convert_layer_to_hf(self, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
         """Convert one layer from PrimeRL to HuggingFace format in-place."""

@@ -19,7 +19,7 @@ def _conversion_chain(config, model_prefix: str) -> list[ConvOp]:
         # Router: mlp.gate.weight -> mlp.router.gate.weight
         ops.append(Rename(f"{p}.mlp.gate.weight", f"{p}.mlp.router.gate.weight"))
         # Routed experts: per-expert (gate/down/up) or fused gate_up_proj -> w1/w2/w3
-        ops.append(routed_experts_op(p, hf_experts="mlp.experts", tt_experts="mlp.experts", fused=True))
+        ops.append(routed_experts_op(p, hf_experts="mlp.experts", prime_experts="mlp.experts", fused=True))
         # Shared expert: mlp.shared_expert.{gate,down,up}_proj.weight -> shared_expert.{w1,w2,w3}.weight
         ops.append(Rename(f"{p}.mlp.shared_expert.gate_proj.weight", f"{p}.shared_expert.w1.weight"))
         ops.append(Rename(f"{p}.mlp.shared_expert.down_proj.weight", f"{p}.shared_expert.w2.weight"))

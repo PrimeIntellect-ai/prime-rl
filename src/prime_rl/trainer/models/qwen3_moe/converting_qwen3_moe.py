@@ -10,5 +10,5 @@ def conversion_chain(config) -> list[ConvOp]:
     for layer_idx in range(config.num_hidden_layers):
         prefix = f"model.layers.{layer_idx}"
         ops.append(Rename(f"{prefix}.mlp.gate.weight", f"{prefix}.mlp.router.gate.weight"))
-        ops.append(routed_experts_op(prefix, hf_experts="mlp.experts", tt_experts="mlp.experts", fused=True))
+        ops.append(routed_experts_op(prefix, hf_experts="mlp.experts", prime_experts="mlp.experts", fused=True))
     return ops

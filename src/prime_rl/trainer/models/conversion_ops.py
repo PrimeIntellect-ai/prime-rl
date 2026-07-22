@@ -1,18 +1,18 @@
 """Declarative, invertible state-dict conversion operators.
 
 Every prime-rl model converts between the HuggingFace checkpoint layout and
-prime-rl's training ("tt") layout. Historically each model hand-wrote a pair of
+the PrimeRL training layout. Historically each model hand-wrote a pair of
 imperative ``convert_hf_*`` / ``convert_*_to_hf`` functions; this module
 replaces them with a declarative chain of small operators, each of which knows
 how to go *both* directions:
 
-    forward  (``hf_to_tt``):  HF checkpoint  ->  prime training layout
-    backward (``tt_to_hf``):  prime training layout  ->  HF checkpoint
+    forward  (``hf_to_prime``):  HF checkpoint  ->  PrimeRL training layout
+    backward (``prime_to_hf``):  PrimeRL training layout  ->  HF checkpoint
 
 A model declares a flat list of ``ConvOp``\\ s (with concrete, fully-templated
-keys). :func:`apply_hf_to_tt` plays them in order; :func:`apply_tt_to_hf` plays
-each op's backward in reverse order. The conversion is thus defined once and the
-inverse falls out for free.
+keys). :func:`apply_hf_to_prime` plays them in order;
+:func:`apply_prime_to_hf` plays each op's backward in reverse order. The
+conversion is thus defined once and the inverse falls out for free.
 
 Design constraints:
 
@@ -47,23 +47,23 @@ StateDict = dict[str, Tensor]
 
 class ConvOp(ABC):
     @abstractmethod
-    def hf_to_tt(self, sd: StateDict) -> None: ...
+    def hf_to_prime(self, sd: StateDict) -> None: ...
 
     @abstractmethod
-    def tt_to_hf(self, sd: StateDict) -> None: ...
+    def prime_to_hf(self, sd: StateDict) -> None: ...
 
 
-def apply_hf_to_tt(sd: StateDict, ops: list[ConvOp]) -> StateDict:
+def apply_hf_to_prime(sd: StateDict, ops: list[ConvOp]) -> StateDict:
     """Play the chain forward (HF -> prime), in place."""
     for op in ops:
-        op.hf_to_tt(sd)
+        op.hf_to_prime(sd)
     return sd
 
 
-def apply_tt_to_hf(sd: StateDict, ops: list[ConvOp]) -> StateDict:
+def apply_prime_to_hf(sd: StateDict, ops: list[ConvOp]) -> StateDict:
     """Play each op's backward in reverse order (prime -> HF), in place."""
     for op in reversed(ops):
-        op.tt_to_hf(sd)
+        op.prime_to_hf(sd)
     return sd
 
 
@@ -74,18 +74,18 @@ def apply_tt_to_hf(sd: StateDict, ops: list[ConvOp]) -> StateDict:
 
 @dataclass
 class Rename(ConvOp):
-    """Rename a single key. ``hf`` is the HF name, ``tt`` the prime name."""
+    """Rename a single key. ``hf`` is the HF name, ``prime`` the PrimeRL name."""
 
     hf: str
-    tt: str
+    prime: str
 
-    def hf_to_tt(self, sd: StateDict) -> None:
+    def hf_to_prime(self, sd: StateDict) -> None:
         if self.hf in sd:
-            sd[self.tt] = sd.pop(self.hf)
+            sd[self.prime] = sd.pop(self.hf)
 
-    def tt_to_hf(self, sd: StateDict) -> None:
-        if self.tt in sd:
-            sd[self.hf] = sd.pop(self.tt)
+    def prime_to_hf(self, sd: StateDict) -> None:
+        if self.prime in sd:
+            sd[self.hf] = sd.pop(self.prime)
 
 
 @dataclass
@@ -94,18 +94,18 @@ class PrefixRename(ConvOp):
     ``mixer.`` <-> ``mamba.``, ``block_sparse_moe.`` <-> ``mlp.``)."""
 
     hf: str
-    tt: str
+    prime: str
 
     @staticmethod
     def _swap(sd: StateDict, old: str, new: str) -> None:
         for key in [k for k in sd if k.startswith(old)]:
             sd[new + key[len(old) :]] = sd.pop(key)
 
-    def hf_to_tt(self, sd: StateDict) -> None:
-        self._swap(sd, self.hf, self.tt)
+    def hf_to_prime(self, sd: StateDict) -> None:
+        self._swap(sd, self.hf, self.prime)
 
-    def tt_to_hf(self, sd: StateDict) -> None:
-        self._swap(sd, self.tt, self.hf)
+    def prime_to_hf(self, sd: StateDict) -> None:
+        self._swap(sd, self.prime, self.hf)
 
 
 @dataclass
@@ -125,10 +125,10 @@ class Drop(ConvOp):
         for key in [k for k in sd if (k.startswith(self.name) if self.is_prefix else k == self.name)]:
             del sd[key]
 
-    def hf_to_tt(self, sd: StateDict) -> None:
+    def hf_to_prime(self, sd: StateDict) -> None:
         self._drop(sd)
 
-    def tt_to_hf(self, sd: StateDict) -> None:
+    def prime_to_hf(self, sd: StateDict) -> None:
         self._drop(sd)
 
 
@@ -158,7 +158,7 @@ class Stack(ConvOp):
     dim: int = 0
     index_offset: int = 0
 
-    def hf_to_tt(self, sd: StateDict) -> None:
+    def hf_to_prime(self, sd: StateDict) -> None:
         items: list[Tensor] = []
         e = 0
         while self.item.format(e=e) in sd:
@@ -167,7 +167,7 @@ class Stack(ConvOp):
         if items:
             sd[self.stacked] = torch.stack(items, dim=self.dim)
 
-    def tt_to_hf(self, sd: StateDict) -> None:
+    def prime_to_hf(self, sd: StateDict) -> None:
         if self.stacked not in sd:
             return
         t = sd.pop(self.stacked)
@@ -197,7 +197,7 @@ class SplitConcat(ConvOp):
             return [total // n] * n
         return [int(size) for _, size in self.parts]
 
-    def hf_to_tt(self, sd: StateDict) -> None:
+    def hf_to_prime(self, sd: StateDict) -> None:
         if self.combined not in sd:
             return
         t = sd.pop(self.combined)
@@ -206,7 +206,7 @@ class SplitConcat(ConvOp):
             sd[key] = t.narrow(self.dim, offset, size)
             offset += size
 
-    def tt_to_hf(self, sd: StateDict) -> None:
+    def prime_to_hf(self, sd: StateDict) -> None:
         if not all(key in sd for key, _ in self.parts):
             return
         tensors = [sd.pop(key) for key, _ in self.parts]
@@ -221,14 +221,14 @@ class Synthetic(ConvOp):
     ``factory`` builds the tensor from the current state dict (so it can match
     device/dtype of a sibling)."""
 
-    tt: str
+    prime: str
     factory: Callable[[StateDict], Tensor]
 
-    def hf_to_tt(self, sd: StateDict) -> None:
-        sd[self.tt] = self.factory(sd)
+    def hf_to_prime(self, sd: StateDict) -> None:
+        sd[self.prime] = self.factory(sd)
 
-    def tt_to_hf(self, sd: StateDict) -> None:
-        sd.pop(self.tt, None)
+    def prime_to_hf(self, sd: StateDict) -> None:
+        sd.pop(self.prime, None)
 
 
 @dataclass
@@ -238,17 +238,17 @@ class MapValue(ConvOp):
     (e.g. a bias shift). ``backward`` may be the identity when the imperative
     converter does not undo the transform (a deliberately lossy roundtrip)."""
 
-    tt: str  # the prime-side key the value lives under (after any rename)
+    prime: str  # the PrimeRL-side key the value lives under (after any rename)
     forward: Callable[[Tensor], Tensor]
     backward: Callable[[Tensor], Tensor]
 
-    def hf_to_tt(self, sd: StateDict) -> None:
-        if self.tt in sd:
-            sd[self.tt] = self.forward(sd[self.tt])
+    def hf_to_prime(self, sd: StateDict) -> None:
+        if self.prime in sd:
+            sd[self.prime] = self.forward(sd[self.prime])
 
-    def tt_to_hf(self, sd: StateDict) -> None:
-        if self.tt in sd:
-            sd[self.tt] = self.backward(sd[self.tt])
+    def prime_to_hf(self, sd: StateDict) -> None:
+        if self.prime in sd:
+            sd[self.prime] = self.backward(sd[self.prime])
 
 
 @dataclass
@@ -260,10 +260,10 @@ class SqueezeLeading(ConvOp):
 
     key: str
 
-    def hf_to_tt(self, sd: StateDict) -> None:
+    def hf_to_prime(self, sd: StateDict) -> None:
         return None
 
-    def tt_to_hf(self, sd: StateDict) -> None:
+    def prime_to_hf(self, sd: StateDict) -> None:
         if self.key in sd and sd[self.key].shape[0] == 1:
             sd[self.key] = sd[self.key][0]
 
@@ -278,21 +278,21 @@ class Conditional(ConvOp):
     """Run ``then`` or ``else_`` depending on a predicate over the state dict.
 
     The predicate is evaluated independently in each direction against the
-    *current* state dict (``hf_to_tt`` sees HF keys, ``tt_to_hf`` sees prime
-    keys), so the branch chosen on the way back can legitimately differ from the
-    way out — which is exactly what the imperative converters do (e.g. accept a
-    fused *or* per-expert HF input, but always emit per-expert)."""
+    *current* state dict (``hf_to_prime`` sees HF keys, ``prime_to_hf`` sees
+    PrimeRL keys), so the branch chosen on the way back can legitimately differ
+    from the way out — which is exactly what the imperative converters do (e.g.
+    accept a fused *or* per-expert HF input, but always emit per-expert)."""
 
     predicate: Callable[[StateDict], bool]
     then: list[ConvOp]
     else_: list[ConvOp] = field(default_factory=list)
 
-    def hf_to_tt(self, sd: StateDict) -> None:
-        apply_hf_to_tt(sd, self.then if self.predicate(sd) else self.else_)
+    def hf_to_prime(self, sd: StateDict) -> None:
+        apply_hf_to_prime(sd, self.then if self.predicate(sd) else self.else_)
 
-    def tt_to_hf(self, sd: StateDict) -> None:
+    def prime_to_hf(self, sd: StateDict) -> None:
         branch = self.then if self.predicate(sd) else self.else_
-        apply_tt_to_hf(sd, branch)
+        apply_prime_to_hf(sd, branch)
 
 
 @dataclass
@@ -302,11 +302,11 @@ class Sequence(ConvOp):
 
     ops: list[ConvOp]
 
-    def hf_to_tt(self, sd: StateDict) -> None:
-        apply_hf_to_tt(sd, self.ops)
+    def hf_to_prime(self, sd: StateDict) -> None:
+        apply_hf_to_prime(sd, self.ops)
 
-    def tt_to_hf(self, sd: StateDict) -> None:
-        apply_tt_to_hf(sd, self.ops)
+    def prime_to_hf(self, sd: StateDict) -> None:
+        apply_prime_to_hf(sd, self.ops)
 
 
 def key_present(name: str) -> Callable[[StateDict], bool]:
@@ -325,7 +325,7 @@ def routed_experts_op(
     prefix: str,
     *,
     hf_experts: str,
-    tt_experts: str,
+    prime_experts: str,
     proj_order=GATE_DOWN_UP,
     hf_proj_suffix: str = ".weight",
     fused: bool = False,
@@ -333,7 +333,7 @@ def routed_experts_op(
     """Compose the routed-experts conversion for one layer from base ops.
 
     Per-expert HF weights <-> stacked prime tensors is a :class:`Stack` per
-    proj. ``hf_experts``/``tt_experts`` are the (relative) expert container
+    proj. ``hf_experts``/``prime_experts`` are the (relative) expert container
     names (e.g. ``mlp.experts`` / ``block_sparse_moe.experts``); ``proj_order``
     maps prime ``wN`` to the HF per-expert proj name.
 
@@ -344,7 +344,10 @@ def routed_experts_op(
     through the per-expert ``Stack`` unstack (the fused key is absent in prime,
     so the conditional takes the else branch)."""
     stacks = [
-        Stack(stacked=f"{prefix}.{tt_experts}.{wn}", item=f"{prefix}.{hf_experts}.{{e}}.{hf_proj}{hf_proj_suffix}")
+        Stack(
+            stacked=f"{prefix}.{prime_experts}.{wn}",
+            item=f"{prefix}.{hf_experts}.{{e}}.{hf_proj}{hf_proj_suffix}",
+        )
         for wn, hf_proj in proj_order
     ]
     if not fused:
@@ -353,9 +356,9 @@ def routed_experts_op(
     fused_then = [
         SplitConcat(
             combined=gate_up,
-            parts=[(f"{prefix}.{tt_experts}.w1", None), (f"{prefix}.{tt_experts}.w3", None)],
+            parts=[(f"{prefix}.{prime_experts}.w1", None), (f"{prefix}.{prime_experts}.w3", None)],
             dim=1,
         ),
-        Rename(f"{prefix}.{hf_experts}.down_proj", f"{prefix}.{tt_experts}.w2"),
+        Rename(f"{prefix}.{hf_experts}.down_proj", f"{prefix}.{prime_experts}.w2"),
     ]
     return Conditional(key_present(gate_up), then=fused_then, else_=stacks)

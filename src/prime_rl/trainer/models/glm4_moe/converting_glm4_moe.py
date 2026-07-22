@@ -35,9 +35,9 @@ from prime_rl.trainer.models.conversion_ops import (
 
 
 def glm_moe_layer_ops(layer_idx: int) -> list[ConvOp]:
-    """The hf<->tt MoE ops for one GLM-style layer.
+    """The HF <-> PrimeRL MoE ops for one GLM-style layer.
 
-    Shared by GLM-4 MoE and GLM-MoE-DSA (their hf<->tt MoE conversion is
+    Shared by GLM-4 MoE and GLM-MoE-DSA (their HF <-> PrimeRL MoE conversion is
     identical; DSA's attention/MLA weights pass through untouched)."""
     p = f"model.layers.{layer_idx}.mlp"
     ops: list[ConvOp] = [
@@ -46,14 +46,14 @@ def glm_moe_layer_ops(layer_idx: int) -> list[ConvOp]:
         routed_experts_op(
             f"model.layers.{layer_idx}",
             hf_experts="mlp.experts",
-            tt_experts="mlp.experts",
+            prime_experts="mlp.experts",
             fused=True,
         ),
     ]
     for wn, hf_proj in GATE_DOWN_UP:
         # SqueezeLeading is backward-only and must run *after* the rename has
         # restored the HF key, so it precedes the Rename in the forward list
-        # (apply_tt_to_hf plays the chain in reverse).
+        # (apply_prime_to_hf plays the chain in reverse).
         ops.append(SqueezeLeading(f"{p}.shared_experts.{hf_proj}.weight"))
         ops.append(Rename(f"{p}.shared_experts.{hf_proj}.weight", f"{p}.shared_expert.{wn}"))
     ops.append(Drop(f"{p}.tokens_per_expert"))

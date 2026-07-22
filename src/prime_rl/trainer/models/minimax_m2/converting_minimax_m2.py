@@ -25,7 +25,7 @@ def conversion_chain(config) -> list[ConvOp]:
             routed_experts_op(
                 p,
                 hf_experts="block_sparse_moe.experts",
-                tt_experts="mlp.experts",
+                prime_experts="mlp.experts",
                 proj_order=_MINIMAX_PROJ_ORDER,
             )
         )

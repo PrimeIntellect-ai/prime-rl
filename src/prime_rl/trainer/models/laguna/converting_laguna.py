@@ -53,7 +53,7 @@ def conversion_chain(config) -> list[ConvOp]:
         )
 
         # Routed experts (per-expert or fused gate_up).
-        ops.append(routed_experts_op(p, hf_experts="mlp.experts", tt_experts="mlp.experts", fused=True))
+        ops.append(routed_experts_op(p, hf_experts="mlp.experts", prime_experts="mlp.experts", fused=True))
 
         # Shared expert. Base Renames handle the singular input + singular
         # backward; the conditional adds the forward-only plural alternate.
