@@ -73,8 +73,12 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     if config.inference is not None:
         # Exclude launcher-only fields that are not needed by the vLLM server
         exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
+        inference_dict = to_toml_dict(config.inference, exclude=exclude_inference)
+        if config.deployment.type == "multi_node":
+            # Per-rank processes run bare engines; the sbatch starts the single global router.
+            inference_dict["router"] = "None"
         with open(output_dir / INFERENCE_TOML, "wb") as f:
-            tomli_w.dump(to_toml_dict(config.inference, exclude=exclude_inference), f)
+            tomli_w.dump(inference_dict, f)
 
 
 def rl_local(config: RLConfig):
@@ -414,7 +418,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_prefill_replicas=infer_deploy.num_prefill_replicas,
             num_decode_replicas=infer_deploy.num_decode_replicas,
             gpus_per_node=config.deployment.gpus_per_node,
-            router=infer_deploy.router,
+            router=config.inference.router,
+            router_port=config.inference.server.port,
             prefill_port=infer_deploy.prefill_port,
             decode_port=infer_deploy.decode_port,
             inference_tp=config.inference.parallel.tp,
@@ -445,9 +450,10 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             nodes_per_infer_replica=config.deployment.infer_nodes_per_replica,
             num_infer_replicas=config.deployment.num_infer_replicas,
             gpus_per_node=config.deployment.gpus_per_node,
-            router=config.inference.deployment.router if config.inference else VllmRouterConfig(),
+            router=config.inference.router if config.inference else VllmRouterConfig(),
+            router_port=config.inference.server.port if config.inference else 8000,
             infer_nodes_per_replica=config.deployment.infer_nodes_per_replica,
-            backend_port=config.inference.deployment.backend_port if config.inference else 8100,
+            backend_port=config.inference.backend_port if config.inference else 8100,
             inference_tp=config.inference.parallel.tp if config.inference else 1,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,

@@ -137,6 +137,13 @@ class StaticInferencePool:
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
         self._admin_clients = setup_admin_clients(client_config)
+        # When admin URLs bypass a router, also health-check the client-facing
+        # (router) endpoint - it only starts serving once its workers are healthy.
+        self._router_clients = (
+            setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
+            if client_config.admin_base_url
+            else []
+        )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
@@ -168,7 +175,8 @@ class StaticInferencePool:
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         await check_health(
-            self._admin_clients, timeout=timeout if timeout is not None else self._wait_for_ready_timeout
+            self._admin_clients + self._router_clients,
+            timeout=timeout if timeout is not None else self._wait_for_ready_timeout,
         )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 

@@ -32,7 +32,7 @@ export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
 {% if num_infer_nodes > 0 -%}
-export ROUTER_PORT={{ router.port }}
+export ROUTER_PORT={{ router_port }}
 export INFERENCE_TP={{ inference_tp }}
 export INFERENCE_DP_LOCAL=$((GPUS_PER_NODE / INFERENCE_TP))
 export INFERENCE_DATA_PARALLEL_RPC_PORT={{ inference_data_parallel_rpc_port }}
@@ -75,58 +75,43 @@ export HOSTNAMES_STR="${HOSTNAMES[*]}"
 {% if num_infer_nodes > 0 -%}
 INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
 
-# Build per-replica router URLs, admin URLs, and backend args for the router
-INFER_URLS=""
+# Single global router on inference node 0 fronts every per-rank endpoint;
+# admin URLs bypass it and hit each rank directly.
+INFER_URLS="http://${INFER_HOSTS[0]}:${ROUTER_PORT}/v1"
 ADMIN_URLS=""
-ALL_ROUTER_ARGS=""
+ROUTER_ARGS=""
 {% if is_disaggregated -%}
+# External-LB: one prefill/decode endpoint per DP rank (PORT + k) on each node.
 for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
     replica_base=$((r * NODES_PER_INFER_REPLICA))
-    router_host="${INFER_HOSTS[$replica_base]}"
-    INFER_URLS="${INFER_URLS:+$INFER_URLS }http://${router_host}:${ROUTER_PORT}/v1"
-
-    REPLICA_ROUTER_ARGS=""
-    # External-LB: one prefill/decode endpoint per DP rank (PORT + k) on each node.
     for ((p=0; p<NUM_PREFILL_NODES; p++)); do
-        node_idx=$((replica_base + p))
-        host="${INFER_HOSTS[$node_idx]}"
+        host="${INFER_HOSTS[$((replica_base + p))]}"
         for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
             ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((PREFILL_PORT + k))/v1"
-            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --prefill http://${host}:$((PREFILL_PORT + k))"
+            ROUTER_ARGS="$ROUTER_ARGS --prefill http://${host}:$((PREFILL_PORT + k))"
         done
     done
     for ((d=0; d<NUM_DECODE_NODES; d++)); do
-        node_idx=$((replica_base + NUM_PREFILL_NODES + d))
-        host="${INFER_HOSTS[$node_idx]}"
+        host="${INFER_HOSTS[$((replica_base + NUM_PREFILL_NODES + d))]}"
         for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
             ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((DECODE_PORT + k))/v1"
-            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --decode http://${host}:$((DECODE_PORT + k))"
+            ROUTER_ARGS="$ROUTER_ARGS --decode http://${host}:$((DECODE_PORT + k))"
         done
     done
-    ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS|}$REPLICA_ROUTER_ARGS"
 done
 {%- else -%}
-for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
-    head_idx=$((r * NODES_PER_INFER_REPLICA))
-    router_host="${INFER_HOSTS[$head_idx]}"
-    INFER_URLS="${INFER_URLS:+$INFER_URLS }http://${router_host}:${ROUTER_PORT}/v1"
-
-    REPLICA_ROUTER_ARGS=""
-    for ((n=0; n<NODES_PER_INFER_REPLICA; n++)); do
-        node_idx=$((head_idx + n))
-        host="${INFER_HOSTS[$node_idx]}"
-        # External-LB: one endpoint per DP rank (BACKEND_PORT + dp_local) on each node.
-        for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
-            ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + k))/v1"
-            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS http://${host}:$((BACKEND_PORT + k))"
-        done
+# External-LB: one endpoint per DP rank (BACKEND_PORT + dp_local) on each node.
+for ((n=0; n<NUM_INFER_NODES; n++)); do
+    host="${INFER_HOSTS[$n]}"
+    for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
+        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + k))/v1"
+        ROUTER_ARGS="$ROUTER_ARGS http://${host}:$((BACKEND_PORT + k))"
     done
-    ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS|}$REPLICA_ROUTER_ARGS"
 done
 {%- endif %}
 export INFER_URLS
 export ADMIN_URLS
-export ALL_ROUTER_ARGS
+export ROUTER_ARGS
 echo "INFER_HOSTS=${INFER_HOSTS[*]}"
 echo "INFER_URLS=${INFER_URLS}"
 echo "ADMIN_URLS=${ADMIN_URLS}"
@@ -310,10 +295,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     echo "ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT" \
         | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
-    # Start the router on the first node of each replica (PD mode, external LB across per-rank endpoints)
-    if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-        REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-        launch_router pd "$REPLICA_ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log" "$REPLICA_IDX" "$REPLICA_BASE"
+    # Start the single global router on inference node 0 (PD mode, external LB across all per-rank endpoints)
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        launch_router pd "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log"
     fi
 {%- if router.type == "llm-d" %}
     # pd-sidecar on each decode node: EPP routes decode -> sidecar (DECODE_SIDECAR_PORT
@@ -348,10 +332,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
     done
 {%- else -%}
-    # Start the router on the first node of each replica
-    if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-        REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-        launch_router regular "$REPLICA_ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log" "$REPLICA_IDX" "$((REPLICA_IDX * NODES_PER_INFER_REPLICA))" "$NODES_PER_INFER_REPLICA"
+    # Start the single global router on inference node 0 (external LB across all per-rank endpoints)
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log"
     fi
 
     # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + d),

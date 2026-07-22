@@ -57,7 +57,7 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 
 ## `inference` — vLLM server
 
-OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly.
+OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly. It starts a `vllm-router` on `server.port` (default 8000, the client-facing URL) fronting the engine on `backend_port` (default 8100); admin endpoints must target the engine port directly.
 
 ```bash
 uv run inference --model.name Qwen/Qwen3-0.6B

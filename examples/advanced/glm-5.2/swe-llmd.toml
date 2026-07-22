@@ -37,7 +37,7 @@ decode_env_vars = {"VLLM_DEEP_GEMM_WARMUP"="skip", "UCX_RCACHE_MAX_UNRELEASED"="
 prefill_vllm_overrides = {"enable_dbo"=true}
 decode_vllm_overrides = {"max_num_batched_tokens"=96, "max_num_seqs"=96}
 
-[inference.deployment.router]
+[inference.router]
 type = "llm-d"
 scorers = { "prefix-cache-scorer" = 3.0 } # need some prefix-cache routing, however due to shared mooncake pool do low prio
 
