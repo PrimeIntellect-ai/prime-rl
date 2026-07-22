@@ -1,0 +1,57 @@
+# Example ConfigMap mounted at /configs in the orchestrator and trainer pods.
+# kubectl apply -f prime-rl-configs.yaml -n <your-namespace>
+#
+# Replace `<your-namespace>` below with your namespace, and adjust the
+# Dynamo frontend service hostname if it differs in your cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prime-rl-configs
+  namespace: <your-namespace>
+data:
+  orch.toml: |
+    max_steps = 20
+    seq_len = 2048
+    batch_size = 64
+    rollouts_per_example = 4
+    use_token_client = false
+
+    [wandb]
+    project = "prime-rl-dynamo-k8s"
+    name = "dynamo-smoke-qwen3-4b"
+
+    [model]
+    name = "Qwen/Qwen3-4B-Instruct-2507"
+
+    [sampling]
+    max_tokens = 256
+
+    [[env]]
+    id = "math-env"
+    name = "hendrycks-math"
+    args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", math_verify_max_workers = 32, math_verify_timeout = 60 }
+
+    [buffer]
+    easy_threshold = 1.0
+    hard_threshold = 0.0
+
+    [client]
+    base_url = ["http://prime-rl-dynamo-frontend.<your-namespace>.svc.cluster.local:8000/v1"]
+    # Admin endpoints (/v1/rl/*) are served natively by the Dynamo Rust frontend
+    # (DYN_ENABLE_RL=true). No separate admin-stub service needed.
+    admin_base_url = ["http://prime-rl-dynamo-frontend.<your-namespace>.svc.cluster.local:8000/v1/rl"]
+    skip_model_check = true
+
+  train.toml: |
+    max_steps = 20
+
+    [model]
+    name = "Qwen/Qwen3-4B-Instruct-2507"
+    seq_len = 2048
+
+    [wandb]
+    project = "prime-rl-dynamo-k8s"
+    name = "dynamo-smoke-qwen3-4b-trainer"
+
+    [optim]
+    lr = 3e-6
