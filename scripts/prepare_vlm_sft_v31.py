@@ -375,8 +375,10 @@ def iter_sharegpt(
 
     for f in files:
         for i, raw in enumerate(rows_from(f)):
+            if not isinstance(raw, dict):
+                continue
             convs = raw.get("conversations") or []
-            images = raw.get("image")
+            images = raw.get("image") or raw.get("images")
             images = [images] if isinstance(images, str) else (images or [])
             if not convs or not images or len(images) > MAX_IMAGES_65K:
                 continue
