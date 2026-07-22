@@ -294,7 +294,9 @@ class RLConfig(BaseConfig):
         if self.deployment.type == "single_node":
             if self.trainer.weight_broadcast.type == "nccl":
                 local_world_size = self.deployment.num_train_gpus + self.deployment.num_infer_gpus
-                has_external_inference = self.trainer.weight_broadcast.inference_world_size is not None
+                has_external_inference = (
+                    self.weight_broadcast is not None and self.weight_broadcast.inference_world_size is not None
+                )
                 if local_world_size < 2 and not has_external_inference:
                     raise ValueError(
                         "NCCL weight broadcast requires at least 2 local GPUs or an explicit external "

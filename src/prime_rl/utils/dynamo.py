@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import httpx
 from httpx import AsyncClient
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 
 from prime_rl.configs.shared import ClientConfig
@@ -25,14 +26,44 @@ DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION = 1
 DYNAMO_READINESS_REQUEST_TIMEOUT_S = 30.0
 
 
-@dataclass(frozen=True)
-class DiscoveredDynamoWorker:
-    component: str
-    instance_id: int
+class DiscoveredDynamoWorker(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    component: str = Field(min_length=1)
+    instance_id: int = Field(ge=0, strict=True)
+    model: str
     admin_base_url: str
-    world_size: int
-    system_url: str | None
-    system_routes: tuple[str, ...]
+    world_size: int = Field(gt=0, strict=True)
+    system_url: str | None = None
+    system_routes: tuple[str, ...] = ()
+
+    @field_validator("admin_base_url", "system_url")
+    @classmethod
+    def validate_control_url(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _normalize_control_url(value, info.field_name)
+
+    @field_validator("system_routes", mode="before")
+    @classmethod
+    def validate_system_routes(cls, value: Any) -> tuple[str, ...]:
+        if not isinstance(value, list) or any(not isinstance(route, str) or not route for route in value):
+            raise ValueError("system_routes must be a list of non-empty strings")
+        return tuple(sorted(set(value)))
+
+
+class DynamoDiscoverySnapshot(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    protocol_version: int = Field(strict=True)
+    workers: list[object]
+
+    @field_validator("protocol_version")
+    @classmethod
+    def validate_protocol_version(cls, value: int) -> int:
+        if value != DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION:
+            raise ValueError("unsupported protocol version")
+        return value
 
 
 class DynamoDiscoveryPending(ValueError):
@@ -50,38 +81,15 @@ def _parse_dynamo_worker(raw_worker: object, model_name: str) -> DiscoveredDynam
         raise ValueError("Dynamo RL discovery returned a malformed worker")
     if raw_worker.get("error"):
         raise DynamoDiscoveryPending(f"Dynamo RL worker probe is not ready: {raw_worker['error']}")
-    if raw_worker.get("model") != model_name:
-        raise ValueError(f"Dynamo RL worker model {raw_worker.get('model')!r} does not match {model_name!r}")
 
-    component = raw_worker.get("component")
-    instance_id = raw_worker.get("instance_id")
-    admin_base_url = raw_worker.get("admin_base_url")
-    system_url = raw_worker.get("system_url")
-    world_size = raw_worker.get("world_size")
-    system_routes = raw_worker.get("system_routes", [])
-    if not isinstance(component, str) or not component:
-        raise ValueError("Dynamo RL worker is missing component identity")
-    if not isinstance(instance_id, int) or isinstance(instance_id, bool) or instance_id < 0:
-        raise ValueError("Dynamo RL worker has an invalid instance_id")
-    if not isinstance(admin_base_url, str) or not admin_base_url:
-        raise ValueError("Dynamo RL worker is missing admin_base_url")
-    if system_url is not None and (not isinstance(system_url, str) or not system_url):
-        raise ValueError("Dynamo RL worker has an invalid system_url")
-    if not isinstance(world_size, int) or isinstance(world_size, bool) or world_size <= 0:
-        raise ValueError("Dynamo RL worker has an invalid world_size")
-    if not isinstance(system_routes, list) or any(not isinstance(route, str) or not route for route in system_routes):
-        raise ValueError("Dynamo RL worker has an invalid system_routes list")
-    admin_base_url = _normalize_control_url(admin_base_url, "admin_base_url")
-    if system_url is not None:
-        system_url = _normalize_control_url(system_url, "system_url")
-    return DiscoveredDynamoWorker(
-        component=component,
-        instance_id=instance_id,
-        admin_base_url=admin_base_url,
-        world_size=world_size,
-        system_url=system_url,
-        system_routes=tuple(sorted(set(system_routes))),
-    )
+    try:
+        worker = DiscoveredDynamoWorker.model_validate(raw_worker)
+    except ValidationError as error:
+        field = error.errors()[0]["loc"][0]
+        raise ValueError(f"Dynamo RL worker has an invalid {field}") from error
+    if worker.model != model_name:
+        raise ValueError(f"Dynamo RL worker model {worker.model!r} does not match {model_name!r}")
+    return worker
 
 
 def _validate_dynamo_snapshot(workers: tuple[DiscoveredDynamoWorker, ...]) -> None:
@@ -104,17 +112,19 @@ def _validate_dynamo_snapshot(workers: tuple[DiscoveredDynamoWorker, ...]) -> No
 
 
 def _parse_dynamo_workers(payload: object, model_name: str) -> tuple[DiscoveredDynamoWorker, ...]:
-    if not isinstance(payload, dict) or not isinstance(payload.get("workers"), list):
-        raise ValueError("Dynamo RL discovery response must contain a workers list")
-    protocol_version = payload.get("protocol_version")
-    if type(protocol_version) is not int or protocol_version != DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION:
-        raise ValueError(
-            "Dynamo RL discovery returned an unsupported protocol version; "
-            f"expected {DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION}"
-        )
+    try:
+        snapshot = DynamoDiscoverySnapshot.model_validate(payload)
+    except ValidationError as error:
+        fields = {item["loc"][0] for item in error.errors()}
+        if "protocol_version" in fields:
+            raise ValueError(
+                "Dynamo RL discovery returned an unsupported protocol version; "
+                f"expected {DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION}"
+            ) from error
+        raise ValueError("Dynamo RL discovery response must contain a workers list") from error
     selected_workers = [
         worker
-        for worker in payload["workers"]
+        for worker in snapshot.workers
         if not isinstance(worker, dict) or not isinstance(worker.get("model"), str) or worker["model"] == model_name
     ]
     workers = tuple(_parse_dynamo_worker(worker, model_name) for worker in selected_workers)

@@ -265,6 +265,22 @@ def test_external_dynamo_nccl_does_not_require_a_local_inference_gpu():
     assert config.trainer.weight_broadcast.inference_world_size == 1
 
 
+def test_default_nccl_world_size_does_not_bypass_local_gpu_guard():
+    with pytest.raises(ValueError, match="NCCL weight broadcast requires at least 2"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"weight_broadcast": {"type": "nccl"}},
+                "orchestrator": {},
+                "inference": None,
+                "deployment": {
+                    "type": "single_node",
+                    "num_train_gpus": 1,
+                    "num_infer_gpus": 0,
+                },
+            }
+        )
+
+
 def test_two_gpu_dynamo_qwen30b_example_uses_bfloat16_training():
     path = Path("examples/dynamo/qwen3_30b_Thinking/rl.toml")
     with path.open("rb") as stream:
