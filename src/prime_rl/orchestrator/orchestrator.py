@@ -603,17 +603,12 @@ class Orchestrator:
                 f"({n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
-        # ADVANCE rule (docs/training.md#staleness-and-pacing): batch ``step`` ships only once the
-        # trainer has published policy v{step-1-TARGET_LAG}. On fast envs the sink
-        # otherwise fills batches from buffered rollouts faster than the trainer
-        # consumes them; the orchestrator would finish all its steps, tear down the
-        # weight watcher, and strand the trainer inside its next in-memory broadcast
-        # handshake (the watcher serves the receive side). Holding here paces the
-        # batch counter to the trainer and keeps the watcher alive for every
-        # broadcast the trainer will make. The requirement is always satisfiable:
-        # the trainer skips only the final TARGET_LAG+1 in-memory broadcasts, so
-        # v{max_steps-1-TARGET_LAG} is the last one published — exactly what the
-        # final batch needs. Bench runs have no trainer, so they ship freely.
+        # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}.
+        # Without this, fast envs fill batches from buffered rollouts, the
+        # orchestrator finishes early, and its teardown strands the trainer inside
+        # an in-memory broadcast handshake that needs the live weight watcher.
+        # Always satisfiable: the trainer skips only the final TARGET_LAG+1
+        # in-memory broadcasts. Bench runs have no trainer, so they ship freely.
         required_version = step - 1 - TARGET_LAG
         if not config.bench and self.policy.version < required_version:
             get_logger().info(
