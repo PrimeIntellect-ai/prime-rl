@@ -792,10 +792,47 @@ def iter_vwi(manifest: dict, rng: random.Random) -> Iterator[tuple[dict, int]]:
                 )
 
 
+def iter_screenqa(rng: random.Random) -> Iterator[tuple[dict, int]]:
+    """google-research ScreenQA short answers over RICO screenshots: grouped
+    into multi-QA conversations per screen (screen-state QA share of the GUI slice)."""
+    base = _first_existing(RAW_ROOT / "screen_qa")
+    rico = _first_existing(RAW_ROOT / "rico" / "combined")
+    if base is None or rico is None:
+        print("  !! screenqa/rico raw not found")
+        return
+    by_image: dict[int, list[dict]] = defaultdict(list)
+    for split in ("train.json", "validation.json"):
+        f = base / "short_answers" / split
+        if f.exists():
+            for r in json.loads(f.read_text()):
+                if r.get("ground_truth"):
+                    by_image[r["image_id"]].append(r)
+    images = list(by_image)
+    rng.shuffle(images)
+    store_dir = MEDIA_ROOT / "screenqa"
+    store_dir.mkdir(parents=True, exist_ok=True)
+    for image_id in images:
+        src = rico / f"{image_id}.jpg"
+        if not src.exists():
+            continue
+        dst = store_dir / f"{image_id}.jpg"
+        if not dst.exists():
+            os.link(src, dst)
+        target = f"{MEDIA_PREFIX}/screenqa/{image_id}.jpg"
+        qas = by_image[image_id][:6]
+        messages = []
+        for j, qa in enumerate(qas):
+            uparts = [image_part(target)] if j == 0 else []
+            uparts.append(text_part(qa["question"]))
+            messages.append({"role": "user", "content": uparts})
+            messages.append({"role": "assistant", "content": [text_part(qa["ground_truth"][0])]})
+        yield make_row(f"screenqa-{image_id}", "screenqa", messages), row_cost(messages, [1300])
+
+
 def iter_text_replay(rng: random.Random) -> Iterator[tuple[dict, int]]:
     """Nemotron-Post-Training-v3: text SFT rows; tool/agentic subsets oversampled 2x
     by yielding them twice (interleave shuffles)."""
-    base = _first_existing(RAW_ROOT / "Nemotron-Post-Training-Dataset-v3", RAW_ROOT / "nptv3")
+    base = _first_existing(RAW_ROOT / "text_replay", RAW_ROOT / "Nemotron-Post-Training-Dataset-v3", RAW_ROOT / "nptv3")
     if base is None:
         print("  !! nptv3 raw not found")
         return
@@ -865,7 +902,8 @@ def build_slices(manifest: dict, rng: random.Random) -> dict[str, SliceSpec]:
                 SourceSpec("groundcua", lambda: iter_groundcua(manifest, rng), 500 * B),
                 SourceSpec("scalecua", lambda: iter_scalecua(manifest, rng), 480 * B),
                 SourceSpec("visualwebinstruct", lambda: iter_vwi(manifest, rng), 240 * B),
-                # agentnet + screenqa are appended by --extend once their layouts land
+                SourceSpec("screenqa", lambda: iter_screenqa(rng), 240 * B),
+                # agentnet appended once its extracted trajectory layout is confirmed
             ],
         ),
         "docs_ocr_v31": SliceSpec(
@@ -945,7 +983,7 @@ def build_slices(manifest: dict, rng: random.Random) -> dict[str, SliceSpec]:
                     "llava_cot",
                     lambda: iter_sharegpt(
                         "llava_cot",
-                        RAW_ROOT / "LLaVA-CoT-100k",
+                        _first_existing(RAW_ROOT / "LLaVA-CoT-100k", RAW_ROOT / "llava_cot") or RAW_ROOT / "llava_cot",
                         "llavacot",
                         manifest,
                         rng,
@@ -956,7 +994,12 @@ def build_slices(manifest: dict, rng: random.Random) -> dict[str, SliceSpec]:
                 SourceSpec(
                     "mathv360k",
                     lambda: iter_sharegpt(
-                        "mathv360k", RAW_ROOT / "MathV360K", "mathv", manifest, rng, transform=boxed_transform
+                        "mathv360k",
+                        _first_existing(RAW_ROOT / "MathV360K", RAW_ROOT / "mathv360k") or RAW_ROOT / "mathv360k",
+                        "mathv",
+                        manifest,
+                        rng,
+                        transform=boxed_transform,
                     ),
                     300 * B,
                 ),

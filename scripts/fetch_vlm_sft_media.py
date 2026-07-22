@@ -145,19 +145,37 @@ def cmd_cc3m(args) -> None:
     target_by_key = {t.name.removeprefix("image_").removesuffix(".jpg"): t for t in todo}
     if not target_by_key:
         return
-    from huggingface_hub import HfApi
+    local_dir = Path("/shared/hubert/raw/nemotron_image_v3_media/cc3m_wds")
+    local_shards = sorted(local_dir.glob("*train*.tar")) if local_dir.exists() else []
+    if local_shards:
+        print(f"  using {len(local_shards)} local cc3m shards")
+        shards = local_shards
+    else:
+        from huggingface_hub import HfApi
 
-    shards = sorted(
-        f
-        for f in HfApi().list_repo_files("pixparse/cc3m-wds", repo_type="dataset")
-        if f.endswith(".tar") and "train" in f
-    )
+        shards = sorted(
+            f
+            for f in HfApi().list_repo_files("pixparse/cc3m-wds", repo_type="dataset")
+            if f.endswith(".tar") and "train" in f
+        )
     remaining = dict(target_by_key)
 
-    def scan_shard(shard: str) -> int:
+    def scan_shard(shard) -> int:
         if not remaining:
             return 0
         found = 0
+        if isinstance(shard, Path):
+            with tarfile.open(shard) as tf:
+                for member in tf:
+                    if not member.name.endswith(".jpg"):
+                        continue
+                    key = member.name.removesuffix(".jpg")
+                    target = remaining.get(key)
+                    if target is not None:
+                        atomic_write(target, tf.extractfile(member).read())
+                        remaining.pop(key, None)
+                        found += 1
+            return found
         with requests.get(CC3M_SHARD_URL.format(shard=shard), stream=True, timeout=300) as resp:
             resp.raise_for_status()
             with tarfile.open(fileobj=resp.raw, mode="r|") as tf:
@@ -454,18 +472,22 @@ def cmd_local_archives(args) -> None:
     todo = load_kind(kind)
     if not todo:
         return
-    root = Path(args.archive_root) / kind
-    if not root.exists():
-        print(f"  !! no archive dir {root}")
+    roots = [Path(r) for r in (args.roots or [str(Path(args.archive_root) / kind)])]
+    roots = [r for r in roots if r.exists()]
+    if not roots:
+        print("  !! none of the roots exist")
         return
     loose = {}
-    for f in root.rglob("*"):
-        if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
-            loose[f.name] = f
+    for root in roots:
+        print(f"  indexing {root} ...", flush=True)
+        for f in root.rglob("*"):
+            if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
+                loose.setdefault(f.name, f)
+    print(f"  {len(loose)} loose files indexed across {len(roots)} roots")
     resolved = 0
     for abs_target, entry in list(todo.items()):
-        cand = root / entry["raw_path"]
-        src = cand if cand.exists() else loose.get(Path(entry["raw_path"]).name)
+        cand = next((r / entry["raw_path"] for r in roots if (r / entry["raw_path"]).exists()), None)
+        src = cand if cand is not None else loose.get(Path(entry["raw_path"]).name)
         if src is not None:
             abs_target.parent.mkdir(parents=True, exist_ok=True)
             if not abs_target.exists():
@@ -478,7 +500,12 @@ def cmd_local_archives(args) -> None:
             todo.pop(abs_target)
             resolved += 1
     print(f"  loose files: {resolved} resolved, {len(todo)} left for archives")
-    archives = [f for f in sorted(root.rglob("*")) if f.suffixes and f.suffixes[-1] in (".tar", ".zip", ".gz", ".tgz")]
+    archives = [
+        f
+        for root in roots
+        for f in sorted(root.rglob("*"))
+        if f.suffixes and f.suffixes[-1] in (".tar", ".zip", ".gz", ".tgz")
+    ]
     for arch in archives:
         if not todo:
             break
@@ -524,6 +551,8 @@ def main():
     parser.add_argument("--manifest", type=Path, default=MANIFEST)
     parser.add_argument("--itv3-kind", type=str, default=None, help="manifest kind for itv3_shards")
     parser.add_argument("--subset", type=str, default=None, help="ITv3 repo subset (defaults to --itv3-kind)")
+    parser.add_argument("--roots", nargs="+", default=None, help="local_archives: media root dirs to search")
+    parser.add_argument("--archive-root", type=str, default="/shared/hubert/raw/nemotron_image_v3_media")
     args = parser.parse_args()
     global _manifest_path
     _manifest_path = args.manifest
