@@ -149,6 +149,13 @@ class WandbMonitor(Monitor):
         self.wandb = init_wandb(max_retries)
         self.run_id = self.wandb.id
 
+        # Upload config files to the W&B run so they're downloadable from the UI.
+        config_dir = Path(full_config_path).parent if full_config_path else None
+        if config_dir and config_dir.is_dir():
+            for config_file in config_dir.iterdir():
+                if config_file.is_file():
+                    wandb.save(str(config_file), policy="now")
+
         wandb.define_metric("*", step_metric="step")
 
         # Provision the curated "overview" saved view once per project (the run's primary process
