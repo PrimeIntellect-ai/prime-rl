@@ -705,6 +705,21 @@ def iter_scalecua(manifest: dict, rng: random.Random) -> Iterator[tuple[dict, in
             )
 
 
+_PIXMO_INDEX: dict | None = None
+
+
+def pixmo_index(img_root: Path) -> dict:
+    """One-time sha1 -> path index over pixmo_images (per-row globs stall on BeeGFS)."""
+    global _PIXMO_INDEX
+    if _PIXMO_INDEX is None:
+        _PIXMO_INDEX = {}
+        for f in img_root.rglob("*"):
+            if f.is_file():
+                _PIXMO_INDEX[f.stem] = f
+        print(f"  pixmo index: {len(_PIXMO_INDEX)} files")
+    return _PIXMO_INDEX
+
+
 def iter_pixmo_points(rng: random.Random) -> Iterator[tuple[dict, int]]:
     base = _first_existing(RAW_ROOT / "pixmo_points", RAW_ROOT / "pixmo-points")
     img_root = RAW_ROOT / "pixmo_images"
@@ -718,9 +733,7 @@ def iter_pixmo_points(rng: random.Random) -> Iterator[tuple[dict, int]]:
                 if not url or not label or not points or len(points) > 40:
                     continue
                 sha = hashlib.sha1(url.encode()).hexdigest()
-                img_file = next(
-                    (c for sub in ("points", "cap", ".") for c in img_root.joinpath(sub).glob(f"{sha}.*")), None
-                )
+                img_file = pixmo_index(img_root).get(sha)
                 if img_file is None:
                     continue
                 target = f"{MEDIA_PREFIX}/pixmo/{img_file.name}"
@@ -761,9 +774,7 @@ def iter_pixmo_cap(rng: random.Random) -> Iterator[tuple[dict, int]]:
                 if not url or not caption:
                     continue
                 sha = hashlib.sha1(url.encode()).hexdigest()
-                img_file = next(
-                    (c for sub in ("cap", "points", ".") for c in img_root.joinpath(sub).glob(f"{sha}.*")), None
-                )
+                img_file = pixmo_index(img_root).get(sha)
                 if img_file is None:
                     continue
                 target = f"{MEDIA_PREFIX}/pixmo/{img_file.name}"
