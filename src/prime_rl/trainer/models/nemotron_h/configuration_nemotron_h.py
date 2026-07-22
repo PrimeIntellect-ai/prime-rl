@@ -215,6 +215,18 @@ class NemotronHConfig(PretrainedConfig):
         )
 
     @property
+    def layer_types(self) -> list[str]:
+        # transformers' shared Mamba2 mixer (via Zamba2MambaMixer) and the base config's
+        # layer-type validation both read `config.layer_types`, expecting canonical names
+        # ("linear_attention"/"full_attention"/"mlp"). Derive them from our `layers_block_type`
+        # schedule (kept in NemotronH's own "mamba"/"attention"/"moe" naming) so the two stay in
+        # sync. Read-only on purpose: the base validation skips writing back when the value is
+        # already canonical, which keeps `layers_block_type` untouched.
+        from transformers.configuration_utils import remap_legacy_layer_types
+
+        return remap_legacy_layer_types(self.layers_block_type)
+
+    @property
     def num_hidden_layers(self) -> int:
         return len(self.layers_block_type)
 
