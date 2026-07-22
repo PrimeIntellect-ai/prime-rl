@@ -472,7 +472,7 @@ class Orchestrator:
             trim_process_memory()
 
     async def main_loop(self) -> None:
-        """Consume ``Rollout``\\ s from the dispatcher and route them
+        """Consume episodes (``list[Rollout]``) from the dispatcher and route them
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
@@ -482,7 +482,7 @@ class Orchestrator:
                 break
 
             try:
-                rollout: Rollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                episode: list[Rollout] = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
 
@@ -490,33 +490,36 @@ class Orchestrator:
             # ``all`` trace file the moment it arrives, so it survives crashes and drains.
             # Train rollouts belong to the batch window currently collecting (``progress.step``),
             # eval rollouts to the step whose eval triggered them.
-            step = rollout.eval_step if rollout.kind == "eval" else self.progress.step
+            kind = episode[0].kind
+            step = episode[0].eval_step if kind == "eval" else self.progress.step
             assert step is not None
             run: vf.RunInfo = (
                 vf.EvalRunInfo(id=self.monitor.run_id, step=step)
-                if rollout.kind == "eval"
+                if kind == "eval"
                 else vf.TrainRunInfo(id=self.monitor.run_id, step=step)
             )
-            rollout.stamp(
-                run,
-                env_name=rollout.env_name,
-                group_id=str(rollout.group_id),
-                policy_version=rollout.policy_version,
-            )
+            for rollout in episode:
+                rollout.stamp(
+                    run,
+                    env_name=rollout.env_name,
+                    group_id=str(rollout.group_id),
+                    episode_id=rollout.episode_id,
+                    policy_version=rollout.policy_version,
+                )
             await asyncio.to_thread(
                 save_rollouts,
-                [rollout.to_record()],
-                get_trace_path(self.config.output_dir, step, rollout.kind, "all"),
+                [rollout.to_record() for rollout in episode],
+                get_trace_path(self.config.output_dir, step, kind, "all"),
             )
 
-            if rollout.kind == "eval":
+            if kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
-                eval_batch = self.eval_sink.add(rollout)
+                eval_batch = self.eval_sink.add(episode)
                 if eval_batch is not None:
                     await self.finalize_eval_batch(eval_batch)
                 continue
 
-            train_batch = await self.train_sink.add(rollout)
+            train_batch = await self.train_sink.add(episode)
             # In drain mode any late-arriving train batch is dropped — we
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():

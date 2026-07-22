@@ -50,16 +50,16 @@ max_completion_tokens = 32768
 
 [[orchestrator.train.env]]
 name = "math"
-taskset = { id = "i3_math_v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "i3_math_v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
 interval = 25
 
 [[orchestrator.eval.env]]
 name = "aime2025"
-taskset = { id = "aime25-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "aime25-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 
 [inference.parallel]
 tp = 8
