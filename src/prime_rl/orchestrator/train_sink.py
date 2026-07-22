@@ -23,6 +23,7 @@ import uuid
 from collections import defaultdict
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.dispatcher import off_policy_lag
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.metrics import TrainRollouts
@@ -294,3 +295,53 @@ class TrainSink:
         self.pre_filter_seen = 0
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name.clear()
+
+    async def on_version_pending(self, trainer_step: int) -> None:
+        """Drop completed rollouts waiting in sink queues once policy lag exceeds the cap."""
+        dropped = self.drop_stale_rollouts(trainer_step, self.config.max_off_policy_steps)
+        if dropped:
+            get_logger().warning(
+                f"Dropped {dropped} queued train rollouts past max_off_policy_steps="
+                f"{self.config.max_off_policy_steps} (sink queue lag)."
+            )
+
+    async def on_new_version(self, step: int) -> None:
+        return
+
+    def drop_stale_rollouts(self, trainer_step: int, max_off_policy_steps: int) -> int:
+        dropped = 0
+
+        def is_stale(rollout: Rollout) -> bool:
+            if rollout.kind != "train":
+                return False
+            env = self.train_envs.get(rollout.env_name)
+            if not env.sampler.samples_from_live_policy:
+                return False
+            return off_policy_lag(trainer_step, rollout.policy_version) > max_off_policy_steps
+
+        kept_batch: list[Rollout] = []
+        for rollout in self.pending_batch:
+            if is_stale(rollout):
+                dropped += 1
+                if self.token_batch_size is not None:
+                    self.pending_tokens -= rollout.num_total_tokens
+            else:
+                rollout.off_policy_steps = off_policy_lag(trainer_step, rollout.policy_version)
+                kept_batch.append(rollout)
+        self.pending_batch = kept_batch
+
+        for group_id, group in list(self.pending_groups.items()):
+            if any(is_stale(rollout) for rollout in group):
+                # Drop the whole partial group — removing only stale members would
+                # strand survivors below group_size with no Cancelled siblings.
+                dropped += len(group)
+                self.pending_groups.pop(group_id, None)
+                continue
+            for rollout in group:
+                rollout.off_policy_steps = off_policy_lag(trainer_step, rollout.policy_version)
+
+        if dropped:
+            self.pending_rollouts = TrainRollouts(
+                [r for r in self.pending_rollouts if not is_stale(r)]
+            )
+        return dropped

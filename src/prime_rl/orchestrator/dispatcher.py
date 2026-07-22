@@ -12,8 +12,9 @@
   source's emptiness), so in-flight rollouts of the opposite kind drain
   naturally on either side of an eval boundary.
 - ``on_version_pending`` (called by the watcher before the engines pause for
-  the weight update) bumps ``off_policy_steps`` on in-flight train rollouts and
-  drops groups past ``max_off_policy_steps``.
+  the weight update) recomputes off-policy lag as
+  ``(trainer_step - 1) - policy_version_at_start`` on in-flight train rollouts
+  and drops groups past ``max_off_policy_steps``.
   Eval rollouts are measurements for the policy version they started with,
   so they are allowed to finish even if training advances. Train rollouts
   sampled from a frozen model never age — their sampler doesn't change
@@ -47,6 +48,11 @@ from prime_rl.orchestrator.types import (
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool, client_identity
 from prime_rl.utils.logger import get_logger
+
+
+def off_policy_lag(trainer_step: int, policy_version_at_start: int) -> int:
+    """Trainer-aligned lag: batches shipped ahead of the rollout's policy version."""
+    return max(0, (trainer_step - 1) - policy_version_at_start)
 
 
 class DispatcherMode(Enum):
@@ -286,8 +292,9 @@ class RolloutDispatcher:
             # change with policy updates.
             if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
                 continue
-            meta.off_policy_steps += 1
-            if meta.off_policy_steps > self.max_off_policy_steps:
+            lag = off_policy_lag(step, meta.policy_version)
+            meta.off_policy_steps = lag
+            if lag > self.max_off_policy_steps:
                 stale_groups.add(meta.group_id)
 
         for gid in stale_groups:

@@ -544,7 +544,10 @@ class OrchestratorConfig(BaseConfig):
     """Maximum training steps. If None, runs indefinitely."""
 
     max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
+    """Maximum trainer–policy lag allowed per rollout before it is discarded.
+
+    Lag is measured as ``(trainer_step - 1) - policy_version_at_generation``,
+    covering both in-flight rollouts and rollouts waiting in the train sink."""
 
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
