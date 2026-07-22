@@ -55,7 +55,10 @@ def load_kind(kind: str) -> dict[Path, dict]:
         manifest = json.load(f)
     todo, done = {}, 0
     for target, entry in manifest.items():
-        if target.split("/")[3] != kind:
+        parts = target.split("/")
+        # kind dir sits at index 3 (datasets/<ds>/media/<kind>/...) or index 2
+        # (datasets/media_v31/<kind>/...) depending on the target scheme.
+        if kind not in (parts[2] if len(parts) > 2 else None, parts[3] if len(parts) > 3 else None):
             continue
         abs_target = REPO_ROOT / target
         if abs_target.exists():
