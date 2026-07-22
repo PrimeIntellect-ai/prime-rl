@@ -302,9 +302,23 @@ def iter_itv3(source: str, keep_think: bool, manifest: dict, rng: random.Random)
 
     def rows_from(f: Path) -> Iterator[dict]:
         if f.suffix == ".jsonl":
-            with open(f) as fh:
-                for line in fh:
-                    yield json.loads(line)
+            idx = Path(str(f) + ".idx")
+            if idx.exists():
+                # uint64 LE byte offsets, one per line + end sentinel: sample rows
+                # in shuffled order so budget-capped slices draw uniformly.
+                import numpy as np
+
+                offsets = np.fromfile(idx, dtype="<u8")[:-1]
+                order = list(range(len(offsets)))
+                rng.shuffle(order)
+                with open(f, "rb") as fh:
+                    for i in order:
+                        fh.seek(int(offsets[i]))
+                        yield json.loads(fh.readline())
+            else:
+                with open(f) as fh:
+                    for line in fh:
+                        yield json.loads(line)
         else:
             for batch in pq.ParquetFile(f).iter_batches(batch_size=256):
                 yield from batch.to_pylist()
