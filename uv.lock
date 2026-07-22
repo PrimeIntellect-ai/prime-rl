@@ -4632,7 +4632,7 @@ requires-dist = [
 
 [[package]]
 name = "openswe-v1"
-version = "0.1.2"
+version = "0.1.3"
 source = { editable = "deps/research-environments/environments/swe/openswe_v1" }
 dependencies = [
     { name = "datasets" },
@@ -4774,7 +4774,7 @@ wheels = [
 
 [[package]]
 name = "openthoughts-tblite-v1"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/research-environments/environments/terminal/openthoughts_tblite_v1" }
 dependencies = [
     { name = "verifiers" },
@@ -6446,7 +6446,7 @@ wheels = [
 
 [[package]]
 name = "senior-swe-bench-v1"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/research-environments/environments/swe/senior_swe_bench_v1" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
@@ -7091,7 +7091,7 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.2.1" }]
 
 [[package]]
 name = "terminal-lego-v1"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/research-environments/environments/terminal/terminal_lego_v1" }
 dependencies = [
     { name = "huggingface-hub" },
