@@ -30,14 +30,14 @@ from prime_rl.trainer.models.nemotron_vl import NemotronVLConfig, NemotronVLForC
 from prime_rl.trainer.sft.loss import compute_document_loss_weights
 from prime_rl.utils.cp import setup_model_cp, shard_for_cp
 
-SEQ_LEN = 512
+SEQ_LEN = 512  # default; --seq-len overrides (v3.1 gate runs 65536)
 DOC_LEN = 256
 IMG_TOKEN_ID = 18
 IMAGE_RUNS = [(60, 66), (376, 382)]  # 6 tokens each; first run crosses the 64-token cp=8 boundary
 TILE_H, TILE_W = 64, 96  # 4x6 patch grid -> 6 tokens per tile after pixel shuffle
 
 
-def tiny_config() -> NemotronVLConfig:
+def tiny_config(seq_len: int = SEQ_LEN) -> NemotronVLConfig:
     return NemotronVLConfig(
         text_config=dict(
             vocab_size=256,
@@ -46,7 +46,7 @@ def tiny_config() -> NemotronVLConfig:
             num_attention_heads=8,  # ulysses all-to-all needs heads % cp_size == 0
             num_key_value_heads=8,
             head_dim=32,
-            max_position_embeddings=SEQ_LEN,
+            max_position_embeddings=seq_len,
             intermediate_size=512,
             mamba_expand=2,
             mamba_num_heads=8,
@@ -82,22 +82,25 @@ def tiny_config() -> NemotronVLConfig:
     )
 
 
-def build_batch() -> dict[str, torch.Tensor]:
+def build_batch(seq_len: int = SEQ_LEN) -> dict[str, torch.Tensor]:
     g = torch.Generator().manual_seed(123)
-    input_ids = torch.randint(32, 200, (1, SEQ_LEN), generator=g)
-    for start, end in IMAGE_RUNS:
+    doc_len = seq_len // 2
+    shard = seq_len // 8  # cp=8 shard size
+    image_runs = [(shard - 2, shard + 4), (doc_len + 2 * shard - 3, doc_len + 2 * shard + 3)]
+    input_ids = torch.randint(32, 200, (1, seq_len), generator=g)
+    for start, end in image_runs:
         input_ids[0, start:end] = IMG_TOKEN_ID
-    target_ids = torch.randint(32, 200, (1, SEQ_LEN), generator=g)
-    loss_mask = torch.zeros(1, SEQ_LEN, dtype=torch.bool)
-    loss_mask[0, 128:DOC_LEN] = True  # doc 0 answer span
-    loss_mask[0, 384:SEQ_LEN] = True  # doc 1 answer span
+    target_ids = torch.randint(32, 200, (1, seq_len), generator=g)
+    loss_mask = torch.zeros(1, seq_len, dtype=torch.bool)
+    loss_mask[0, doc_len // 2 : doc_len] = True  # doc 0 answer span
+    loss_mask[0, doc_len + doc_len // 2 :] = True  # doc 1 answer span
     return {
         "input_ids": input_ids,
         "target_ids": target_ids,
         "loss_mask": loss_mask,
-        "position_ids": torch.cat([torch.arange(DOC_LEN), torch.arange(DOC_LEN)]).unsqueeze(0),
-        "pixel_values": torch.randn(len(IMAGE_RUNS), 3, TILE_H, TILE_W, generator=g),
-        "seq_lens": torch.tensor([DOC_LEN, DOC_LEN]),
+        "position_ids": torch.cat([torch.arange(doc_len), torch.arange(doc_len)]).unsqueeze(0),
+        "pixel_values": torch.randn(2, 3, TILE_H, TILE_W, generator=g),
+        "seq_lens": torch.tensor([doc_len, doc_len]),
     }
 
 
@@ -105,6 +108,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cp-size", type=int, required=True, choices=[1, 8])
     parser.add_argument("--scratch", type=str, required=True, help="node-local dir shared by both runs")
+    parser.add_argument("--seq-len", type=int, default=SEQ_LEN)
+    parser.add_argument(
+        "--gate-vision", action="store_true", help="vision-tower grads gate the result (v3.1 trains the encoder)"
+    )
     args = parser.parse_args()
 
     dist.init_process_group("nccl")
@@ -114,7 +121,7 @@ def main() -> None:
     torch.cuda.set_device(local_rank)
 
     torch.manual_seed(0)
-    model = NemotronVLForCausalLM(tiny_config())
+    model = NemotronVLForCausalLM(tiny_config(args.seq_len))
     state_path = os.path.join(args.scratch, "cp_equiv_init.pt")
     ref_path = os.path.join(args.scratch, "cp_equiv_ref.pt")
     if args.cp_size == 1:
@@ -129,7 +136,7 @@ def main() -> None:
         lambda module, a, kw: captured.update(embeds=kw["inputs_embeds"].detach().clone()), with_kwargs=True
     )
 
-    batch = {k: v.cuda() for k, v in build_batch().items()}
+    batch = {k: v.cuda() for k, v in build_batch(args.seq_len).items()}
     pixel_values = batch["pixel_values"].to(torch.bfloat16)
 
     # Square-averaging weights, computed on the FULL pre-shard mask + doc boundaries
@@ -223,9 +230,15 @@ def main() -> None:
             if ".mlp1." in name:
                 print(f"    rel={rel:.3e} cos={cos:.6f} {name}")
 
-        # Vision-tower grads are unused in every planned stage (tower frozen in phase-1 SFT;
-        # LoRA stage excludes the vision encoder) — NaNs there are reported but not gating.
-        gating_nan = [n for n, _, _ in nan_params if ".visual." not in n]
+        # Vision-tower grads gate only when the stage trains the encoder (--gate-vision).
+        gating_nan = (
+            [n for n, _, _ in nan_params] if args.gate_vision else [n for n, _, _ in nan_params if ".visual." not in n]
+        )
+        if args.gate_vision:
+            vis = [(rel, cos, n) for rel, cos, n in worst if "vision" in n or ".visual." in n]
+            print(f"[cp=8] vision-tower grads (GATING, encoder trainable): {len(vis)} tensors")
+            for rel, cos, name in vis[:8]:
+                print(f"    rel={rel:.3e} cos={cos:.6f} {name}")
         min_cos = min(cos for _, cos, _ in worst)
         ok = embeds_diff < 1e-6 and loss_rel < 5e-3 and min_cos > 0.99 and not gating_nan
         print(

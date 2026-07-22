@@ -1030,10 +1030,75 @@ def build_slice(spec: SliceSpec, manifest: dict) -> None:
     print(f"  -> {len(rows) - n_val} train / {n_val} val rows, {total / 1e9:.2f}B tokens")
 
 
+def finalize() -> None:
+    """Copy the browser subset in, write the README yaml configs, and compute
+    interleave probabilities: p_i ∝ epochs_i * train_rows_i (browser epochs=2,
+    everything else 1) so all subsets finish their pass together."""
+    import shutil
+
+    browser_out = OUT_DIR / "data" / "browser_use_sft_dataset"
+    if not browser_out.exists() and BROWSER_SRC.exists():
+        shutil.copytree(BROWSER_SRC, browser_out)
+        print(f"browser subset copied from {BROWSER_SRC}")
+
+    subsets = [
+        "browser_use_sft_dataset",
+        "gui_v31",
+        "docs_ocr_v31",
+        "charts_v31",
+        "reasoning_v31",
+        "perception_v31",
+        "general_v31",
+        "text_replay_v31",
+    ]
+    counts, missing = {}, []
+    for s in subsets:
+        f = OUT_DIR / "data" / s / "train.parquet"
+        if not f.exists():
+            missing.append(s)
+            continue
+        counts[s] = pq.ParquetFile(f).metadata.num_rows
+    if missing:
+        print(f"!! finalize with missing subsets: {missing}")
+    weights = {s: (2 if s == "browser_use_sft_dataset" else 1) * n for s, n in counts.items()}
+    total_w = sum(weights.values())
+    probs = {s: w / total_w for s, w in weights.items()}
+
+    lines = ["---", "configs:"]
+    for s in counts:
+        lines += [
+            f"- config_name: {s}",
+            "  data_files:",
+            f"  - split: train\n    path: data/{s}/train.parquet",
+            f"  - split: validation\n    path: data/{s}/validation.parquet",
+        ]
+    lines += [
+        "---",
+        "",
+        "# nemotron_vl_sft_v31 (Blend v3.1)",
+        "",
+        "Interleave probabilities (p ∝ epochs × rows; browser at 2 epochs):",
+        "```toml",
+        "subsets = [" + ", ".join(f'"{s}"' for s in counts) + "]",
+        "probabilities = [" + ", ".join(f"{probs[s]:.6f}" for s in counts) + "]",
+        "```",
+        "",
+    ]
+    for s, n in counts.items():
+        lines.append(f"- {s}: {n} train rows (p={probs[s]:.4f})")
+    (OUT_DIR / "README.md").write_text("\n".join(lines) + "\n")
+    print("\n".join(lines[-len(counts) :]))
+    print("README.md written; paste the toml block into phase2_v31.toml")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--slices", nargs="+", default=None)
+    parser.add_argument("--finalize", action="store_true")
     args = parser.parse_args()
+    if args.finalize:
+        finalize()
+        return
     rng = random.Random(SEED)
     manifest: dict = {}
     (OUT_DIR / "data").mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,121 @@
+# Phase 2 v3.1 — Blend v3.1, single 65k stage, FULL fine-tune (LM + projector +
+# CRADIO encoder all trainable). Init from phase-1 step_340 (reassembled on the
+# H200 cluster as Nemotron-3-Super-VL-graft-p1).
+#
+# 4 nodes x 8 H200 (user-reduced from the doc's 20), cp=8 ulysses -> dp=4,
+# bs=32 packed rows @ 65536 = 2.1M tokens/step, grad_accum 8.
+# Param groups: LM 1.75e-5 | projector 1e-5 | encoder 3e-6 (module_lrs).
+# Cosine -> 0, warmup 3% (160 of ~5320 steps), wd 0.01, clip 1.0, square loss.
+# max_steps 5320 ~= 11.2B tokens: externals single-pass at doc budgets +
+# browser at ~2 interleaved epochs (the doc's reserve lever, pre-pulled since
+# probabilities cannot change mid-run).
+#
+# PROBABILITIES ARE PLACEHOLDERS until the v3.1 build's token scan writes the
+# final row-visit shares (scripts/prepare_vlm_sft_v31.py output). DO NOT LAUNCH
+# with the placeholders.
+
+output_dir = "outputs/nemotron-vl-phase2-v31"
+max_steps = 5320
+loss_weighting = "square"
+
+[env_vars]
+HF_HOME = "/tmp/hubert-hf"
+TMPDIR = "/tmp/hubert-tmp"
+TRITON_CACHE_DIR = "/tmp/hubert-triton-cache"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+UV_CACHE_DIR = "/shared/hubert/uv_cache"
+
+[slurm]
+job_name = "nemotron-vl-p2-v31"
+partition = "all"
+pre_run_command = "srun --ntasks-per-node=1 bash -c 'mkdir -p /tmp/hubert-hf /tmp/hubert-tmp /tmp/hubert-triton-cache'"
+
+[deployment]
+type = "multi_node"
+num_nodes = 4
+
+[wandb]
+project = "nemotron-vl"
+name = "nemotron-vl-phase2-v31"
+
+[model]
+name = "/shared/hubert/models/Nemotron-3-Super-VL-graft-p1"
+impl = "custom"
+attn = "flash_attention_3"
+cp = 8
+cp_style = "ulysses"
+ep = 1
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+seq_len = 65536
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+freeze_vision_encoder = false
+freeze_language_model = false
+
+[model.ac]
+freq = 1
+
+[renderer]
+name = "nemotron-vl"
+
+[data]
+type = "sft"
+name = "datasets/nemotron_vl_sft_v31"
+subsets = [
+    "browser_use_sft_dataset",
+    "gui_v31",
+    "docs_ocr_v31",
+    "charts_v31",
+    "reasoning_v31",
+    "perception_v31",
+    "general_v31",
+    "text_replay_v31",
+]
+# PLACEHOLDER — replaced by the build's measured row-visit shares:
+# p_i ∝ target_tokens_i / mean_row_tokens_i (browser target = 2 epochs of its pool)
+probabilities = [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125]
+batch_size = 32
+micro_batch_size = 1
+seq_len = 65536
+
+[val]
+interval = 532
+eval_on_start = true
+
+[val.data]
+type = "sft"
+name = "datasets/nemotron_vl_sft_v31"
+subsets = [
+    "browser_use_sft_dataset",
+    "gui_v31",
+    "docs_ocr_v31",
+    "charts_v31",
+    "reasoning_v31",
+    "perception_v31",
+    "general_v31",
+    "text_replay_v31",
+]
+splits = ["validation", "validation", "validation", "validation", "validation", "validation", "validation", "validation"]
+batch_size = 16
+micro_batch_size = 1
+seq_len = 65536
+
+[optim]
+type = "adamw"
+lr = 1.75e-5
+weight_decay = 0.01
+max_norm = 1.0
+
+[optim.module_lrs]
+"model.mlp1" = 1e-5
+"model.visual" = 3e-6
+
+[scheduler]
+type = "cosine"
+warmup_steps = 160
+
+[ckpt]
+interval = 532

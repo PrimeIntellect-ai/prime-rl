@@ -84,9 +84,10 @@ def check_subset(tok, vl, subset: str, rows: list[dict]) -> list[int]:
         n_assistant = sum(1 for m in messages if m["role"] == "assistant")
         assert sup.count("<|im_end|>") == n_assistant, (subset, row["id"], "per-turn stop mismatch")
 
-        if subset == "browser_use_sft_dataset":
+        if subset in ("browser_use_sft_dataset", "gui_v31"):
             full = tok.decode(ids[: min(len(ids), 4000)])
-            assert "<function>" in full and "<name>" in full, (subset, "tools block missing from system prompt")
+            if json.loads(row.get("tools") or "[]"):
+                assert "<function>" in full and "<name>" in full, (subset, "tools block missing from system prompt")
             if any(m.get("tool_calls") for m in messages):
                 assert "<tool_call>" in sup, (subset, row["id"], "tool calls not supervised")
             for m in messages:
@@ -96,7 +97,7 @@ def check_subset(tok, vl, subset: str, rows: list[dict]) -> list[int]:
                             probe = p["text"][:40]
                             assert probe not in sup, (subset, row["id"], "tool output leaked into supervision")
                             break
-        if subset == "reasoning_p2":
+        if subset in ("reasoning_p2", "reasoning_v31"):
             has_think_src = any(
                 "<think>" in (p.get("text") or "")
                 for m in messages
@@ -117,14 +118,17 @@ def check_subset(tok, vl, subset: str, rows: list[dict]) -> list[int]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--per-subset", type=int, default=25)
+    parser.add_argument("--data-dir", type=Path, default=DATA, help="dataset data/ dir")
+    parser.add_argument("--subsets", nargs="+", default=SUBSETS)
+    parser.add_argument("--model-dir", type=Path, default=GRAFT, help="tokenizer source")
     args = parser.parse_args()
 
-    tok = AutoTokenizer.from_pretrained(str(GRAFT))
+    tok = AutoTokenizer.from_pretrained(str(args.model_dir))
     vl = create_renderer(tok, NemotronVLRendererConfig(image_cache_max=1))
 
     all_ok = True
-    for subset in SUBSETS:
-        path = DATA / subset / "validation.parquet"
+    for subset in args.subsets:
+        path = args.data_dir / subset / "validation.parquet"
         if not path.exists():
             print(f"{subset}: MISSING parquet")
             all_ok = False
