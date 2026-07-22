@@ -231,6 +231,7 @@ class Orchestrator:
         self.monitor = setup_monitor(
             wandb_config=config.wandb,
             prime_config=config.prime_monitor,
+            file_config=config.file_monitor,
             output_dir=config.output_dir,
             tokenizer=self.tokenizer,
             run_config=config,

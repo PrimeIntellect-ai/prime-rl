@@ -86,7 +86,9 @@ def train(config: TrainerConfig):
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
-    monitor = setup_monitor(config.wandb, output_dir=config.output_dir, run_config=config)
+    monitor = setup_monitor(
+        config.wandb, file_config=config.file_monitor, output_dir=config.output_dir, run_config=config
+    )
 
     # Setup heartbeat (only on rank 0)
     heart = None
