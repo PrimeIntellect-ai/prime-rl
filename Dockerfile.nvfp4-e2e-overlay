@@ -6,7 +6,9 @@ USER root
 # Keep Prime main, the pinned NVFP4 runtime, and the cache/package-move fixes
 # from the immutable dev3 image. This layer only tracks vLLM's OnlineRenderer
 # member rename; it does not install or compile anything.
-COPY --chown=appuser:appuser \
+# Numeric ownership avoids resolving names from the 9.7 GB base filesystem,
+# allowing BuildKit to append this source layer without unpacking the base.
+COPY --chown=1000:1000 \
     src/prime_rl/inference/vllm/serving_tokens.py \
     /app/src/prime_rl/inference/vllm/serving_tokens.py
 
