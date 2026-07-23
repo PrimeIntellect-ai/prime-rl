@@ -86,6 +86,9 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.staged_shards_by_group: dict[int, list[StagedTensorShard]] = {}
         self.staging_arenas: dict[torch.dtype, torch.Tensor] = {}
         self.staging_buffer_count: int
+        self.inference_worker_rank_offsets: dict[str, int] = {}
+        self.ranks_per_inference_worker: int | None = None
+        self.inference_rank_count = config.inference_world_size
 
     @property
     def is_serving_rank(self) -> bool:
@@ -360,7 +363,16 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 last_error = error
             else:
                 workers = response.json()["workers"]
-                urls = sorted({self.worker_admin_url(worker["url"]) for worker in workers if worker["is_healthy"]})
+                if self.ranks_per_inference_worker is None:
+                    initial_workers = [worker for worker in workers if worker["is_usable"]]
+                    healthy_workers = (
+                        initial_workers
+                        if initial_workers and all(worker["is_healthy"] for worker in initial_workers)
+                        else []
+                    )
+                else:
+                    healthy_workers = [worker for worker in workers if worker["is_healthy"]]
+                urls = sorted({self.worker_admin_url(worker["url"]) for worker in healthy_workers})
                 if urls:
                     return urls
 
@@ -370,10 +382,23 @@ class NIXLWeightBroadcast(WeightBroadcast):
 
     def initialize_inference_workers(self) -> None:
         worker_urls = self.discover_inference_workers()
-        workers_per_server = self.config.inference_world_size // len(worker_urls)
+        if self.ranks_per_inference_worker is None:
+            self.ranks_per_inference_worker = self.config.inference_world_size // len(worker_urls)
+
+        new_worker_urls = [url for url in worker_urls if url not in self.inference_worker_rank_offsets]
+        next_rank_offset = len(self.inference_worker_rank_offsets) * self.ranks_per_inference_worker
+        new_workers = {
+            worker_url: next_rank_offset + index * self.ranks_per_inference_worker
+            for index, worker_url in enumerate(new_worker_urls)
+        }
+        current_rank_count = len(worker_urls) * self.ranks_per_inference_worker
+        if not new_workers:
+            self.inference_rank_count = current_rank_count
+            return
+
         timeout = httpx.Timeout(connect=10.0, read=self.config.timeout, write=60.0, pool=10.0)
         deadline = time.monotonic() + self.config.timeout
-        pending = {worker_url: index * workers_per_server for index, worker_url in enumerate(worker_urls)}
+        pending = dict(new_workers)
         last_errors: dict[str, httpx.HTTPError] = {}
         with httpx.Client(timeout=timeout) as client:
             while pending:
@@ -385,7 +410,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
                                 "host": self.config.host,
                                 "port": self.config.port,
                                 "rank_offset": rank_offset,
-                                "inference_world_size": self.config.inference_world_size,
+                                "inference_world_size": current_rank_count,
                                 "timeout": self.config.timeout,
                                 "quantize_in_weight_transfer": False,
                                 "session_id": self.config.session_id,
@@ -408,8 +433,11 @@ class NIXLWeightBroadcast(WeightBroadcast):
                             iter(last_errors.values()), None
                         )
                     time.sleep(WORKER_DISCOVERY_POLL_INTERVAL)
+        self.inference_worker_rank_offsets.update(new_workers)
+        self.inference_rank_count = current_rank_count
         self.logger.info(
-            f"Initialized NIXL transfer on {len(worker_urls)} inference servers from {self.config.router_url}"
+            f"Initialized NIXL transfer on {len(new_workers)} new inference servers; "
+            f"{len(worker_urls)} servers and {self.inference_rank_count} ranks now participate"
         )
 
     def initialize_transfer(self, model: nn.Module) -> None:
@@ -453,8 +481,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
             )
             self.model_express.publish(nixl_metadata=table.encode())
             self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-            if self.config.router_url is not None:
-                self.initialize_inference_workers()
             tensor_count = sum(len(group.tensors) for group in table.groups)
             self.logger.info(
                 f"Published {tensor_count} trainer tensors in {len(table.groups)} groups "
@@ -467,7 +493,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             session = self.buffer_sessions[buffer_index]
             session.wait_for(
                 "inference",
-                count=self.config.inference_world_size,
+                count=self.inference_rank_count,
                 status=p2p_pb2.SOURCE_STATUS_READY,
                 timeout=self.config.timeout,
                 poll_interval=BUFFER_POLL_INTERVAL,
@@ -475,7 +501,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
             session.wait_for(
                 "inference",
-                count=self.config.inference_world_size,
+                count=self.inference_rank_count,
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 timeout=self.config.timeout,
                 poll_interval=BUFFER_POLL_INTERVAL,
@@ -489,6 +515,8 @@ class NIXLWeightBroadcast(WeightBroadcast):
         start = time.perf_counter()
 
         if self.world.is_master:
+            if self.config.router_url is not None:
+                self.initialize_inference_workers()
             self.model_express.set_status(p2p_pb2.SOURCE_STATUS_READY)
             self.model_express.wait_for(
                 "orchestrator",
@@ -498,7 +526,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             )
             self.model_express.wait_for(
                 "inference",
-                count=self.config.inference_world_size,
+                count=self.inference_rank_count,
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 timeout=self.config.timeout,
             )
@@ -529,7 +557,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         if self.world.is_master:
             self.model_express.wait_for(
                 "inference",
-                count=self.config.inference_world_size,
+                count=self.inference_rank_count,
                 status=p2p_pb2.SOURCE_STATUS_READY,
                 timeout=self.config.timeout,
             )
