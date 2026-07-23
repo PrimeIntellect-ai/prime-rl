@@ -1,4 +1,4 @@
-max_steps = 200
+max_steps = 5000
 seq_len = 8192
 
 [deployment]

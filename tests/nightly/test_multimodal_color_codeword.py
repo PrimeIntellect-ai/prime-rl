@@ -30,7 +30,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/nightly-fft/multimodal-color-codeword.toml",
+        "configs/ci/nightly/multimodal_color_codeword.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",
