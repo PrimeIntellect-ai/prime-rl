@@ -7,7 +7,7 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
-from prime_rl.configs.trainer import FakeDataLoaderConfig, MissingMMImagePolicy
+from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.multimodal.adapters.base import ForwardPolicy, MaterializedMM
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
@@ -19,8 +19,7 @@ from prime_rl.transport import (
     setup_micro_batch_receiver,
 )
 from prime_rl.transport.types import MMRefs
-from prime_rl.utils.logger import get_logger
-from prime_rl.utils.mm import RawImageMaterializer, missing_file_uris
+from prime_rl.utils.mm import RawImageMaterializer
 
 
 class TensorMicroBatch(TypedDict):
@@ -79,7 +78,6 @@ class FakeDataLoader:
         self.multi_run_manager = get_multi_run_manager()
         self.last_mm_materialize_time = 0.0
         self.last_mm_images_materialized = 0
-        self.last_mm_images_placeholdered = 0
 
     def wait_for_batch(self) -> None:
         return
@@ -199,7 +197,6 @@ class DataLoader:
         config: TransportConfig,
         model_name: str,
         model_trust_remote_code: bool,
-        missing_mm_image_policy: MissingMMImagePolicy = "placeholder_zero_loss",
     ):
         self.world = get_world()
 
@@ -219,7 +216,6 @@ class DataLoader:
 
         self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, dp_rank, start_step, config)
         self.mm_materializer = RawImageMaterializer(model_name, trust_remote_code=model_trust_remote_code)
-        self.missing_mm_image_policy = missing_mm_image_policy
         self._reset_mm_stats()
 
     def wait_for_batch(self) -> None:
@@ -240,7 +236,6 @@ class DataLoader:
     def _reset_mm_stats(self) -> None:
         self.last_mm_materialize_time = 0.0
         self.last_mm_images_materialized = 0
-        self.last_mm_images_placeholdered = 0
 
     @staticmethod
     def _materialized_mm_parts(materialized: MaterializedMM | None) -> MaterializedMMParts:
@@ -248,43 +243,11 @@ class DataLoader:
             return None, None
         return materialized.kwargs, materialized.forward_policy
 
-    @staticmethod
-    def _mm_run_context(micro_batch: MicroBatch) -> str:
-        run_idx = next((i for i, n in enumerate(micro_batch.lora_num_tokens or []) if n > 0), None)
-        return f"run_idx={run_idx}, run_id={micro_batch.run_id}, run_step={micro_batch.run_step}"
-
     def _materialize_mm_refs(self, micro_batch: MicroBatch, refs: MMRefs) -> MaterializedMMParts:
         materialize_start = time.perf_counter()
-        try:
-            materialized = self.mm_materializer.materialize(refs)
-        except FileNotFoundError as exc:
-            self.last_mm_materialize_time += time.perf_counter() - materialize_start
-            if self.missing_mm_image_policy == "error":
-                get_logger().error(
-                    f"raw image materialization failed ({self._mm_run_context(micro_batch)}, uris={refs.uris}): {exc!r}"
-                )
-                raise
-            return self._synthesize_missing_mm_placeholder(micro_batch, refs)
-
+        materialized = self.mm_materializer.materialize(refs)
         self.last_mm_materialize_time += time.perf_counter() - materialize_start
-        self.last_mm_images_materialized += len(refs.uris)
-        return self._materialized_mm_parts(materialized)
-
-    def _synthesize_missing_mm_placeholder(self, micro_batch: MicroBatch, refs: MMRefs) -> MaterializedMMParts:
-        placeholder_start = time.perf_counter()
-        materialized = self.mm_materializer.synthesize_placeholder(refs)
-        self.last_mm_materialize_time += time.perf_counter() - placeholder_start
-        self.last_mm_images_placeholdered += len(refs.uris)
-        micro_batch.loss_mask = [False] * len(micro_batch.loss_mask)
-        micro_batch.advantages = [0.0] * len(micro_batch.advantages)
-
-        missing_uris = missing_file_uris(refs.uris)
-        get_logger().warning(
-            "raw image materialization missing image(s); using zero-loss placeholder "
-            f"({self._mm_run_context(micro_batch)}, "
-            f"missing_uris={missing_uris or ['<unknown: disappeared during read>']}, "
-            f"uris={refs.uris})"
-        )
+        self.last_mm_images_materialized += len(refs.images)
         return self._materialized_mm_parts(materialized)
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:

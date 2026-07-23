@@ -53,7 +53,7 @@ def make_training_sample() -> TrainingSample:
 
 
 def _mm_sample(value: float, env_name: str = "test-env") -> TrainingSample:
-    uri = f"file:///tmp/image-{value}.png"
+    image_data = f"data:image/png;base64,{value}"
     return TrainingSample(
         token_ids=[1, 250, 2],
         mask=[False, True, True],
@@ -70,11 +70,10 @@ def _mm_sample(value: float, env_name: str = "test-env") -> TrainingSample:
                         "modality": "image",
                         "family": "qwen_vl",
                         "layout_fingerprint": "f" * 32,
-                        "raw_image_uri": uri,
+                        "raw_image_data": image_data,
                         "payload": {"image_grid_thw": [[1, 1, 1]]},
                     },
                     hash="a" * 32,
-                    uri=uri,
                     offset=1,
                     length=1,
                 )

@@ -129,39 +129,3 @@ class QwenVLAdapter:
                 f"Image placeholder length mismatch: expected {expected_placeholder_length}, got {num_image_tokens}"
             )
         return mm_item
-
-    def placeholder_feature_dim(self, image_processor: Any) -> int:
-        patch_size = getattr(image_processor, "patch_size", None)
-        temporal_patch_size = getattr(image_processor, "temporal_patch_size", None)
-        image_mean = getattr(image_processor, "image_mean", None)
-        channels = len(image_mean) if image_mean is not None else getattr(image_processor, "num_channels", 3)
-        if patch_size is None or temporal_patch_size is None:
-            raise ValueError(
-                "Cannot synthesize raw image placeholders without image processor patch_size and temporal_patch_size"
-            )
-        return int(channels) * _temporal_patch_extent(temporal_patch_size) * _patch_area(patch_size)
-
-    def synthesize_placeholder(
-        self,
-        image_processor: Any,
-        items: list[RawMMItem],
-    ) -> MaterializedMM | None:
-        if not items:
-            return None
-        import torch
-
-        feature_dim = self.placeholder_feature_dim(image_processor)
-        pixel_values: list[torch.Tensor] = []
-        image_grid_thw: list[list[int]] = []
-        for item in items:
-            self.validate_item(item)
-            grid = _grid_payload(item)
-            pixel_values.append(torch.zeros((math.prod(grid), feature_dim), dtype=torch.float32))
-            image_grid_thw.append(grid)
-        return MaterializedMM(
-            kwargs={
-                "pixel_values": torch.cat(pixel_values, dim=0).contiguous(),
-                "image_grid_thw": torch.tensor(image_grid_thw, dtype=torch.long),
-            },
-            forward_policy=self.forward_policy,
-        )

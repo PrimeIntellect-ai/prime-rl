@@ -21,15 +21,15 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
 class MMImageRef(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """One raw image reference for trainer-side materialization.
 
-    ``item`` is the JSON-safe renderer descriptor (adapter family + payload,
-    parseable via ``parse_raw_mm_item``), ``hash``/``uri`` identify the raw image
-    file, and ``offset``/``length`` are the image's placeholder range in token
-    space (needed to truncate at image boundaries).
+    ``item`` is the JSON-safe renderer descriptor (adapter family + payload +
+    the inline base64 image source, parseable via ``parse_raw_mm_item``),
+    ``hash`` is the content identity of the raw bytes, and ``offset``/``length``
+    are the image's placeholder range in token space (needed to truncate at
+    image boundaries).
     """
 
     item: dict
     hash: str
-    uri: str
     offset: int
     length: int
 
@@ -42,10 +42,6 @@ class MMRefs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """
 
     images: list[MMImageRef]
-
-    @property
-    def uris(self) -> list[str]:
-        return [image.uri for image in self.images]
 
 
 # Orchestrator -> Packer

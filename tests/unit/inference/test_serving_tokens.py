@@ -270,25 +270,28 @@ def test_client_set_max_tokens_assumes_set_when_body_unreadable():
     assert asyncio.run(_client_set_max_tokens(_FakeRawRequest([1, 2, 3]))) is True
 
 
-def test_materialize_raw_image_ref_uses_generic_family_payload(tmp_path, monkeypatch):
+def test_materialize_raw_image_ref_uses_generic_family_payload(monkeypatch):
+    import base64
+    from io import BytesIO
+
     from PIL import Image
     from renderers.mm_store import raw_mm_ref
 
     from prime_rl.inference.vllm import serving_tokens
 
-    image_dir = tmp_path / "run_serving" / "assets" / "images"
-    image_dir.mkdir(parents=True)
-    image_path = image_dir / "image.png"
-    Image.new("RGB", (8, 6), color=(32, 64, 128)).save(image_path)
+    buf = BytesIO()
+    Image.new("RGB", (8, 6), color=(32, 64, 128)).save(buf, format="PNG")
+    raw_bytes = buf.getvalue()
+    image_data = "data:image/png;base64," + base64.b64encode(raw_bytes).decode("ascii")
 
-    mm_hash = hashlib.sha256(image_path.read_bytes()).hexdigest()[:32]
+    mm_hash = hashlib.sha256(raw_bytes).hexdigest()[:32]
     fingerprint = "f" * 32
     raw_ref = raw_mm_ref(
         family="test_family",
         fingerprint=fingerprint,
         modality="image",
         mm_hash=mm_hash,
-        raw_image_uri=image_path.as_uri(),
+        raw_image_data=image_data,
         payload={"adapter_owned": [1, 2, 3]},
     )
     processor = object()
@@ -326,29 +329,31 @@ def test_materialize_raw_image_ref_uses_generic_family_payload(tmp_path, monkeyp
     item = captured["item"]
     assert item.family == "test_family"
     assert item.layout_fingerprint == fingerprint
-    assert item.raw_image_uri == image_path.as_uri()
+    assert item.raw_image_data == image_data
     assert item.payload == {"adapter_owned": [1, 2, 3]}
 
 
-def _mm_features(tmp_path, *, image_name: str = "image.png", placeholder_length: int = 7):
+def _mm_features(*, image_seed: int = 0, placeholder_length: int = 7):
     """A minimal ``GenerateRequest.features``-shaped object carrying one real raw ref."""
+    import base64
+    from io import BytesIO
     from types import SimpleNamespace
 
     from PIL import Image
     from renderers.mm_store import raw_mm_ref
 
-    image_dir = tmp_path / "assets" / "images"
-    image_dir.mkdir(parents=True, exist_ok=True)
-    image_path = image_dir / image_name
-    Image.new("RGB", (8, 6), color=(len(image_name) % 255, 64, 128)).save(image_path)
+    buf = BytesIO()
+    Image.new("RGB", (8, 6), color=(image_seed % 255, 64, 128)).save(buf, format="PNG")
+    raw_bytes = buf.getvalue()
+    image_data = "data:image/png;base64," + base64.b64encode(raw_bytes).decode("ascii")
 
-    mm_hash = hashlib.sha256(image_path.read_bytes()).hexdigest()[:32]
+    mm_hash = hashlib.sha256(raw_bytes).hexdigest()[:32]
     raw_ref = raw_mm_ref(
         family="test_family",
         fingerprint="f" * 32,
         modality="image",
         mm_hash=mm_hash,
-        raw_image_uri=image_path.as_uri(),
+        raw_image_data=image_data,
         payload={},
     )
     return SimpleNamespace(
@@ -366,19 +371,19 @@ def _patch_adapter(monkeypatch, calls: list, materialize=None):
             calls.append(item.raw_ref)
             if materialize is not None:
                 return materialize(item)
-            return {"materialized": item.raw_image_uri}
+            return {"materialized": item.raw_image_data}
 
     monkeypatch.setattr(serving_tokens, "_load_image_processor", lambda _model, _trust: object())
     monkeypatch.setattr(serving_tokens, "get_multimodal_adapter", lambda _family: _Adapter())
 
 
-def test_mm_materialize_cache_hit_skips_work(tmp_path, monkeypatch):
+def test_mm_materialize_cache_hit_skips_work(monkeypatch):
     from prime_rl.inference.vllm import serving_tokens
 
     calls: list = []
     _patch_adapter(monkeypatch, calls)
     cache = serving_tokens._MaterializedRefCache(max_bytes=1 << 20)
-    features = _mm_features(tmp_path)
+    features = _mm_features()
 
     async def _run():
         first = await serving_tokens._decode_raw_mm_kwargs(
@@ -395,7 +400,7 @@ def test_mm_materialize_cache_hit_skips_work(tmp_path, monkeypatch):
     assert (cache.hits, cache.misses) == (1, 1)
 
 
-def test_mm_materialize_cache_byte_budget_evicts_oldest(tmp_path, monkeypatch):
+def test_mm_materialize_cache_byte_budget_evicts_oldest(monkeypatch):
     from vllm.multimodal.cache import MultiModalCache
 
     from prime_rl.inference.vllm import serving_tokens
@@ -404,8 +409,8 @@ def test_mm_materialize_cache_byte_budget_evicts_oldest(tmp_path, monkeypatch):
     _patch_adapter(monkeypatch, calls)
     monkeypatch.setattr(MultiModalCache, "get_item_size", classmethod(lambda _cls, _item: 60))
     cache = serving_tokens._MaterializedRefCache(max_bytes=100)
-    features_a = _mm_features(tmp_path, image_name="a.png")
-    features_b = _mm_features(tmp_path, image_name="b.png")
+    features_a = _mm_features(image_seed=1)
+    features_b = _mm_features(image_seed=2)
 
     async def _decode(features):
         return await serving_tokens._decode_raw_mm_kwargs(
@@ -420,7 +425,7 @@ def test_mm_materialize_cache_byte_budget_evicts_oldest(tmp_path, monkeypatch):
     assert cache.misses == 3
 
 
-def test_mm_materialize_cache_failure_not_cached(tmp_path, monkeypatch):
+def test_mm_materialize_cache_failure_not_cached(monkeypatch):
     import pytest
 
     from prime_rl.inference.vllm import serving_tokens
@@ -436,7 +441,7 @@ def test_mm_materialize_cache_failure_not_cached(tmp_path, monkeypatch):
 
     _patch_adapter(monkeypatch, calls, materialize=_materialize)
     cache = serving_tokens._MaterializedRefCache(max_bytes=1 << 20)
-    features = _mm_features(tmp_path)
+    features = _mm_features()
 
     async def _decode():
         return await serving_tokens._decode_raw_mm_kwargs(
@@ -450,13 +455,13 @@ def test_mm_materialize_cache_failure_not_cached(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
-def test_mm_materialize_cache_single_flight(tmp_path, monkeypatch):
+def test_mm_materialize_cache_single_flight(monkeypatch):
     from prime_rl.inference.vllm import serving_tokens
 
     calls: list = []
     _patch_adapter(monkeypatch, calls)
     cache = serving_tokens._MaterializedRefCache(max_bytes=1 << 20)
-    features = _mm_features(tmp_path)
+    features = _mm_features()
 
     async def _run():
         return await asyncio.gather(

@@ -45,6 +45,7 @@ from io import BytesIO
 from typing import Any
 
 from fastapi import Request
+from renderers.mm_store import decode_data_image_url
 from vllm.entrypoints.openai.engine.protocol import (
     ErrorResponse,
     PromptTokenUsageInfo,
@@ -65,7 +66,6 @@ from vllm.sampling_params import RequestOutputKind, SamplingParams
 from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
 from prime_rl.multimodal.registry import get_multimodal_adapter
 from prime_rl.multimodal.schema import RawMMItem
-from prime_rl.utils.mm import file_uri_to_path
 
 logger = logging.getLogger(__name__)
 
@@ -202,9 +202,9 @@ def _parse_raw_image_ref(raw_ref: str, *, feature_modality: str, mm_hash: str):
 
 def _read_verified_raw_image(ref) -> bytes:
     try:
-        raw = file_uri_to_path(ref.raw_image_uri).read_bytes()
-    except OSError as exc:
-        raise _MMImageRefError(f"Unable to read raw image asset {ref.raw_image_uri!r}: {exc}") from exc
+        raw = decode_data_image_url(ref.raw_image_data)
+    except ValueError as exc:
+        raise _MMImageRefError(f"Unable to decode inline raw image data: {exc}") from exc
 
     actual_hash = hashlib.sha256(raw).hexdigest()[:32]
     if actual_hash != ref.mm_hash:
@@ -212,13 +212,13 @@ def _read_verified_raw_image(ref) -> bytes:
     return raw
 
 
-def _decode_raw_image(raw: bytes, *, raw_image_uri: str):
+def _decode_raw_image(raw: bytes):
     from PIL import Image
 
     try:
         return Image.open(BytesIO(raw)).convert("RGB")
     except OSError as exc:
-        raise _MMImageRefError(f"Unable to decode raw image asset {raw_image_uri!r}: {exc}") from exc
+        raise _MMImageRefError(f"Unable to decode inline raw image bytes: {exc}") from exc
 
 
 def _materialize_raw_image_ref_sync(
@@ -232,13 +232,13 @@ def _materialize_raw_image_ref_sync(
 ):
     ref = _parse_raw_image_ref(raw_ref, feature_modality=feature_modality, mm_hash=mm_hash)
     raw = _read_verified_raw_image(ref)
-    image = _decode_raw_image(raw, raw_image_uri=ref.raw_image_uri)
+    image = _decode_raw_image(raw)
     image_processor = _load_image_processor(processor_model_name, trust_remote_code)
     item = RawMMItem(
         modality=ref.modality,
         family=ref.family,
         layout_fingerprint=ref.fingerprint,
-        raw_image_uri=ref.raw_image_uri,
+        raw_image_data=ref.raw_image_data,
         payload=dict(ref.payload),
         raw_ref=raw_ref,
     )
@@ -251,9 +251,10 @@ def _materialize_raw_image_ref_sync(
     )
 
 
-# (raw_ref, expected_placeholder_length, processor_model_name). The ref string is
-# content-addressed (it embeds the image hash, layout fingerprint, family, and URI),
-# so identical keys describe byte-identical materialization work.
+# (mm_hash, expected_placeholder_length, processor_model_name). The hash is the
+# content identity of the raw image bytes (verified on every miss), so identical
+# keys describe byte-identical materialization work — and the key stays small
+# even though the ref string itself embeds the full inline image payload.
 _MaterializeKey = tuple[str, int, str]
 
 _MM_MATERIALIZE_CACHE_GB_ENV = "PRIME_RL_MM_MATERIALIZE_CACHE_GB"
@@ -408,7 +409,7 @@ async def _decode_raw_mm_kwargs(
     decoded = await asyncio.gather(
         *(
             cache.get_or_materialize(
-                (raw_ref, placeholder.length, processor_model_name),
+                (mm_hash, placeholder.length, processor_model_name),
                 lambda fm=feature_modality, r=raw_ref, h=mm_hash, p=placeholder: _materialize(fm, r, h, p),
             )
             for feature_modality, raw_ref, mm_hash, placeholder in flat

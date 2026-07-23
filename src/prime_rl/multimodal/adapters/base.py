@@ -44,9 +44,3 @@ class MultimodalAdapter(Protocol):
         image: "Image",
         expected_placeholder_length: int,
     ) -> Any: ...
-
-    def synthesize_placeholder(
-        self,
-        image_processor: Any,
-        items: list["RawMMItem"],
-    ) -> MaterializedMM | None: ...

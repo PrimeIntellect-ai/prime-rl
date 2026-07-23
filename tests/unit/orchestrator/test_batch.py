@@ -411,26 +411,25 @@ def test_prepare_sample_truncates_routed_experts():
     assert micro_batch.env_names == ["test-env"] * 3
 
 
-def _image_ref(uri: str, offset: int, length: int) -> MMImageRef:
+def _image_ref(image_data: str, offset: int, length: int) -> MMImageRef:
     return MMImageRef(
         item={
             "kind": "prime_raw_mm_item",
             "modality": "image",
             "family": "qwen_vl",
             "layout_fingerprint": "f" * 32,
-            "raw_image_uri": uri,
+            "raw_image_data": image_data,
             "payload": {"image_grid_thw": [[1, 1, 1]]},
         },
         hash="a" * 32,
-        uri=uri,
         offset=offset,
         length=length,
     )
 
 
 def test_prepare_sample_truncates_raw_mm_refs_at_image_boundary():
-    first_image = _image_ref("file:///tmp/image-0.png", offset=1, length=2)
-    second_image = _image_ref("file:///tmp/image-1.png", offset=4, length=2)
+    first_image = _image_ref("data:image/png;base64,aW1nMA==", offset=1, length=2)
+    second_image = _image_ref("data:image/png;base64,aW1nMQ==", offset=4, length=2)
     sample = TrainingSample(
         token_ids=[10, 11, 12, 13, 14, 15, 16],
         mask=[False, False, True, True, False, True, True],
@@ -458,7 +457,7 @@ def test_prepare_sample_truncates_raw_mm_refs_at_image_boundary():
 def test_prepare_batch_keeps_raw_mm_samples_unpacked():
     """Raw-ref multimodal samples never pack — not with text, not with each other."""
 
-    def mm_sample(uri: str) -> TrainingSample:
+    def mm_sample(image_data: str) -> TrainingSample:
         return TrainingSample(
             token_ids=[10, 11, 12],
             mask=[False, True, True],
@@ -467,7 +466,7 @@ def test_prepare_batch_keeps_raw_mm_samples_unpacked():
             advantages=[0.0, 1.0, 1.0],
             env_name="mm-env",
             mm_token_type_ids=[0, 1, 0],
-            mm_refs=MMRefs(images=[_image_ref(uri, offset=1, length=1)]),
+            mm_refs=MMRefs(images=[_image_ref(image_data, offset=1, length=1)]),
         )
 
     text_sample = TrainingSample(
@@ -480,7 +479,11 @@ def test_prepare_batch_keeps_raw_mm_samples_unpacked():
     )
 
     batches_per_gpu = prepare_batch(
-        rollouts=[mm_sample("file:///tmp/image-0.png"), mm_sample("file:///tmp/image-1.png"), text_sample],
+        rollouts=[
+            mm_sample("data:image/png;base64,aW1nMA=="),
+            mm_sample("data:image/png;base64,aW1nMQ=="),
+            text_sample,
+        ],
         seq_len=16,
         num_train_workers=2,
         idxs=[0, 0, 0],

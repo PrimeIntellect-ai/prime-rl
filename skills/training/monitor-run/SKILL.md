@@ -165,24 +165,17 @@ A few warnings are normal. Escalate when errors are persistent, growing, or hit 
 - **Trainer**: NCCL/CUDA errors, OOM, NaN loss or gradients.
 - **Inference**: NCCL/CUDA errors, OOM, request timeouts.
 
-### Multimodal image offload checks
+### Multimodal image checks
 
-v1 multimodal RL offloads images exactly once, at verifiers ingress: every image
-content part is rewritten to a `file://` asset under the run image directory
-before rendering, and renderers/inference/trainer all work from those refs. A
-`data:` URL reaching a renderer ("requires offloaded file:// image assets")
-means ingress was bypassed.
+v1 multimodal RL keeps images inline: message content carries
+`data:image/...;base64` URLs end to end, and renderers emit raw descriptors
+embedding that inline source. Inference and trainer each materialize pixels
+from the inline data with their own image processor; nothing is written to a
+shared image directory.
 
-- The image directory comes from `[multimodal].offload_dir` in the resolved
-  config; unset, it defaults to a run-scoped path (`{output_dir}/assets/images`
-  or the hosted `RUN_ID` path). The launcher exports it to the orchestrator as
-  `VF_RENDERER_IMAGE_OFFLOAD_DIR` (protected — not settable via `env_vars`).
-- While multimodal rollouts are in flight, image files should accumulate under
-  that directory. Zero files means the offload path isn't being exercised or
-  image preparation failed before request submission.
 - Inference rejects bad refs with `invalid_mm_image_ref` 400s (hash mismatch,
-  fingerprint mismatch, unreadable asset) — grep the inference log.
-- Inference caches materialized refs and logs
+  fingerprint mismatch, undecodable inline data) — grep the inference log.
+- Inference caches materialized images by content hash and logs
   `mm materialize cache: hits=X misses=Y hit_rate=Z% bytes=A/B evictions=C`
   every 1000 lookups. Hit rate should climb after turn 1 of multi-turn
   multimodal rollouts; a stuck-at-zero hit rate with repeat images means the
@@ -191,11 +184,10 @@ means ingress was bypassed.
 - The orchestrator raises on placeholder/token drift ("does not cover
   image-typed tokens") before a sample ships — treat any occurrence as a bug,
   not noise.
-- Trainer metrics: `mm/images_materialized`, `time/mm_materialize`, and
-  `mm/images_placeholdered`. A nonzero placeholder count means image files
-  disappeared before materialization (the batch trains with zero-loss
-  placeholders and logs "raw image materialization missing image(s)") — check
-  whether something cleaned the offload directory mid-run.
+- Trainer metrics: `mm/images_materialized` and `time/mm_materialize`.
+- Rollout records and traces carry the inline base64 images, so multimodal
+  runs produce large `results.jsonl` files and wire payloads that grow with
+  turn count — expected, not a leak.
 
 ### Process tree
 

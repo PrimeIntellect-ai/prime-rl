@@ -200,7 +200,7 @@ The `rl` launcher applies these the same way in both single-node and multi-node 
 1. The launcher's own defaults — **your `env_vars` override these**.
 2. Your top-level `[env_vars]`.
 3. Your `[component.env_vars]`.
-4. Orchestration-critical vars the launcher always sets last — `CUDA_VISIBLE_DEVICES` (GPU partitioning), `WANDB_SHARED_*` (the single shared W&B run), and `VF_RENDERER_IMAGE_OFFLOAD_DIR` (raw multimodal image asset path) — **these cannot be overridden** from `env_vars`.
+4. Orchestration-critical vars the launcher always sets last — `CUDA_VISIBLE_DEVICES` (GPU partitioning), `WANDB_SHARED_*` (the single shared W&B run) — **these cannot be overridden** from `env_vars`.
 
 For standalone `sft` and `inference` configs, `[env_vars]` applies to that entrypoint's process(es). For disaggregated P/D inference, the role-specific [`deployment.{prefill,decode}_env_vars`](inference.md) layer on top of any shared inference env vars.
 

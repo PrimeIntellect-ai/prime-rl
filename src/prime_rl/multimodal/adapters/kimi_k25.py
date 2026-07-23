@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -154,30 +153,3 @@ class KimiK25Adapter:
             "grid_thws": MultiModalFieldConfig.batched("vision_chunk"),
         }
         return MultiModalKwargsItems.from_hf_inputs(tensors, config_by_key)["vision_chunk"][0]
-
-    def synthesize_placeholder(
-        self,
-        image_processor: Any,
-        items: list[RawMMItem],
-    ) -> MaterializedMM | None:
-        if not items:
-            return None
-        import torch
-
-        layout = _processor_layout(image_processor)
-        grids: list[list[int]] = []
-        pixel_values: list[torch.Tensor] = []
-        for item in items:
-            self.validate_item(item)
-            grid = _grid_payload(item)
-            grids.append(grid)
-            pixel_values.append(
-                torch.zeros((math.prod(grid), 3, layout.patch_size, layout.patch_size), dtype=torch.float32)
-            )
-        return MaterializedMM(
-            kwargs={
-                "pixel_values": torch.cat(pixel_values, dim=0).contiguous(),
-                "grid_thws": torch.tensor(grids, dtype=torch.long),
-            },
-            forward_policy=self.forward_policy,
-        )
