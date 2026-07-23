@@ -1,0 +1,19 @@
+ARG BASE_IMAGE=ghcr.io/primeintellect-ai/prime-rl@sha256:823eea93b07b5adbaaafddacdc00a7d0f7384c65696b952b92ff28b5790af6b7
+FROM ${BASE_IMAGE}
+
+USER root
+
+# Keep Prime main and the pinned NVFP4 runtime from the immutable dev2 image.
+# This layer only adapts Prime to vLLM's scale-out package move and fixes the
+# persistent-cache wrapper; it does not install or compile anything.
+COPY --chown=appuser:appuser \
+    src/prime_rl/inference/vllm/serving_tokens.py \
+    /app/src/prime_rl/inference/vllm/serving_tokens.py
+COPY --chown=appuser:appuser \
+    src/prime_rl/utils/client.py \
+    /app/src/prime_rl/utils/client.py
+COPY --chown=appuser:appuser \
+    k8s/experiments/run_nvfp4_inference.sh \
+    /app/k8s/experiments/run_nvfp4_inference.sh
+
+USER appuser

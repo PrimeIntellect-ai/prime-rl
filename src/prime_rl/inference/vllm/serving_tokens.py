@@ -1,7 +1,7 @@
 """Prime-RL extensions to vLLM's `/inference/v1/generate` handler.
 
 vLLM 0.22 ships a generic tokens-in / tokens-out handler at
-``vllm.entrypoints.serve.disagg.serving.ServingTokens`` that already covers
+``vllm.entrypoints.scale_out.token_in_token_out.serving.ServingTokens`` that already covers
 prefix-cache salting, lora dispatch, multimodal features, prompt logprobs,
 priority, ``data_parallel_rank`` header routing and server-side ``max_tokens``
 defaulting. We subclass it for the bits still missing from the upstream handler:
@@ -37,12 +37,12 @@ from vllm.entrypoints.openai.engine.protocol import (
     RequestResponseMetadata,
     UsageInfo,
 )
-from vllm.entrypoints.serve.disagg.protocol import (
+from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
     GenerateResponse,
     GenerateResponseChoice,
 )
-from vllm.entrypoints.serve.disagg.serving import ServingTokens
+from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
 from vllm.entrypoints.serve.utils.api_utils import get_max_tokens
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
@@ -200,7 +200,7 @@ class PrimeRlServingTokens(ServingTokens):
         # Build the engine input — features-aware (MM) or text-only fallback.
         # Identical to upstream so we keep tracking it.
         if features := request.features:
-            from vllm.entrypoints.serve.disagg.mm_serde import decode_mm_kwargs_item
+            from vllm.entrypoints.scale_out.token_in_token_out.mm_serde import decode_mm_kwargs_item
             from vllm.inputs import mm_input
             from vllm.multimodal.inputs import (
                 MultiModalKwargsItem,

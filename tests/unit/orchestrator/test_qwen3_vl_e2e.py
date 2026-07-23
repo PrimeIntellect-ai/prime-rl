@@ -96,8 +96,8 @@ def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm()
         ClientConfig,
         UserMessage,
     )
-    from vllm.entrypoints.serve.disagg.mm_serde import decode_mm_kwargs_item
-    from vllm.entrypoints.serve.disagg.protocol import GenerateRequest
+    from vllm.entrypoints.scale_out.token_in_token_out.mm_serde import decode_mm_kwargs_item
+    from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateRequest
 
     # ── Build a real Qwen3VLRenderer with a real processor. ─────────────
     tokenizer = load_tokenizer(_MODEL)

@@ -45,12 +45,10 @@ PY
 export NVFP4_CACHE_HIT=0
 if [[ -f "$NVFP4_CACHE_READY_MARKER" ]] && \
    [[ "$(<"$NVFP4_CACHE_READY_MARKER")" == "$NVFP4_CACHE_KEY" ]]; then
-  # Wheel extraction gives byte-identical CUDA sources fresh mtimes on every
-  # pod. Refresh cached build outputs so Ninja does not rebuild them solely
-  # because the source inode was recreated.
-  find "$FLASHINFER_WORKSPACE_BASE" \
-    -type f \( -name '*.so' -o -name '*.o' -o -name '*.a' \) \
-    -exec touch {} +
+  # The runtime is baked into an immutable image, so its CUDA source mtimes
+  # are stable across pods. Preserve Ninja's recorded output mtimes: touching
+  # cached objects here invalidates .ninja_log and forces the expensive
+  # fused-MoE translation units to rebuild.
   export NVFP4_CACHE_HIT=1
   echo "Reusing persistent NVFP4 JIT cache: $NVFP4_CACHE_KEY"
 else
