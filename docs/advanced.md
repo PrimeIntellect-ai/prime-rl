@@ -28,7 +28,7 @@ impl = "custom"        # or "hf" to force the HF path
 | GLM-5 / GLM-5.2 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8`, `zai-org/GLM-5.2`, `zai-org/GLM-5.2-FP8` | ✅ | ✅ |
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
-| Qwen3 / Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
+| Qwen3 / Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ❌ |
 | Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
 | MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
@@ -36,7 +36,21 @@ impl = "custom"        # or "hf" to force the HF path
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
 | GPT-OSS (HF MoE) | `openai/gpt-oss-20b`, `openai/gpt-oss-120b` | ❌ | ✅ |
 
-The custom path enables you to set EP, CP, selective activation checkpointing, FP8 training (`model.fp8 = true`, requires SM90+), and faster MoE kernels (`moe_use_grouped_mm = true`, default). Forcing `impl = "hf"` is mostly useful when debugging — it's slower and disables most MoE-specific knobs.
+The custom path enables you to set EP, CP, selective activation checkpointing, low-precision training (`[trainer.model.quantization]`), and faster MoE kernels (`moe_use_grouped_mm = true`, default). Forcing `impl = "hf"` is mostly useful when debugging — it's slower and disables most MoE-specific knobs.
+
+### Low-precision training
+
+Set `[trainer.model.quantization]` to train dense linears and MoE expert GEMMs in low precision. Two backends are available via the `type` discriminator:
+
+- `type = "fp8"` — DeepGEMM FP8 blockwise (requires SM90+ / Hopper). Options: `enable_grouped_gemm` (FP8 MoE expert GEMM). Both default on.
+- `type = "mxfp8"` — torchao MXFP8 microscaling (requires SM100+ / Blackwell). Options: `enable_grouped_gemm`, `enable_a2a` (MXFP8 expert-parallel all-to-all), and `recipe` (`mxfp8_rceil` default or `mxfp8_rceil_wgrad_with_hp`).
+
+```toml
+[trainer.model.quantization]
+type = "mxfp8"
+recipe = "mxfp8_rceil"
+enable_a2a = true
+```
 
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
 
@@ -58,12 +72,8 @@ The built-in VLM registry covers:
 
 | Family | `model_type` | Vision attr | LM attr |
 |---|---|---|---|
-| Qwen3-VL | `qwen3_vl` | `model.visual` | `model.language_model` |
-| Qwen3-VL MoE | `qwen3_vl_moe` | `model.visual` | `model.language_model` |
 | Qwen3.5 | `qwen3_5` | `model.visual` | `model.language_model` |
 | Qwen3.5-MoE | `qwen3_5_moe` | `model.visual` | `model.language_model` |
-
-For a model not in the table, look up the attribute paths on the loaded HF model with `model.named_children()` and set them under `[model.vlm]` directly.
 
 ### Enabling VLM Mode
 
@@ -71,7 +81,8 @@ Add `[model.vlm]` and bfloat16 dtypes:
 
 ```toml
 [model]
-name = "Qwen/Qwen3-VL-4B-Instruct"
+name = "Qwen/Qwen3.5-4B"
+impl = "custom"
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
 
@@ -83,11 +94,11 @@ language_model_attr = "model.language_model"
 
 The weight-broadcast key prefix is derived as `{language_model_attr}.layers.` automatically.
 
-To add a new model family permanently, append an entry to `VLM_REGISTRY` in `src/prime_rl/utils/vlm.py`.
+VLM training requires a registered custom PrimeRL implementation.
 
 ### Limitations
 
-- **Vision encoder frozen by default.** Set `freeze_vision_encoder = false` to fine-tune it; in that case it's FSDP-sharded per block. The combination `freeze_vision_encoder = false` + LoRA is rejected by a config validator — LoRA freezes everything non-adapter, so unfreezing the encoder under LoRA would be a silent no-op.
+- **Vision encoder frozen by default.** The default LoRA targets do not match Qwen3.5 vision modules. Set `freeze_vision_encoder = false` to fine-tune it; in that case it's FSDP-sharded per block. The combination `freeze_vision_encoder = false` + LoRA is rejected by a config validator — LoRA freezes everything non-adapter, so unfreezing the encoder under LoRA would be a silent no-op.
 - **Truncation cuts at image boundaries.** Raw multimodal samples that exceed `seq_len` are truncated before packing at the start of the first image that doesn't fit — an image placeholder span is never split, and refs for dropped images are discarded. A sample whose leading image alone exceeds `seq_len` is rejected.
 - **bfloat16 mandatory.** The trainer config validator refuses any other `optimization_dtype` / `reduce_dtype` for VLMs — vLLM serves VLMs in bfloat16 and a mismatch breaks the importance ratio.
 - **Higher KL mismatch with multi-image inputs.** Expect noisier `mismatch_kl` than text-only; this is from minor numerical differences between the trainer's and vLLM's image processing.
@@ -106,7 +117,7 @@ dropout = 0.0
 
 `target_modules` defaults to a reasonable cross-family set (`q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`, `experts`, plus a few latent-projection names for Nemotron). Unknown names are silently ignored, so the defaults work across architectures. Add architecture-specific names to extend coverage (e.g. `in_proj` / `out_proj` for Mamba).
 
-LoRA is supported across SFT and RL. For RL, `weight_broadcast.type = "nccl"` is **not** supported with LoRA — use the default filesystem transport. To save the raw adapter alongside the merged HF weights:
+LoRA is supported across SFT and RL. For RL, NCCL weight broadcast is **not** supported with LoRA — the default NCCL transport automatically falls back to filesystem when LoRA is enabled. To save the raw adapter alongside the merged HF weights:
 
 ```toml
 [ckpt.weights]
@@ -128,7 +139,7 @@ For large MoE serving, splitting prefill and decode onto separate vLLM groups ca
 | Agentic (SWE, Lean) | 3:1 | Long growing contexts → prefill-heavy |
 | Non-agentic (math, chat) | 1:2 | Short prompts, long generations → decode-heavy |
 
-Example config: [`examples/glm5_pd_disag/rl.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/glm5_pd_disag/rl.toml) — full RL run on `GLM-5` with P/D disaggregation behind a `vllm-router`, FP8 inference, and NCCL weight broadcast (see the [README](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/glm5_pd_disag) for the launch story).
+Example config: [`examples/advanced/glm-5.2/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/advanced/glm-5.2/swe.toml) — full RL run on `GLM-5` with P/D disaggregation behind a `vllm-router`, FP8 inference, and NCCL weight broadcast, paired with an inference config from [`examples/advanced/glm-5.2/infer/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.2/infer).
 
 Monitor live queue depths to detect imbalance:
 

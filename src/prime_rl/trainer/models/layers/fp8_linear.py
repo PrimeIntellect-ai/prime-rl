@@ -2,20 +2,22 @@ from __future__ import annotations
 
 import re
 
+import torch
+from torch import nn
+
 try:
     import deep_gemm
 except ImportError:
     deep_gemm = None  # CPU-only environments don't ship deep_gemm; FP8 paths
     # are GPU-only at runtime, so leaving the symbol None is safe — only the
     # autograd Function bodies below actually call into it.
-import torch
-from torch import nn
 
 from prime_rl.trainer.models.kernels.fp8_utils import (
     per_block_cast_to_fp8_tp_triton,
     per_block_cast_to_fp8_triton,
     per_token_cast_to_fp8_tp_triton,
     per_token_cast_to_fp8_triton,
+    ue8m0_for_device,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -25,8 +27,9 @@ class _FP8BlockwiseMM(torch.autograd.Function):
     def forward(ctx, x, weight, block_size, out_dtype=torch.bfloat16):
         x_shape = x.shape
         x_2d = x.reshape(-1, x_shape[-1]).contiguous()
-        x_fp8 = per_token_cast_to_fp8_triton(x_2d, False, block_size)
-        weight_fp8 = per_block_cast_to_fp8_triton(weight, False, block_size)
+        use_ue8m0 = ue8m0_for_device(x.device)
+        x_fp8 = per_token_cast_to_fp8_triton(x_2d, use_ue8m0, block_size)
+        weight_fp8 = per_block_cast_to_fp8_triton(weight, use_ue8m0, block_size)
 
         out = torch.empty((x_2d.size(0), weight.size(0)), device=x.device, dtype=out_dtype)
         deep_gemm.fp8_gemm_nt(x_fp8, weight_fp8, out)
@@ -41,11 +44,12 @@ class _FP8BlockwiseMM(torch.autograd.Function):
         x_2d, weight = ctx.saved_tensors
         block_size = ctx.block_size
         grad_output_2d = grad_output.reshape(-1, grad_output.shape[-1]).contiguous()
+        use_ue8m0 = ue8m0_for_device(grad_output.device)
 
         grad_x = grad_weight = None
         if ctx.needs_input_grad[0]:
-            grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, False, block_size)
-            weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, False, block_size)
+            grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, use_ue8m0, block_size)
+            weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, use_ue8m0, block_size)
             grad_x_2d = torch.empty_like(x_2d)
             deep_gemm.fp8_gemm_nt(grad_output_fp8, weight_dx_fp8, grad_x_2d)
             grad_x = grad_x_2d.reshape(ctx.x_shape)
@@ -63,8 +67,8 @@ class _FP8BlockwiseMM(torch.autograd.Function):
             else:
                 grad_output_2d_padded = grad_output_2d
                 x_2d_padded = x_2d
-            grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d_padded, False, block_size)
-            x_t_fp8 = per_token_cast_to_fp8_tp_triton(x_2d_padded, False, block_size)
+            grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d_padded, use_ue8m0, block_size)
+            x_t_fp8 = per_token_cast_to_fp8_tp_triton(x_2d_padded, use_ue8m0, block_size)
             grad_weight_fp32 = torch.zeros_like(weight, dtype=torch.float32)
             deep_gemm.fp8_gemm_nt(
                 grad_output_t_fp8,
@@ -82,7 +86,7 @@ class Float8BlockwiseLinear(nn.Linear):
     """nn.Linear replacement that uses FP8 blockwise matmul via DeepGEMM.
 
     Requires:
-    - SM90 (Hopper) GPU
+    - SM90 (Hopper) or SM100 (Blackwell) GPU
     - bfloat16 inputs/weights
     - No bias
     - in_features and out_features divisible by 128
@@ -109,24 +113,7 @@ class Float8BlockwiseLinear(nn.Linear):
         return new_mod
 
 
-DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
-    "lm_head",
-    "router",
-    # Use escaped dots — re.search treats `.` as any-char, so the previous
-    # "mlp.gate." pattern was also matching dense MLP `mlp.gate_proj` (the
-    # trailing `.` was matching `_`). That left the dense MLP gate projection
-    # in BF16 on the trainer while inference quantized it to FP8, causing
-    # hidden-state drift before the MoE router.
-    r"mlp\.gate\.",
-    "shared_expert_gate",  # Qwen3.5 MoE: nn.Linear(hidden, 1, bias=False)
-    "eh_proj",
-    "weights_proj",
-    "in_proj_a",
-    "in_proj_b",
-]
-
-
-def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: list[str] | None = None) -> None:
+def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: list[str]) -> None:
     """Replace nn.Linear in `model` with Float8BlockwiseLinear, skipping any
     module whose qualified name matches an ignore pattern (substring or regex).
 
@@ -146,8 +133,6 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
     Conv1d, layer norms, and embedding tables are not nn.Linear and are
     skipped automatically by the type check; we don't need to list them.
     """
-    if ignore_modules is None:
-        ignore_modules = list(DEFAULT_FP8_IGNORE_PATTERNS)
     logger = get_logger()
     logger.info(f"Replacing linear layers with FP8 blockwise linear layers (ignore={ignore_modules})")
     replaced_modules = []

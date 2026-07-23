@@ -23,14 +23,10 @@ from prime_rl.trainer.models.layers.cp_mamba import mamba_cp_forward
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import LatentMoE, NemotronHRouter, NonGatedGroupedExperts
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
+from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
-from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
-    convert_hf_layer_to_prime,
-    convert_hf_to_prime,
-    convert_prime_layer_to_hf,
-    convert_prime_to_hf,
-)
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import conversion_chain
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 logger = logging.get_logger(__name__)
 
@@ -224,14 +220,22 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
         routed_experts: torch.Tensor | None = None,
+        cu_seqlens_are_pre_shard: bool = False,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
 
         if self.cp_enabled:
-            # TODO: This path doesnt support cu_seqlens so packing makes it wrong
+            global_cu_seqlens = (
+                cu_seqlens if cu_seqlens is not None and cu_seqlens_are_pre_shard else ULYSSES_PARAMS["cu_seqlens"]
+            )
             hidden_states = mamba_cp_forward(
-                self.mamba, hidden_states, self._cp_group, self._cp_rank, self._cp_world_size
+                self.mamba,
+                hidden_states,
+                self._cp_group,
+                self._cp_rank,
+                self._cp_world_size,
+                global_cu_seqlens,
             )
         else:
             hidden_states = self.mamba(hidden_states, cu_seqlens=cu_seqlens)
@@ -268,6 +272,7 @@ class NemotronHMoELayer(GradientCheckpointingLayer):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
         routed_experts: torch.Tensor | None = None,
+        cu_seqlens_are_pre_shard: bool = False,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
@@ -301,6 +306,7 @@ class NemotronHAttentionLayer(GradientCheckpointingLayer):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
         routed_experts: torch.Tensor | None = None,
+        cu_seqlens_are_pre_shard: bool = False,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
@@ -335,8 +341,12 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     supports_gradient_checkpointing = True
     _no_split_modules = ["NemotronHMambaLayer", "NemotronHMoELayer", "NemotronHAttentionLayer"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _can_compile_fullgraph = False
+
+    @classmethod
+    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        return name.endswith(("mamba.A_log", "mamba.D", "mlp.router.e_score_correction_bias"))
 
     def _init_weights(self, module):
         std = self.config.initializer_range
@@ -367,17 +377,8 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
         )
 
     @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        # Need config to know layer types; infer from state dict keys
-        layers_block_type = _infer_layers_block_type(state_dict)
-        convert_prime_to_hf(state_dict, layers_block_type)
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        layers_block_type = _infer_layers_block_type_from_hf(state_dict)
-        convert_hf_to_prime(state_dict, layers_block_type)
-        return state_dict
+    def conversion_chain(cls, config):
+        return conversion_chain(config)
 
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -396,88 +397,6 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
                 state_dict[new_key] = state_dict.pop(old_key)
         return state_dict
 
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import _rename_keys
-
-        if layer_idx == -1:
-            # Non-layer weights: rename global keys and model.* -> backbone.*
-            if "model.embed_tokens.weight" in state_dict:
-                state_dict["model.embeddings.weight"] = state_dict.pop("model.embed_tokens.weight")
-            if "model.norm.weight" in state_dict:
-                state_dict["model.norm_f.weight"] = state_dict.pop("model.norm.weight")
-            _rename_keys(state_dict, "model.", "backbone.")
-        else:
-            layer_type = _infer_layer_type_prime(state_dict, layer_idx)
-            convert_prime_layer_to_hf(state_dict, layer_idx, layer_type)
-            _rename_keys(state_dict, "model.layers.", "backbone.layers.")
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import _rename_keys
-
-        # Handle backbone.* -> model.* prefix before layer conversion
-        _rename_keys(state_dict, "backbone.", "model.")
-
-        if layer_idx == -1:
-            # Non-layer weights: rename global keys
-            if "model.embeddings.weight" in state_dict:
-                state_dict["model.embed_tokens.weight"] = state_dict.pop("model.embeddings.weight")
-            if "model.norm_f.weight" in state_dict:
-                state_dict["model.norm.weight"] = state_dict.pop("model.norm_f.weight")
-        else:
-            layer_type = _infer_layer_type_hf(state_dict, layer_idx)
-            convert_hf_layer_to_prime(state_dict, layer_idx, layer_type)
-        return state_dict
-
-
-def _infer_layer_type_hf(state_dict: dict[str, Tensor], layer_idx: int) -> str:
-    """Infer layer type from HF state dict keys for a given layer."""
-    # HF checkpoints may use either "model." or "backbone." prefix
-    for root in ("model", "backbone"):
-        prefix = f"{root}.layers.{layer_idx}.mixer."
-        layer_keys = [k for k in state_dict if k.startswith(prefix)]
-        if layer_keys:
-            for k in layer_keys:
-                suffix = k[len(prefix) :]
-                if suffix.startswith("gate.") or suffix.startswith("experts."):
-                    return "moe"
-                if suffix.startswith("q_proj") or suffix.startswith("k_proj"):
-                    return "attention"
-            return "mamba"
-    return "mamba"  # fallback
-
-
-def _infer_layer_type_prime(state_dict: dict[str, Tensor], layer_idx: int) -> str:
-    """Infer layer type from PrimeRL state dict keys for a given layer."""
-    prefix = f"model.layers.{layer_idx}."
-    for k in state_dict:
-        if not k.startswith(prefix):
-            continue
-        suffix = k[len(prefix) :]
-        if suffix.startswith("mlp."):
-            return "moe"
-        if suffix.startswith("self_attn."):
-            return "attention"
-        if suffix.startswith("mamba."):
-            return "mamba"
-    return "mamba"
-
-
-def _infer_layers_block_type_from_hf(state_dict: dict[str, Tensor]) -> list[str]:
-    """Infer full layers_block_type list from HF state dict."""
-    # HF checkpoints may use either "model." or "backbone." prefix
-    layer_keys = [k for k in state_dict if k.startswith("model.layers.") or k.startswith("backbone.layers.")]
-    max_layer = max(int(k.split(".")[2]) for k in layer_keys) + 1
-    return [_infer_layer_type_hf(state_dict, i) for i in range(max_layer)]
-
-
-def _infer_layers_block_type(state_dict: dict[str, Tensor]) -> list[str]:
-    """Infer full layers_block_type list from PrimeRL state dict."""
-    max_layer = max(int(k.split(".")[2]) for k in state_dict if k.startswith("model.layers.")) + 1
-    return [_infer_layer_type_prime(state_dict, i) for i in range(max_layer)]
-
 
 class NemotronHModel(NemotronHPreTrainedModel):
     def __init__(self, config: NemotronHConfig):
@@ -495,6 +414,11 @@ class NemotronHModel(NemotronHPreTrainedModel):
         self.gradient_checkpointing = False
         self.post_init()
 
+    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+        for layer in self.layers.modules():
+            if isinstance(layer, NemotronHMambaLayer):
+                layer.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+
     @auto_docstring
     def forward(
         self,
@@ -502,11 +426,18 @@ class NemotronHModel(NemotronHPreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
+        seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token, indexed by global layer index. Only used for router replay; slots
             for non-MoE (Mamba/attention) layers are ignored.
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
+        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -514,13 +445,11 @@ class NemotronHModel(NemotronHPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        # Compute cu_seqlens and max_seqlen for flash attention
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        else:
-            max_seqlen = None
-            cu_seqlens = None
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device),
+            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids) if self.rotary_emb is not None else None
@@ -534,6 +463,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
                 routed_experts=routed_experts_layer,
+                cu_seqlens_are_pre_shard=seq_lens_are_pre_shard,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -554,6 +484,9 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
     def get_decoder(self):
         return self.model
 
+    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+        self.model.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -563,6 +496,9 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
         logits_to_keep: int = 0,
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
+        seq_lens_are_pre_shard: bool = False,
         **kwargs,
     ) -> PrimeLmOutput:
         if position_ids is None:
@@ -576,6 +512,8 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
+            seq_lens=seq_lens,
+            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
         )
 
         hidden_states = outputs.last_hidden_state

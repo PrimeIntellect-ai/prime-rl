@@ -1,0 +1,67 @@
+# Mixed per-env algorithms in one run: a GRPO env and an OPD env, both on
+# reverse-text. Exercises heterogeneous train batches — OPD samples ship
+# ref_logprobs, GRPO samples don't, and both pack into the same micro batches.
+# Start the frozen reference server first (on a separate GPU):
+#   CUDA_VISIBLE_DEVICES=1 uv run inference \
+#     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
+#     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
+# Then:
+#   uv run rl @ configs/debug/algo/mixed_grpo_opd.toml
+
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "algorithms-debug"
+name = "debug-mixed-grpo-opd"
+
+[orchestrator]
+batch_size = 128
+group_size = 16
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.renderer]
+name = "prime-qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+name = "reverse-text-grpo"
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[[orchestrator.train.env]]
+name = "reverse-text-opd"
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.train.env.algo]
+type = "opd"
+
+[orchestrator.train.env.algo.teacher]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+base_url = ["http://localhost:8001/v1"]
+
+[orchestrator.eval]
+interval = 5
+num_examples = 128
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.eval.env]]
+name = "reverse-text"
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+gpu_memory_utilization = 0.5

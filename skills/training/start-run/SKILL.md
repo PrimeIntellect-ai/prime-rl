@@ -26,9 +26,8 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 Launches inference server, orchestrator, and trainer as subprocesses.
 
 ```bash
-uv run rl @ examples/reverse_text/rl.toml
-uv run rl @ examples/reverse_text/rl.toml @ examples/reverse_text/slurm_rl.toml   # SLURM
-uv run rl @ examples/reverse_text/rl.toml --dry-run                                # write scripts, don't run
+uv run rl @ examples/basic/reverse-text/rl.toml
+uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                                # write scripts, don't run
 ```
 
 - Config: `RLConfig` (`packages/prime-rl-configs/src/prime_rl/configs/rl.py`)
@@ -37,18 +36,19 @@ uv run rl @ examples/reverse_text/rl.toml --dry-run                             
 - Environment packages: before launching a config with a non-core verifier env id,
   verify the package imports under `uv run` (for example
   `uv run python -c "import importlib.util; print(importlib.util.find_spec('r2e_gym_v1'))"`).
-  If a local env exists under `deps/research-environments/environments/` but does not
-  import, add it to the root `pyproject.toml` env extra, workspace members, and
-  `[tool.uv.sources]`, then run `uv sync --all-extras`.
+  If a local env exists under `deps/research-environments/environments/` or
+  `deps/verifiers/environments/` but does not import, install the env workspace
+  members with `uv sync --all-packages` (all) or `uv sync --package prime-rl
+  --package <env>` (one) — they're auto-discovered, no `pyproject.toml` edit needed.
 
 ## `sft` — SFT training
 
 Launches torchrun internally — never call torchrun directly.
 
 ```bash
-uv run sft @ examples/reverse_text/sft.toml
-uv run sft @ examples/reverse_text/sft.toml --slurm
-uv run sft @ examples/reverse_text/sft.toml --dry-run
+uv run sft @ examples/basic/reverse-text/sft.toml
+uv run sft @ examples/basic/reverse-text/sft.toml --slurm
+uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 ```
 
 - Config: `SFTConfig` (`packages/prime-rl-configs/src/prime_rl/configs/sft.py`)
@@ -60,7 +60,7 @@ uv run sft @ examples/reverse_text/sft.toml --dry-run
 OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly.
 
 ```bash
-uv run inference @ configs/debug/infer.toml
+uv run inference --model.name Qwen/Qwen3-0.6B
 uv run inference --model.name Qwen/Qwen3-0.6B --model.enforce-eager
 ```
 
@@ -91,4 +91,4 @@ curl http://localhost:8000/v1/chat/completions \
 - `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference` (+ `trainer`, `orchestrator` for direct launches)
 - `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
 - `configs/debug/` — minimal debug configs
-- `examples/` — full example configs (e.g. `reverse_text/`)
+- `examples/` — full example configs (e.g. `reverse-text/`)

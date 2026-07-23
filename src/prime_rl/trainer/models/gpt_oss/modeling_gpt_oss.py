@@ -26,8 +26,7 @@ from transformers.utils import TransformersKwargs, auto_docstring, can_return_tu
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
-    convert_to_hf,
-    convert_to_prime,
+    conversion_chain,
     is_hf_state_dict,
     is_prime_state_dict,
 )
@@ -193,12 +192,8 @@ class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
         return is_prime_state_dict(state_dict)
 
     @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        return convert_to_hf(state_dict)
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        return convert_to_prime(state_dict)
+    def conversion_chain(cls, config):
+        return conversion_chain(config)
 
 
 @auto_docstring
@@ -305,9 +300,18 @@ class GptOssForCausalLM(GptOssPreTrainedModel, GenerationMixin):
         use_cache: bool | None = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: torch.Tensor | None = None,
+        # Document boundaries derive from position_ids (HF packed-sequence masks);
+        # seq_lens is accepted to satisfy the trainer's universal contract.
+        *,
+        seq_lens: torch.LongTensor,
+        seq_lens_are_pre_shard: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
+        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are provided.
         """

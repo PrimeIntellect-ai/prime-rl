@@ -37,3 +37,28 @@ def quantize_to_fp8_blockwise(weight: Tensor, block_size: int = 128) -> tuple[Te
 
     quantized = blocks_fp8.permute(0, 2, 1, 3).reshape(padded_rows, padded_cols)[:rows, :cols].contiguous()
     return quantized, scales.float().contiguous()
+
+
+def quantize_to_vllm_kernel_format(weight: Tensor, block_size: int = 128) -> tuple[Tensor, Tensor]:
+    """Quantize a weight into the FP8 layout used by vLLM kernels.
+
+    Hopper kernels consume the regular blockwise scale grid. On SM100, vLLM's
+    DeepGEMM kernels instead use UE8M0 scales in an architecture-specific packed
+    layout. Reuse vLLM's own post-processing so tensors sent over the kernel
+    weight-transfer path have the same representation as the loaded parameters.
+    """
+    quantized, scales = quantize_to_fp8_blockwise(weight, block_size)
+
+    if not weight.is_cuda or torch.cuda.get_device_capability(weight.device) != (10, 0):
+        return quantized, scales
+
+    from vllm.model_executor.layers.quantization.utils.fp8_utils import (
+        deepgemm_post_process_fp8_weight_block,
+    )
+
+    return deepgemm_post_process_fp8_weight_block(
+        wq=quantized,
+        ws=scales,
+        quant_block_shape=(block_size, block_size),
+        use_e8m0=True,
+    )

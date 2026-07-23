@@ -3,10 +3,12 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
-from renderers import RendererConfig
+from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
+from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.shared import (
     EnvVars,
+    FileMonitorConfig,
     HeartbeatConfig,
     SlurmConfig,
     TrainerLogConfig,
@@ -32,9 +34,6 @@ class BaseDataConfig(BaseConfig):
 
     seq_len: int = Field(128, ge=1)
     """Sequence length."""
-
-    pack_function: Literal["cat", "stack"] = "cat"
-    """Sample packing strategy. ``cat`` concatenates; ``stack`` requires ``seq_len`` divisible by 256."""
 
     micro_batch_size: int = Field(1, ge=1)
     """Per-step micro batch size. ``batch_size`` must be divisible by this."""
@@ -175,13 +174,8 @@ class SFTConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig | None = None
-    """Typed renderer config (``renderers.RendererConfig`` discriminated
-    union). When set, SFT tokenizes samples through the ``renderers``
-    library (single ``render()`` + ``message_indices`` mask) instead of
-    the default ``build_incremental_token_mask`` path. Required for chat
-    templates that render position-dependently (e.g. Qwen3, Qwen3.5).
-    ``None`` (default) uses the legacy tokenization path."""
+    renderer: RendererConfig = AutoRendererConfig()
+    """Renderer config. Defaults to auto-selecting from the tokenizer model name."""
 
     data: DataConfig = SFTDataConfig()
 
@@ -197,6 +191,9 @@ class SFTConfig(BaseConfig):
     log: TrainerLogConfig = TrainerLogConfig()
 
     wandb: WandbConfig | None = None
+
+    file_monitor: FileMonitorConfig | None = None
+    """Local JSONL metric sink. If set, metrics are appended to ``<output_dir>/metrics.jsonl``."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — checkpoints and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
@@ -224,9 +221,6 @@ class SFTConfig(BaseConfig):
 
     dist_timeout_seconds: int = 3600
     """Timeout in seconds for torch distributed ops."""
-
-    loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "torch"
-    """Cross-entropy loss implementation. ``liger_fused`` fuses the lm_head projection with the CE loss to avoid materializing full logits. ``quack_fused`` uses quack-kernels for chunked linear + CE with CuTe DSL CUDA kernels."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
@@ -272,13 +266,26 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_pack_function(self):
-        if self.model.cp > 1:
-            if self.data.pack_function != "cat":
-                raise ValueError("Packing function must be 'cat' when CP is enabled")
-            if self.val is not None and self.val.data.pack_function != "cat":
-                raise ValueError("Validation packing function must be 'cat' when CP is enabled")
-        return self
+    def validate_typed_renderer(self):
+        """Require a typed renderer whenever SFT renders real samples."""
+        if self.data.type == "fake" and self.val is None:
+            return self
+
+        model_id = self.tokenizer.name or self.model.name
+        if isinstance(self.renderer, AutoRendererConfig):
+            if model_id in MODEL_RENDERER_MAP:
+                return self
+            reason = f"no typed renderer is registered for {model_id!r}"
+        elif isinstance(self.renderer, DefaultRendererConfig):
+            reason = "renderer.name='default' selects DefaultRenderer"
+        else:
+            return self
+
+        raise ValueError(
+            f"SFT requires a typed renderer with sampled-token and content attribution, but {reason}. "
+            "Implement and register the renderer in the renderers package, or explicitly select an existing "
+            "typed renderer only when its template is verified to match."
+        )
 
     @model_validator(mode="after")
     def validate_cp_seq_len(self):
@@ -299,11 +306,26 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_seq_len(self):
-        if self.data.pack_function == "stack" and self.data.seq_len % 256 != 0:
-            raise ValueError("The sequence length must be divisible by 256 when using pack function stack")
-        if self.val is not None and self.val.data.pack_function == "stack" and self.val.data.seq_len % 256 != 0:
-            raise ValueError("The validation sequence length must be divisible by 256 when using pack function stack")
+    def vlm_freeze_incompatible_with_lora(self):
+        if self.model.vlm is not None and not self.model.vlm.freeze_vision_encoder and self.model.lora is not None:
+            raise ValueError(
+                "freeze_vision_encoder=false is incompatible with LoRA. "
+                "LoRA freezes all non-adapter parameters including the vision encoder."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_vlm_constraints(self):
+        if self.model.vlm is None:
+            return self
+        if self.model.optimization_dtype != "bfloat16" or self.model.reduce_dtype != "bfloat16":
+            raise ValueError(
+                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
+            )
+        if self.data.micro_batch_size != 1:
+            raise ValueError("VLM SFT requires data.micro_batch_size = 1.")
+        if self.val is not None and self.val.data.micro_batch_size != 1:
+            raise ValueError("VLM SFT requires val.data.micro_batch_size = 1.")
         return self
 
     @model_validator(mode="after")
@@ -315,15 +337,6 @@ class SFTConfig(BaseConfig):
                 raise ValueError(
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
                 )
-        return self
-
-    @model_validator(mode="after")
-    def validate_renderer_vs_vlm(self):
-        if self.renderer is not None and self.model.vlm is not None:
-            raise ValueError(
-                "renderer is not supported for VLMs in SFT. The renderer tokenizes "
-                "text-only message dicts client-side and cannot handle image inputs."
-            )
         return self
 
     @model_validator(mode="after")
@@ -341,11 +354,6 @@ class SFTConfig(BaseConfig):
     def validate_opt_and_fsdp_offload(self):
         if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
             raise ValueError("Muon optimizer does not support FSDP CPU offload")
-        return self
-
-    @model_validator(mode="after")
-    def validate_and_disable_chunked_loss(self):
-        self.model.fused_lm_head_token_chunk_size = "disabled"
         return self
 
     @model_validator(mode="after")

@@ -135,6 +135,7 @@ class WandbMonitor(Monitor):
         # Everyone else still retries to absorb transient W&B server errors (e.g. 404 on upsertBucket).
         max_retries = 30 if shared_mode and not primary else 5
         self.wandb = init_wandb(max_retries)
+        self.run_id = self.wandb.id
 
         wandb.define_metric("*", step_metric="step")
 
@@ -225,8 +226,8 @@ class WandbMonitor(Monitor):
                 sample = {
                     "step": step,
                     "env_name": rollout.env_name,
-                    "task": _loggable_task(trace.task),
-                    "task_idx": trace.task.idx,
+                    "task": _loggable_task(trace.task.data),
+                    "task_idx": trace.task.data.idx,
                     "messages": self.tokenizer.decode(token_ids),
                     "input_ids": str(token_ids),
                     "reward": trace.reward,
@@ -263,8 +264,8 @@ class WandbMonitor(Monitor):
                 sample = {
                     "step": step,
                     "env": env_name,
-                    "task": _loggable_task(trace.task),
-                    "task_idx": trace.task.idx,
+                    "task": _loggable_task(trace.task.data),
+                    "task_idx": trace.task.data.idx,
                     "completion": completion,
                     "reward": trace.reward,
                 }

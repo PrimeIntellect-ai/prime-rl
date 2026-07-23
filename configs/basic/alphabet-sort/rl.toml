@@ -1,0 +1,42 @@
+# Alphabet-sort on 2 GPUs (1 trainer + 1 inference) — a multi-turn task driven by a colocated
+# user simulator, trained with LoRA on Qwen3-4B. Dev-sized mirror of examples/basic/alphabet-sort.
+
+max_steps = 200
+seq_len = 2048
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "alphabet-sort"
+name = "alphabet-sort"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
+
+[trainer.optim]
+lr = 1e-5
+
+[orchestrator]
+batch_size = 128
+group_size = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 768
+
+[[orchestrator.train.env]]
+name = "alphabet-sort"
+env.taskset = { id = "alphabet-sort-v1", min_turns = 3, max_turns = 5, task = { power_per_turn = false } }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[ckpt] # Checkpoint at the end of training
+
+[inference]

@@ -10,8 +10,8 @@ prime-rl uses [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-
 ## Loading and composition
 
 ```bash
-uv run rl @ examples/reverse_text/rl.toml                                  # single TOML
-uv run rl @ examples/reverse_text/rl.toml --max-steps 50                   # CLI override
+uv run rl @ examples/basic/reverse-text/rl.toml                                  # single TOML
+uv run rl @ examples/basic/reverse-text/rl.toml --max-steps 50                   # CLI override
 uv run rl @ base.toml @ overlay.toml                                       # left-to-right merge
 uv run rl --model @ model.toml --data @ data.toml                          # nested section files
 uv run rl @ base.toml --trainer @ trainer.toml --trainer.lr 1e-3           # mixed
@@ -41,11 +41,13 @@ Incompatible combinations (e.g. CP requires flash attention) must raise in a `mo
 **Lists** — TOML uses array of tables; later config files replace lists wholesale, so overlays must include the full desired list:
 
 ```toml
-[[orchestrator.env]]
-id = "reverse-text"
+[[orchestrator.train.env]]
+name = "reverse-text"
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
 ```
 
-CLI: `--env.0.id reverse-text --env.1.id math-env`.
+CLI: `--orchestrator.train.env.0.env.taskset.id reverse-text-v1`.
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--vllm-extra '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `algo`) reject JSON strings; use dotted keys (`--orchestrator.algo.type max_rl`) or a TOML overlay file.
 

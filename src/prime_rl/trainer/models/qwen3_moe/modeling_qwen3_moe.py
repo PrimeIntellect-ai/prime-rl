@@ -34,13 +34,8 @@ from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
-from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
-    convert_hf_layer_to_tt,
-    convert_hf_to_tt_moe,
-    convert_tt_layer_to_hf,
-    convert_tt_to_hf_moe,
-)
-from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import conversion_chain
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 logger = logging.get_logger(__name__)
 
@@ -127,7 +122,7 @@ class Qwen3MoePreTrainedModel(PreTrainedModelPrimeRL):
     _no_split_modules = ["Qwen3MoeDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _supports_flex_attn = True
     _can_compile_fullgraph = False  # MoE models don't work with torch.compile (`torch.where(condition)` not supported)
     _supports_attention_backend = True
@@ -147,28 +142,8 @@ class Qwen3MoePreTrainedModel(PreTrainedModelPrimeRL):
         return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
 
     @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        """Convert MoE weights from PrimeRL training format to HuggingFace format in-place."""
-        convert_tt_to_hf_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        """Convert MoE weights from HuggingFace format to PrimeRL training format in-place."""
-        convert_hf_to_tt_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """Convert a single layer's MoE weights from PrimeRL format to HuggingFace format in-place."""
-        convert_tt_layer_to_hf(state_dict, layer_idx)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """Convert a single layer's MoE weights from HuggingFace format to PrimeRL format in-place."""
-        convert_hf_layer_to_tt(state_dict, layer_idx)
-        return state_dict
+    def conversion_chain(cls, config):
+        return conversion_chain(config)
 
 
 @auto_docstring
@@ -206,10 +181,17 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
+        seq_lens_are_pre_shard: bool = False,
     ) -> MoeModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
+        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -217,12 +199,11 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        else:
-            max_seqlen = None
-            cu_seqlens = None
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device),
+            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -282,9 +263,16 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Union[torch.Tensor, None] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
+        seq_lens_are_pre_shard: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
+        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
             Indices of input tokens in the KV cache. Accepted only for HuggingFace API
             compatibility — prime-rl asserts `use_cache is None` since training does not
@@ -332,6 +320,8 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
+            seq_lens=seq_lens,
+            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
         )
 
         hidden_states = outputs.last_hidden_state

@@ -26,7 +26,7 @@ jobs:
           apt-get install -y git
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: false
       - name: Init public submodules
@@ -34,9 +34,9 @@ jobs:
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
       - name: Install dependencies
-        run: uv sync --all-extras --locked
+        run: uv sync --all-extras --all-packages --locked
       - name: Run unit tests
         env:
           USERNAME_CI: CI_RUNNER
@@ -97,7 +97,7 @@ jobs:
           apt-get install -y git
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: false
       - name: Init public submodules
@@ -105,9 +105,9 @@ jobs:
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
       - name: Install dependencies
-        run: uv sync --all-extras --locked
+        run: uv sync --all-extras --all-packages --locked
       - name: Run integration tests
         env:
           USERNAME_CI: CI_RUNNER
@@ -121,3 +121,11 @@ jobs:
           PYTEST_OUTPUT_DIR: /tmp/outputs
           VLLM_WORKER_MULTIPROC_METHOD: spawn
         run: uv run pytest -vvs ${{ matrix.pytest_args }}
+      - name: Upload run logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.test }}-logs
+          path: /tmp/outputs/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore

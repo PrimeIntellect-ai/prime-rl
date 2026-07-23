@@ -8,7 +8,7 @@ from typing import Any
 import tomli_w
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.utils.config import cli
+from prime_rl.utils.config import cli, to_toml_dict
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir
 from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, DEFAULT_INFERENCE_ENV_VARS, set_proc_title
@@ -33,7 +33,7 @@ def write_config(config: InferenceConfig, output_dir: Path, exclude: set[str] | 
     output_dir.mkdir(parents=True, exist_ok=True)
     config_path = output_dir / INFERENCE_TOML
     with open(config_path, "wb") as f:
-        tomli_w.dump(config.model_dump(exclude=exclude, exclude_none=True, mode="json"), f)
+        tomli_w.dump(to_toml_dict(config, exclude=exclude), f)
     return config_path
 
 
@@ -76,6 +76,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         template_vars.update(
             num_prefill_nodes=config.deployment.num_prefill_nodes,
             num_decode_nodes=config.deployment.num_decode_nodes,
+            prefill_nodes_per_replica=config.deployment.prefill_nodes_per_replica,
+            decode_nodes_per_replica=config.deployment.decode_nodes_per_replica,
             num_prefill_replicas=config.deployment.num_prefill_replicas,
             num_decode_replicas=config.deployment.num_decode_replicas,
             prefill_port=config.deployment.prefill_port,

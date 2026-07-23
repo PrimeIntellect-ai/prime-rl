@@ -107,10 +107,12 @@ ep_comm_backend = "torch"  # or "deepep"
 
 CP shards a single sequence across multiple GPUs along the token dimension — for long-context sequences. We reccomend using `ulysses` style CP for most of the models to get the most throughput. Some models (e.g. GLM-5) only support `ring` style CP. Wrong setting will be rejected on validation.
 
+`ulysses` head-shards Q/K/V, so the CP degree must divide `num_attention_heads`. GQA models with fewer KV heads than the CP degree (e.g. NemotronH: 32 query heads, 2 KV heads) are supported via KV-head replication; the CP degree must then be a multiple of `num_key_value_heads`. Hybrid Mamba layers head-shard independently (`cp_mamba`), which requires the CP degree to divide `mamba_num_heads` and `n_groups`.
+
 ```toml
 [trainer.model]
 impl = "custom"
-attn = "flash_attention_2"   # or fa3 / fa4
+attn = "auto"                # auto = FA3 on Hopper, FA4 on Blackwell; or flash_attention_2/3/4
 cp = 2                       # CP degree
 cp_style = "ulysses"         # "ring"
 ```
@@ -179,7 +181,7 @@ The defaults already cover: fused LM head chunking (`1024`), `torch.compile` (fu
 
 The `rl`, `sft`, and `inference` entrypoints all submit to SLURM when a `[slurm]` table is present — there's no separate entrypoint.
 
-> **The prime-rl checkout and its `uv` venv must live on a shared filesystem** visible to every node. The generated sbatch script runs a single `uv sync --all-extras` on the batch node (not once per node), so all ranks share that one environment — a node-local venv would leave the other nodes stale.
+> **The prime-rl checkout and its `uv` venv must live on a shared filesystem** visible to every node. The generated sbatch script runs a single `uv sync --all-extras --all-packages` on the batch node (not once per node), so all ranks share that one environment — a node-local venv would leave the other nodes stale.
 
 ### Activation
 
@@ -208,7 +210,7 @@ uv run rl @ base_rl.toml @ my_slurm.toml --dry-run   # writes the sbatch script 
 [deployment]
 type = "multi_node"
 num_train_nodes = 2
-num_infer_nodes = 1
+num_infer_nodes = 1              # optional when inference.deployment defines the node topology
 gpus_per_node = 8                # default
 nodes_per_fsdp_group = 1         # optional — controls FSDP island size
 ```
@@ -224,10 +226,10 @@ gpus_per_node = 8
 
 ### Examples
 
-Full multi-node configs ship in [`examples/multinode/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/multinode):
+Full multi-node configs ship under [`examples/advanced/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced):
 
-- [`rl.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/multinode/rl.toml) — two-node RL run with NCCL weight broadcast on a 30B MoE policy.
-- [`sft.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/multinode/sft.toml) — two-node SFT against the same model.
+- [`nemotron-3-super/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/advanced/nemotron-3-super/swe.toml) — 4 trainer + 1 inference node RL on a 120B hybrid-Mamba MoE with NCCL weight broadcast.
+- [`glm-5.2/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.2) — large-scale and P/D-disaggregated inference across the GLM-5 family.
 
 For inference-only multi-node, set `[deployment] type = "multi_node"` on an inference TOML — each node runs an independent vLLM replica (TP and DP must fit within one node), and the launcher prints one URL per node. Front the URLs with a router or point clients at any of them.
 

@@ -45,7 +45,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 The minimal RL run trains an SFT-warmed `Qwen3-0.6B` on the `reverse-text` task — the env is bundled with the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) submodule, so nothing else needs to be installed:
 
 ```bash
-uv run rl @ examples/reverse_text/rl.toml
+uv run rl @ examples/basic/reverse-text/rl.toml
 ```
 
 ### Useful Knobs
@@ -144,12 +144,21 @@ Two accepted layouts:
 
 If both columns are present, `messages` takes precedence.
 
-**Tool definitions.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` ([`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the chat template's `tools=...` argument. The `chat_template_kwargs` column, if present, is forwarded verbatim into `apply_chat_template`.
+**Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` ([`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the renderer.
 
-**Position-dependent chat templates.** Multi-turn SFT under the default tokenization path (`build_incremental_token_mask`) requires that tokenizing the first _k_ turns of a conversation be a strict prefix of tokenizing all _n ≥ k_ turns. Qwen3's upstream template _violates_ this — it strips past `<think>` blocks across user turns, silently corrupting the loss mask. Two fixes:
+Renderer-backed SFT reads template controls from the typed `[renderer]` config in the SFT TOML. For example:
 
-- **Enable the renderer** (set a typed `[renderer]` config, e.g. `name = "qwen3"`, recommended; defaults to `"auto"` for RL). The [`renderers`](algorithms.md#renderers) package owns tokenization end-to-end and is robust to position-dependent templates. Hand-coded renderers ship for Qwen3, Qwen3.5, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS. Not supported for VLMs.
-- **Patched chat template** — the prime-rl–patched checkpoints (e.g. `PrimeIntellect/Qwen3-0.6B`, used in `examples/reverse_text/sft.toml`) ship a chat template that preserves thinking. Or supply your own.
+```toml
+[renderer]
+name = "qwen3"
+enable_thinking = false
+```
+
+If a model needs another template control, add it to that model's renderer config in `renderers` (for example a new field on the relevant `*RendererConfig`) and consume it in the renderer implementation.
+
+**Renderer-backed tokenization.** SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5.
+
+**VLM training requires a custom PrimeRL implementation.** Training a model with `[model.vlm]` set (SFT or RL) requires `model.impl = "custom"` and only works for models with a registered PrimeRL VLM class (currently Qwen3.5 dense and MoE).
 
 See [Algorithms § Multi-Turn Trajectories](algorithms.md#multi-turn-trajectories) for the full picture.
 
@@ -158,7 +167,7 @@ See [Algorithms § Multi-Turn Trajectories](algorithms.md#multi-turn-trajectorie
 The minimal SFT run trains `Qwen3-0.6B` on the `reverse-text` SFT dataset:
 
 ```bash
-uv run sft @ examples/reverse_text/sft.toml --wandb
+uv run sft @ examples/basic/reverse-text/sft.toml --wandb
 ```
 
 Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and Torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
@@ -328,7 +337,7 @@ Requires `PRIME_API_KEY` (set via `prime login` or env var) and an allowlisted t
 
 ## Rules of Thumb
 
-- **Start small.** Run `examples/reverse_text/rl.toml` end-to-end on 2 GPUs before scaling. If the smoke run finishes cleanly, your install is good.
+- **Start small.** Run `examples/basic/reverse-text/rl.toml` end-to-end on 2 GPUs before scaling. If the smoke run finishes cleanly, your install is good.
 - **Batch size ≥ 64.** Smaller batches give noisy gradient estimates and the trainer's overhead-per-step dominates throughput. 64 is the practical floor; 128–512 is the range for quick ablations; production RL often runs at 1024+.
 - **Group size ≥ 8.** Bigger groups (`orchestrator.group_size`) make it more likely that a task produces a mix of high- and low-reward rollouts, which is what gives the trainer a usable signal — if all rollouts in a group succeed or all fail, the within-group advantage collapses to zero and the trainer learns nothing from that task. Bigger groups also tighten advantage normalization. 8 is the floor; 16–32 is common.
 - **Pin `output_dir` per run.** Sharing a directory across runs will mix rollouts and break resumes. `--output-dir outputs/<unique-name>` is the simplest discipline.

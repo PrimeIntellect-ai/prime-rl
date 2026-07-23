@@ -59,6 +59,7 @@ def _micro_batch() -> MicroBatch:
         inference_logprobs=[0.0, -0.1, -0.2],
         position_ids=[0, 1, 2],
         sequence_lengths=[3],
+        seq_lens=[3],
         temperatures=[1.0, 1.0, 1.0],
         env_names=["env", "env", "env"],
         lora_num_tokens=[3],

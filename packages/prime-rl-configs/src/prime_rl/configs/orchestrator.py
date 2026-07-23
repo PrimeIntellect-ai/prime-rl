@@ -14,6 +14,7 @@ from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
     EnvVars,
+    FileMonitorConfig,
     FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
@@ -174,23 +175,15 @@ class EnvConfig(vf.EnvServerConfig):
         return data
 
     @property
-    def is_legacy(self) -> bool:
-        """A v0/legacy env (run via the bridge): an ``id`` is set and no v1 ``taskset`` is."""
-        return not self.taskset.id
-
-    @property
-    def env_id(self) -> str:
-        """The env identifier — the v1 taskset id (v1) or the legacy env id (v0)."""
-        return self.taskset.id or self.id or ""
-
-    @property
     def resolved_name(self) -> str:
         return self.name or self.env_id
 
     @model_validator(mode="after")
     def validate_env(self):
-        if not self.taskset.id and not self.id:
-            raise ValueError('no env configured — set taskset = { id = "<id>" } (v1) or id = "<id>" (v0/legacy)')
+        if not self.env_id:
+            raise ValueError(
+                'no env configured — set env = { taskset = { id = "<id>" } } (v1) or id = "<id>" (v0/legacy)'
+            )
         if self.resolved_name == "agg":
             raise ValueError(
                 'Environment name "agg" is reserved for cross-env metric aggregation. Use a different name or id.'
@@ -201,13 +194,16 @@ class EnvConfig(vf.EnvServerConfig):
     def resolve_legacy_env_kwargs(self):
         """For a v0/legacy env, surface the v1 knobs the legacy bridge applies via
         ``extra_env_kwargs`` (``env.set_kwargs(...)``): the per-rollout wall-clock timeout and
-        the multi-turn completion-token budget. (``max_seq_len`` is added per train run in
-        ``OrchestratorConfig.resolve_env_config``, which knows ``seq_len``.)"""
+        the multi-turn completion-token budget, read off ``env.agent``. (``max_seq_len`` is
+        added per train run in ``OrchestratorConfig.resolve_env_config``, which knows
+        ``seq_len``.)"""
         if self.is_legacy:
-            if self.timeout.rollout is not None:
-                self.extra_env_kwargs["timeout_seconds"] = self.timeout.rollout
-            if self.max_output_tokens is not None:
-                self.extra_env_kwargs["max_total_completion_tokens"] = self.max_output_tokens
+            agent = getattr(self.env, "agent", None)
+            if agent is not None:
+                if agent.timeout.rollout is not None:
+                    self.extra_env_kwargs["timeout_seconds"] = agent.timeout.rollout
+                if agent.max_output_tokens is not None:
+                    self.extra_env_kwargs["max_total_completion_tokens"] = agent.max_output_tokens
         return self
 
 
@@ -398,27 +394,43 @@ class FileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
 
-class NCCLWeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl"] = "nccl"
-
+class InMemoryWeightBroadcastConfig(BaseConfig):
     host: str = "localhost"
-    """Host for the NCCL broadcast rendezvous."""
+    """Weight transfer host."""
+
+    port: int
+    """Weight transfer port."""
+
+    timeout: int = 1200
+    """Weight transfer timeout in seconds."""
+
+    inference_world_size: int = Field(1, ge=1)
+    """Total inference workers across all servers."""
+
+
+class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nccl"] = "nccl"
 
     port: int = 29501
     """Port for the NCCL broadcast rendezvous."""
 
-    timeout: int = 1200
-    """Timeout in seconds for the NCCL broadcast."""
-
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates."""
 
-    inference_world_size: int = Field(1, ge=1)
-    """Total inference GPUs across all servers. Used by ``init_nccl_broadcast`` to compute per-server rank offsets."""
+
+class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nixl"] = "nixl"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    session_id: str = "default"
+    """ModelExpress session ID."""
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -482,6 +494,9 @@ class OrchestratorConfig(BaseConfig):
     wandb: WandbWithExtrasConfig | None = None
 
     prime_monitor: PrimeMonitorConfig | None = None
+
+    file_monitor: FileMonitorConfig | None = None
+    """Local JSONL metric sink. If set, orchestrator metrics are appended to ``<output_dir>/metrics.jsonl``."""
 
     collect_inference_metrics: bool = True
     """Collect inference-server metrics (requires wandb)."""

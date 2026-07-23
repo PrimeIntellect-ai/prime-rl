@@ -114,6 +114,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     sequence_lengths: list[int]
     temperatures: list[float]  # Per-token temperatures used during generation
     env_names: list[str]
+    seq_lens: list[int]
     ref_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None

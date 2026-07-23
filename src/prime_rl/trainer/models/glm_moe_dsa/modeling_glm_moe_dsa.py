@@ -15,11 +15,8 @@ from transformers.utils.deprecation import deprecate_kwarg
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
-    convert_hf_layer_to_tt,
-    convert_hf_to_tt_moe,
-    convert_tt_layer_to_hf,
+    conversion_chain,
     convert_tt_layer_to_vllm_kernel,
-    convert_tt_to_hf_moe,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
@@ -126,7 +123,7 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     _no_split_modules = ["GlmMoeDsaDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
-    _supports_sdpa = True
+    _supports_sdpa = False
     _supports_flex_attn = True
     _can_compile_fullgraph = False
     _supports_attention_backend = True
@@ -138,6 +135,10 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         super()._init_weights(module)
 
     @classmethod
+    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        return name.endswith("mlp.expert_bias")
+
+    @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return any("mlp.experts.1.up_proj" in name or "mlp.experts.gate_up_proj" in name for name in state_dict.keys())
 
@@ -146,24 +147,8 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
 
     @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        convert_tt_to_hf_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        convert_hf_to_tt_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        convert_tt_layer_to_hf(state_dict, layer_idx)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        convert_hf_layer_to_tt(state_dict, layer_idx)
-        return state_dict
+    def conversion_chain(cls, config):
+        return conversion_chain(config)
 
     @classmethod
     def convert_layer_to_vllm_kernel(
@@ -308,9 +293,19 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        # Document boundaries derive from position_ids (sparse MLA builds its
+        # varlen indices from them); seq_lens is accepted to satisfy the
+        # trainer's universal contract.
+        *,
+        seq_lens: torch.LongTensor,
+        seq_lens_are_pre_shard: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
+        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
             Indices of input tokens in the KV cache. Accepted only for HuggingFace API
             compatibility — prime-rl asserts `use_cache is None` since training does not

@@ -39,6 +39,7 @@ class TensorMicroBatch(TypedDict):
 
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
+    seq_lens: Int[Tensor, "segments"]
 
     # MoE router replay
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
@@ -137,6 +138,7 @@ class FakeDataLoader:
             "sequence_lengths": sequence_lengths,
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
+            "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "mm_kwargs": None,
             "mm_forward_policy": None,
@@ -170,6 +172,7 @@ class FakeDataLoader:
             "sequence_lengths": [self.seq_len],
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
+            "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "mm_kwargs": None,
             "mm_forward_policy": None,
@@ -320,6 +323,7 @@ class DataLoader:
             env_names=micro_batch.env_names,
             sequence_lengths=micro_batch.sequence_lengths,
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
+            seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_kwargs=mm_kwargs,
             mm_forward_policy=mm_forward_policy,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)

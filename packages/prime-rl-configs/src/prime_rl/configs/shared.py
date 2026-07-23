@@ -105,7 +105,7 @@ class VLMConfig(BaseConfig):
     """Dotted attribute path to the language model module (e.g. ``model.language_model``)."""
 
     freeze_vision_encoder: bool = True
-    """Freeze the vision encoder. When False, it is trainable and FSDP-sharded per-block. No effect with LoRA (LoRA freezes all non-adapter parameters)."""
+    """Freeze the vision encoder parameters during training."""
 
 
 class BaseModelConfig(BaseConfig):
@@ -230,6 +230,18 @@ class WandbConfig(BaseConfig):
 class WandbWithExtrasConfig(WandbConfig):
     log_extras: LogExtrasConfig | None = LogExtrasConfig()
     """Extras logging configuration. If None, no extras are logged."""
+
+
+class FileMonitorConfig(BaseConfig):
+    """Enable the local JSONL metric sink (``<output_dir>/metrics.jsonl``).
+
+    Present (non-None) enables it, mirroring the ``prime_monitor`` pattern. Metrics
+    are the same scalars sent to W&B; useful for self-hosted dashboards or when W&B
+    is disabled.
+    """
+
+    filename: str = "metrics.jsonl"
+    """Name of the JSONL file written under the component's ``output_dir``."""
 
 
 class PrimeMonitorConfig(BaseConfig):

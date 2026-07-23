@@ -101,6 +101,17 @@ class TimingMetrics(StatGroup):
         return Stat([r.timing.generation.duration for r in self.rollouts])
 
     @property
+    def generation_model(self) -> Stat:
+        """The share of the generation phase spent inside model calls (inference)."""
+        return Stat([r.timing.generation.model.duration for r in self.rollouts])
+
+    @property
+    def generation_harness(self) -> Stat:
+        """The share of the generation phase spent outside model calls (harness, tools,
+        user simulation)."""
+        return Stat([r.timing.generation.harness.duration for r in self.rollouts])
+
+    @property
     def finalize(self) -> Stat:
         return Stat([r.timing.finalize.duration for r in self.rollouts])
 
@@ -113,7 +124,12 @@ class TimingMetrics(StatGroup):
         return Stat([sum(getattr(r.timing, p).duration for p in self.PHASES) for r in self.rollouts])
 
     def stats(self) -> dict[str, Stat]:
-        return {**{phase: getattr(self, phase) for phase in self.PHASES}, "total": self.total}
+        return {
+            **{phase: getattr(self, phase) for phase in self.PHASES},
+            "generation/model": self.generation_model,
+            "generation/harness": self.generation_harness,
+            "total": self.total,
+        }
 
 
 class CustomMetrics(StatGroup):
@@ -321,8 +337,9 @@ class EvalMetrics(RolloutMetrics):
 
 
 class TrainRollouts:
-    """A list of train rollouts (everything that came back, errored + filtered included). ``effective``
-    is the clean subset (a view of the same traces); ``metrics`` builds ``TrainMetrics`` over them."""
+    """A list of train rollouts (everything that came back, errored + filtered + untrainable
+    included). ``effective`` is the clean trainable subset (a view of the same traces);
+    ``metrics`` builds ``TrainMetrics`` over them."""
 
     def __init__(self, rollouts: list[Rollout] | None = None) -> None:
         self.rollouts = rollouts if rollouts is not None else []
@@ -338,7 +355,7 @@ class TrainRollouts:
 
     @property
     def effective(self) -> TrainRollouts:
-        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered])
+        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered and r.trainable])
 
     def by_env(self) -> dict[str, TrainRollouts]:
         grouped: dict[str, list[Rollout]] = {}
@@ -352,7 +369,8 @@ class TrainRollouts:
 
 
 class EvalRollouts:
-    """A list of eval rollouts (errored included). ``effective`` is the non-errored subset (a view).
+    """A list of eval rollouts (errored + untrainable included). ``effective`` is the
+    non-errored trainable subset (a view).
     ``group_size`` (rollouts per example, the ``avg@k`` k) is derived from the full epoch and carried
     onto ``effective`` so both subsets share one stable key; ``metrics`` builds ``EvalMetrics``."""
 
@@ -368,18 +386,21 @@ class EvalRollouts:
 
     @property
     def group_size(self) -> int:
-        """The largest group (equals the configured group size whenever one example kept all its
-        rollouts); a subview carries its parent's value so ``avg@k`` doesn't drift across subsets."""
+        """The largest group in trainable (policy) traces — equals the configured group size
+        whenever one example kept all its rollouts; untrainable traces don't count, so a
+        multi-agent episode doesn't inflate ``k``. A subview carries its parent's value so
+        ``avg@k`` doesn't drift across subsets."""
         if self._group_size is not None:
             return self._group_size
         counts: dict = {}
         for r in self.rollouts:
-            counts[r.group_id] = counts.get(r.group_id, 0) + 1
+            if r.trainable:
+                counts[r.group_id] = counts.get(r.group_id, 0) + 1
         return max(counts.values(), default=0)
 
     @property
     def effective(self) -> EvalRollouts:
-        return EvalRollouts([r for r in self.rollouts if not r.has_error], group_size=self.group_size)
+        return EvalRollouts([r for r in self.rollouts if not r.has_error and r.trainable], group_size=self.group_size)
 
     @property
     def metrics(self) -> EvalMetrics:

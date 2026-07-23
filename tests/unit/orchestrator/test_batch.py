@@ -156,6 +156,7 @@ def test_randomized_packing_invariants():
         for batch in flat_batches:
             assert len(batch.input_ids) <= seq_len
             assert sum(batch.sequence_lengths) == len(batch.input_ids)
+            assert batch.seq_lens == batch.sequence_lengths
             assert sum(batch.lora_num_tokens) == len(batch.input_ids)
             assert len(batch.env_names) == len(batch.input_ids)
 
@@ -170,7 +171,8 @@ def test_pad_micro_batch_preserves_explicit_sequence_lengths():
     padded = pad_micro_batch(micro_batch, pad_to_multiple_of=6)
 
     assert len(padded.input_ids) == 6
-    assert padded.sequence_lengths == [4, 2]
+    assert padded.sequence_lengths == [6]
+    assert padded.seq_lens == [6]
     assert sum(padded.sequence_lengths) == len(padded.input_ids)
     assert padded.loss_mask[-2:] == [False, False]
 
@@ -266,6 +268,7 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     # Second sample (4 tokens): all get temp 1.1
     assert flat_batches[0].temperatures[4:8] == [1.1, 1.1, 1.1, 1.1]
     assert flat_batches[0].env_names == ["env-a"] * 4 + ["env-b"] * 4
+    assert flat_batches[0].seq_lens == [4, 4]
 
 
 def test_prepare_sample_propagates_weight_streams(make_training_example):
@@ -450,6 +453,44 @@ def test_prepare_sample_truncates_raw_mm_refs_at_image_boundary():
     assert micro_batch.input_ids == [10]
     assert micro_batch.mm_token_type_ids == [0]
     assert micro_batch.mm_refs is None
+
+
+def test_prepare_batch_keeps_raw_mm_sample_unpacked():
+    """Raw-ref multimodal samples never pack — not with text, not with each other."""
+    mm_sample = TrainingSample(
+        token_ids=[10, 11, 12],
+        mask=[False, True, True],
+        logprobs=[0.0, -0.1, -0.2],
+        temperatures=[1.0, 1.0, 1.0],
+        advantages=[0.0, 1.0, 1.0],
+        env_name="mm-env",
+        mm_token_type_ids=[0, 1, 0],
+        mm_refs=MMRefs(images=[_image_ref("file:///tmp/image-0.png", offset=1, length=1)]),
+    )
+    text_sample = TrainingSample(
+        token_ids=[20, 21],
+        mask=[False, True],
+        logprobs=[0.0, -0.3],
+        temperatures=[0.7, 0.7],
+        advantages=[0.0, 1.0],
+        env_name="text-env",
+    )
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[mm_sample, text_sample],
+        seq_len=8,
+        num_train_workers=2,
+        idxs=[0, 0],
+        num_loras=1,
+        bin_cost=build_bin_cost(None),
+    )
+
+    real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
+    assert len(real_batches) == 2
+    mm_batches = [batch for batch in real_batches if batch.mm_refs is not None]
+    assert len(mm_batches) == 1
+    assert mm_batches[0].env_names == ["mm-env"] * 3
+    assert mm_batches[0].mm_refs == mm_sample.mm_refs
 
 
 def test_prepare_sample_none_routed_experts():

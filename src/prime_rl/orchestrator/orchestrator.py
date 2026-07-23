@@ -27,6 +27,9 @@ import time
 from typing import TYPE_CHECKING
 
 import tomli_w
+import verifiers.v1 as vf
+from modelexpress import p2p_pb2
+from modelexpress.client import MxClient
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -69,13 +72,15 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
+from prime_rl.trainer.rl.broadcast.nixl.model_express import ModelExpressSession
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
-from prime_rl.utils.client import init_nccl_broadcast
+from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
+from prime_rl.utils.config import to_toml_dict
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
+from prime_rl.utils.pathing import get_log_dir, get_trace_path
 from prime_rl.utils.run_assets import apply_run_asset_env
 from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
@@ -100,6 +105,11 @@ MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 # dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
+
+# Default wait for the trainer's startup weight broadcast when no ckpt block
+# configures ``wait_for_weights_timeout`` (e.g. a from-scratch run). The
+# broadcast is always coming, so wait rather than fail immediately.
+STARTUP_WEIGHT_WAIT_TIMEOUT_S = 1200
 
 
 class Orchestrator:
@@ -167,6 +177,8 @@ class Orchestrator:
         self.eval_triggered_at = {}
         self.consecutive_empty_batches = 0
         self.gate_closed_at = None
+        # Pulsed by the version hooks so a held ship can re-check ``policy.version``
+        self.version_advanced = asyncio.Event()
         self.wait_for_policy_time = 0.0
         self.component_tasks = []
 
@@ -183,6 +195,7 @@ class Orchestrator:
         self.lora_name = None
         self.resume_step = None
         self.lag_task = None
+        self.model_express = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -196,7 +209,7 @@ class Orchestrator:
         config_dir = config.output_dir / "control"
         config_dir.mkdir(parents=True, exist_ok=True)
         with open(config_dir / "orch.toml", "wb") as f:
-            tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
+            tomli_w.dump(to_toml_dict(config), f)
 
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
@@ -221,6 +234,7 @@ class Orchestrator:
         self.monitor = setup_monitor(
             wandb_config=config.wandb,
             prime_config=config.prime_monitor,
+            file_config=config.file_monitor,
             output_dir=config.output_dir,
             tokenizer=self.tokenizer,
             run_config=config,
@@ -302,6 +316,24 @@ class Orchestrator:
                 inference_world_size=config.weight_broadcast.inference_world_size,
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
             )
+        elif config.weight_broadcast.type == "nixl":
+            await init_nixl_broadcast(
+                self.policy_inference.admin_clients,
+                config.weight_broadcast.host,
+                config.weight_broadcast.port,
+                config.weight_broadcast.timeout,
+                config.weight_broadcast.inference_world_size,
+                config.weight_broadcast.session_id,
+            )
+            self.model_express = ModelExpressSession(
+                client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
+                role="orchestrator",
+                rank=0,
+                session_id=config.weight_broadcast.session_id,
+                worker_id="orchestrator",
+            )
+            self.model_express.publish()
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
         self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
@@ -315,18 +347,39 @@ class Orchestrator:
             # trainer even when ``ckpt.skip_progress`` left the counter unrestored.
             self.progress.step = self.resume_step + 1
             get_logger().info(f"Resuming orchestrator from checkpoint step {self.resume_step}")
-            check_exists = config.weight_broadcast.type != "nccl"
-            wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
-            weights_path = get_weight_dir(
-                config.output_dir, self.resume_step, check_exists=check_exists, wait_timeout=wait_timeout
-            )
-            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=self.resume_step)
+        else:
+            get_logger().info("Training from scratch")
+
+        # Sync inference to the incoming policy before the first step when resuming or when using
+        # an in-memory transport, which rendezvouses with the trainer's startup broadcast.
+        if self.resume_step is not None or config.weight_broadcast.type in ("nccl", "nixl"):
+            sync_version = self.resume_step if self.resume_step is not None else 0
+            if config.weight_broadcast.type == "nixl":
+                weights_path = None
+            else:
+                check_exists = config.weight_broadcast.type == "filesystem"
+                # Without a ckpt block, fall back to a default timeout instead of not waiting at all.
+                wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
+                weights_path = get_weight_dir(
+                    config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
+                )
+            if self.model_express is not None:
+                await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
+            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
+            if self.model_express is not None:
+                await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
+                # Complete the startup rendezvous before the watcher begins its next cycle.
+                await asyncio.to_thread(
+                    self.model_express.wait_for,
+                    "trainer",
+                    count=1,
+                    status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
+                    timeout=config.weight_broadcast.timeout,
+                )
             if self.lora_name is not None:
                 self.policy_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
-            self.policy.version = self.resume_step
-        else:
-            get_logger().info("Training from scratch")
+            self.policy.version = sync_version
 
         self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source: EvalSource | None = (
@@ -371,6 +424,7 @@ class Orchestrator:
             observers=[self.dispatcher, self],
             lora_name=self.lora_name,
             ckpt_step=self.policy.version,
+            model_express=self.model_express,
         )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
@@ -452,7 +506,7 @@ class Orchestrator:
             trim_process_memory()
 
     async def main_loop(self) -> None:
-        """Consume ``Rollout``\\ s from the dispatcher and route them
+        """Consume episodes (``list[Rollout]``) from the dispatcher and route them
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
@@ -462,18 +516,44 @@ class Orchestrator:
                 break
 
             try:
-                rollout: Rollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                episode: list[Rollout] = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
 
-            if rollout.kind == "eval":
+            # Every completed rollout — errored, filtered, or never batched — lands in the
+            # ``all`` trace file the moment it arrives, so it survives crashes and drains.
+            # Train rollouts belong to the batch window currently collecting (``progress.step``),
+            # eval rollouts to the step whose eval triggered them.
+            kind = episode[0].kind
+            step = episode[0].eval_step if kind == "eval" else self.progress.step
+            assert step is not None
+            run: vf.RunInfo = (
+                vf.EvalRunInfo(id=self.monitor.run_id, step=step)
+                if kind == "eval"
+                else vf.TrainRunInfo(id=self.monitor.run_id, step=step)
+            )
+            for rollout in episode:
+                rollout.stamp(
+                    run,
+                    env_name=rollout.env_name,
+                    group_id=str(rollout.group_id),
+                    episode_id=rollout.episode_id,
+                    policy_version=rollout.policy_version,
+                )
+            await asyncio.to_thread(
+                save_rollouts,
+                [rollout.to_record() for rollout in episode],
+                get_trace_path(self.config.output_dir, step, kind, "all"),
+            )
+
+            if kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
-                eval_batch = self.eval_sink.add(rollout)
+                eval_batch = self.eval_sink.add(episode)
                 if eval_batch is not None:
                     await self.finalize_eval_batch(eval_batch)
                 continue
 
-            train_batch = await self.train_sink.add(rollout)
+            train_batch = await self.train_sink.add(episode)
             # In drain mode any late-arriving train batch is dropped — we
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
@@ -525,12 +605,42 @@ class Orchestrator:
                 f"({n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
-        # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables); to_record
-        # drops the per-node training tensors — they're for training, not the rollout record, and
-        # can't round-trip json (raw numpy bytes).
-        rollout_dicts = [r.to_record() for r in batch.rollouts]
-        step_path = get_step_path(get_rollout_dir(config.output_dir), step)
-        await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
+        # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}.
+        # Without this, fast envs fill batches from buffered rollouts, the
+        # orchestrator finishes early, and its teardown strands the trainer inside
+        # an in-memory broadcast handshake that needs the live weight watcher.
+        # Always satisfiable: the trainer skips only the final TARGET_LAG+1
+        # in-memory broadcasts. Bench runs have no trainer, so they ship freely.
+        required_version = step - 1 - TARGET_LAG
+        if not config.bench and self.policy.version < required_version:
+            get_logger().info(
+                f"Holding batch {step} until the trainer publishes policy v{required_version} "
+                f"(currently v{self.policy.version})"
+            )
+            hold_start = time.perf_counter()
+            while True:
+                self.version_advanced.clear()
+                if self.policy.version >= required_version:
+                    break
+                await self.version_advanced.wait()
+            self.wait_for_policy_time += time.perf_counter() - hold_start
+
+        # Stamp each rollout's true staleness: batch ``step`` trains on policy
+        # v{step-1}, so a rollout generated from v{k} is (step-1)-k versions
+        # off-policy — queue time included, unlike the dispatcher's in-flight
+        # counter, which only sees weight updates during generation. Frozen-
+        # sourced rollouts stay 0 (their sampler doesn't follow the policy).
+        for r in batch.rollouts:
+            if self.train_envs.get(r.env_name).sampler.samples_from_live_policy:
+                r.off_policy_steps = (step - 1) - r.policy_version
+
+        # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
+        # at ship time; the full arrival window already streamed into ``all`` on arrival.
+        # to_record drops the per-node training tensors — they're for training, not the rollout
+        # record, and can't round-trip json (raw numpy bytes).
+        effective = batch.rollouts.effective
+        records = [r.to_record() for r in effective]
+        await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.progress.step += 1
@@ -541,7 +651,6 @@ class Orchestrator:
 
         # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``batch.rollouts`` is the
         # full arrival window (errored + filtered included); ``.effective`` is the clean subset.
-        effective = batch.rollouts.effective
         metrics: dict[str, float] = {}
         for subset, pool in (("all", batch.rollouts), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
@@ -741,12 +850,13 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
             return
 
-        rollout_dicts = [r.to_record() for r in batch.rollouts]
-        step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
+        # The non-errored subset lands in the per-step ``effective`` trace file on epoch
+        # completion (multiple eval envs share the step file — each epoch appends its cohort
+        # once, and every record carries ``env_name``); the full returned cohort already
+        # streamed into ``all`` on arrival.
+        records = [r.to_record() for r in batch.rollouts.effective]
         await asyncio.to_thread(
-            save_rollouts,
-            rollout_dicts,
-            step_path / f"eval_rollouts_{batch.env_name}.jsonl",
+            save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
         policy_versions = {r.policy_version for r in batch.rollouts}
@@ -802,9 +912,16 @@ class Orchestrator:
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
         count is ``progress.step - 1``."""
         lead = (self.progress.step - 1) - self.policy.version
+        # The trainer skips the final in-memory weight broadcasts, so policy.version never
+        # reaches the last step. Let the final batch through instead of waiting for it.
+        building_final_batch_without_update = (
+            self.config.weight_broadcast.type in ("nccl", "nixl")
+            and self.config.max_steps is not None
+            and self.progress.step >= self.config.max_steps - 1
+        )
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG:
+        if lead > TARGET_LAG and not building_final_batch_without_update:
             if was_set:
                 get_logger().info(
                     "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."
@@ -820,12 +937,17 @@ class Orchestrator:
             gate.set()
 
     async def on_version_pending(self, step: int) -> None:
-        """No-op: the dispatch gate is re-evaluated in ``on_new_version`` once
-        the new policy version is live."""
+        """``VersionObserver`` hook, fired at publish confirmation (pre-apply):
+        ``policy.version`` already carries the new version, so wake a held ship."""
+        if self.model_express is not None:
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
+        self.version_advanced.set()
 
     async def on_new_version(self, step: int) -> None:
-        """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
+        """``VersionObserver`` hook: the weight update completed;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""
+        if self.model_express is not None:
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.update_dispatch_gate()
 
     async def stop(self) -> None:

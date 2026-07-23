@@ -58,7 +58,7 @@ After a restart, verify all processes are back up and progress resumed before th
 - `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the output dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
 - `{output_dir}/configs/` — resolved TOMLs (`rl.toml` has the full picture).
 - `{output_dir}/logs/` — see below.
-- `{output_dir}/rollouts/step_N/` — saved rollouts.
+- `{output_dir}/rollouts/step_N/{train,eval}/` — saved rollout traces (see Traces below).
 
 ### Logs
 
@@ -89,17 +89,17 @@ grep -E "WARNING|ERROR" {output_dir}/logs/envs/{train,eval}/*.log
 
 All metrics print to the console log (and W&B when configured).
 
-**Progress** — orchestrator log:
+**Progress** — orchestrator log. Rollout metrics are keyed `{scope}/{subset}/<metric>/<stat>`: `scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (post-filter).
 
 | Metric | Description |
 |--------|-------------|
-| `reward/{all,env}/mean` | mean training reward |
-| `seq_len/{all,env}/mean` | avg sequence length (tokens) |
-| `num_turns/{all,env}/mean` | avg turns per rollout (multi-turn only) |
-| `is_truncated/{all,env}/mean` | fraction truncated |
-| `empty_rollouts/{all,env}`, `errored_rollouts/{all,env}` | fraction empty/errored |
-| `metrics/{env}/{metric}` | env-specific (e.g. pass rate) |
-| `eval/{env}/{avg@k,pass@k}` | eval scores when configured |
+| `train/agg/all/reward/mean` | mean training reward (per env: `train/<env>/all/reward/mean`) |
+| `train/agg/all/num_total_tokens/mean` | avg tokens per rollout (also `num_input_tokens`, `num_output_tokens`) |
+| `train/agg/all/num_turns/mean` | avg turns per rollout (multi-turn only) |
+| `train/agg/all/is_truncated/mean` | fraction truncated |
+| `train/agg/all/has_error/mean` | fraction errored (per-type under `train/agg/all/error/<type>`; also `dispatcher/errored/{train,eval}`) |
+| `train/<env>/all/metrics/<name>/mean` | env-specific metrics (e.g. pass rate) |
+| `eval/<env>/all/{avg@k,pass@k}` | eval scores when configured |
 
 **Stability** — trainer log:
 
@@ -118,9 +118,9 @@ All metrics print to the console log (and W&B when configured).
 | trainer | `time/wait_for_batch` | **high → orchestrator is bottleneck** |
 | trainer | `time/forward_backward`, `time/broadcast_weights`, `time/save_ckpt` | phase timings |
 | trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU % |
-| orchestrator | `time/step`, `time/generate_completions`, `time/update_weights` | phase timings |
-| orchestrator | `time/wait_for_ckpt` | **high → trainer is bottleneck** |
-| orchestrator | `scheduler/async_level`, `scheduler/inflight_rollouts` | scheduler state |
+| orchestrator | `time/step`, `time/save_ckpt` | phase timings |
+| orchestrator | `time/wait_for_policy` | **high → trainer is bottleneck** |
+| orchestrator | `dispatcher/off_policy_level_{mean,max}`, `dispatcher/inflight_{train,eval}`, `dispatcher/groups_in_flight`, `dispatcher/queued/eval` | dispatcher / async state |
 | env server | event loop lag (min/mean/p90/p99/max), active task distribution | periodic |
 
 For live vLLM stats, query Prometheus directly:
@@ -130,20 +130,31 @@ curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
 # vllm:num_requests_running, vllm:num_requests_waiting, vllm:gpu_cache_usage_perc (→1.0 = KV cache saturated)
 ```
 
-### Rollouts
+### Traces
 
 ```
-{output_dir}/rollouts/step_N/
-├── train_rollouts.jsonl   # all train rollouts (vf.RolloutOutput, trajectory excluded)
-├── eval_rollouts.jsonl    # only present when eval ran
-└── train_rollouts.bin     # binary batch consumed by the trainer
+{output_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per rollout as it completes
+{output_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
+
+JSONL files of `vf.Trace` records (training tensors excluded), one line per trace — a
+multi-agent env's episode contributes several lines sharing one `info.episode_id`. `all`
+gets every completed rollout the moment it arrives — errored, filtered, and never-batched
+ones included — so it's crash-durable; `effective` gets the clean trainable subset that went
+into the step's train batch (eval: the non-errored trainable epoch cohort; multiple eval envs
+share the step file) — untrainable traces (a frozen judge's) appear only in `all`. Each record carries `run` (`{type, id, step}`; for eval, `step` is the trigger step),
+`verifiers` (producing build), `agent` (model, sampling, harness, `name`, `trainable`), `ok`
+(the success sentinel — `errors` alone keeps retry history even after a recovery), and
+`runtime` (config + provisioned resource id, e.g. the sandbox id), plus `env_name`,
+`group_id`, `episode_id`, and `policy_version` under `info`.
 
 ```bash
-wc -l {output_dir}/rollouts/step_42/train_rollouts.jsonl
-head -1 {output_dir}/rollouts/step_42/train_rollouts.jsonl | python -m json.tool
-jq '.reward' {output_dir}/rollouts/step_42/train_rollouts.jsonl
+wc -l {output_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
+jq '.rewards' {output_dir}/rollouts/step_42/train/effective/traces.jsonl
+jq 'select(.ok | not) | {id, env: .info.env_name, runtime}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
+
+The binary batches consumed by the trainer still live at `{output_dir}/rollouts/step_N/train_rollouts.bin`, next to the trace subtrees.
 
 ### Common failure modes
 

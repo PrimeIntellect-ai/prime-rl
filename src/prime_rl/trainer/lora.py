@@ -162,8 +162,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     )
 
     if not target_modules:
-        logger.warning("No target modules found for LoRA. Check your target_modules patterns.")
-        return
+        raise ValueError(f"No LoRA target modules found for patterns {config.target_modules}.")
 
     for module_name in target_modules:
         base_module = _get_module_by_name(model, module_name)

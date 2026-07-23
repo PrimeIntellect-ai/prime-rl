@@ -10,8 +10,6 @@ from torch import Tensor
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import get_final_logit_softcapping
 
-FUSED_CE_IGNORE_INDEX = -100
-
 
 class PrimeLmOutput(TypedDict, total=False):
     """Output from LM head - a TypedDict so pytree can find tensors for FSDP2 hooks."""
@@ -73,78 +71,6 @@ class VanillaOutputLinear(torch.nn.Linear):
     ) -> PrimeLmOutput:
         # VanillaOutputLinear just returns logits - temperature scaling is done externally in train.py
         return PrimeLmOutput(logits=super().forward(hidden_states))
-
-
-class FusedCrossEntropyOutputLinear(torch.nn.Linear):
-    """Fused lm_head + cross-entropy loss using Liger kernel.
-
-    Avoids materializing the full [N, V] logits tensor by fusing the linear
-    projection with the cross-entropy loss computation.
-    """
-
-    IGNORE_INDEX = FUSED_CE_IGNORE_INDEX
-
-    def __init__(self, in_features: int, out_features: int, softcap: float | None = None):
-        super().__init__(in_features, out_features, bias=False)
-        from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
-
-        self.fused_ce = LigerFusedLinearCrossEntropyLoss(
-            ignore_index=self.IGNORE_INDEX, reduction="mean", softcap=softcap
-        )
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        labels: torch.Tensor | None = None,
-        temperature: Tensor | None = None,
-    ) -> PrimeLmOutput:
-        if labels is None:
-            return PrimeLmOutput(logits=super().forward(hidden_states))
-
-        b, s, h = hidden_states.shape
-        hidden_flat = hidden_states.reshape(b * s, h).contiguous()
-        labels_flat = labels.reshape(b * s).contiguous()
-        loss = self.fused_ce(self.weight, hidden_flat, labels_flat)
-        return PrimeLmOutput(loss=loss)
-
-
-class QuackFusedCrossEntropyOutputLinear(torch.nn.Linear):
-    """Fused lm_head + cross-entropy loss using quack-kernels.
-
-    Chunks the linear projection and cross-entropy computation to avoid
-    materializing the full [N, V] logits tensor, using quack's optimized
-    CuTe DSL kernels for CE and GEMM.
-    """
-
-    IGNORE_INDEX = FUSED_CE_IGNORE_INDEX
-
-    def __init__(self, in_features: int, out_features: int, chunk_size: int = 4096):
-        super().__init__(in_features, out_features, bias=False)
-        self.chunk_size = chunk_size
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        labels: torch.Tensor | None = None,
-        temperature: Tensor | None = None,
-    ) -> PrimeLmOutput:
-        if labels is None:
-            return PrimeLmOutput(logits=super().forward(hidden_states))
-
-        from quack.linear_cross_entropy import chunked_linear_cross_entropy
-
-        b, s, h = hidden_states.shape
-        hidden_flat = hidden_states.reshape(b * s, h).contiguous()
-        labels_flat = labels.reshape(b * s).contiguous()
-        loss = chunked_linear_cross_entropy(
-            hidden_flat,
-            self.weight,
-            labels_flat,
-            chunk_size=self.chunk_size,
-            ignore_index=self.IGNORE_INDEX,
-            reduction="mean",
-        )
-        return PrimeLmOutput(loss=loss)
 
 
 def _online_logsumexp_and_weighted_update(
@@ -238,8 +164,9 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         vocab = weight.shape[0]
         vocab_chunk_size = min(vocab, 8192)
 
-        grad_hidden = torch.zeros_like(hidden)
-        grad_weight = torch.zeros_like(weight)
+        needs_hidden, needs_weight = ctx.needs_input_grad[0], ctx.needs_input_grad[1]
+        grad_hidden = torch.zeros_like(hidden) if needs_hidden else None
+        grad_weight = torch.zeros_like(weight) if needs_weight else None
 
         for start in range(0, n, chunk_size):
             end = min(start + chunk_size, n)
@@ -263,8 +190,10 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     grad_logits[mask, idx] += grad_chunk[mask]
                 grad_logits = grad_logits * inv_t_chunk
 
-                grad_hidden[start:end].add_(grad_logits.to(hidden.dtype) @ weight_chunk)
-                grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
+                if needs_hidden:
+                    grad_hidden[start:end].add_(grad_logits.to(hidden.dtype) @ weight_chunk)
+                if needs_weight:
+                    grad_weight[vocab_start:vocab_end].add_(grad_logits.to(weight.dtype).t() @ hidden_chunk)
 
         return grad_hidden, grad_weight, None, None, None
 
@@ -272,7 +201,6 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 def inject_prime_lm_head(
     model: nn.Module,
     chunk_size: int | None = None,
-    fused_cross_entropy: bool | str = False,
 ) -> None:
     """
     Inject a PrimeRL LM head into a model.
@@ -283,11 +211,7 @@ def inject_prime_lm_head(
     Args:
         model: The model to wrap.
         chunk_size: When set to an int, uses FusedOutputLinear with sequence-token chunked
-            logprob/entropy computation (for RL).
-        fused_cross_entropy: Controls fused lm_head + CE loss. Accepts:
-            - False: no fusion
-            - True or "liger": Liger kernel fusion
-            - "quack": quack-kernels fusion (chunked linear + CE with CuTe DSL kernels)
+            logprob/entropy computation.
     """
     # Guards so we have nicer error messages when a non-standard model is used
     assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"
@@ -303,33 +227,14 @@ def inject_prime_lm_head(
     # Check for Gemma-style softcapping - dispatch to specialized implementation.
     final_logit_softcapping = get_final_logit_softcapping(model.config)
     if final_logit_softcapping:
-        if fused_cross_entropy == "quack":
-            raise ValueError(
-                "quack_fused does not support Gemma logit softcapping. "
-                "Use loss_impl='liger_fused' or loss_impl='torch' instead."
-            )
-        if not fused_cross_entropy:
-            from prime_rl.trainer.models.layers.lm_head_gemma import inject_gemma_lm_head
+        from prime_rl.trainer.models.layers.lm_head_gemma import inject_gemma_lm_head
 
-            inject_gemma_lm_head(model, chunk_size, final_logit_softcapping)
-            return
+        inject_gemma_lm_head(model, chunk_size, final_logit_softcapping)
+        return
 
     # Replace the lm_head with the appropriate wrapper
     old_lm_head = model.lm_head
-    if fused_cross_entropy == "quack":
-        logger.info("Injecting fused cross-entropy LM head (quack-kernels)")
-        model.lm_head = QuackFusedCrossEntropyOutputLinear(
-            in_features=old_lm_head.in_features,
-            out_features=old_lm_head.out_features,
-        )
-    elif fused_cross_entropy:
-        logger.info("Injecting fused cross-entropy LM head (Liger kernel)")
-        model.lm_head = FusedCrossEntropyOutputLinear(
-            in_features=old_lm_head.in_features,
-            out_features=old_lm_head.out_features,
-            softcap=final_logit_softcapping,
-        )
-    elif isinstance(chunk_size, int):
+    if isinstance(chunk_size, int):
         logger.info(f"Injecting chunked LM head with chunk size {chunk_size}")
         model.lm_head = FusedOutputLinear(
             in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
@@ -360,12 +265,10 @@ def _patch_model_forward(model: nn.Module) -> None:
         if position_ids is None and not is_multimodal:
             reference_tensor = input_ids if input_ids is not None else inputs_embeds
             position_ids = torch.arange(1, reference_tensor.shape[1] + 1, device=reference_tensor.device).unsqueeze(0)
-        outputs = self.model(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            inputs_embeds=inputs_embeds,
-            **kwargs,
-        )
+        model_kwargs = {"input_ids": input_ids, "position_ids": position_ids, **kwargs}
+        if inputs_embeds is not None:
+            model_kwargs["inputs_embeds"] = inputs_embeds
+        outputs = self.model(**model_kwargs)
         hidden_states = outputs.last_hidden_state
 
         # Slice hidden states for logits_to_keep

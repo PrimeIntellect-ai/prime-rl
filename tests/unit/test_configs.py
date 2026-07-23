@@ -1,4 +1,3 @@
-import tomllib
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -13,7 +12,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.utils.config import BaseConfig, cli
+from prime_rl.utils.config import BaseConfig, cli, to_toml_dict
 
 # All config config classes
 CONFIG_CLASSES = [
@@ -33,19 +32,9 @@ def get_config_files() -> list[Path]:
     return config_files + example_files
 
 
-def is_eval_config(path: Path) -> bool:
-    """vf-eval TOMLs live under configs but are not prime-rl entrypoint configs."""
-    with path.open("rb") as f:
-        data = tomllib.load(f)
-    return isinstance(data.get("eval"), list)
-
-
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
 def test_load_configs(config_file: Path):
     """Tests that all config files can be loaded by at least one config class."""
-    if is_eval_config(config_file):
-        pytest.skip("vf-eval TOML files are not prime-rl entrypoint configs")
-
     could_parse = []
     for config_cls in CONFIG_CLASSES:
         try:
@@ -167,6 +156,22 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_to_toml_dict_roundtrips_explicit_none(tmp_path):
+    """An explicit None override survives the write/re-parse round-trip used by SLURM launches."""
+    config = cli(TrainerConfig, args=["--model.compile", "None", "--optim.max_norm", "None"])
+    assert config.model.compile is None
+    assert config.optim.max_norm is None
+
+    write_toml(tmp_path / "cfg.toml", to_toml_dict(config))
+    reloaded = cli(TrainerConfig, args=["@", str(tmp_path / "cfg.toml")])
+    assert reloaded.model.compile is None
+    assert reloaded.optim.max_norm is None
+    assert reloaded == config
+
+    # Unset None fields stay dropped, so defaults still resolve on re-parse
+    assert "max_steps" not in to_toml_dict(cli(TrainerConfig, args=[]))
+
+
 def test_env_algo_overrides_top_level():
     config = OrchestratorConfig.model_validate(
         {
@@ -261,6 +266,24 @@ def test_orchestrator_vlm_requires_renderer():
     )
 
     assert config.renderer is not None
+
+
+def test_trainer_rejects_vlm_cp_with_ring():
+    config = {
+        "model": {
+            "cp": 2,
+            "impl": "custom",
+            "optimization_dtype": "bfloat16",
+            "reduce_dtype": "bfloat16",
+            "vlm": {
+                "vision_encoder_attr": "model.visual",
+                "language_model_attr": "model.language_model",
+            },
+        },
+    }
+
+    with pytest.raises(ValidationError, match="cp_style='ulysses'"):
+        TrainerConfig.model_validate(config)
 
 
 def test_selective_activation_checkpointing_requires_custom_impl():
@@ -529,6 +552,26 @@ def test_orchestrator_renderer_auto_accepts_mapped_model():
     config = OrchestratorConfig.model_validate({"model": {"name": "Qwen/Qwen3-0.6B"}})
     assert config.renderer is not None
     assert config.renderer.name == "auto"
+
+
+def test_sft_renderer_auto_accepts_prime_qwen_model():
+    config = SFTConfig.model_validate({"model": {"name": "PrimeIntellect/Qwen3-0.6B"}})
+    assert config.renderer.name == "auto"
+
+
+def test_sft_rejects_default_renderer_for_real_data():
+    with pytest.raises(ValidationError, match="requires a typed renderer"):
+        SFTConfig.model_validate({"renderer": {"name": "default"}})
+
+
+def test_sft_allows_unused_default_renderer_for_fake_data():
+    config = SFTConfig.model_validate(
+        {
+            "data": {"type": "fake"},
+            "renderer": {"name": "default"},
+        }
+    )
+    assert config.renderer.name == "default"
 
 
 def test_orchestrator_explicit_renderer_skips_unmapped_check():

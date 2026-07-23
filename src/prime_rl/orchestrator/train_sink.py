@@ -3,15 +3,17 @@
 1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
    dispatcher producing more rollouts), then the env algorithm's
    ``finalize_rollout`` (rollout-local scoring + any reference I/O). Errored
-   rollouts skip this.
-2. ``process_group`` — filters errored rollouts, hands survivors to the env
-   algorithm's ``finalize_group`` (advantages + per-sample wire stamping),
-   runs the pre-batch filter pass.
+   and untrainable rollouts skip this.
+2. ``process_group`` — filters errored rollouts, hands the trainable
+   survivors to the env algorithm's ``finalize_group`` (advantages +
+   per-sample wire stamping), runs the pre-batch filter pass.
 3. ``process_batch`` — applies post-batch filter annotations and assembles
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
-``add()`` returns ``TrainBatch | None``. I/O concerns (ship to trainer,
-save_rollouts, monitor.log) live on the orchestrator.
+``add()`` takes one episode (``list[Rollout]``) and returns
+``TrainBatch | None``; group accounting counts episodes, never loose traces.
+I/O concerns (ship to trainer, save_rollouts, monitor.log) live on the
+orchestrator.
 """
 
 from __future__ import annotations
@@ -28,6 +30,19 @@ from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
+
+
+def payload_tokens(rollout: Rollout) -> int:
+    """Token cost of the rollout's trainer-bound payload — the samples built by
+    ``process_rollout``. This is what actually ships: forked traces can drop
+    branches with no trainable tokens, so ``Trace.num_total_tokens`` (which sums
+    over all branches) may overcount. For linear traces the two agree.
+
+    Zero-payload rollouts (no trainable samples at all) fall back to the trace
+    total so they still advance token batching — a degenerate all-zero-payload
+    stream then ships empty batches and trips the orchestrator's
+    consecutive-empty-batch abort instead of stalling the readiness check."""
+    return sum(len(sample.token_ids) for sample in rollout.samples) or rollout.num_total_tokens
 
 
 class TrainSink:
@@ -57,15 +72,21 @@ class TrainSink:
         self.pre_filters = pre_filters
         self.post_filters = post_filters
 
+        # Observation window for the next shipped batch: rollouts of groups
+        # finalized since the last ship (errored + filtered + survivors).
+        # In-progress groups stay out until they finalize.
+        self.pending_rollouts: TrainRollouts = TrainRollouts()
         # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
         # isn't unique — the same task can be re-sampled while an
         # earlier group is still in flight
-        self.pending_rollouts: TrainRollouts = TrainRollouts()
         self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
+        # Episodes arrived per group — the finalization count (an episode may
+        # add several traces to ``pending_groups`` but counts once here).
+        self.pending_group_episodes: dict[uuid.UUID, int] = defaultdict(int)
         self.pending_batch: list[Rollout] = []
-        # Running token total of ``pending_batch`` (token-batched runs), kept in
-        # sync on append/pop so the readiness check never re-walks the uncached
-        # ``Trace.num_total_tokens`` graph property per arrival.
+        # Running payload-token total of ``pending_batch`` (token-batched
+        # runs), kept in sync on append/pop so the readiness check never
+        # re-sums per arrival.
         self.pending_tokens: int = 0
 
         # Reset by the orchestrator after each ship via ``reset_pre_filter_stats``
@@ -75,22 +96,6 @@ class TrainSink:
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
-
-    def in_progress_groups(self) -> list[list[Rollout]]:
-        """Per-rollout groups currently accumulating in ``pending_groups`` —
-        i.e. groups that haven't hit ``group_size`` yet, so the pipeline log
-        can reflect partial-group progress. Skips group-scoring envs (whose
-        rollouts only make sense as a unit — the user expects per-group
-        fill, not per-rollout, for those)."""
-        out: list[list[Rollout]] = []
-        for rollouts in self.pending_groups.values():
-            if not rollouts:
-                continue
-            env_name = rollouts[0].env_name
-            if self.train_envs.get(env_name).requires_group_scoring:
-                continue
-            out.append(rollouts)
-        return out
 
     def batch_progress(self) -> tuple[int, int, str]:
         """``(current, target, unit)`` for the train batch — counts only
@@ -103,9 +108,13 @@ class TrainSink:
         return self.pending_tokens, self.token_batch_size, "tokens"
 
     def buffered_count(self) -> int:
-        """Rollouts that have arrived but sit in not-yet-complete groups
+        """Episodes that have arrived but sit in not-yet-complete groups
         (non-group-scoring envs) — buffered in the sink ahead of the batch."""
-        return sum(len(group) for group in self.in_progress_groups())
+        return sum(
+            self.pending_group_episodes.get(group_id, 0)
+            for group_id, rollouts in self.pending_groups.items()
+            if rollouts and not self.train_envs.get(rollouts[0].env_name).requires_group_scoring
+        )
 
     def pending_batch_by_env(self) -> dict[str, int]:
         """Per-env breakdown of ``batch_progress()`` (``pending_batch`` only);
@@ -115,15 +124,23 @@ class TrainSink:
             counts[r.env_name] += 1
         return dict(counts)
 
-    async def add(self, rollout: Rollout) -> TrainBatch | None:
-        """Process one arrival; finalize the group on the ``group_size``-th
-        arrival; return a ``TrainBatch`` if the batch threshold is met."""
-        await self.process_rollout(rollout)
-        env_name = rollout.env_name
-        self.pending_rollouts.append(rollout)
-        self.pending_groups[rollout.group_id].append(rollout)
-        if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
-            await self.process_group(rollout.group_id)
+    async def add(self, episode: list[Rollout]) -> TrainBatch | None:
+        """Process one episode arrival; finalize the group on the
+        ``group_size``-th episode; return a ``TrainBatch`` if the finalization
+        pushed (or left) the batch over its threshold. Arrivals into
+        still-incomplete groups never ship a batch."""
+        group_id = episode[0].group_id
+        env_name = episode[0].env_name
+        for rollout in episode:
+            await self.process_rollout(rollout)
+        self.pending_groups[group_id].extend(episode)
+        self.pending_group_episodes[group_id] += 1
+        if self.pending_group_episodes[group_id] < self.group_size_for(env_name):
+            return None
+        await self.process_group(group_id)
+        # ``pending_batch`` only grows on group finalization, so readiness is
+        # only re-checked here — the window of a shipped batch then always
+        # contains at least the group that finalized it.
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
@@ -137,8 +154,8 @@ class TrainSink:
         """Build training samples from the rollout's Trace (one per branch), walking the
         message graph. Training is renderer-only across all modes (RL/OPD student, SFT teacher),
         so every node already carries its tokens. Errored rollouts are dropped at the group
-        level, so skip them here."""
-        if rollout.has_error:
+        level, so skip them here; untrainable traces never become training data."""
+        if rollout.has_error or not rollout.trainable:
             return
         samples = await asyncio.to_thread(
             trace_to_samples,
@@ -157,10 +174,17 @@ class TrainSink:
         when ``requires_group_scoring`` and any failed), assign advantages,
         run pre-batch filters, append survivors to ``pending_batch``."""
         group = self.pending_groups.pop(group_id, [])
+        self.pending_group_episodes.pop(group_id, None)
         if not group:
             return
+        # Window membership follows group finalization, not arrival: a rollout
+        # only becomes observable (metrics / persistence) once its whole group
+        # is finalized, so a batch's window never claims rollouts of a group
+        # that ships later. Dropped groups still land here — they were observed.
+        for r in group:
+            self.pending_rollouts.append(r)
         env_name = group[0].env_name
-        task_idx = group[0].task.idx
+        task_idx = group[0].task.data.idx
         survivors = [r for r in group if not r.has_error]
         num_errored = len(group) - len(survivors)
 
@@ -173,10 +197,12 @@ class TrainSink:
                 f"rollouts={len(group)} (errored={num_errored}) | dropped: group-scored partial"
             )
             return
+        # Untrainable traces carry no samples and must not skew the group baseline.
+        survivors = [r for r in survivors if r.trainable]
         if not survivors:
             get_logger().debug(
                 f"Finished group | env={env_name} task_idx={task_idx} | "
-                f"rollouts={len(group)} (errored={num_errored}) | dropped: all failed"
+                f"rollouts={len(group)} (errored={num_errored}) | dropped: no trainable survivors"
             )
             return
 
@@ -211,7 +237,7 @@ class TrainSink:
             r.is_filtered = False
             self.pending_batch.append(r)
             if self.token_batch_size is not None:
-                self.pending_tokens += r.num_total_tokens
+                self.pending_tokens += payload_tokens(r)
 
         # Per-group summary. One line per finalized group; per-filter
         # detection breakdown lives at debug level in ``apply_filters``
@@ -238,7 +264,7 @@ class TrainSink:
             cut = 0
             running = 0
             for i, r in enumerate(self.pending_batch):
-                running += r.num_total_tokens
+                running += payload_tokens(r)
                 cut = i + 1
                 if running >= self.token_batch_size:
                     break
@@ -253,11 +279,12 @@ class TrainSink:
         # advantage stream and loss routing on each sample. Filtered rollouts don't ship.
         samples: list[TrainingSample] = [sample for r in cohort if not r.is_filtered for sample in r.samples]
 
-        # ``rollouts`` is the whole arrival window (errored + filtered + survivors); ``samples`` is
-        # the shipped cohort's trainable payload. ``rollouts.effective`` / ``rollouts.metrics`` derive
-        # the clean subset + metric views on demand. Reset the window only when the batch actually
-        # ships (non-empty samples) — an empty batch is dropped unlogged by the orchestrator, so keep
-        # accumulating its arrivals (and any overflow) into the next shipped batch's window.
+        # ``rollouts`` is the observation window — every rollout of every group finalized since the
+        # last ship (errored + filtered + survivors) — while ``samples`` is the shipped cohort's
+        # trainable payload. ``rollouts.effective`` / ``rollouts.metrics`` derive the clean subset +
+        # metric views on demand. Reset the window only when the batch actually ships (non-empty
+        # samples) — an empty batch is dropped unlogged by the orchestrator, so keep accumulating its
+        # finalized groups (and any overflow) into the next shipped batch's window.
         rollouts = self.pending_rollouts
         if samples:
             self.pending_rollouts = TrainRollouts()

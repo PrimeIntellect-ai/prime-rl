@@ -15,13 +15,25 @@ from tests.utils import check_reward_goes_up, check_reward_in_range, strip_escap
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
-TIMEOUT = 300  # 5 minutes
+TIMEOUT = 600  # 10 minutes (was 300s — too tight when 3 concurrent orchestrators
+# contend for 2 inference GPUs; verifiers per-call tracing added overhead)
 ORCHESTRATOR_NAMES = ["alpha", "beta", "gamma"]
+
+
+def remove_run_dir(run_dir: Path) -> None:
+    """Delete a run dir, tolerating the shared trainer still flushing its tail
+    (token exports recreate directories mid-rmtree -> 'Directory not empty')."""
+    for _ in range(10):
+        shutil.rmtree(run_dir, ignore_errors=True)
+        if not run_dir.exists():
+            return
+        time.sleep(1)
+    shutil.rmtree(run_dir)
 
 
 def wait_for_file(
     file_path: Path,
-    timeout: int = 300,
+    timeout: int = 600,
     poll_interval: float = 1.0,
 ) -> None:
     """Wait for file to exist.
@@ -46,7 +58,7 @@ def wait_for_log(
     log_file: Path,
     conditions: list[str],
     proc: subprocess.Popen,
-    timeout: int = 300,
+    timeout: int = 600,
     poll_interval: float = 0.1,
     sigterm: bool = False,
     kill: bool = False,
@@ -111,7 +123,7 @@ def start_inference_and_trainer(
                     "run",
                     "inference",
                     "@",
-                    "configs/ci/integration/reverse_text_multi_run/inference.toml",
+                    "configs/ci/integration/reverse-text-multi-run/inference.toml",
                     "--server.port",
                     str(port),
                 ],
@@ -134,7 +146,7 @@ def start_inference_and_trainer(
                 "-m",
                 "prime_rl.trainer.rl.train",
                 "@",
-                "configs/ci/integration/reverse_text_multi_run/trainer.toml",
+                "configs/ci/integration/reverse-text-multi-run/trainer.toml",
                 "--output-dir",
                 output_dir.as_posix(),
                 "--wandb.project",
@@ -200,7 +212,7 @@ def start_orchestrator(
         "run",
         "orchestrator",
         "@",
-        "configs/ci/integration/reverse_text_multi_run/orchestrator.toml",
+        "configs/ci/integration/reverse-text-multi-run/orchestrator.toml",
         "--output-dir",
         run_dir.as_posix(),
         "--max-steps",
@@ -273,7 +285,7 @@ def multi_run_result(
     print(f"Copied alpha checkpoint to {tmp_path / 'alpha_ckpt_step_10'}")
 
     # Remove alpha run directory
-    shutil.rmtree(output_dir / "run_alpha")
+    remove_run_dir(output_dir / "run_alpha")
 
     # ===========================
     # Queue alpha's resume proc
@@ -304,7 +316,7 @@ def multi_run_result(
     shutil.copy(run_dir / "logs" / "orchestrator.log", log_dir / "beta_orchestrator.log")
     shutil.copytree(beta_ckpt_dir, tmp_path / "beta_ckpt_step_20")
     print(f"Copied {beta_ckpt_dir} to {tmp_path / 'beta_ckpt_step_20'}")
-    shutil.rmtree(run_dir)
+    remove_run_dir(run_dir)
 
     # =====================
     # Queue beta's resume
@@ -328,7 +340,7 @@ def multi_run_result(
         timeout=TIMEOUT,
     )
     shutil.copy(output_dir / "run_gamma" / "logs" / "orchestrator.log", log_dir / "gamma_orchestrator.log")
-    shutil.rmtree(output_dir / "run_gamma")
+    remove_run_dir(output_dir / "run_gamma")
 
     # ================================================
     # Wait for alpha_resume and beta_resume to finish

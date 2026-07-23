@@ -16,7 +16,7 @@ from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.inference import vllm_overrides_fragment
-from prime_rl.utils.config import cli
+from prime_rl.utils.config import cli, to_toml_dict
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -57,9 +57,8 @@ def get_physical_gpu_ids() -> list[int]:
 def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    config_dict = config.model_dump(exclude=exclude, exclude_none=True, mode="json")
     with open(output_dir / RL_TOML, "wb") as f:
-        tomli_w.dump(config_dict, f)
+        tomli_w.dump(to_toml_dict(config, exclude=exclude), f)
 
 
 def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
@@ -67,16 +66,16 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with open(output_dir / TRAINER_TOML, "wb") as f:
-        tomli_w.dump(config.trainer.model_dump(exclude_none=True, mode="json"), f)
+        tomli_w.dump(to_toml_dict(config.trainer), f)
 
     with open(output_dir / ORCHESTRATOR_TOML, "wb") as f:
-        tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
+        tomli_w.dump(to_toml_dict(config.orchestrator), f)
 
     if config.inference is not None:
         # Exclude launcher-only fields that are not needed by the vLLM server
         exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
         with open(output_dir / INFERENCE_TOML, "wb") as f:
-            tomli_w.dump(config.inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"), f)
+            tomli_w.dump(to_toml_dict(config.inference, exclude=exclude_inference), f)
 
 
 def rl_local(config: RLConfig):
@@ -418,6 +417,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_infer_replicas=config.deployment.num_infer_replicas,
             num_prefill_nodes=infer_deploy.num_prefill_nodes,
             num_decode_nodes=infer_deploy.num_decode_nodes,
+            prefill_nodes_per_replica=infer_deploy.prefill_nodes_per_replica,
+            decode_nodes_per_replica=infer_deploy.decode_nodes_per_replica,
             num_prefill_replicas=infer_deploy.num_prefill_replicas,
             num_decode_replicas=infer_deploy.num_decode_replicas,
             gpus_per_node=config.deployment.gpus_per_node,
@@ -450,11 +451,11 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             image_offload_dir=image_offload_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes,
-            nodes_per_infer_replica=config.deployment.num_infer_nodes,
+            nodes_per_infer_replica=config.deployment.infer_nodes_per_replica,
             num_infer_replicas=config.deployment.num_infer_replicas,
             gpus_per_node=config.deployment.gpus_per_node,
             router=config.inference.deployment.router if config.inference else VllmRouterConfig(),
-            infer_nodes_per_replica=config.deployment.num_infer_nodes,
+            infer_nodes_per_replica=config.deployment.infer_nodes_per_replica,
             backend_port=config.inference.deployment.backend_port if config.inference else 8100,
             inference_tp=config.inference.parallel.tp if config.inference else 1,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
@@ -505,7 +506,7 @@ def rl_slurm(config: RLConfig):
         train_env_names = [env.resolved_name for env in config.orchestrator.train.env]
         eval_env_names = [env.resolved_name for env in config.orchestrator.eval.env] if config.orchestrator.eval else []
 
-        has_infer = config.deployment.num_infer_nodes > 0
+        has_infer = config.deployment.infer_nodes_per_replica > 0
         log_message = format_log_message(
             log_dir=log_dir,
             trainer=True,

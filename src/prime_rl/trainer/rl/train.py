@@ -86,7 +86,9 @@ def train(config: TrainerConfig):
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
-    monitor = setup_monitor(config.wandb, output_dir=config.output_dir, run_config=config)
+    monitor = setup_monitor(
+        config.wandb, file_config=config.file_monitor, output_dir=config.output_dir, run_config=config
+    )
 
     # Setup heartbeat (only on rank 0)
     heart = None
@@ -152,6 +154,9 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
+    if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
+        raise ValueError("Packed multimodal training requires model support")
+
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Setting up loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
@@ -186,7 +191,12 @@ def train(config: TrainerConfig):
         logger.info("Skipping weight broadcast setup (fake data mode)")
     else:
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast, config.model.lora)
+        weight_broadcast = setup_weight_broadcast(
+            config.output_dir,
+            config.weight_broadcast,
+            parallel_dims,
+            config.model.lora,
+        )
 
     if parallel_dims.cp_enabled:
         cp_group = parallel_dims.world_mesh["cp"].get_group()
@@ -204,8 +214,7 @@ def train(config: TrainerConfig):
             substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
         from prime_rl.utils.cp import (
             assert_cp_style_supports_model,
-            setup_hybrid_cp,
-            setup_nemotron_h_cp,
+            setup_model_cp,
             setup_sparse_mla_cp,
         )
 
@@ -215,8 +224,7 @@ def train(config: TrainerConfig):
         # Linear-attn / Mamba layers are only configured under ulysses; with ring
         # we'd have already raised above.
         if config.model.cp_style == "ulysses":
-            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
-            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -258,6 +266,7 @@ def train(config: TrainerConfig):
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function
+    start_step = progress.step
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -267,6 +276,19 @@ def train(config: TrainerConfig):
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
+
+        # In-memory transfers broadcast the incoming policy (v{progress.step-1}) before waiting
+        # for its rollouts so the trainer and inference pool join the same update lifecycle.
+        if (
+            progress.step == start_step
+            and weight_broadcast is not None
+            and config.weight_broadcast.type in ("nccl", "nixl")
+        ):
+            logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
+            multi_run_manager.wait_for_run(0)
+            for idx in multi_run_manager.used_idxs:
+                multi_run_manager.ready_to_update[idx] = True
+            weight_broadcast.broadcast_weights(model, step=progress.step - 1)
 
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")
@@ -350,32 +372,45 @@ def train(config: TrainerConfig):
             mm_kwargs_raw = micro_batch.get("mm_kwargs")
             mm_kwargs = {k: v.to("cuda") for k, v in mm_kwargs_raw.items()} if mm_kwargs_raw else None
             mm_forward_policy = micro_batch.get("mm_forward_policy")
+            if mm_kwargs is not None and config.model.vlm is None:
+                raise ValueError(
+                    "Received multimodal samples but [model.vlm] is not set. "
+                    "Set [model.vlm] to train on multimodal samples."
+                )
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
                 else None
             )
 
+            seq_lens = micro_batch["seq_lens"].to("cuda")
+
             labels = shift_tensor_left(input_ids)
 
-            # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
-            if cp_enabled and mm_kwargs is not None:
-                raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
+            seq_lens_are_pre_shard = False
 
             if cp_enabled:
-                input_ids, forward_position_ids = setup_cp_params(
-                    input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
-                )
+                # MRoPE batches must merge image embeddings before sharding.
+                defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
+                if not defer_vlm_cp_to_model:
+                    input_ids, position_ids = setup_cp_params(
+                        input_ids,
+                        position_ids,
+                        cp_rank,
+                        cp_size,
+                        cp_group,
+                        seq_lens=seq_lens,
+                        cp_style=config.model.cp_style,
+                    )
+                seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
-                if routed_experts is not None:
+                if routed_experts is not None and not defer_vlm_cp_to_model:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
-            else:
-                forward_position_ids = position_ids
 
             if config.model.lora:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
                 if cp_enabled:
-                    chunk_size = input_ids.shape[1]
+                    chunk_size = labels.shape[1]
                     # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
                     cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
                     adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
@@ -395,12 +430,14 @@ def train(config: TrainerConfig):
                 out = forward(
                     model,
                     input_ids,
-                    forward_position_ids,
+                    position_ids,
                     labels=labels,
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
                     mm_forward_policy=mm_forward_policy,
                     mm_token_type_ids=mm_token_type_ids,
+                    seq_lens=seq_lens,
+                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                     routed_experts=routed_experts,
                 )
 
@@ -557,19 +594,17 @@ def train(config: TrainerConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
-        # sample its next step from it. Skip the final NCCL broadcasts: with a 1-step async barrier
-        # the orchestrator's last step uses the trainer's penultimate ckpt, so they have no receiver
-        # (the inference NCCL group is torn down). Filesystem broadcast still writes them so we can
-        # resume from the broadcast directory.
+        # sample its next step from it. In-memory transports retain their two-step shutdown
+        # window; filesystem broadcast still writes every version for resume.
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
-            nccl_broadcast_unused = (
-                config.weight_broadcast.type == "nccl"
+            broadcast_unused = (
+                config.weight_broadcast.type in ("nccl", "nixl")
                 and config.max_steps is not None
                 and progress.step >= config.max_steps - 1
             )
-            if not nccl_broadcast_unused:
+            if not broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time

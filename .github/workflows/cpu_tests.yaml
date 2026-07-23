@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: false
       - name: Init public submodules
@@ -20,12 +20,12 @@ jobs:
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install dependencies
-        run: uv sync --extra flash-attn --extra envs --locked
+        run: uv sync --extra flash-attn --all-packages --locked
       - name: Run tests
         env:
           USERNAME_CI: CI_RUNNER
@@ -48,9 +48,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -90,14 +90,19 @@ jobs:
           assert find_package_resource("templates") is None, "templates should not be in slim wheel"
           print("slim install OK — configs import with no heavy deps loaded")
           PY
-      - name: Verify a real config (with [slurm]) parses on slim install
+      - name: Verify real SFT config (with [slurm]) parses on slim install
         run: |
           /tmp/slim/bin/python - <<'PY'
           from pydantic_config import cli
-          from prime_rl.configs.rl import RLConfig
-          rl = cli(RLConfig, args=["@", "examples/Intellect-3.1/rl.toml"])
-          assert rl.slurm is not None, "expected [slurm] in example config"
-          # On slim, template_path can't be auto-resolved (heavy wheel absent) — must stay None.
-          assert rl.slurm.template_path is None, f"unexpected template_path on slim: {rl.slurm.template_path}"
+          from prime_rl.configs.sft import SFTConfig
+          # The slim wheel intentionally excludes taskset packages, so validate a real
+          # SFT config here. RL recipes are covered by the full config suite.
+          for cfg_cls, args in [
+              (SFTConfig, ["@", "configs/ci/slim_sft.toml"]),
+          ]:
+              cfg = cli(cfg_cls, args=args)
+              assert cfg.slurm is not None, f"expected [slurm] in {args}"
+              # On slim, template_path can't be auto-resolved (heavy wheel absent) — must stay None.
+              assert cfg.slurm.template_path is None, f"unexpected template_path on slim: {cfg.slurm.template_path}"
           print("slim parse OK")
           PY

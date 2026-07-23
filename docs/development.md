@@ -14,6 +14,7 @@ This page covers workflows for developing on `prime-rl` itself — running the t
   - [Implement the Modeling Code](#implement-the-modeling-code)
   - [Register a Mini Preset](#register-a-mini-preset)
   - [Run the Smoke Test](#run-the-smoke-test)
+- [Adding a Custom VLM Implementation](#adding-a-custom-vlm-implementation)
 
 ## Test Suite
 
@@ -71,7 +72,7 @@ Drop the modeling code under `src/prime_rl/trainer/models/<arch>/` (HF-compatibl
 
 ### Register a Mini Preset
 
-Add an entry to [`scripts/mini_moe.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/mini_moe.py) so the smoke-test workflow can build a ~0.5B test model in your architecture. The preset names the config class, picks small dimensions, and wires up the HF + PrimeRL model classes plus a tokenizer source:
+Add an entry to [`scripts/mini_moe.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/mini_moe.py) so the smoke-test workflow can build a ~0.5B test model in your architecture. The preset names the config class, picks small dimensions, and wires up the HF + prime-rl model classes plus a tokenizer source:
 
 ```python
 ARCH_PRESETS = {
@@ -88,7 +89,7 @@ ARCH_PRESETS = {
 
 ### Run the Smoke Test
 
-Build the mini model. This creates a ~543M-parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) with random weights, copies the tokenizer from the original GLM-4 model, and verifies the HF↔PrimeRL roundtrip is lossless:
+Build the mini model. This creates a ~543M-parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) with random weights, copies the tokenizer from the original GLM-4 model, and verifies the HF↔prime-rl roundtrip is lossless:
 
 ```bash
 uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
@@ -103,10 +104,9 @@ uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --
 Warm up the random-weight mini model with SFT on reverse-text so KL divergence becomes meaningful in the RL phase. Loss drops from ~12 to ~2.5 — the output won't be coherent, but the distribution is non-trivial. A pre-built SFT'd checkpoint lives at [samsja/mini-glm-moe](https://huggingface.co/samsja/mini-glm-moe) if you want to skip this step:
 
 ```bash
-uv run sft @ configs/debug/moe/sft/train.toml \
+uv run sft \
   --model.name ./mini-glm-moe \
   --data.name PrimeIntellect/Reverse-Text-SFT \
-  --data.type null \
   --max_steps 200 \
   --optim.lr 1e-4 \
   --ckpt.weights
@@ -115,7 +115,7 @@ uv run sft @ configs/debug/moe/sft/train.toml \
 Then run the full RL stack on reverse-text:
 
 ```bash
-uv run rl @ configs/ci/integration/reverse_text_moe/start.toml \
+uv run rl @ configs/ci/integration/reverse-text-moe/start.toml \
   --model.name samsja/mini-glm-moe \
   --trainer.model.impl custom \
   --inference.gpu-memory-utilization 0.7 \
@@ -138,3 +138,15 @@ Before merging a new model, you need to ensure the following:
 - The small smoke test passes.
 
 In the PR that adds the new model, you also need to provide a table covering the KL mismatch across 20 steps on `math` environment with `batch_size=64`. All the entries in the table must lower than 0.015. If this is not met, the PR will not be merged (unless reasonable justification is provided). This is to ensure all our models are consistent and their implementations match the implementations in the inference framework.
+
+## Adding a Custom VLM Implementation
+
+VLM training (any run with `[model.vlm]` set, SFT or RL) is custom-implementation-only: `get_model` rejects models without a custom PrimeRL VLM class at load time. To make a new VLM family trainable, extend a custom text model with a composite VLM body — the Qwen3.5 dense (`models/qwen3_5/`) and MoE (`models/qwen3_5_moe/`) implementations are the reference. The pieces, in dependency order:
+
+1. **Custom text model first.** The VLM body wraps a custom `*ForCausalLM` (see [Adding a New Model](#adding-a-new-model)), so the text side — including its state-dict conversion and KL-mismatch table — comes first.
+2. **Composite VLM body.** A `*VLMModel` that holds the HF vision encoder and the custom text model, with a `prepare_inputs_embeds_and_position_ids` step: embed tokens, run the vision encoder, scatter image embeddings over placeholder tokens, and build MRoPE 3D positions from `mm_token_type_ids` (the renderer owns the token→modality mapping). The unified `*ForCausalLM` dispatches on the config: composite config → VLM path, text config → text path.
+3. **Always run the vision encoder.** Text-only micro-batches must feed the encoder dummy pixels and graft the result into the graph with zero contribution (`inputs_embeds + image_embeds.sum() * 0.0`) so FSDP/EP collectives stay symmetric across ranks when the encoder is trainable.
+4. **Packed-boundary consumption.** Samples pack into shared rows with per-document boundaries in `seq_lens`; every custom model's `forward()` declares the typed `seq_lens`/`seq_lens_are_pre_shard` parameters (the trainer passes them unconditionally) and must honor the boundaries — varlen flash `cu_seqlens`, linear-attention state resets per document, and a loud rejection on attention paths that can't (see the packed-batch guard in any modeling file). Set `supports_packed_multimodal_training` on the VLM model once packed rows are handled — RL fails loudly at startup for VLM models without it.
+5. **Registration.** Register the composite `model_type` in `_CUSTOM_VLM_MAPPING` (`models/__init__.py`) so `get_model` dispatches to the custom class, and describe the family in `VLM_REGISTRY` (`utils/vlm.py`).
+6. **Context parallelism (optional).** CP-capable VLMs implement `set_context_parallel_attributes` and shard embeds/positions inside the model after the vision merge; the trainers defer sharding to the model for MRoPE batches under ulysses.
+7. **Validation.** Same bar as text models: the KL-mismatch table for the text path, plus an SFT run and an RL run on a real multimodal dataset (the `color-codeword` environment is the reference task).
