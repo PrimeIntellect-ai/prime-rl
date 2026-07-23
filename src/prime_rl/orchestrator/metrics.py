@@ -142,8 +142,17 @@ class CustomMetrics(StatGroup):
 
     def stats(self) -> dict[str, Stat]:
         names = sorted({name for r in self.rollouts for name in getattr(r, self.attr)})
+        # Rewards are ``vf.Reward`` (raw score + weight); report the raw score — the
+        # weighted headline is already the trace-level ``reward``.
         return {
-            name: Stat([getattr(r, self.attr)[name] for r in self.rollouts if name in getattr(r, self.attr)])
+            name: Stat(
+                [
+                    float(getattr(value, "score", value))
+                    for r in self.rollouts
+                    if name in getattr(r, self.attr)
+                    for value in [getattr(r, self.attr)[name]]
+                ]
+            )
             for name in names
         }
 
