@@ -99,6 +99,7 @@ def test_forward_policy_can_require_mm_token_type_ids():
             model,
             input_ids,
             position_ids,
+            seq_lens=torch.tensor([input_ids.shape[1]]),
             mm_kwargs={"pixel_values": torch.ones(2, 3)},
             mm_forward_policy=ForwardPolicy(requires_mm_token_type_ids=True),
         )

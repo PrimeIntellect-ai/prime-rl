@@ -455,18 +455,21 @@ def test_prepare_sample_truncates_raw_mm_refs_at_image_boundary():
     assert micro_batch.mm_refs is None
 
 
-def test_prepare_batch_keeps_raw_mm_sample_unpacked():
+def test_prepare_batch_keeps_raw_mm_samples_unpacked():
     """Raw-ref multimodal samples never pack — not with text, not with each other."""
-    mm_sample = TrainingSample(
-        token_ids=[10, 11, 12],
-        mask=[False, True, True],
-        logprobs=[0.0, -0.1, -0.2],
-        temperatures=[1.0, 1.0, 1.0],
-        advantages=[0.0, 1.0, 1.0],
-        env_name="mm-env",
-        mm_token_type_ids=[0, 1, 0],
-        mm_refs=MMRefs(images=[_image_ref("file:///tmp/image-0.png", offset=1, length=1)]),
-    )
+
+    def mm_sample(uri: str) -> TrainingSample:
+        return TrainingSample(
+            token_ids=[10, 11, 12],
+            mask=[False, True, True],
+            logprobs=[0.0, -0.1, -0.2],
+            temperatures=[1.0, 1.0, 1.0],
+            advantages=[0.0, 1.0, 1.0],
+            env_name="mm-env",
+            mm_token_type_ids=[0, 1, 0],
+            mm_refs=MMRefs(images=[_image_ref(uri, offset=1, length=1)]),
+        )
+
     text_sample = TrainingSample(
         token_ids=[20, 21],
         mask=[False, True],
@@ -477,20 +480,21 @@ def test_prepare_batch_keeps_raw_mm_sample_unpacked():
     )
 
     batches_per_gpu = prepare_batch(
-        rollouts=[mm_sample, text_sample],
-        seq_len=8,
+        rollouts=[mm_sample("file:///tmp/image-0.png"), mm_sample("file:///tmp/image-1.png"), text_sample],
+        seq_len=16,
         num_train_workers=2,
-        idxs=[0, 0],
+        idxs=[0, 0, 0],
         num_loras=1,
         bin_cost=build_bin_cost(None),
     )
 
     real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
-    assert len(real_batches) == 2
+    assert len(real_batches) == 3
     mm_batches = [batch for batch in real_batches if batch.mm_refs is not None]
-    assert len(mm_batches) == 1
-    assert mm_batches[0].env_names == ["mm-env"] * 3
-    assert mm_batches[0].mm_refs == mm_sample.mm_refs
+    assert len(mm_batches) == 2
+    for batch in mm_batches:
+        assert batch.env_names == ["mm-env"] * 3
+        assert len(batch.mm_refs.images) == 1
 
 
 def test_prepare_sample_none_routed_experts():

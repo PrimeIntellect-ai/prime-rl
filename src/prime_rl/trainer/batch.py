@@ -68,6 +68,10 @@ def multimodal_sample_error(sample: TrainingSample) -> str | None:
             "mm_token_type_ids length must match token_ids length "
             f"({len(mm_token_type_ids)} != {len(sample.token_ids)})"
         )
+    if sample.mm_refs is not None and mm_token_type_ids is None:
+        # The orchestrator always stamps mm_token_type_ids alongside mm_refs; the
+        # trainer's image-boundary truncation and forward policies rely on them.
+        return "raw multimodal samples require mm_token_type_ids"
     if sample.mm_kwargs is not None and "image_grid_thw" in sample.mm_kwargs and mm_token_type_ids is None:
         return "image_grid_thw multimodal samples require mm_token_type_ids"
     return None
@@ -191,7 +195,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
     """Check if a sample contains multimodal data (images)."""
-    return sample.mm_refs is not None
+    return sample.mm_refs is not None or sample.mm_kwargs is not None
 
 
 @dataclass

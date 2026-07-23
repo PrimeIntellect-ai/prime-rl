@@ -300,25 +300,32 @@ class _MaterializedRefCache:
         if (inflight := self._inflight.get(key)) is not None:
             self.hits += 1
             self._maybe_log()
-            return await inflight
+            return await asyncio.shield(inflight)
         self.misses += 1
         self._maybe_log()
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._inflight[key] = future
-        try:
-            item = await asyncio.to_thread(materialize_fn)
-        except BaseException as exc:
-            # Never cache a failure: the exception propagates to every awaiter and
-            # the next request for this key retries cleanly.
-            future.set_exception(exc)
-            # A never-awaited errored future logs a spurious warning at GC.
-            future.exception()
-            del self._inflight[key]
-            raise
-        future.set_result(item)
-        del self._inflight[key]
-        self._insert(key, item)
-        return item
+
+        async def _materialize_and_resolve() -> None:
+            try:
+                item = await asyncio.to_thread(materialize_fn)
+            except BaseException as exc:
+                # Never cache a failure: the exception propagates to every awaiter
+                # and the next request for this key retries cleanly.
+                future.set_exception(exc)
+                # A never-awaited errored future logs a spurious warning at GC.
+                future.exception()
+            else:
+                future.set_result(item)
+                self._insert(key, item)
+            finally:
+                del self._inflight[key]
+
+        # The work runs as its own task and awaiters shield the shared future:
+        # a cancelled request (client disconnect) must neither poison the future
+        # for deduped awaiters nor cancel it out from under them.
+        asyncio.get_running_loop().create_task(_materialize_and_resolve())
+        return await asyncio.shield(future)
 
     def _insert(self, key: _MaterializeKey, item: Any) -> None:
         nbytes = MultiModalCache.get_item_size(item)

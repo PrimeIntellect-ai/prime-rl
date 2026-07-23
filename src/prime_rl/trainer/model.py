@@ -1396,7 +1396,10 @@ def forward(
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        policy = mm_forward_policy or ForwardPolicy()
+        # Callers without an adapter policy (SFT) fall back to key presence:
+        # models whose kwargs carry image_grid_thw (Qwen-VL family) build
+        # their own MRoPE position ids and must not receive packed 1D ones.
+        policy = mm_forward_policy or ForwardPolicy(pass_position_ids_with_mm="image_grid_thw" not in mm_kwargs)
         if policy.requires_mm_token_type_ids and mm_token_type_ids is None:
             raise ValueError("Multimodal forward policy requires mm_token_type_ids")
         if policy.pass_position_ids_with_mm:
