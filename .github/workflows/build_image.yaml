@@ -36,8 +36,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  authorize:
+    name: Authorize dispatcher
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require maintain or admin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.triggering_actor }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Manual dispatches are restricted to repo members with maintain
+          # or admin. Automated dispatches from in-repo workflows (devx_tag
+          # dev-image builds, the release build) run as github-actions[bot]
+          # via GITHUB_TOKEN — allow those through.
+          if [ "$ACTOR" = "github-actions[bot]" ]; then
+            echo "Dispatcher is repo automation ($ACTOR); allowed."
+            exit 0
+          fi
+          role=$(gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.role_name' 2>/dev/null || true)
+          echo "Dispatcher $ACTOR has repo role: ${role:-<none>}"
+          case "$role" in
+            admin|maintain)
+              echo "Authorized." ;;
+            *)
+              echo "::error::$ACTOR (role: ${role:-none}) is not allowed to trigger image builds; requires maintain or admin." >&2
+              exit 1 ;;
+          esac
+
   prepare:
     name: Prepare build
+    needs: authorize
     runs-on: ubuntu-latest
     permissions:
       contents: read
