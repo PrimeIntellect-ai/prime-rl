@@ -5142,6 +5142,7 @@ dependencies = [
     { name = "prime" },
     { name = "prime-pydantic-config" },
     { name = "prime-rl-configs" },
+    { name = "prime-rl-kernels" },
     { name = "pyarrow" },
     { name = "pybase64" },
     { name = "pyzmq" },
@@ -5258,6 +5259,7 @@ requires-dist = [
     { name = "prime-rl", extras = ["flash-attn-cute"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
+    { name = "prime-rl-kernels", editable = "packages/prime-rl-kernels" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
     { name = "pyzmq", specifier = ">=27.1.0" },
@@ -5321,6 +5323,21 @@ requires-dist = [
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomli-w", specifier = ">=1.2.0" },
     { name = "verifiers", specifier = ">=0.2.1" },
+]
+
+[[package]]
+name = "prime-rl-kernels"
+version = "0.1.0"
+source = { editable = "packages/prime-rl-kernels" }
+dependencies = [
+    { name = "torch" },
+    { name = "triton" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "torch", specifier = ">=2.11.0" },
+    { name = "triton", specifier = ">=3.6.0" },
 ]
 
 [[package]]
