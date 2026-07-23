@@ -75,21 +75,41 @@ jobs:
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
-                  # Query GHCR directly for tags whose manifests have actually
-                  # been pushed. devx_tag.yaml creates a `v*.dev*` git tag on
-                  # every main commit and dispatches build_image.yaml with that
-                  # tag, but the build takes time and can fail — the newest git
-                  # tag may not yet exist as an image. Ask GHCR, not git.
-                  tag=$(gh api --paginate \
+                  # The GHCR versions API can list a tag before its manifest is
+                  # actually pullable (build in-flight, or manifest step didn't
+                  # finish). So: pull the top N candidate tags, then verify each
+                  # with a manifest HEAD via the anonymous registry token flow;
+                  # take the newest one that resolves.
+                  candidates=$(gh api --paginate \
                       "/orgs/primeintellect-ai/packages/container/prime-rl/versions" \
                       --jq '.[].metadata.container.tags[]' \
                       | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' \
-                      | sort -Vr | head -n1)
-                  if [ -z "$tag" ]; then
-                      echo "No v*.dev* tag published on GHCR." >&2
+                      | sort -Vru | head -n 10)
+                  if [ -z "$candidates" ]; then
+                      echo "No v*.dev* tag listed on GHCR." >&2
                       exit 1
                   fi
-                  echo "Latest prime-rl image tag on GHCR: $tag"
+                  registry_token=$(curl -fsSL \
+                      "https://ghcr.io/token?scope=repository:primeintellect-ai/prime-rl:pull" \
+                      | jq -r .token)
+                  tag=""
+                  for cand in $candidates; do
+                      code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                          -H "Authorization: Bearer $registry_token" \
+                          -H 'Accept: application/vnd.oci.image.index.v1+json' \
+                          -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+                          "https://ghcr.io/v2/primeintellect-ai/prime-rl/manifests/$cand")
+                      if [ "$code" = "200" ]; then
+                          tag="$cand"
+                          break
+                      fi
+                      echo "Skip $cand — manifest HEAD returned $code"
+                  done
+                  if [ -z "$tag" ]; then
+                      echo "None of the top v*.dev* tags have a published manifest." >&2
+                      exit 1
+                  fi
+                  echo "Latest published prime-rl image tag on GHCR: $tag"
                   echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
             - name: Install uv
@@ -108,12 +128,23 @@ jobs:
               run: |
                   echo "Dispatching config: ${{ matrix.config_file }}"
                   echo "Image tag:          ${{ steps.image.outputs.tag }}"
+                  # Tag the RFTRun so it's identifiable on the platform as
+                  # coming from this workflow. Injected here rather than in
+                  # the checked-in toml because a top-level `name` field
+                  # breaks tests/unit/test_configs.py::test_load_configs
+                  # (RLConfig has no top-level name).
+                  config_base=$(basename "${{ matrix.config_file }}" .toml)
+                  run_name="nightly-${config_base}-$(date -u +%Y-%m-%d)-${{ github.run_id }}"
+                  dispatch_cfg=$(mktemp --suffix=.toml)
+                  printf 'name = "%s"\n\n' "$run_name" > "$dispatch_cfg"
+                  cat "${{ matrix.config_file }}" >> "$dispatch_cfg"
+                  echo "Dispatched run name: $run_name"
                   # Forward WANDB_API_KEY / HF_TOKEN into the hosted payload:
                   # the full-FT dispatch path (`prime train`) only picks up
                   # secrets that were explicitly collected via `-e` / `--env-file`,
                   # not ambient env, so the workflow env: block alone is not
                   # enough to reach the hosted trainer/orchestrator pods.
-                  prime train "${{ matrix.config_file }}" \
+                  prime train "$dispatch_cfg" \
                       --image-tag "${{ steps.image.outputs.tag }}" \
                       -e WANDB_API_KEY \
                       -e HF_TOKEN \
