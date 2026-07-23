@@ -1,10 +1,10 @@
 type = "full_finetune"
-name = "queue-e2e-test"
+name = "reverse-text"
 max_steps = 20
 seq_len = 2048
 
 [model]
-name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [wandb]
 project = "reverse-text"
@@ -19,7 +19,7 @@ max_completion_tokens = 128
 
 [[orchestrator.train.env]]
 id = "jannikst/reverse-text"
-name = "revtext"
+name = "reverse-text"
 
 [trainer.optim]
 lr = 3e-6
@@ -29,4 +29,4 @@ lr = 3e-6
 [inference]
 
 [orchestrator.renderer]
-name = "qwen3"
+name = "prime-qwen3"

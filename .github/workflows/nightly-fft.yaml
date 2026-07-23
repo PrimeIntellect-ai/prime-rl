@@ -5,7 +5,7 @@ on:
     workflow_dispatch:
         inputs:
             config_file:
-                description: "Full-FT config to dispatch (e.g. configs/ci/nightly-fft/queue-e2e-test.toml). Leave empty to run all."
+                description: "Full-FT config to dispatch (e.g. configs/ci/nightly-fft/reverse-text.toml). Leave empty to run all."
                 required: false
                 default: ""
 
