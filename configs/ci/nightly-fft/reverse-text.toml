@@ -3,6 +3,10 @@ name = "reverse-text"
 max_steps = 20
 seq_len = 2048
 
+[deployment]
+num_train_gpus = 2
+num_infer_gpus = 6
+
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
