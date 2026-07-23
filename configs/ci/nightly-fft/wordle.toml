@@ -1,36 +1,37 @@
 type = "full_finetune"
-name = "reverse-text"
-max_steps = 20
-seq_len = 2048
+name = "wordle"
+max_steps = 200
+seq_len = 8192
 
 [deployment]
 num_train_gpus = 2
 num_infer_gpus = 6
 
-[model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
-
 [wandb]
-project = "reverse-text"
-name = "reverse-text"
-
-[orchestrator]
-batch_size = 128
-group_size = 16
-
-[orchestrator.train.sampling]
-max_completion_tokens = 128
-
-[[orchestrator.train.env]]
-id = "jannikst/reverse-text"
-name = "reverse-text"
-
-[trainer.optim]
-lr = 3e-6
+project = "wordle"
+name = "wordle"
 
 [ckpt]
 
-[inference]
+[model]
+name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
+
+[orchestrator]
+batch_size = 512
+group_size = 16
+
+[[orchestrator.train.env]]
+name = "wordle"
+env.taskset = { id = "wordle-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.train.sampling]
+max_completion_tokens = 1024
+
+[trainer]
+
+[inference.parallel]
+dp = 6
 
 [orchestrator.renderer]
 name = "prime-qwen3"
