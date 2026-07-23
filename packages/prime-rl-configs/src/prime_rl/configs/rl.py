@@ -20,6 +20,7 @@ from prime_rl.configs.orchestrator import (
 )
 from prime_rl.configs.shared import (
     EnvVars,
+    FileMonitorConfig,
     SlurmConfig,
     VLMConfig,
 )
@@ -244,6 +245,9 @@ class RLConfig(BaseConfig):
 
     wandb: SharedWandbConfig | None = None
     """Shared W&B config. If None, falls back to the sub-config W&B settings."""
+
+    file_monitor: FileMonitorConfig | None = None
+    """Shared local JSONL metric sink. If set, enables ``<output_dir>/metrics.jsonl`` on both trainer and orchestrator. If None, falls back to the sub-config settings."""
 
     model: SharedModelConfig | None = None
     """Shared model config. If None, falls back to the sub-config model settings."""

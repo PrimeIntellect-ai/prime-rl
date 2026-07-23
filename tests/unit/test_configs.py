@@ -268,6 +268,24 @@ def test_orchestrator_vlm_requires_renderer():
     assert config.renderer is not None
 
 
+def test_trainer_rejects_vlm_cp_with_ring():
+    config = {
+        "model": {
+            "cp": 2,
+            "impl": "custom",
+            "optimization_dtype": "bfloat16",
+            "reduce_dtype": "bfloat16",
+            "vlm": {
+                "vision_encoder_attr": "model.visual",
+                "language_model_attr": "model.language_model",
+            },
+        },
+    }
+
+    with pytest.raises(ValidationError, match="cp_style='ulysses'"):
+        TrainerConfig.model_validate(config)
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})

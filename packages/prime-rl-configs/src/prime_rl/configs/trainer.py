@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 from prime_rl.configs.shared import (
     BaseModelConfig,
     EnvVars,
+    FileMonitorConfig,
     FileSystemTransportConfig,
     HeartbeatConfig,
     MetricsServerConfig,
@@ -239,6 +240,12 @@ class ModelConfig(BaseModelConfig):
     def vlm_only_with_custom_impl(self):
         if self.vlm is not None and self.impl != "custom":
             raise ValueError("VLM training requires model.impl='custom'")
+        return self
+
+    @model_validator(mode="after")
+    def vlm_cp_requires_ulysses(self):
+        if self.vlm is not None and self.cp > 1 and self.cp_style != "ulysses":
+            raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
         return self
 
     @model_validator(mode="after")
@@ -584,6 +591,9 @@ class TrainerConfig(BaseConfig):
     log: TrainerLogConfig = TrainerLogConfig()
 
     wandb: WandbConfig | None = None
+
+    file_monitor: FileMonitorConfig | None = None
+    """Local JSONL metric sink. If set, trainer metrics are appended to ``<output_dir>/metrics.jsonl``."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""

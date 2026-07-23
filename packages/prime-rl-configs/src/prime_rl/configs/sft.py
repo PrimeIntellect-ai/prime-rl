@@ -8,6 +8,7 @@ from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.shared import (
     EnvVars,
+    FileMonitorConfig,
     HeartbeatConfig,
     SlurmConfig,
     TrainerLogConfig,
@@ -191,6 +192,9 @@ class SFTConfig(BaseConfig):
 
     wandb: WandbConfig | None = None
 
+    file_monitor: FileMonitorConfig | None = None
+    """Local JSONL metric sink. If set, metrics are appended to ``<output_dir>/metrics.jsonl``."""
+
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — checkpoints and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
 
@@ -318,8 +322,6 @@ class SFTConfig(BaseConfig):
             raise ValueError(
                 "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
-        if self.model.cp > 1 and self.model.cp_style != "ulysses":
-            raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
         if self.data.micro_batch_size != 1:
             raise ValueError("VLM SFT requires data.micro_batch_size = 1.")
         if self.val is not None and self.val.data.micro_batch_size != 1:
