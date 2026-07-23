@@ -127,6 +127,12 @@ def test_parse_workers_rejects_unknown_protocol_version(protocol_version):
         _parse_dynamo_workers(discovery, MODEL)
 
 
+@pytest.mark.parametrize("discovery", [None, [], "not-an-object", 1, True])
+def test_parse_workers_rejects_non_object_snapshot(discovery):
+    with pytest.raises(ValueError, match="workers list"):
+        _parse_dynamo_workers(discovery, MODEL)
+
+
 def test_rank_offsets_support_heterogeneous_managed_world_sizes():
     assert _rank_offsets([1, 2], inference_world_size=3) == [0, 1]
     assert _rank_offsets([2, 2, 2, 2], inference_world_size=8) == [0, 2, 4, 6]

@@ -155,6 +155,8 @@ class NCCLWeightUpdateWorker(Worker):
 
     def update_weights_from_path(self, weight_dir: str) -> None:
         """Update weights with the nccl communicator."""
+        global_inference_rank = self._prime_rl_global_inference_rank
+        inference_world_size = self._prime_rl_inference_world_size
         model_runner = self.model_runner
         if hasattr(model_runner.model, "runnable"):
             model = model_runner.model.runnable
@@ -162,22 +164,36 @@ class NCCLWeightUpdateWorker(Worker):
             model = model_runner.model
         assert isinstance(model, Module)
 
+        received_tensors = 0
+
+        def track_received_tensors(
+            state_iter: Generator[tuple[str, torch.Tensor], None, None],
+        ) -> Generator[tuple[str, torch.Tensor], None, None]:
+            nonlocal received_tensors
+            for item in state_iter:
+                received_tensors += 1
+                yield item
+
         if self.quantize_in_weight_transfer:
-            state_iter = self.nccl_broadcast_receiver.receive_state_dict()
+            state_iter = track_received_tensors(self.nccl_broadcast_receiver.receive_state_dict())
             load_weights_kernel(model, state_iter)
-            update_mla_absorbed_weights(model)
         else:
             for state_iter in self.nccl_broadcast_receiver.receive_state_dicts():
                 load_weights_checkpoint_layerwise(
                     model,
-                    state_iter,
+                    track_received_tensors(state_iter),
                     self.model_runner.model_config,
                     self.vllm_config,
                 )
 
+        if received_tensors == 0:
+            raise RuntimeError("NCCL weight update received no weight tensors")
+        if self.quantize_in_weight_transfer:
+            update_mla_absorbed_weights(model)
+
         logger.info(
             "Completed NCCL weight update "
-            f"[global_rank={self._prime_rl_global_inference_rank} "
-            f"inference_world_size={self._prime_rl_inference_world_size} "
+            f"[global_rank={global_inference_rank} "
+            f"inference_world_size={inference_world_size} "
             f"weight_dir={weight_dir}]"
         )

@@ -281,6 +281,38 @@ def test_default_nccl_world_size_does_not_bypass_local_gpu_guard():
         )
 
 
+def test_explicit_world_size_does_not_bypass_local_inference_gpu_guard():
+    with pytest.raises(ValueError, match="NCCL weight broadcast requires at least 2"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {},
+                "inference": {},
+                "deployment": {
+                    "type": "single_node",
+                    "num_train_gpus": 1,
+                    "num_infer_gpus": 0,
+                },
+                "weight_broadcast": {
+                    "type": "nccl",
+                    "inference_world_size": 1,
+                },
+            }
+        )
+
+
+def test_absent_local_inference_does_not_count_configured_inference_gpus():
+    with pytest.raises(ValueError, match="NCCL weight broadcast requires at least 2"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {},
+                "inference": None,
+                "weight_broadcast": {"type": "nccl"},
+            }
+        )
+
+
 def test_glm52_dynamo_r2e_example_matches_external_inference_contract():
     example = Path("examples/dynamo/glm52_fp8_r2e")
     with (example / "orchestrator.toml").open("rb") as stream:

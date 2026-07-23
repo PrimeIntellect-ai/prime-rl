@@ -112,10 +112,12 @@ def _validate_dynamo_snapshot(workers: tuple[DiscoveredDynamoWorker, ...]) -> No
 
 
 def _parse_dynamo_workers(payload: object, model_name: str) -> tuple[DiscoveredDynamoWorker, ...]:
+    if not isinstance(payload, dict):
+        raise ValueError("Dynamo RL discovery response must contain a workers list")
     try:
         snapshot = DynamoDiscoverySnapshot.model_validate(payload)
     except ValidationError as error:
-        fields = {item["loc"][0] for item in error.errors()}
+        fields = {item["loc"][0] for item in error.errors() if item["loc"]}
         if "protocol_version" in fields:
             raise ValueError(
                 "Dynamo RL discovery returned an unsupported protocol version; "
