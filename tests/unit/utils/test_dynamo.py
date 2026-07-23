@@ -41,6 +41,7 @@ def pool_with_clients(*, admin, system=None, frontend=None):
     pool._admin_clients = [admin]
     pool._lora_update_clients = [] if system is None else [system]
     pool._frontend_model_clients = [] if frontend is None else [frontend]
+    pool._nccl_initialized = False
     pool._skip_model_check = False
     pool._wait_for_ready_timeout = 1
     pool._readiness_deadline = None
@@ -200,6 +201,19 @@ def test_discovery_retries_until_expected_world_size_is_complete():
     assert [item.component for item in pool.workers] == ["backend", "prefill"]
 
 
+def test_discovery_requires_expected_world_size():
+    with pytest.raises(ValueError, match="expected_inference_world_size"):
+        asyncio.run(
+            DynamoInferencePool.from_config(
+                ClientConfig(
+                    base_url=["http://frontend:8000/v1"],
+                    dynamo_discovery_url="http://frontend:8001",
+                ),
+                model_name=MODEL,
+            )
+        )
+
+
 def test_discovered_control_clients_do_not_receive_frontend_credentials(monkeypatch):
     monkeypatch.setenv("PRIME_TEST_API_KEY", "secret")
     config = ClientConfig(
@@ -291,6 +305,7 @@ def test_full_weight_update_uses_native_collective_rpc(tmp_path):
     admin = AsyncMock()
     admin.post.return_value = response({"status": "ok"})
     pool = pool_with_clients(admin=admin)
+    pool._nccl_initialized = True
 
     asyncio.run(pool.update_weights(tmp_path, step=1))
 
@@ -303,6 +318,16 @@ def test_full_weight_update_uses_native_collective_rpc(tmp_path):
         "method": "update_weights_from_path",
         "args": [str(tmp_path)],
     }
+
+
+def test_full_weight_update_requires_initialized_nccl(tmp_path):
+    admin = AsyncMock()
+    pool = pool_with_clients(admin=admin)
+
+    with pytest.raises(RuntimeError, match="init_nccl_broadcast"):
+        asyncio.run(pool.update_weights(tmp_path, step=1))
+
+    admin.post.assert_not_awaited()
 
 
 def test_stop_closes_every_client_owned_by_dynamo_pool():

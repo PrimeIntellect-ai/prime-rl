@@ -302,8 +302,7 @@ class RLConfig(BaseConfig):
         )
         if local_world_size < 2 and not has_external_inference:
             raise ValueError(
-                "NCCL weight broadcast requires at least 2 local GPUs or an explicit external "
-                "inference_world_size."
+                "NCCL weight broadcast requires at least 2 local GPUs or an explicit external inference_world_size."
             )
 
     @model_validator(mode="after")
@@ -378,6 +377,15 @@ class RLConfig(BaseConfig):
             raise ValueError(
                 "LoRA training is not yet supported with NCCL weight broadcast. "
                 "Set weight_broadcast.type = 'filesystem'."
+            )
+        if (
+            self.orchestrator.model.client.is_dynamo
+            and self.weight_broadcast.type == "filesystem"
+            and self.trainer.model.lora is None
+        ):
+            raise ValueError(
+                "Dynamo full-weight training requires NCCL weight broadcast; "
+                "filesystem broadcast is supported only for LoRA."
             )
         if self.weight_broadcast.type == "nccl":
             inference_world_size = (

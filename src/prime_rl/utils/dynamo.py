@@ -229,6 +229,7 @@ class DynamoInferencePool(StaticInferencePool):
         frontend_config = client_config.model_copy(update={"admin_base_url": None})
         self._frontend_model_clients = setup_admin_clients(frontend_config)
         self._readiness_deadline: float | None = None
+        self._nccl_initialized = False
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         effective_timeout = self._wait_for_ready_timeout if timeout is None else timeout
@@ -270,6 +271,7 @@ class DynamoInferencePool(StaticInferencePool):
             quantize_in_weight_transfer=quantize_in_weight_transfer,
             use_native_collective_rpc=True,
         )
+        self._nccl_initialized = True
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         if lora_name is not None and weight_dir is not None:
@@ -288,6 +290,11 @@ class DynamoInferencePool(StaticInferencePool):
             finally:
                 await _resume_engines(self._admin_clients)
             return
+        if not self._nccl_initialized:
+            raise RuntimeError(
+                "Dynamo full-weight updates require init_nccl_broadcast; "
+                "use NCCL weight broadcast, or filesystem broadcast with LoRA"
+            )
         await update_weights(
             self._admin_clients,
             weight_dir,
@@ -318,6 +325,8 @@ class DynamoInferencePool(StaticInferencePool):
     ) -> DynamoInferencePool:
         if client_config.dynamo_discovery_url is None:
             raise ValueError("Dynamo inference pool requires dynamo_discovery_url")
+        if expected_inference_world_size is None:
+            raise ValueError("Dynamo inference pool requires expected_inference_world_size")
         discovery_url = client_config.dynamo_discovery_url.rstrip("/").removesuffix("/v1")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + client_config.wait_for_ready_timeout
