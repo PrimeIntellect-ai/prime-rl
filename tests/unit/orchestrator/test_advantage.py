@@ -183,6 +183,11 @@ def test_max_rl_mean_normalized():
     assert _max_rl(_make_group(rewards=[1.0, 1.0])) == pytest.approx([0.0, 0.0])
 
 
+def test_max_rl_singleton_uses_reward_as_reinforce_advantage():
+    assert _max_rl(_make_group(rewards=[1.0])) == pytest.approx([1.0])
+    assert _max_rl(_make_group(rewards=[0.0])) == pytest.approx([0.0])
+
+
 # --------------------------------------------------------------------------
 # GRPO linear length penalty: pass_rate-scaled penalty before the baseline.
 # --------------------------------------------------------------------------
