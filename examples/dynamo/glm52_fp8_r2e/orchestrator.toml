@@ -39,12 +39,8 @@ max_output_tokens = 16384
 max_total_tokens = 32768
 timeout = { setup = 600, rollout = 1800, finalize = 300, scoring = 600 }
 pool = { type = "static", num_workers = 2 }
-taskset = { id = "r2e-gym-v1", dataset_name = "R2E-Gym/R2E-Gym-Subset", split = "train" }
+taskset = { id = "r2e-gym-v1" }
 harness = { id = "default", edit = true, runtime = { type = "prime", labels = ["glm52-dynamo"], cpu = 4, creates_per_min = 2 } }
-
-[[pre_batch_filters]]
-type = "zero_advantage"
-enforce = false
 
 [[post_batch_filters]]
 type = "zero_advantage"

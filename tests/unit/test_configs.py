@@ -281,7 +281,7 @@ def test_default_nccl_world_size_does_not_bypass_local_gpu_guard():
         )
 
 
-def test_glm52_dynamo_r2e_example_includes_post_update_rollout():
+def test_glm52_dynamo_r2e_example_matches_external_inference_contract():
     example = Path("examples/dynamo/glm52_fp8_r2e")
     with (example / "orchestrator.toml").open("rb") as stream:
         orchestrator = tomllib.load(stream)
@@ -290,6 +290,26 @@ def test_glm52_dynamo_r2e_example_includes_post_update_rollout():
 
     assert orchestrator["max_steps"] == 3
     assert trainer["max_steps"] == 3
+    assert orchestrator["model"]["name"] == trainer["model"]["name"] == "zai-org/GLM-5.2-FP8"
+
+    client = orchestrator["model"]["client"]
+    assert client["base_url"] == ["http://dynamo-frontend:8000/v1"]
+    assert client["dynamo_discovery_url"] == "http://dynamo-frontend:8001"
+    assert client["extra_headers_from_state"] == {
+        "X-Session-ID": "trajectory_id",
+        "X-Dynamo-Session-ID": "trajectory_id",
+    }
+
+    train_env = orchestrator["train"]["env"]
+    assert len(train_env) == 1
+    assert train_env[0]["taskset"] == {"id": "r2e-gym-v1"}
+    assert "pre_batch_filters" not in orchestrator
+    assert orchestrator["post_batch_filters"] == [{"type": "zero_advantage", "enforce": False}]
+
+    assert orchestrator["weight_broadcast"]["type"] == "nccl"
+    assert trainer["weight_broadcast"]["type"] == "nccl"
+    assert orchestrator["weight_broadcast"]["inference_world_size"] == 16
+    assert trainer["weight_broadcast"]["inference_world_size"] == 16
 
 
 def test_two_gpu_dynamo_qwen30b_example_uses_bfloat16_training():

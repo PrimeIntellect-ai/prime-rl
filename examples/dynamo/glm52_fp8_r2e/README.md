@@ -11,7 +11,7 @@ Dynamo DGD and the multi-node trainer have independent lifecycles. It does not
 add a Prime inference configuration or require Prime's launcher to manage the
 DGD.
 
-## Validated topology
+## Reference topology
 
 | Component | Shape | GPUs |
 |---|---|---:|
@@ -19,8 +19,10 @@ DGD.
 | Dynamo decode | 2 nodes, DP4 x TP2 x PP1 x EP8 | 8 |
 | Prime trainer | 4 nodes, FSDP16 x CP4 x EP8 | 16 |
 
-The two discovery records must report `prefill` and `backend` components with
-a combined `world_size` of 16. If the DGD topology changes, update
+The checked-in configuration targets this topology; it is not a claim that
+every cluster can use these parallelism dimensions unchanged. The two
+discovery records must report `prefill` and `backend` components with a
+combined `world_size` of 16. If the DGD topology changes, update
 `weight_broadcast.inference_world_size` in both TOML files to the atomic sum
 returned by the same `/v1/rl/workers` response.
 
@@ -29,8 +31,23 @@ The inference engines must load
 admin routes, and run the version-matched `vllm-rs` and
 `dynamo-vllm-sidecar` binaries described in [`../README.md`](../README.md).
 For mutable GLM weight reloads, launch every vLLM rank with `--enforce-eager`.
+The trainer and every inference engine must also use a compatible NCCL
+transport. Apply cluster-specific settings such as `NCCL_IB_DISABLE`,
+`NCCL_SOCKET_IFNAME`, and the NCCL network plugin consistently on both sides;
+do not force Socket on the trainer while allowing inference to select IB.
 
 ## Configure
+
+Initialize the R2E environment submodule and install its workspace package:
+
+```bash
+git submodule update --init -- deps/research-environments
+uv sync --package prime-rl --package r2e-gym-v1
+```
+
+The taskset intentionally uses the current `r2e-gym-v1` default,
+`PrimeIntellect/R2E-Gym-Subset-Verified`, instead of pinning an older dataset
+override in this recipe.
 
 Replace the checked-in service names when the DGD and trainer use different
 DNS names:
@@ -44,11 +61,26 @@ The R2E harness uses Prime sandboxes. Configure the normal Prime credentials,
 or replace the runtime with the sandbox backend used by your cluster. Model
 and dataset caches should be shared across the trainer and inference nodes.
 
-Verify Dynamo before starting Prime:
+Multi-turn affinity is not enabled merely by sending a session header. Start
+the Dynamo frontend with `--router-session-affinity-ttl-secs <seconds>` (or
+`DYN_ROUTER_SESSION_AFFINITY_TTL_SECS`) and choose an idle TTL longer than the
+longest expected R2E turn gap. Prime maps each trajectory ID to the canonical
+`X-Dynamo-Session-ID` header in `orchestrator.toml`.
+
+Verify both the model and the complete atomic worker snapshot before starting
+Prime. A successful HTTP status alone is insufficient:
 
 ```bash
-curl --fail http://dynamo-frontend:8000/v1/models
-curl --fail http://dynamo-frontend:8001/v1/rl/workers
+MODEL=zai-org/GLM-5.2-FP8
+curl -fsS http://dynamo-frontend:8000/v1/models |
+  jq -e --arg model "$MODEL" '.data | any(.id == $model)'
+curl -fsS http://dynamo-frontend:8001/v1/rl/workers |
+  jq -e --arg model "$MODEL" '
+    .protocol_version == 1 and
+    ([.workers[] | select(.model == $model and (.error | not))] | length == 2) and
+    ([.workers[] | select(.model == $model) | .component] | sort == ["backend", "prefill"]) and
+    ([.workers[] | select(.model == $model) | .world_size] | add == 16)
+  '
 ```
 
 ## Run
@@ -80,4 +112,5 @@ settles on all 16 inference ranks through NCCL, and a later multi-turn rollout
 completes without changing its Dynamo session assignment. Three steps are
 required because finite NCCL runs skip broadcasts once
 `step >= max_steps - 1`; this leaves step 1 as the first non-final broadcast
-slot.
+slot. The disabled post-batch zero-advantage filter keeps this small smoke run
+from stalling on a homogeneous batch; enable it for a production training run.
