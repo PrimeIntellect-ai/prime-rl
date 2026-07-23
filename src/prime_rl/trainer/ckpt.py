@@ -109,6 +109,7 @@ class AppState(Stateful):
             if isinstance(opt, CPUOffloadOptimizer):
                 opt._move_states("cpu")
         if has_cpu_offload:
+            torch.cuda.synchronize()
             gc.collect()
             torch.cuda.empty_cache()
 
