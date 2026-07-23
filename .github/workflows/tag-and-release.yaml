@@ -119,6 +119,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Needed to dispatch build_image.yaml below (POST .../dispatches).
+      actions: write
     steps:
       - name: Publish draft release
         env:
@@ -127,11 +129,22 @@ jobs:
         run: |
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
 
+      # Publishing runs as GITHUB_TOKEN, whose events don't retrigger
+      # workflows, so dispatch the image build explicitly.
+      - name: Trigger image build for the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.auto-tag-on-main.outputs.tag }}
+        run: |
+          gh workflow run build_image.yaml --repo "$GITHUB_REPOSITORY" -f ref="$TAG"
+
   tag-and-release:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Needed to dispatch build_image.yaml below (POST .../dispatches).
+      actions: write
     steps:
       - name: Checkout tagged release (dispatch)
         if: github.event_name == 'workflow_dispatch'
@@ -195,6 +208,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Publish draft release
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
@@ -207,6 +221,17 @@ jobs:
           fi
           if [ "$STATE" = "false" ]; then
             echo "Release $TAG is already published; nothing to do."
+            echo "published=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      # Skipped when the release was already published (no rebuild needed).
+      - name: Trigger image build for the release
+        if: steps.publish.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh workflow run build_image.yaml --repo "$GITHUB_REPOSITORY" -f ref="$TAG"
