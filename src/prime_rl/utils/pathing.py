@@ -159,17 +159,21 @@ def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool, ckpt_o
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
     """Remove stale rollouts, broadcasts, and traces past ``resume_step``.
 
-    Pass ``resume_step=-1`` to wipe every step directory (fresh runs).
+    Broadcast markers are cleaned from ``resume_step`` itself onwards: on resume the
+    trainer re-broadcasts the resumed weights and waits on the resume step's
+    ``NCCL_READY`` marker, so a stale marker from a previous boot makes it broadcast
+    before the inference workers are ready and hang. Pass ``resume_step=-1`` to wipe
+    every step directory (fresh runs).
     """
     run_default = output_dir / "run_default"
     dirs = [
-        get_rollout_dir(output_dir),
-        get_rollout_dir(run_default),
-        get_broadcast_dir(run_default),
+        (get_rollout_dir(output_dir), resume_step),
+        (get_rollout_dir(run_default), resume_step),
+        (get_broadcast_dir(run_default), resume_step - 1),
     ]
 
-    for directory in dirs:
-        steps_to_delete = [step for step in get_all_ckpt_steps(directory) if step > resume_step]
+    for directory, keep_through in dirs:
+        steps_to_delete = [step for step in get_all_ckpt_steps(directory) if step > keep_through]
         if not steps_to_delete:
             continue
         get_logger().info(
