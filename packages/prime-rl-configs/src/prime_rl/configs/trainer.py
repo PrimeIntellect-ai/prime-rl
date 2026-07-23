@@ -243,6 +243,12 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
+    def vlm_cp_requires_ulysses(self):
+        if self.vlm is not None and self.cp > 1 and self.cp_style != "ulysses":
+            raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
+        return self
+
+    @model_validator(mode="after")
     def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
