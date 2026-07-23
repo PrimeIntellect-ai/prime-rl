@@ -150,7 +150,7 @@ source .venv/bin/activate
 # all finish. `set -e` above aborts the job if any node's sync fails. Re-source .env
 # inside the task because unexported vars in .env don't cross srun even with normal
 # SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
-srun --ntasks-per-node=1 bash -c 'cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages'
+srun --ntasks-per-node=1 bash -c 'cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages && uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" --reinstall --no-deps deps-rdma/nixl_cu12-*.whl'
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
 uv sync --all-extras --all-packages
@@ -268,7 +268,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     UCX_NET_DEVICES=$(rdma_ports InfiniBand)
     [ -n "$UCX_NET_DEVICES" ] || UCX_NET_DEVICES=$(rdma_ports Ethernet)
     export UCX_NET_DEVICES=${UCX_NET_DEVICES:-all}
-    export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx-rdma/lib:$PROJECT_DIR/third_party/ucx-rdma/lib/ucx:${LD_LIBRARY_PATH:-}"
     export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
@@ -391,7 +391,7 @@ else
 
     echo $HOSTNAMES_STR | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 
-    WANDB_SHARED_LABEL=trainer uv run torchrun \
+    WANDB_SHARED_LABEL=trainer uv run --no-sync torchrun \
         --role=trainer \
         --nnodes=$NUM_TRAIN_NODES \
         --nproc-per-node=$GPUS_PER_NODE \

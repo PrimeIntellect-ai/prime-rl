@@ -48,10 +48,13 @@ def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str,
         concatenated = torch.empty(total_elements, dtype=dtype, device=communicator.device)
         communicator.broadcast(concatenated, src=0)
 
-        # Split concatenated tensor back into individual tensors
+        # Split the receive buffer into views. The consumer copies each tensor into
+        # the model before advancing the generator, so cloning here only duplicates
+        # the largest layer tensor and can add several GiB to peak receiver memory.
+        # Keep ``concatenated`` alive until every view has been consumed instead.
         offset = 0
         for key, shape, numel in tensor_info_list:
-            tensor = concatenated[offset : offset + numel].view(shape).clone()
+            tensor = concatenated[offset : offset + numel].view(shape)
             offset += numel
             try:
                 yield key, tensor

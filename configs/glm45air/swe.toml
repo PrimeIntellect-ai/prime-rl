@@ -8,7 +8,7 @@
 # subtraction.
 #
 # 2 train + 4 infer nodes. Trainer uses cp=8 (ulysses) plus
-# the memory improvements from the GLM-5.1 prod run (research-prod rlm5/prod.toml): LM-head token
+# the memory improvements from the GLM-5.1 prod run (research-prod rlm5/prod/prod.toml): LM-head token
 # chunking, activation checkpointing (freq=1) + activation offloading (max_inflight=1), optimizer
 # CPU offload, and skip-gather / skip-optimizer checkpointing. Derived from
 # configs/debug/v1/scaleswe.toml + GLM-4.5-Air model settings from the int5 opencode configs.
