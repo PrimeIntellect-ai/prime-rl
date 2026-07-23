@@ -23,6 +23,7 @@ class EvalSource:
         eval_config: EvalConfig,
         *,
         is_resumed: bool = False,
+        resume_step: int | None = None,
     ) -> None:
         self.eval_envs = eval_envs
         self.eval_config = eval_config
@@ -40,19 +41,34 @@ class EvalSource:
 
         self.queue: deque[dict] = deque()
 
-        # On resume we skip the startup eval; on fresh start the first
-        # trigger fires every env (subject to ``skip_first_step``)
-        self.first_trigger = not is_resumed
+        # On fresh start the first trigger fires every env (subject to
+        # ``skip_first_step``). On resume the first trigger fires only envs
+        # whose interval divides the checkpoint step, so an eval that was due
+        # at the checkpoint is recovered instead of deferred to the next
+        # interval boundary.
+        self.is_resumed = is_resumed
+        self.resume_step = resume_step
+        self.first_trigger = True
 
     def trigger(self, step: int) -> list[str]:
-        """Fire eligible envs for ``step`` and return their names. On resume
-        ``first_trigger`` is False, so the startup/base eval doesn't re-run."""
+        """Fire eligible envs for ``step`` and return their names.
+
+        On fresh start the first trigger fires every env (subject to
+        ``skip_first_step``). On resume the first trigger fires only envs
+        whose interval divides the checkpoint step, recovering an eval that
+        was due at the checkpoint instead of deferring to the next boundary.
+        """
         is_first, self.first_trigger = self.first_trigger, False
         if is_first and self.eval_config.skip_first_step:
             return []
+        # On resume, evaluate against the checkpoint step (not progress.step,
+        # which is checkpoint + 1) so interval-aligned evals are recovered.
+        eval_step = self.resume_step if (is_first and self.is_resumed) else step
         fired: list[str] = []
         for name, interval in self.intervals.items():
-            if is_first or step % interval == 0:
+            if is_first and not self.is_resumed:
+                fired.append(name)
+            elif eval_step % interval == 0:
                 fired.append(name)
         # Round-robin across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates at example granularity. ``try_schedule``'s
@@ -64,7 +80,7 @@ class EvalSource:
                 if example is None:
                     continue
                 row = dict(example)
-                row["eval_step"] = step
+                row["eval_step"] = eval_step
                 self.queue.append(row)
         return fired
 

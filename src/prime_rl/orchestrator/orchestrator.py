@@ -383,6 +383,7 @@ class Orchestrator:
                 self.eval_envs,
                 config.eval,
                 is_resumed=self.resume_step is not None,
+                resume_step=self.resume_step,
             )
             if config.eval is not None and self.eval_envs is not None
             else None
@@ -467,7 +468,8 @@ class Orchestrator:
         ]
 
         # Base-model eval (policy v0) — fires before any train rollouts, logged at the first
-        # step, unless ``eval.skip_first_step=True`` (or this is a resume)
+        # step, unless ``eval.skip_first_step=True``. On resume, fires only
+        # envs whose interval divides the checkpoint step (see EvalSource).
         self.maybe_trigger_eval(self.progress.step)
 
         # Anchor step-time clock so the first step measures startup → first batch
