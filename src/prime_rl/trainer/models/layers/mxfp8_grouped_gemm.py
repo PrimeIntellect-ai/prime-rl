@@ -8,10 +8,10 @@ from torchao.prototype.moe_training.config import MXFP8TrainingOpConfig, MXFP8Tr
 from torchao.prototype.moe_training.kernels.mxfp8 import triton_mx_block_rearrange_2d_M_groups
 from torchao.prototype.moe_training.tensor import MXFP8TrainingWeightWrapperTensor
 from torchao.quantization.quant_api import quantize_
-from torchtitan.distributed.expert_parallel import set_token_group_alignment_size_m
-from torchtitan.experiments.kernels.moe import indices as tt_indices
 
 from prime_rl.configs.trainer import MXFP8Recipe
+from prime_rl.trainer.distributed.moe import indices as tt_indices
+from prime_rl.trainer.distributed.tt_expert_parallel import set_token_group_alignment_size_m
 from prime_rl.trainer.models.layers.moe import GroupedExperts, NonGatedGroupedExperts
 from prime_rl.utils.logger import get_logger
 

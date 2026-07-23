@@ -5273,7 +5273,7 @@ requires-dist = [
     { name = "torchao", marker = "platform_machine == 'x86_64'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl" },
     { name = "torchaudio", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchdata", specifier = ">=0.11.0" },
-    { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=23e4dfc" },
+    { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=cc286a6" },
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", specifier = "==5.6.2" },
     { name = "uvloop", specifier = ">=0.21.0" },
@@ -7442,17 +7442,33 @@ wheels = [
 ]
 
 [[package]]
+name = "spmd-types"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d2/d4/adbc2fc5b9e5c5078c63dce783439236dfb9bc0fbb884c548be440acfaec/spmd_types-0.2.1.tar.gz", hash = "sha256:4a7364e22553384a5c94decb3a390945f9a880eaf42689cf48af836e9c928c36", size = 105220, upload-time = "2026-06-05T19:06:53Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/20/da/332e1ff31f68b6425baabf035652b4ae784e3e3aa483d93e27baf83cf2b5/spmd_types-0.2.1-py3-none-any.whl", hash = "sha256:0b7ba23a73b9c2a86a24d517880867a9d9d03da32c1aef74445a49c22b135891", size = 118384, upload-time = "2026-06-05T19:06:52Z" },
+]
+dependencies = [
+    { name = "torch" },
+]
+
+[[package]]
 name = "torchtitan"
-version = "0.1.0"
-source = { git = "https://github.com/pytorch/torchtitan?rev=23e4dfc#23e4dfca5ca52587dbaf18f67bee8d73e875df5b" }
+version = "0.2.2"
+source = { git = "https://github.com/pytorch/torchtitan?rev=cc286a6#cc286a63599e42480a07928cc362e514ae448a85" }
 dependencies = [
     { name = "datasets" },
+    { name = "einops" },
     { name = "fsspec" },
+    { name = "pillow" },
+    { name = "safetensors" },
+    { name = "spmd-types" },
     { name = "tensorboard" },
     { name = "tokenizers" },
-    { name = "tomli" },
     { name = "torchdata" },
     { name = "tyro" },
+    { name = "wandb" },
 ]
 
 [[package]]

@@ -352,9 +352,14 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             w3_lora_a = w3_lora_a.to_local()
             w3_lora_b = w3_lora_b.to_local()
 
-            if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
-                from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+            if getattr(self.base_layer, "ep_comm_backend", "torch") not in {
+                "deepep",
+                "deepep_v2",
+                "hybridep",
+                "minimal_async_ep",
+            }:
+                from prime_rl.trainer.distributed.moe.indices import generate_permute_indices
+                from prime_rl.trainer.distributed.tt_expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
 
                 experts_per_ep_rank = base_w1.shape[0]
                 num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
@@ -661,9 +666,14 @@ class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
             w2_lora_a = w2_lora_a.to_local()
             w2_lora_b = w2_lora_b.to_local()
 
-            if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
-                from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+            if getattr(self.base_layer, "ep_comm_backend", "torch") not in {
+                "deepep",
+                "deepep_v2",
+                "hybridep",
+                "minimal_async_ep",
+            }:
+                from prime_rl.trainer.distributed.moe.indices import generate_permute_indices
+                from prime_rl.trainer.distributed.tt_expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
 
                 experts_per_ep_rank = base_w1.shape[0]
                 num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
@@ -955,9 +965,14 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             d_a = d_a.to_local()
             d_b = d_b.to_local()
 
-            if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
-                from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+            if getattr(self.base_layer, "ep_comm_backend", "torch") not in {
+                "deepep",
+                "deepep_v2",
+                "hybridep",
+                "minimal_async_ep",
+            }:
+                from prime_rl.trainer.distributed.moe.indices import generate_permute_indices
+                from prime_rl.trainer.distributed.tt_expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
 
                 experts_per_ep_rank = base_gu.shape[0]
                 num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
