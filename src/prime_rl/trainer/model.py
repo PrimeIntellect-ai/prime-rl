@@ -937,7 +937,24 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
         model_keys = dict.fromkeys(model.state_dict().keys())
 
-        if model.is_hf_state_dict(snapshot_keys) and model.is_prime_state_dict(model_keys):
+        # If the model considers the snapshot's state dict to be in *both* HF
+        # and PrimeRL formats simultaneously, the conversion between them is
+        # identity (e.g. dense Qwen3 — both `convert_to_hf` and `convert_to_prime`
+        # are pass-throughs). Skip the convert-and-write branch entirely and
+        # load directly from `source_path`, which is what `snapshot_path`
+        # already points at. Otherwise `save_state_dict` would try to mkdir
+        # `<snapshot>/prime` under a potentially read-only model-cache mount
+        # (pi-rft's converter sidecar no-ops for identity conversions, so
+        # `<snapshot>/prime` is never populated in the cache).
+        identity_conversion = model.is_hf_state_dict(snapshot_keys) and model.is_prime_state_dict(
+            snapshot_keys
+        )
+
+        if identity_conversion:
+            logger.debug(
+                "Snapshot state dict matches both HF and PrimeRL formats — identity conversion, loading directly from source."
+            )
+        elif model.is_hf_state_dict(snapshot_keys) and model.is_prime_state_dict(model_keys):
             logger.warning(
                 "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
             )
