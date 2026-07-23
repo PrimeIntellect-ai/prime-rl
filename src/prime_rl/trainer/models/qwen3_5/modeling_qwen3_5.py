@@ -160,7 +160,10 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return True
+        # Dense models use identical key names in HF and PrimeRL format, so we
+        # never claim to be in a separate PrimeRL format. This disables the
+        # auto-conversion path in load_dcp_from_hf and lets DCP load directly.
+        return False
 
     @classmethod
     def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
