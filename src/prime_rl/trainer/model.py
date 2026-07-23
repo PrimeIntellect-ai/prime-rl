@@ -946,9 +946,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         # `<snapshot>/prime` under a potentially read-only model-cache mount
         # (pi-rft's converter sidecar no-ops for identity conversions, so
         # `<snapshot>/prime` is never populated in the cache).
-        identity_conversion = model.is_hf_state_dict(snapshot_keys) and model.is_prime_state_dict(
-            snapshot_keys
-        )
+        identity_conversion = model.is_hf_state_dict(snapshot_keys) and model.is_prime_state_dict(snapshot_keys)
 
         if identity_conversion:
             logger.debug(
