@@ -92,9 +92,8 @@ enable_prefix_caching = true
 [inference.model]
 dtype = "bfloat16"
 max_model_len = 8192
-# Establish the RL/weight-transfer baseline before separately validating
-# online-NVFP4 reloads under captured CUDA graphs.
-enforce_eager = true
+# Validate recurrent online-NVFP4 reloads against vLLM's captured CUDA graphs.
+enforce_eager = false
 
 [inference.parallel]
 tp = 4

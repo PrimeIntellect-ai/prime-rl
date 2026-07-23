@@ -85,7 +85,7 @@ configs:
 
     max_model_len = 8192
 
-    enforce_eager = true
+    enforce_eager = false
 
     tool_call_parser = "hermes"
 
