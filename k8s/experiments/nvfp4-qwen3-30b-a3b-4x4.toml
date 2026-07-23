@@ -31,7 +31,8 @@ filename = "trainer-metrics.jsonl"
 
 [trainer.model]
 impl = "custom"
-attn = "flash_attention_3"
+# Prime's FA3 wheel targets Hopper. GB200/SM100 requires the CuTe FA4 path.
+attn = "flash_attention_4"
 ep = 4
 ep_comm_backend = "torch"
 optim_cpu_offload = true

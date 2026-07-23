@@ -74,6 +74,12 @@ trainer:
       value: "7200000"
     - name: TRANSFORMERS_OFFLINE
       value: "1"
+    # CuTe DSL kernels used by FlashAttention 4 are JIT-compiled independently
+    # from the vLLM/FlashInfer cache. Persist them on the shared experiment PVC.
+    - name: FLASH_ATTENTION_CUTE_DSL_CACHE_ENABLED
+      value: "1"
+    - name: FLASH_ATTENTION_CUTE_DSL_CACHE_DIR
+      value: /data/nvfp4-e2e/cache/flash-attention-cute-dsl
 
 inference:
   # Avoid the auxiliary vllm-router for this one TP=4 server.
