@@ -108,6 +108,13 @@ jobs:
               run: |
                   echo "Dispatching config: ${{ matrix.config_file }}"
                   echo "Image tag:          ${{ steps.image.outputs.tag }}"
+                  # Forward WANDB_API_KEY / HF_TOKEN into the hosted payload:
+                  # the full-FT dispatch path (`prime train`) only picks up
+                  # secrets that were explicitly collected via `-e` / `--env-file`,
+                  # not ambient env, so the workflow env: block alone is not
+                  # enough to reach the hosted trainer/orchestrator pods.
                   prime train "${{ matrix.config_file }}" \
                       --image-tag "${{ steps.image.outputs.tag }}" \
+                      -e WANDB_API_KEY \
+                      -e HF_TOKEN \
                       --yes --output json
