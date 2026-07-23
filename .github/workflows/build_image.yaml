@@ -83,27 +83,30 @@ jobs:
           INPUT_TAG: ${{ env.BUILD_TAG }}
           PLATFORMS: ${{ env.BUILD_PLATFORMS }}
         run: |
-          case "$INPUT_REF" in
-            main|v[0-9]*|*.dev[0-9]*) ;;
-            *)
-              echo "ref '${INPUT_REF}' not allowed for ghcr publish (must be main, v*, or *.dev*)" >&2
-              exit 1
-              ;;
-          esac
-
           if [ -n "$INPUT_TAG" ] && [ "$INPUT_TAG" != "$INPUT_REF" ] && [ "$INPUT_REF" != "main" ]; then
             echo "custom 'tag' that differs from 'ref' is only allowed when ref=main; got ref='${INPUT_REF}' tag='${INPUT_TAG}'" >&2
             exit 1
           fi
 
-          raw_tag="$INPUT_TAG"
-          if [ -z "$raw_tag" ]; then
-            raw_tag="$INPUT_REF"
+          sanitize() {
+            echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-50
+          }
+
+          # A ref that is exactly a git tag builds under that tag verbatim;
+          # any other ref (branch / arbitrary commit) is prefixed with
+          # `git describe` so the tag carries the nearest release, commit
+          # distance and short sha (e.g. v0.7.0-42-g1a2b3c4d5-fix-my-branch)
+          # and can't collide with a clean release tag.
+          if [ -n "$INPUT_TAG" ]; then
+            tag=$(sanitize "$INPUT_TAG")
+          elif tag=$(git describe --tags --exact-match 2>/dev/null); then
+            :
+          else
+            tag="$(git describe --tags --always)-$(sanitize "$INPUT_REF")"
           fi
 
-          tag=$(echo "$raw_tag" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g' | sed 's/--*/-/g' | cut -c1-50 | sed 's/^-//;s/-$//')
           if [ -z "$tag" ]; then
-            echo "Could not derive a valid image tag from '${raw_tag}'." >&2
+            echo "Could not derive a valid image tag from ref='${INPUT_REF}' tag='${INPUT_TAG}'." >&2
             exit 1
           fi
 
