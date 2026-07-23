@@ -296,7 +296,6 @@ def test_glm52_dynamo_r2e_example_matches_external_inference_contract():
     assert client["base_url"] == ["http://dynamo-frontend:8000/v1"]
     assert client["dynamo_discovery_url"] == "http://dynamo-frontend:8001"
     assert client["extra_headers_from_state"] == {
-        "X-Session-ID": "trajectory_id",
         "X-Dynamo-Session-ID": "trajectory_id",
     }
 

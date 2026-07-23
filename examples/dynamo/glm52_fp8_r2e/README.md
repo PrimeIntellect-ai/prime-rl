@@ -31,10 +31,16 @@ The inference engines must load
 admin routes, and run the version-matched `vllm-rs` and
 `dynamo-vllm-sidecar` binaries described in [`../README.md`](../README.md).
 For mutable GLM weight reloads, launch every vLLM rank with `--enforce-eager`.
+When serving a snapshot path, set `--served-model-name
+zai-org/GLM-5.2-FP8`. The tested GLM entrypoint also uses the `glm47` tool
+parser, `glm45` reasoning parser, the model chat template, and complementary
+NIXL `kv_producer`/`kv_consumer` roles for prefill/decode.
 The trainer and every inference engine must also use a compatible NCCL
 transport. Apply cluster-specific settings such as `NCCL_IB_DISABLE`,
 `NCCL_SOCKET_IFNAME`, and the NCCL network plugin consistently on both sides;
 do not force Socket on the trainer while allowing inference to select IB.
+The filesystem rollout transport requires the orchestrator and all trainer
+nodes to mount the same read-write shared output root.
 
 ## Configure
 
@@ -77,7 +83,13 @@ curl -fsS http://dynamo-frontend:8000/v1/models |
 curl -fsS http://dynamo-frontend:8001/v1/rl/workers |
   jq -e --arg model "$MODEL" '
     .protocol_version == 1 and
-    ([.workers[] | select(.model == $model and (.error | not))] | length == 2) and
+    (.workers | length == 2) and
+    (all(.workers[]; .model == $model and
+      ((.error // "") == "") and
+      (.instance_id != null) and
+      ((.admin_base_url // "") != ""))) and
+    ([.workers[].instance_id] | unique | length == 2) and
+    ([.workers[].admin_base_url] | unique | length == 2) and
     ([.workers[] | select(.model == $model) | .component] | sort == ["backend", "prefill"]) and
     ([.workers[] | select(.model == $model) | .world_size] | add == 16)
   '
