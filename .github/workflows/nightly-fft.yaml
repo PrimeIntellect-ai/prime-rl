@@ -1,0 +1,84 @@
+name: Nightly FFT
+
+on:
+    # Allow to manually trigger the workflow
+    workflow_dispatch:
+        inputs:
+            config_file:
+                description: "Full-FT config to dispatch (e.g. configs/ci/nightly-fft/queue-e2e-test.toml). Leave empty to run all."
+                required: false
+                default: ""
+
+    # Scheduled run at 3AM PST (11AM UTC) — disabled for now, enable once dry-run passes
+    # schedule:
+    #     - cron: "0 11 * * *"
+
+jobs:
+    discover-configs:
+        name: Discover configs
+        runs-on: ubuntu-latest
+
+        outputs:
+            matrix: ${{ steps.build-matrix.outputs.matrix }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                  submodules: false
+
+            - name: Build matrix from nightly FFT configs
+              id: build-matrix
+              run: |
+                  # Find all nightly full-finetune configs
+                  files=$(ls configs/ci/nightly-fft/*.toml)
+
+                  # Filter to specific config if provided in workflow_dispatch
+                  if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.config_file }}" ]; then
+                      filtered=$(echo "$files" | grep -F "${{ github.event.inputs.config_file }}" || true)
+                      if [ -z "$filtered" ]; then
+                          echo "Error: Config file '${{ github.event.inputs.config_file }}' not found"
+                          exit 1
+                      fi
+                      files="$filtered"
+                  fi
+
+                  echo "Discovered nightly FFT configs:"
+                  echo "$files"
+
+                  # Build JSON of the form: { "config_file": ["configs/ci/nightly-fft/foo.toml", ...] }
+                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc '{config_file: .}')
+
+                  echo "matrix=$json" >> "$GITHUB_OUTPUT"
+
+    dispatch-run:
+        name: Dispatch hosted FFT run
+        needs: discover-configs
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        strategy:
+            fail-fast: false
+            matrix: ${{ fromJSON(needs.discover-configs.outputs.matrix) }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                  submodules: false
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+
+            - name: Install prime CLI (latest)
+              run: uv tool install prime
+
+            - name: Dispatch run
+              env:
+                  PRIME_API_KEY: ${{ secrets.PRIME_FFT_API_KEY }}
+                  PRIME_TEAM_ID: ${{ secrets.PRIME_FFT_TEAM_ID }}
+                  PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
+                  WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+              run: |
+                  echo "Dispatching config: ${{ matrix.config_file }}"
+                  prime train "${{ matrix.config_file }}" --yes --output json
