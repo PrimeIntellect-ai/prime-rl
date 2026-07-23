@@ -201,8 +201,7 @@ class CPUOffloadOptimizer:
         chunk and its state is touched exactly once).
         """
         for group, orig_step in zip(self._original_param_groups, original_steps):
-            if "step" in group:
-                group["step"] = orig_step + 1
+            group["step"] = orig_step + 1
 
     # ------------------------------------------------------------------ #
     # Public API
