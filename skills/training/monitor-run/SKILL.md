@@ -182,6 +182,12 @@ means ingress was bypassed.
   image preparation failed before request submission.
 - Inference rejects bad refs with `invalid_mm_image_ref` 400s (hash mismatch,
   fingerprint mismatch, unreadable asset) — grep the inference log.
+- Inference caches materialized refs and logs
+  `mm materialize cache: hits=X misses=Y hit_rate=Z% bytes=A/B evictions=C`
+  every 1000 lookups. Hit rate should climb after turn 1 of multi-turn
+  multimodal rollouts; a stuck-at-zero hit rate with repeat images means the
+  cache is disabled or thrashing (sized by `PRIME_RL_MM_MATERIALIZE_CACHE_GB`,
+  default 2.0, `0` disables).
 - The orchestrator raises on placeholder/token drift ("does not cover
   image-typed tokens") before a sample ships — treat any occurrence as a bug,
   not noise.

@@ -34,7 +34,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import AsyncGenerator, AsyncIterable
+import logging
+import os
+from collections import OrderedDict
+from collections.abc import AsyncGenerator, AsyncIterable, Callable
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from http import HTTPStatus
@@ -55,6 +58,7 @@ from vllm.entrypoints.serve.disagg.protocol import (
 )
 from vllm.entrypoints.serve.disagg.serving import ServingTokens
 from vllm.entrypoints.serve.utils.api_utils import get_max_tokens
+from vllm.multimodal.cache import MultiModalCache
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
@@ -62,6 +66,8 @@ from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
 from prime_rl.multimodal.registry import get_multimodal_adapter
 from prime_rl.multimodal.schema import RawMMItem
 from prime_rl.utils.mm import file_uri_to_path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -245,6 +251,101 @@ def _materialize_raw_image_ref_sync(
     )
 
 
+# (raw_ref, expected_placeholder_length, processor_model_name). The ref string is
+# content-addressed (it embeds the image hash, layout fingerprint, family, and URI),
+# so identical keys describe byte-identical materialization work.
+_MaterializeKey = tuple[str, int, str]
+
+_MM_MATERIALIZE_CACHE_GB_ENV = "PRIME_RL_MM_MATERIALIZE_CACHE_GB"
+_MM_MATERIALIZE_LOG_EVERY = 1000
+
+
+class _MaterializedRefCache:
+    """Byte-bounded LRU of materialized raw image refs, with single-flight misses.
+
+    Every request carries a ref for every image in its prompt (prior turns included),
+    so multi-turn rollouts re-materialize the same images once per turn per rollout —
+    this cache turns those repeats into lookups. Keys are content-addressed, so
+    entries can only go cold, never stale: a post-eviction request simply misses and
+    re-materializes from the durable ``file://`` asset.
+
+    All mutation happens on the event loop thread (materialization itself runs in a
+    worker thread via ``asyncio.to_thread``, but lookup/insertion/eviction happen in
+    the async caller) — so no lock is needed. Do not touch this cache from sync code.
+
+    ``max_bytes == 0`` disables caching and single-flight entirely: every call runs
+    the materializer, byte-identical to the uncached path.
+
+    Host-RAM note: this budget is additive to vLLM's own processor cache
+    (``mm_processor_cache_gb × (api_server_count + data_parallel_size)``).
+    """
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        self._items: OrderedDict[_MaterializeKey, tuple[Any, int]] = OrderedDict()
+        self._inflight: dict[_MaterializeKey, asyncio.Future] = {}
+        self._bytes = 0
+        self.hits = 0
+        self.misses = 0
+        self.evictions = 0
+
+    async def get_or_materialize(self, key: _MaterializeKey, materialize_fn: Callable[[], Any]) -> Any:
+        if self.max_bytes == 0:
+            return await asyncio.to_thread(materialize_fn)
+        if key in self._items:
+            self._items.move_to_end(key)
+            self.hits += 1
+            self._maybe_log()
+            return self._items[key][0]
+        if (inflight := self._inflight.get(key)) is not None:
+            self.hits += 1
+            self._maybe_log()
+            return await inflight
+        self.misses += 1
+        self._maybe_log()
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._inflight[key] = future
+        try:
+            item = await asyncio.to_thread(materialize_fn)
+        except BaseException as exc:
+            # Never cache a failure: the exception propagates to every awaiter and
+            # the next request for this key retries cleanly.
+            future.set_exception(exc)
+            # A never-awaited errored future logs a spurious warning at GC.
+            future.exception()
+            del self._inflight[key]
+            raise
+        future.set_result(item)
+        del self._inflight[key]
+        self._insert(key, item)
+        return item
+
+    def _insert(self, key: _MaterializeKey, item: Any) -> None:
+        nbytes = MultiModalCache.get_item_size(item)
+        if nbytes > self.max_bytes:
+            # Don't churn the whole cache for one oversized entry.
+            return
+        self._items[key] = (item, nbytes)
+        self._bytes += nbytes
+        while self._bytes > self.max_bytes:
+            _, (_, evicted_bytes) = self._items.popitem(last=False)
+            self._bytes -= evicted_bytes
+            self.evictions += 1
+
+    def _maybe_log(self) -> None:
+        total = self.hits + self.misses
+        if total % _MM_MATERIALIZE_LOG_EVERY == 0:
+            logger.info(
+                "mm materialize cache: hits=%d misses=%d hit_rate=%.1f%% bytes=%d/%d evictions=%d",
+                self.hits,
+                self.misses,
+                100.0 * self.hits / total,
+                self._bytes,
+                self.max_bytes,
+                self.evictions,
+            )
+
+
 def _raw_ref_payloads_for_feature(
     features: Any, feature_modality: str, hashes: list[str]
 ) -> tuple[list[str], list[Any]]:
@@ -276,29 +377,59 @@ async def _decode_raw_mm_kwargs(
     *,
     processor_model_name: str,
     trust_remote_code: bool,
+    cache: _MaterializedRefCache,
 ) -> dict[str, list[Any]]:
-    mm_kwargs: dict[str, list[Any]] = {}
+    # Flatten across modalities so every image in the request materializes
+    # concurrently; single-flight in the cache dedupes identical refs across
+    # (and within) requests. Fresh lists per request — vLLM's cache-injection
+    # path replaces list elements in place, so never hand it cache-owned lists.
+    flat: list[tuple[str, str, str, Any]] = []
     for feature_modality, hashes in features.mm_hashes.items():
         raw_refs, placeholders = _raw_ref_payloads_for_feature(features, feature_modality, hashes)
-        decoded: list[Any] = []
-        for raw_ref, mm_hash, placeholder in zip(raw_refs, hashes, placeholders, strict=True):
-            decoded.append(
-                await asyncio.to_thread(
-                    _materialize_raw_image_ref_sync,
-                    raw_ref,
-                    feature_modality=feature_modality,
-                    mm_hash=mm_hash,
-                    expected_placeholder_length=placeholder.length,
-                    processor_model_name=processor_model_name,
-                    trust_remote_code=trust_remote_code,
-                )
+        flat.extend(zip([feature_modality] * len(hashes), raw_refs, hashes, placeholders, strict=True))
+
+    def _materialize(feature_modality: str, raw_ref: str, mm_hash: str, placeholder: Any):
+        return _materialize_raw_image_ref_sync(
+            raw_ref,
+            feature_modality=feature_modality,
+            mm_hash=mm_hash,
+            expected_placeholder_length=placeholder.length,
+            processor_model_name=processor_model_name,
+            trust_remote_code=trust_remote_code,
+        )
+
+    decoded = await asyncio.gather(
+        *(
+            cache.get_or_materialize(
+                (raw_ref, placeholder.length, processor_model_name),
+                lambda fm=feature_modality, r=raw_ref, h=mm_hash, p=placeholder: _materialize(fm, r, h, p),
             )
-        mm_kwargs[feature_modality] = decoded
+            for feature_modality, raw_ref, mm_hash, placeholder in flat
+        )
+    )
+
+    mm_kwargs: dict[str, list[Any]] = {feature_modality: [] for feature_modality in features.mm_hashes}
+    for (feature_modality, _, _, _), item in zip(flat, decoded, strict=True):
+        mm_kwargs[feature_modality].append(item)
     return mm_kwargs
 
 
 class PrimeRlServingTokens(ServingTokens):
     """ServingTokens + DP-rank routing + routed experts + raw image refs + max_tokens defaulting."""
+
+    @cached_property
+    def _mm_materialize_cache(self) -> _MaterializedRefCache:
+        """Materialized-ref cache, sized by ``PRIME_RL_MM_MATERIALIZE_CACHE_GB``
+        (float GiB, default 2.0, ``0`` disables — the kill switch: disabled is
+        byte-identical to the uncached path).
+
+        A ``cached_property`` because ``custom_init_app_state`` grafts this
+        subclass via ``object.__new__`` + ``__dict__.update``, so ``__init__``
+        never runs (see ``_max_tokens_defaults``). One frontend process serves
+        all DP ranks of an engine, so the cache is shared across ranks.
+        """
+        gb = float(os.environ.get(_MM_MATERIALIZE_CACHE_GB_ENV, "2.0"))
+        return _MaterializedRefCache(max_bytes=int(gb * (1 << 30)))
 
     @cached_property
     def _max_tokens_defaults(self) -> tuple[dict, int | None]:
@@ -363,6 +494,7 @@ class PrimeRlServingTokens(ServingTokens):
                     features,
                     processor_model_name=processor_model_name,
                     trust_remote_code=trust_remote_code,
+                    cache=self._mm_materialize_cache,
                 )
             except _MMImageRefError as exc:
                 return self.create_error_response(
