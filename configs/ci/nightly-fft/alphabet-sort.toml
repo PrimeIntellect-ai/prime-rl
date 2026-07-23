@@ -2,8 +2,8 @@ max_steps = 200
 seq_len = 2048
 
 [deployment]
-num_train_gpus = 2
-num_infer_gpus = 6
+num_train_gpus = 4
+num_infer_gpus = 4
 
 [wandb]
 project = "alphabet-sort"
@@ -29,4 +29,4 @@ max_completion_tokens = 768
 [trainer]
 
 [inference.parallel]
-dp = 6
+dp = 4

@@ -2,8 +2,8 @@ max_steps = 200
 seq_len = 4096
 
 [deployment]
-num_train_gpus = 2
-num_infer_gpus = 6
+num_train_gpus = 4
+num_infer_gpus = 4
 
 [wandb]
 project = "wiki-search"
@@ -17,6 +17,11 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 [orchestrator]
 batch_size = 512
 group_size = 16
+oversampling_factor = 2.0
+
+[[orchestrator.pre_batch_filters]]
+type = "zero_advantage"
+enforce = true
 
 [[orchestrator.train.env]]
 name = "wiki-search"
@@ -29,7 +34,7 @@ max_completion_tokens = 512
 [trainer]
 
 [inference.parallel]
-dp = 6
+dp = 4
 
 [inference.model]
 tool_call_parser = "hermes"

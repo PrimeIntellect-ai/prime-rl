@@ -2,8 +2,8 @@ max_steps = 20
 seq_len = 2048
 
 [deployment]
-num_train_gpus = 2
-num_infer_gpus = 6
+num_train_gpus = 1
+num_infer_gpus = 1
 
 [wandb]
 project = "reverse-text"
@@ -15,7 +15,7 @@ name = "reverse-text"
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [orchestrator]
-batch_size = 512
+batch_size = 128
 group_size = 16
 
 [[orchestrator.train.env]]
@@ -28,8 +28,7 @@ max_completion_tokens = 128
 
 [trainer]
 
-[inference.parallel]
-dp = 6
+[inference]
 
 [orchestrator.renderer]
 name = "prime-qwen3"
