@@ -1,0 +1,7 @@
+**
+!Dockerfile.nvfp4-e2e-overlay
+!src/
+!src/prime_rl/
+!src/prime_rl/inference/
+!src/prime_rl/inference/vllm/
+!src/prime_rl/inference/vllm/serving_tokens.py

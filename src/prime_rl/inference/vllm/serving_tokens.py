@@ -226,7 +226,7 @@ class PrimeRlServingTokens(ServingTokens):
                 cache_salt=request.cache_salt,
             )
         else:
-            (engine_input,) = await self.openai_serving_render.preprocess_completion(
+            (engine_input,) = await self.online_renderer.preprocess_completion(
                 request,
                 prompt_input=request.token_ids,
                 prompt_embeds=None,
