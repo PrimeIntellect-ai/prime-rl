@@ -144,7 +144,12 @@ class MXFP8Config(BaseConfig):
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
 
 
-QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
+class NVFP4Config(BaseConfig):
+    type: Literal["nvfp4"] = "nvfp4"
+    """Use experimental NVFP4 for routed-expert grouped GEMMs on Blackwell."""
+
+
+QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config | NVFP4Config, Field(discriminator="type")]
 
 
 class ModelConfig(BaseModelConfig):
@@ -289,6 +294,12 @@ class ModelConfig(BaseModelConfig):
     def quantization_only_with_custom_impl(self):
         if self.quantization is not None and self.impl not in ("custom", "auto"):
             raise ValueError(f"{self.quantization.type} training is only supported with model.impl='custom' or 'auto'.")
+        return self
+
+    @model_validator(mode="after")
+    def nvfp4_requires_grouped_mm(self):
+        if isinstance(self.quantization, NVFP4Config) and not self.moe_use_grouped_mm:
+            raise ValueError("NVFP4 quantization requires model.moe_use_grouped_mm=true.")
         return self
 
     @model_validator(mode="after")

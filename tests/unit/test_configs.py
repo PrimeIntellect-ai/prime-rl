@@ -11,7 +11,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
-from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.trainer import NVFP4Config, TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli, to_toml_dict
 
 # All config config classes
@@ -154,6 +154,19 @@ def test_cli_overrides_toml(tmp_path):
 def test_removed_fused_lm_head_chunk_size_field_is_rejected():
     with pytest.raises(ValidationError, match="fused_lm_head_chunk_size"):
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
+
+
+def test_nvfp4_quantization_config():
+    config = TrainerModelConfig.model_validate({"quantization": {"type": "nvfp4"}})
+    assert isinstance(config.quantization, NVFP4Config)
+
+    with pytest.raises(ValidationError, match="moe_use_grouped_mm"):
+        TrainerModelConfig.model_validate(
+            {
+                "moe_use_grouped_mm": False,
+                "quantization": {"type": "nvfp4"},
+            }
+        )
 
 
 def test_to_toml_dict_roundtrips_explicit_none(tmp_path):
