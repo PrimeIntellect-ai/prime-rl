@@ -243,7 +243,7 @@ class CPUOffloadOptimizer:
         """Per-layer optimizer step without stream overlap — simple sequential loop."""
         for i in range(len(self._chunks)):
             self._move_chunk_states(i, "cuda")
-            self._step_chunk(i, closure)
+            self._step_chunk(i, closure if i == 0 else None)
             self._move_chunk_states(i, "cpu")
         torch.cuda.synchronize()
 
@@ -275,7 +275,9 @@ class CPUOffloadOptimizer:
                 self._move_chunk_states(i + 1, "cuda", h2d_stream)
 
             # Run optimizer step for chunk i.
-            self._step_chunk(i, closure)
+            # Only evaluate the closure once (first chunk) to avoid recomputing
+            # loss/grads per chunk — the optimizer contract expects one evaluation per step.
+            self._step_chunk(i, closure if i == 0 else None)
 
             # Evict chunk i's states back to CPU (overlaps with step i+1).
             d2h_stream.wait_stream(compute_stream)
