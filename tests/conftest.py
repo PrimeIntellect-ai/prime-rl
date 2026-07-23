@@ -1,5 +1,4 @@
 import os
-import shutil
 import signal
 import socket
 import subprocess
@@ -74,11 +73,11 @@ def branch_name() -> str:
 
 @pytest.fixture(scope="session")
 def output_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[Path, None, None]:
-    """Fixture for temporary output directory for tests with automatic cleanup"""
+    """Fixture for the tests' output directory. Never deleted — CI uploads run logs
+    from it on failure; runs start with ``--clean-output-dir`` for a fresh workspace."""
     output_dir = Path(os.environ.get("PYTEST_OUTPUT_DIR", tmp_path_factory.mktemp("outputs")))
     output_dir.mkdir(parents=True, exist_ok=True)
     yield output_dir
-    shutil.rmtree(output_dir, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")

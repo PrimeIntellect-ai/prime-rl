@@ -176,6 +176,8 @@ class Orchestrator:
         self.eval_triggered_at = {}
         self.consecutive_empty_batches = 0
         self.gate_closed_at = None
+        # Pulsed by the version hooks so a held ship can re-check ``policy.version``
+        self.version_advanced = asyncio.Event()
         self.wait_for_policy_time = 0.0
         self.component_tasks = []
 
@@ -602,6 +604,35 @@ class Orchestrator:
                 f"({n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
+        # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}.
+        # Without this, fast envs fill batches from buffered rollouts, the
+        # orchestrator finishes early, and its teardown strands the trainer inside
+        # an in-memory broadcast handshake that needs the live weight watcher.
+        # Always satisfiable: the trainer skips only the final TARGET_LAG+1
+        # in-memory broadcasts. Bench runs have no trainer, so they ship freely.
+        required_version = step - 1 - TARGET_LAG
+        if not config.bench and self.policy.version < required_version:
+            get_logger().info(
+                f"Holding batch {step} until the trainer publishes policy v{required_version} "
+                f"(currently v{self.policy.version})"
+            )
+            hold_start = time.perf_counter()
+            while True:
+                self.version_advanced.clear()
+                if self.policy.version >= required_version:
+                    break
+                await self.version_advanced.wait()
+            self.wait_for_policy_time += time.perf_counter() - hold_start
+
+        # Stamp each rollout's true staleness: batch ``step`` trains on policy
+        # v{step-1}, so a rollout generated from v{k} is (step-1)-k versions
+        # off-policy — queue time included, unlike the dispatcher's in-flight
+        # counter, which only sees weight updates during generation. Frozen-
+        # sourced rollouts stay 0 (their sampler doesn't follow the policy).
+        for r in batch.rollouts:
+            if self.train_envs.get(r.env_name).sampler.samples_from_live_policy:
+                r.off_policy_steps = (step - 1) - r.policy_version
+
         # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
         # at ship time; the full arrival window already streamed into ``all`` on arrival.
         # to_record drops the per-node training tensors — they're for training, not the rollout
@@ -905,11 +936,14 @@ class Orchestrator:
             gate.set()
 
     async def on_version_pending(self, step: int) -> None:
+        """``VersionObserver`` hook, fired at publish confirmation (pre-apply):
+        ``policy.version`` already carries the new version, so wake a held ship."""
         if self.model_express is not None:
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
+        self.version_advanced.set()
 
     async def on_new_version(self, step: int) -> None:
-        """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
+        """``VersionObserver`` hook: the weight update completed;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""
         if self.model_express is not None:
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
