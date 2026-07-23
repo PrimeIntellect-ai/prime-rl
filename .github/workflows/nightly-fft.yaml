@@ -15,6 +15,7 @@ on:
 
 permissions:
     contents: read
+    packages: read
 
 jobs:
     discover-configs:
@@ -68,21 +69,27 @@ jobs:
               uses: actions/checkout@v5
               with:
                   submodules: false
-                  fetch-depth: 0
-                  fetch-tags: true
 
             - name: Resolve latest prime-rl image tag
               id: image
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
-                  # devx_tag.yaml pushes a `v*.dev*` tag on every main commit and
-                  # dispatches build_image.yaml with that tag, so the newest dev tag
-                  # is the newest published GHCR image.
-                  tag=$(git tag --list 'v*.dev*' --sort=-v:refname | head -n1)
+                  # Query GHCR directly for tags whose manifests have actually
+                  # been pushed. devx_tag.yaml creates a `v*.dev*` git tag on
+                  # every main commit and dispatches build_image.yaml with that
+                  # tag, but the build takes time and can fail — the newest git
+                  # tag may not yet exist as an image. Ask GHCR, not git.
+                  tag=$(gh api --paginate \
+                      "/orgs/primeintellect-ai/packages/container/prime-rl/versions" \
+                      --jq '.[].metadata.container.tags[]' \
+                      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' \
+                      | sort -Vr | head -n1)
                   if [ -z "$tag" ]; then
-                      echo "No v*.dev* tag found; cannot resolve latest prime-rl image." >&2
+                      echo "No v*.dev* tag published on GHCR." >&2
                       exit 1
                   fi
-                  echo "Latest prime-rl image tag: $tag"
+                  echo "Latest prime-rl image tag on GHCR: $tag"
                   echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
             - name: Install uv
