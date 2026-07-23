@@ -43,15 +43,18 @@ jobs:
       contents: read
     steps:
       - name: Require maintain or admin
+        # Gate MANUAL dispatches only; other events (e.g. release) are
+        # already privileged and pass through. Guard the step, not the job —
+        # a skipped job would skip `prepare` via `needs: authorize`.
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.triggering_actor }}
           REPO: ${{ github.repository }}
         run: |
-          # Manual dispatches are restricted to repo members with maintain
-          # or admin. Automated dispatches from in-repo workflows (devx_tag
-          # dev-image builds, the release build) run as github-actions[bot]
-          # via GITHUB_TOKEN — allow those through.
+          # Restricted to repo members with maintain or admin. Automated
+          # in-repo dispatches (devx_tag dev-image builds, the release build)
+          # run as github-actions[bot] via GITHUB_TOKEN — allow those through.
           if [ "$ACTOR" = "github-actions[bot]" ]; then
             echo "Dispatcher is repo automation ($ACTOR); allowed."
             exit 0
