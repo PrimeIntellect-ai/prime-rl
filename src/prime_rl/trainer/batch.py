@@ -270,7 +270,7 @@ class _MicroBatchBin:
         if existing_mm_sample is not None and sample_is_mm:
             dst = existing_mm_sample.mm_kwargs
             src = sample.mm_kwargs
-            assert dst is not None and src is not None
+            assert dst is not None and src is not None, "multimodal samples must carry mm_kwargs"
             return set(dst) == set(src) and all(
                 dst[key].dtype == src[key].dtype
                 and len(dst[key].shape) > 0
