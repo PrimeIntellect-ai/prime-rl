@@ -1,0 +1,32 @@
+max_steps = 200
+seq_len = 2048
+
+[deployment]
+num_train_gpus = 2
+num_infer_gpus = 6
+
+[wandb]
+project = "alphabet-sort"
+name = "alphabet-sort"
+
+[ckpt]
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[orchestrator]
+batch_size = 512
+group_size = 16
+
+[[orchestrator.train.env]]
+name = "alphabet-sort"
+env.taskset = { id = "alphabet-sort-v1", min_turns = 3, max_turns = 5, task = { power_per_turn = false } }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.train.sampling]
+max_completion_tokens = 768
+
+[trainer]
+
+[inference.parallel]
+dp = 6
