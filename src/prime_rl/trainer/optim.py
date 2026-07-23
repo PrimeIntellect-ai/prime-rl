@@ -209,21 +209,21 @@ class CPUOffloadOptimizer:
     # ------------------------------------------------------------------ #
 
     def step(self, closure=None):
-        # First step initializes states on GPU — offload after.
-        if not self._initialized:
-            result = self.optimizer.step(closure)
-            self._move_states("cpu")
-            self._initialized = True
-            return result
-
-        # Non-chunked fallback (no named_params provided).
+        # Non-chunked path (no named_params provided).
         if self._chunks is None or len(self._chunks) <= 1:
+            if not self._initialized:
+                result = self.optimizer.step(closure)
+                self._move_states("cpu")
+                torch.cuda.synchronize()
+                self._initialized = True
+                return result
             self._move_states("cuda")
             result = self.optimizer.step(closure)
             self._move_states("cpu")
             return result
 
-        # Chunked step.
+        # Chunked path (also used for the first step to avoid materializing
+        # all optimizer states on GPU at once during initialization).
         self._original_param_groups = self.optimizer.param_groups
         original_steps = [g.get("step", 0) for g in self._original_param_groups]
 
@@ -234,6 +234,10 @@ class CPUOffloadOptimizer:
 
         self._sync_step_counters(original_steps)
         self._original_param_groups = None
+
+        if not self._initialized:
+            self._initialized = True
+
         return None
 
     def _step_chunked(self, closure=None):
@@ -242,6 +246,7 @@ class CPUOffloadOptimizer:
             self._move_chunk_states(i, "cuda")
             self._step_chunk(i, closure)
             self._move_chunk_states(i, "cpu")
+        torch.cuda.synchronize()
 
     def _step_chunked_streamed(self, closure=None):
         """Per-layer optimizer step with stream-overlapped H2D / D2H.
@@ -264,8 +269,10 @@ class CPUOffloadOptimizer:
             compute_stream.wait_stream(h2d_stream)
 
             # Prefetch H2D for chunk i+1 so it overlaps with step i on the
-            # compute stream.
+            # compute stream.  Wait for the previous chunk's D2H to finish
+            # first so we don't overwrite pinned CPU buffers still in flight.
             if i + 1 < n:
+                h2d_stream.wait_stream(d2h_stream)
                 self._move_chunk_states(i + 1, "cuda", h2d_stream)
 
             # Run optimizer step for chunk i.
@@ -275,9 +282,8 @@ class CPUOffloadOptimizer:
             d2h_stream.wait_stream(compute_stream)
             self._move_chunk_states(i, "cpu", d2h_stream)
 
-        # Ensure all transfers are complete before returning.
-        compute_stream.wait_stream(h2d_stream)
-        compute_stream.wait_stream(d2h_stream)
+        # Block the CPU until all async transfers are complete.
+        torch.cuda.synchronize()
 
     def zero_grad(self, set_to_none: bool = True):
         self.optimizer.zero_grad(set_to_none=set_to_none)
@@ -290,6 +296,7 @@ class CPUOffloadOptimizer:
         sd = self.optimizer.state_dict()
         if self._initialized:
             self._move_states("cpu")
+            torch.cuda.synchronize()
         return sd
 
     def load_state_dict(self, state_dict):
@@ -320,8 +327,8 @@ def setup_optimizer(
     parallel_dims: ParallelDims,
     lora: bool = False,
     cpu_offload: bool = False,
-    cpu_offload_chunked: bool = True,
-    cpu_offload_stream: bool = True,
+    cpu_offload_chunked: bool = False,
+    cpu_offload_stream: bool = False,
 ) -> Optimizer | CPUOffloadOptimizer:
     if lora:
         # Wait for run 0 to be created in the multi run manager

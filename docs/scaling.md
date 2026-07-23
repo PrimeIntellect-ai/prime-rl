@@ -154,7 +154,7 @@ optim_cpu_offload_chunked = true
 optim_cpu_offload_stream = true
 ```
 
-Set `optim_cpu_offload_chunked = false` to fall back to all-at-once offloading (loads the full model's optimizer states to GPU in one shot — simpler but requires enough VRAM to hold them all simultaneously). Set `optim_cpu_offload_stream = false` to disable stream overlap within the chunked step, falling back to a simple sequential move→step→move loop.
+Both default to `false`. Set `optim_cpu_offload_chunked = true` to enable per-layer chunking. Set `optim_cpu_offload_stream = true` to additionally overlap H2D/D2H transfers with optimizer compute on dedicated CUDA streams. When chunked is enabled but stream is not, the step uses a simple sequential move→step→move loop.
 
 ### LM Head Chunking
 
