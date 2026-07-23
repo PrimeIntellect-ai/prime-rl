@@ -137,6 +137,8 @@ class NCCLWeightUpdateWorker(Worker):
             f"rank_offset={rank_offset}] "
             f"-> [global_rank={global_rank_inference} inference_world_size={inference_world_size}]"
         )
+        self._prime_rl_global_inference_rank = global_rank_inference
+        self._prime_rl_inference_world_size = inference_world_size
 
         self.nccl_broadcast_receiver = NCCLWeightBroadcastReceiver(
             host=host,
@@ -164,12 +166,18 @@ class NCCLWeightUpdateWorker(Worker):
             state_iter = self.nccl_broadcast_receiver.receive_state_dict()
             load_weights_kernel(model, state_iter)
             update_mla_absorbed_weights(model)
-            return
+        else:
+            for state_iter in self.nccl_broadcast_receiver.receive_state_dicts():
+                load_weights_checkpoint_layerwise(
+                    model,
+                    state_iter,
+                    self.model_runner.model_config,
+                    self.vllm_config,
+                )
 
-        for state_iter in self.nccl_broadcast_receiver.receive_state_dicts():
-            load_weights_checkpoint_layerwise(
-                model,
-                state_iter,
-                self.model_runner.model_config,
-                self.vllm_config,
-            )
+        logger.info(
+            "Completed NCCL weight update "
+            f"[global_rank={self._prime_rl_global_inference_rank} "
+            f"inference_world_size={self._prime_rl_inference_world_size} "
+            f"weight_dir={weight_dir}]"
+        )
